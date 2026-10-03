@@ -354,7 +354,7 @@ mod tests {
             return;
         };
         let Some(layer) =
-            paint_effect_at(&format!(r##"background = "#FF0000FE", shadow_mode = "Content", {shadow}"##), &column)
+            paint_effect_at(&format!(r##"background = "#FF0000FE", shadow_mode = "content", {shadow}"##), &column)
         else {
             return;
         };
@@ -366,7 +366,7 @@ mod tests {
     /// composites over it rather than beside it.
     #[test]
     fn a_translucent_box_casts_a_shadow_at_its_own_alpha_under_itself() {
-        let content = r##"background = "#FF000080", shadow_mode = "Content", shadow_offset = { y = 16 }"##;
+        let content = r##"background = "#FF000080", shadow_mode = "content", shadow_offset = { y = 16 }"##;
         let Some(px) = paint_effect(content) else { return };
         assert!(near(px[0], (255, 255, 255)), "{px:?}");
         assert!(near(px[1], (255, 127, 127)), "the box alone: {px:?}");
@@ -393,8 +393,8 @@ mod tests {
     /// A mask cuts the pixels the shadow is cast from: the masked-away half casts nothing.
     #[test]
     fn a_masked_box_casts_the_shadow_of_what_its_mask_keeps() {
-        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_mode = "Content",
-            mask = { gradient = "Linear", angle = 90,
+        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_mode = "content",
+            mask = { gradient = "linear", angle = 90,
                 stops = { { 0, "#FFFFFFFF" }, { 0.5, "#FFFFFFFF" }, { 0.5, "#FFFFFF00" }, { 1, "#FFFFFF00" } } }"##;
         let Some(px) = paint_effect_at(effect, &[(20, 30), (44, 30), (20, 56), (44, 56)]) else { return };
         assert!(near(px[0], (255, 0, 0)) && near(px[1], (255, 255, 255)), "the mask keeps the left half: {px:?}");
@@ -452,8 +452,8 @@ mod tests {
     fn a_box_shadow_leaves_a_frosted_labelled_pill_as_it_was() {
         let src = |shadow: &str| {
             format!(
-                r##"{STRIPES} return panel {{ id = "bar", width = 96, height = 48, child = rect {{ width = "Fill", height = "Fill",
-                    background = {{ gradient = "Linear", angle = 90, stops = stops }}, padding = 8,
+                r##"{STRIPES} return panel {{ id = "bar", width = 96, height = 48, child = rect {{ width = "fill", height = "fill",
+                    background = {{ gradient = "linear", angle = 90, stops = stops }}, padding = 8,
                     children = {{ rect {{ width = 80, height = 32, radius = 16, backdrop_blur = 4,
                         background = "#FFFFFF33", padding = 8, {shadow}
                         children = {{ text {{ content = "hi", foreground = "#FF0000FF" }} }} }} }} }} }}"##
@@ -471,7 +471,7 @@ mod tests {
             return;
         };
         assert!(plain == boxed, "the body unchanged by its box shadow");
-        let content = src(r#"shadow_blur = 8, shadow_offset = { y = 4 }, shadow_mode = "Content","#);
+        let content = src(r#"shadow_blur = 8, shadow_offset = { y = 4 }, shadow_mode = "content","#);
         let Some(cast) = paint_with_gl(&content, (96, 48), &body) else { return };
         assert!(cast != plain, "a content shadow shows through the glass");
     }
@@ -480,7 +480,7 @@ mod tests {
     /// them, the shadow's notches stay clear, and the body is knocked out.
     #[test]
     fn a_scooped_box_shadow_is_its_silhouette_knocked_out() {
-        let effect = r##"background = "#FF000080", radius = 12, corner_shape = "Scoop", shadow_offset = { y = 16 }"##;
+        let effect = r##"background = "#FF000080", radius = 12, corner_shape = "scoop", shadow_offset = { y = 16 }"##;
         let strip: Vec<(usize, usize)> = (18..31).map(|y| (32, y)).collect();
         let Some(px) = paint_effect_at(effect, &[&[(32, 40), (32, 56), (17, 46), (17, 63)], &strip[..]].concat())
         else {
@@ -573,8 +573,8 @@ mod tests {
     #[test]
     fn a_backdrop_blur_frosts_the_stripes_under_a_pill_and_nothing_else() {
         let src = &(STRIPES.to_owned()
-            + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "Fill", height = "Fill",
-                background = { gradient = "Linear", angle = 90, stops = stops }, padding = 8,
+            + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "fill", height = "fill",
+                background = { gradient = "linear", angle = 90, stops = stops }, padding = 8,
                 children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
                     border_width = 2, border_color = "#00FF00FF", children = {
                         rect { width = 4, height = 4, margin = { left = 38, top = 14 }, background = "#FF0000FF" } } } } } }"##);
@@ -600,7 +600,7 @@ mod tests {
     #[test]
     fn a_fading_backdrop_keeps_an_opaque_ground_opaque_up_to_the_surfaces_edge() {
         let src = r##"return panel { id = "bar", width = 64, height = 32, background = "#FF0000FF",
-            child = rect { width = "Fill", height = "Fill", backdrop_blur = 4, opacity = 0.5 } }"##;
+            child = rect { width = "fill", height = "fill", backdrop_blur = 4, opacity = 0.5 } }"##;
         let Some(px) = paint_with_gl(src, (64, 32), &[(32, 16), (0, 0), (63, 31)]) else { return };
         assert_eq!(px, [(255, 0, 0, 255); 3]);
     }
@@ -609,10 +609,10 @@ mod tests {
     /// above a blue viewport does not bleed into the glass at the viewport's top.
     #[test]
     fn a_glass_reads_nothing_past_its_parents_clip() {
-        let src = r##"return panel { id = "bar", width = 64, height = 48, child = column { width = "Fill", children = {
-            rect { width = "Fill", height = 16, background = "#FF0000FF" },
-            rect { width = "Fill", height = 32, background = "#0000FFFF",
-                children = { rect { width = "Fill", height = 16, backdrop_blur = 4 } } } } } }"##;
+        let src = r##"return panel { id = "bar", width = 64, height = 48, child = column { width = "fill", children = {
+            rect { width = "fill", height = 16, background = "#FF0000FF" },
+            rect { width = "fill", height = 32, background = "#0000FFFF",
+                children = { rect { width = "fill", height = 16, backdrop_blur = 4 } } } } } }"##;
         let Some(px) = paint_with_gl(src, (64, 48), &[(32, 16), (32, 8)]) else { return };
         assert_eq!(px, [(0, 0, 255, 255), (255, 0, 0, 255)]);
     }
@@ -624,8 +624,8 @@ mod tests {
     fn a_glass_in_a_rounded_clip_blurs_what_is_behind_the_card() {
         let src = &(STRIPES.to_owned()
             + r##"return panel { id = "bar", width = 96, height = 48, padding = 4,
-                background = { gradient = "Linear", angle = 90, stops = stops },
-                child = rect { width = 88, height = 40, radius = 8, clip = "Rounded", padding = 4,
+                background = { gradient = "linear", angle = 90, stops = stops },
+                child = rect { width = 88, height = 40, radius = 8, clip = "rounded", padding = 4,
                     children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
                         background = "#0000FF40" } } } }"##);
         let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 20)).collect();
@@ -649,10 +649,10 @@ mod tests {
     /// vertical centres, so an unflipped read lands elsewhere.
     #[test]
     fn a_backdrop_is_read_where_the_box_is_in_every_target() {
-        let opaque_mask = r##"mask = { gradient = "Linear", stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFFFF" } } },"##;
+        let opaque_mask = r##"mask = { gradient = "linear", stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFFFF" } } },"##;
         for (wrapper, pill) in [
             ("", ""),
-            (r#"radius = 4, clip = "Rounded","#, ""),
+            (r#"radius = 4, clip = "rounded","#, ""),
             (opaque_mask, ""),
             ("", r##"content_blur = 1, border_width = 1, border_color = "#00FF00FF""##),
             ("translate = { x = 4, y = -4 },", ""),
@@ -660,8 +660,8 @@ mod tests {
         ] {
             let src = format!(
                 r##"return panel {{ id = "bar", width = 96, height = 96, padding = 8, child = rect {{
-                    width = 80, height = 64, {wrapper} children = {{ rect {{ width = "Fill", height = "Fill",
-                        padding = {{ left = 8 }}, background = {{ gradient = "Linear", angle = 135, stops = {{ {{ 0, "#FF0000FF" }},
+                    width = 80, height = 64, {wrapper} children = {{ rect {{ width = "fill", height = "fill",
+                        padding = {{ left = 8 }}, background = {{ gradient = "linear", angle = 135, stops = {{ {{ 0, "#FF0000FF" }},
                             {{ 0.25, "#FF0000FF" }}, {{ 0.25, "#0000FFFF" }}, {{ 1, "#0000FFFF" }} }} }},
                         children = {{ rect {{ width = 64, height = 32, radius = 16, backdrop_blur = 2, {pill} }} }} }} }} }} }}"##
             );

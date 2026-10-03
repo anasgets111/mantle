@@ -87,7 +87,7 @@ impl Sequence {
     }
 }
 
-const INFINITE: &str = "Infinite";
+const INFINITE: &str = "infinite";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Loops {
@@ -107,7 +107,7 @@ impl crate::layout::node::input::Input for Loops {
 
 /// An entry's `keyframes` and `loops`, if it has them. A frame is a bare value, or a table naming
 /// its own `duration` and `easing` in place of the entry's; the first frame is where the property
-/// starts and the timing on it is never read. `loops` is a count or `"Infinite"`, one by default.
+/// starts and the timing on it is never read. `loops` is a count or `"infinite"`, one by default.
 pub(super) fn parse_sequence(
     property: &str,
     field: &str,
@@ -195,15 +195,15 @@ mod tests {
             "rect",
             &rect_props(
                 &lua,
-                r#"return { animate = { opacity = { duration = 200, easing = "Linear", loops = "Infinite",
-                    keyframes = { 1, 0.4, { value = 1, duration = 50, easing = "OutCubic" } } } } }"#,
+                r#"return { animate = { opacity = { duration = 200, easing = "linear", loops = "infinite",
+                    keyframes = { 1, 0.4, { value = 1, duration = 50, easing = "out_cubic" } } } } }"#,
             ),
         )
         .unwrap()
         .remove("opacity")
         .expect("opacity has a spec");
         let sequence = spec.sequence().expect("the entry named keyframes");
-        assert_eq!(sequence.loops, None, "\"Infinite\" is no count at all");
+        assert_eq!(sequence.loops, None, "\"infinite\" is no count at all");
         assert_eq!(sequence.frames.len(), 3);
         assert_eq!(sequence.frames[1].duration, Duration::from_millis(200), "the entry's duration");
         assert_eq!(sequence.frames[2].duration, Duration::from_millis(50), "its own");
@@ -229,7 +229,7 @@ mod tests {
         };
 
         let once = sequence(
-            r#"return { animate = { opacity = { duration = 100, easing = "Linear", keyframes = { 0, 1, 0 } } } }"#,
+            r#"return { animate = { opacity = { duration = 100, easing = "linear", keyframes = { 0, 1, 0 } } } }"#,
         );
         for (millis, want, why) in [
             (0, 0.0, "the first frame"),
@@ -244,7 +244,7 @@ mod tests {
         assert!(once.done(Duration::from_millis(200)) && !once.done(Duration::from_millis(199)));
 
         let endless = sequence(
-            r#"return { animate = { opacity = { duration = 100, easing = "Linear", loops = "Infinite",
+            r#"return { animate = { opacity = { duration = 100, easing = "linear", loops = "infinite",
                 keyframes = { 0, 1, 0 } } } }"#,
         );
         assert!((at(&endless, 250) - 0.5).abs() < 1e-5, "back round the first segment: got {}", at(&endless, 250));
@@ -285,7 +285,7 @@ mod tests {
         let cases: [(&str, &[&str]); 7] = [
             ("keyframes = { 1 }", &["at least two"]),
             ("keyframes = 3", &["`keyframes` is a list"]),
-            (r#"keyframes = { 1, "Fill" }"#, &["keyframes[2]"]),
+            (r#"keyframes = { 1, "fill" }"#, &["keyframes[2]"]),
             ("loops = 0, keyframes = { 1, 0 }", &["`loops`", "[1, 10000]"]),
             ("keyframes = { 1, { value = 0, duration = -5 } }", &["keyframes[2]", "[0, 60000]"]),
             // A hole truncates the read at index 3, so the two frames that survive would have
@@ -309,7 +309,7 @@ mod tests {
             "rect",
             &rect_props(
                 &lua,
-                r#"return { animate = { opacity = { duration = 100, easing = "Linear", loops = "Infinite",
+                r#"return { animate = { opacity = { duration = 100, easing = "linear", loops = "infinite",
                     keyframes = { 0, 1 } } } }"#,
             ),
         )
@@ -338,7 +338,7 @@ mod tests {
         let lua = Lua::new();
         let text = refused(
             &lua,
-            r#"return { animate = { width = { duration = 100, loops = "Infinite",
+            r#"return { animate = { width = { duration = 100, loops = "infinite",
                 keyframes = { 0, { value = 1, duration = 0 } } } } }"#,
         );
         assert!(text.contains("takes none is a jump"), "{text}");
@@ -388,7 +388,7 @@ mod tests {
             "rect",
             &rect_props(
                 &lua,
-                r#"return { animate = { width = { duration = 100, easing = "Linear",
+                r#"return { animate = { width = { duration = 100, easing = "linear",
                     keyframes = { 0, { value = 10, duration = 300 }, { value = 20, duration = 100 },
                         { value = 99, duration = 0 }, { value = 5, duration = 100 } } } } }"#,
             ),
@@ -410,7 +410,7 @@ mod tests {
         let lua = Lua::new();
         let specs = parse_animate(
             "rect",
-            &rect_props(&lua, "return { animate = { opacity = { duration = 100, delay = 40, keyframes = { 0, 1 }, loops = \"Infinite\" } } }"),
+            &rect_props(&lua, "return { animate = { opacity = { duration = 100, delay = 40, keyframes = { 0, 1 }, loops = \"infinite\" } } }"),
         )
         .unwrap();
         let started = Instant::now();

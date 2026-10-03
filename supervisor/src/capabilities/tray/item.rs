@@ -1,6 +1,7 @@
 //! `TrayItem` hydration from `StatusNotifierItem` properties; `menu` is fetched separately.
 
 pub use shared::state::tray::TrayItem;
+use shared::state::tray::TrayStatus;
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, BuildHasherDefault, DefaultHasher};
@@ -25,6 +26,15 @@ fn capped(value: String) -> String {
 /// Resolves `TrayItem.name`: `Title`, falling back to `Id` when empty (ADR-0031).
 fn resolve_display_name(title: &str, id: &str) -> String {
     if title.is_empty() { id.to_string() } else { title.to_string() }
+}
+
+/// SNI `Status` by its spec spelling; anything else reads as `Active`.
+fn parse_status(status: &str) -> TrayStatus {
+    match status {
+        "Passive" => TrayStatus::Passive,
+        "NeedsAttention" => TrayStatus::NeedsAttention,
+        _ => TrayStatus::Active,
+    }
 }
 
 /// Flattens `ToolTip`'s title and text (ADR-0031 leaves exact formatting open).
@@ -84,7 +94,7 @@ pub(super) async fn fetch_tray_item_base(
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
     let id_prop = capped(take(&mut all, "Id").unwrap_or_default());
     let title = capped(take(&mut all, "Title").unwrap_or_default());
-    let status = capped(take(&mut all, "Status").unwrap_or_default());
+    let status = parse_status(&take::<String>(&mut all, "Status").unwrap_or_default());
     let item_is_menu = take(&mut all, "ItemIsMenu").unwrap_or(false);
     let tooltip = take::<RawToolTip>(&mut all, "ToolTip");
     // Read once for all three icon variants; the directory belongs to the item (ADR-0074). Not
@@ -180,6 +190,19 @@ mod tests {
     #[test]
     fn resolve_display_name_falls_back_to_id_when_title_is_empty() {
         assert_eq!(resolve_display_name("", "discord"), "discord");
+    }
+
+    #[test]
+    fn status_maps_the_sni_spellings_and_reads_anything_else_as_active() {
+        for (raw, status) in [
+            ("Active", TrayStatus::Active),
+            ("Passive", TrayStatus::Passive),
+            ("NeedsAttention", TrayStatus::NeedsAttention),
+            ("needs_attention", TrayStatus::Active),
+            ("", TrayStatus::Active),
+        ] {
+            assert_eq!(parse_status(raw), status, "{raw}");
+        }
     }
 
     #[test]

@@ -10,8 +10,8 @@ local clicks = state("clicks", 0)
 
 return panel {
     id = "bar",
-    layer = "Top",
-    keyboard_interactivity = "OnDemand",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
     anchor = { top = true },
     child = rect {
         padding = 8,
@@ -33,7 +33,7 @@ Every pointer event asks which nodes lie under the pointer, from the surface dow
 | :--- | :--- |
 | Transforms | A node is hit where it is painted, after `scale`, `rotate` and `translate` |
 | Stacking | Siblings are asked topmost first: higher `z`, then later in declaration order |
-| Clipping | A point outside a node reaches none of its children, unless the node has `clip = "None"` |
+| Clipping | A point outside a node reaches none of its children, unless the node has `clip = "none"` |
 | Skipped | `visible = false` subtrees and nodes playing an [exit](animation.md#exit). `opacity = 0` is still hit |
 | Edges | Half-open: two nodes sharing an edge never both take it |
 | Rects | Every `rect` argument and `hover_rect` value is the node's surface-local `{ x, y, width, height }` laid-out box, before transforms |
@@ -80,7 +80,7 @@ local percent = level:map(function(value) return string.format("%d%%", math.floo
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true },
     child = row {
         padding = 14,
@@ -88,20 +88,20 @@ return panel {
         radius = 12,
         background = "#1e1e2e",
         children = {
-            icon { name = "display-brightness-symbolic", size = 18, foreground = "#f9e2af", align_v = "Center" },
+            icon { name = "display-brightness-symbolic", size = 18, foreground = "#f9e2af", align_v = "center" },
             rect {
                 width = 200,
                 height = 10,
                 radius = 5,
-                align_v = "Center",
-                clip = "Rounded",
+                align_v = "center",
+                clip = "rounded",
                 background = "#45475a",
                 -- A press is "start", so clicking the track also seeks.
                 on_drag = function(rect, pointer, phase) level:set(clamp(pointer.x / rect.width)) end,
                 on_wheel = function(_, steps) level:set(clamp(level:get() + steps * 0.05)) end,
-                children = { rect { height = "Fill", background = "#f9e2af", width = percent } },
+                children = { rect { height = "fill", background = "#f9e2af", width = percent } },
             },
-            text { content = percent, width = 36, foreground = "#cdd6f4", align_v = "Center" },
+            text { content = percent, width = 36, foreground = "#cdd6f4", align_v = "center" },
         },
     },
 }
@@ -126,7 +126,7 @@ local over = hover("wifi")
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true },
     child = rect {
         padding = 6,
@@ -150,7 +150,7 @@ Like `hover`, the name is the identity and survives reloads.
 | :--- | :--- |
 | Axis | A `column` or vertical `list` scrolls with the vertical wheel, a `row` or horizontal `list` with the horizontal one only |
 | Distance | One wheel notch is 39 px; a touchpad scrolls the distance it reports |
-| Bound | Layout clamps the offset to `[0, content − viewport]` and writes the clamped value back. The container needs a bounded size on its axis (fixed, `"Fill"` or `max_*`); one sized by its content has nothing to scroll |
+| Bound | Layout clamps the offset to `[0, content − viewport]` and writes the clamped value back. The container needs a bounded size on its axis (fixed, `"fill"` or `max_*`); one sized by its content has nothing to scroll |
 | Cost | While only `scroll` properties read the signal, the wheel moves the laid-out children without a layout pass. A `map` or `:get()` of it, or a `scroll` inside a `list` item, costs a pass per wheel event |
 | `:reveal(index)` | On the next pass, scrolls the least distance that shows the `index`-th visible child (1-based; a `list`'s items in source order). An index past the end does nothing; below 1 raises. Only a `scroll` signal has it |
 
@@ -160,7 +160,7 @@ A node with `on_click` or `submit = true` becomes a keyboard control when it has
 `accessible_name`. The name is announced through AT-SPI. Give every `textfield` an
 `accessible_name` too; fields take focus through their existing callbacks or `secure_submit`.
 Keys reach controls only on the surface with keyboard focus. Panels use
-`keyboard_interactivity = "OnDemand"` or `"Exclusive"`; shown popups under that surface share its
+`keyboard_interactivity = "on_demand"` or `"exclusive"`; shown popups under that surface share its
 focus scope.
 
 Tab moves to the next control in document order across the focused surface and its shown popups.
@@ -184,8 +184,8 @@ local search = focused("search")
 
 return panel {
     id = "launcher",
-    layer = "Top",
-    keyboard_interactivity = "OnDemand",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
     child = rect {
         padding = 6,
         radius = 8,
@@ -222,7 +222,7 @@ A field takes the keyboard only when both hold:
 
 | Condition | Detail |
 | :--- | :--- |
-| The surface has keyboard focus | A `panel` needs `keyboard_interactivity = "OnDemand"` or `"Exclusive"` ([keyboard focus](../surfaces/panel.md#keyboard-focus)); a popup shown under the focused surface shares its keys |
+| The surface has keyboard focus | A `panel` needs `keyboard_interactivity = "on_demand"` or `"exclusive"` ([keyboard focus](../surfaces/panel.md#keyboard-focus)); a popup shown under the focused surface shares its keys |
 | The field can use keys | It has `secure_submit`, `on_change` or `on_submit`. A field with none of them (even with `on_cancel` or `on_navigate`) never takes focus, and a press on it acts like a press on empty space |
 
 A press on the field focuses it and puts the caret under the pointer. `autofocus` focuses it without
@@ -273,8 +273,8 @@ local search_focus = focus_target("search")
 
 return panel {
     id = "search",
-    layer = "Top",
-    keyboard_interactivity = "OnDemand",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
     child = row { children = {
         textfield {
             focus_target = search_focus,
@@ -346,10 +346,10 @@ secret or its length.
 return lock {
     id = "lock",
     child = column {
-        width = "Fill",
-        height = "Fill",
-        align_h = "Center",
-        align_v = "Center",
+        width = "fill",
+        height = "fill",
+        align_h = "center",
+        align_v = "center",
         spacing = 12,
         background = "#11111b",
         children = {
@@ -400,7 +400,7 @@ local menu_at = state("context_at", { x = 0, y = 0, width = 1, height = 1 })
 
 local function item(label, run)
     return rect {
-        width = "Fill",
+        width = "fill",
         padding = 8,
         radius = 6,
         on_click = function()
@@ -425,19 +425,19 @@ local files = row {
         end
     end,
     children = {
-        icon { name = "folder", size = 18, align_v = "Center" },
-        text { content = "Files", foreground = "#cdd6f4", align_v = "Center" },
+        icon { name = "folder", size = 18, align_v = "center" },
+        text { content = "Files", foreground = "#cdd6f4", align_v = "center" },
     },
 }
 
 return {
-    panel { id = "bar", layer = "Top", anchor = { top = true }, child = files },
+    panel { id = "bar", layer = "top", anchor = { top = true }, child = files },
     popup {
         id = "files_menu",
         parent = "bar",
         anchor_rect = menu_at,
-        anchor = "Bottom",
-        gravity = "BottomRight",
+        anchor = "bottom",
+        gravity = "bottom_right",
         offset = { y = 4 },
         visible = menu_open,
         on_dismiss = function() menu_open:set(false) end,
@@ -501,7 +501,7 @@ end
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true },
     child = list { spacing = 4, source = items, itemfn = row_for, key = function(name) return name end },
 }
@@ -512,9 +512,9 @@ return panel {
 | Trap | Fix |
 | :--- | :--- |
 | A `textfield` is invisible or cannot be clicked | It has no intrinsic size. Give it `width` and `height` |
-| A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"OnDemand"` (or `"Exclusive"` for a modal) |
+| A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"on_demand"` (or `"exclusive"` for a modal) |
 | A field with only `on_navigate`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
-| Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"None"` |
+| Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"none"` |
 | A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focused(name)` for a style that tracks any focus |
 | Tab stopped reaching `on_navigate` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_navigate` only when the field is the sole control |
 | The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |

@@ -5,9 +5,9 @@ fonts {
 }
 
 local workspaces = list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 6,
-    align_v = "Center",
+    align_v = "center",
     source = mantle.workspaces:map(function(ws)
         local output = ws and ws.outputs[1]
         local items = {}
@@ -23,13 +23,13 @@ local workspaces = list {
             height = 40,
             radius = 20,
             background = w.active and "#89b4fa" or "#313244",
-            animate = { width = { duration = 300, easing = "OutCubic" }, background = 300 },
+            animate = { width = { duration = 300, easing = "out_cubic" }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {
                     content = tostring(w.idx),
-                    align_h = "Center",
-                    align_v = "Center",
+                    align_h = "center",
+                    align_v = "center",
                     font_size = 20,
                     foreground = w.active and "#11111b" or "#cdd6f4",
                 },
@@ -41,24 +41,24 @@ local workspaces = list {
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
         exclusive_zone = true,
-        width = "Fill",
+        width = "fill",
         height = 56,
         background = "#11111be6",
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 12, right = 12 },
             children = {
                 workspaces,
-                rect { width = "Fill" },
+                rect { width = "fill" },
                 text {
                     content = mantle.system:map(function(s)
                         return os.date("%a %d %b   %H:%M", s and s.time)
                     end),
-                    align_v = "Center",
+                    align_v = "center",
                     font_size = 22,
                     foreground = "#cdd6f4ff",
                 },

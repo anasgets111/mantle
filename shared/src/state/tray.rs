@@ -25,6 +25,20 @@ pub struct MenuItem {
     pub children: Vec<MenuItem>,
 }
 
+/// SNI `Status`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum TrayStatus {
+    /// Normal; also any value outside the spec, or none.
+    #[default]
+    Active,
+    /// The item asks to be hidden.
+    Passive,
+    /// The item wants attention; draw its attention artwork if set.
+    NeedsAttention,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrayState {
@@ -44,7 +58,7 @@ pub struct TrayItem {
     /// Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap
     /// spooled to a PNG.
     pub icon_path: Option<String>,
-    /// Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like
+    /// Artwork to draw while `status == "needs_attention"`, paired with `attention_icon_path` like
     /// the base icon; both `nil` when unset.
     pub attention_icon_name: Option<String>,
     /// File half of the attention artwork.
@@ -55,8 +69,8 @@ pub struct TrayItem {
     pub overlay_icon_path: Option<String>,
     /// Tooltip title and text joined by a newline, or `nil` when both are empty.
     pub tooltip: Option<String>,
-    /// `"Active"`, `"Passive"` (the item asks to be hidden) or `"NeedsAttention"`, as the item sent it.
-    pub status: String,
+    /// SNI `Status`.
+    pub status: TrayStatus,
     /// Left click should open `menu` instead of `activate`.
     pub item_is_menu: bool,
     /// Top-level menu entries, or `nil` when the item exports no DBusMenu or its first fetch failed.

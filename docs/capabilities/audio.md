@@ -189,7 +189,7 @@ end)
 
 local osd = panel {
     id = "osd",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { bottom = true },
     margin = { bottom = 80 },
     visible = osd_visible,

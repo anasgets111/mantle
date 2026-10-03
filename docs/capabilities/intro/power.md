@@ -1,6 +1,6 @@
 ```lua
 list {
-    direction = "Horizontal",
+    direction = "horizontal",
     source = mantle.power:map(function(power)
         return power and power.profiles or {}
     end),

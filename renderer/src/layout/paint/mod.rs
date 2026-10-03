@@ -498,8 +498,8 @@ mod tests {
     fn a_list_knows_which_files_it_draws_through_a_rounded_clip_too() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = rect { width = 100, height = 40, radius = 8, clip = "Rounded",
-                children = { image { source = "/tmp/a.png", async = true, width = "Fill", height = "Fill" } } } }"##;
+            child = rect { width = 100, height = 40, radius = 8, clip = "rounded",
+                children = { image { source = "/tmp/a.png", async = true, width = "fill", height = "fill" } } } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let list = build(&tree, 1.0, None);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/a.png")]));
@@ -519,7 +519,7 @@ mod tests {
         for name in [svg.to_str().unwrap(), "letters"] {
             let src = format!(
                 r#"return panel {{ id='bar', width=64, height=64,
-                child=rect {{ width=64, height=64, rotate=15, radius=8, clip='Rounded',
+                child=rect {{ width=64, height=64, rotate=15, radius=8, clip='rounded',
                     children={{icon {{name={name:?}, size=64}}}} }} }}"#
             );
             let list =
@@ -542,7 +542,7 @@ mod tests {
 
     pub(super) const IMAGE_MASKED: &str = r##"rect { width = 80, height = 32, background = "#0000FFFF",
         border_width = 1, border_color = "#FFFFFFFF", mask = { source = "/tmp/m.png" },
-        children = { rect { width = 30, height = "Fill", background = "#FF0000FF" } } }"##;
+        children = { rect { width = 30, height = "fill", background = "#FF0000FF" } } }"##;
 
     /// A mask texture changes under an unchanged list like an `image`'s: a decode landing, a GIF
     /// frame, the file rewritten. So it is pinned, marks its surface stale, and damages its group.
@@ -691,7 +691,7 @@ mod tests {
     fn a_change_inside_a_rounded_clip_damages_that_child_alone() {
         let list = |color: &str| {
             effect_surface(&format!(
-                r##"rect {{ width = 120, height = 40, radius = 8, clip = "Rounded", children = {{ row {{ children = {{
+                r##"rect {{ width = 120, height = 40, radius = 8, clip = "rounded", children = {{ row {{ children = {{
                     rect {{ width = 20, height = 20, background = "{color}" }},
                     rect {{ width = 20, height = 20, background = "#ffffff" }},
                     image {{ source = "/tmp/i.png", width = 20, height = 20 }} }} }} }} }}"##
@@ -712,7 +712,7 @@ mod tests {
         let list = effect_surface(
             r##"row { spacing = 4, children = {
                 rect { width = 20, height = 20, background = "#ffffff", content_blur = 1 },
-                rect { width = 30, height = 20, radius = 4, clip = "Rounded", children = {
+                rect { width = 30, height = 20, radius = 4, clip = "rounded", children = {
                     rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } },
                 rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } }"##,
         );

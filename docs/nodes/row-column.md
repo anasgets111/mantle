@@ -4,7 +4,7 @@ Boxes that flow their children along one axis: a `row` left to right, a `column`
 They are the main layout tools; everything else is placed inside one. The two accept the same
 properties and differ only in their main axis. For children built from data, use a [`list`](list.md).
 
-A meter: a `"Fill"`-wide track with a percentage-wide fill that follows a signal.
+A meter: a `"fill"`-wide track with a percentage-wide fill that follows a signal.
 
 <!-- shot-alt: A volume card: a speaker icon, a blue meter filling 45% of its dark track, and the percentage. -->
 ```lua,shot
@@ -12,12 +12,12 @@ local volume = state("volume", 0.45)
 local percent = volume:map(function(v) return string.format("%d%%", math.floor((v or 0) * 100 + 0.5)) end)
 
 local meter = row {
-    width = "Fill",
+    width = "fill",
     height = 6,
     radius = 3,
-    align_v = "Center",
+    align_v = "center",
     background = "#313244",
-    children = { rect { width = percent, height = "Fill", radius = 3, background = "#89B4FA", animate = { width = 150 } } },
+    children = { rect { width = percent, height = "fill", radius = 3, background = "#89B4FA", animate = { width = 150 } } },
 }
 
 return row {
@@ -27,9 +27,9 @@ return row {
     radius = 12,
     background = "#1E1E2E",
     children = {
-        icon { name = "audio-volume-medium-symbolic", size = 18, foreground = "#89B4FA", align_v = "Center" },
+        icon { name = "audio-volume-medium-symbolic", size = 18, foreground = "#89B4FA", align_v = "center" },
         meter,
-        text { content = percent, foreground = "#CDD6F4", align_v = "Center" },
+        text { content = percent, foreground = "#CDD6F4", align_v = "center" },
     },
 }
 ```
@@ -51,10 +51,10 @@ How the container packs its children:
 
 | Axis | Set by | Effect |
 | :--- | :--- | :--- |
-| Main (`row`: horizontal, `column`: vertical) | The container's own `align_h` (row) or `align_v` (column) | `"Start"`, `"Center"`, `"End"` pack the children; `"Stretch"` packs like `"Start"`. The children's own value on this axis is ignored |
-| Cross | Each child's `align_v` (row) or `align_h` (column) | Places that child across the row's height or the column's width; `"Stretch"` fills it |
+| Main (`row`: horizontal, `column`: vertical) | The container's own `align_h` (row) or `align_v` (column) | `"start"`, `"center"`, `"end"` pack the children; `"stretch"` packs like `"start"`. The children's own value on this axis is ignored |
+| Cross | Each child's `align_v` (row) or `align_h` (column) | Places that child across the row's height or the column's width; `"stretch"` fills it |
 
-`"Fill"` children along the main axis share what the others leave, and no child shrinks; see
+`"fill"` children along the main axis share what the others leave, and no child shrinks; see
 [sizes](index.md#sizes).
 
 ## How do I…
@@ -63,15 +63,15 @@ How the container packs its children:
 | :--- | :--- |
 | Show a progress bar | The meter above |
 | Push items apart | [Below](#push-items-apart) |
-| Split a bar into three groups | The [bar](index.md#nodes): two `"Fill"` rows around a content-sized middle |
-| Centre items in a row | `align_h = "Center"` on the row itself |
-| Make children equal width | Give each `width = "Fill"` |
+| Split a bar into three groups | The [bar](index.md#nodes): two `"fill"` rows around a content-sized middle |
+| Centre items in a row | `align_h = "center"` on the row itself |
+| Make children equal width | Give each `width = "fill"` |
 | Scroll overflowing content | Bound the axis (`height` or `max_height` on a column), then `scroll = scroll("name")` ([scroll](../guide/input.md#scroll)) |
 | Overlap items, like stacked avatars | Negative `spacing` |
 
 ### Push items apart
 
-A `"Fill"` child takes the space its siblings leave, so a bare `rect` makes a spacer:
+A `"fill"` child takes the space its siblings leave, so a bare `rect` makes a spacer:
 
 <!-- shot-alt: A card row with a Wi-Fi icon and label on the left and a green Connected pushed to the right. -->
 ```lua,shot
@@ -82,10 +82,10 @@ local header = row {
     radius = 12,
     background = "#1E1E2E",
     children = {
-        icon { name = "network-wireless-symbolic", size = 18, foreground = "#89B4FA", align_v = "Center" },
-        text { content = "Wi-Fi", font_size = 14, font_weight = 700, foreground = "#CDD6F4", align_v = "Center" },
-        rect { width = "Fill" }, -- takes the space left over, pushing what follows to the end
-        text { content = "Connected", foreground = "#A6E3A1", align_v = "Center" },
+        icon { name = "network-wireless-symbolic", size = 18, foreground = "#89B4FA", align_v = "center" },
+        text { content = "Wi-Fi", font_size = 14, font_weight = 700, foreground = "#CDD6F4", align_v = "center" },
+        rect { width = "fill" }, -- takes the space left over, pushing what follows to the end
+        text { content = "Connected", foreground = "#A6E3A1", align_v = "center" },
     },
 }
 
@@ -96,10 +96,10 @@ return header
 
 | Trap | Fix |
 | :--- | :--- |
-| `align_h = "Center"` on a child of a `row` does nothing | The row packs its main axis: set `align_h` on the row, or use `"Fill"` spacers |
-| `align_v = "Center"` on a `row` leaves its children at the top | A row's own `align_v` places the row in its parent. Set `align_v` on each child, as in [push items apart](#push-items-apart) |
-| A `"Fill"` child of a content-sized row is 0 wide | The row has no leftover space to share. Give the row a `width` or `"Fill"` |
-| `direction = "Horizontal"` on a `column` is refused | `direction` is a [`list`](list.md) property. Use a `row` |
+| `align_h = "center"` on a child of a `row` does nothing | The row packs its main axis: set `align_h` on the row, or use `"fill"` spacers |
+| `align_v = "center"` on a `row` leaves its children at the top | A row's own `align_v` places the row in its parent. Set `align_v` on each child, as in [push items apart](#push-items-apart) |
+| A `"fill"` child of a content-sized row is 0 wide | The row has no leftover space to share. Give the row a `width` or `"fill"` |
+| `direction = "horizontal"` on a `column` is refused | `direction` is a [`list`](list.md) property. Use a `row` |
 | A `scroll` row or column never scrolls | Its size on the main axis is content-sized, so nothing overflows. Set `width`/`height` or a `max_*` |
 
 See also: [list](list.md), [rect](rect.md), [layout model](index.md#layout-model).

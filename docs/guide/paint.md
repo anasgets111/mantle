@@ -19,14 +19,14 @@ column {
     shadow_offset = { x = 0, y = 8 },
     children = {
         row {
-            width = "Fill",
+            width = "fill",
             children = {
-                text { content = "Battery", width = "Fill", font_size = 14, font_weight = 700, foreground = "#CDD6F4" },
+                text { content = "Battery", width = "fill", font_size = 14, font_weight = 700, foreground = "#CDD6F4" },
                 text { content = "82%", font_size = 14, foreground = "#A6E3A1" },
             },
         },
         rect {
-            width = "Fill",
+            width = "fill",
             height = 6,
             radius = 3,
             background = "#313244",
@@ -88,13 +88,13 @@ colours and no short `#RGB` form.
 | `background` | `Color\|Gradient\|Bound` | None | A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate` |
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
 | `radius` | `number\|Bound`, `[0, 8192]` | `0` | Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle |
-| `corner_shape` | `"Round"\|"Scoop"\|Bound` | `"Round"` | `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
+| `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
 | `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `backdrop_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs) |
-| `shadow_mode` | `"Box"\|"Content"\|Bound` | `"Box"` | `"Box"`: CSS `box-shadow` of the box shape. `"Content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
-| `clip` | `"Box"\|"Rounded"\|"None"\|Bound` | `"Box"` | `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip) |
+| `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
+| `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip. See [Clip](#clip) |
 <!-- End of the generated table. -->
 
 A border follows the corners, round or scooped, as CSS draws it. Where two edges meet, the corner
@@ -107,15 +107,15 @@ local function tile(label, color, props)
     props.width, props.height, props.radius = 104, 72, 16
     props.background = "#1E1E2E"
     props.border_color = props.border_color or color
-    props.children = { text { content = label, foreground = "#CDD6F4", align_h = "Center", align_v = "Center" } }
+    props.children = { text { content = label, foreground = "#CDD6F4", align_h = "center", align_v = "center" } }
     return rect(props)
 end
 
 return row {
     spacing = 16,
     children = {
-        tile("Round", "#89B4FA", { border_width = 2 }),
-        tile("Scoop", "#CBA6F7", { corner_shape = "Scoop", border_width = 2 }),
+        tile("round", "#89B4FA", { border_width = 2 }),
+        tile("scoop", "#CBA6F7", { corner_shape = "scoop", border_width = 2 }),
         tile("Per-edge", "#A6E3A1", { border_width = { bottom = 3 } }),
         tile("Four colours", nil, {
             border_width = 3,
@@ -131,7 +131,7 @@ return row {
 
 ```lua
 background = {
-    gradient = "Linear",
+    gradient = "linear",
     angle = 90,
     stops = { { 0, "#CBA6F7" }, { 0.5, "#F38BA8" }, { 1, "#89B4FA" } },
 }
@@ -139,15 +139,15 @@ background = {
 
 | Key | Rule |
 | :--- | :--- |
-| `gradient` | `"Linear"`, `"Radial"` or `"Conic"` |
-| `angle` | Degrees clockwise from the top, as in CSS. `Linear` default 180 (top to bottom), `Conic` default 0 (starts at twelve o'clock). `Radial` refuses it |
+| `gradient` | `"linear"`, `"radial"` or `"conic"` |
+| `angle` | Degrees clockwise from the top, as in CSS. `"linear"` default 180 (top to bottom), `"conic"` default 0 (starts at twelve o'clock). `"radial"` refuses it |
 | `stops` | At least 2 `{ position, colour }` pairs. Positions in `[0, 1]`, never descending; two equal positions make a hard edge |
 
 | Shape | Geometry |
 | :--- | :--- |
-| `Linear` | Along `angle` through the centre, long enough that the corners take the end stops (CSS) |
-| `Radial` | An ellipse from the centre out to the box's edges, not its corners |
-| `Conic` | A turn around the centre, starting at `angle` |
+| `"linear"` | Along `angle` through the centre, long enough that the corners take the end stops (CSS) |
+| `"radial"` | An ellipse from the centre out to the box's edges, not its corners |
+| `"conic"` | A turn around the centre, starting at `angle` |
 
 <!-- shot-alt: The same three stops, mauve to pink to blue, as a linear, a radial and a conic gradient tile. -->
 ```lua,shot
@@ -158,7 +158,7 @@ local function swatch(label, fill)
         spacing = 8,
         children = {
             rect { width = 112, height = 80, radius = 12, background = fill },
-            text { content = label, font_size = 13, foreground = "#BAC2DE", align_h = "Center" },
+            text { content = label, font_size = 13, foreground = "#BAC2DE", align_h = "center" },
         },
     }
 end
@@ -166,9 +166,9 @@ end
 return row {
     spacing = 16,
     children = {
-        swatch("Linear, 90", { gradient = "Linear", angle = 90, stops = stops }),
-        swatch("Radial", { gradient = "Radial", stops = stops }),
-        swatch("Conic", { gradient = "Conic", stops = stops }),
+        swatch("linear, 90", { gradient = "linear", angle = 90, stops = stops }),
+        swatch("radial", { gradient = "radial", stops = stops }),
+        swatch("conic", { gradient = "conic", stops = stops }),
     },
 }
 ```
@@ -179,9 +179,9 @@ return row {
 
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
-| `"Box"` | The box's rectangle | Free (a scissor) |
-| `"Rounded"` | The box's `radius` and `corner_shape`. With `radius = 0` it is `"Box"` | An offscreen pass every repaint of the box |
-| `"None"` | Whatever the parent cuts to, so children and their shadows can overflow this box | Free |
+| `"box"` | The box's rectangle | Free (a scissor) |
+| `"rounded"` | The box's `radius` and `corner_shape`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
+| `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box | Free |
 
 A rounded clip draws in the order fill, children, border, so the border stays on top of children
 that reach the arc.
@@ -198,8 +198,8 @@ that reach the arc.
 | Any form, plus `invert = true` | The complement: kept and cut swap |
 
 Name exactly one of `source`, `node`, or a gradient. A masked box draws its subtree offscreen every repaint
-and always cuts children to its box (to `radius` too under `clip = "Rounded"`), even with
-`clip = "None"`.
+and always cuts children to its box (to `radius` too under `clip = "rounded"`), even with
+`clip = "none"`.
 
 <!-- shot-alt: A scrolling list of Wi-Fi networks in a card; the rows at its top and bottom edges fade out under a gradient mask. -->
 ```lua,shot
@@ -208,14 +208,14 @@ local networks = { "Home", "Office 5G", "Cafe Guest", "Library", "Studio", "Gard
 local rows = {}
 for i, name in ipairs(networks) do
     rows[i] = row {
-        width = "Fill",
+        width = "fill",
         padding = 10,
         spacing = 10,
         radius = 8,
         background = i == 1 and "#89B4FA26" or "#313244",
         children = {
-            icon { name = "network-wireless-symbolic", size = 16, foreground = i == 1 and "#89B4FA" or "#A6ADC8", align_v = "Center" },
-            text { content = name, foreground = "#CDD6F4", align_v = "Center" },
+            icon { name = "network-wireless-symbolic", size = 16, foreground = i == 1 and "#89B4FA" or "#A6ADC8", align_v = "center" },
+            text { content = name, foreground = "#CDD6F4", align_v = "center" },
         },
     }
 end
@@ -229,7 +229,7 @@ return column {
     background = "#1E1E2E",
     scroll = scroll("feed"),
     mask = {
-        gradient = "Linear",
+        gradient = "linear",
         stops = { { 0, "#00000000" }, { 0.1, "#000000" }, { 0.9, "#000000" }, { 1, "#00000000" } },
     },
     children = rows,
@@ -250,7 +250,7 @@ rect {
     width = 160, height = 80, background = "#3366ffff",
     mask = { node = "shape" },
     children = {
-        rect { id = "shape", width = 80, height = "Fill", radius = 24,
+        rect { id = "shape", width = 80, height = "fill", radius = 24,
             background = "#ffffffff" },
     },
 }
@@ -271,14 +271,14 @@ A shadow draws when `shadow_color` has alpha above 0 and at least one of `shadow
 | `shadow_blur` | CSS blur radius in px `[0, 8192]`; the Gaussian's sigma is half of it | 0 |
 | `shadow_offset` | `{ x, y }` px, each `[-8192, 8192]`, missing axis 0 | `{ x = 0, y = 0 }` |
 | `shadow_spread` | px `[-8192, 8192]` the shape grows (negative shrinks) per side. On a non-box shadow it scales the shadow about the box centre instead | 0 |
-| `shadow_mode` | Box kinds only. `"Box"`: CSS `box-shadow`, cast by the box's shape and cut out under the box. `"Content"`: CSS `drop-shadow`, cast by everything the node and its subtree paint | `"Box"` |
+| `shadow_mode` | Box kinds only. `"box"`: CSS `box-shadow`, cast by the box's shape and cut out under the box. `"content"`: CSS `drop-shadow`, cast by everything the node and its subtree paint | `"box"` |
 
 Non-box nodes (`text`, `icon`, `image`, ...) have no box to cast, so their shadow is always the
 content's: text gets a glyph-shaped shadow. The same unfilled, bordered box in each mode:
 
 <!-- shot-alt: Two unfilled cards with a blue border, a star and a label on a grey panel: the Box card casts one rounded shadow, the Content card casts shadows of its border ring, star and text. -->
 ```lua,shot
-local function card(mode)
+local function card(label, mode)
     return row {
         padding = 14,
         spacing = 10,
@@ -290,8 +290,8 @@ local function card(mode)
         shadow_blur = 4,
         shadow_offset = { x = 5, y = 6 },
         children = {
-            icon { name = "starred-symbolic", size = 22, foreground = "#F9E2AF", align_v = "Center" },
-            text { content = mode, font_size = 20, foreground = "#CDD6F4", align_v = "Center" },
+            icon { name = "starred-symbolic", size = 22, foreground = "#F9E2AF", align_v = "center" },
+            text { content = label, font_size = 20, foreground = "#CDD6F4", align_v = "center" },
         },
     }
 end
@@ -301,11 +301,11 @@ return row {
     spacing = 28,
     radius = 16,
     background = "#6C7086",
-    children = { card("Box"), card("Content") },
+    children = { card("box", "box"), card("content", "content") },
 }
 ```
 
-`"Box"` casts the rounded box and cuts the shadow out under it; `"Content"` casts the border ring
+`"box"` casts the rounded box and cuts the shadow out under it; `"content"` casts the border ring
 and the glyphs.
 
 | Case | How it draws |
@@ -343,13 +343,13 @@ are rescaled and the blur with them. Animated GIFs ignore it. Changing it re-dec
 ```lua
 panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 36,
     exclusive_zone = true,
     background = "#1E1E2E99",
     behind_blur = true,
-    child = row { width = "Fill", padding = { left = 12, right = 12 }, children = { clock } },
+    child = row { width = "fill", padding = { left = 12, right = 12 }, children = { clock } },
 }
 ```
 
@@ -361,12 +361,12 @@ rect {
     width = 360,
     height = 200,
     radius = 16,
-    clip = "Rounded",
+    clip = "rounded",
     children = {
-        image { source = "/usr/share/backgrounds/default.png", width = "Fill", height = "Fill", async = true },
+        image { source = "/usr/share/backgrounds/default.png", width = "fill", height = "fill", async = true },
         row {
-            align_h = "Center",
-            align_v = "Center",
+            align_h = "center",
+            align_v = "center",
             padding = { left = 16, right = 16, top = 8, bottom = 8 },
             spacing = 10,
             radius = 999,
@@ -375,8 +375,8 @@ rect {
             border_color = "#FFFFFF33",
             backdrop_blur = 12,
             children = {
-                text { content = "12:45", font_size = 20, font_weight = 700, foreground = "#FFFFFF", align_v = "Center" },
-                text { content = "Thu 24 Sep", font_size = 13, foreground = "#FFFFFFCC", align_v = "Center" },
+                text { content = "12:45", font_size = 20, font_weight = 700, foreground = "#FFFFFF", align_v = "center" },
+                text { content = "Thu 24 Sep", font_size = 13, foreground = "#FFFFFFCC", align_v = "center" },
             },
         },
     },
@@ -393,7 +393,7 @@ One node paints in this order, each step over the last:
 
 1. **Backdrop** (`backdrop_blur`): replaces the pixels under the box with their blur.
 2. **Shadow**, when it is a gradient quad or a silhouette.
-3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "Rounded"` the body
+3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
    goes through an offscreen pass.
 4. **Layer**: for `content_blur` or a layered shadow, the body is drawn offscreen, its shadow cast
    from it, then the body blurred.
@@ -404,14 +404,14 @@ One node paints in this order, each step over the last:
 | `mask` and `backdrop_blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
 | `content_blur` and `backdrop_blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
 | `backdrop_blur` inside a parent with `mask`, `content_blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
-| `backdrop_blur` inside `clip = "Rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
+| `backdrop_blur` inside `clip = "rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
 | `backdrop_blur` on a surface root | It blurs transparency: it never reads the desktop | `behind_blur = true` |
 | Shadow and `content_blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
-| Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "Content"` to cast from what is painted |
+| Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "content"` to cast from what is painted |
 | Content-mode shadow on a masked node | Cast from the masked result | Expected |
 | Content-mode shadow or `content_blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
 | Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
-| Shadow or `content_blur` near the parent's edge | Cut at the parent's clip, like any child paint | Give the parent padding, or `clip = "None"` on it |
+| Shadow or `content_blur` near the parent's edge | Cut at the parent's clip, like any child paint | Give the parent padding, or `clip = "none"` on it |
 | `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
 | `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
 | A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
@@ -435,7 +435,7 @@ One node paints in this order, each step over the last:
 ```lua
 panel {
     id = "sheet",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, right = true },
     margin = 8,
     child = column {
@@ -501,7 +501,7 @@ A radius past half the height makes the ends round whatever the label's width.
 rect {
     padding = 2,
     radius = 14,
-    background = { gradient = "Linear", angle = 135, stops = { { 0, "#CBA6F7" }, { 1, "#89B4FA" } } },
+    background = { gradient = "linear", angle = 135, stops = { { 0, "#CBA6F7" }, { 1, "#89B4FA" } } },
     children = {
         row {
             padding = { left = 18, right = 18, top = 12, bottom = 12 },
@@ -509,8 +509,8 @@ rect {
             radius = 12,
             background = "#1E1E2E",
             children = {
-                icon { name = "starred-symbolic", size = 16, foreground = "#CBA6F7", align_v = "Center" },
-                text { content = "Upgrade to Pro", font_weight = 700, foreground = "#CDD6F4", align_v = "Center" },
+                icon { name = "starred-symbolic", size = 16, foreground = "#CBA6F7", align_v = "center" },
+                text { content = "Upgrade to Pro", font_weight = 700, foreground = "#CDD6F4", align_v = "center" },
             },
         },
     },
@@ -534,14 +534,14 @@ row {
             width = 56,
             height = 56,
             radius = 28,
-            clip = "Rounded",
+            clip = "rounded",
             border_width = 2,
             border_color = "#89B4FA",
-            children = { image { source = "/var/lib/AccountsService/icons/user", width = "Fill", height = "Fill" } },
+            children = { image { source = "/var/lib/AccountsService/icons/user", width = "fill", height = "fill" } },
         },
         column {
             spacing = 2,
-            align_v = "Center",
+            align_v = "center",
             children = {
                 text { content = "user", font_size = 15, font_weight = 700, foreground = "#CDD6F4" },
                 text { content = "Signed in", font_size = 12, foreground = "#A6ADC8" },
@@ -551,27 +551,27 @@ row {
 }
 ```
 
-`clip = "Rounded"` cuts the image to the circle, and the border paints over the image's edge.
+`clip = "rounded"` cuts the image to the circle, and the border paints over the image's edge.
 
 ### Dim the background behind a modal
 
 ```lua
 panel {
     id = "modal",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
-    keyboard_interactivity = "OnDemand",
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
+    keyboard_interactivity = "on_demand",
     child = rect {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         children = {
-            rect { width = "Fill", height = "Fill", background = "#11111B99" },
+            rect { width = "fill", height = "fill", background = "#11111B99" },
             column {
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 width = 360,
                 padding = 24,
                 spacing = 8,
@@ -598,7 +598,7 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 
 | Trap | Fix |
 | :--- | :--- |
-| `clip = "Rounded"` changes nothing | It needs a non-zero `radius`, and only clips children |
+| `clip = "rounded"` changes nothing | It needs a non-zero `radius`, and only clips children |
 | A gradient or a per-edge `border_color` jumps instead of easing under `animate` | Only single colours ease; see [Animation](animation.md) |
 | Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the clickable node or accept it |
 

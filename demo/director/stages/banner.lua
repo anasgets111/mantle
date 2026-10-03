@@ -4,7 +4,7 @@ local rescue = mantle.rescue
 
 return panel {
     id = "rescue",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { bottom = true, left = true },
     margin = { bottom = 300, left = 48 },
     visible = rescue:map(function(r) return r ~= nil and r.is_rescue end),
@@ -14,7 +14,7 @@ return panel {
     background = theme.danger,
     radius = 14,
     child = column {
-        width = "Fill",
+        width = "fill",
         padding = 18,
         spacing = 6,
         children = {
@@ -26,8 +26,8 @@ return panel {
             },
             text {
                 content = rescue:map(function(r) return r and r.error_log or "" end),
-                width = "Fill",
-                wrap = "Word",
+                width = "fill",
+                wrap = "word",
                 font = "CaskaydiaCove Nerd Font Mono",
                 font_size = 16,
                 foreground = theme.crust,

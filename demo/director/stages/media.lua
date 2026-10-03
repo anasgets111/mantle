@@ -17,7 +17,7 @@ local player = media:map(function(m) return m.players[1] end)
 local function field(name, fallback)
     return player:map(function(p) return p and p[name] or fallback end)
 end
-local playing = player:map(function(p) return p ~= nil and p.play_state == "Playing" end)
+local playing = player:map(function(p) return p ~= nil and p.play_state == "playing" end)
 local play_icon = playing:map(function(on)
     return on and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
 end)
@@ -32,27 +32,27 @@ local chip = rect {
     visible = player:map(function(p) return p ~= nil end),
     margin = { right = 14 },
     height = 40,
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 6, right = 16 },
     radius = 20,
     background = theme.surface,
     scale = 1,
-    animate = { scale = { duration = 320, easing = "OutBack", from = 0.5 } },
+    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
     children = {
         row {
-            height = "Fill",
+            height = "fill",
             spacing = 10,
             children = {
                 rect {
                     width = 30,
                     height = 30,
                     radius = 15,
-                    clip = "Rounded",
-                    align_v = "Center",
-                    children = { image { source = field("album_art_path", ""), width = "Fill", height = "Fill" } },
+                    clip = "rounded",
+                    align_v = "center",
+                    children = { image { source = field("album_art_path", ""), width = "fill", height = "fill" } },
                 },
-                icon { name = play_icon, size = 20, align_v = "Center", foreground = theme.accent },
-                text { content = field("title", ""), align_v = "Center", font_size = 18, foreground = theme.text },
+                icon { name = play_icon, size = 20, align_v = "center", foreground = theme.accent },
+                text { content = field("title", ""), align_v = "center", font_size = 18, foreground = theme.text },
             },
         },
     },
@@ -70,8 +70,8 @@ local function control(name, glyph, size, primary)
             icon {
                 name = glyph,
                 size = size,
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 foreground = primary and theme.crust or theme.text,
             },
         },
@@ -80,7 +80,7 @@ end
 
 local card = panel {
     id = "media",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
@@ -96,14 +96,14 @@ local card = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 360, easing = "OutBack", from = { y = -20 } },
+            translate = { duration = 360, easing = "out_back", from = { y = -20 } },
         },
         children = {
             rect {
                 width = cover_px,
                 height = cover_px,
                 radius = 22,
-                clip = "Rounded",
+                clip = "rounded",
                 shadow_color = "#00000080",
                 shadow_blur = 30,
                 shadow_offset = { y = 10 },
@@ -111,55 +111,55 @@ local card = panel {
                     image {
                         id = "cover",
                         source = field("album_art_path", ""),
-                        width = "Fill",
-                        height = "Fill",
-                        transition = { duration = 500, easing = "InOutSine" },
+                        width = "fill",
+                        height = "fill",
+                        transition = { duration = 500, easing = "in_out_sine" },
                     },
                 },
             },
             column {
-                width = "Fill",
+                width = "fill",
                 spacing = 10,
-                align_v = "Center",
+                align_v = "center",
                 children = {
                     text { content = field("identity", ""), font_size = 18, foreground = theme.muted },
                     text {
                         content = field("title", ""),
-                        width = "Fill",
-                        elide = "End",
+                        width = "fill",
+                        elide = "end",
                         font_size = 36,
                         font_weight = 800,
                         foreground = theme.text,
                     },
                     text { content = field("artist", ""), font_size = 24, foreground = theme.subtext },
                     rect {
-                        width = "Fill",
+                        width = "fill",
                         height = 6,
                         radius = 3,
                         margin = { top = 14 },
                         background = theme.surface,
                         children = {
                             rect {
-                                height = "Fill",
+                                height = "fill",
                                 radius = 3,
                                 background = theme.accent,
                                 width = player:map(function(p)
                                     if not (p and p.length and p.position) or p.length <= 0 then return "0%" end
                                     return string.format("%.1f%%", math.min(1, p.position / p.length) * 100)
                                 end),
-                                animate = { width = { duration = 1000, easing = "Linear" } },
+                                animate = { width = { duration = 1000, easing = "linear" } },
                             },
                         },
                     },
                     row {
-                        width = "Fill",
+                        width = "fill",
                         children = {
                             text {
                                 content = player:map(function(p) return p and p.position and clock(p.position) or "" end),
                                 font_size = 16,
                                 foreground = theme.muted,
                             },
-                            rect { width = "Fill" },
+                            rect { width = "fill" },
                             text {
                                 content = player:map(function(p) return p and p.length and clock(p.length) or "" end),
                                 font_size = 16,
@@ -168,7 +168,7 @@ local card = panel {
                         },
                     },
                     row {
-                        align_h = "Center",
+                        align_h = "center",
                         spacing = 18,
                         children = {
                             control("previous", "media-skip-backward-symbolic", 24),

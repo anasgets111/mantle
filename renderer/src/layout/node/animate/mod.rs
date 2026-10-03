@@ -55,7 +55,7 @@ fn hex_of(color: Rgba) -> String {
 }
 
 /// How one property eases: `animate = { width = 200 }` or
-/// `animate = { width = { duration = 200, easing = "OutCubic", from = 0 } }`.
+/// `animate = { width = { duration = 200, easing = "out_cubic", from = 0 } }`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AnimationSpec {
     /// What kind of motion this is, and the only place its timing lives.
@@ -120,7 +120,7 @@ pub fn depart(
 /// two key sets, the edges `{ top, right, bottom, left }` or the axes `{ x, y }`, an absent key
 /// reading as the property's default (`0`, or `1` for a `scale`). `Path` is a path's `commands`,
 /// which tween point by point only between lists of the same ops and hole flags. Two different
-/// shapes snap, so a fill that switches between `"45%"` and `"Fill"` or a margin that switches
+/// shapes snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches
 /// between a number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Animatable {
@@ -158,7 +158,7 @@ impl Animatable {
     }
 
     /// The typed reading of `property`'s current value, or `None` when the value is a shape no
-    /// tween carries (`"Fill"`, a boolean, a table of colours, absent): the caller snaps then. A
+    /// tween carries (`"fill"`, a boolean, a table of colours, absent): the caller snaps then. A
     /// `#` string that fails its colour parse is an error, the same one the property's own parser
     /// raises.
     pub fn from_value(property: &str, value: Option<&Value>) -> Result<Option<Self>, LayoutError> {
@@ -703,7 +703,7 @@ mod tests {
             "rect",
             &rect_props(
                 &lua,
-                r##"return { animate = { background = { duration = 150, easing = "OutCubic", from = "#000000" } } }"##,
+                r##"return { animate = { background = { duration = 150, easing = "out_cubic", from = "#000000" } } }"##,
             ),
         )
         .unwrap();
@@ -720,7 +720,7 @@ mod tests {
         )
         .unwrap_err();
         let text = err.to_string();
-        assert!(text.contains("animate.width") && text.contains("Bouncy") && text.contains("OutBack"), "{text}");
+        assert!(text.contains("animate.width") && text.contains("Bouncy") && text.contains("out_back"), "{text}");
     }
 
     #[test]
@@ -894,7 +894,7 @@ mod tests {
         assert_eq!(Animatable::from_value("border_color", Some(&colours)).unwrap(), None, "colour edges snap");
         // Read as edges, it would write `{ top = 0, ... }` back into `background` and fail the pass.
         let gradient: Value = lua
-            .load(r##"return { gradient = "Linear", stops = { { 0, "#000000" }, { 1, "#ffffff" } } }"##)
+            .load(r##"return { gradient = "linear", stops = { { 0, "#000000" }, { 1, "#ffffff" } } }"##)
             .eval()
             .unwrap();
         assert_eq!(Animatable::from_value("background", Some(&gradient)).unwrap(), None, "a gradient snaps");
@@ -951,7 +951,7 @@ mod tests {
         let mid = pct("40%").lerp(&pct("60%"), 0.5, "width");
         let Value::String(text) = mid.to_value(&lua).unwrap() else { panic!("a percent writes back as a string") };
         assert_eq!(text.to_str().unwrap(), "50.000%");
-        let fill = Value::String(lua.create_string("Fill").unwrap());
+        let fill = Value::String(lua.create_string("fill").unwrap());
         assert_eq!(Animatable::from_value("width", Some(&fill)).unwrap(), None, "`Fill` is not an endpoint");
     }
 
@@ -997,7 +997,7 @@ mod tests {
     fn a_field_belonging_to_another_motion_is_refused_rather_than_ignored() {
         let lua = Lua::new();
         let spring = "spring = { stiffness = 200, damping = 10 }";
-        for beside in ["easing = \"Linear\"", "duration = 200", "loops = 3"] {
+        for beside in ["easing = \"linear\"", "duration = 200", "loops = 3"] {
             let text = refused(&lua, &format!("return {{ animate = {{ width = {{ {spring}, {beside} }} }} }}"));
             assert!(text.contains("a `spring` has no"), "{beside}: {text}");
         }
@@ -1014,7 +1014,7 @@ mod tests {
         let started = Instant::now();
         for src in [
             "return { animate = { width = { spring = { stiffness = 200, damping = 10 } } } }",
-            "return { animate = { width = { duration = 100, easing = \"OutCubic\" } } }",
+            "return { animate = { width = { duration = 100, easing = \"out_cubic\" } } }",
         ] {
             let tween = Tween {
                 property: "width",
@@ -1092,7 +1092,7 @@ mod tests {
         let start = Instant::now();
         let mut forward_props = rect_props(
             &lua,
-            "return { width = 100, animate = { width = { duration = 300, easing = \"Linear\", from = 0 } } }",
+            "return { width = 100, animate = { width = { duration = 300, easing = \"linear\", from = 0 } } }",
         );
         let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap();
         let at = |tween: &Tween, now| match tween.at(now) {
@@ -1104,7 +1104,7 @@ mod tests {
 
         let shown = PropMap::from_iter([("width", forward[0].at(turn).to_value(&lua).unwrap())]);
         let mut back_props =
-            rect_props(&lua, "return { width = 0, animate = { width = { duration = 300, easing = \"Linear\" } } }");
+            rect_props(&lua, "return { width = 0, animate = { width = { duration = 300, easing = \"linear\" } } }");
         let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap();
         assert_eq!(at(&back[0], turn + Duration::from_millis(135)), 45.0);
         assert!(back[0].done(turn + Duration::from_millis(270)));
@@ -1112,7 +1112,7 @@ mod tests {
         let turn_again = turn + Duration::from_millis(135);
         let shown = PropMap::from_iter([("width", back[0].at(turn_again).to_value(&lua).unwrap())]);
         let mut forward_props =
-            rect_props(&lua, "return { width = 100, animate = { width = { duration = 300, easing = \"Linear\" } } }");
+            rect_props(&lua, "return { width = 100, animate = { width = { duration = 300, easing = \"linear\" } } }");
         let forward_again = retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua).unwrap();
         assert!(!forward_again[0].done(turn_again + Duration::from_millis(164)));
         assert!(forward_again[0].done(turn_again + Duration::from_millis(166)));
@@ -1123,8 +1123,8 @@ mod tests {
         let lua = Lua::new();
         let start = Instant::now();
         let forward_source =
-            "return { width = 100, animate = { width = { duration = 100, easing = \"OutCubic\", from = 0 } } }";
-        let back_source = "return { width = 0, animate = { width = { duration = 100, easing = \"OutCubic\" } } }";
+            "return { width = 100, animate = { width = { duration = 100, easing = \"out_cubic\", from = 0 } } }";
+        let back_source = "return { width = 0, animate = { width = { duration = 100, easing = \"out_cubic\" } } }";
         let mut forward_props = rect_props(&lua, forward_source);
         let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap();
         let turn = start + Duration::from_millis(50);

@@ -32,7 +32,7 @@ end
 refresh()
 
 return panel {
-    id = "weather", layer = "Top", anchor = { top = true },
+    id = "weather", layer = "top", anchor = { top = true },
     child = rect {
         on_click = refresh,
         children = { text { content = temperature, font_size = 14 } },
@@ -87,7 +87,7 @@ Starts a program that stops being the shell's: its own session, reparented to in
 
 ```lua
 return panel {
-    id = "dock", layer = "Top", anchor = { bottom = true },
+    id = "dock", layer = "top", anchor = { bottom = true },
     child = rect {
         padding = 8,
         on_click = function()
@@ -125,7 +125,7 @@ local function toggle()
 end
 
 return panel {
-    id = "rec", layer = "Top", anchor = { top = true, right = true },
+    id = "rec", layer = "top", anchor = { top = true, right = true },
     child = rect {
         on_click = toggle,
         children = {
@@ -201,7 +201,7 @@ poll()
 interval(30000, poll)
 
 return panel {
-    id = "disk", layer = "Top", anchor = { top = true },
+    id = "disk", layer = "top", anchor = { top = true },
     child = text { content = disk:map(function(value) return "/ " .. value end) },
 }
 ```
@@ -225,8 +225,8 @@ end
 follow()
 
 return panel {
-    id = "media", layer = "Top", anchor = { top = true },
-    child = text { content = title, elide = "End", max_width = 300 },
+    id = "media", layer = "top", anchor = { top = true },
+    child = text { content = title, elide = "end", max_width = 300 },
 }
 ```
 

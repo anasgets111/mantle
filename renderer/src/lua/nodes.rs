@@ -3,7 +3,7 @@
 //! ponytail: shallow by design. `deserialize_lua_table` reads `kind`, refuses one with no
 //! `properties::KINDS` row or a key no `properties` field declares, copies other keys unchanged,
 //! never recurses into `children`/`child` (reconciliation's job), and does not validate shapes such
-//! as `width` being an integer or `"Fill"` (the layout engine is the only typed-property consumer).
+//! as `width` being an integer or `"fill"` (the layout engine is the only typed-property consumer).
 
 use mlua::{Lua, Table, Value};
 
@@ -185,7 +185,7 @@ mod tests {
     fn a_node_constructor_tags_the_props_table_with_its_kind() {
         let lua = lua_with_constructors();
         let table: Table =
-            lua.load(r##"return rect { background = "#11111B", width = "Fill", height = 32 }"##).eval().unwrap();
+            lua.load(r##"return rect { background = "#11111B", width = "fill", height = 32 }"##).eval().unwrap();
         assert_eq!(table.get::<String>("kind").unwrap(), "rect");
         assert_eq!(table.get::<String>("background").unwrap(), "#11111B");
     }
@@ -203,12 +203,12 @@ mod tests {
     fn a_property_of_another_kind_is_refused_too() {
         let lua = lua_with_constructors();
         for (source, property) in [
-            (r#"return rect { layer = "Top" }"#, "layer"),
+            (r#"return rect { layer = "top" }"#, "layer"),
             ("return window { margin = 4 }", "margin"),
             ("return popup { margin = 4 }", "margin"),
             ("return lock { margin = 4 }", "margin"),
-            (r#"return panel { align_h = "End" }"#, "align_h"),
-            (r#"return lock { align_v = "End" }"#, "align_v"),
+            (r#"return panel { align_h = "end" }"#, "align_h"),
+            (r#"return lock { align_v = "end" }"#, "align_v"),
         ] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             let err = deserialize_lua_table(&table).unwrap_err();
@@ -225,10 +225,10 @@ mod tests {
     #[test]
     fn shadow_mode_is_a_box_property() {
         let lua = lua_with_constructors();
-        let table: mlua::Table = lua.load(r#"return text { shadow_mode = "Box" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return text { shadow_mode = "box" }"#).eval().unwrap();
         let err = deserialize_lua_table(&table).unwrap_err().to_string();
         assert!(err.contains("`text` has no property `shadow_mode`"), "{err}");
-        let table: mlua::Table = lua.load(r#"return rect { shadow_mode = "Content" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return rect { shadow_mode = "content" }"#).eval().unwrap();
         assert!(deserialize_lua_table(&table).is_ok());
     }
 
@@ -237,7 +237,7 @@ mod tests {
     fn a_surface_root_takes_the_base_properties_and_the_box_ones() {
         let lua = lua_with_constructors();
         let table: mlua::Table = lua
-            .load(r##"return panel { id = "bar", layer = "Top", padding = { top = 4 }, radius = 8, opacity = 0.5 }"##)
+            .load(r##"return panel { id = "bar", layer = "top", padding = { top = 4 }, radius = 8, opacity = 0.5 }"##)
             .eval()
             .unwrap();
         assert!(deserialize_lua_table(&table).is_ok());
@@ -283,7 +283,7 @@ mod tests {
     fn deserialize_lua_table_leaves_a_nested_child_table_unconverted() {
         let lua = lua_with_constructors();
         let table: Table = lua
-            .load(r##"return panel { id = "bar", layer = "Top", child = rect { background = "#000000" } }"##)
+            .load(r##"return panel { id = "bar", layer = "top", child = rect { background = "#000000" } }"##)
             .eval()
             .unwrap();
 
@@ -665,11 +665,11 @@ mod meta_stub_tests {
             ("scale", _) => return Some("1.5".to_string()),
             ("rotate", _) => return Some("7.5".to_string()),
             ("origin", _) => return Some("{ x = 0.5, y = 0.5 }".to_string()),
-            ("transition", "Transition") => return Some("{ duration = 400.5, easing = \"InOutCubic\" }".to_string()),
+            ("transition", "Transition") => return Some("{ duration = 400.5, easing = \"in_out_cubic\" }".to_string()),
             ("border_color", "BorderColors") => return Some("{ top = \"#112233\" }".to_string()),
             ("background", "Gradient") | ("mask", "Mask") => {
                 return Some(
-                    "{ gradient = \"Conic\", angle = 45, stops = { { 0, \"#112233\" }, { 1, \"#11223300\" } } }".into(),
+                    "{ gradient = \"conic\", angle = 45, stops = { { 0, \"#112233\" }, { 1, \"#11223300\" } } }".into(),
                 );
             }
             // Inline table shapes have no alias.
@@ -762,7 +762,7 @@ mod meta_stub_tests {
         let surface = if SURFACE_KINDS.contains(&kind) {
             node
         } else {
-            format!("panel {{ id = \"probe\", layer = \"Top\", child = {node} }}")
+            format!("panel {{ id = \"probe\", layer = \"top\", child = {node} }}")
         };
 
         let lua = mlua::Lua::new();
@@ -854,7 +854,7 @@ mod meta_stub_tests {
         rest
     }
 
-    /// `ty` split on top-level `sep`; `("SlideX"|...)[]` and inline shapes stay whole.
+    /// `ty` split on top-level `sep`; `("slide_x"|...)[]` and inline shapes stay whole.
     fn split_top(ty: &str, sep: char) -> Vec<&str> {
         let (mut depth, mut start, mut out) = (0, 0, Vec::new());
         for (index, c) in ty.char_indices() {

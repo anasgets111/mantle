@@ -293,7 +293,7 @@ impl ResolvedNode {
         LogicalRect { x: origin_x + self.rect.x, y: origin_y + self.rect.y, ..self.rect }
     }
 
-    /// `clip = "None"` hands children the parent's clip instead of cutting them to this box.
+    /// `clip = "none"` hands children the parent's clip instead of cutting them to this box.
     pub(super) fn clips_children(&self) -> bool {
         !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
     }
@@ -366,7 +366,7 @@ impl ResolvedNode {
 }
 
 /// Persistent trees keyed by surface instance (`"{id}@{output}"`), not declared id. A panel on
-/// `output = "All"` needs separate trees for a laptop and 4K output because their geometry
+/// `output = "all"` needs separate trees for a laptop and 4K output because their geometry
 /// differs. Surface `id` remains reconcile identity; the output suffix distinguishes instances
 /// (ADR-0045). Descendants use per-parent id matching, with positional fallback for id-less nodes.
 #[derive(Default)]
@@ -932,7 +932,7 @@ pub(super) mod tests {
             let table: mlua::Table = lua
                 .load(format!(
                     r#"return panel {{ id = "bar", child = image {{ id = "wp", source = "{path}",
-                        async = true, transition = {{ duration = 400, easing = "InOutCubic" }} }} }}"#
+                        async = true, transition = {{ duration = 400, easing = "in_out_cubic" }} }} }}"#
                 ))
                 .eval()
                 .unwrap();
@@ -1202,7 +1202,7 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = "Fill", height = "Fill", child = image { source = "/tmp/w.png", width = "Fill", height = "Fill" } }"#,
+            r#"panel { id = "bar", width = "fill", height = "fill", child = image { source = "/tmp/w.png", width = "fill", height = "fill" } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
@@ -1233,7 +1233,7 @@ pub(super) mod tests {
     fn one_declared_surface_resolves_one_tree_per_instance_each_against_its_own_size() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", width = "Fill", height = "Fill" }"#);
+        let (lua, surface) = surface_from(r#"panel { id = "bar", width = "fill", height = "fill" }"#);
         let instances = vec![
             SurfaceInstance {
                 instance_id: "bar@eDP-1".to_string(),
@@ -1465,15 +1465,15 @@ pub(super) mod tests {
                 source = state("source", entries)
                 return panel {{
                     id = "picker",
-                    child = column {{ width = "Fill", height = "Fill", children = {{
+                    child = column {{ width = "fill", height = "fill", children = {{
                         text {{ content = clock, font_size = 14 }},
                         list {{
-                            width = "Fill", height = "Fill", spacing = 6,
+                            width = "fill", height = "fill", spacing = 6,
                             source = source,
                             key = function(e) return e.id end,
                             itemfn = function(e)
                                 local over = hover(e.id)
-                                return row {{ width = "Fill", height = 96, spacing = 6, children = {{
+                                return row {{ width = "fill", height = 96, spacing = 6, children = {{
                                     rect {{ width = 96, height = 96, radius = 8, hover = over,
                                         background = over:map(function(on) return on and "#303030" or "#202020" end) }},
                                     rect {{ width = 96, height = 96, background = theme, radius = 8 }},
@@ -1587,10 +1587,10 @@ pub(super) mod tests {
             local entries = {}
             for i = 1, 500 do entries[i] = { id = "e" .. i, label = "wallpaper " .. i } end
             return panel { id = "picker", child = list {
-                width = "Fill", height = "Fill", spacing = 6, scroll = s, source = state("source", entries),
+                width = "fill", height = "fill", spacing = 6, scroll = s, source = state("source", entries),
                 key = function(e) return e.id end,
                 itemfn = function(e)
-                    return row { width = "Fill", height = 96, spacing = 6, children = {
+                    return row { width = "fill", height = 96, spacing = 6, children = {
                         rect { width = 96, height = 96, background = "#202020", radius = 8 },
                         rect { width = 96, height = 96, background = "#202020", radius = 8 },
                         text { content = e.label, font_size = 14 },
@@ -1637,7 +1637,7 @@ pub(super) mod tests {
                     } } },
                 }
             end
-            return panel { id = "bar", child = row { width = "Fill", height = 32, spacing = 4, children = chips } }"##,
+            return panel { id = "bar", child = row { width = "fill", height = 32, spacing = 4, children = chips } }"##,
         );
         let shaping = ShapingHandle::spawn();
         let mut scene = Scene::new();

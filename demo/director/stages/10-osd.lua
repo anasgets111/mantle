@@ -13,9 +13,9 @@ local overview = require("overview")
 local osd = require("osd")
 
 local workspaces = list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 6,
-    align_v = "Center",
+    align_v = "center",
     source = mantle.workspaces:map(function(ws)
         local output = ws and ws.outputs[1]
         local items = {}
@@ -31,13 +31,13 @@ local workspaces = list {
             height = 40,
             radius = 20,
             background = w.active and theme.accent or theme.surface,
-            animate = { width = { duration = 300, easing = "OutCubic" }, background = 300 },
+            animate = { width = { duration = 300, easing = "out_cubic" }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {
                     content = tostring(w.idx),
-                    align_h = "Center",
-                    align_v = "Center",
+                    align_h = "center",
+                    align_v = "center",
                     font_size = 20,
                     foreground = w.active and theme.crust or theme.text,
                 },
@@ -75,7 +75,7 @@ end)
 
 local launcher = panel {
     id = "launcher",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = { top = 12, left = 12 },
     visible = launcher_open,
@@ -84,7 +84,7 @@ local launcher = panel {
     radius = 24,
     behind_blur = true,
     child = column {
-        width = "Fill",
+        width = "fill",
         padding = 10,
         spacing = 6,
         children = {
@@ -96,20 +96,20 @@ local launcher = panel {
                 opacity = query:map(function(q) return q == "" and 0.45 or 1 end),
             },
             list {
-                width = "Fill",
+                width = "fill",
                 spacing = 2,
                 source = apps,
                 key = function(app) return app.id end,
                 itemfn = function(app)
                     return row {
-                        width = "Fill",
+                        width = "fill",
                         padding = 12,
                         radius = 12,
                         on_click = function() mantle.applications:launch(app.id) end,
                         spacing = 14,
                         children = {
                             icon { name = app.icon or "application-x-executable", size = 52 },
-                            text { content = app.name, align_v = "Center", font_size = 26 },
+                            text { content = app.name, align_v = "center", font_size = 26 },
                         },
                     }
                 end,
@@ -120,24 +120,24 @@ local launcher = panel {
 
 local aurora = panel {
     id = "aurora",
-    layer = "Background",
+    layer = "background",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
     child = rect {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         children = {
             wallpaper.image,
             shader {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 source = mantle.config_dir .. "/aurora.frag",
                 params = theme.tints,
                 progress = 0,
                 animate = {
-                    progress = { duration = 16000, easing = "Linear", keyframes = { 0, 1 }, loops = "Infinite" },
+                    progress = { duration = 16000, easing = "linear", keyframes = { 0, 1 }, loops = "infinite" },
                 },
             },
         },
@@ -152,25 +152,25 @@ return {
     launcher,
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
         exclusive_zone = true,
-        width = "Fill",
+        width = "fill",
         height = 56,
         background = theme.fade("crust", "e6"),
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 12, right = 12 },
             children = {
                 workspaces,
                 taskbar.bar,
-                rect { width = "Fill" },
+                rect { width = "fill" },
                 text {
                     content = mantle.system:map(function(s)
                         return os.date("%a %d %b   %H:%M", s and s.time)
                     end),
-                    align_v = "Center",
+                    align_v = "center",
                     font_size = 22,
                     foreground = theme.text,
                 },

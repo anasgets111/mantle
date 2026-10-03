@@ -17,10 +17,10 @@ local function dots(count)
             width = 16,
             height = 16,
             radius = 8,
-            align_v = "Center",
+            align_v = "center",
             background = theme.text,
             scale = 1,
-            animate = { scale = { duration = 220, easing = "OutBack", from = 0 } },
+            animate = { scale = { duration = 220, easing = "out_back", from = 0 } },
         }
     end
     return out
@@ -34,7 +34,7 @@ local field = lock:map(function(l)
         width = 420,
         height = 64,
         radius = 32,
-        align_h = "Center",
+        align_h = "center",
         padding = { left = 26, right = 26 },
         background = theme.fade("crust", "cc"),
         border_width = 2,
@@ -46,27 +46,27 @@ local field = lock:map(function(l)
                 keyframes = { { x = 0, y = 0 }, { x = -18, y = 0 }, { x = 16, y = 0 }, { x = -10, y = 0 }, { x = 0, y = 0 } },
             },
         } or nil,
-        children = { row { height = "Fill", align_h = "Center", spacing = 12, children = typed:map(dots) } },
+        children = { row { height = "fill", align_h = "center", spacing = 12, children = typed:map(dots) } },
     } }
 end)
 
 return panel {
     id = "lock",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
     visible = mapped,
     child = rect {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         background = theme.crust,
         opacity = up:map(function(on) return on and 1 or 0 end),
         scale = up:map(function(on) return on and 1 or 1.04 end),
         animate = {
-            opacity = { duration = 500, easing = "OutCubic", from = 0 },
-            scale = { duration = 700, easing = "OutCubic", from = 1.04 },
+            opacity = { duration = 500, easing = "out_cubic", from = 0 },
+            scale = { duration = 700, easing = "out_cubic", from = 1.04 },
         },
         children = {
             image {
@@ -75,25 +75,25 @@ return panel {
                 end),
                 source_blur = 6,
                 fit = "cover",
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
             },
-            rect { width = "Fill", height = "Fill", background = theme.fade("crust", "99") },
+            rect { width = "fill", height = "fill", background = theme.fade("crust", "99") },
             column {
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 spacing = 22,
                 children = {
                     text {
                         content = mantle.system:map(function(s) return os.date("%H:%M", s and s.time) end),
-                        align_h = "Center",
+                        align_h = "center",
                         font_size = 200,
                         font_weight = 200,
                         foreground = theme.text,
                     },
                     text {
                         content = mantle.system:map(function(s) return os.date("%A, %d %B", s and s.time) end),
-                        align_h = "Center",
+                        align_h = "center",
                         font_size = 36,
                         foreground = theme.subtext,
                         margin = { bottom = 40 },
@@ -102,24 +102,24 @@ return panel {
                         width = 96,
                         height = 96,
                         radius = 48,
-                        align_h = "Center",
+                        align_h = "center",
                         background = theme.accent,
                         children = {
                             icon {
                                 name = "avatar-default-symbolic",
                                 size = 52,
-                                align_h = "Center",
-                                align_v = "Center",
+                                align_h = "center",
+                                align_v = "center",
                                 foreground = theme.crust,
                             },
                         },
                     },
-                    rect { align_h = "Center", children = field },
+                    rect { align_h = "center", children = field },
                     text {
                         content = lock:map(function(l)
                             return l.error ~= "" and l.error or "Type your password to unlock"
                         end),
-                        align_h = "Center",
+                        align_h = "center",
                         font_size = 20,
                         foreground = computed({ lock, theme.danger, theme.muted }, function(l, failed, calm)
                             return l.error ~= "" and failed or calm

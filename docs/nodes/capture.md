@@ -16,10 +16,10 @@ local preview = rect {
     width = 320,
     height = 180,
     radius = 8,
-    clip = "Rounded",
+    clip = "rounded",
     background = "#000000",
     children = {
-        capture { output = first_output, live = 30, fit = "contain", width = "Fill", height = "Fill" },
+        capture { output = first_output, live = 30, fit = "contain", width = "fill", height = "fill" },
     },
 }
 ```
@@ -92,7 +92,7 @@ and logs one warning.
 | Show a part of the screen | `region = { x = 0, y = 0, width = 960, height = 540 }` |
 | Keep CPU low | Leave `live = false` for a still, or cap it: `live = 10` |
 | Include the mouse pointer | `paint_cursor = true` |
-| Round the corners | Wrap it in a `rect` with `radius` and `clip = "Rounded"`, as above |
+| Round the corners | Wrap it in a `rect` with `radius` and `clip = "rounded"`, as above |
 
 ## Gotchas
 

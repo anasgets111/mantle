@@ -184,7 +184,7 @@ impl Prop for Num {
 }
 
 /// An optional pixel bound: `max_width`/`max_height` cap a `Content`-sized node's growth, leaving
-/// the overflow for `scroll`; `min_width`/`min_height` floor it. Percent and `"Fill"` bounds add no
+/// the overflow for `scroll`; `min_width`/`min_height` floor it. Percent and `"fill"` bounds add no
 /// meaning beyond a fixed size.
 pub(crate) struct Pixels;
 
@@ -390,8 +390,9 @@ impl<E: Keyword> Prop for OneOf<E> {
     }
 }
 
-/// An enum whose variants are a closed set of Lua names: `Cover = "cover"` where the name is not
-/// the variant's. Spelled in LuaCATS as the union of its names.
+/// An enum whose variants are a closed set of Lua names, each the variant in `snake_case`
+/// (`OnDemand` is `"on_demand"`) unless written as `M = "M"`. Spelled in LuaCATS as the union of
+/// its names.
 macro_rules! keywords {
     ($(#[$attr:meta])* $vis:vis enum $name:ident { $($(#[$variant_attr:meta])* $variant:ident $(= $lua:literal)?),+ $(,)? }) => {
         $(#[$attr])*
@@ -412,10 +413,45 @@ macro_rules! keywords {
             }
         }
     };
-    (@name $variant:ident) => { stringify!($variant) };
+    (@name $variant:ident) => {{
+        const BYTES: [u8; $crate::layout::node::prop::snake_len(stringify!($variant))] =
+            $crate::layout::node::prop::snake(stringify!($variant));
+        match std::str::from_utf8(&BYTES) {
+            Ok(name) => name,
+            Err(_) => unreachable!(),
+        }
+    }};
     (@name $variant:ident $lua:literal) => { $lua };
 }
 pub(crate) use keywords;
+
+/// The length of `name` in `snake_case`: one `_` before each capital but the first.
+pub(crate) const fn snake_len(name: &str) -> usize {
+    let mut len = name.len();
+    let mut at = 1;
+    while at < name.len() {
+        len += name.as_bytes()[at].is_ascii_uppercase() as usize;
+        at += 1;
+    }
+    len
+}
+
+/// `name` in `snake_case`; `N` is its [`snake_len`].
+pub(crate) const fn snake<const N: usize>(name: &str) -> [u8; N] {
+    let mut out = [0; N];
+    let (mut at, mut len) = (0, 0);
+    while at < name.len() {
+        let byte = name.as_bytes()[at];
+        if at > 0 && byte.is_ascii_uppercase() {
+            out[len] = b'_';
+            len += 1;
+        }
+        out[len] = byte.to_ascii_lowercase();
+        len += 1;
+        at += 1;
+    }
+    out
+}
 
 /// A function the engine calls; its signature is the row's (`props!`'s `name(param: Type)` form).
 pub(crate) struct Callback;

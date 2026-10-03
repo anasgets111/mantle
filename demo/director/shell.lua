@@ -126,29 +126,29 @@ end)
 
 local code_pane = panel {
     id = "code",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, right = true, bottom = true },
     margin = { top = 16, right = 16, bottom = 16 },
     width = pane_width,
-    height = "Fill",
+    height = "fill",
     background = theme.fade("crust", "f2"),
     radius = 18,
     child = column {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         children = {
             row {
-                width = "Fill",
+                width = "fill",
                 height = HEADER,
                 padding = { left = 24, right = 24 },
                 spacing = 12,
                 children = {
-                    text { content = "shell.lua", align_v = "Center", font = MONO, font_size = 20, foreground = theme.text },
-                    rect { width = "Fill" },
+                    text { content = "shell.lua", align_v = "center", font = MONO, font_size = 20, foreground = theme.text },
+                    rect { width = "fill" },
                     rect {
                         visible = meter:map(function(m) return m ~= "" end),
                         height = 40,
-                        align_v = "Center",
+                        align_v = "center",
                         padding = { left = 16, right = 16 },
                         radius = 12,
                         background = computed({ meter_hot, theme.success, theme.base }, function(hot, on, off)
@@ -156,11 +156,11 @@ local code_pane = panel {
                                 on or off
                         end),
                         scale = meter_hot:map(function(hot) return hot and 1.08 or 1 end),
-                        animate = { background = 300, scale = { duration = 400, easing = "OutBack" } },
+                        animate = { background = 300, scale = { duration = 400, easing = "out_back" } },
                         children = {
                             text {
                                 content = meter,
-                                align_v = "Center",
+                                align_v = "center",
                                 font = MONO,
                                 font_size = 18,
                                 foreground = computed({ meter_hot, theme.crust, theme.subtext }, function(hot, on, off)
@@ -177,17 +177,17 @@ local code_pane = panel {
                             return s == "unsaved" and dirty or clean
                         end),
                         animate = { foreground = 200 },
-                        align_v = "Center",
+                        align_v = "center",
                         font = MONO,
                         font_size = 18,
                     },
                 },
             },
-            rect { width = "Fill", height = 1, background = theme.surface },
+            rect { width = "fill", height = 1, background = theme.surface },
             rect {
-                width = "Fill",
-                height = "Fill",
-                clip = "Box",
+                width = "fill",
+                height = "fill",
+                clip = "box",
                 padding = { top = 12 },
                 children = {
                     text {
@@ -198,7 +198,7 @@ local code_pane = panel {
                         font_size = code_size,
                     },
                     rect {
-                        width = "Fill",
+                        width = "fill",
                         height = line_px,
                         background = theme.fade("text", "0a"),
                         translate = caret_row:map(function(y) return { x = 0, y = y } end),
@@ -234,7 +234,7 @@ local function chip(label)
         border_width = 1,
         border_color = theme.overlay2,
         scale = 1,
-        animate = { scale = { duration = 260, easing = "OutBack", from = 0.6 } },
+        animate = { scale = { duration = 260, easing = "out_back", from = 0.6 } },
         children = { text { content = label, font = MONO, font_size = 24, foreground = theme.text } },
     }
 end
@@ -243,13 +243,13 @@ local key_row = computed({ keys, key_command }, function(combo, command)
     local out = {}
     for key in combo:gmatch("[^+]+") do
         if #out > 0 then
-            out[#out + 1] = text { content = "+", align_v = "Center", font_size = 24, foreground = theme.muted }
+            out[#out + 1] = text { content = "+", align_v = "center", font_size = 24, foreground = theme.muted }
         end
         out[#out + 1] = chip(key)
     end
     out[#out + 1] = text {
         content = "→  " .. command,
-        align_v = "Center",
+        align_v = "center",
         font = MONO,
         font_size = 22,
         foreground = theme.accent,
@@ -259,7 +259,7 @@ end)
 
 local caption_pane = panel {
     id = "caption",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { bottom = true, left = true },
     margin = { bottom = 48, left = 48 },
     visible = caption:map(function(title) return title ~= "" end),
@@ -276,13 +276,13 @@ local caption_pane = panel {
             translate = { x = 0, y = 0 },
             animate = {
                 opacity = { duration = 350, from = 0 },
-                translate = { duration = 500, easing = "OutCubic", from = { x = 0, y = 30 } },
+                translate = { duration = 500, easing = "out_cubic", from = { x = 0, y = 30 } },
             },
             children = {
                 text {
                     content = title,
-                    width = cap.width and "Fill" or nil,
-                    wrap = cap.width and "Word" or nil,
+                    width = cap.width and "fill" or nil,
+                    wrap = cap.width and "word" or nil,
                     font_size = cap.title,
                     font_weight = 800,
                     foreground = theme.text,
@@ -290,8 +290,8 @@ local caption_pane = panel {
                 text {
                     content = detail,
                     visible = detail:map(function(d) return d ~= "" end),
-                    width = cap.width and "Fill" or nil,
-                    wrap = cap.width and "Word" or nil,
+                    width = cap.width and "fill" or nil,
+                    wrap = cap.width and "word" or nil,
                     font_size = cap.detail,
                     foreground = theme.subtext,
                 },
@@ -309,7 +309,7 @@ local caption_pane = panel {
 -- Title and end cards -----------------------------------------------------------------------
 
 local function line_of(content, size, color, font)
-    return text { content = content, align_h = "Center", font = font, font_size = size, foreground = color }
+    return text { content = content, align_h = "center", font = font, font_size = size, foreground = color }
 end
 
 -- What the take showed, two rows of six so a 1920 px screen fits them.
@@ -333,7 +333,7 @@ local function feature_chip(index, label)
             opacity = { duration = 350, keyframes = { 0, { value = 0, duration = wait_ms }, 1 } },
             translate = {
                 duration = 450,
-                easing = "OutCubic",
+                easing = "out_cubic",
                 keyframes = {
                     { value = { x = 0, y = 18 } },
                     { value = { x = 0, y = 18 }, duration = wait_ms },
@@ -352,16 +352,16 @@ end
 
 local card_lines = {
     title = {
-        image { source = WORDMARK, width = 191, height = 160, fit = "contain", align_h = "Center" },
+        image { source = WORDMARK, width = 191, height = 160, fit = "contain", align_h = "center" },
         line_of("Mantle", 132, theme.text),
         line_of("Desktop shells in Lua, on Wayland.", 44, theme.subtext),
         line_of("Save the file. The shell changes.", 30, theme.muted),
     },
     ["end"] = {
-        image { source = WORDMARK, width = 143, height = 120, fit = "contain", align_h = "Center" },
+        image { source = WORDMARK, width = 143, height = 120, fit = "contain", align_h = "center" },
         line_of("Write your shell in Lua.", 64, theme.text),
-        row { align_h = "Center", margin = { top = 12 }, spacing = 12, children = { table.unpack(chips, 1, 6) } },
-        row { align_h = "Center", margin = { bottom = 12 }, spacing = 12, children = { table.unpack(chips, 7, 12) } },
+        row { align_h = "center", margin = { top = 12 }, spacing = 12, children = { table.unpack(chips, 1, 6) } },
+        row { align_h = "center", margin = { bottom = 12 }, spacing = 12, children = { table.unpack(chips, 7, 12) } },
         line_of("anasgets111.github.io/mantle", 34, theme.accent, MONO),
         line_of("AUR: mantle-git", 30, theme.subtext, MONO),
         line_of("Typed, reloaded, captioned and recorded by a Mantle shell.", 24, theme.muted),
@@ -370,35 +370,35 @@ local card_lines = {
 
 local wallpaper = panel {
     id = "wallpaper",
-    layer = "Background",
+    layer = "background",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
-    child = image { source = backdrop, width = "Fill", height = "Fill", fit = "cover" },
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
+    child = image { source = backdrop, width = "fill", height = "fill", fit = "cover" },
 }
 
 local card_pane = panel {
     id = "card",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
     visible = card:map(function(kind) return kind ~= "" end),
     child = card:map(function(kind)
         return rect {
             id = "card:" .. kind,
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             opacity = card_shown:map(function(on) return on and 1 or 0 end),
-            animate = { opacity = { duration = 700, easing = "OutCubic", from = 0 } },
+            animate = { opacity = { duration = 700, easing = "out_cubic", from = 0 } },
             children = {
-                image { source = backdrop, width = "Fill", height = "Fill", fit = "cover" },
-                rect { width = "Fill", height = "Fill", background = theme.fade("crust", "b8") },
+                image { source = backdrop, width = "fill", height = "fill", fit = "cover" },
+                rect { width = "fill", height = "fill", background = theme.fade("crust", "b8") },
                 column {
-                    align_h = "Center",
-                    align_v = "Center",
+                    align_h = "center",
+                    align_v = "center",
                     spacing = 24,
                     children = card_lines[kind] or {},
                 },
@@ -682,7 +682,7 @@ local function play_track(k, from, seconds)
                         album_art_path = DEMO_DIR .. "/covers/" .. track.art,
                         length = track.length * 1000000,
                         position = (from + t) * 1000000,
-                        play_state = "Playing",
+                        play_state = "playing",
                     },
                 },
             })(function() timer(1000, function() at(t + 1) end) end)
@@ -692,9 +692,9 @@ local function play_track(k, from, seconds)
 end
 
 local TRAY = {
-    { id = "1", name = "Steam",    icon_name = "steam",                status = "Active" },
-    { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "Active" },
-    { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "Active" },
+    { id = "1", name = "Steam",    icon_name = "steam",                status = "active" },
+    { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "active" },
+    { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "active" },
 }
 
 local function tray_items(count, calling)
@@ -705,7 +705,7 @@ local function tray_items(count, calling)
             id = item.id,
             name = item.name,
             icon_name = item.icon_name,
-            status = item.name == calling and "NeedsAttention" or item.status,
+            status = item.name == calling and "needs_attention" or item.status,
         }
     end
     return { items = out }
@@ -778,15 +778,15 @@ local pointer_at = pointer:map(function(p) return { x = p.x, y = p.y } end)
 
 local pointer_pane = panel {
     id = "pointer",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
-    exclusive_zone = "Ignore",
+    width = "fill",
+    height = "fill",
+    exclusive_zone = "ignore",
     visible = pointer:map(function(p) return p.shown end),
     child = rect {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         children = {
             rect {
                 width = 44,
@@ -798,9 +798,9 @@ local pointer_pane = panel {
                 opacity = pressed:map(function(on) return on and 1 or 0 end),
                 scale = pressed:map(function(on) return on and 1 or 0.4 end),
                 animate = {
-                    translate = { duration = 600, easing = "InOutCubic" },
+                    translate = { duration = 600, easing = "in_out_cubic" },
                     opacity = 220,
-                    scale = { duration = 320, easing = "OutCubic" },
+                    scale = { duration = 320, easing = "out_cubic" },
                 },
             },
             image {
@@ -814,8 +814,8 @@ local pointer_pane = panel {
                 shadow_blur = 8,
                 shadow_offset = { y = 2 },
                 animate = {
-                    translate = { duration = 600, easing = "InOutCubic" },
-                    scale = { duration = 160, easing = "OutCubic" },
+                    translate = { duration = 600, easing = "in_out_cubic" },
+                    scale = { duration = 160, easing = "out_cubic" },
                 },
             },
         },

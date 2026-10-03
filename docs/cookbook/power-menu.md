@@ -47,7 +47,7 @@ local function action_button(action)
             if is_armed then return "#f38ba8" end
             return hovered and "#45475a" or "#313244"
         end),
-        animate = { background = 120, scale = { duration = 120, easing = "OutCubic" } },
+        animate = { background = 120, scale = { duration = 120, easing = "out_cubic" } },
         scale = over:map(function(hovered) return hovered and 1.05 or 1 end),
         on_click = function()
             if action.confirm and pending:get() ~= action.key then
@@ -59,19 +59,19 @@ local function action_button(action)
         end,
         children = {
             column {
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 spacing = 10,
                 children = {
                     icon {
                         name = action.glyph,
                         size = 36,
-                        align_h = "Center",
+                        align_h = "center",
                         foreground = armed:map(function(is_armed) return is_armed and "#1e1e2e" or "#cdd6f4" end),
                     },
                     text {
                         content = armed:map(function(is_armed) return is_armed and "Click again" or action.label end),
-                        align_h = "Center",
+                        align_h = "center",
                         foreground = armed:map(function(is_armed) return is_armed and "#1e1e2e" or "#cdd6f4" end),
                     },
                 },
@@ -88,20 +88,20 @@ end
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
-        width = "Fill",
+        width = "fill",
         height = 32,
         exclusive_zone = true,
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 8, right = 8 },
             background = "#1e1e2e",
             children = {
-                rect { width = "Fill" },
+                rect { width = "fill" },
                 rect {
-                    align_v = "Center",
+                    align_v = "center",
                     padding = 6,
                     radius = 6,
                     on_click = function() open:set(true) end,
@@ -112,23 +112,23 @@ return {
     },
     panel {
         id = "power_menu",
-        layer = "Overlay",
-        output = "Active",
+        layer = "overlay",
+        output = "active",
         anchor = { top = true, bottom = true, left = true, right = true },
-        width = "Fill",
-        height = "Fill",
-        exclusive_zone = "Ignore",
+        width = "fill",
+        height = "fill",
+        exclusive_zone = "ignore",
         visible = open,
         reset_on_close = { pending }, -- a reopened menu never starts armed
         child = rect {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             background = "#11111bcc",
             opacity = 1, -- `from` needs the property set
             animate = { opacity = { duration = 150, from = 0 } },
             children = {
-                rect { width = "Fill", height = "Fill", on_click = close }, -- outside click
-                row { align_h = "Center", align_v = "Center", spacing = 16, children = buttons },
+                rect { width = "fill", height = "fill", on_click = close }, -- outside click
+                row { align_h = "center", align_v = "center", spacing = 16, children = buttons },
             },
         },
     },

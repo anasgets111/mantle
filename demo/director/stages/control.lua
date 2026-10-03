@@ -82,7 +82,7 @@ local function tile(spec)
     end
     return row {
         geometry = target("control:" .. spec.key),
-        width = "Fill",
+        width = "fill",
         height = 96,
         padding = { left = 20, right = 20 },
         radius = 24,
@@ -93,9 +93,9 @@ local function tile(spec)
         on_click = spec.persisted and function() flip(spec.key) end or nil,
         spacing = 16,
         children = {
-            icon { name = spec.glyph, size = 30, align_v = "Center", foreground = pick(theme.crust, theme.text) },
+            icon { name = spec.glyph, size = 30, align_v = "center", foreground = pick(theme.crust, theme.text) },
             column {
-                align_v = "Center",
+                align_v = "center",
                 spacing = 2,
                 children = {
                     text { content = spec.title, font_size = 20, font_weight = 700, foreground = pick(theme.crust, theme.text) },
@@ -108,24 +108,24 @@ end
 
 local function slider(glyph, value)
     return row {
-        width = "Fill",
+        width = "fill",
         height = 48,
         spacing = 16,
         children = {
-            icon { name = glyph, size = 26, align_v = "Center", foreground = theme.text },
+            icon { name = glyph, size = 26, align_v = "center", foreground = theme.text },
             rect {
-                width = "Fill",
+                width = "fill",
                 height = 10,
                 radius = 5,
-                align_v = "Center",
+                align_v = "center",
                 background = theme.surface,
                 children = {
                     rect {
-                        height = "Fill",
+                        height = "fill",
                         radius = 5,
                         background = theme.accent,
                         width = value:map(function(v) return math.floor(v) .. "%" end),
-                        animate = { width = { duration = 400, easing = "OutCubic" } },
+                        animate = { width = { duration = 400, easing = "out_cubic" } },
                     },
                 },
             },
@@ -135,7 +135,7 @@ end
 
 local panel_node = panel {
     id = "control",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
@@ -151,11 +151,11 @@ local panel_node = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 360, easing = "OutBack", from = { y = -20 } },
+            translate = { duration = 360, easing = "out_back", from = { y = -20 } },
         },
         children = {
-            row { width = "Fill", spacing = 14, children = { tile(tiles[1]), tile(tiles[2]) } },
-            row { width = "Fill", spacing = 14, children = { tile(tiles[3]), tile(tiles[4]) } },
+            row { width = "fill", spacing = 14, children = { tile(tiles[1]), tile(tiles[2]) } },
+            row { width = "fill", spacing = 14, children = { tile(tiles[3]), tile(tiles[4]) } },
             slider("display-brightness-symbolic", brightness:map(function(b) return b.percent end)),
             slider("audio-volume-high-symbolic", mantle.audio:map(function(a)
                 return a and a.volume and math.min(a.volume, 100) or 0
@@ -167,13 +167,13 @@ local panel_node = panel {
 -- The bar's radio icons, lit while each radio is on.
 local status = row {
     spacing = 12,
-    align_v = "Center",
+    align_v = "center",
     margin = { right = 18 },
     children = {
         icon {
             name = network:map(wifi_icon),
             size = 24,
-            align_v = "Center",
+            align_v = "center",
             foreground = computed({ network, theme.text, theme.muted }, function(n, lit, dim)
                 return n.connected and lit or dim
             end),
@@ -181,7 +181,7 @@ local status = row {
         icon {
             name = "bluetooth-active-symbolic",
             size = 24,
-            align_v = "Center",
+            align_v = "center",
             foreground = computed({ bluetooth, theme.accent, theme.muted }, function(b, lit, dim)
                 return #b.connected_devices > 0 and lit or dim
             end),

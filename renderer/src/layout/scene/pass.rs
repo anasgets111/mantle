@@ -81,7 +81,7 @@ fn children_kept(
 /// name, before the ordinary child walk. It is part of its root's resolve, so it runs again only
 /// when the root resolves again (ADR-0270): a signal it or the root's properties read was written,
 /// or a reload. Repeat calls preserve registry-stable state such as `state("wallpaper_" .. output)`.
-/// `window`/`popup` and an `output = "Active"` panel (ADR-0246) have no output name, so function
+/// `window`/`popup` and an `output = "active"` panel (ADR-0246) have no output name, so function
 /// children are refused rather than called with `""`.
 pub(super) fn build_child_for_output(
     mut properties: PropMap,
@@ -2008,7 +2008,7 @@ mod tests {
                     return computed({}, function() order = order .. name; return value end)
                 end
                 return panel { id = "bar", child = row { width = 600, height = 40, children = {
-                    rect { width = "Fill", height = 10, margin = mark("a", 0),
+                    rect { width = "fill", height = 10, margin = mark("a", 0),
                         children = { rect { width = 1, height = 1, margin = mark("A", 0) } } },
                     rect { width = 100, height = 10, margin = mark("b", 0),
                         children = { rect { width = 1, height = 1, margin = mark("B", 0) } } },
@@ -2348,7 +2348,7 @@ mod tests {
             let shaping = ShapingHandle::spawn();
             let (lua, surface) = surface_from(&format!(
                 r#"{{ kind = "{kind}", id = "s", width = 100, height = 50,
-                       child = rect {{ align_h = "Stretch", align_v = "Stretch" }} }}"#
+                       child = rect {{ align_h = "stretch", align_v = "stretch" }} }}"#
             ));
             apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
             let child = &scene.surface("s@TEST").unwrap().children[0];
@@ -2362,7 +2362,7 @@ mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) =
-            surface_from(r#"{ kind = "window", id = "settings", child = rect { width = "Fill", height = "Fill" } }"#);
+            surface_from(r#"{ kind = "window", id = "settings", child = rect { width = "fill", height = "fill" } }"#);
         apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1168.0 }, &shaping, &lua).unwrap();
 
         let root = scene.surface("settings@TEST").unwrap();
@@ -2375,7 +2375,7 @@ mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"{ kind = "window", id = "settings", width = 400, child = rect { width = "Fill", height = "Fill" } }"#,
+            r#"{ kind = "window", id = "settings", width = 400, child = rect { width = "fill", height = "fill" } }"#,
         );
         apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1168.0 }, &shaping, &lua).unwrap();
 
@@ -2394,7 +2394,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r#"{ kind = "popup", id = "menu", parent = "bar", width = 200, height = 120,
                  anchor_rect = { x = 0, y = 0, width = 86, height = 24 },
-                 child = rect { width = "Fill", height = "Fill" } }"#,
+                 child = rect { width = "fill", height = "fill" } }"#,
         );
         apply_at(&mut scene, &[surface], LogicalSize { width: 200.0, height: 120.0 }, &shaping, &lua).unwrap();
 
@@ -2409,7 +2409,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"{ kind = "lock", id = "screen-lock",
-                 child = rect { align_h = "Stretch", align_v = "Stretch" } }"#,
+                 child = rect { align_h = "stretch", align_v = "stretch" } }"#,
         );
         apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1080.0 }, &shaping, &lua).unwrap();
 
@@ -2424,7 +2424,7 @@ mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) =
-            surface_from(r#"{ kind = "lock", id = "screen-lock", child = rect { width = "Fill", height = "Fill" } }"#);
+            surface_from(r#"{ kind = "lock", id = "screen-lock", child = rect { width = "fill", height = "fill" } }"#);
         apply_at(&mut scene, &[surface], LogicalSize { width: 2560.0, height: 1440.0 }, &shaping, &lua).unwrap();
 
         let root = scene.surface("screen-lock@TEST").unwrap();

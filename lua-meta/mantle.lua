@@ -75,14 +75,14 @@
 ---@field port? string The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
 
 ---@alias BatteryStatus
----| "Unknown" # No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
----| "Charging" # Taking current from an adapter.
----| "Discharging" # Draining.
----| "Empty" # Flat.
----| "FullyCharged" # Charged and holding.
----| "PendingCharge" # On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause.
----| "PendingDischarge" # Waiting to discharge.
----`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
+---| "unknown" # No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
+---| "charging" # Taking current from an adapter.
+---| "discharging" # Draining.
+---| "empty" # Flat.
+---| "fully_charged" # Charged and holding.
+---| "pending_charge" # On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause.
+---| "pending_discharge" # Waiting to discharge.
+---`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "pending_charge"`.
 
 ---@class BluetoothCodecs
 ---One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
@@ -157,9 +157,9 @@
 ---@field ssid string The network the join was for.
 
 ---@alias LoopStatus
----| "None" # Plays through once.
----| "Track" # Repeats the current track.
----| "Playlist" # Repeats the playlist.
+---| "none" # Plays through once.
+---| "track" # Repeats the current track.
+---| "playlist" # Repeats the playlist.
 ---MPRIS `LoopStatus`, also the `set_loop_status` argument.
 
 ---@class MenuItem
@@ -231,7 +231,7 @@
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
 
----@alias PlayState "Playing"|"Paused"|"Stopped"
+---@alias PlayState "playing"|"paused"|"stopped"
 ---MPRIS `PlaybackStatus`.
 
 ---@alias PlayerCommand "play"|"pause"|"play_pause"|"next"|"previous"|"stop"
@@ -256,7 +256,7 @@
 ---@field loop_status? LoopStatus MPRIS loop mode; `nil` when the player does not report one.
 ---@field maximum_rate number MPRIS maximum playback rate, or `0` when unavailable.
 ---@field minimum_rate number MPRIS minimum playback rate, or `0` when unavailable.
----@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none.
+---@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
 ---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself.
@@ -337,7 +337,7 @@
 ---@field title string Track title, empty when the player has none.
 
 ---@class TrayItem
----@field attention_icon_name? string Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset.
+---@field attention_icon_name? string Artwork to draw while `status == "needs_attention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset.
 ---@field attention_icon_path? string File half of the attention artwork.
 ---@field icon_name? string Theme icon name for `icon { name = ... }`. At most one of it and `icon_path` is set.
 ---@field icon_path? string Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap spooled to a PNG.
@@ -347,8 +347,14 @@
 ---@field name string SNI `Title`, or its `Id` when the title is empty.
 ---@field overlay_icon_name? string Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset.
 ---@field overlay_icon_path? string File half of the badge.
----@field status string `"Active"`, `"Passive"` (the item asks to be hidden) or `"NeedsAttention"`, as the item sent it.
+---@field status TrayStatus SNI `Status`.
 ---@field tooltip? string Tooltip title and text joined by a newline, or `nil` when both are empty.
+
+---@alias TrayStatus
+---| "active" # Normal; also any value outside the spec, or none.
+---| "passive" # The item asks to be hidden.
+---| "needs_attention" # The item wants attention; draw its attention artwork if set.
+---SNI `Status`.
 
 ---@class UpdateCandidate
 ---One installed package with a newer version.

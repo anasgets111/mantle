@@ -17,13 +17,13 @@ local function workspace_item(item)
         height = 18,
         radius = 9,
         background = item.active and theme.color("accent") or theme.color("surface"),
-        animate = { width = { duration = 180, easing = "OutCubic" } },
+        animate = { width = { duration = 180, easing = "out_cubic" } },
         on_click = function() mantle.workspaces:focus(item.id) end,
         children = {
             text {
                 content = item.label,
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 font_size = 10,
                 foreground = theme.color("fg"),
             },
@@ -35,9 +35,9 @@ local function workspace_key(item) return tostring(item.id) end
 
 local function workspaces(name)
     return list {
-        direction = "Horizontal",
+        direction = "horizontal",
         spacing = 4,
-        align_v = "Center",
+        align_v = "center",
         source = mantle.workspaces:map(function(all)
             local output = output_of(all, name)
             local items = {}
@@ -56,7 +56,7 @@ local function workspaces(name)
 end
 
 local function reading(content)
-    return text { content = content, align_v = "Center", font_size = 12, foreground = theme.color("fg") }
+    return text { content = content, align_v = "center", font_size = 12, foreground = theme.color("fg") }
 end
 
 local cpu = mantle.sysinfo:map(function(s) return s and string.format("CPU %d%%", s.cpu_percent) or "CPU --" end)
@@ -74,28 +74,28 @@ local clock = mantle.system:map(function(s) return os.date("%H:%M:%S", s and s.t
 
 return panel {
     id = "hs_bar",
-    layer = "Top",
+    layer = "top",
     anchor = { bottom = true, left = true, right = true },
-    width = "Fill",
+    width = "fill",
     height = 26,
     visible = bar_shown,
     child = function(output)
         theme.counters.bar_child = theme.counters.bar_child + 1
         return row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             spacing = 12,
             padding = { left = 10, right = 10 },
             background = theme.counted("bg", "bar_color"),
             children = {
                 workspaces(output),
-                rect { width = "Fill" },
+                rect { width = "fill" },
                 reading(cpu),
                 reading(ram),
                 reading(net),
                 reading(volume),
                 reading(wifi),
-                text { content = clock, align_v = "Center", font_size = 12, foreground = theme.color("accent") },
+                text { content = clock, align_v = "center", font_size = 12, foreground = theme.color("accent") },
             },
         }
     end,

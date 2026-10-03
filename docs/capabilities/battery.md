@@ -32,17 +32,17 @@ text {
 
 ### `BatteryStatus`
 
-`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
+`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "pending_charge"`.
 
 | Value | Description |
 | --- | --- |
-| `"Unknown"` | No answer: UPower unreachable, an unknown state number, or a display device that is not a battery. |
-| `"Charging"` | Taking current from an adapter. |
-| `"Discharging"` | Draining. |
-| `"Empty"` | Flat. |
-| `"FullyCharged"` | Charged and holding. |
-| `"PendingCharge"` | On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause. |
-| `"PendingDischarge"` | Waiting to discharge. |
+| `"unknown"` | No answer: UPower unreachable, an unknown state number, or a display device that is not a battery. |
+| `"charging"` | Taking current from an adapter. |
+| `"discharging"` | Draining. |
+| `"empty"` | Flat. |
+| `"fully_charged"` | Charged and holding. |
+| `"pending_charge"` | On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause. |
+| `"pending_discharge"` | Waiting to discharge. |
 
 ## Actions
 
@@ -54,7 +54,7 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 | :--- | :--- |
 | Source | UPower's `DisplayDevice`, the composite of every battery |
 | Updates | Re-reads every field on each `PropertiesChanged`; no timer, since UPower already polls the hardware |
-| No battery or no UPower | `present = false`, `percent = 0`, `state = "Unknown"`, no time estimates |
+| No battery or no UPower | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates |
 
 ## How do I…
 
@@ -71,7 +71,7 @@ text {
         elseif not battery.present then
             return ""
         end
-        return string.format("%d%%%s", battery.percent, battery.state == "Charging" and " +" or "")
+        return string.format("%d%%%s", battery.percent, battery.state == "charging" and " +" or "")
     end),
 }
 ```

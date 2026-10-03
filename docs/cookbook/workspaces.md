@@ -34,7 +34,7 @@ end
 local function strip(name)
     local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
     return rect {
-        align_v = "Center",
+        align_v = "center",
         -- Wheel up is positive; step towards lower numbers, once per whole notch.
         on_wheel = function(_, steps)
             wheel = wheel + steps
@@ -45,9 +45,9 @@ local function strip(name)
         end,
         children = {
             list {
-                direction = "Horizontal",
+                direction = "horizontal",
                 spacing = 4,
-                align_v = "Center",
+                align_v = "center",
                 source = mantle.workspaces:map(function(workspaces)
                     local output = output_of(workspaces, name)
                     local items = {}
@@ -68,13 +68,13 @@ local function strip(name)
                         height = 20,
                         radius = 10,
                         background = item.active and "#89b4fa" or (item.populated and "#45475a" or "#313244"),
-                        animate = { width = { duration = 180, easing = "OutCubic" }, background = 180 },
+                        animate = { width = { duration = 180, easing = "out_cubic" }, background = 180 },
                         on_click = function() mantle.workspaces:focus(item.id) end,
                         children = {
                             text {
                                 content = item.label,
-                                align_h = "Center",
-                                align_v = "Center",
+                                align_h = "center",
+                                align_v = "center",
                                 font_size = 11,
                                 foreground = item.active and "#1e1e2e" or "#cdd6f4",
                             },
@@ -88,9 +88,9 @@ end
 
 -- Hyprland's scratchpads; `special` is nil on niri, so this list is empty there.
 local specials = list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 4,
-    align_v = "Center",
+    align_v = "center",
     source = mantle.workspaces:map(function(workspaces)
         return workspaces and workspaces.special or {}
     end),
@@ -116,15 +116,15 @@ local specials = list {
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
-        width = "Fill",
+        width = "fill",
         height = 32,
         exclusive_zone = true,
         child = function(output) -- one instance per monitor, named by connector
             return row {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 spacing = 12,
                 padding = { left = 8, right = 8 },
                 background = "#1e1e2e",
@@ -152,5 +152,5 @@ return {
 | App icons instead of numbers | Carry `app_id = workspace.app_id` into `items` and draw `icon { name = item.app_id or "", size = 14 }`. Where the icon name differs from the `app_id`, read `entries[by_app_id[app_id]].icon` from `mantle.applications` |
 | Named workspaces | `label = workspace.name or tostring(workspace.idx)`, with `min_width` and side `padding` instead of a fixed `width` |
 | Dots only | Drop the `text` and set `width = item.active and 20 or 8, height = 8` |
-| Show the focused window's title | Add `text { content = mantle.workspaces:map(function(workspaces) return workspaces and workspaces.active_client and workspaces.active_client.title or "" end), elide = "End", max_width = 400 }` |
-| Vertical bar | Anchor `left`, set `width = 40`, `height = "Fill"`, use a `column` and `direction = "Vertical"` |
+| Show the focused window's title | Add `text { content = mantle.workspaces:map(function(workspaces) return workspaces and workspaces.active_client and workspaces.active_client.title or "" end), elide = "end", max_width = 400 }` |
+| Vertical bar | Anchor `left`, set `width = 40`, `height = "fill"`, use a `column` and `direction = "vertical"` |

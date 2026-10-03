@@ -7428,3 +7428,16 @@ a table shared n levels deep expands 2^n times in native code no instruction hoo
 more than half holes, which mlua allocates out to its highest index (`{[2^40]=1}`); and a decoded
 array given a named key, which mlua's array metatable would silently drop. Rejected: encoding `{}` as an object,
 which makes it ambiguous the other way, and a `json.null` sentinel, for ADR-0057's truthiness reason.
+
+## 0310. Every engine-defined Lua enum is lowercase snake_case
+
+Node, surface, animation and capability enums read and take lowercase snake_case: `"center"`,
+`"fill"`, `"in_out_quad"`, `"on_demand"`, `"fully_charged"`, `"needs_attention"`. They mixed
+PascalCase with lowercase, so an author could not guess a spelling; Lua's own strings (`"n"`,
+`"*t"`, `"count"`) are lowercase. Easing names stay QML's curves (ADR-0151) in snake_case. Renderer
+keywords derive the name from the Rust variant at compile time; capability enums use serde
+`snake_case`, and each backend still parses its protocol's spelling (MPRIS `"Playing"`, SNI
+`"NeedsAttention"`) at the boundary. Old spellings are refused, not aliased: the engine is 0.x and
+an alias doubles every choice list. Kept: POSIX signal names (`"TERM"`), SVG path ops (`"M"`,
+uppercase for absolute coordinates) and data such as codec and connector names. Tray `status`
+became an enum with this change; an off-spec or missing status reads `"active"`.

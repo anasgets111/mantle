@@ -24,10 +24,10 @@ local function dots(count)
             width = 14,
             height = 14,
             radius = 7,
-            align_v = "Center",
+            align_v = "center",
             background = theme.text,
             scale = 1,
-            animate = { scale = { duration = 220, easing = "OutBack", from = 0 } },
+            animate = { scale = { duration = 220, easing = "out_back", from = 0 } },
         }
     end
     return out
@@ -35,11 +35,11 @@ end
 
 return panel {
     id = "polkit",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
-    keyboard_interactivity = "None",
+    keyboard_interactivity = "none",
     child = column {
         width = placed:map(function(p) return p.width end),
         padding = 34,
@@ -60,26 +60,26 @@ return panel {
             icon {
                 name = "system-lock-screen-symbolic",
                 size = 56,
-                align_h = "Center",
+                align_h = "center",
                 foreground = theme.accent,
             },
             text {
                 content = "Authentication required",
-                align_h = "Center",
+                align_h = "center",
                 font_size = 30,
                 font_weight = 800,
                 foreground = theme.text,
             },
             text {
                 content = polkit:map(function(p) return p.message end),
-                width = "Fill",
-                wrap = "Word",
-                text_align = "Center",
+                width = "fill",
+                wrap = "word",
+                text_align = "center",
                 font_size = 20,
                 foreground = theme.subtext,
             },
             rect {
-                width = "Fill",
+                width = "fill",
                 height = 60,
                 radius = 16,
                 margin = { top = 8 },
@@ -89,7 +89,7 @@ return panel {
                 padding = { left = 22, right = 22 },
                 children = {
                     row {
-                        height = "Fill",
+                        height = "fill",
                         spacing = 10,
                         children = typed:map(dots),
                     },
@@ -97,7 +97,7 @@ return panel {
             },
             text {
                 content = polkit:map(function(p) return "Password for " .. p.user end),
-                align_h = "Center",
+                align_h = "center",
                 font_size = 16,
                 foreground = theme.muted,
             },

@@ -19,7 +19,7 @@ pub use transform::{
 };
 
 /// `"NN%"` (`^\d+(\.\d+)?%$`) as `SizeMode::Percent`. Not a confirmed spec syntax: the base
-/// property table only documents integer/`"Fill"` for width/height, though `Percent(f32)` is
+/// property table only documents integer/`"fill"` for width/height, though `Percent(f32)` is
 /// named as a size class with no literal Lua form given. See ADR-0023.
 pub(super) fn parse_percent(s: &str) -> Option<f32> {
     let digits = s.strip_suffix('%')?;
@@ -38,7 +38,7 @@ pub(super) fn parse_percent(s: &str) -> Option<f32> {
 
 spelled!(SizeMode => "Length");
 
-/// `width`/`height`: pixels within the row's range (ADR-0021), `"Fill"`, or `"NN%"`. The map is a
+/// `width`/`height`: pixels within the row's range (ADR-0021), `"fill"`, or `"NN%"`. The map is a
 /// [`resolve_properties`] result, so absent covers both omission and a signal resolving to `nil`.
 impl Prop for SizeMode {
     type Out = SizeMode;
@@ -50,7 +50,7 @@ impl Prop for SizeMode {
             return Ok(SizeMode::Pixels(row_within(row, n)?));
         }
         if let Value::String(s) = value {
-            if &*s.as_bytes() == b"Fill" {
+            if &*s.as_bytes() == b"fill" {
                 return Ok(SizeMode::Fill);
             }
             if let Ok(s_str) = s.to_str()
@@ -62,7 +62,7 @@ impl Prop for SizeMode {
         Err(invalid(
             row.name,
             format!(
-                "expected a number, \"Fill\", or a \"NN%\" string (Content sizing has no literal -- omit the property instead), got {}",
+                "expected a number, \"fill\", or a \"NN%\" string (Content sizing has no literal -- omit the property instead), got {}",
                 preview_for_error(value)
             ),
         ))
@@ -113,7 +113,7 @@ keywords! {
     }
 }
 
-/// `radius`, negated under `corner_shape = "Scoop"`.
+/// `radius`, negated under `corner_shape = "scoop"`.
 pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
     let radius = fields::paint::radius.read(properties)?;
     Ok(if fields::paint::corner_shape.read(properties)? == CornerShape::Scoop { -radius } else { radius })
@@ -284,7 +284,7 @@ pub struct Shadow {
 
 /// What a node's own painted output is filtered by (ADR-0254). `blur` is `content_blur`, CSS
 /// `filter: blur()`'s sigma; `backdrop` is `backdrop_blur`, `backdrop-filter: blur()`'s (ADR-0256).
-/// `0` is off. `content_shadow` is `shadow_mode = "Content"`: the shadow is cast by the painted
+/// `0` is off. `content_shadow` is `shadow_mode = "content"`: the shadow is cast by the painted
 /// subtree, not the box's shape (ADR-0260).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Effect {
@@ -366,7 +366,7 @@ mod tests {
     #[test]
     fn width_fill_string_is_fill() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "Fill" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "fill" }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Fill);
     }
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn height_content_error_names_omission_as_the_spelling() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", height = "Content" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "rect", height = "content" }"#).eval().unwrap();
         let props = props_from_table(&table);
         let err = fields::common::height.read(&props).unwrap_err();
         assert!(
@@ -653,7 +653,7 @@ mod tests {
     #[test]
     fn clip_reads_every_shape() {
         for (declared, expected) in
-            [("Box", ClipShape::Box), ("Rounded", ClipShape::Rounded), ("None", ClipShape::None)]
+            [("box", ClipShape::Box), ("rounded", ClipShape::Rounded), ("none", ClipShape::None)]
         {
             let lua = mlua::Lua::new();
             let src = format!(r#"return {{ kind = "rect", clip = "{declared}" }}"#);
@@ -668,11 +668,11 @@ mod tests {
     #[test]
     fn an_unknown_clip_shape_is_rejected_naming_both() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "Circle" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "Rounded" }"#).eval().unwrap();
         let props = deserialize_lua_table(&table).unwrap().properties;
         let err = fields::paint::clip.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("`Box`, `Rounded`")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("`box`, `rounded`")),
             "got {err:?}"
         );
 
@@ -934,8 +934,8 @@ mod tests {
         assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { blur: 3.0, ..Effect::default() });
         assert_eq!(parse("return { backdrop_blur = 8 }").unwrap(), Effect { backdrop: 8.0, ..Effect::default() });
         let content = Effect { content_shadow: true, ..Effect::default() };
-        assert_eq!(parse(r#"return { shadow_mode = "Content" }"#).unwrap(), content);
-        assert_eq!(parse(r#"return { shadow_mode = "Box" }"#).unwrap(), Effect::default());
+        assert_eq!(parse(r#"return { shadow_mode = "content" }"#).unwrap(), content);
+        assert_eq!(parse(r#"return { shadow_mode = "box" }"#).unwrap(), Effect::default());
         for (src, property) in [
             ("return { content_blur = -1 }", "content_blur"),
             ("return { backdrop_blur = -1 }", "backdrop_blur"),

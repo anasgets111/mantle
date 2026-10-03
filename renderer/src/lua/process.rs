@@ -97,8 +97,8 @@ keywords! {
     /// Which pipe an `on_line` line came from; the wire keeps `shared::ProcessStream`.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Stream {
-        Stdout = "stdout",
-        Stderr = "stderr",
+        Stdout,
+        Stderr,
     }
 }
 

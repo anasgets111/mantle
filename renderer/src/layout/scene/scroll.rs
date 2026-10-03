@@ -411,7 +411,7 @@ mod tests {
     #[test]
     fn alignment_and_scrolling_are_mutually_exclusive_by_construction() {
         let (_lua, ys, used) = scrolled(
-            r#"panel { id = "bar", child = column { width = 100, height = 300, align_v = "Center", scroll = scroll("s"), children = {
+            r#"panel { id = "bar", child = column { width = 100, height = 300, align_v = "center", scroll = scroll("s"), children = {
                 rect { width = 10, height = 50 }, rect { width = 10, height = 50 },
             } } }"#,
             999.0,

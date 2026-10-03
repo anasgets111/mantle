@@ -815,7 +815,7 @@ pub(crate) mod tests {
 
         let red = resolved_surface(
             &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "Fill", height = "Fill", background = "#FF0000FF" } }"##,
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", background = "#FF0000FF" } }"##,
             LogicalSize { width: 64.0, height: 64.0 },
         );
         painter.resize(64, 64);
@@ -825,7 +825,7 @@ pub(crate) mod tests {
         instance.make_current(display, Some(second), Some(second), Some(context)).expect("switching the draw surface");
         let green = resolved_surface(
             &lua,
-            r##"return panel { id = "bar", width = 32, height = 32, child = rect { width = "Fill", height = "Fill", background = "#00FF00FF" } }"##,
+            r##"return panel { id = "bar", width = 32, height = 32, child = rect { width = "fill", height = "fill", background = "#00FF00FF" } }"##,
             LogicalSize { width: 32.0, height: 32.0 },
         );
         painter.resize(32, 32);
@@ -901,7 +901,7 @@ pub(crate) mod tests {
 
         let root = resolved_surface(
             &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "Fill", height = "Fill", background = "#FF0000FF" } }"##,
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", background = "#FF0000FF" } }"##,
             LogicalSize { width: 64.0, height: 64.0 },
         );
         paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
@@ -920,7 +920,7 @@ pub(crate) mod tests {
             };
             let root = resolved_surface(
                 &lua,
-                r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "Fill", height = "Fill", children = {
+                r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", children = {
                     rect { width = 16, height = 16, background = "#FF0000FF" },
                     path { width = 16, height = 16, margin = { left = 24 }, fill = "#00FF00FF",
                         commands = { { op = "M", points = { 0, 0 } }, { op = "L", points = { 16, 0 } },
@@ -991,7 +991,7 @@ pub(crate) mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 64, height = 64,
-                child = rect { width = 32, height = 32, radius = 12, clip = "Rounded",
+                child = rect { width = 32, height = 32, radius = 12, clip = "rounded",
                     children = { rect { width = 32, height = 32, background = "#FF0000FF" } } } }"##,
             LogicalSize { width: 64.0, height: 64.0 },
         );
@@ -1013,10 +1013,10 @@ pub(crate) mod tests {
     fn a_gradient_mask_fades_the_nodes_fill_and_subtree_and_invert_flips_it() {
         let masked = |invert: bool| {
             format!(
-                r##"rect {{ width = "Fill", height = "Fill", background = "#FFFFFFFF",
-                    mask = {{ gradient = "Linear", invert = {invert},
+                r##"rect {{ width = "fill", height = "fill", background = "#FFFFFFFF",
+                    mask = {{ gradient = "linear", invert = {invert},
                         stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFFFF" }}, {{ 0.5, "#FFFFFF00" }}, {{ 1, "#FFFFFF00" }} }} }},
-                    children = {{ rect {{ width = 8, height = "Fill", background = "#FF0000FF" }} }} }}"##
+                    children = {{ rect {{ width = 8, height = "fill", background = "#FF0000FF" }} }} }}"##
             )
         };
         let points = [(32, 8), (32, 56), (4, 8), (4, 56)];
@@ -1109,7 +1109,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let child = format!(
-            r##"rect {{ width = "Fill", height = "Fill", background = "#00FF00FF", mask = {{ source = "{}" }} }}"##,
+            r##"rect {{ width = "fill", height = "fill", background = "#00FF00FF", mask = {{ source = "{}" }} }}"##,
             svg.display()
         );
         let Some(px) = paint_points(&child, &[(8, 32), (56, 32)]) else { return };
@@ -1170,7 +1170,7 @@ pub(crate) mod tests {
 
         let root = resolved_surface(
             &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "Fill", height = "Fill", background = "#0000FFFF", children = {
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", background = "#0000FFFF", children = {
                 rect { background = "#00FF00FF", width = 20, height = 20 },
             } } }"##,
             LogicalSize { width: 64.0, height: 64.0 },
@@ -1211,7 +1211,7 @@ pub(crate) mod tests {
 
         let root = resolved_surface(
             &lua,
-            r##"return panel { id = "bar", width = 120, height = 40, child = rect { width = "Fill", height = "Fill", background = "#000000FF", children = {
+            r##"return panel { id = "bar", width = 120, height = 40, child = rect { width = "fill", height = "fill", background = "#000000FF", children = {
                 text { content = "Mantle", font_size = 24, foreground = "#00FF00FF" },
             } } }"##,
             LogicalSize { width: 120.0, height: 40.0 },
@@ -1425,8 +1425,8 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
-                    width = 80, height = 32, radius = 16, clip = "Rounded",
-                    children = { rect { width = 30, height = "Fill", background = "#0000FFFF" } },
+                    width = 80, height = 32, radius = 16, clip = "rounded",
+                    children = { rect { width = 30, height = "fill", background = "#0000FFFF" } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
         );
@@ -1462,7 +1462,7 @@ pub(crate) mod tests {
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
                     width = 80, height = 32, radius = 16,
-                    children = { rect { width = 30, height = "Fill", background = "#0000FFFF" } },
+                    children = { rect { width = 30, height = "fill", background = "#0000FFFF" } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
         );
@@ -1483,7 +1483,7 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
-                    width = 40, height = 32, radius = 16, clip = "Rounded",
+                    width = 40, height = 32, radius = 16, clip = "rounded",
                     children = { rect { width = 90, height = 90, background = "#0000FFFF" } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
@@ -1511,9 +1511,9 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 96, background = "#FF0000FF",
                 padding = { top = 16, left = 16 }, child = rect {
-                    width = 64, height = 64, radius = 32, clip = "Rounded",
+                    width = 64, height = 64, radius = 32, clip = "rounded",
                     children = { rect {
-                        width = 64, height = 64, radius = 32, clip = "Rounded",
+                        width = 64, height = 64, radius = 32, clip = "rounded",
                         children = { rect { width = 64, height = 64, background = "#0000FFFF" } },
                     } },
                 } }"##,
@@ -1540,8 +1540,8 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
-                    width = 80, height = 32, radius = 16, clip = "Rounded",
-                    children = { rect { width = 30, height = "Fill", background = "#0000FF80" } },
+                    width = 80, height = 32, radius = 16, clip = "rounded",
+                    children = { rect { width = 30, height = "fill", background = "#0000FF80" } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
         );
@@ -1564,9 +1564,9 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
-                    width = 80, height = 32, radius = 16, clip = "Rounded",
+                    width = 80, height = 32, radius = 16, clip = "rounded",
                     border_width = 4, border_color = "#00FF00FF",
-                    children = { rect { width = 30, height = "Fill", background = "#0000FFFF" } },
+                    children = { rect { width = 30, height = "fill", background = "#0000FFFF" } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
         );
@@ -1619,8 +1619,8 @@ pub(crate) mod tests {
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
                     width = 60, height = 32, children = { rect {
-                        margin = { left = 40 }, width = 64, height = 32, radius = 16, clip = "Rounded",
-                        children = { rect { width = 64, height = "Fill", background = "#0000FFFF" } },
+                        margin = { left = 40 }, width = 64, height = 32, radius = 16, clip = "rounded",
+                        children = { rect { width = 64, height = "fill", background = "#0000FFFF" } },
                     } },
                 } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
@@ -1700,7 +1700,7 @@ pub(crate) mod tests {
             surface_96x64(&format!(
                 r##"return panel {{ id = "bar", width = 96, height = 64, background = "{ground}", padding = 8,
                     child = row {{ spacing = 8, children = {{
-                        rect {{ width = 24, height = 48, background = "#FF0000FF", mask = {{ gradient = "Linear",
+                        rect {{ width = 24, height = 48, background = "#FF0000FF", mask = {{ gradient = "linear",
                             angle = 90, stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 1, "#FFFFFF40" }} }} }},
                             children = {{ rect {{ width = 16, height = 16, background = "{corner}" }} }} }},
                         shader {{ width = 20, height = 48, source = "{}", params = {{ tint = {{ {tint} }} }} }},
@@ -1740,7 +1740,7 @@ pub(crate) mod tests {
             surface_96x64(&format!(
                 r##"return panel {{ id = "bar", width = 96, height = 64, padding = 4, background = "#FF0000FF",
                     child = column {{ spacing = 4, children = {{ {},
-                        rect {{ width = 88, height = 32, radius = 8, clip = "Rounded", padding = 4,
+                        rect {{ width = 88, height = 32, radius = 8, clip = "rounded", padding = 4,
                             background = "#FFFFFF40", children = {{ {} }} }} }} }} }}"##,
                 pair(colour),
                 pair(colour)
@@ -1810,10 +1810,10 @@ pub(crate) mod tests {
     #[test]
     fn a_gradient_over_an_offscreen_paints_the_same_every_frame() {
         let src = r##"return panel { id = "bar", width = 96, height = 64, padding = 16,
-            background = { gradient = "Linear", angle = 90, stops = { { 0, "#FF0000FF" }, { 1, "#0000FFFF" } } },
-            child = rect { width = 40, height = 20, radius = 10, clip = "Rounded", children = {
+            background = { gradient = "linear", angle = 90, stops = { { 0, "#FF0000FF" }, { 1, "#0000FFFF" } } },
+            child = rect { width = 40, height = 20, radius = 10, clip = "rounded", children = {
                 rect { width = 40, height = 10,
-                    background = { gradient = "Linear", stops = { { 0, "#00FF00FF" }, { 1, "#000000FF" } } } },
+                    background = { gradient = "linear", stops = { { 0, "#00FF00FF" }, { 1, "#000000FF" } } } },
                 rect { width = 40, height = 10, background = "#FFFFFFFF" } } } }"##;
         let Some(instance) = init_headless_egl(96, 64) else { return };
         let shaping = ShapingHandle::spawn();
@@ -1866,7 +1866,7 @@ pub(crate) mod tests {
             format!(
                 r##"return panel {{ id = "bar", width = 96, height = 64,
             background = "#FFFFFF", child = rect {{ width = 48, height = 48,
-                translate = {{ x = 12, y = 4 }}, radius = 16, clip = "Rounded", background = "#00FF00",
+                translate = {{ x = 12, y = 4 }}, radius = 16, clip = "rounded", background = "#00FF00",
                 mask = {{ node = "shape" }}, children = {{ rect {{ id = "shape", width = {width}, height = 48,
                     background = "#FFFFFF" }} }} }} }}"##
             )

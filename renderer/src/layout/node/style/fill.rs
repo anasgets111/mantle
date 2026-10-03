@@ -89,7 +89,7 @@ impl GradientInput {
             (GradientKind::Linear, angle) => GradientShape::Linear { angle: angle.unwrap_or(180.0) },
             (GradientKind::Conic, angle) => GradientShape::Conic { angle: angle.unwrap_or(0.0) },
             (GradientKind::Radial, None) => GradientShape::Radial,
-            (GradientKind::Radial, Some(_)) => return Err(invalid(property, "a `Radial` gradient takes no `angle`")),
+            (GradientKind::Radial, Some(_)) => return Err(invalid(property, "a \"radial\" gradient takes no `angle`")),
         };
         if let Some((at, _)) = self.stops.iter().find(|(at, _)| !(0.0..=1.0).contains(at)) {
             return Err(invalid(property, format!("stop positions must be within [0, 1], got {at}")));
@@ -210,9 +210,9 @@ mod tests {
         let lua = mlua::Lua::new();
         let stops = r##"stops = { { 0, "#ffffff" }, { 1, "#ffffff00" } }"##;
         for (shape, expected) in [
-            ("Linear", GradientShape::Linear { angle: 180.0 }),
-            ("Radial", GradientShape::Radial),
-            ("Conic", GradientShape::Conic { angle: 0.0 }),
+            ("linear", GradientShape::Linear { angle: 180.0 }),
+            ("radial", GradientShape::Radial),
+            ("conic", GradientShape::Conic { angle: 0.0 }),
         ] {
             let src = format!(r#"return {{ kind = "rect", background = {{ gradient = "{shape}", {stops} }} }}"#);
             let Some(Fill::Gradient(gradient)) = fields::paint::background.read(&eval_props(&lua, &src)).unwrap()
@@ -231,7 +231,7 @@ mod tests {
         let with = |stops: &str| {
             eval_props(
                 &lua,
-                &format!(r#"return {{ kind = "rect", background = {{ gradient = "Linear", stops = {stops} }} }}"#),
+                &format!(r#"return {{ kind = "rect", background = {{ gradient = "linear", stops = {stops} }} }}"#),
             )
         };
         rejects(fields::paint::background.read(&with(r##"{ { 0, "#ffffff" } }"##)), "background", "at least two");
@@ -265,11 +265,11 @@ mod tests {
         rejects(
             fields::paint::background.read(&eval_props(&lua, src)),
             "background",
-            r#"`gradient` must be "Linear"|"Radial"|"Conic", got Nil"#,
+            r#"`gradient` must be "linear"|"radial"|"conic", got Nil"#,
         );
-        let src = r##"return { kind = "rect", background = { gradient = "Box", stops = {} } }"##;
-        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", r#""Linear"|"Radial"|"Conic""#);
-        let src = r##"return { kind = "rect", background = { gradient = "Radial", angle = 45,
+        let src = r##"return { kind = "rect", background = { gradient = "box", stops = {} } }"##;
+        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", r#""linear"|"radial"|"conic""#);
+        let src = r##"return { kind = "rect", background = { gradient = "radial", angle = 45,
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
         rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "angle");
     }
@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn a_mask_is_a_gradient_or_an_image_source_either_inverted() {
         let lua = mlua::Lua::new();
-        let src = r##"return { kind = "rect", mask = { gradient = "Linear",
+        let src = r##"return { kind = "rect", mask = { gradient = "linear",
             stops = { { 0, "#ffffff00" }, { 1, "#ffffff" } } } }"##;
         let gradient =
             Gradient { shape: GradientShape::Linear { angle: 180.0 }, stops: vec![(0.0, CLEAR), (1.0, WHITE)] };
@@ -298,7 +298,7 @@ mod tests {
     #[test]
     fn a_signal_nested_in_a_gradient_is_refused_by_its_path() {
         let lua = crate::layout::node::signal_lua();
-        let src = r##"return { kind = "rect", background = { gradient = "Linear",
+        let src = r##"return { kind = "rect", background = { gradient = "linear",
             stops = { { 0, state("#ffffff") }, { 1, "#000000" } } } }"##;
         let err = fields::paint::background.read(&eval_props(&lua, src)).unwrap_err();
         assert!(
@@ -320,7 +320,7 @@ mod tests {
             "mask",
             "one of",
         );
-        let both = r##"return { kind = "rect", mask = { source = "/a.png", gradient = "Radial",
+        let both = r##"return { kind = "rect", mask = { source = "/a.png", gradient = "radial",
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
         rejects(fields::paint::mask.read(&eval_props(&lua, both)), "mask", "one of");
         let stray = r##"return { kind = "rect", mask = { source = "/a.png", stops = { { 0, "#ffffff" } } } }"##;
@@ -338,7 +338,7 @@ mod tests {
         }
         let src = r#"return { kind = "rect", mask = { source = "/a.png", invert = 1 } }"#;
         rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "invert");
-        let src = r#"return { kind = "rect", mask = { source = false, gradient = "Radial" } }"#;
+        let src = r#"return { kind = "rect", mask = { source = false, gradient = "radial" } }"#;
         rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "`source` must be string");
     }
 }

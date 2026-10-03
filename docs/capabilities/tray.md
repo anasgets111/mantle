@@ -6,7 +6,7 @@ StatusNotifierItem: registered tray items with artwork, status and menus.
 
 ```lua
 list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 4,
     source = mantle.tray:map(function(tray)
         return tray and tray.items or {}
@@ -52,7 +52,7 @@ One `tray.items[].menu` entry.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `attention_icon_name?` | `string` | Artwork to draw while `status == "NeedsAttention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset. |
+| `attention_icon_name?` | `string` | Artwork to draw while `status == "needs_attention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset. |
 | `attention_icon_path?` | `string` | File half of the attention artwork. |
 | `icon_name?` | `string` | Theme icon name for `icon { name = ... }`. At most one of it and `icon_path` is set. |
 | `icon_path?` | `string` | Icon file for `image { source = ... }`: one from the item's `IconThemePath`, or its pixmap spooled to a PNG. |
@@ -62,8 +62,18 @@ One `tray.items[].menu` entry.
 | `name` | `string` | SNI `Title`, or its `Id` when the title is empty. |
 | `overlay_icon_name?` | `string` | Badge to draw over the icon's corner, paired with `overlay_icon_path`; both `nil` when unset. |
 | `overlay_icon_path?` | `string` | File half of the badge. |
-| `status` | `string` | `"Active"`, `"Passive"` (the item asks to be hidden) or `"NeedsAttention"`, as the item sent it. |
+| `status` | `TrayStatus` | SNI `Status`. |
 | `tooltip?` | `string` | Tooltip title and text joined by a newline, or `nil` when both are empty. |
+
+### `TrayStatus`
+
+SNI `Status`.
+
+| Value | Description |
+| --- | --- |
+| `"active"` | Normal; also any value outside the spec, or none. |
+| `"passive"` | The item asks to be hidden. |
+| `"needs_attention"` | The item wants attention; draw its attention artwork if set. |
 
 ## Actions
 

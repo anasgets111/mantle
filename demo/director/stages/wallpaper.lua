@@ -21,11 +21,11 @@ action("wallpaper", choose)
 
 local image_node = image {
     id = "wallpaper",
-    width = "Fill",
-    height = "Fill",
+    width = "fill",
+    height = "fill",
     async = true,
     source = current:map(function(name) return name ~= "" and DIR .. "/" .. name or "" end),
-    transition = { duration = 1400, easing = "InOutSine", shader = mantle.config_dir .. "/chevron.frag" },
+    transition = { duration = 1400, easing = "in_out_sine", shader = mantle.config_dir .. "/chevron.frag" },
     opacity = current:map(function(name) return name ~= "" and 1 or 0 end),
     animate = { opacity = 600 },
 }
@@ -50,9 +50,9 @@ local function thumbnail(entry)
                 width = picker_box:map(function(p) return p.tile end),
                 height = picker_box:map(function(p) return p.tile_h end),
                 radius = 14,
-                clip = "Rounded",
+                clip = "rounded",
                 children = {
-                    image { source = THUMBS .. entry.name, async = true, width = "Fill", height = "Fill" },
+                    image { source = THUMBS .. entry.name, async = true, width = "fill", height = "fill" },
                 },
             },
         },
@@ -61,7 +61,7 @@ end
 
 local picker = panel {
     id = "picker",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = picker_box:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
@@ -75,11 +75,11 @@ local picker = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 320, easing = "OutBack", from = { y = -20 } },
+            translate = { duration = 320, easing = "out_back", from = { y = -20 } },
         },
         children = {
             list {
-                direction = "Horizontal",
+                direction = "horizontal",
                 spacing = 16,
                 source = mantle.files:map(function(files)
                     local folder = files and files.folders[DIR]

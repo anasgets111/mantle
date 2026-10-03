@@ -12,26 +12,26 @@ local menu_anchor = state("menu_anchor", { x = 0, y = 0, width = 1, height = 1 }
 
 local function item(icon_name, label, color)
     return row {
-        width = "Fill",
+        width = "fill",
         padding = 8,
         spacing = 10,
         radius = 6,
         children = {
-            icon { name = icon_name, size = 16, foreground = color, align_v = "Center" },
-            text { content = label, foreground = color, align_v = "Center" },
+            icon { name = icon_name, size = 16, foreground = color, align_v = "center" },
+            text { content = label, foreground = color, align_v = "center" },
         },
     }
 end
 
 local bar = panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
-    width = "Fill",
+    width = "fill",
     height = 32,
     exclusive_zone = true,
     child = row {
-        width = "Fill", height = "Fill", background = "#1e1e2e",
+        width = "fill", height = "fill", background = "#1e1e2e",
         children = {
             rect {
                 padding = 8,
@@ -49,8 +49,8 @@ local menu = popup {
     id = "menu",
     parent = "bar",
     anchor_rect = menu_anchor,
-    anchor = "Bottom",
-    gravity = "BottomRight",
+    anchor = "bottom",
+    gravity = "bottom_right",
     offset = { x = 4, y = 4 },
     visible = menu_open,
     on_dismiss = function() menu_open:set(false) end,
@@ -81,14 +81,14 @@ and `on_dismiss` takes a signal.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id` |
 | `parent` | `string` | Required | The `id` of a shown `panel`, `window` or `popup`; hiding the parent closes this popup. On a per-output panel it opens on the clicked instance, else the first. A change applies at the next open; a `lock` cannot be a parent |
 | `anchor_rect` | `Rect\|Bound` | Required | In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes |
-| `anchor` | `"Top"\|"Bottom"\|"Left"\|"Right"\|"TopLeft"\|"TopRight"\|"BottomLeft"\|"BottomRight"\|"Center"\|Bound` | `"Center"` | The point on `anchor_rect` the popup hangs from |
-| `gravity` | `"Top"\|"Bottom"\|"Left"\|"Right"\|"TopLeft"\|"TopRight"\|"BottomLeft"\|"BottomRight"\|"Center"\|Bound` | `"Center"` | The direction it extends from that point: `"Bottom"` hangs it below, `"BottomRight"` below and to the right |
-| `constraint_adjustment` | `("SlideX"\|"SlideY"\|"FlipX"\|"FlipY"\|"ResizeX"\|"ResizeY")[]\|Bound` | `{ "FlipY", "SlideX" }` | How the compositor may keep it on screen; `{}` for none, order is ignored |
+| `anchor` | `"top"\|"bottom"\|"left"\|"right"\|"top_left"\|"top_right"\|"bottom_left"\|"bottom_right"\|"center"\|Bound` | `"center"` | The point on `anchor_rect` the popup hangs from |
+| `gravity` | `"top"\|"bottom"\|"left"\|"right"\|"top_left"\|"top_right"\|"bottom_left"\|"bottom_right"\|"center"\|Bound` | `"center"` | The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right |
+| `constraint_adjustment` | `("slide_x"\|"slide_y"\|"flip_x"\|"flip_y"\|"resize_x"\|"resize_y")[]\|Bound` | `{ "flip_y", "slide_x" }` | How the compositor may keep it on screen; `{}` for none, order is ignored |
 | `offset` | `{ x?: number, y?: number }\|Bound` | `{ x = 0, y = 0 }` | Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left |
-| `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"Fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
+| `width` | `number\|Bound` | Content | Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+) |
 | `height` | `number\|Bound` | Content | As `width`; each axis is independent |
 | `grab` | `boolean\|Bound` | `true` | Takes an input grab so an outside click dismisses it ([grab](#grab)). `false` for a tooltip |
 | `on_dismiss` | `fun()` | None | The compositor closed it (click outside, denied grab, parent gone); not called when the config hides it. Set `visible = false` here, or it reopens on the next click |
@@ -129,7 +129,7 @@ so each one whose `visible` stays true reopens on the next press.
 | Open a context menu on right click | `on_click = function(rect, which) if which == "right" then ... end end` ([pointer](../guide/input.md#pointer)) |
 | Fade it out before it closes | Keep `visible` true with `delay` while the child's `opacity` animates ([delay](../guide/signals.md#delay-hold-a-value)) |
 | Open it from a keybind | `grab = false`, since a keybind is no pointer press; it then stays until the config hides it |
-| Keep it on screen near an edge | `constraint_adjustment = { "FlipX", "FlipY", "SlideX", "SlideY" }` |
+| Keep it on screen near an edge | `constraint_adjustment = { "flip_x", "flip_y", "slide_x", "slide_y" }` |
 | Give it a fixed size | `width` and `height` in px |
 | Open it from a window | `parent = "<window id>"` |
 
@@ -155,9 +155,9 @@ local submenu = popup {
     id = "power_menu",
     parent = "menu",
     anchor_rect = sub_anchor,
-    anchor = "TopRight",
-    gravity = "BottomRight",
-    constraint_adjustment = { "FlipX", "SlideY" },
+    anchor = "top_right",
+    gravity = "bottom_right",
+    constraint_adjustment = { "flip_x", "slide_y" },
     visible = sub_open,
     on_dismiss = function() sub_open:set(false) end,
     background = "#1e1e2e", padding = 8,
@@ -181,8 +181,8 @@ local tooltip = popup {
     id = "clock_tooltip",
     parent = "bar",
     anchor_rect = hover_rect("clock"),
-    anchor = "Bottom",
-    gravity = "Bottom",
+    anchor = "bottom",
+    gravity = "bottom",
     offset = { y = 4 },
     grab = false,
     visible = hover("clock"),
@@ -207,8 +207,8 @@ local details = popup {
     anchor_rect = geometry("battery"):map(function(rect)
         return rect.width > 0 and rect or { x = 0, y = 0, width = 1, height = 1 }
     end),
-    anchor = "Bottom",
-    gravity = "Bottom",
+    anchor = "bottom",
+    gravity = "bottom",
     grab = false,
     visible = state("battery_open", false),
     child = text { content = "2 h 10 min left" },
@@ -224,7 +224,7 @@ local details = popup {
 | A popup that is `visible` at startup, or opened from a keybind, never opens | `grab = true` needs a click; open it from `on_click`, or set `grab = false` |
 | A popup whose parent is hidden does not open | Show the parent first; the popup opens on the next pass |
 | A submenu reopens after its menu closed | Clear the submenu's state wherever the menu closes, `on_dismiss` included |
-| `width = "Fill"` or `"50%"` is refused | px, or omit it to size to the content |
+| `width = "fill"` or `"50%"` is refused | px, or omit it to size to the content |
 | `anchor_rect` from a click in a popup is placed wrong on the bar | A rect is in its own surface's coordinates; anchor a popup only to rects from its `parent` |
 | An open tooltip does not grow with its text on an old compositor | `xdg_popup` below version 3 cannot reposition; it keeps its opening size until it closes |
 

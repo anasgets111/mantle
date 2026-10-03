@@ -557,13 +557,13 @@ pub(super) mod tests {
         // The default is what every config written before `direction` existed relies on.
         let lua = mlua::Lua::new();
         assert_eq!(flow_kind("list", &direction_props(&lua, None)).unwrap(), "column");
-        assert_eq!(flow_kind("list", &direction_props(&lua, Some("Vertical"))).unwrap(), "column");
+        assert_eq!(flow_kind("list", &direction_props(&lua, Some("vertical"))).unwrap(), "column");
     }
 
     #[test]
     fn a_horizontal_list_lays_out_as_a_row() {
         let lua = mlua::Lua::new();
-        assert_eq!(flow_kind("list", &direction_props(&lua, Some("Horizontal"))).unwrap(), "row");
+        assert_eq!(flow_kind("list", &direction_props(&lua, Some("horizontal"))).unwrap(), "row");
     }
 
     #[test]
@@ -571,8 +571,8 @@ pub(super) mod tests {
         // `row` and `column` already say which way they go in their own name, so a `direction` on
         // one is a config confusing itself, not a second way to spell the kind.
         let lua = mlua::Lua::new();
-        assert_eq!(flow_kind("column", &direction_props(&lua, Some("Horizontal"))).unwrap(), "column");
-        assert_eq!(flow_kind("row", &direction_props(&lua, Some("Vertical"))).unwrap(), "row");
+        assert_eq!(flow_kind("column", &direction_props(&lua, Some("horizontal"))).unwrap(), "column");
+        assert_eq!(flow_kind("row", &direction_props(&lua, Some("vertical"))).unwrap(), "row");
     }
 
     #[test]
@@ -580,7 +580,7 @@ pub(super) mod tests {
         let lua = mlua::Lua::new();
         let err = flow_kind("list", &direction_props(&lua, Some("sideways"))).unwrap_err().to_string();
         assert!(err.contains("sideways"), "the message has to name what was written: {err}");
-        assert!(err.contains("Horizontal"), "and what was expected: {err}");
+        assert!(err.contains("horizontal"), "and what was expected: {err}");
     }
 
     #[test]
@@ -611,7 +611,7 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = 1000, height = 500, child = rect { width = "Fill", height = "Fill" } }"#,
+            r#"panel { id = "bar", width = 1000, height = 500, child = rect { width = "fill", height = "fill" } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let child = &scene.surface("bar@TEST").unwrap().children[0];
@@ -689,9 +689,9 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = 100, height = 50, child = row { height = "Fill", children = {
-                rect { width = 20, align_v = "Stretch", children = {
-                    rect { width = 6, height = 6, align_h = "Center", align_v = "Center" },
+            r#"panel { id = "bar", width = 100, height = 50, child = row { height = "fill", children = {
+                rect { width = 20, align_v = "stretch", children = {
+                    rect { width = 6, height = 6, align_h = "center", align_v = "center" },
                 } },
             } } }"#,
         );
@@ -710,7 +710,7 @@ pub(super) mod tests {
     /// A `Stretch` child of a `Content`-sized row: the solver closes this, not anything written
     /// here (ADR-0023).
     ///
-    /// Same shape as the test above, minus the row's `height = "Fill"`, which is the whole
+    /// Same shape as the test above, minus the row's `height = "fill"`, which is the whole
     /// difference: the row is now `Content`-sized, so its own height is not known until after its
     /// children resolve. The hand-written pass could not pre-force a `Stretch` child's size in that
     /// case, so it patched the child's own `rect` afterwards and left the child's descendants
@@ -724,8 +724,8 @@ pub(super) mod tests {
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", width = 100, height = 50, child = row { children = {
                 rect { width = 20, height = 50 },
-                rect { width = 20, align_v = "Stretch", children = {
-                    rect { width = 6, height = 6, align_h = "Center", align_v = "Center" },
+                rect { width = 20, align_v = "stretch", children = {
+                    rect { width = 6, height = 6, align_h = "center", align_v = "center" },
                 } },
             } } }"#,
         );
@@ -789,7 +789,7 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = 100, height = 20, child = row { width = "Fill", align_h = "End", children = { rect { width = 10, height = 10 } } } }"#,
+            r#"panel { id = "bar", width = 100, height = 20, child = row { width = "fill", align_h = "end", children = { rect { width = 10, height = 10 } } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
@@ -801,7 +801,7 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = 100, height = 50, child = row { height = "Fill", children = { rect { width = 10, height = 5, align_v = "Stretch" } } } }"#,
+            r#"panel { id = "bar", width = 100, height = 50, child = row { height = "fill", children = { rect { width = 10, height = 5, align_v = "stretch" } } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
@@ -813,9 +813,9 @@ pub(super) mod tests {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", width = 100, height = 100, child = rect { width = "Fill", height = "Fill", children = {
-                rect { width = 20, height = 20, align_h = "Start", align_v = "Start" },
-                rect { width = 20, height = 20, align_h = "End", align_v = "End" },
+            r#"panel { id = "bar", width = 100, height = 100, child = rect { width = "fill", height = "fill", children = {
+                rect { width = 20, height = 20, align_h = "start", align_v = "start" },
+                rect { width = 20, height = 20, align_h = "end", align_v = "end" },
             } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
@@ -844,7 +844,7 @@ pub(super) mod tests {
         );
     }
 
-    /// `width = "Fill"` shares the main axis with its siblings: in a 600px row a `Fill` child
+    /// `width = "fill"` shares the main axis with its siblings: in a 600px row a `Fill` child
     /// resolved against the whole content width would push its fixed sibling to x=600, outside
     /// the row.
     #[test]
@@ -853,7 +853,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
                 rect { width = 100, height = 10 },
             } } }"#,
         );
@@ -869,8 +869,8 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = "Fill", height = 10 },
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
+                rect { width = "fill", height = 10 },
             } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
@@ -888,7 +888,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = "Fill", height = 10, margin = 25 },
+                rect { width = "fill", height = 10, margin = 25 },
                 rect { width = 100, height = 10 },
             } } }"#,
         );
@@ -909,7 +909,7 @@ pub(super) mod tests {
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
                 rect { width = 100, height = 10, margin = 20 },
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
             } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
@@ -929,7 +929,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, spacing = 20, children = {
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
                 rect { width = 100, height = 10 },
             } } }"#,
         );
@@ -945,7 +945,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = column { width = 200, height = 600, children = {
-                rect { height = "Fill", width = 10 },
+                rect { height = "fill", width = 10 },
                 rect { height = 100, width = 10 },
             } } }"#,
         );
@@ -964,7 +964,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 100, height = 40, children = {
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
                 rect { width = 300, height = 10 },
             } } }"#,
         );
@@ -982,12 +982,12 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         for hidden in [
             r#"rect { width = 100, height = 10, visible = false }"#,
-            r#"rect { width = "Fill", height = 10, visible = false }"#,
+            r#"rect { width = "fill", height = 10, visible = false }"#,
         ] {
             let mut scene_for_case = std::mem::replace(&mut scene, Scene::new());
             let (lua, surface) = surface_from(&format!(
                 r#"panel {{ id = "bar", child = row {{ width = 600, height = 40, children = {{
-                    rect {{ width = "Fill", height = 10 }}, {hidden},
+                    rect {{ width = "fill", height = 10 }}, {hidden},
                 }} }} }}"#
             ));
             apply_at(&mut scene_for_case, &[surface], full(), &shaping, &lua).unwrap();
@@ -1003,7 +1003,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 200, children = {
-                rect { width = 100, height = "Fill" },
+                rect { width = 100, height = "fill" },
                 rect { width = 100, height = 50 },
             } } }"#,
         );
@@ -1020,8 +1020,8 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = rect { width = 600, height = 200, children = {
-                rect { width = "Fill", height = 10 },
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
+                rect { width = "fill", height = 10 },
             } } }"#,
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
@@ -1039,7 +1039,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
                 rect { width = "50%", height = 10 },
             } } }"#,
         );
@@ -1058,7 +1058,7 @@ pub(super) mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = row { height = 40, children = {
-                rect { width = "Fill", height = 10 },
+                rect { width = "fill", height = 10 },
                 rect { width = 100, height = 10 },
             } } }"#,
         );
@@ -1238,11 +1238,11 @@ pub(super) mod tests {
         let long = "have a look at this: https://example.com/project/mantle/pull/12345 and tell me what you think about it all";
         let heights = |margin: u32| {
             let src = format!(
-                r#"panel {{ id = "bar", child = column {{ width = "Fill", height = "Fill", children = {{
+                r#"panel {{ id = "bar", child = column {{ width = "fill", height = "fill", children = {{
                 column {{ width = 392, margin = {{ left = {margin}, top = 4 }}, padding = {{ top = 7, right = 7, bottom = 7, left = 7 }}, children = {{
-                    column {{ width = "Fill", children = {{
+                    column {{ width = "fill", children = {{
                         text {{ content = "Sender", font_size = 14 }},
-                        text {{ content = "{long}", font_size = 12, wrap = "Word", width = "Fill" }},
+                        text {{ content = "{long}", font_size = 12, wrap = "word", width = "fill" }},
                     }} }},
                 }} }},
             }} }} }}"#

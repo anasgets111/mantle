@@ -18,7 +18,7 @@ text {
 | :--- | :--- |
 | Source | UPower's `DisplayDevice`, the composite of every battery |
 | Updates | Re-reads every field on each `PropertiesChanged`; no timer, since UPower already polls the hardware |
-| No battery or no UPower | `present = false`, `percent = 0`, `state = "Unknown"`, no time estimates |
+| No battery or no UPower | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates |
 
 ## How do I…
 
@@ -35,7 +35,7 @@ text {
         elseif not battery.present then
             return ""
         end
-        return string.format("%d%%%s", battery.percent, battery.state == "Charging" and " +" or "")
+        return string.format("%d%%%s", battery.percent, battery.state == "charging" and " +" or "")
     end),
 }
 ```

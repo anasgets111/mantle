@@ -38,8 +38,8 @@ end)
 return {
     panel {
         id = "volume_osd",
-        layer = "Overlay",
-        output = "Active",
+        layer = "overlay",
+        output = "active",
         anchor = { bottom = true }, -- no left/right: centred, width measured
         margin = { bottom = 80 },
         visible = mapped,
@@ -48,7 +48,7 @@ return {
             height = 48,
             spacing = 12,
             padding = { left = 16, right = 16 },
-            align_v = "Center",
+            align_v = "center",
             radius = 24,
             background = "#1e1e2ee6",
             border_width = 1,
@@ -57,19 +57,19 @@ return {
             translate = shown:map(function(on) return { y = on and 0 or 12 } end),
             animate = {
                 opacity = { duration = 150, from = 0 },
-                translate = { duration = 200, easing = "OutCubic", from = { y = 12 } },
+                translate = { duration = 200, easing = "out_cubic", from = { y = 12 } },
             },
             children = {
-                icon { name = glyph, size = 20, foreground = "#cdd6f4", align_v = "Center" },
+                icon { name = glyph, size = 20, foreground = "#cdd6f4", align_v = "center" },
                 rect {
-                    width = "Fill",
+                    width = "fill",
                     height = 6,
                     radius = 3,
-                    align_v = "Center",
+                    align_v = "center",
                     background = "#45475a",
                     children = {
                         rect {
-                            height = "Fill",
+                            height = "fill",
                             radius = 3,
                             background = osd:map(function(entry) return entry.muted and "#6c7086" or "#89b4fa" end),
                             width = osd:map(function(entry) return percent(entry) .. "%" end),
@@ -80,8 +80,8 @@ return {
                 text {
                     content = osd:map(function(entry) return entry.muted and "Muted" or percent(entry) .. "%" end),
                     width = 44,
-                    text_align = "End",
-                    align_v = "Center",
+                    text_align = "end",
+                    align_v = "center",
                     font_size = 13,
                     foreground = "#cdd6f4",
                 },
@@ -99,7 +99,7 @@ Bind the volume keys to anything that changes the default sink, for example
 - `on_change` reacts to each audio push and skips the first one, and a sink appearing (`previous.volume` is `nil`), which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
 - It writes a fresh table, counted by `n`, into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
-- `output = "Active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel output](../surfaces/panel.md#output), [OSD](../surfaces/panel.md#osd)).
+- `output = "active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel output](../surfaces/panel.md#output), [OSD](../surfaces/panel.md#osd)).
 - The fill is a `"NN%"` width inside a fixed track ([sizes](../nodes/index.md#sizes)); `translate` and `opacity` animate without re-laying out ([animation](../guide/animation.md)).
 - The glyph comes from the icon theme by name ([icon](../nodes/icon.md)).
 
@@ -110,5 +110,5 @@ Bind the volume keys to anything that changes the default sink, for example
 | Brightness too | A second `on_change` on `mantle.brightness` writing `{ volume = brightness.percent, muted = false }` into the same state |
 | Show above 100% | Drop `math.min` from `percent`, and size the fill `math.floor(entry.volume / 1.5) .. "%"`: the track is then 150% |
 | Top of the screen | `anchor = { top = true }`, `margin = { top = 80 }` and `from = { y = -12 }` |
-| Every monitor | Remove `output = "Active"` |
+| Every monitor | Remove `output = "active"` |
 | Longer on screen | `pulse(osd, 3000)` and `pulse(osd, 3200)` |

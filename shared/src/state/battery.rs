@@ -2,9 +2,10 @@
 
 use serde::Serialize;
 
-/// `battery.state`: UPower's `Device.State` by name, e.g. `b.state == "PendingCharge"`.
+/// `battery.state`: UPower's `Device.State` by name, e.g. `b.state == "pending_charge"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum BatteryStatus {
     /// No answer: UPower unreachable, an unknown state number, or a display device that is not a battery.
     #[default]

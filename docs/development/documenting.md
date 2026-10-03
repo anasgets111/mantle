@@ -57,7 +57,7 @@ A module file that only makes sense beside another one:
 
 ```lua,fragment
 local clock = require("widgets.clock")
-return panel { id = "bar", layer = "Top", child = clock }
+return panel { id = "bar", layer = "top", child = clock }
 ```
 
 <!-- no-check: two alternative returns in one block do not parse -->
@@ -76,7 +76,7 @@ block has to return a node or surfaces.
 
 | Part | Rule |
 |---|---|
-| Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `SlideX` put it on its parent, at scale 1 over Catppuccin Mocha crust `#11111b`. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
+| Image | Every visible surface stacked top to bottom 8 px apart, each popup where its `anchor_rect`, `anchor`, `gravity`, `offset` and `"slide_x"` put it on its parent, at scale 1 over Catppuccin Mocha crust `#11111b`. Cropped to the painted pixels plus 16 px; a shot that paints nothing fails |
 | Still | Drawn with every tween finished |
 | `<!-- shot: frames=0..400/20 -->` on the line above | An animated PNG: one frame per time, in ms after the last tween started. `frames=0,50,120` lists them. Each frame shows until the next time and the last for a second; `0@900` holds one for 900 ms, so a loop can rest on the state worth seeing. Viewers without APNG show the frame held longest |
 | `<!-- shot-alt: ... -->` immediately above a shot or its frame directive | Describes the visible result for readers who cannot see the image. Name the state or motion the example demonstrates, not the code syntax |

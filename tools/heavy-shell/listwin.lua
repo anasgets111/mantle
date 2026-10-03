@@ -39,7 +39,7 @@ local function row_key(item) return tostring(item.id) end
 local function row_of(item)
     theme.counters.list_item = theme.counters.list_item + 1
     return row {
-        width = "Fill",
+        width = "fill",
         height = 22,
         padding = { left = 8, right = 8 },
         spacing = 8,
@@ -49,10 +49,10 @@ local function row_of(item)
             return nil
         end),
         children = {
-            text { content = item.name, width = "Fill", align_v = "Center", font_size = 12, foreground = theme.color("fg") },
+            text { content = item.name, width = "fill", align_v = "center", font_size = 12, foreground = theme.color("fg") },
             text {
                 content = item.score and tostring(item.score) or "",
-                align_v = "Center",
+                align_v = "center",
                 font_size = 11,
                 foreground = theme.color("muted"),
             },
@@ -78,20 +78,20 @@ return {
             visible = visible,
             on_close = close,
             child = column {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 padding = 8,
                 spacing = 6,
                 background = theme.color("bg"),
                 children = {
                     rect {
-                        width = "Fill",
+                        width = "fill",
                         padding = { left = 8, right = 8 },
                         radius = 6,
                         background = theme.color("surface"),
                         children = {
                             textfield {
-                                width = "Fill",
+                                width = "fill",
                                 height = 28,
                                 font_size = 13,
                                 foreground = theme.color("fg"),
@@ -113,8 +113,8 @@ return {
                         foreground = theme.color("muted"),
                     },
                     list {
-                        width = "Fill",
-                        height = "Fill",
+                        width = "fill",
+                        height = "fill",
                         spacing = 1,
                         scroll = LIST,
                         source = results,

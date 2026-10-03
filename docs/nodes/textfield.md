@@ -22,9 +22,9 @@ local matches = query:map(function(q)
 end)
 
 local launcher = column { width = 320, padding = 12, spacing = 8, background = "#1E1E2E", radius = 12, children = {
-    rect { width = "Fill", padding = { left = 10, right = 10 }, radius = 8, background = "#313244", children = {
+    rect { width = "fill", padding = { left = 10, right = 10 }, radius = 8, background = "#313244", children = {
         textfield {
-            width = "Fill",
+            width = "fill",
             height = 36,
             font_size = 14,
             foreground = "#CDD6F4",
@@ -39,12 +39,12 @@ local launcher = column { width = 320, padding = 12, spacing = 8, background = "
         },
     } },
     list {
-        width = "Fill",
+        width = "fill",
         source = matches,
         key = function(name) return name end,
         itemfn = function(name)
             return rect {
-                width = "Fill", padding = { left = 10, right = 10, top = 6, bottom = 6 }, radius = 8,
+                width = "fill", padding = { left = 10, right = 10, top = 6, bottom = 6 }, radius = 8,
                 background = computed({ matches, selected }, function(found, index)
                     return found[index] == name and "#45475A" or "#00000000"
                 end),
@@ -54,8 +54,8 @@ local launcher = column { width = 320, padding = 12, spacing = 8, background = "
     },
 } }
 
-return { panel { id = "launcher", layer = "Top", anchor = { top = true },
-    keyboard_interactivity = "OnDemand", child = launcher } }
+return { panel { id = "launcher", layer = "top", anchor = { top = true },
+    keyboard_interactivity = "on_demand", child = launcher } }
 ```
 
 The image shows the empty search field and unfiltered list. Typing updates the list through
@@ -73,7 +73,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
 | `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
 | `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text and placeholder |
-| `text_align` | `"Start"\|"Center"\|"End"\|Bound` | `"Start"` | Aligns the text inside the field's box |
+| `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns the text inside the field's box |
 | `autofocus` | `boolean\|Bound` | `false` | Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left |
 | `on_change` | `fun(text: string)` | None | Full text after every edit |
 | `on_submit` | `fun(text: string)` | None | Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |

@@ -23,7 +23,7 @@ local function spark(samples)
             width = 4,
             height = math.max(2, math.floor(value * 26 / 100)),
             radius = 2,
-            align_v = "End",
+            align_v = "end",
             background = theme.accent,
         }
     end
@@ -33,10 +33,10 @@ end
 local function chip(label, value)
     return row {
         spacing = 8,
-        align_v = "Center",
+        align_v = "center",
         children = {
-            text { content = label, align_v = "Center", font_size = 16, font_weight = 700, foreground = theme.muted },
-            text { content = value, align_v = "Center", font_size = 18, foreground = theme.text },
+            text { content = label, align_v = "center", font_size = 16, font_weight = 700, foreground = theme.muted },
+            text { content = value, align_v = "center", font_size = 18, foreground = theme.text },
         },
     }
 end
@@ -44,17 +44,17 @@ end
 return rect {
     margin = { right = 18 },
     height = 40,
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 14, right = 16 },
     radius = 20,
     background = theme.surface,
     visible = mantle.sysinfo:map(function(s) return s ~= nil end),
     children = {
         row {
-            height = "Fill",
+            height = "fill",
             spacing = 14,
             children = {
-                row { height = 28, align_v = "Center", spacing = 2, children = history:map(spark) },
+                row { height = 28, align_v = "center", spacing = 2, children = history:map(spark) },
                 chip("CPU", mantle.sysinfo:map(function(s) return s and (s.cpu_percent .. "%") or "" end)),
                 chip("RAM", mantle.sysinfo:map(function(s) return s and (s.ram_percent .. "%") or "" end)),
             },

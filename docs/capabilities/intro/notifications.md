@@ -51,7 +51,7 @@ list {
             background = "#1E1E2E",
             on_click = function() mantle.notifications:dismiss(item.id) end,
             children = {
-                text { content = item.summary, font_size = 13, elide = "End", width = "Fill" },
+                text { content = item.summary, font_size = 13, elide = "end", width = "fill" },
                 text { content = item.app_name, font_size = 11, foreground = "#A6ADC8" },
             },
         }

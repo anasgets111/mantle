@@ -19,7 +19,7 @@ local clock = require("widgets.clock") -- widgets/clock.lua
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 32,
     background = "#1e1e2eff",
@@ -163,7 +163,7 @@ local rescue = mantle.rescue
 
 return panel {
     id = "rescue",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { bottom = true, left = true, right = true },
     visible = rescue:map(function(state) return state ~= nil and state.is_rescue end),
     background = "#f38ba8ff",
@@ -299,7 +299,7 @@ local palette = require("lib.palette")
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 32,
     background = palette.surface,
@@ -324,7 +324,7 @@ end
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 32,
     child = text { content = "up since " .. os.date("%H:%M", started_at) },

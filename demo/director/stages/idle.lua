@@ -7,25 +7,25 @@ local indicator = rect {
     visible = idle:map(function(i) return i.inhibited end),
     margin = { right = 14 },
     height = 40,
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 16, right = 18 },
     radius = 20,
     background = theme.caution,
     scale = 1,
-    animate = { scale = { duration = 320, easing = "OutBack", from = 0.5 } },
+    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
     children = {
         row {
-            height = "Fill",
+            height = "fill",
             spacing = 10,
             children = {
-                icon { name = "view-reveal-symbolic", size = 24, align_v = "Center", foreground = theme.crust },
+                icon { name = "view-reveal-symbolic", size = 24, align_v = "center", foreground = theme.crust },
                 text {
                     content = idle:map(function(i)
                         local holder = i.inhibitors[1]
                         if not holder then return "Kept awake" end
                         return holder.why ~= "" and (holder.who .. " · " .. holder.why) or holder.who
                     end),
-                    align_v = "Center",
+                    align_v = "center",
                     font_size = 20,
                     font_weight = 700,
                     foreground = theme.crust,

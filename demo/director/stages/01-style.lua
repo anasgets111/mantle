@@ -7,23 +7,23 @@ fonts {
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
         exclusive_zone = true,
-        width = "Fill",
+        width = "fill",
         height = 56,
         background = "#11111be6",
         child = row {
-            width = "Fill",
-            height = "Fill",
-            align_h = "End",
+            width = "fill",
+            height = "fill",
+            align_h = "end",
             padding = { left = 12, right = 12 },
             children = {
                 text {
                     content = mantle.system:map(function(s)
                         return os.date("%a %d %b   %H:%M", s and s.time)
                     end),
-                    align_v = "Center",
+                    align_v = "center",
                     font_size = 22,
                     foreground = "#cdd6f4ff",
                 },

@@ -10,11 +10,11 @@ local LOW = 15
 local pill_hover = hover("battery")
 
 local STATES = {
-    Charging = "Charging",
-    Discharging = "On battery",
-    FullyCharged = "Fully charged",
-    PendingCharge = "Plugged in, not charging",
-    Empty = "Empty",
+    charging = "Charging",
+    discharging = "On battery",
+    fully_charged = "Fully charged",
+    pending_charge = "Plugged in, not charging",
+    empty = "Empty",
 }
 
 local function duration(seconds)
@@ -28,14 +28,14 @@ local glyph = mantle.battery:map(function(battery)
         return "battery-missing-symbolic"
     end
     local step = math.floor(battery.percent / 10 + 0.5) * 10
-    if battery.state == "FullyCharged" or (step == 100 and battery.state == "Charging") then
+    if battery.state == "fully_charged" or (step == 100 and battery.state == "charging") then
         return "battery-level-100-charged-symbolic"
     end
-    return string.format("battery-level-%d%s-symbolic", step, battery.state == "Charging" and "-charging" or "")
+    return string.format("battery-level-%d%s-symbolic", step, battery.state == "charging" and "-charging" or "")
 end)
 
 local colour = mantle.battery:map(function(battery)
-    local low = battery and battery.present and battery.percent <= LOW and battery.state == "Discharging"
+    local low = battery and battery.present and battery.percent <= LOW and battery.state == "discharging"
     return low and "#f38ba8" or "#cdd6f4"
 end)
 
@@ -44,9 +44,9 @@ local details = mantle.battery:map(function(battery)
         return "No battery"
     end
     local line = string.format("%d%% · %s", battery.percent, STATES[battery.state] or battery.state)
-    if battery.state == "Discharging" and battery.time_to_empty then
+    if battery.state == "discharging" and battery.time_to_empty then
         line = line .. "\n" .. duration(battery.time_to_empty) .. " left"
-    elseif battery.state == "Charging" and battery.time_to_full then
+    elseif battery.state == "charging" and battery.time_to_full then
         line = line .. "\n" .. duration(battery.time_to_full) .. " to full"
     end
     return line
@@ -57,13 +57,13 @@ mantle.battery:on_change(function(battery, previous)
     if previous == nil or not battery.present then
         return
     end
-    if battery.state == "Discharging" and battery.percent <= LOW and previous.percent > LOW then
+    if battery.state == "discharging" and battery.percent <= LOW and previous.percent > LOW then
         process.detach("notify-send", { "-u", "critical", "Battery low", battery.percent .. "% remaining" })
     end
 end)
 
 local pill = row {
-    align_v = "Center",
+    align_v = "center",
     spacing = 4,
     padding = { left = 8, right = 10, top = 3, bottom = 3 },
     radius = 12,
@@ -71,13 +71,13 @@ local pill = row {
     hover = pill_hover,
     visible = mantle.battery:map(function(battery) return battery ~= nil and battery.present end),
     children = {
-        icon { name = glyph, size = 16, foreground = colour, align_v = "Center" },
+        icon { name = glyph, size = 16, foreground = colour, align_v = "center" },
         text {
             content = mantle.battery:map(function(battery)
                 return battery and battery.present and battery.percent .. "%" or ""
             end),
             foreground = colour,
-            align_v = "Center",
+            align_v = "center",
         },
     },
 }
@@ -85,25 +85,25 @@ local pill = row {
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
-        width = "Fill",
+        width = "fill",
         height = 32,
         exclusive_zone = true,
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 8, right = 8 },
             background = "#1e1e2e",
-            children = { rect { width = "Fill" }, pill },
+            children = { rect { width = "fill" }, pill },
         },
     },
     popup {
         id = "battery_tooltip",
         parent = "bar",
         anchor_rect = hover_rect("battery"),
-        anchor = "Bottom",
-        gravity = "Bottom",
+        anchor = "bottom",
+        gravity = "bottom",
         offset = { y = 6 },
         grab = false,
         visible = pill_hover,
@@ -112,7 +112,7 @@ return {
         background = "#1e1e2e",
         border_width = 1,
         border_color = "#45475a",
-        child = text { content = details, foreground = "#cdd6f4", wrap = "Word" },
+        child = text { content = details, foreground = "#cdd6f4", wrap = "word" },
     },
 }
 ```
@@ -129,8 +129,8 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Charge as a bar instead of an icon | A 24 × 10 `rect` track with a child `rect { width = battery.percent .. "%", height = "Fill" }` ([sizes](../nodes/index.md#sizes)) |
+| Charge as a bar instead of an icon | A 24 × 10 `rect` track with a child `rect { width = battery.percent .. "%", height = "fill" }` ([sizes](../nodes/index.md#sizes)) |
 | Cycle the power profile on click | Make the pill a node with an `on_click` that picks the next entry of `mantle.power:get().profiles` and calls `set_profile` ([power](../capabilities/power.md)) |
 | Show the wattage | Add `text { content = mantle.power:map(function(power) return power and power.energy_rate and string.format("%.1f W", power.energy_rate) or "" end) }` |
 | Different threshold | `LOW = 20` |
-| Hide the pill on mains at full charge | `visible` returns `battery ~= nil and battery.present and battery.state ~= "FullyCharged"` |
+| Hide the pill on mains at full charge | `visible` returns `battery ~= nil and battery.present and battery.state ~= "fully_charged"` |

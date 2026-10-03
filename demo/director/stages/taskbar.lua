@@ -15,9 +15,9 @@ local function icon_of(app_id)
 end
 
 local bar = list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 6,
-    align_v = "Center",
+    align_v = "center",
     margin = { left = 18 },
     source = windows:map(function(w) return w.windows end),
     key = function(w) return w.id end,
@@ -29,18 +29,18 @@ local bar = list {
             radius = 22,
             background = w.focused and theme.surface or "#00000000",
             scale = 1,
-            animate = { background = 200, scale = { duration = 360, easing = "OutBack", from = 0.3 } },
+            animate = { background = 200, scale = { duration = 360, easing = "out_back", from = 0.3 } },
             on_click = function() mantle.windows:focus(w.id) end,
             children = {
                 row {
-                    height = "Fill",
+                    height = "fill",
                     spacing = 10,
                     children = {
-                        icon { name = icon_of(w.app_id), size = 28, align_v = "Center" },
+                        icon { name = icon_of(w.app_id), size = 28, align_v = "center" },
                         text {
                             content = w.title,
                             visible = w.focused,
-                            align_v = "Center",
+                            align_v = "center",
                             font_size = 18,
                             foreground = theme.text,
                         },
@@ -50,10 +50,10 @@ local bar = list {
                     width = w.focused and 24 or 6,
                     height = 4,
                     radius = 2,
-                    align_h = "Center",
-                    align_v = "End",
+                    align_h = "center",
+                    align_v = "end",
                     background = w.focused and theme.accent or theme.overlay2,
-                    animate = { width = { duration = 260, easing = "OutCubic" }, background = 200 },
+                    animate = { width = { duration = 260, easing = "out_cubic" }, background = 200 },
                 },
             },
         }

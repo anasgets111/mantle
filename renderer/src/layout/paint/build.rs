@@ -80,7 +80,7 @@ fn build_node(
 
     // Snap this box and intersect it with ancestor clips. Wrapped text is already rewritten by
     // `fit_text_to_box`; this remains a backstop for unwrapped overflow. Clips stay rectangular
-    // here; `clip = "Rounded"` creates a grouped mask below.
+    // here; `clip = "rounded"` creates a grouped mask below.
     //
     // ponytail: `layout::hit` intersects the same rectangles but knows nothing about the arc, so a
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
@@ -624,8 +624,8 @@ mod tests {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true,
-                transition = { duration = 400, easing = "Linear" },
-                width = "Fill", height = "Fill" } }"##;
+                transition = { duration = 400, easing = "linear" },
+                width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let image_draw = |tree: &ResolvedNode| {
             build(tree, 1.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
@@ -646,7 +646,7 @@ mod tests {
         // `retain` with no transition keeps the plain cover: it has no cross to open on.
         let plain = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true, retain = true,
-                width = "Fill", height = "Fill" } }"##;
+                width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, plain, LogicalSize { width: 200.0, height: 40.0 });
         tree.children[0].displayed_source = Some("/tmp/old.png".to_string());
         assert_eq!(image_draw(&tree), Some((Some("/tmp/old.png".to_string()), None)));
@@ -659,8 +659,8 @@ mod tests {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true,
-                transition = { duration = 400, easing = "Linear" },
-                width = "Fill", height = "Fill" } }"##;
+                transition = { duration = 400, easing = "linear" },
+                width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let image_draw = |tree: &ResolvedNode| {
             build(tree, 1.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
@@ -712,7 +712,7 @@ mod tests {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true, retain = true,
-                width = "Fill", height = "Fill" } }"##;
+                width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
 
         // Nothing has landed yet, so there is nothing to cover the gap with.
@@ -745,7 +745,7 @@ mod tests {
         // The same stale state without the property draws nothing while the source decodes.
         let plain = r##"return panel { id = "bar", width = 200, height = 40,
             child = image { id = "wp", source = "/tmp/new.png", async = true,
-                width = "Fill", height = "Fill" } }"##;
+                width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, plain, LogicalSize { width: 200.0, height: 40.0 });
         tree.children[0].displayed_source = Some("/tmp/old.png".to_string());
         assert_eq!(cover_of(&tree), Some(None), "`retain` is what carries the cover, not the state");
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn a_declared_text_align_reaches_the_display_list() {
         for (declared, expected) in
-            [("Center", TextAlign::Center), ("End", TextAlign::End), ("Start", TextAlign::Start)]
+            [("center", TextAlign::Center), ("end", TextAlign::End), ("start", TextAlign::Start)]
         {
             let lua = Lua::new();
             let src = format!(
@@ -781,7 +781,7 @@ mod tests {
     fn a_textfield_carries_its_own_alignment_too() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = 180, height = 24, placeholder = "password", foreground = "#ffffffff", text_align = "Center" } }"##;
+            child = textfield { width = 180, height = 24, placeholder = "password", foreground = "#ffffffff", text_align = "center" } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         assert_eq!(text_align_of(&build(&tree, 1.0, None)), TextAlign::Center);
     }
@@ -797,8 +797,8 @@ mod tests {
                     child = text {{ content = "hi", foreground = "#ffffffff", text_align = "{align}" }} }}"##
             )
         };
-        let a = build(&resolved_surface(&Lua::new(), &src("Start"), size), 1.0, None);
-        let b = build(&resolved_surface(&Lua::new(), &src("Center"), size), 1.0, None);
+        let a = build(&resolved_surface(&Lua::new(), &src("start"), size), 1.0, None);
+        let b = build(&resolved_surface(&Lua::new(), &src("center"), size), 1.0, None);
         assert_ne!(a, b);
     }
 
@@ -1032,7 +1032,7 @@ mod tests {
     /// One surface holding a password field.
     fn password_surface(lua: &Lua) -> ResolvedNode {
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = "Fill", height = 28, placeholder = "password",
+            child = textfield { width = "fill", height = 28, placeholder = "password",
                 mask_character = "*",
                 secure_submit = { capability = "lock", action = "authenticate" } } }"##;
         resolved_surface(lua, src, LogicalSize { width: 200.0, height: 40.0 })
@@ -1050,7 +1050,7 @@ mod tests {
 
     fn reply_surface(lua: &Lua) -> ResolvedNode {
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = "Fill", height = 28, placeholder = "Reply",
+            child = textfield { width = "fill", height = 28, placeholder = "Reply",
                 on_submit = function(text) end } }"##;
         resolved_surface(lua, src, LogicalSize { width: 200.0, height: 40.0 })
     }
@@ -1110,7 +1110,7 @@ mod tests {
     fn a_focused_empty_field_that_declared_no_placeholder_draws_the_caret_alone() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = "Fill", height = 28, on_submit = function(text) end } }"##;
+            child = textfield { width = "fill", height = 28, on_submit = function(text) end } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let id = tree.children[0].id;
 
@@ -1309,7 +1309,7 @@ mod tests {
     fn a_field_without_a_mask_character_falls_back_to_a_bullet() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = "Fill", height = 28,
+            child = textfield { width = "fill", height = 28,
                 secure_submit = { capability = "lock", action = "authenticate" } } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let target = lock_target();
@@ -1337,7 +1337,7 @@ mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, child = rect {
-                width = 80, height = 32, radius = 16, clip = "Rounded", background = "#0000FFFF",
+                width = 80, height = 32, radius = 16, clip = "rounded", background = "#0000FFFF",
             } }"##,
             LogicalSize { width: 96.0, height: 48.0 },
         );
@@ -1355,12 +1355,12 @@ mod tests {
             format!(
                 r##"return panel {{ id = "bar", width = 96, height = 48, child = rect {{
                     width = 80, height = 32, radius = 16, clip = "{clip}",
-                    children = {{ rect {{ width = 30, height = "Fill", background = "#0000FFFF" }} }},
+                    children = {{ rect {{ width = 30, height = "fill", background = "#0000FFFF" }} }},
                 }} }}"##
             )
         };
-        let boxed = build(&resolved_surface(&Lua::new(), &src("Box"), size), 1.0, None);
-        let rounded = build(&resolved_surface(&Lua::new(), &src("Rounded"), size), 1.0, None);
+        let boxed = build(&resolved_surface(&Lua::new(), &src("box"), size), 1.0, None);
+        let rounded = build(&resolved_surface(&Lua::new(), &src("rounded"), size), 1.0, None);
         assert_ne!(boxed, rounded);
     }
 
@@ -1408,7 +1408,7 @@ mod tests {
     #[test]
     fn a_masked_rounded_box_composites_through_its_radius_and_a_leaf_still_groups() {
         let list = masked(
-            r##"rect { width = 80, height = 32, radius = 8, clip = "Rounded", background = "#0000FFFF",
+            r##"rect { width = 80, height = 32, radius = 8, clip = "rounded", background = "#0000FFFF",
                 mask = { source = "/nonexistent/mask.svg" } }"##,
         );
         let Draw::Clipped { radius, mask: Some(_), commands } = &list.commands[1].draw else { panic!("{list:?}") };
@@ -1420,7 +1420,7 @@ mod tests {
     fn opacity_fades_every_gradient_stop() {
         let list = masked(
             r##"rect { width = 80, height = 32, opacity = 0.5,
-                background = { gradient = "Radial", stops = { { 0, "#ffffff" }, { 1, "#ffffff80" } } } }"##,
+                background = { gradient = "radial", stops = { { 0, "#ffffff" }, { 1, "#ffffff80" } } } }"##,
         );
         let Draw::Box { background: Some(Fill::Gradient(gradient)), .. } = &list.commands[1].draw else {
             panic!("{list:?}")
@@ -1441,7 +1441,7 @@ mod tests {
         };
         let src = format!(
             r##"return panel {{ id = "bar", width = 200, height = 40, child = row {{ spacing = -10, radius = {radius},
-                clip = "Rounded", children = {{ {}, {}, {} }} }} }}"##,
+                clip = "rounded", children = {{ {}, {}, {} }} }} }}"##,
             sibling(1),
             sibling(2),
             sibling(3)
@@ -1494,7 +1494,7 @@ mod tests {
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
         let opaque = card("");
         assert!(opaque.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Shadow { knockout: false, .. })));
-        assert_eq!(card(r#"shadow_mode = "Content","#), opaque, "the same in either mode (ADR-0260)");
+        assert_eq!(card(r#"shadow_mode = "content","#), opaque, "the same in either mode (ADR-0260)");
     }
 
     /// ADR-0254. Anything but an opaque box casts the shadow of its pixels, so its subtree goes
@@ -1505,7 +1505,7 @@ mod tests {
         for child in [
             r##"text { content = "hi", opacity = 0.5, shadow_blur = 4, shadow_offset = { x = 3 } }"##,
             r##"rect { width = 40, height = 20, background = "#ffffff80", opacity = 0.5, shadow_blur = 4,
-                shadow_offset = { x = 3 }, shadow_mode = "Content", children = { text { content = "hi" } } }"##,
+                shadow_offset = { x = 3 }, shadow_mode = "content", children = { text { content = "hi" } } }"##,
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
@@ -1553,7 +1553,7 @@ mod tests {
         assert_eq!(list.commands[2].clip, PhysicalRect { x0: 34, y0: 34, x1: 86, y1: 66 }, "the blur's reach alone");
 
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, radius = 6, corner_shape = "Scoop", background = "#ffffff40",
+            r##"rect { width = 40, height = 20, radius = 6, corner_shape = "scoop", background = "#ffffff40",
                 opacity = 0.5, shadow_offset = { y = 4 }, children = { text { content = "hi" } } }"##,
         );
         let Draw::Layer { effect, silhouette: true, commands } = &list.commands[1].draw else {
@@ -1600,7 +1600,7 @@ mod tests {
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. } if cmd.rect.y == 64.0)));
     }
 
-    /// `clip = "None"` hands a node's children its parent's clip: a wrapper exactly its child's size
+    /// `clip = "none"` hands a node's children its parent's clip: a wrapper exactly its child's size
     /// no longer cuts the child's shadow, nor a child laid out past it once the wrapper scrolls away.
     #[test]
     fn an_unclipped_wrapper_leaves_its_childs_shadow_and_overflow_whole() {
@@ -1613,23 +1613,23 @@ mod tests {
         let shadow = |list: &DisplayList| {
             list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow").clip
         };
-        assert_eq!(shadow(&wrapped("Box")), PhysicalRect { x0: 40, y0: 40, x1: 80, y1: 60 }, "cut to the wrapper");
-        assert_eq!(shadow(&wrapped("None")), PhysicalRect { x0: 28, y0: 32, x1: 92, y1: 76 });
+        assert_eq!(shadow(&wrapped("box")), PhysicalRect { x0: 40, y0: 40, x1: 80, y1: 60 }, "cut to the wrapper");
+        assert_eq!(shadow(&wrapped("none")), PhysicalRect { x0: 28, y0: 32, x1: 92, y1: 76 });
 
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, clip = "None", children = { rect { width = 40, height = 20,
+            r##"rect { width = 40, height = 20, clip = "none", children = { rect { width = 40, height = 20,
                 margin = { top = 24 }, background = "#ffffff" } } }"##,
         );
         assert!(list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. }) && cmd.rect.y == 64.0));
     }
 
-    /// Under a chain of `clip = "None"` to the surface, a layer's offscreen stops at the surface
+    /// Under a chain of `clip = "none"` to the surface, a layer's offscreen stops at the surface
     /// grown by what its blur and shadow reach back in from: 3 sigma plus the offset.
     #[test]
     fn a_layer_under_unclipped_ancestors_stops_near_the_surface() {
-        let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "None", child = rect {
-            width = 40, height = 20, clip = "None", content_blur = 1,
-            shadow_blur = 4, shadow_offset = { x = 5 }, shadow_mode = "Content",
+        let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "none", child = rect {
+            width = 40, height = 20, clip = "none", content_blur = 1,
+            shadow_blur = 4, shadow_offset = { x = 5 }, shadow_mode = "content",
             children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
         let layer = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer");
@@ -1691,7 +1691,7 @@ mod tests {
         assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");
         let content = effect_surface(
             r##"rect { width = 40, height = 20, background = "#ffffff40", backdrop_blur = 4, shadow_offset = { y = 4 },
-                shadow_mode = "Content" }"##,
+                shadow_mode = "content" }"##,
         );
         let at = content.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).unwrap();
         assert!(matches!(content.commands[at + 1].draw, Draw::Layer { .. }), "the layer draws over it");

@@ -46,9 +46,9 @@ mod tests {
         seen = ""
         query:on_change(function(now, before) seen = before .. "->" .. now end)
         return {
-            panel { id = "bar", layer = "Top", child = text { content = "bar" } },
+            panel { id = "bar", layer = "top", child = text { content = "bar" } },
             panel {
-                id = "launcher", layer = "Overlay", visible = state("open", true),
+                id = "launcher", layer = "overlay", visible = state("open", true),
                 reset_on_close = { query, results }, child = text { content = query },
             },
             popup {
@@ -139,14 +139,14 @@ mod tests {
         assert_eq!(eval(&client, "query:get()"), "fire", "a failed reload closes nothing");
 
         // A changed `layer` rebuilds the surface under the same id: still shown.
-        assert!(reload(&mut client, &path, &LAUNCHER.replace(r#""Overlay""#, r#""Top""#)));
+        assert!(reload(&mut client, &path, &LAUNCHER.replace(r#""overlay""#, r#""top""#)));
         client.reset_closed_surfaces(&["bar@TEST", "launcher@TEST", "menu"]);
         assert_eq!(eval(&client, "query:get()"), "fire", "a recreated surface never stopped being shown");
 
         let without = r#"
             query = state("query", "none")
             results = scroll("results")
-            return panel { id = "bar", layer = "Top", child = text { content = "bar" } }
+            return panel { id = "bar", layer = "top", child = text { content = "bar" } }
         "#;
         assert!(reload(&mut client, &path, without));
         client.loader.lua().load(r#"query:set("fire")"#).exec().unwrap();
@@ -157,7 +157,7 @@ mod tests {
     #[test]
     fn a_per_output_surface_resets_when_its_last_instance_closes() {
         let (_dir, mut client) =
-            started(&LAUNCHER.replace(r#"layer = "Overlay","#, r#"layer = "Overlay", output = "All","#));
+            started(&LAUNCHER.replace(r#"layer = "overlay","#, r#"layer = "overlay", output = "all","#));
         let outputs = ["A", "B"].map(|name| OutputGeometry {
             name: name.into(),
             size: layout::LogicalSize { width: 1920.0, height: 1080.0 },
@@ -179,7 +179,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             let source = format!(
                 r#"local query = state("query", "")
-                return panel {{ id = "launcher", layer = "Top", reset_on_close = {{ query, {entry} }} }}"#
+                return panel {{ id = "launcher", layer = "top", reset_on_close = {{ query, {entry} }} }}"#
             );
             let path = write_shell_lua(dir.path(), &source);
             let (mut client, _rx) = test_client(&path);

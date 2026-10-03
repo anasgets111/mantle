@@ -82,12 +82,12 @@ other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 | Task | Answer |
 | :--- | :--- |
 | Fade an effect in and out | Bind `progress` to 0 or 1 and tween it with `animate`, as above |
-| Loop an animation | `animate = { progress = { keyframes = { 0, 1 }, duration = 2000, loops = "Infinite" } }` ([keyframes](../guide/animation.md#keyframes)) |
+| Loop an animation | `animate = { progress = { keyframes = { 0, 1 }, duration = 2000, loops = "infinite" } }` ([keyframes](../guide/animation.md#keyframes)) |
 | Pass a colour | A `vec3` or `vec4` uniform, `params = { tint = { r, g, b } }` in `0..1` |
 | Pass many values, like a visualizer's bars | `uniform vec4 bars[64]` takes 256 numbers, `params = { bars = levels }`; read bar `i` as `bars[i / 4][i % 4]`. Drivers may count each `float` array element as a whole `vec4` against the uniform limit, so pack into `vec4`s |
 | Work in pixels | `v_uv * u_size` is the fragment's position in logical px |
 | Click a shader | Give it `on_click`; without a handler it is transparent to the pointer |
-| Round its corners | Wrap it in a `rect` with `radius` and `clip = "Rounded"` ([clip](../guide/paint.md#clip)) |
+| Round its corners | Wrap it in a `rect` with `radius` and `clip = "rounded"` ([clip](../guide/paint.md#clip)) |
 
 ## Gotchas
 

@@ -216,14 +216,14 @@ props! {
         ///
         /// Book: Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin))
         padding: Bound<NumberOrEdges> = range(0.0, 8192.0).absent(Number(0.0));
-        /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
+        /// Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"stretch"` packs as `"start"`). `"stretch"` overrides a pixel size; `"fill"` off the parent's flow axis overrides alignment.
         ///
         /// Book: See [alignment](#alignment)
-        align_h: Bound<OneOf<Align>> = absent(Choice("Start")).only(PLACED);
+        align_h: Bound<OneOf<Align>> = absent(Choice("start")).only(PLACED);
         /// As `align_h` with the axes swapped: packs a `column`'s children.
         ///
         /// Book: See [alignment](#alignment)
-        align_v: Bound<OneOf<Align>> = absent(Choice("Start")).only(PLACED);
+        align_v: Bound<OneOf<Align>> = absent(Choice("start")).only(PLACED);
         /// `false` removes the node from layout, paint and spacing but keeps its subtree frozen in memory (ADR-0124); to switch views, bind the parent's `children`.
         ///
         /// Book: `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching))
@@ -240,7 +240,7 @@ props! {
         translate: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
         /// Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
         origin: Bound<Axes> = range(0.0, 1.0).absent(Lua("{ x = 0.5, y = 0.5 }"));
-        /// Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "None"` (ADR-0254).
+        /// Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "none"` (ADR-0254).
         ///
         /// Book: A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set
         shadow_color: Bound<Color> = absent(Lua(r##""#000000""##));
@@ -305,14 +305,14 @@ props! {
         ///
         /// Book: A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate`
         background: Bound<Fill>;
-        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `behind_blur` ignore it.
+        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "rounded"`. Hit-testing and `behind_blur` ignore it.
         ///
         /// Book: Multiplies the alpha of this node and its subtree; see [Mask](#mask)
         mask: Bound<Mask>;
         /// Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle.
         radius: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
-        /// `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
-        corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("Round"));
+        /// `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
+        corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
@@ -325,14 +325,14 @@ props! {
         ///
         /// Book: Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs)
         backdrop_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
-        /// `"Box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"Content"`: CSS `drop-shadow` of everything painted (ADR-0260).
+        /// `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
         ///
-        /// Book: `"Box"`: CSS `box-shadow` of the box shape. `"Content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)
-        shadow_mode: Bound<OneOf<ShadowMode>> = absent(Choice("Box"));
-        /// `"Box"`: children cut to the rectangle. `"Rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"None"` leaves children on the parent's clip (ADR-0257).
+        /// Book: `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)
+        shadow_mode: Bound<OneOf<ShadowMode>> = absent(Choice("box"));
+        /// `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257).
         ///
-        /// Book: `"Box"` cuts children to the rectangle, `"Rounded"` also to `radius`, `"None"` leaves them on the parent's clip. See [Clip](#clip)
-        clip: Bound<OneOf<ClipShape>> = absent(Choice("Box"));
+        /// Book: `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip. See [Clip](#clip)
+        clip: Bound<OneOf<ClipShape>> = absent(Choice("box"));
     }
     mod stack(RECT) {
         /// Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.
@@ -373,14 +373,14 @@ props! {
         ///
         /// Book: A [colour](../guide/paint.md#colours); a run's `color` overrides it
         foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
-        /// Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
-        text_align: Bound<OneOf<TextAlign>> = absent(Choice("Start"));
-        /// `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis).
-        wrap: Bound<OneOf<Wrap>> = absent(Choice("None"));
-        /// Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
+        /// Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
+        text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
+        /// `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis).
+        wrap: Bound<OneOf<Wrap>> = absent(Choice("none"));
+        /// Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
         max_lines: Bound<MaxLines> = absent(Number(0.0));
-        /// `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
-        elide: Bound<OneOf<Elide>> = absent(Choice("None"));
+        /// `"end"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+        elide: Bound<OneOf<Elide>> = absent(Choice("none"));
         /// An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
         elided: Handle;
         /// Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
@@ -469,7 +469,7 @@ props! {
         /// Build at most this many items; above 10000 acts as 10000, `0` builds none.
         limit: Bound<Limit>;
         /// Lays out as a `column` or a `row`.
-        direction: Bound<OneOf<Direction>> = absent(Choice("Vertical"));
+        direction: Bound<OneOf<Direction>> = absent(Choice("vertical"));
         /// Px between visible items along `direction`; negative values overlap them.
         spacing: Bound<Num> = absent(Number(0.0));
         /// A `scroll(name)` signal; makes this a scrolling viewport along `direction`.
@@ -488,7 +488,7 @@ props! {
         /// Colour of the text and placeholder.
         foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
         /// Aligns the text inside the field's box.
-        text_align: Bound<OneOf<TextAlign>> = absent(Choice("Start"));
+        text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
         /// Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
         autofocus: Bound<Flag> = absent(Bool(false));
         /// Full text after every edit.
@@ -507,37 +507,37 @@ props! {
         mask_character: Bound<Text> = absent(Lua(r#""•""#));
     }
     mod surface(SURFACES) {
-        /// The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id`.
+        /// The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id`.
         id: Structural<Name> = absent(Required);
     }
     /// A layer surface (`zwlr_layer_surface_v1`): bar, dock, wallpaper, OSD, launcher.
     mod panel(PANEL) {
-        /// Stacking level, bottom to top. `"Overlay"` draws over fullscreen windows.
+        /// Stacking level, bottom to top. `"overlay"` draws over fullscreen windows.
         layer: Structural<OneOf<LayerKind>> = absent(Required);
         /// Edges to pin to; an absent edge is `false`. None pinned centres the surface; one edge centres it along that edge.
         anchor: Structural<Anchor> = absent(Prose("all `false`"));
-        /// A connector name, `"All"`, or `"Active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
+        /// A connector name, `"all"`, or `"active"`: one instance on the output the compositor picks at each show, refusing a `"NN%"` size and a function `child` (ADR-0246). An unknown connector warns and creates nothing.
         ///
-        /// Book: A connector name, `"All"` or `"Active"`: which outputs get an instance ([output](#output))
-        output: Structural<Name> = absent(Lua(r#""All""#));
+        /// Book: A connector name, `"all"` or `"active"`: which outputs get an instance ([output](#output))
+        output: Structural<Name> = absent(Lua(r#""all""#));
         /// The layer namespace compositor rules match (Hyprland `layerrule`, niri `layer-rule`).
         namespace: Structural<Name> = absent(Lua(r#""mantle-{id}""#));
-        /// Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"Fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "Fill"` to cover it.
+        /// Omitted measures the content, capped by the output less the anchored edges' margins; `"NN%"` is of the output. On an axis anchored to both edges, omitted and `"fill"` both size the surface to the compositor's span; the root node stays content-sized, so give the child `width = "fill"` to cover it.
         ///
         /// Book: The surface's size ([size](#size))
         width: Bound<SizeMode> = range(0.0, 8192.0).absent(Prose("content"));
-        /// As `width`, against `top`/`bottom`. `"Fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
+        /// As `width`, against `top`/`bottom`. `"fill"` without both edges of its axis anchored is a protocol error: the surface stays hidden with a warning.
         ///
         /// Book: The surface's size ([size](#size))
         height: Bound<SizeMode> = range(0.0, 8192.0).absent(Prose("content"));
-        /// `false` reserves nothing, a positive integer reserves that many px, `"Ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
+        /// `false` reserves nothing, a positive integer reserves that many px, `"ignore"` also overlaps others' zones. `true` reserves the configured height when exactly one of `top`/`bottom` is anchored and `left`/`right` match (both or neither), the width in the transposed case, else nothing.
         ///
         /// Book: The space reserved from other windows ([exclusive zones](#exclusive-zones))
         exclusive_zone: Bound<Exclusive> = absent(Bool(false));
         /// Whether it takes the keyboard.
         ///
         /// Book: Whether it takes the keyboard ([keyboard focus](#keyboard-focus))
-        keyboard_interactivity: Bound<OneOf<KeyboardInteractivity>> = absent(Choice("None"));
+        keyboard_interactivity: Bound<OneOf<KeyboardInteractivity>> = absent(Choice("none"));
         /// Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing.
         margin: Bound<NumberOrEdges> = absent(Number(0.0));
         /// Hiding destroys the layer surface; showing recreates it (ADR-0088).
@@ -579,14 +579,14 @@ props! {
         /// In the parent's surface coordinates; `width`/`height` in `(0, 8192]`, `x`/`y` default `0`. Usually the rect `on_click` passes.
         anchor_rect: Bound<AnchorRect> = absent(Required);
         /// The point on `anchor_rect` the popup hangs from.
-        anchor: Bound<OneOf<PopupAnchor>> = absent(Choice("Center"));
-        /// The direction it extends from that point: `"Bottom"` hangs it below, `"BottomRight"` below and to the right.
-        gravity: Bound<OneOf<PopupAnchor>> = absent(Choice("Center"));
+        anchor: Bound<OneOf<PopupAnchor>> = absent(Choice("center"));
+        /// The direction it extends from that point: `"bottom"` hangs it below, `"bottom_right"` below and to the right.
+        gravity: Bound<OneOf<PopupAnchor>> = absent(Choice("center"));
         /// How the compositor may keep it on screen; `{}` for none, order is ignored.
-        constraint_adjustment: Bound<ConstraintAdjustment> = absent(Lua(r#"{ "FlipY", "SlideX" }"#));
+        constraint_adjustment: Bound<ConstraintAdjustment> = absent(Lua(r#"{ "flip_y", "slide_x" }"#));
         /// Pixel nudge after `anchor` and `gravity`; an absent axis is `0`, negative moves up or left.
         offset: Bound<PopupOffset> = absent(Lua("{ x = 0, y = 0 }"));
-        /// Pixels in `(0, 8192]`; no `"Fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
+        /// Pixels in `(0, 8192]`; no `"fill"` or `%`. Omitted sizes to the content, capped at the first output's size and the root's `max_width`/`max_height`; an open popup follows it through `xdg_popup.reposition` (xdg-shell v3+).
         width: Bound<PopupExtent> = absent(Prose("content"));
         /// As `width`; each axis is independent.
         height: Bound<PopupExtent> = absent(Prose("content"));

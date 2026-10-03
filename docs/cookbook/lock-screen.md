@@ -36,22 +36,22 @@ local lock_screen = lock {
     background = "#11111b",
     child = function(output)
         return column {
-            width = "Fill",
-            height = "Fill",
-            align_h = "Center",
-            align_v = "Center",
+            width = "fill",
+            height = "fill",
+            align_h = "center",
+            align_v = "center",
             spacing = 16,
-            background = { gradient = "Linear", angle = 160, stops = { { 0, "#1e1e2e" }, { 1, "#11111b" } } },
+            background = { gradient = "linear", angle = 160, stops = { { 0, "#1e1e2e" }, { 1, "#11111b" } } },
             opacity = up:map(function(on) return on and 1 or 0 end),
             animate = { opacity = { duration = FADE_MS, from = 0 } },
             children = {
-                text { content = time, font_size = 96, foreground = "#cdd6f4", align_h = "Center" },
-                text { content = date, font_size = 20, foreground = "#a6adc8", align_h = "Center" },
+                text { content = time, font_size = 96, foreground = "#cdd6f4", align_h = "center" },
+                text { content = date, font_size = 20, foreground = "#a6adc8", align_h = "center" },
                 rect { height = 32 },
-                text { content = os.getenv("USER") or "", font_size = 16, foreground = "#cdd6f4", align_h = "Center" },
+                text { content = os.getenv("USER") or "", font_size = 16, foreground = "#cdd6f4", align_h = "center" },
                 rect {
                     width = 320,
-                    align_h = "Center",
+                    align_h = "center",
                     padding = { left = 16, right = 16 },
                     radius = 22,
                     background = "#1e1e2e",
@@ -60,11 +60,11 @@ local lock_screen = lock {
                     animate = { border_color = 150 },
                     children = {
                         textfield {
-                            width = "Fill",
+                            width = "fill",
                             height = 44,
                             font_size = 16,
                             foreground = "#cdd6f4",
-                            text_align = "Center",
+                            text_align = "center",
                             placeholder = "Password",
                             secure_submit = { capability = "lock", action = "authenticate" },
                         },
@@ -73,7 +73,7 @@ local lock_screen = lock {
                 text {
                     content = hint,
                     foreground = failed:map(function(bad) return bad and "#f38ba8" or "#6c7086" end),
-                    align_h = "Center",
+                    align_h = "center",
                 },
             },
         }
@@ -96,7 +96,7 @@ return { lock_screen }
 
 | Change | Edit |
 | :--- | :--- |
-| Wallpaper behind it | Wrap the column in a `rect { width = "Fill", height = "Fill" }` whose first child is `image { source = "/path/to/wallpaper.jpg", width = "Fill", height = "Fill" }`, and drop the gradient ([image](../nodes/image.md)) |
+| Wallpaper behind it | Wrap the column in a `rect { width = "fill", height = "fill" }` whose first child is `image { source = "/path/to/wallpaper.jpg", width = "fill", height = "fill" }`, and drop the gradient ([image](../nodes/image.md)) |
 | Blurred wallpaper | Add `source_blur = 24` to that `image` ([blurs](../guide/paint.md#blurs)) |
 | Unlock button | A clickable node with `submit = true` beside the field sends it like Enter ([pointer](../guide/input.md#pointer)) |
 | Clock on one monitor only | `visible = output == "DP-1"` on the clock texts |

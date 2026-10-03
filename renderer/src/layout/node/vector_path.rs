@@ -8,7 +8,7 @@ use mlua::{Table, Value};
 
 keywords! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum PathOp { M, L, Q, C, A, Z }
+    pub enum PathOp { M = "M", L = "L", Q = "Q", C = "C", A = "A", Z = "Z" }
 }
 
 lua_shape! {

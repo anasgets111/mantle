@@ -149,10 +149,10 @@ mod tests {
             (decode::<TrayAction>("activate_menu_item", json!(["1.42", 1u64 << 31])), Err("i32")),
             (decode::<TrayAction>("scroll", json!(["1.42", 1, "diagonal"])), Err("unknown variant")),
             (
-                decode::<MprisAction>("set_loop_status", json!(["mpv", "Track"])),
+                decode::<MprisAction>("set_loop_status", json!(["mpv", "track"])),
                 Ok(r#"SetLoopStatus { id: "mpv", value: Track }"#),
             ),
-            (decode::<MprisAction>("set_loop_status", json!(["mpv", "track"])), Err("unknown variant")),
+            (decode::<MprisAction>("set_loop_status", json!(["mpv", "Track"])), Err("unknown variant")),
             (decode::<LockAction>("set_unlock_animation", json!([])), Ok("SetUnlockAnimation { ms: None }")),
             (decode::<LockAction>("set_unlock_animation", json!(["fast"])), Err("invalid type")),
             (decode::<NotificationsAction>("hold_expiry", json!([-1])), Err("invalid value")),

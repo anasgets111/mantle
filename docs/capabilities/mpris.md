@@ -19,7 +19,7 @@ rect {
     children = {
         text {
             max_width = 240,
-            elide = "End",
+            elide = "end",
             content = player:map(function(current)
                 return current and (current.play_state .. ": " .. current.title) or ""
             end),
@@ -42,15 +42,15 @@ MPRIS `LoopStatus`, also the `set_loop_status` argument.
 
 | Value | Description |
 | --- | --- |
-| `"None"` | Plays through once. |
-| `"Track"` | Repeats the current track. |
-| `"Playlist"` | Repeats the playlist. |
+| `"none"` | Plays through once. |
+| `"track"` | Repeats the current track. |
+| `"playlist"` | Repeats the playlist. |
 
 ### `PlayState`
 
 MPRIS `PlaybackStatus`.
 
-One of `"Playing"`, `"Paused"`, `"Stopped"`.
+One of `"playing"`, `"paused"`, `"stopped"`.
 
 ### `PlayerState`
 
@@ -75,7 +75,7 @@ One of `"Playing"`, `"Paused"`, `"Stopped"`.
 | `loop_status?` | `LoopStatus` | MPRIS loop mode; `nil` when the player does not report one. |
 | `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
 | `minimum_rate` | `number` | MPRIS minimum playback rate, or `0` when unavailable. |
-| `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none. |
+| `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
 | `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself. |
@@ -157,7 +157,7 @@ One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`, `"stop"`.
 | Discovery | Session bus `ListNames` once, then `NameOwnerChanged` for `org.mpris.MediaPlayer2.*`. Skips `playerctld` and any player reporting `CanControl = false` |
 | Pushes | On playback, metadata, control-property, TrackList or Playlists changes and on `Seeked`. A status change re-reads `Position` 100 ms later. Nothing polls |
 | Seek | `seek` calls `SetPosition` with the cached `mpris:trackid`. A player without one gets a relative `Seek` from a live `Position` read |
-| Controls | Read `can_*` before calling matching methods. Setters accept a finite nonnegative volume percent, positive finite rate within advertised limits, and `None`, `Track`, or `Playlist` loop status |
+| Controls | Read `can_*` before calling matching methods. Setters accept a finite nonnegative volume percent, positive finite rate within advertised limits, and `"none"`, `"track"`, or `"playlist"` loop status |
 | Artwork | Uses existing local `file://` paths. Remote artwork URLs are unsupported |
 
 ## How do I…

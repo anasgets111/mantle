@@ -26,8 +26,8 @@ end)
 
 return panel {
     id = "launcher",
-    layer = "Overlay",
-    keyboard_interactivity = "OnDemand",
+    layer = "overlay",
+    keyboard_interactivity = "on_demand",
     visible = launcher_open,
     width = 480,
     height = 320,

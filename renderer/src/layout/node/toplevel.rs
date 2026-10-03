@@ -133,7 +133,7 @@ keywords! {
 
 /// The six independent adjustment permissions. Array order is irrelevant because the compositor
 /// applies fixed Flip, Slide, Resize precedence and the request is a bitmask. Default is
-/// `{ "FlipY", "SlideX" }`, not the protocol's empty default (ADR-0040 decision 3).
+/// `{ "flip_y", "slide_x" }`, not the protocol's empty default (ADR-0040 decision 3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ConstraintAdjustment {
     pub slide_x: bool,
@@ -278,7 +278,7 @@ impl Prop for AnchorRect {
     }
 }
 
-/// Popup `width`/`height`, narrower than [`SizeMode`]: no `"Fill"` and no percent, because
+/// Popup `width`/`height`, narrower than [`SizeMode`]: no `"fill"` and no percent, because
 /// there is no parent box for either to mean anything against -- `xdg_positioner::set_size` takes a
 /// number, and the compositor places the popup rather than fitting it into something.
 ///
@@ -302,7 +302,7 @@ impl Prop for PopupExtent {
             invalid(
                 property,
                 format!(
-                    "expected a number, got {} -- a popup has no \"Fill\" and no percent; omit the property to size it to its content",
+                    "expected a number, got {} -- a popup has no \"fill\" and no percent; omit the property to size it to its content",
                     preview_for_error(value)
                 ),
             )
@@ -566,8 +566,8 @@ mod tests {
         let lua = mlua::Lua::new();
         let props = popup_props(
             &lua,
-            r#", anchor = "BottomLeft", gravity = "BottomRight",
-                    constraint_adjustment = { "SlideY", "ResizeX" }, offset = { x = -4, y = 2 }, grab = false"#,
+            r#", anchor = "bottom_left", gravity = "bottom_right",
+                    constraint_adjustment = { "slide_y", "resize_x" }, offset = { x = -4, y = 2 }, grab = false"#,
         );
         let spec = popup_spec(&props).unwrap();
         assert_eq!(
@@ -707,7 +707,7 @@ mod tests {
     #[test]
     fn a_fill_popup_width_is_rejected_because_a_popup_has_no_fill() {
         let lua = mlua::Lua::new();
-        let props = popup_props(&lua, r#", width = "Fill""#);
+        let props = popup_props(&lua, r#", width = "fill""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "width"
@@ -756,7 +756,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let props = popup_props(
             &lua,
-            r#", constraint_adjustment = { "SlideX", "SlideY", "FlipX", "FlipY", "ResizeX", "ResizeY" }"#,
+            r#", constraint_adjustment = { "slide_x", "slide_y", "flip_x", "flip_y", "resize_x", "resize_y" }"#,
         );
         assert_eq!(
             popup_spec(&props).unwrap().constraint_adjustment,
@@ -774,16 +774,16 @@ mod tests {
     #[test]
     fn constraint_adjustment_is_a_set_so_order_and_repetition_do_not_change_it() {
         let lua = mlua::Lua::new();
-        let ordered = popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "FlipY", "SlideX" }"#)).unwrap();
+        let ordered = popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "flip_y", "slide_x" }"#)).unwrap();
         let reversed =
-            popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "SlideX", "FlipY", "SlideX" }"#)).unwrap();
+            popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "slide_x", "flip_y", "slide_x" }"#)).unwrap();
         assert_eq!(ordered.constraint_adjustment, reversed.constraint_adjustment);
     }
 
     #[test]
     fn an_adjustment_after_a_hole_is_refused_rather_than_dropped() {
         let lua = mlua::Lua::new();
-        assert!(popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "FlipY", nil, "SlideX" }"#)).is_err());
+        assert!(popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "flip_y", nil, "slide_x" }"#)).is_err());
     }
 
     #[test]
@@ -798,7 +798,7 @@ mod tests {
     #[test]
     fn an_unknown_constraint_adjustment_entry_is_rejected() {
         let lua = mlua::Lua::new();
-        let props = popup_props(&lua, r#", constraint_adjustment = { "FlipY", "SlideZ" }"#);
+        let props = popup_props(&lua, r#", constraint_adjustment = { "flip_y", "SlideZ" }"#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "constraint_adjustment"
@@ -808,7 +808,7 @@ mod tests {
     #[test]
     fn a_constraint_adjustment_that_is_not_an_array_table_is_rejected() {
         let lua = mlua::Lua::new();
-        let props = popup_props(&lua, r#", constraint_adjustment = "FlipY""#);
+        let props = popup_props(&lua, r#", constraint_adjustment = "flip_y""#);
         assert!(matches!(
             popup_spec(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "constraint_adjustment"
@@ -892,8 +892,8 @@ mod tests {
         let lua = mlua::Lua::new();
         let spec = popup_spec(&unresolved_popup_props(
             &lua,
-            r#", width = state("w", 200), height = state("h", 300), anchor = state("an", "Top"),
-                    gravity = state("g", "Bottom"), constraint_adjustment = state("c", {}),
+            r#", width = state("w", 200), height = state("h", 300), anchor = state("an", "top"),
+                    gravity = state("g", "bottom"), constraint_adjustment = state("c", {}),
                     offset = state("o", { x = 3, y = 3 }), grab = state("gr", false)"#,
         ))
         .unwrap();

@@ -1,6 +1,6 @@
 ```lua
 list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 4,
     source = mantle.tray:map(function(tray)
         return tray and tray.items or {}

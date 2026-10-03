@@ -1,9 +1,9 @@
 //! The progress curves an eased tween runs along: named ones, CSS `cubic-bezier` and `steps`
 //! (ADR-0145, ADR-0151).
 
-/// QML's `Easing.Type` names, spelled the same so a
-/// `Behavior on width { NumberAnimation { easing.type: Easing.OutCubic } }` ports by dropping the
-/// prefix, plus CSS's two curves QML has no name for: an arbitrary cubic Bezier and a step
+/// QML's `Easing.Type` curves, named in `snake_case` so a
+/// `Behavior on width { NumberAnimation { easing.type: Easing.OutCubic } }` ports as
+/// `"out_cubic"`, plus CSS's two curves QML has no name for: an arbitrary cubic Bezier and a step
 /// function (ADR-0151).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub enum Easing {
@@ -92,37 +92,37 @@ impl crate::lua::luacats::LuaType for Easing {
 
 impl Easing {
     pub(super) const NAMES: &[(&str, Easing)] = &[
-        ("Linear", Easing::Linear),
-        ("InQuad", Easing::InQuad),
-        ("OutQuad", Easing::OutQuad),
-        ("InOutQuad", Easing::InOutQuad),
-        ("InCubic", Easing::InCubic),
-        ("OutCubic", Easing::OutCubic),
-        ("InOutCubic", Easing::InOutCubic),
-        ("InQuart", Easing::InQuart),
-        ("OutQuart", Easing::OutQuart),
-        ("InOutQuart", Easing::InOutQuart),
-        ("InQuint", Easing::InQuint),
-        ("OutQuint", Easing::OutQuint),
-        ("InOutQuint", Easing::InOutQuint),
-        ("InSine", Easing::InSine),
-        ("OutSine", Easing::OutSine),
-        ("InOutSine", Easing::InOutSine),
-        ("InExpo", Easing::InExpo),
-        ("OutExpo", Easing::OutExpo),
-        ("InOutExpo", Easing::InOutExpo),
-        ("InCirc", Easing::InCirc),
-        ("OutCirc", Easing::OutCirc),
-        ("InOutCirc", Easing::InOutCirc),
-        ("InBack", Easing::InBack),
-        ("OutBack", Easing::OutBack),
-        ("InOutBack", Easing::InOutBack),
-        ("InElastic", Easing::InElastic),
-        ("OutElastic", Easing::OutElastic),
-        ("InOutElastic", Easing::InOutElastic),
-        ("InBounce", Easing::InBounce),
-        ("OutBounce", Easing::OutBounce),
-        ("InOutBounce", Easing::InOutBounce),
+        ("linear", Easing::Linear),
+        ("in_quad", Easing::InQuad),
+        ("out_quad", Easing::OutQuad),
+        ("in_out_quad", Easing::InOutQuad),
+        ("in_cubic", Easing::InCubic),
+        ("out_cubic", Easing::OutCubic),
+        ("in_out_cubic", Easing::InOutCubic),
+        ("in_quart", Easing::InQuart),
+        ("out_quart", Easing::OutQuart),
+        ("in_out_quart", Easing::InOutQuart),
+        ("in_quint", Easing::InQuint),
+        ("out_quint", Easing::OutQuint),
+        ("in_out_quint", Easing::InOutQuint),
+        ("in_sine", Easing::InSine),
+        ("out_sine", Easing::OutSine),
+        ("in_out_sine", Easing::InOutSine),
+        ("in_expo", Easing::InExpo),
+        ("out_expo", Easing::OutExpo),
+        ("in_out_expo", Easing::InOutExpo),
+        ("in_circ", Easing::InCirc),
+        ("out_circ", Easing::OutCirc),
+        ("in_out_circ", Easing::InOutCirc),
+        ("in_back", Easing::InBack),
+        ("out_back", Easing::OutBack),
+        ("in_out_back", Easing::InOutBack),
+        ("in_elastic", Easing::InElastic),
+        ("out_elastic", Easing::OutElastic),
+        ("in_out_elastic", Easing::InOutElastic),
+        ("in_bounce", Easing::InBounce),
+        ("out_bounce", Easing::OutBounce),
+        ("in_out_bounce", Easing::InOutBounce),
     ];
 
     /// Back's overshoot constant and Elastic's period, Penner's originals, the numbers

@@ -662,11 +662,11 @@ mod tests {
             dir.path(),
             r##"return {
                 panel {
-                    id = "host", layer = "Overlay",
+                    id = "host", layer = "overlay",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive_zone = false, width = "Fill", height = "Fill",
-                    child = rect { width = "Fill", height = "Fill", children = {
-                        rect { width = "Fill", height = "Fill", on_click = function() end },
+                    exclusive_zone = false, width = "fill", height = "fill",
+                    child = rect { width = "fill", height = "fill", children = {
+                        rect { width = "fill", height = "fill", on_click = function() end },
                         column { margin = { top = 260, left = 200 }, children = {
                             rect {
                                 width = 620, height = 260, radius = 0,
@@ -706,12 +706,12 @@ mod tests {
             dir.path(),
             r##"return {
                 panel {
-                    id = "wallpaper", layer = "Background",
+                    id = "wallpaper", layer = "background",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive_zone = "Ignore", width = "Fill", height = "Fill",
+                    exclusive_zone = "ignore", width = "fill", height = "fill",
                     background = "#11111bff",
                     child = rect {
-                        width = "Fill", height = "Fill", background = "#202020ff",
+                        width = "fill", height = "fill", background = "#202020ff",
                         children = {
                             rect { width = 120, height = 40, on_click = function() end },
                         },
@@ -739,11 +739,11 @@ mod tests {
             dir.path(),
             r##"return {
                 panel {
-                    id = "host", layer = "Top",
+                    id = "host", layer = "top",
                     anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive_zone = false, width = "Fill", height = "Fill",
+                    exclusive_zone = false, width = "fill", height = "fill",
                     child = rect {
-                        width = "Fill", height = "Fill", background = "#202020ff",
+                        width = "fill", height = "fill", background = "#202020ff",
                         children = {
                             rect { width = 120, height = 40, on_click = function() end },
                         },
@@ -904,7 +904,7 @@ mod tests {
             r#"
             local hovered = hover("pill")
             return { panel {
-                id = "bar", layer = "Top", width = "Fill", height = 40,
+                id = "bar", layer = "top", width = "fill", height = 40,
                 child = row {
                     width = 100, height = 20, hover = hovered,
                     children = { rect { id = "tip", width = 10, height = 10, visible = hovered } },
@@ -978,9 +978,9 @@ mod tests {
             local left, right = hover("left"), hover("right")
             return {
                 panel {
-                    id = "bar", layer = "Top", width = "Fill", height = 40,
+                    id = "bar", layer = "top", width = "fill", height = 40,
                     child = row {
-                        width = "Fill", height = "Fill", spacing = 0,
+                        width = "fill", height = "fill", spacing = 0,
                         children = {
                             row { id = "left_pill", width = 60, height = 20, hover = left },
                             row { id = "right_pill", width = 60, height = 20, hover = right },
@@ -993,7 +993,7 @@ mod tests {
                     visible = left,
                     width = 120, height = 40,
                     grab = false,
-                    anchor = "BottomLeft", gravity = "BottomRight",
+                    anchor = "bottom_left", gravity = "bottom_right",
                     child = rect { width = 120, height = 40, background = "#000000ff" },
                 },
             }
@@ -1079,7 +1079,7 @@ mod tests {
             dir.path(),
             r##"
             return { panel {
-                id = "notification_area", layer = "Top", anchor = { top = true, right = true },
+                id = "notification_area", layer = "top", anchor = { top = true, right = true },
                 width = 200, height = 60,
                 -- nil until the first push, as at real boot.
                 visible = mantle.notifications:map(function(n) return n ~= nil and #n.feed > 0 end),
@@ -1222,7 +1222,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r##"return {
-                panel { id = "bar", layer = "Top" },
+                panel { id = "bar", layer = "top" },
                 lock {
                     id = "screen",
                     child = text { content = mantle.lock:map(function(s) return (s and s.error) or "" end) },
@@ -1557,7 +1557,7 @@ mod tests {
     #[test]
     fn run_startup_evaluation_applies_a_valid_file_and_clears_rescue() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         run_startup(&mut client);
@@ -1570,7 +1570,7 @@ mod tests {
     /// A `window` and `popup` alongside panels.
     fn three_roles_config() -> &'static str {
         r#"return {
-            panel { id = "bar", layer = "Top" },
+            panel { id = "bar", layer = "top" },
             window { id = "settings", title = "Settings", min_size = { width = 320, height = 240 } },
             popup { id = "menu", parent = "bar", width = 200, height = 120,
                     anchor_rect = { x = 12, y = 32, width = 86, height = 24 } },
@@ -1595,7 +1595,7 @@ mod tests {
     #[test]
     fn a_destroyed_surface_leaves_the_reconcile_set_with_its_tree() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client.set_instances(instances_for(&["bar", "menu"]));
 
@@ -1612,7 +1612,7 @@ mod tests {
         // ADR-0049 decision 3: a window object may come and go within a generation, but its
         // *declaration* is fixed, so adding one changes topology.
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
@@ -1627,7 +1627,7 @@ mod tests {
     fn lock_config(background: &str) -> String {
         format!(
             r##"return {{
-                panel {{ id = "bar", layer = "Top" }},
+                panel {{ id = "bar", layer = "top" }},
                 lock {{ id = "screen", child = column {{ background = "{background}", children = {{
                     textfield {{ mask_character = "*", secure_submit = {{ capability = "lock", action = "authenticate" }} }},
                 }} }} }},
@@ -1660,7 +1660,7 @@ mod tests {
         write_shell_lua(
             dir.path(),
             r##"return {
-            panel { id = "bar", layer = "Top" },
+            panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#204080FF", children = {} } },
         }"##,
         );
@@ -1687,7 +1687,7 @@ mod tests {
         write_shell_lua(
             dir.path(),
             r##"return {
-            panel { id = "bar", layer = "Top" },
+            panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#101010FF", children = {} } },
         }"##,
         );
@@ -1724,7 +1724,7 @@ mod tests {
         write_shell_lua(
             dir.path(),
             r##"return {
-            panel { id = "bar", layer = "Top" },
+            panel { id = "bar", layer = "top" },
             lock { id = "screen", child = column { background = "#101010FF", children = {} } },
         }"##,
         );
@@ -1757,7 +1757,7 @@ mod tests {
         assert!(is_rescue, "the refusal has to be visible somewhere, and rescue is where an evaluation failure goes");
         assert!(error_log.contains("`lock` surfaces"), "the message must name what was refused: {error_log}");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
         write_shell_lua(dir.path(), two_locks);
         assert!(
@@ -1797,7 +1797,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"return {
-                panel { id = "bar", layer = "Top" },
+                panel { id = "bar", layer = "top" },
                 popup { id = "menu", parent = "bar", width = 200, height = 120,
                         anchor_rect = { x = 0, y = 0, width = 0, height = 0 } },
             }"#,
@@ -1854,7 +1854,7 @@ mod tests {
         run_startup(&mut client);
         assert!(client.state.applied_specs.is_empty(), "startup must have failed (no file yet)");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         assert!(client.reevaluate(), "the first successful evaluation after a startup failure must be applied");
         assert_eq!(
             client.pending_surfaces().map(|(_, rebuilt)| rebuilt),
@@ -1866,10 +1866,10 @@ mod tests {
     #[test]
     fn a_topology_edit_names_the_declarations_to_rebuild() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         // Seed a *different* topology so fresh evaluation reads as changed.
-        let other = client.loader.evaluate(r#"return panel { id = "other", layer = "Top" }"#).unwrap();
+        let other = client.loader.evaluate(r#"return panel { id = "other", layer = "top" }"#).unwrap();
         client.state.applied_specs = surface_specs(&other).unwrap();
 
         assert!(client.reevaluate());
@@ -1883,12 +1883,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return { panel { id = "bar", layer = "Top" }, panel { id = "dock", layer = "Top" } }"#,
+            r#"return { panel { id = "bar", layer = "top" }, panel { id = "dock", layer = "top" } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
-        write_shell_lua(dir.path(), r#"return { panel { id = "bar", layer = "Top" } }"#);
+        write_shell_lua(dir.path(), r#"return { panel { id = "bar", layer = "top" } }"#);
         assert!(client.reevaluate());
         let (_, rebuilt) = client.pending_surfaces().expect("staged");
         assert!(rebuilt.is_empty(), "removing `dock` rebuilds nothing; reconcile drops its instance");
@@ -1907,7 +1907,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", margin = { left = 4 }, keyboard_interactivity = "None", exclusive_zone = false, height = 32 }"#,
+            r#"return panel { id = "bar", layer = "top", margin = { left = 4 }, keyboard_interactivity = "none", exclusive_zone = false, height = 32 }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
@@ -1915,7 +1915,7 @@ mod tests {
         // Change every in-place field; leave topology unchanged.
         write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", margin = { left = 40 }, keyboard_interactivity = "Exclusive", exclusive_zone = true, height = 48 }"#,
+            r#"return panel { id = "bar", layer = "top", margin = { left = 40 }, keyboard_interactivity = "exclusive", exclusive_zone = true, height = 48 }"#,
         );
         assert!(client.reevaluate());
         assert_eq!(
@@ -1929,11 +1929,11 @@ mod tests {
     fn editing_only_the_namespace_rebuilds_that_panel_in_place() {
         // `get_layer_surface` fixes namespace at creation, so the edit needs a new layer surface.
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", namespace = "my-bar" }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", namespace = "my-bar" }"#);
         assert!(client.reevaluate());
         assert_eq!(client.pending_surfaces().map(|(_, rebuilt)| rebuilt), Some(vec!["bar".to_string()]));
     }
@@ -1951,7 +1951,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "startup must have applied");
@@ -1976,7 +1976,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "startup must have applied");
@@ -2000,7 +2000,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "startup must have applied");
@@ -2020,7 +2020,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client), "startup must have applied");
@@ -2047,10 +2047,10 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"return {
-                panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" },
-                panel { id = "b", layer = "Top" },
-                panel { id = "c", layer = "Top" },
-                panel { id = "d", layer = "Top" },
+                panel { id = "bar", layer = "top", width = "fill", height = "fill" },
+                panel { id = "b", layer = "top" },
+                panel { id = "c", layer = "top" },
+                panel { id = "d", layer = "top" },
             }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
@@ -2068,7 +2068,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
@@ -2085,12 +2085,12 @@ mod tests {
 
     #[test]
     fn one_surface_on_two_outputs_resolves_two_trees_against_two_different_sizes() {
-        // `output = "All"` across laptop and 4K external means two configured sizes; one declared
+        // `output = "all"` across laptop and 4K external means two configured sizes; one declared
         // surface tree cannot serve both.
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", width = "Fill", height = "Fill" }"#,
+            r#"return panel { id = "bar", layer = "top", width = "fill", height = "fill" }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2109,7 +2109,7 @@ mod tests {
     #[test]
     fn a_panel_naming_an_unplugged_monitor_gets_no_instance_and_no_resolved_tree() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", output = "HDMI-A-9" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", output = "HDMI-A-9" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         assert!(
@@ -2139,7 +2139,7 @@ mod tests {
         // `InvalidTopLevelReturn`'s fixed "must be a `panel` node or an array of them" message.
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", anchor = { top = "yes" } }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", anchor = { top = "yes" } }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         assert!(!client.reevaluate());
@@ -2179,7 +2179,7 @@ mod tests {
     fn a_push_that_makes_a_property_invalid_keeps_the_prior_scene_in_rescue_until_a_pass_applies() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         push_workspace(&mut client, 1, serde_json::json!(true));
         run_startup(&mut client);
@@ -2209,7 +2209,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", visible = mantle.audio, child = rect { width = mantle.network, height = 10, children = mantle.tray } }"#,
+            r#"return panel { id = "bar", layer = "top", visible = mantle.audio, child = rect { width = mantle.network, height = 10, children = mantle.tray } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2235,7 +2235,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = mantle.audio } }"#,
+            r#"return panel { id = "bar", layer = "top", child = text { content = mantle.audio } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2287,7 +2287,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"
-            return panel { id = "bar", layer = "Top", child = row { children = computed({mantle.audio}, function(n)
+            return panel { id = "bar", layer = "top", child = row { children = computed({mantle.audio}, function(n)
                 if n == 3 then
                     return { rect { width = 1, height = 1 }, rect { width = 1, height = 1 }, rect { width = 1, height = 1 } }
                 end
@@ -2330,7 +2330,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = "hi" } }"#,
+            r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2363,7 +2363,7 @@ mod tests {
             r#"
             local panels = {}
             for _, screen in ipairs(mantle.screens:get()) do
-                panels[#panels + 1] = panel { id = "bar@" .. screen.name, layer = "Top", output = screen.name }
+                panels[#panels + 1] = panel { id = "bar@" .. screen.name, layer = "top", output = screen.name }
             end
             return panels
             "#,
@@ -2383,7 +2383,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = "screens: " .. #mantle.screens:get() } }"#,
+            r#"return panel { id = "bar", layer = "top", child = text { content = "screens: " .. #mantle.screens:get() } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2400,7 +2400,7 @@ mod tests {
         // `update_output` handles changes absent from `screens`; an unchanged push buys neither
         // `Scene::apply` nor a re-evaluation.
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client.set_screens(screens_json(&["eDP-1"]));
         run_startup(&mut client);
@@ -2414,7 +2414,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = computed({mantle.screens}, function(list) return "n=" .. #list end) } }"#,
+            r#"return panel { id = "bar", layer = "top", child = text { content = computed({mantle.screens}, function(list) return "n=" .. #list end) } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         client.set_screens(screens_json(&["eDP-1"]));
@@ -2444,7 +2444,7 @@ mod tests {
             dir.path(),
             r#"
             mantle.screens:on_change(function(now, before) seen = #before .. "->" .. #now end)
-            return panel { id = "bar", layer = "Top" }
+            return panel { id = "bar", layer = "top" }
             "#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
@@ -2454,7 +2454,7 @@ mod tests {
         client.set_screens(screens_json(&["eDP-1", "DP-1"]));
         assert_eq!(client.loader.lua().globals().get::<String>("seen").unwrap(), "1->2");
 
-        std::fs::write(&path, r#"return panel { id = "bar", layer = "Top" }"#).unwrap();
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         assert!(client.reevaluate());
         client.set_screens(screens_json(&["eDP-1"]));
         assert_eq!(client.loader.lua().globals().get::<String>("seen").unwrap(), "1->2", "the dropped handler ran");
@@ -2471,7 +2471,7 @@ mod tests {
             local open = state("open", false)
             local hint = state("hint", "idle")
             open:on_change(function(now) hint:set(now and "open" or "closed") end)
-            return panel { id = "bar", layer = "Top", child = text { content = hint } }
+            return panel { id = "bar", layer = "top", child = text { content = hint } }
             "#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
@@ -2508,7 +2508,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "Top", child = text { content = "hi" } }"#,
+            r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2522,7 +2522,7 @@ mod tests {
     fn applied_surface_specs_returns_the_applied_declarations_without_reading_shell_lua_again() {
         // Hotplug expansion source (ADR-0038 decision 3). Delete the file to prove it is untouched.
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", output = "All" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", output = "all" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         run_startup(&mut client);
         std::fs::remove_file(&path).unwrap();
@@ -2530,7 +2530,7 @@ mod tests {
         let specs = client.applied_surface_specs();
         assert_eq!(specs.len(), 1);
         assert!(
-            matches!(&specs[0], SurfaceSpec::Panel(panel) if panel.topology.id == "bar" && panel.topology.output == "All")
+            matches!(&specs[0], SurfaceSpec::Panel(panel) if panel.topology.id == "bar" && panel.topology.output == "all")
         );
     }
 
@@ -2544,7 +2544,7 @@ mod tests {
     #[test]
     fn handle_frame_hands_a_successful_reevaluate_to_the_wayland_loop() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         assert_eq!(
@@ -2568,7 +2568,7 @@ mod tests {
             exits_at_top = exits
             process.run("tail", { "-f", "log" }, function() lines = lines + 1 end,
                 function(code) exits, last_code = exits + 1, code end)
-            return panel { id = "bar", layer = "Top" }"#,
+            return panel { id = "bar", layer = "top" }"#,
         );
         let (mut client, mut rx) = test_client(&path);
         assert!(run_startup(&mut client));
@@ -2601,7 +2601,7 @@ mod tests {
         // Both directions matter: `locked = true` reaches Wayland for refusal without a `lock`
         // surface (ADR-0052 decision 3); `locked = false` is the only unlock path (ADR-0042).
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
 
         assert_eq!(
@@ -2617,7 +2617,7 @@ mod tests {
     #[test]
     fn handle_frame_routes_process_output_and_exit_frames_to_the_registered_lua_callbacks() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         // Register real callbacks through `process.run`; fresh registry id 0 is what inbound frames
         // address.
@@ -2626,7 +2626,7 @@ mod tests {
             .evaluate(
                 r#"
                 process.run("cmd", {}, function(line, stream) probe_line = line; probe_stream = stream end, function(code) probe_code = code end)
-                return panel { id = "bar", layer = "Top" }
+                return panel { id = "bar", layer = "top" }
                 "#,
             )
             .unwrap();

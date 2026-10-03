@@ -7,7 +7,7 @@ Workspaces per output, special workspaces and the focused window.
 ```lua
 panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 28,
     child = function(output) -- one instance per monitor, named by connector
@@ -120,7 +120,7 @@ Draw `idx`, send `id` ([`list`](../nodes/list.md) builds one button per entry):
 
 ```lua
 list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 4,
     source = mantle.workspaces:map(function(workspaces)
         local output = workspaces and workspaces.outputs[1]

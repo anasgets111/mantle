@@ -61,7 +61,7 @@ pub(super) enum TrackedRole {
         /// every later one were invisible; reopening a hidden bar stayed blank (ADR-0088).
         layer: Option<LayerSurface>,
         /// Instance output, reused by [`App::show_panel`] (ADR-0038 decision 3). `None` for
-        /// `output = "Active"`, whose every show lets the compositor pick (ADR-0246).
+        /// `output = "active"`, whose every show lets the compositor pick (ADR-0246).
         output: Option<wl_output::WlOutput>,
         /// `layer::spec_update`'s diff baseline and the spec used by
         /// [`App::apply_exclusive_zone`] after configure (ADR-0038 decision 2).
@@ -586,7 +586,7 @@ mod tests {
                 id: id.to_string(),
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
-                output: "All".to_string(),
+                output: "all".to_string(),
                 namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,

@@ -478,7 +478,7 @@ mod tests {
     fn a_changed_target_starts_a_tween_from_the_value_on_screen_and_a_tick_carries_it() {
         // ADR-0145: the pass that sees `90` lays out `40` and a tween; the ticks do the rest
         // without Lua.
-        let (mut scene, lua, surface) = animated_width("Linear");
+        let (mut scene, lua, surface) = animated_width("linear");
         let shaping = ShapingHandle::spawn();
         assert_eq!(child_width(&scene), 40.0);
         assert!(!scene.surface("bar@TEST").unwrap().animating(), "a first value is taken as it is");
@@ -509,8 +509,8 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"return panel { id = "bar", child = rect { width = state("w", 30), height = 20,
-                animate = { width = { duration = 100, easing = "Linear" } },
-                children = { text { width = "Fill", content = "A long message that should expand", elide = "End" } } } }"#,
+                animate = { width = { duration = 100, easing = "linear" } },
+                children = { text { width = "fill", content = "A long message that should expand", elide = "end" } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("w", 30):set(300)"#).exec().unwrap();
@@ -535,12 +535,12 @@ mod tests {
             local w = e:map(function(on) return on and 220 or 34 end)
             local o = e:map(function(on) return on and 1 or 0 end)
             local v = state("v", 50)
-            local function bar() return rect { width = v:map(function(x) return x .. "%" end), height = "Fill",
-                opacity = o, animate = { opacity = { duration = 100, easing = "Linear" } },
-                children = { row { width = w, height = "Fill", animate = { width = { duration = 100, easing = "Linear" } } } } } end
-            return panel { id = "bar", child = rect { width = w, height = 20, clip = "Rounded", radius = 4,
-                animate = { width = { duration = 100, easing = "Linear" } },
-                children = { bar(), row { width = "Fill", height = "Fill", children = { rect { width = "100%" } } } } } }"#,
+            local function bar() return rect { width = v:map(function(x) return x .. "%" end), height = "fill",
+                opacity = o, animate = { opacity = { duration = 100, easing = "linear" } },
+                children = { row { width = w, height = "fill", animate = { width = { duration = 100, easing = "linear" } } } } } end
+            return panel { id = "bar", child = rect { width = w, height = 20, clip = "rounded", radius = 4,
+                animate = { width = { duration = 100, easing = "linear" } },
+                children = { bar(), row { width = "fill", height = "fill", children = { rect { width = "100%" } } } } } }"#,
         );
         let fill = |scene: &Scene| {
             let parent = &scene.surface("bar@TEST").unwrap().children[0];
@@ -566,7 +566,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"return panel { id = "bar", child = rect { width = state("w", 40), height = 20, geometry = geometry("g"),
-                animate = { width = { duration = 100, easing = "Linear" } } } }"#,
+                animate = { width = { duration = 100, easing = "linear" } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
@@ -635,7 +635,7 @@ mod tests {
             r#"return panel { id = "bar", child = rect { width = 10, height = 10,
                 margin = state("m", { left = 0 }), opacity = 1,
                 animate = { opacity = { duration = 100, from = 0 },
-                            margin = { duration = 100, easing = "Linear", from = { left = 40 } } } } }"#,
+                            margin = { duration = 100, easing = "linear", from = { left = 40 } } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let child = &scene.surface("bar@TEST").unwrap().children[0];
@@ -659,9 +659,9 @@ mod tests {
         // re-read that forgot to carry it would hand back the whole untruncated message.
         let source = "a long message that will not fit";
         let (lua, surface) = surface_from(
-            r##"local label = text { id = "label", width = 60, font_size = 14, elide = "End",
+            r##"local label = text { id = "label", width = 60, font_size = 14, elide = "end",
                    content = "a long message that will not fit", foreground = "#000000",
-                   animate = { exit = { duration = 100, easing = "Linear", foreground = "#ff0000" } } }
+                   animate = { exit = { duration = 100, easing = "linear", foreground = "#ff0000" } } }
                return panel { id = "bar", child = row { children = state("kids", { label }) } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -691,7 +691,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"local a = rect { id = "a", width = 10, height = 10, background = "#ff0000",
                    children = { rect { id = "inner", width = 4, height = 4, background = "#ffffff" } },
-                   animate = { exit = { duration = 100, easing = "Linear", opacity = 0, translate = { y = 8 } } } }
+                   animate = { exit = { duration = 100, easing = "linear", opacity = 0, translate = { y = 8 } } } }
                local b = rect { id = "b", width = 10, height = 10, background = "#00ff00" }
                local c = rect { id = "c", width = 10, height = 10, background = "#0000ff" }
                return panel { id = "bar", child = row { spacing = 0, children = state("kids", { a, b, c }) } }"##,
@@ -746,7 +746,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r##"local card = rect { id = "card", width = 40, height = 20, margin = { bottom = 2 },
-                   animate = { exit = { duration = 100, easing = "Linear", opacity = 0 } } }
+                   animate = { exit = { duration = 100, easing = "linear", opacity = 0 } } }
                return panel { id = "bar", child = column { padding = 4, children = state("kids", { card }) } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -808,7 +808,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r##"local a = rect { id = "a", width = 10, height = 10, background = "#ff0000",
-                   animate = { exit = { duration = 100, easing = "Linear", opacity = 0 } } }
+                   animate = { exit = { duration = 100, easing = "linear", opacity = 0 } } }
                return panel { id = "bar", child = row { spacing = 0, children = state("kids", { a }) } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -822,7 +822,7 @@ mod tests {
         // The fixture's own `a` is not reachable from Lua, so rebuild an identical child instead.
         lua.load(
             r##"state("kids", {}):set({ rect { id = "a", width = 10, height = 10, background = "#ff0000",
-                   animate = { exit = { duration = 100, easing = "Linear", opacity = 0 } } } })"##,
+                   animate = { exit = { duration = 100, easing = "linear", opacity = 0 } } } })"##,
         )
         .exec()
         .unwrap();
@@ -849,10 +849,10 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"return panel { id = "bar", child = row { spacing = 0, children = {
                    rect { id = "pulse", width = 10, height = 10, background = "#ff0000", opacity = 1,
-                     animate = { opacity = { duration = 100, easing = "Linear", loops = "Infinite",
+                     animate = { opacity = { duration = 100, easing = "linear", loops = "infinite",
                                              keyframes = { 1, 0.2, 1 } } } },
                    rect { id = "flash", width = state("w", 10), height = 10, background = "#00ff00", opacity = 1,
-                     animate = { opacity = { duration = 100, easing = "Linear", loops = 1,
+                     animate = { opacity = { duration = 100, easing = "linear", loops = 1,
                                              keyframes = { 1, 0 } } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -906,7 +906,7 @@ mod tests {
             r#"local held = state("held", 0)
             return panel { id = "bar", child = rect { width = 10, height = 10, opacity = 1,
               animate = held:map(function(d)
-                  return { opacity = { duration = 100, easing = "Linear", loops = 1,
+                  return { opacity = { duration = 100, easing = "linear", loops = 1,
                                        keyframes = { 1, 0 }, delay = d } }
               end) } }"#,
         );
@@ -941,10 +941,10 @@ mod tests {
               rect { width = 10, height = 10,
                      background = lit:map(function(o) return o and "#ffffff" or "#000000" end),
                      opacity = lit:map(function(o) return o and 1 or 0.2 end),
-                     animate = { background = { duration = 100, easing = "Linear" },
-                                 opacity = { duration = 100, easing = "Linear" } } },
+                     animate = { background = { duration = 100, easing = "linear" },
+                                 opacity = { duration = 100, easing = "linear" } } },
               text { content = "abc", foreground = lit:map(function(o) return o and "#ffffff" or "#000000" end),
-                     animate = { foreground = { duration = 100, easing = "Linear" } } } } } }"##,
+                     animate = { foreground = { duration = 100, easing = "linear" } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let before = scene.surface("bar@TEST").unwrap().children[0].children[0].rect;
@@ -989,10 +989,10 @@ mod tests {
                 shadow_offset = up:map(function(u) return u and { x = 0, y = 4 } or { x = 0, y = 0 } end),
                 content_blur = up:map(function(u) return u and 2 or 0 end),
                 backdrop_blur = up:map(function(u) return u and 8 or 0 end),
-                animate = { shadow_blur = { duration = 100, easing = "Linear" },
-                            shadow_offset = { duration = 100, easing = "Linear" },
-                            content_blur = { duration = 100, easing = "Linear" },
-                            backdrop_blur = { duration = 100, easing = "Linear" } } } }"##,
+                animate = { shadow_blur = { duration = 100, easing = "linear" },
+                            shadow_offset = { duration = 100, easing = "linear" },
+                            content_blur = { duration = 100, easing = "linear" },
+                            backdrop_blur = { duration = 100, easing = "linear" } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
@@ -1019,7 +1019,7 @@ mod tests {
             return panel { id = "bar", child = row { width = 100, height = 20, children = {
               rect { height = 10, background = "#ffffff",
                      width = wide:map(function(w) return w and 40 or 10 end),
-                     animate = { width = { duration = 100, easing = "Linear" } } } } } }"##,
+                     animate = { width = { duration = 100, easing = "linear" } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("wide", false):set(true)"#).exec().unwrap();
@@ -1105,11 +1105,11 @@ mod tests {
         let (lua, surface) = surface_from(
             r#"local open = state("open", true)
             local linger = computed({ open, delay(open, 147) }, function(now, was) return now or was end)
-            return panel { id = "host", visible = linger, child = rect { width = "Fill", height = "Fill", children = {
-                rect { width = "Fill", height = "Fill" },
+            return panel { id = "host", visible = linger, child = rect { width = "fill", height = "fill", children = {
+                rect { width = "fill", height = "fill" },
                 column { width = 100, margin = open:map(function(o) return { left = 30, top = o and 4 or -44 } end),
                     opacity = open:map(function(o) return o and 1 or 0 end),
-                    animate = { opacity = { duration = 147, from = 0 }, margin = { duration = 147, easing = "OutQuad" } },
+                    animate = { opacity = { duration = 147, from = 0 }, margin = { duration = 147, easing = "out_quad" } },
                     children = { rect { width = 10, height = 10 } } } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1133,7 +1133,7 @@ mod tests {
 
     #[test]
     fn a_pass_that_does_not_move_the_target_keeps_the_running_tween() {
-        let (mut scene, lua, surface) = animated_width("Linear");
+        let (mut scene, lua, surface) = animated_width("linear");
         let shaping = ShapingHandle::spawn();
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1149,7 +1149,7 @@ mod tests {
 
     #[test]
     fn a_retarget_mid_flight_starts_from_the_displayed_value_not_the_old_target() {
-        let (mut scene, lua, surface) = animated_width("Linear");
+        let (mut scene, lua, surface) = animated_width("linear");
         let shaping = ShapingHandle::spawn();
         lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1173,7 +1173,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"panel { id = "bar", child = rect { width = 10, height = 10,
                     background = state("bg", "#000000"),
-                    animate = { background = { duration = 100, easing = "Linear" } } } }"##,
+                    animate = { background = { duration = 100, easing = "linear" } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r##"state("bg", "#000000"):set("#ffffff")"##).exec().unwrap();
@@ -1198,7 +1198,7 @@ mod tests {
             r##"panel { id = "bar", child = row { width = 200, height = 40, children = {
                   rect { width = 50, height = 20, background = "#ffffff" },
                   shader { width = 40, height = 30, source = "/s.frag", progress = state("p", 0),
-                           animate = { progress = { duration = 100, easing = "Linear" } } } } } }"##,
+                           animate = { progress = { duration = 100, easing = "linear" } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("p", 0):set(1)"#).exec().unwrap();
@@ -1238,9 +1238,9 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"panel { id = "bar", child = row { width = 400, height = 40, children = {
                   rect { width = 20, height = 20, background = "#ffffff",
-                         animate = { translate = { duration = 100, easing = "Linear", loops = "Infinite",
+                         animate = { translate = { duration = 100, easing = "linear", loops = "infinite",
                                                    keyframes = { { x = 0, y = 0 }, { x = 200, y = 0 } } },
-                                     scale = { duration = 100, easing = "Linear", loops = "Infinite",
+                                     scale = { duration = 100, easing = "linear", loops = "infinite",
                                                keyframes = { 1, 2 } } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1280,8 +1280,8 @@ mod tests {
                     rect {{ width = 8, height = 8, background = "#00FF00FF" }} }} }}
                 end
                 kids[1] = rect {{ width = 8, height = 8, background = "#FFFFFFFF", {tweened} = v,
-                  animate = {{ {tweened} = {{ duration = 60000, easing = "Linear" }} }} }}
-                return panel {{ id = "bar", layer = "Top", child = row {{ spacing = 4, children = kids }} }}"##
+                  animate = {{ {tweened} = {{ duration = 60000, easing = "linear" }} }} }}
+                return panel {{ id = "bar", layer = "top", child = row {{ spacing = 4, children = kids }} }}"##
             ));
             let mut scene = Scene::new();
             apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -1319,7 +1319,7 @@ mod tests {
         }
     }
 
-    /// Two instances of one surface, one per output, as `output = "All"` makes them.
+    /// Two instances of one surface, one per output, as `output = "all"` makes them.
     fn two_outputs(surface: &VirtualNode) -> [SurfaceInstance; 2] {
         ["A", "B"].map(|output| SurfaceInstance {
             instance_id: format!("bar@{output}"),
@@ -1332,7 +1332,7 @@ mod tests {
     /// clock says rather than where its missed frames would have left it.
     #[test]
     fn a_tick_advances_only_the_instances_whose_frame_is_due() {
-        let (_, lua, surface) = animated_width("Linear");
+        let (_, lua, surface) = animated_width("linear");
         let (mut scene, shaping) = (Scene::new(), ShapingHandle::spawn());
         let [a, b] = two_outputs(&surface);
         let both = [a.clone(), b.clone()];
@@ -1366,7 +1366,7 @@ mod tests {
                 text { content = "item " .. i, font_size = 12 },
                 rect { width = 8, height = 8, background = "#00FF00FF" } } }
             end
-            kids[1] = rect { width = v, height = 8, animate = { width = { duration = 60000, easing = "Linear" } } }
+            kids[1] = rect { width = v, height = 8, animate = { width = { duration = 60000, easing = "linear" } } }
             return panel { id = "bar", child = row { spacing = 4, children = kids } }"##,
         );
         let shaping = ShapingHandle::spawn();
@@ -1408,7 +1408,7 @@ mod tests {
                     animate = { width = 100 } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        lua.load(r#"state("w", 40):set("Fill")"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set("fill")"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         // `Fill` under a content-sized panel is zero (see
         // `a_fill_child_of_a_content_sized_row_...`);
@@ -1424,7 +1424,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r#"return panel { id = "bar", child = text { content = "Hello World",
                 font_size = state("fs", 12),
-                animate = { font_size = { duration = 100, easing = "Linear" } } } }"#,
+                animate = { font_size = { duration = 100, easing = "linear" } } } }"#,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let width_12 = scene.surface("bar@TEST").unwrap().children[0].rect.width;

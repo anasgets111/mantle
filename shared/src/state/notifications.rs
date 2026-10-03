@@ -6,9 +6,8 @@ use serde::Serialize;
 /// One body-markup run (ADR-0033): styled text or an image.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(tag = "kind")]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NotificationSpan {
-    #[serde(rename = "text")]
     Text {
         /// Unescaped text; empty runs are omitted.
         text: String,
@@ -21,7 +20,6 @@ pub enum NotificationSpan {
         /// `<a href>` target, or `nil` when not a link.
         href: Option<String>,
     },
-    #[serde(rename = "image")]
     Image {
         /// Existing absolute path under an icon root; images elsewhere are dropped.
         image_path: String,

@@ -200,7 +200,7 @@ impl App {
 
     /// Handles an output appearing, changing, or leaving: update `screens` only when its payload
     /// changed. `update_output` also fires for things `screens` does not carry; re-running the
-    /// rest for one would re-evaluate for nothing. Reconcile `output = "All"`
+    /// rest for one would re-evaluate for nothing. Reconcile `output = "all"`
     /// instances in place (ADR-0038 decision 3), then re-evaluate, which catches a config's `screens`
     /// loop changing surface ids (ADR-0041 decisions 2-3).
     fn handle_output_change(&mut self, qh: &QueueHandle<App>, departing: Option<&wl_output::WlOutput>) {

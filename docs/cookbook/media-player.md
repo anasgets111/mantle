@@ -16,7 +16,7 @@ local selected_player = state("media_selected_player", "")
 local function pick(mpris)
     local players = mpris and mpris.players or {}
     for _, candidate in ipairs(players) do
-        if candidate.play_state == "Playing" then
+        if candidate.play_state == "playing" then
             return candidate
         end
     end
@@ -36,7 +36,7 @@ mantle.mpris:on_change(function(mpris)
         card_open:set(false) -- so the next player to appear does not reopen the card
     end
     for _, candidate in ipairs(players) do
-        if candidate.play_state == "Playing" then
+        if candidate.play_state == "playing" then
             selected_player:set(candidate.id)
             return
         end
@@ -72,7 +72,7 @@ local position = computed({ player, position_mark, mantle.system }, function(cur
     end
     local elapsed = 0
     -- An unstamped report, such as one before the first clock push, adds nothing.
-    if current.play_state == "Playing" and system and mark.key == report_key(current) then
+    if current.play_state == "playing" and system and mark.key == report_key(current) then
         elapsed = (system.monotonic - mark.at) * 1000000
     end
     local rate = current.rate or 1
@@ -95,7 +95,7 @@ end
 
 local function control_button(glyph, command, size)
     return rect {
-        align_v = "Center",
+        align_v = "center",
         padding = 8,
         radius = 20,
         background = command == "play_pause" and "#89b4fa" or "#313244",
@@ -105,12 +105,12 @@ local function control_button(glyph, command, size)
 end
 
 local play_glyph = player:map(function(current)
-    return current and current.play_state == "Playing" and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
+    return current and current.play_state == "playing" and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
 end)
 
 local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
 local pill = row {
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 10, right = 10, top = 4, bottom = 4 },
     radius = 12,
     background = "#313244",
@@ -133,10 +133,10 @@ local pill = row {
     end,
     spacing = 6,
     children = {
-        icon { name = play_glyph, size = 14, foreground = "#cdd6f4", align_v = "Center" },
+        icon { name = play_glyph, size = 14, foreground = "#cdd6f4", align_v = "center" },
         text {
             max_width = 240,
-            elide = "End",
+            elide = "end",
             foreground = "#cdd6f4",
             content = player:map(function(current)
                 if current == nil or current.title == "" then return "" end
@@ -147,10 +147,10 @@ local pill = row {
 }
 
 local progress = rect {
-    width = "Fill",
+    width = "fill",
     height = 6,
     radius = 3,
-    clip = "Rounded",
+    clip = "rounded",
     background = "#45475a",
     -- Seek on release, to where the pointer let go.
     on_drag = function(rect, pointer, phase)
@@ -162,7 +162,7 @@ local progress = rect {
     end,
     children = {
         rect {
-            height = "Fill",
+            height = "fill",
             background = "#89b4fa",
             width = computed({ player, position }, function(current, now)
                 if current == nil or not current.length or current.length <= 0 or now == nil then return "0%" end
@@ -178,40 +178,40 @@ local card = column {
     spacing = 12,
     children = {
         row {
-            width = "Fill",
+            width = "fill",
             spacing = 12,
             children = {
                 rect {
                     width = 64,
                     height = 64,
                     radius = 8,
-                    clip = "Rounded",
+                    clip = "rounded",
                     background = "#313244",
                     children = {
                         image {
-                            width = "Fill",
-                            height = "Fill",
+                            width = "fill",
+                            height = "fill",
                             fit = "cover",
                             source = player:map(function(current) return current and current.album_art_path or "" end),
                         },
                     },
                 },
                 column {
-                    width = "Fill",
-                    align_v = "Center",
+                    width = "fill",
+                    align_v = "center",
                     spacing = 2,
                     children = {
                         text {
                             content = player:map(function(current) return current and current.title or "" end),
-                            width = "Fill", elide = "End", font_size = 14, foreground = "#cdd6f4",
+                            width = "fill", elide = "end", font_size = 14, foreground = "#cdd6f4",
                         },
                         text {
                             content = player:map(function(current) return current and current.artist or "" end),
-                            width = "Fill", elide = "End", foreground = "#a6adc8",
+                            width = "fill", elide = "end", foreground = "#a6adc8",
                         },
                         text {
                             content = player:map(function(current) return current and current.identity or "" end),
-                            width = "Fill", elide = "End", font_size = 11, foreground = "#6c7086",
+                            width = "fill", elide = "end", font_size = 11, foreground = "#6c7086",
                         },
                     },
                 },
@@ -219,10 +219,10 @@ local card = column {
         },
         progress,
         row {
-            width = "Fill",
+            width = "fill",
             children = {
                 text { content = position:map(function(now) return now and clock(now) or "" end), font_size = 11, foreground = "#a6adc8" },
-                rect { width = "Fill" },
+                rect { width = "fill" },
                 text {
                     content = player:map(function(current) return current and current.length and clock(current.length) or "" end),
                     font_size = 11,
@@ -231,9 +231,9 @@ local card = column {
             },
         },
         row {
-            align_h = "Center",
+            align_h = "center",
             spacing = 12,
-            width = "Fill",
+            width = "fill",
             children = {
                 control_button("media-skip-backward-symbolic", "previous", 16),
                 control_button(play_glyph, "play_pause", 20),
@@ -246,25 +246,25 @@ local card = column {
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
-        width = "Fill",
+        width = "fill",
         height = 32,
         exclusive_zone = true,
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 8, right = 8 },
             background = "#1e1e2e",
-            children = { rect { width = "Fill" }, pill, rect { width = "Fill" } },
+            children = { rect { width = "fill" }, pill, rect { width = "fill" } },
         },
     },
     popup {
         id = "media_card",
         parent = "bar",
         anchor_rect = card_anchor,
-        anchor = "Bottom",
-        gravity = "Bottom",
+        anchor = "bottom",
+        gravity = "bottom",
         offset = { y = 6 },
         visible = computed({ card_open, player }, function(open, current) return open and current ~= nil end),
         on_dismiss = function() card_open:set(false) end,

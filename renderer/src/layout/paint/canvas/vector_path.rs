@@ -95,7 +95,7 @@ mod tests {
     #[test]
     fn paths_share_ancestor_mask_opacity_and_translation() {
         let src = r##"rect { width=64, height=64, opacity=0.5,
-            mask={ gradient='Linear', stops={{0,'#ffffff'},{0.5,'#ffffff'},{0.5,'#ffffff00'},{1,'#ffffff00'}} },
+            mask={ gradient='linear', stops={{0,'#ffffff'},{0.5,'#ffffff'},{0.5,'#ffffff00'},{1,'#ffffff00'}} },
             children={path { width=48, height=48, translate={x=8,y=8}, fill='#ff0000', commands={
                 {op='M',points={0,0}},{op='L',points={0,48}},{op='L',points={48,48}},{op='L',points={48,0}},{op='Z',points={}}
             } }}
@@ -136,7 +136,7 @@ mod tests {
     fn paths_share_gradient_fills_shadows_and_content_blur() {
         let shape = r##"commands={{op='M',points={16,8}},{op='L',points={16,24}},{op='L',points={32,24}},{op='L',points={32,8}},{op='Z',points={}}}"##;
         let src = format!(
-            r##"path {{width=64,height=64,fill={{gradient='Linear',stops={{{{0,'#ff0000'}},{{1,'#0000ff'}}}}}},shadow_color='#00ff00',shadow_offset={{x=0,y=24}}, {shape}}}"##
+            r##"path {{width=64,height=64,fill={{gradient='linear',stops={{{{0,'#ff0000'}},{{1,'#0000ff'}}}}}},shadow_color='#00ff00',shadow_offset={{x=0,y=24}}, {shape}}}"##
         );
         let px = paint_points(&src, &[(24, 16), (24, 40), (8, 40)]).expect("headless EGL required");
         assert!(px[0].0 > 150 && px[0].2 > 30, "{px:?}");

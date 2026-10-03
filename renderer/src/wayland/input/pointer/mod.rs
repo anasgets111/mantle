@@ -163,9 +163,9 @@ keywords! {
     /// The mouse buttons `on_click` reports.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum MouseButton {
-        Left = "left",
-        Right = "right",
-        Middle = "middle",
+        Left,
+        Right,
+        Middle,
     }
 }
 
@@ -173,9 +173,9 @@ keywords! {
     /// Where an `on_drag` call falls in its drag (ADR-0116).
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum DragPhase {
-        Start = "start",
-        Move = "move",
-        End = "end",
+        Start,
+        Move,
+        End,
     }
 }
 

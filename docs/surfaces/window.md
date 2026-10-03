@@ -18,35 +18,35 @@ local TABS = {
 local function tab(entry)
     local selected = page:map(function(current) return current == entry.name end)
     return row {
-        width = "Fill",
+        width = "fill",
         padding = { left = 10, right = 12, top = 8, bottom = 8 },
         spacing = 10,
         radius = 8,
         background = selected:map(function(on) return on and "#89b4fa26" or "#00000000" end),
         on_click = function() page:set(entry.name) end,
         children = {
-            icon { name = entry.icon, size = 16, align_v = "Center",
+            icon { name = entry.icon, size = 16, align_v = "center",
                    foreground = selected:map(function(on) return on and "#89b4fa" or "#a6adc8" end) },
-            text { content = entry.name, foreground = "#cdd6f4", align_v = "Center" },
+            text { content = entry.name, foreground = "#cdd6f4", align_v = "center" },
         },
     }
 end
 
 local function switch(label, detail, on)
     return row {
-        width = "Fill",
+        width = "fill",
         padding = 12,
         spacing = 12,
         children = {
-            column { width = "Fill", spacing = 2, align_v = "Center", children = {
+            column { width = "fill", spacing = 2, align_v = "center", children = {
                 text { content = label, foreground = "#cdd6f4" },
                 text { content = detail, font_size = 12, foreground = "#a6adc8" },
             } },
             rect {
-                width = 36, height = 20, radius = 10, align_v = "Center",
+                width = 36, height = 20, radius = 10, align_v = "center",
                 background = on and "#89b4fa" or "#45475a",
                 children = { rect { width = 14, height = 14, radius = 7, margin = { left = 3, right = 3 },
-                    align_h = on and "End" or "Start", align_v = "Center", background = on and "#ffffff" or "#bac2de" } },
+                    align_h = on and "end" or "start", align_v = "center", background = on and "#ffffff" or "#bac2de" } },
             },
         },
     }
@@ -55,12 +55,12 @@ end
 local function group(title, rows)
     local divided = {}
     for index, item in ipairs(rows) do
-        if index > 1 then divided[#divided + 1] = rect { width = "Fill", height = 1, margin = { left = 12, right = 12 }, background = "#313244" } end
+        if index > 1 then divided[#divided + 1] = rect { width = "fill", height = 1, margin = { left = 12, right = 12 }, background = "#313244" } end
         divided[#divided + 1] = item
     end
-    return column { width = "Fill", spacing = 10, children = {
+    return column { width = "fill", spacing = 10, children = {
         text { content = title, font_size = 12, font_weight = 700, foreground = "#89b4fa", margin = { left = 4 } },
-        column { width = "Fill", radius = 10, background = "#181825", children = divided },
+        column { width = "fill", radius = 10, background = "#181825", children = divided },
     } }
 end
 
@@ -75,12 +75,12 @@ local settings = window {
     visible = open,
     on_close = function() open:set(false) end,
     child = row {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         background = "#1e1e2e",
         children = {
-            column { width = 180, height = "Fill", padding = 10, spacing = 2, background = "#181825", children = tabs },
-            column { width = "Fill", padding = 24, spacing = 18, children = {
+            column { width = 180, height = "fill", padding = 10, spacing = 2, background = "#181825", children = tabs },
+            column { width = "fill", padding = 24, spacing = 18, children = {
                 text { content = page, font_size = 22, font_weight = 700, foreground = "#cdd6f4" },
                 group("Appearance", {
                     switch("Dark style", "Use dark colours in every window", true),
@@ -110,7 +110,7 @@ opens.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id` |
 | `title` | `string\|Bound` | `""` | The window title |
 | `app_id` | `string\|Bound` | `"mantle-{id}"` | What compositor window rules match |
 | `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size)) |
@@ -148,7 +148,7 @@ the opening size.
 | Ask before closing | [Confirm before closing](#confirm-before-closing) |
 | Make it float, or place it | A Hyprland `windowrule` or niri `window-rule` matching `app_id` |
 | Give it a starting size | `min_size`, or a compositor rule |
-| Scroll content taller than the window | A `column { height = "Fill", scroll = scroll("name") }` ([scroll](../guide/input.md#scroll)) |
+| Scroll content taller than the window | A `column { height = "fill", scroll = scroll("name") }` ([scroll](../guide/input.md#scroll)) |
 | Close it from a button inside it | Set its `visible` state to `false` from `on_click` |
 | Open a menu from it | A [popup](popup.md) with `parent` set to the window's `id` |
 
@@ -166,7 +166,7 @@ local editor = window {
     visible = open,
     on_close = function() confirming:set(true) end,
     child = column {
-        width = "Fill", height = "Fill", padding = 16, spacing = 8, background = "#1e1e2e",
+        width = "fill", height = "fill", padding = 16, spacing = 8, background = "#1e1e2e",
         children = {
             text { content = "Unsaved changes", foreground = "#cdd6f4" },
             row {
@@ -197,7 +197,7 @@ return { editor }
 | `min_size = { width = 400 }` is refused | Name both axes; `0` leaves one unconstrained |
 | `max_size` below `min_size` is refused | Keep every non-zero `max_size` axis at or above `min_size`'s, or `0` |
 | `width = 600` on the window doesn't resize it | That sizes the root inside the window; the compositor owns the window's size |
-| A click on the window's empty background reaches the window behind it | Put the background on a `"Fill"` child, not the window ([input region](index.md#input-region)) |
+| A click on the window's empty background reaches the window behind it | Put the background on a `"fill"` child, not the window ([input region](index.md#input-region)) |
 | No title bar under a compositor without server-side decorations | The engine draws none; draw your own row, or use compositor rules |
 
 See also: [surfaces](index.md), [popup](popup.md), [nodes](../nodes/index.md),

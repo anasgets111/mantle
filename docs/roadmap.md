@@ -46,7 +46,7 @@ Wanted, but each needs a consumer or a decision first.
 | Clipboard capability | `process.detach("wl-copy", { text })`: a selection needs a process that stays alive to serve it | 0188 |
 | Video encoding | A recorder under `session_process`, driven from config | 0175 |
 | Global input capture | An external input backend, streamed in | — |
-| Wallpaper capability | A `Background` panel, an `image` with `async`/`retain`/`transition`, `files` for the folder, `persistent_table` for the choice | 0055 |
+| Wallpaper capability | A `"background"`-layer panel, an `image` with `async`/`retain`/`transition`, `files` for the folder, `persistent_table` for the choice | 0055 |
 | Rust widgets (sliders, calendars, launchers, settings) | Lua components over existing nodes | — |
 | Framework settings schema | `persistent_table` with config-declared files | — |
 | Per-panel IPC commands | `mantle set`, `toggle` and `call` | — |

@@ -6,7 +6,7 @@ Power profiles, mains or battery, and battery power draw.
 
 ```lua
 list {
-    direction = "Horizontal",
+    direction = "horizontal",
     source = mantle.power:map(function(power)
         return power and power.profiles or {}
     end),

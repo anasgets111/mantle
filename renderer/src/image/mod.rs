@@ -150,11 +150,11 @@ crate::layout::node::prop::keywords! {
     pub enum Fit {
         /// Covers the box and crops overflow. Default because it alone cannot leave wallpaper bars.
         #[default]
-        Cover = "cover",
+        Cover,
         /// Fits inside the box, leaving the remainder unpainted.
-        Contain = "contain",
+        Contain,
         /// Ignores aspect ratio.
-        Stretch = "stretch",
+        Stretch,
     }
 }
 

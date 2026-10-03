@@ -491,7 +491,7 @@ mod tests {
             ("spring = { stiffness = 220, damping = 0 }", &["damping", "(0, 10000]"]),
             ("spring = 220", &["`spring` must be Spring"]),
             // Without a spring the duration is still required, so lifting it is scoped to the one.
-            (r#"easing = "Linear""#, &["expected a duration in ms"]),
+            (r#"easing = "linear""#, &["expected a duration in ms"]),
         ];
         for (entry, wanted) in cases {
             let text = refused(&lua, &format!("return {{ animate = {{ width = {{ {entry} }} }} }}"));

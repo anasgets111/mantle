@@ -76,7 +76,7 @@ keywords! {
     /// A [`TextRun`]'s `kind`: the notification span it may be.
     #[derive(Clone, Copy, PartialEq)]
     pub(crate) enum SpanKind {
-        Text = "text",
+        Text,
     }
 }
 
@@ -239,7 +239,7 @@ impl Prop for Font {
 }
 
 keywords! {
-    /// What to do with text too wide for its box. Only `"End"` is offered: middle elision needs a
+    /// What to do with text too wide for its box. Only `"end"` is offered: middle elision needs a
     /// grapheme budget across runs.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub enum Elide {
@@ -252,8 +252,8 @@ keywords! {
 }
 
 keywords! {
-    /// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "Word"`
-    /// and `elide = "End"` fills the allowed lines, then ellipsizes the last one. The default,
+    /// Whether oversized text breaks onto another line. It composes with `elide`: `wrap = "word"`
+    /// and `elide = "end"` fills the allowed lines, then ellipsizes the last one. The default,
     /// `None`, measures one line, so a fixed-width `text` reserves the height it paints.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub enum Wrap {
@@ -267,7 +267,7 @@ keywords! {
 
 /// `max_lines` is uncapped when absent or `0`; zero lets signal-driven values spell "absent"
 /// because `Bound` cannot. Negatives error rather than being clamped, which would hide a sign
-/// mistake in config arithmetic. It is consulted only under `wrap = "Word"`, so setting both
+/// mistake in config arithmetic. It is consulted only under `wrap = "word"`, so setting both
 /// unconditionally is safe.
 pub(crate) struct MaxLines;
 
@@ -609,13 +609,13 @@ mod tests {
         let lua = mlua::Lua::new();
         assert_eq!(fields::text::wrap.read(&PropMap::default()).unwrap(), Wrap::None);
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "Word" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "word" }"#).eval().unwrap();
         assert_eq!(fields::text::wrap.read(&props_from_table(&table)).unwrap(), Wrap::Word);
 
         // "WordWrap" is the plausible typo.
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
         let err = fields::text::wrap.read(&props_from_table(&table)).unwrap_err();
-        assert!(format!("{err}").contains("Word"), "the error should name the modes that do exist, got {err}");
+        assert!(format!("{err}").contains("word"), "the error should name the modes that do exist, got {err}");
     }
 
     /// Zero is the uncapped spelling a `Bound` needs, since a signal has no way to be absent. A

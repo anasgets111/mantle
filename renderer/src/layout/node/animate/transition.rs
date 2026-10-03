@@ -19,7 +19,7 @@ lua_shape! {
     pub struct TransitionInput {
         /// Required, ms `[1, 60000]`.
         pub duration: Duration,
-        /// Default `"InOutQuad"`; drives `u_progress`.
+        /// Default `"in_out_quad"`; drives `u_progress`.
         pub easing: Option<Easing>,
         // The config's own file: `layout::image_shader` compiles it and owns nothing about what it
         // draws.
@@ -48,7 +48,7 @@ pub struct TransitionSpec {
 
 spelled!(TransitionSpec => TransitionInput::lua());
 
-/// `transition = { duration = 700, easing = "InOutCubic" }` on an `image`. The `duration` is
+/// `transition = { duration = 700, easing = "in_out_cubic" }` on an `image`. The `duration` is
 /// required: a dissolve with no length is a snap, and `retain` on its own is already that.
 impl Prop for TransitionSpec {
     type Out = Option<TransitionSpec>;

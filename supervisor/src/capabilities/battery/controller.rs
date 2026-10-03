@@ -239,7 +239,7 @@ mod tests {
         }
     }
 
-    /// An unknown future state degrades to `"Unknown"` instead of dropping the payload.
+    /// An unknown future state degrades to `"unknown"` instead of dropping the payload.
     #[test]
     fn a_state_number_this_build_does_not_know_reads_as_unknown() {
         assert_eq!(from_upower(7), BatteryStatus::Unknown);
@@ -257,7 +257,7 @@ mod tests {
             time_to_full: None,
         })
         .unwrap();
-        assert_eq!(json, r#"{"present":true,"percent":70,"state":"PendingCharge"}"#);
+        assert_eq!(json, r#"{"present":true,"percent":70,"state":"pending_charge"}"#);
     }
 
     #[test]

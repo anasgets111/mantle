@@ -14,7 +14,7 @@
 ---the index keeps a field set after construction legal.
 ---@class Node
 ---@field [string] any
----@alias Align "Start"|"Center"|"End"|"Stretch"
+---@alias Align "start"|"center"|"end"|"stretch"
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
@@ -22,24 +22,24 @@
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent "0%"|"1%"|"2%"|"3%"|"4%"|"5%"|"6%"|"7%"|"8%"|"9%"|"10%"|"11%"|"12%"|"13%"|"14%"|"15%"|"16%"|"17%"|"18%"|"19%"|"20%"|"21%"|"22%"|"23%"|"24%"|"25%"|"26%"|"27%"|"28%"|"29%"|"30%"|"31%"|"32%"|"33%"|"34%"|"35%"|"36%"|"37%"|"38%"|"39%"|"40%"|"41%"|"42%"|"43%"|"44%"|"45%"|"46%"|"47%"|"48%"|"49%"|"50%"|"51%"|"52%"|"53%"|"54%"|"55%"|"56%"|"57%"|"58%"|"59%"|"60%"|"61%"|"62%"|"63%"|"64%"|"65%"|"66%"|"67%"|"68%"|"69%"|"70%"|"71%"|"72%"|"73%"|"74%"|"75%"|"76%"|"77%"|"78%"|"79%"|"80%"|"81%"|"82%"|"83%"|"84%"|"85%"|"86%"|"87%"|"88%"|"89%"|"90%"|"91%"|"92%"|"93%"|"94%"|"95%"|"96%"|"97%"|"98%"|"99%"|"100%" `"NN%"` of the parent's box (the output's, on a panel).
----@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
+---@alias Length number|"fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
 ---@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color, [string]: "no such property" } Per-edge colours; a signal inside is refused.
 ---@alias Axes { x?: number, y?: number, [string]: "no such property" } A missing axis takes the property's default.
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand { op: "M"|"L"|"Q"|"C"|"A"|"Z", points: number[], hole?: boolean, [string]: "no such property" } Node-local logical pixels. Q has one control point, C has two, then the endpoint. A is centre x, centre y, radius, start and sweep in degrees clockwise from the +x axis. `hole` on a subpath's first command cuts it out of the fill, whatever its winding.
----@alias Gradient { gradient: "Linear"|"Radial"|"Conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
----@alias Mask { gradient?: "Linear"|"Radial"|"Conic", angle?: number, stops?: GradientStop[], source?: string, node?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
----@alias EasingName "Linear"|"InQuad"|"OutQuad"|"InOutQuad"|"InCubic"|"OutCubic"|"InOutCubic"|"InQuart"|"OutQuart"|"InOutQuart"|"InQuint"|"OutQuint"|"InOutQuint"|"InSine"|"OutSine"|"InOutSine"|"InExpo"|"OutExpo"|"InOutExpo"|"InCirc"|"OutCirc"|"InOutCirc"|"InBack"|"OutBack"|"InOutBack"|"InElastic"|"OutElastic"|"InOutElastic"|"InBounce"|"OutBounce"|"InOutBounce" `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
+---@alias Gradient { gradient: "linear"|"radial"|"conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
+---@alias Mask { gradient?: "linear"|"radial"|"conic", angle?: number, stops?: GradientStop[], source?: string, node?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
+---@alias EasingName "linear"|"in_quad"|"out_quad"|"in_out_quad"|"in_cubic"|"out_cubic"|"in_out_cubic"|"in_quart"|"out_quart"|"in_out_quart"|"in_quint"|"out_quint"|"in_out_quint"|"in_sine"|"out_sine"|"in_out_sine"|"in_expo"|"out_expo"|"in_out_expo"|"in_circ"|"out_circ"|"in_out_circ"|"in_back"|"out_back"|"in_out_back"|"in_elastic"|"out_elastic"|"in_out_elastic"|"in_bounce"|"out_bounce"|"in_out_bounce" The `back` and `elastic` families overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing EasingName|[number, number, number, number]|{ steps: integer, [string]: "no such property" } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
 ---@alias Keyframe number|string|Edges|Axes|PathCommand[]|{ value: number|string|Edges|Axes|PathCommand[], duration?: number, easing?: Easing, [string]: "no such property" } A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
 ---@alias Spring { stiffness: number, damping: number, [string]: "no such property" } Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
----@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes|PathCommand[], spring?: Spring, keyframes?: Keyframe[], loops?: integer|"Infinite", [string]: "no such property" } A bare number is `duration`.
---- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
+---@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Axes|PathCommand[], spring?: Spring, keyframes?: Keyframe[], loops?: integer|"infinite", [string]: "no such property" } A bare number is `duration`.
+--- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"in_out_quad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
---- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"Infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
+--- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
 ---@alias Animations table<string, Animation> Property name to animation; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
@@ -59,7 +59,7 @@
 ---@field rotate? number|Bound `[-8192, 8192]`, default `0`. Degrees clockwise about `origin`. Paint only.
 ---@field translate? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only.
 ---@field origin? Axes|Bound `[0, 1]`, default `{ x = 0.5, y = 0.5 }`. Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
----@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "None"` (ADR-0254).
+---@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "none"` (ADR-0254).
 ---@field shadow_blur? number|Bound `[0, 8192]`, default `0`. CSS `box-shadow` blur radius in px (ADR-0262).
 ---@field shadow_offset? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Shadow offset in px per axis. Follows the node's transform.
 ---@field shadow_spread? number|Bound `[-8192, 8192]`, default `0`. Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre.
@@ -82,22 +82,22 @@
 ---[docs](https://anasgets111.github.io/mantle/nodes/index.html#common-properties)
 ---@class PlacedBase
 ---@field margin? number|Edges|Bound Default `0`. Outer spacing; a number sets all four edges. Not range-checked.
----@field align_h? Align|Bound Default `"Start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"Stretch"` packs as `"Start"`). `"Stretch"` overrides a pixel size; `"Fill"` off the parent's flow axis overrides alignment.
----@field align_v? Align|Bound Default `"Start"`. As `align_h` with the axes swapped: packs a `column`'s children.
+---@field align_h? Align|Bound Default `"start"`. Places the node in its parent: both axes under a stacking parent, only the cross axis under a `row`/`column`/`list`. On a `row` it also packs the children, which ignore their own (`"stretch"` packs as `"start"`). `"stretch"` overrides a pixel size; `"fill"` off the parent's flow axis overrides alignment.
+---@field align_v? Align|Bound Default `"start"`. As `align_h` with the axes swapped: packs a `column`'s children.
 
 ---Box paint for `rect`, `row`, `column` and every surface role.
 ---[docs](https://anasgets111.github.io/mantle/guide/paint.html#box-properties)
 ---@class BoxBase
 ---@field background? Color|Gradient|Bound Absent draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
----@field mask? Mask|Bound Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "Rounded"`. Hit-testing and `behind_blur` ignore it.
+---@field mask? Mask|Bound Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "rounded"`. Hit-testing and `behind_blur` ignore it.
 ---@field radius? number|Bound `[0, 8192]`, default `0`. Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle.
----@field corner_shape? "Round"|"Scoop"|Bound Default `"Round"`. `"Scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
+---@field corner_shape? "round"|"scoop"|Bound Default `"round"`. `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
 ---@field border_color? Color|BorderColors|Bound A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
 ---@field border_width? number|Edges|Bound `[0, 8192]`, default `0`. Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
 ---@field behind_blur? boolean|Bound Default `false`. Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
 ---@field backdrop_blur? number|Bound `[0, 8192]`, default `0`. Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
----@field shadow_mode? "Box"|"Content"|Bound Default `"Box"`. `"Box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"Content"`: CSS `drop-shadow` of everything painted (ADR-0260).
----@field clip? "Box"|"Rounded"|"None"|Bound Default `"Box"`. `"Box"`: children cut to the rectangle. `"Rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"None"` leaves children on the parent's clip (ADR-0257).
+---@field shadow_mode? "box"|"content"|Bound Default `"box"`. `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
+---@field clip? "box"|"rounded"|"none"|Bound Default `"box"`. `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257).
 
 ---One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
 ---drop image spans, which have no `text` and are refused.
@@ -114,7 +114,7 @@
 ---`image.transition`. Unknown keys are refused.
 ---@class Transition
 ---@field duration number Required, ms `[1, 60000]`.
----@field easing? Easing Default `"InOutQuad"`; drives `u_progress`.
+---@field easing? Easing Default `"in_out_quad"`; drives `u_progress`.
 ---@field shader? string Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
 --- Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
 --- - `v_uv`: box coordinates `0..1`, top-left origin, y down.
@@ -156,10 +156,10 @@
 ---@field font_weight? number|Bound `[1, 1000]`, default `400`. Font weight from 1 to 1000. A run with `bold = true` uses weight 700.
 ---@field italic? boolean|Bound Default `false`. Use the family's italic face when available. A run with `italic = true` stays italic.
 ---@field foreground? Color|Bound Default `"#FFFFFF"`. A run's `color` overrides it.
----@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns lines inside the node's own box; `Start`/`End` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
----@field wrap? "None"|"Word"|Bound Default `"None"`. `"Word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"Fill"` or a stretched cross axis).
----@field max_lines? number|Bound Default `0`. Line cap under `wrap = "Word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
----@field elide? "None"|"End"|Bound Default `"None"`. `"End"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+---@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
+---@field wrap? "none"|"word"|Bound Default `"none"`. `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis).
+---@field max_lines? number|Bound Default `0`. Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
+---@field elide? "none"|"end"|Bound Default `"none"`. `"end"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
 ---@field elided? Bound An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
 ---@field on_link? fun(href: string) Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
 
@@ -204,7 +204,7 @@
 ---@field itemfn fun(item: any): Node Required. Builds a node for every built item, visible or not.
 ---@field key? fun(item: any): string Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
 ---@field limit? integer|Bound Build at most this many items; above 10000 acts as 10000, `0` builds none.
----@field direction? "Vertical"|"Horizontal"|Bound Default `"Vertical"`. Lays out as a `column` or a `row`.
+---@field direction? "vertical"|"horizontal"|Bound Default `"vertical"`. Lays out as a `column` or a `row`.
 ---@field spacing? number|Bound Default `0`. Px between visible items along `direction`; negative values overlap them.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along `direction`.
 
@@ -215,7 +215,7 @@
 ---@field placeholder? string|Bound Default `""`. Shown while the field is empty, focused or not (ADR-0135). Never submitted.
 ---@field font_size? number|Bound `[1, 8192]`, default `12`. Size of the text and placeholder.
 ---@field foreground? Color|Bound Default `"#FFFFFF"`. Colour of the text and placeholder.
----@field text_align? "Start"|"Center"|"End"|Bound Default `"Start"`. Aligns the text inside the field's box.
+---@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns the text inside the field's box.
 ---@field autofocus? boolean|Bound Default `false`. Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
 ---@field on_change? fun(text: string) Full text after every edit.
 ---@field on_submit? fun(text: string) Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.

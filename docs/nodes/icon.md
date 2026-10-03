@@ -19,10 +19,10 @@ end)
 local app_badge = row {
     spacing = 8, padding = { left = 8, right = 12, top = 6, bottom = 6 }, radius = 8, background = "#313244",
     children = {
-        icon { name = focused_icon, size = 20, align_v = "Center" },
+        icon { name = focused_icon, size = 20, align_v = "center" },
         text { content = mantle.workspaces:map(function(w)
             return w and w.active_client and w.active_client.title or ""
-        end), max_width = 200, elide = "End", align_v = "Center", foreground = "#CDD6F4" },
+        end), max_width = 200, elide = "end", align_v = "center", foreground = "#CDD6F4" },
     },
 }
 

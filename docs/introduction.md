@@ -26,26 +26,26 @@ Open `~/.config/mantle/shell.lua` and replace its contents with this bar:
 ```lua,shot
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
-    width = "Fill",
+    width = "fill",
     height = 32,
     exclusive_zone = true,
     background = "#1e1e2e",
     child = row {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         padding = { left = 12, right = 12 },
         children = {
-            text { content = "Mantle", font_weight = 700, foreground = "#89b4fa", align_v = "Center" },
-            rect { width = "Fill" },
+            text { content = "Mantle", font_weight = 700, foreground = "#89b4fa", align_v = "center" },
+            rect { width = "fill" },
             text {
                 content = mantle.system:map(function(system)
                     return system and os.date("%H:%M", system.time) or "--:--"
                 end),
                 font_weight = 700,
                 foreground = "#cdd6f4",
-                align_v = "Center",
+                align_v = "center",
             },
         },
     },
@@ -55,7 +55,7 @@ return panel {
 | Part | What it does |
 | :--- | :--- |
 | `panel` | Places a 32 px bar at the top of each output and reserves that space from windows |
-| `row` and the `"Fill"` `rect` | Put the label on the left and push the clock to the right |
+| `row` and the `"fill"` `rect` | Put the label on the left and push the clock to the right |
 | `mantle.system:map(...)` | Updates the clock when the system capability pushes time. The callback handles `nil` before its first push |
 
 Check the config before starting a shell, then run it:

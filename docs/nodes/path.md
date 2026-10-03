@@ -97,7 +97,7 @@ return row {
     children = {
         ring(0.7),
         column {
-            align_v = "Center",
+            align_v = "center",
             spacing = 2,
             children = {
                 text { content = "Storage", font_weight = 700, foreground = "#cdd6f4" },
@@ -137,9 +137,9 @@ return path {
     animate = {
         commands = {
             duration = 600,
-            easing = "InOutCubic",
+            easing = "in_out_cubic",
             keyframes = { star, square, circle, star },
-            loops = "Infinite",
+            loops = "infinite",
         },
     },
 }

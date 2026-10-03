@@ -283,7 +283,7 @@ mod tests {
             body = state("body", "A long label that cannot fit")
             width = state("width", 40)
             return panel { id = "bar", child = text {
-                content = body, width = width, elide = "End", elided = cut
+                content = body, width = width, elide = "end", elided = cut
             } }"#,
         );
         let shaping = ShapingHandle::spawn();
@@ -316,7 +316,7 @@ mod tests {
             return panel { id = "bar", child = text {
                 content = { { text = "مرحبا بالعالم ", bold = true },
                     { text = "👩‍👩‍👧‍👦 👍🏽 more words on several lines", italic = true } },
-                width = 80, wrap = "Word", max_lines = cap, elided = cut
+                width = 80, wrap = "word", max_lines = cap, elided = cut
             } }"#,
         );
         let shaping = ShapingHandle::spawn();
@@ -335,8 +335,8 @@ mod tests {
         let (lua, surface) = surface_from(
             r#"cut = elided("label")
             size = state("size", 12)
-            return panel { id = "bar", width = "Fill", child = text {
-                width = "Fill", content = "WWW", font_size = size, elide = "End", elided = cut
+            return panel { id = "bar", width = "fill", child = text {
+                width = "fill", content = "WWW", font_size = size, elide = "end", elided = cut
             } }"#,
         );
         let shaping = ShapingHandle::spawn();
@@ -356,7 +356,7 @@ mod tests {
         let (lua, surface) = surface_from(
             r#"w = state("w", 1)
             return panel { id = "bar", child = text {
-                content = "1️⃣👩‍👩‍👧‍👦👍🏽éxyz", width = w, elide = "End"
+                content = "1️⃣👩‍👩‍👧‍👦👍🏽éxyz", width = w, elide = "end"
             } }"#,
         );
         let shaping = ShapingHandle::spawn();
@@ -403,7 +403,7 @@ mod tests {
     #[test]
     fn a_styled_run_follows_its_text_across_a_wrap() {
         let (content, runs) = styled(
-            r##"panel { id = "bar", child = text { width = 90, font_size = 14, wrap = "Word", content = {
+            r##"panel { id = "bar", child = text { width = 90, font_size = 14, wrap = "word", content = {
                 { text = "plain " }, { text = "bold words that wrap", bold = true }, { text = " tail" },
             } } }"##,
         );
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn an_elided_styled_text_ends_in_an_ellipsis_of_the_same_style() {
         let (content, runs) = styled(
-            r##"panel { id = "bar", child = text { width = 60, font_size = 14, elide = "End", content = {
+            r##"panel { id = "bar", child = text { width = 60, font_size = 14, elide = "end", content = {
                 { text = "Alice: ", bold = true, color = "#ff0000" }, { text = "a long message that will not fit" },
             } } }"##,
         );
@@ -471,7 +471,7 @@ mod tests {
     #[test]
     fn a_narrow_text_that_wraps_is_broken_into_lines_and_measured_at_their_height() {
         let (drawn, height) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word" }} }}"#
         ));
         let lines: Vec<&str> = drawn.lines().collect();
         assert!(lines.len() > 1, "80px cannot hold {LONG:?} on one line, got {drawn:?}");
@@ -489,7 +489,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(&format!(
             r#"panel {{ id = "bar", width = 200,
-                child = column {{ children = {{ text {{ content = "{LONG}", wrap = "Word" }} }} }} }}"#
+                child = column {{ children = {{ text {{ content = "{LONG}", wrap = "word" }} }} }} }}"#
         ));
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let laid_out = scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height;
@@ -522,7 +522,7 @@ mod tests {
     #[test]
     fn a_wrapped_line_that_would_read_against_its_paragraph_is_marked() {
         let (drawn, _) = text_box(
-            r#"panel { id = "bar", child = text { width = 80, content = "اول wwwwwwwww ثاني", wrap = "Word" } }"#,
+            r#"panel { id = "bar", child = text { width = 80, content = "اول wwwwwwwww ثاني", wrap = "word" } }"#,
         );
         let lines: Vec<&str> = drawn.lines().collect();
         assert!(!lines[0].starts_with('\u{200F}'), "the line that opens the paragraph already agrees: {drawn:?}");
@@ -539,7 +539,7 @@ mod tests {
     #[test]
     fn max_lines_caps_both_what_is_drawn_and_the_height_reserved_for_it() {
         let (drawn, height) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word", max_lines = 2 }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 2 }} }}"#
         ));
         assert_eq!(drawn.lines().count(), 2, "got {drawn:?}");
         assert_eq!(height, 2.0 * 12.0 * 1.2, "a capped run reserves the lines it keeps, not the ones it dropped");
@@ -550,14 +550,14 @@ mod tests {
     #[test]
     fn a_capped_wrap_that_elides_finishes_its_last_line_with_an_ellipsis() {
         let (drawn, _) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word", max_lines = 2, elide = "End" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 2, elide = "end" }} }}"#
         ));
         let lines: Vec<&str> = drawn.lines().collect();
         assert_eq!(lines.len(), 2, "got {drawn:?}");
         assert!(lines[1].ends_with('\u{2026}'), "the last kept line must be ellipsized: {drawn:?}");
         assert!(!lines[0].ends_with('\u{2026}'), "no earlier line may be: {drawn:?}");
         let (uncapped, _) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word" }} }}"#
         ));
         let original: Vec<_> = uncapped.lines().collect();
         assert_eq!(lines[0], original[0]);
@@ -570,7 +570,7 @@ mod tests {
             r##"cap = state("cap", 2)
             cut = elided("preview")
             return panel { id = "bar", child = text {
-                width = 300, wrap = "Word", max_lines = cap, elide = "End", elided = cut,
+                width = 300, wrap = "word", max_lines = cap, elide = "end", elided = cut,
                 content = {
                     { text = "First line\n" },
                     { text = "Second line", bold = true, color = "#ff0000" },
@@ -608,7 +608,7 @@ mod tests {
         {
             let (drawn, _) = text_box(&format!(
                 r#"panel {{ id = "bar", child = text {{ width = 300, content = "{source}",
-                    wrap = "Word", max_lines = 2, elide = "End" }} }}"#
+                    wrap = "word", max_lines = 2, elide = "end" }} }}"#
             ));
             assert_eq!(drawn, expected);
         }
@@ -619,7 +619,7 @@ mod tests {
     #[test]
     fn a_max_lines_above_the_line_count_leaves_the_run_alone() {
         let (drawn, _) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word", max_lines = 40, elide = "End" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 40, elide = "end" }} }}"#
         ));
         assert!(!drawn.contains('\u{2026}'), "nothing was dropped, so nothing should say it was: {drawn:?}");
         assert_eq!(drawn.split_whitespace().collect::<Vec<_>>(), LONG.split_whitespace().collect::<Vec<_>>());
@@ -630,9 +630,9 @@ mod tests {
     #[test]
     fn a_max_lines_of_zero_is_no_cap_at_all() {
         let uncapped =
-            format!(r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word" }} }}"#);
+            format!(r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word" }} }}"#);
         let zero = format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "Word", max_lines = 0 }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 0 }} }}"#
         );
         assert_eq!(text_box(&zero), text_box(&uncapped));
     }
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn a_text_too_wide_for_its_box_is_cut_short_and_finished_with_an_ellipsis() {
         let drawn = elided(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", elide = "End" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", elide = "end" }} }}"#
         ));
         assert!(drawn.ends_with('\u{2026}'), "must end with an ellipsis: {drawn:?}");
         assert!(drawn.chars().count() < LONG.chars().count(), "must be shorter than the original: {drawn:?}");
@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn a_text_that_already_fits_is_left_exactly_as_written() {
-        let drawn = elided(r#"panel { id = "bar", child = text { width = 600, content = "short", elide = "End" } }"#);
+        let drawn = elided(r#"panel { id = "bar", child = text { width = 600, content = "short", elide = "end" } }"#);
         assert_eq!(drawn, "short", "an ellipsis on a string that fits would be a lie about the content");
     }
 
@@ -663,7 +663,7 @@ mod tests {
     /// A `Content`-sized box came from measuring this same string, so it fits by construction.
     #[test]
     fn a_content_sized_text_never_elides_itself() {
-        let drawn = elided(&format!(r#"panel {{ id = "bar", child = text {{ content = "{LONG}", elide = "End" }} }}"#));
+        let drawn = elided(&format!(r#"panel {{ id = "bar", child = text {{ content = "{LONG}", elide = "end" }} }}"#));
         assert_eq!(drawn, LONG);
     }
 
@@ -672,7 +672,7 @@ mod tests {
     #[test]
     fn a_box_too_narrow_for_one_character_draws_only_the_ellipsis() {
         let drawn = elided(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 1, content = "{LONG}", elide = "End" }} }}"#
+            r#"panel {{ id = "bar", child = text {{ width = 1, content = "{LONG}", elide = "end" }} }}"#
         ));
         assert_eq!(drawn, "\u{2026}");
     }

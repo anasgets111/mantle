@@ -1,6 +1,6 @@
 //! Expanding declared surfaces into the instances the compositor actually maps (`CONTEXT.md`,
 //! Surface instance; ADR-0038 decision 3). One declared surface is not one Wayland surface: a
-//! `panel` with `output = "All"` targets every connected output, each with its own
+//! `panel` with `output = "all"` targets every connected output, each with its own
 //! `zwlr_layer_surface_v1` and size, why the retained scene keys by instance id, not declared id.
 //! Pure: no Wayland types, the testable seam with no headless harness. Per-output resolves to
 //! three answers per role: a `window` has no `output` (one instance regardless of
@@ -32,7 +32,7 @@ pub struct SurfaceInstance {
     /// and `set_instance_size` leaves it alone, because the compositor's answer there is the size
     /// this surface asked for and writing it back would make the measurement its own cap.
     ///
-    /// That is not pedantry. A `Content` root over a `wrap = "Word"` child does take its bound into
+    /// That is not pedantry. A `Content` root over a `wrap = "word"` child does take its bound into
     /// account: measured against 1000 the same paragraph is 342 wide on one line, against 180 it is
     /// 180 wide on two. Feed the granted 342 back as the ceiling and the text can never grow wider
     /// again -- it wraps taller inside the width it happened to open at. `TrackedRole::Panel`'s
@@ -58,10 +58,10 @@ pub struct OutputGeometry {
 /// Every instance `specs` declares against the currently connected `outputs`, per role
 /// (ADR-0038 decision 3, ADR-0049 decision 1).
 ///
-/// **`panel`**: expands per output. `output = "All"` (the default) yields one instance per
+/// **`panel`**: expands per output. `output = "all"` (the default) yields one instance per
 /// output, in `outputs` order; other values match the named output, else none. The
 /// `"{id}@{output}"` id form stays uniform even for a single match (`"DP-1"` yields `"bar@DP-1"`).
-/// `"Active"` yields one instance on the bare id with no output, since the compositor picks it at
+/// `"active"` yields one instance on the bare id with no output, since the compositor picks it at
 /// each show (ADR-0246); none while no output exists to pick.
 ///
 /// **`window`**: always exactly one instance, whatever `outputs` holds, including none, since the
@@ -74,7 +74,7 @@ pub struct OutputGeometry {
 /// (ADR-0051 decision 1): expanding per parent would open a dropdown on every monitor from one
 /// `visible` signal (its parent is chosen at creation instead). `available` seeds from the popup's
 /// own `width`/`height` (either may be absent, sizing that axis to content; neither takes
-/// `"Fill"`), `xdg_positioner::set_size`'s argument.
+/// `"fill"`), `xdg_positioner::set_size`'s argument.
 ///
 /// **`lock`**: expands per output like a `panel`, with no filter (ADR-0052 decision 2):
 /// `ext-session-lock-v1` requires "lock surfaces for all outputs currently present" and rejects a
@@ -84,7 +84,7 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
     let mut instances = Vec::new();
     for spec in specs {
         match spec {
-            SurfaceSpec::Panel(panel) if panel.topology.output == "Active" => {
+            SurfaceSpec::Panel(panel) if panel.topology.output == "active" => {
                 if let Some(first) = outputs.first() {
                     instances.push(SurfaceInstance {
                         instance_id: panel.topology.id.clone(),
@@ -99,7 +99,7 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
             }
             SurfaceSpec::Panel(panel) => {
                 for output in outputs {
-                    if panel.topology.output != "All" && panel.topology.output != output.name {
+                    if panel.topology.output != "all" && panel.topology.output != output.name {
                         continue;
                     }
                     instances.push(SurfaceInstance {
@@ -164,7 +164,7 @@ pub fn warn_unmatched_outputs(specs: &[SurfaceSpec], outputs: &[OutputGeometry])
     for spec in specs {
         let SurfaceSpec::Panel(panel) = spec else { continue };
         let output = panel.topology.output.as_str();
-        if !matches!(output, "All" | "Active") && !connected.contains(&output) {
+        if !matches!(output, "all" | "active") && !connected.contains(&output) {
             warn!(
                 "surface {:?} targets output {output:?}, which is not connected (connected: {connected:?}); no surface created for it",
                 panel.topology.id
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn output_all_produces_one_instance_per_output_in_output_order() {
         let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)];
-        let instances = expand_instances(&[spec("bar", "All")], &outputs);
+        let instances = expand_instances(&[spec("bar", "all")], &outputs);
 
         assert_eq!(instances.iter().map(|i| i.instance_id.as_str()).collect::<Vec<_>>(), ["bar@eDP-1", "bar@DP-1"]);
         assert_eq!(instances[0].available, LogicalSize { width: 1920.0, height: 1080.0 });
@@ -302,16 +302,16 @@ mod tests {
     #[test]
     fn an_active_panel_is_one_bare_instance_with_no_output_and_none_without_outputs() {
         let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)];
-        let instances = expand_instances(&[spec("osd", "Active")], &outputs);
+        let instances = expand_instances(&[spec("osd", "active")], &outputs);
 
         assert_eq!(instances.len(), 1);
         assert_eq!((instances[0].instance_id.as_str(), instances[0].output.as_str()), ("osd", ""));
-        assert!(expand_instances(&[spec("osd", "Active")], &[]).is_empty());
+        assert!(expand_instances(&[spec("osd", "active")], &[]).is_empty());
     }
 
     #[test]
     fn no_outputs_at_all_produces_no_instances_even_for_output_all() {
-        assert!(expand_instances(&[spec("bar", "All")], &[]).is_empty());
+        assert!(expand_instances(&[spec("bar", "all")], &[]).is_empty());
     }
 
     #[test]
@@ -414,7 +414,7 @@ mod tests {
 
     #[test]
     fn a_window_still_expands_with_no_outputs_connected_at_all() {
-        let instances = expand_instances(&[window("settings"), spec("bar", "All")], &[]);
+        let instances = expand_instances(&[window("settings"), spec("bar", "all")], &[]);
 
         assert_eq!(instances.iter().map(|i| i.instance_id.as_str()).collect::<Vec<_>>(), ["settings"]);
         assert_eq!(instances[0].available, LogicalSize::default());
@@ -423,7 +423,7 @@ mod tests {
     #[test]
     fn several_specs_expand_independently_and_keep_spec_order() {
         let outputs = [output("eDP-1", 1920.0, 1080.0), output("DP-1", 2560.0, 1440.0)];
-        let instances = expand_instances(&[spec("bar", "All"), spec("dock", "DP-1")], &outputs);
+        let instances = expand_instances(&[spec("bar", "all"), spec("dock", "DP-1")], &outputs);
 
         assert_eq!(
             instances.iter().map(|i| i.instance_id.as_str()).collect::<Vec<_>>(),
@@ -445,7 +445,7 @@ mod tests {
     fn a_plugged_in_monitor_adds_one_instance_and_leaves_the_existing_one_alone() {
         let current = [configured("bar@eDP-1", "bar", "eDP-1", 1920.0, 32.0)];
         let fresh =
-            expand_instances(&[spec("bar", "All")], &[output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)]);
+            expand_instances(&[spec("bar", "all")], &[output("eDP-1", 1920.0, 1080.0), output("DP-1", 3840.0, 2160.0)]);
 
         let reconcile = reconcile_instances(&current, &fresh, &[]);
 
@@ -460,7 +460,7 @@ mod tests {
     #[test]
     fn a_retained_instance_keeps_the_size_the_compositor_configured_not_the_outputs_logical_size() {
         let current = [configured("bar@eDP-1", "bar", "eDP-1", 1920.0, 32.0)];
-        let fresh = expand_instances(&[spec("bar", "All")], &[output("eDP-1", 1920.0, 1080.0)]);
+        let fresh = expand_instances(&[spec("bar", "all")], &[output("eDP-1", 1920.0, 1080.0)]);
 
         let reconcile = reconcile_instances(&current, &fresh, &[]);
 
@@ -475,7 +475,7 @@ mod tests {
             configured("bar@eDP-1", "bar", "eDP-1", 1920.0, 32.0),
             configured("bar@DP-1", "bar", "DP-1", 3840.0, 48.0),
         ];
-        let fresh = expand_instances(&[spec("bar", "All")], &[output("eDP-1", 1920.0, 1080.0)]);
+        let fresh = expand_instances(&[spec("bar", "all")], &[output("eDP-1", 1920.0, 1080.0)]);
 
         let reconcile = reconcile_instances(&current, &fresh, &[]);
 
@@ -490,7 +490,7 @@ mod tests {
             configured("bar@eDP-1", "bar", "eDP-1", 1920.0, 32.0),
             configured("dock@eDP-1", "dock", "eDP-1", 64.0, 1080.0),
         ];
-        let fresh = expand_instances(&[spec("bar", "All"), spec("dock", "All")], &[output("eDP-1", 1920.0, 1080.0)]);
+        let fresh = expand_instances(&[spec("bar", "all"), spec("dock", "all")], &[output("eDP-1", 1920.0, 1080.0)]);
 
         let reconcile = reconcile_instances(&current, &fresh, &["bar".to_string()]);
 
@@ -516,7 +516,7 @@ mod tests {
     #[test]
     fn a_swap_of_one_monitor_for_another_adds_and_removes_in_the_same_pass() {
         let current = [configured("bar@eDP-1", "bar", "eDP-1", 1920.0, 32.0)];
-        let fresh = expand_instances(&[spec("bar", "All")], &[output("DP-1", 3840.0, 2160.0)]);
+        let fresh = expand_instances(&[spec("bar", "all")], &[output("DP-1", 3840.0, 2160.0)]);
 
         let reconcile = reconcile_instances(&current, &fresh, &[]);
 
@@ -527,7 +527,7 @@ mod tests {
 
     #[test]
     fn a_first_expansion_against_an_empty_current_set_is_all_added() {
-        let fresh = expand_instances(&[spec("bar", "All")], &[output("eDP-1", 1920.0, 1080.0)]);
+        let fresh = expand_instances(&[spec("bar", "all")], &[output("eDP-1", 1920.0, 1080.0)]);
 
         let reconcile = reconcile_instances(&[], &fresh, &[]);
 

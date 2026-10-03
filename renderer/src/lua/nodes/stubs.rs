@@ -312,24 +312,24 @@ const NODES_HEADER: &str = r##"---@meta
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent {PERCENT} `"NN%"` of the parent's box (the output's, on a panel).
----@alias Length number|"Fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
+---@alias Length number|"fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
 ---@alias BorderColors {BorderColors}
 ---@alias Axes {Axes}
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
----@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: Linear default `180`, Conic default `0`, Radial refuses it.
+---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
 ---@alias Mask {Mask} Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
----@alias EasingName {EASING} `Back` and `Elastic` overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
+---@alias EasingName {EASING} The `back` and `elastic` families overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing {Easing} A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
 ---@alias Keyframe {ANIMATABLE}|{Keyframe}
 ---@alias Spring {Spring}
 ---@alias Animation {Animation} A bare number is `duration`.
---- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"InOutQuad"`.
+--- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"in_out_quad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
---- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"Infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
+--- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
 ---@alias Animations {Animations} Property name to animation; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit {Exit} `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 

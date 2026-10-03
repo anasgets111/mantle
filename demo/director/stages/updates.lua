@@ -18,21 +18,21 @@ local badge = rect {
     visible = updates:map(function(u) return #u.packages > 0 or u.installing end),
     margin = { right = 14 },
     height = 40,
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 14, right = 18 },
     radius = 20,
     background = theme.surface,
     scale = 1,
-    animate = { scale = { duration = 320, easing = "OutBack", from = 0.5 } },
+    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
     children = {
         row {
-            height = "Fill",
+            height = "fill",
             spacing = 10,
             children = {
                 icon {
                     name = "software-update-available-symbolic",
                     size = 22,
-                    align_v = "Center",
+                    align_v = "center",
                     foreground = theme.accent,
                 },
                 text {
@@ -40,7 +40,7 @@ local badge = rect {
                         if u.installing then return string.format("%d/%d", u.install_current_step, u.install_total_steps) end
                         return tostring(#u.packages)
                     end),
-                    align_v = "Center",
+                    align_v = "center",
                     font_size = 18,
                     font_weight = 700,
                     foreground = theme.text,
@@ -52,11 +52,11 @@ local badge = rect {
 
 local function package_row(p)
     return row {
-        width = "Fill",
+        width = "fill",
         spacing = 12,
         children = {
             text { content = p.name, font_size = 20, foreground = theme.text },
-            rect { width = "Fill" },
+            rect { width = "fill" },
             text { content = p.old_version, font_size = 17, foreground = theme.muted },
             text { content = "→", font_size = 17, foreground = theme.muted },
             text { content = p.new_version, font_size = 17, foreground = theme.success },
@@ -66,7 +66,7 @@ end
 
 local popover = panel {
     id = "updates",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = mapped,
@@ -82,7 +82,7 @@ local popover = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 360, easing = "OutBack", from = { y = -20 } },
+            translate = { duration = 360, easing = "out_back", from = { y = -20 } },
         },
         children = updates:map(function(u)
             local done = not u.installing and #u.packages == 0
@@ -98,17 +98,17 @@ local popover = panel {
             }
             if u.installing then
                 out[#out + 1] = rect {
-                    width = "Fill",
+                    width = "fill",
                     height = 8,
                     radius = 4,
                     background = theme.surface,
                     children = {
                         rect {
-                            height = "Fill",
+                            height = "fill",
                             radius = 4,
                             background = theme.accent,
                             width = string.format("%d%%", u.install_current_step * 100 // math.max(1, u.install_total_steps)),
-                            animate = { width = { duration = 500, easing = "OutCubic" } },
+                            animate = { width = { duration = 500, easing = "out_cubic" } },
                         },
                     },
                 }
@@ -119,7 +119,7 @@ local popover = panel {
             if not u.installing and #u.packages > 0 then
                 out[#out + 1] = rect {
                     geometry = target("updates:install"),
-                    width = "Fill",
+                    width = "fill",
                     height = 56,
                     radius = 16,
                     margin = { top = 6 },
@@ -128,8 +128,8 @@ local popover = panel {
                     children = {
                         text {
                             content = "Update all",
-                            align_h = "Center",
-                            align_v = "Center",
+                            align_h = "center",
+                            align_v = "center",
                             font_size = 22,
                             font_weight = 700,
                             foreground = theme.crust,

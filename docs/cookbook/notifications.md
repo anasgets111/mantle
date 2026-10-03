@@ -45,8 +45,8 @@ local function artwork(item)
             width = 40,
             height = 40,
             radius = 8,
-            clip = "Rounded",
-            children = { image { source = item.image_path, fit = "cover", width = "Fill", height = "Fill" } },
+            clip = "rounded",
+            children = { image { source = item.image_path, fit = "cover", width = "fill", height = "fill" } },
         }
     end
     return icon { name = item.app_icon or "dialog-information-symbolic", size = 32 }
@@ -56,24 +56,24 @@ local function action_buttons(item)
     local buttons = {}
     for index, action in ipairs(item.actions) do
         buttons[index] = rect {
-            width = "Fill",
+            width = "fill",
             padding = 6,
             radius = 6,
             background = "#313244",
             on_click = function() mantle.notifications:invoke_action(item.id, action.key) end,
             children = {
-                text { content = action.label, align_h = "Center", elide = "End", foreground = "#cdd6f4" },
+                text { content = action.label, align_h = "center", elide = "end", foreground = "#cdd6f4" },
             },
         }
     end
-    return row { width = "Fill", spacing = 6, visible = #buttons > 0, children = buttons }
+    return row { width = "fill", spacing = 6, visible = #buttons > 0, children = buttons }
 end
 
 local function card(item)
     local critical = item.urgency == "critical"
     local runs = body_runs(item.body)
     return row {
-        width = "Fill",
+        width = "fill",
         padding = 12,
         radius = 12,
         background = "#1e1e2ef2",
@@ -83,7 +83,7 @@ local function card(item)
         translate = { x = 0 },
         animate = {
             opacity = { duration = 150, from = 0 },
-            translate = { duration = 200, easing = "OutCubic", from = { x = 40 } },
+            translate = { duration = 200, easing = "out_cubic", from = { x = 40 } },
             exit = { duration = 150, opacity = 0 },
         },
         on_click = function()
@@ -97,14 +97,14 @@ local function card(item)
         children = {
             artwork(item),
             column {
-                width = "Fill",
+                width = "fill",
                 spacing = 4,
                 children = {
                     row {
-                        width = "Fill",
+                        width = "fill",
                         spacing = 6,
                         children = {
-                            text { content = item.app_name, width = "Fill", elide = "End", font_size = 11, foreground = "#a6adc8" },
+                            text { content = item.app_name, width = "fill", elide = "end", font_size = 11, foreground = "#a6adc8" },
                             rect {
                                 padding = { left = 4, right = 4 },
                                 radius = 4,
@@ -115,18 +115,18 @@ local function card(item)
                     },
                     text {
                         content = { { text = item.summary, bold = true } },
-                        width = "Fill",
-                        elide = "End",
+                        width = "fill",
+                        elide = "end",
                         font_size = 13,
                         foreground = "#cdd6f4",
                     },
                     text {
                         content = runs,
                         visible = #runs > 0,
-                        width = "Fill",
-                        wrap = "Word",
+                        width = "fill",
+                        wrap = "word",
                         max_lines = 4,
-                        elide = "End",
+                        elide = "end",
                         foreground = "#bac2de",
                         on_link = function(href) mantle.applications:open_url(href) end,
                     },
@@ -140,19 +140,19 @@ end
 return {
     panel {
         id = "notifications",
-        layer = "Overlay",
+        layer = "overlay",
         anchor = { top = true, right = true },
         margin = { top = 8, right = 8 },
         width = 380,
         visible = cards:map(function(shown) return #shown > 0 end),
         child = column {
-            width = "Fill",
+            width = "fill",
             hover = stack_hover,
             -- Pause every countdown while the pointer is over the stack.
             on_hover = function(inside) mantle.notifications:hold_expiry(inside and 300 or 0) end,
             children = {
                 list {
-                    width = "Fill",
+                    width = "fill",
                     spacing = 8,
                     source = cards,
                     key = function(item) return tostring(item.id) end,

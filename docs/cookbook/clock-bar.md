@@ -20,7 +20,7 @@ local tooltip_text = mantle.system:map(function(system)
 end)
 
 local clock = rect {
-    align_v = "Center",
+    align_v = "center",
     padding = { left = 10, right = 10, top = 4, bottom = 4 },
     radius = 6,
     hover = clock_hover,
@@ -32,17 +32,17 @@ local clock = rect {
 
 local bar = panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
-    width = "Fill",
+    width = "fill",
     height = 32,
     exclusive_zone = true,
     child = row {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         padding = { left = 8, right = 8 },
         background = "#1e1e2e",
-        children = { rect { width = "Fill" }, clock, rect { width = "Fill" } },
+        children = { rect { width = "fill" }, clock, rect { width = "fill" } },
     },
 }
 
@@ -50,8 +50,8 @@ local tooltip = popup {
     id = "clock_tooltip",
     parent = "bar",
     anchor_rect = hover_rect("clock"),
-    anchor = "Bottom",
-    gravity = "Bottom",
+    anchor = "bottom",
+    gravity = "bottom",
     offset = { y = 6 },
     grab = false,
     visible = clock_hover,
@@ -70,7 +70,7 @@ return { bar, tooltip }
 
 - `mantle.system` pushes the time once a second, and `os.date` formats it ([system](../capabilities/system.md)).
 - `computed` combines the clock with a [named state](../guide/signals.md#named-state) the click toggles ([derived signals](../guide/signals.md#derived-signals)).
-- Both `"Fill"` spacers take an equal share of the row, so the clock sits at the exact centre ([sizes](../nodes/index.md#sizes)).
+- Both `"fill"` spacers take an equal share of the row, so the clock sits at the exact centre ([sizes](../nodes/index.md#sizes)).
 - The background is on the `row`, not the panel, so the whole bar takes clicks ([input region](../surfaces/index.md#input-region)).
 - `hover` and `hover_rect` drive a non-grabbing [popup](../surfaces/popup.md) as a tooltip ([hover](../guide/input.md#hover)).
 
@@ -80,6 +80,6 @@ return { bar, tooltip }
 | :--- | :--- |
 | Seconds | `"%H:%M:%S"` |
 | 12-hour clock | `"%I:%M %p"` |
-| Clock on the right | Drop the second spacer: `children = { rect { width = "Fill" }, clock }` |
+| Clock on the right | Drop the second spacer: `children = { rect { width = "fill" }, clock }` |
 | One monitor only | `output = "DP-1"` on the panel |
-| Bottom bar | `anchor = { bottom = true, left = true, right = true }` and `anchor = "Top", gravity = "Top", offset = { y = -6 }` on the tooltip |
+| Bottom bar | `anchor = { bottom = true, left = true, right = true }` and `anchor = "top", gravity = "top", offset = { y = -6 }` on the tooltip |

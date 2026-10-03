@@ -27,24 +27,24 @@ end
 local function artwork(item)
     local name = item.icon_name
     local path = item.icon_path
-    if item.status == "NeedsAttention" and (item.attention_icon_name or item.attention_icon_path) then
+    if item.status == "needs_attention" and (item.attention_icon_name or item.attention_icon_path) then
         name, path = item.attention_icon_name, item.attention_icon_path
     end
     if path then
-        return image { source = path, width = 16, height = 16, fit = "contain", align_v = "Center" }
+        return image { source = path, width = 16, height = 16, fit = "contain", align_v = "center" }
     end
     -- `foreground` tints symbolic icons, which are dark by default; colour icons ignore it.
-    return icon { name = name or "application-x-executable", size = 16, foreground = "#cdd6f4", align_v = "Center" }
+    return icon { name = name or "application-x-executable", size = 16, foreground = "#cdd6f4", align_v = "center" }
 end
 
 local tray_items = list {
-    direction = "Horizontal",
+    direction = "horizontal",
     spacing = 2,
-    align_v = "Center",
+    align_v = "center",
     source = mantle.tray:map(function(tray)
         local shown = {}
         for _, item in ipairs(tray and tray.items or {}) do
-            if item.status ~= "Passive" then -- Passive asks to be hidden
+            if item.status ~= "passive" then -- passive asks to be hidden
                 shown[#shown + 1] = item
             end
         end
@@ -120,15 +120,15 @@ local function menu_row(row_data)
     local indent = 8 + row_data.depth * 12
     if entry.menu_type == "separator" then
         return rect {
-            width = "Fill",
+            width = "fill",
             padding = { top = 4, bottom = 4, left = indent, right = 8 },
-            children = { rect { width = "Fill", height = 1, background = "#45475a" } },
+            children = { rect { width = "fill", height = 1, background = "#45475a" } },
         }
     end
     local mark = marker(entry)
     local row_hover = hover("tray_menu_row_" .. entry.id .. "_" .. row_data.depth)
     return row {
-        width = "Fill",
+        width = "fill",
         padding = { top = 6, bottom = 6, left = indent, right = 8 },
         radius = 6,
         hover = row_hover,
@@ -151,8 +151,8 @@ local function menu_row(row_data)
         end,
         spacing = 8,
         children = {
-            icon { name = entry.icon_name or "", size = 14, foreground = "#cdd6f4", visible = entry.icon_name ~= nil, align_v = "Center" },
-            text { content = strip_mnemonic(entry.label), width = "Fill", elide = "End", foreground = "#cdd6f4" },
+            icon { name = entry.icon_name or "", size = 14, foreground = "#cdd6f4", visible = entry.icon_name ~= nil, align_v = "center" },
+            text { content = strip_mnemonic(entry.label), width = "fill", elide = "end", foreground = "#cdd6f4" },
             text { content = mark, visible = mark ~= "", foreground = "#a6adc8" },
         },
     }
@@ -161,27 +161,27 @@ end
 return {
     panel {
         id = "bar",
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true, right = true },
-        width = "Fill",
+        width = "fill",
         height = 32,
         exclusive_zone = true,
         child = row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 8, right = 8 },
             background = "#1e1e2e",
-            children = { rect { width = "Fill" }, tray_items },
+            children = { rect { width = "fill" }, tray_items },
         },
     },
     popup {
         id = "tray_menu",
         parent = "bar",
         anchor_rect = menu_anchor,
-        anchor = "Bottom",
-        gravity = "BottomLeft",
+        anchor = "bottom",
+        gravity = "bottom_left",
         offset = { y = 4 },
-        constraint_adjustment = { "SlideX", "FlipY" },
+        constraint_adjustment = { "slide_x", "flip_y" },
         visible = menu_open,
         on_dismiss = close_menu,
         width = 260,
@@ -191,7 +191,7 @@ return {
         border_width = 1,
         border_color = "#45475a",
         child = list {
-            width = "Fill",
+            width = "fill",
             max_height = 480,
             scroll = scroll("tray_menu"),
             source = menu_rows,
@@ -215,8 +215,8 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Show hidden (Passive) items | Return `tray and tray.items or {}` from the source map |
+| Show hidden (`"passive"`) items | Return `tray and tray.items or {}` from the source map |
 | Tooltips | Give each button `hover = hover("tray_" .. item.id)` and add a `grab = false` popup showing `item.tooltip` ([tooltip](../surfaces/popup.md#tooltip)) |
 | Bigger icons | `size = 20` and `width = 20, height = 20` |
-| Open the menu rightwards, for a tray on the left | `gravity = "BottomRight"` |
-| Attention badge | Stack an `icon { name = item.overlay_icon_name }` over the artwork in a `rect`, aligned `"End"` both ways |
+| Open the menu rightwards, for a tray on the left | `gravity = "bottom_right"` |
+| Attention badge | Stack an `icon { name = item.overlay_icon_name }` over the artwork in a `rect`, aligned `"end"` both ways |

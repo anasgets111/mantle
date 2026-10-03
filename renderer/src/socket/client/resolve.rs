@@ -322,7 +322,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "prompt", layer = "Top", child = textfield {
+            r#"return panel { id = "prompt", layer = "top", child = textfield {
                    secure_submit = { capability = "polkit", action = "authenticate" } } }"#,
         );
         let (mut client, mut outbound_rx) = test_client(&path);
@@ -343,7 +343,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"
-            return panel { id = "prompt", layer = "Top", child = row { children = computed({mantle.network}, function(ssid)
+            return panel { id = "prompt", layer = "top", child = row { children = computed({mantle.network}, function(ssid)
                 if ssid then
                     return { textfield { secure_submit = { capability = "polkit", action = "authenticate" } } }
                 end
@@ -382,7 +382,7 @@ mod tests {
     fn a_boot_apply_failure_clears_when_a_re_resolve_applies() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
         assert!(!run_startup(&mut client));
@@ -398,12 +398,12 @@ mod tests {
     #[test]
     fn a_reload_apply_failure_stays_in_rescue_until_a_reload_applies() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
         assert!(run_startup(&mut client));
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         assert!(client.reevaluate());
         assert!(!client.handle_apply_pending());
         assert!(rescue_state(&client.loader).0, "an evaluation that fails to apply must reach rescue");
@@ -412,7 +412,7 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert!(rescue_state(&client.loader).0, "a pass over the prior scene must not clear it");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         assert!(client.reevaluate() && client.handle_apply_pending());
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
@@ -424,7 +424,7 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"w = state("w", 1)
-            return panel { id = "bar", layer = "Top", child = rect { width = w, height = 1 } }"#,
+            return panel { id = "bar", layer = "top", child = rect { width = w, height = 1 } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
@@ -435,7 +435,7 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert!(rescue_state(&client.loader).0, "the file is still broken");
 
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         assert!(client.reevaluate());
         assert!(rescue_state(&client.loader).0, "not cleared before the apply");
         assert!(client.handle_apply_pending());
@@ -445,7 +445,7 @@ mod tests {
     #[test]
     fn handle_apply_pending_reconciles_the_pending_evaluation_into_the_scene() {
         let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top" }"#);
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         let (output, specs) = evaluate_and_specs(&client.loader, &path).unwrap();
         client.set_instances(instances_for(&["bar"]));
@@ -484,7 +484,7 @@ mod tests {
     fn re_resolve_if_dirty_applies_a_pushed_value_without_reading_shell_lua_again() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client
             .apply_state_snapshot(StateSnapshot {
@@ -523,7 +523,7 @@ mod tests {
     fn re_resolve_if_dirty_clears_the_flag_and_a_second_call_does_no_work() {
         let dir = tempfile::tempdir().unwrap();
         let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = mantle.workspace }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
         client
             .apply_state_snapshot(StateSnapshot {
@@ -549,7 +549,7 @@ mod tests {
         // `visible = true`.
         // A true no-op leaves the scene as the first resolve left it.
         let poisoned_path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "Top", visible = true }"#);
+            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = true }"#);
         let (poisoned_output, _) = evaluate_and_specs(&client.loader, &poisoned_path).unwrap();
         client.state.applied_output = Some(poisoned_output);
 
@@ -568,8 +568,8 @@ mod tests {
             r#"
             q = state("q", false)
             return {
-                panel { id = "bar", layer = "Top" },
-                panel { id = "modal", layer = "Top", visible = q },
+                panel { id = "bar", layer = "top" },
+                panel { id = "modal", layer = "top", visible = q },
             }
             "#,
         );
@@ -594,9 +594,9 @@ mod tests {
             g = geometry("card")
             w = state("w", 30)
             return {
-                panel { id = "bar", layer = "Top", child = rect { width = w, height = 20, geometry = g } },
-                panel { id = "reader", layer = "Top", child = rect { width = g:map(function(r) return r.width end), height = 1 } },
-                panel { id = "other", layer = "Top" },
+                panel { id = "bar", layer = "top", child = rect { width = w, height = 20, geometry = g } },
+                panel { id = "reader", layer = "top", child = rect { width = g:map(function(r) return r.width end), height = 1 } },
+                panel { id = "other", layer = "top" },
             }
             "#,
         );
@@ -622,10 +622,10 @@ mod tests {
             r#"cut = elided("body")
             w = state("w", 40)
             return {
-                panel { id = "writer", layer = "Top", child = text { width = w,
-                    content = "A label too long for its box", elide = "End", elided = cut } },
-                panel { id = "reader", layer = "Top", visible = cut },
-                panel { id = "other", layer = "Top" },
+                panel { id = "writer", layer = "top", child = text { width = w,
+                    content = "A label too long for its box", elide = "end", elided = cut } },
+                panel { id = "reader", layer = "top", visible = cut },
+                panel { id = "other", layer = "top" },
             }"#,
         );
         let (mut client, _) = test_client(&path);
@@ -649,9 +649,9 @@ mod tests {
         let path = write_shell_lua(
             dir.path(),
             r#"local cut = elided("body")
-            return panel { id = "bar", layer = "Top", child = text {
+            return panel { id = "bar", layer = "top", child = text {
                 width = cut:map(function(v) return v and 500 or 40 end),
-                content = "A label too long for its box", elide = "End", elided = cut
+                content = "A label too long for its box", elide = "end", elided = cut
             } }"#,
         );
         let (mut client, _) = test_client(&path);
@@ -669,10 +669,10 @@ mod tests {
             r#"cut = elided("body")
             w = state("w", 40)
             return {
-                panel { id = "writer", layer = "Top", child = text { width = w,
-                    animate = { width = { duration = 100, easing = "Linear" } },
-                    content = "A label too long for its box", elide = "End", elided = cut } },
-                panel { id = "reader", layer = "Top", visible = cut },
+                panel { id = "writer", layer = "top", child = text { width = w,
+                    animate = { width = { duration = 100, easing = "linear" } },
+                    content = "A label too long for its box", elide = "end", elided = cut } },
+                panel { id = "reader", layer = "top", visible = cut },
             }"#,
         );
         let (mut client, _) = test_client(&path);
@@ -711,7 +711,7 @@ mod tests {
                     height = 20, opacity = computed({ expanded, shown }, function(o, k) return (o or k) and 1 or 0 end),
                     animate = { width = 100, opacity = 100 } }
             end
-            return { panel { id = "bar", layer = "Top", child = row { children = {
+            return { panel { id = "bar", layer = "top", child = row { children = {
                 row { spacing = probe:map(function(o) return o and 7 or 0 end), animate = { spacing = 100 },
                     children = { cell(state("s1", false)), cell(state("s2", true)) } } } } } }
             "#,
@@ -759,10 +759,10 @@ mod tests {
             local g = geometry("g")
             local x = computed({ g }, function(r) return r and r.width or 0 end)
             return {
-                panel { id = "early", layer = "Top", child = row { children = { row { width = x, height = 5 } } } },
-                panel { id = "src", layer = "Top", child = row { children = {
+                panel { id = "early", layer = "top", child = row { children = { row { width = x, height = 5 } } } },
+                panel { id = "src", layer = "top", child = row { children = {
                     row { geometry = g, width = wide:map(function(w) return w and 50 or 10 end), height = 5 } } } },
-                panel { id = "late", layer = "Top", child = row { children = {
+                panel { id = "late", layer = "top", child = row { children = {
                     row { width = computed({ g, x, wide }, function(_, v, w) return w and v + 1 or v end), height = 5 } } } },
             }
             "#,
@@ -810,7 +810,7 @@ mod tests {
             dir.path(),
             r#"
             armed = state("armed", false)
-            return panel { id = "bar", layer = "Top", child = text { content = "m",
+            return panel { id = "bar", layer = "top", child = text { content = "m",
                 opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
             "#,
         );
@@ -837,7 +837,7 @@ mod tests {
             dir.path(),
             r#"
             armed = state("armed", false)
-            return panel { id = "bar", layer = "Top", child = text { content = "m",
+            return panel { id = "bar", layer = "top", child = text { content = "m",
                 opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
             "#,
         );
@@ -865,8 +865,8 @@ mod tests {
                 if a then return 2.0 else return 1.0 end
             end)
             return {
-                panel { id = "bar", layer = "Top", visible = q },
-                panel { id = "modal", layer = "Top", child = text { content = "m", opacity = modal_opacity } },
+                panel { id = "bar", layer = "top", visible = q },
+                panel { id = "modal", layer = "top", child = text { content = "m", opacity = modal_opacity } },
             }
             "#,
         );
@@ -901,7 +901,7 @@ mod tests {
                 runs = runs + 1
                 return net and net.connected and "online" or "offline"
             end)
-            return panel { id = "status", layer = "Top", child = text { content = sig } }
+            return panel { id = "status", layer = "top", child = text { content = sig } }
             "#,
         );
         let (mut client, _) = test_client(&path);
@@ -942,7 +942,7 @@ mod tests {
                 runs = runs + 1
                 return net and net.connected and "online" or "offline"
             end)
-            return panel { id = "status", layer = "Top", child = text { content = sig } }
+            return panel { id = "status", layer = "top", child = text { content = sig } }
             "#,
         );
         let (mut client, _) = test_client(&path);

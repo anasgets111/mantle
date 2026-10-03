@@ -18,17 +18,17 @@ local path = state("wallpaper", "/usr/share/backgrounds/a.jpg")
 
 return { panel {
     id = "wallpaper",
-    layer = "Background",
+    layer = "background",
     anchor = { top = true, bottom = true, left = true, right = true },
-    width = "Fill",
-    height = "Fill",
+    width = "fill",
+    height = "fill",
     child = image {
         id = "wallpaper_image", -- keeps the node, and so the held picture, across source changes
         source = path,
         async = true,
-        transition = { duration = 600, easing = "InOutCubic" },
-        width = "Fill",
-        height = "Fill",
+        transition = { duration = 600, easing = "in_out_cubic" },
+        width = "fill",
+        height = "fill",
     },
 } }
 ```
@@ -53,7 +53,7 @@ return { panel {
 | Field | Values | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `duration` | ms, `[1, 60000]` | Required | Length of the cross |
-| `easing` | An [easing](../guide/animation.md) | `"InOutQuad"` | Drives `u_progress` |
+| `easing` | An [easing](../guide/animation.md) | `"in_out_quad"` | Drives `u_progress` |
 | `shader` | Absolute `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
 | `params` | `{ name = number \| { up to 4096 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |
 
@@ -82,7 +82,7 @@ the node falls back to the cross-dissolve.
 
 ### Round an image's corners
 
-An `image` has no `radius`. Put it in a box with `radius` and `clip = "Rounded"`
+An `image` has no `radius`. Put it in a box with `radius` and `clip = "rounded"`
 ([clip](../guide/paint.md#clip)):
 
 ```lua
@@ -90,9 +90,9 @@ local cover = rect {
     width = 96,
     height = 96,
     radius = 12,
-    clip = "Rounded", -- cut the image to the corners
+    clip = "rounded", -- cut the image to the corners
     children = {
-        image { source = "/usr/share/backgrounds/a.jpg", fit = "cover", async = true, width = "Fill", height = "Fill" },
+        image { source = "/usr/share/backgrounds/a.jpg", fit = "cover", async = true, width = "fill", height = "fill" },
     },
 }
 ```

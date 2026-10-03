@@ -16,14 +16,14 @@ keywords! {
     /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum NavigateKey {
-        Up = "up",
-        Down = "down",
-        Left = "left",
-        Right = "right",
-        PageUp = "page_up",
-        PageDown = "page_down",
-        Tab = "tab",
-        Backtab = "backtab",
+        Up,
+        Down,
+        Left,
+        Right,
+        PageUp,
+        PageDown,
+        Tab,
+        Backtab,
     }
 }
 

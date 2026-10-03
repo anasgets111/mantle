@@ -94,7 +94,7 @@ mod tests {
         let lua = mlua::Lua::new();
         crate::lua::nodes::register_node_constructors(&lua).unwrap();
         let tables: Vec<mlua::Table> = lua
-            .load(r#"return { panel { id = "bar", layer = "Top" }, panel { id = "bar", layer = "Bottom" } }"#)
+            .load(r#"return { panel { id = "bar", layer = "top" }, panel { id = "bar", layer = "bottom" } }"#)
             .eval()
             .unwrap();
         let surfaces = tables.iter().map(|table| crate::lua::nodes::deserialize_lua_table(table).unwrap()).collect();

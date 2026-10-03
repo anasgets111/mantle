@@ -66,14 +66,14 @@ local function move(step)
 end
 
 local search = rect {
-    width = "Fill",
+    width = "fill",
     padding = { left = 12, right = 12 },
     radius = 10,
     background = "#313244",
     children = {
         textfield {
             id = "search",
-            width = "Fill",
+            width = "fill",
             height = 40,
             font_size = 16,
             foreground = "#cdd6f4",
@@ -97,7 +97,7 @@ local search = rect {
 }
 
 local results = list {
-    width = "Fill",
+    width = "fill",
     max_height = 400,
     spacing = 2,
     scroll = results_scroll,
@@ -105,7 +105,7 @@ local results = list {
     key = function(entry) return entry.id end,
     itemfn = function(entry)
         return row {
-            width = "Fill",
+            width = "fill",
             padding = 8,
             radius = 8,
             -- Per row, so a move reruns this and builds no row.
@@ -116,17 +116,17 @@ local results = list {
             on_click = function() launch(entry) end,
             spacing = 12,
             children = {
-                icon { name = entry.icon or "application-x-executable", size = 32, align_v = "Center" },
+                icon { name = entry.icon or "application-x-executable", size = 32, align_v = "center" },
                 column {
-                    width = "Fill",
-                    align_v = "Center",
+                    width = "fill",
+                    align_v = "center",
                     children = {
-                        text { content = entry.name, width = "Fill", elide = "End", font_size = 14, foreground = "#cdd6f4" },
+                        text { content = entry.name, width = "fill", elide = "end", font_size = 14, foreground = "#cdd6f4" },
                         text {
                             content = entry.comment or entry.generic_name or "",
                             visible = (entry.comment or entry.generic_name) ~= nil,
-                            width = "Fill",
-                            elide = "End",
+                            width = "fill",
+                            elide = "end",
                             font_size = 11,
                             foreground = "#a6adc8",
                         },
@@ -140,25 +140,25 @@ local results = list {
 return {
     panel {
         id = "launcher",
-        layer = "Overlay",
-        output = "Active",
+        layer = "overlay",
+        output = "active",
         anchor = { top = true, bottom = true, left = true, right = true },
-        width = "Fill",
-        height = "Fill",
-        exclusive_zone = "Ignore",
+        width = "fill",
+        height = "fill",
+        exclusive_zone = "ignore",
         visible = open,
         reset_on_close = { query, selected, results_scroll }, -- however it closed, it reopens fresh
-        keyboard_interactivity = "Exclusive", -- hiding destroys the surface, so no binding needed
+        keyboard_interactivity = "exclusive", -- hiding destroys the surface, so no binding needed
         child = rect {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             background = "#11111b80",
             children = {
                 -- Catches clicks outside the card.
-                rect { width = "Fill", height = "Fill", on_click = close },
+                rect { width = "fill", height = "fill", on_click = close },
                 column {
                     width = 560,
-                    align_h = "Center",
+                    align_h = "center",
                     margin = { top = 160 },
                     padding = 12,
                     spacing = 8,
@@ -172,7 +172,7 @@ return {
                         text {
                             content = "No matches",
                             visible = matches:map(function(entries) return #entries == 0 end),
-                            align_h = "Center",
+                            align_h = "center",
                             padding = 12,
                             foreground = "#6c7086",
                         },
@@ -196,14 +196,14 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
 - `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).
-- `"Exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
+- `"exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).
 - A full-size transparent `rect` under the card closes it on an outside click ([close an overlay](../surfaces/panel.md#close-an-overlay-on-an-outside-click)).
 
 ## Variations
 
 | Change | Edit |
 | :--- | :--- |
-| Pointer focus on Hyprland | `"OnDemand"` instead of `"Exclusive"`, so other surfaces keep taking clicks ([panel gotchas](../surfaces/panel.md#gotchas)) |
+| Pointer focus on Hyprland | `"on_demand"` instead of `"exclusive"`, so other surfaces keep taking clicks ([panel gotchas](../surfaces/panel.md#gotchas)) |
 | Fewer rows | `MAX_RESULTS = 8` and drop `max_height` |
 | Debounce typing | Rank against `delay(query, 80)` instead of `query` ([debounce a search](../guide/signals.md#debounce-a-search)) |
 | No dimmed backdrop | Remove the root `rect`'s `background` |

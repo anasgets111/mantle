@@ -6,7 +6,7 @@ all four roles share; each role has its own page.
 
 | You are building | Role | Protocol | Instances |
 | :--- | :--- | :--- | :--- |
-| Bar, dock, wallpaper, OSD, launcher overlay, notification stack | [`panel`](panel.md) | `zwlr_layer_surface_v1` | One per matched output, id `id@output`; one with the bare id `id` for `output = "Active"` |
+| Bar, dock, wallpaper, OSD, launcher overlay, notification stack | [`panel`](panel.md) | `zwlr_layer_surface_v1` | One per matched output, id `id@output`; one with the bare id `id` for `output = "active"` |
 | Settings window, dialog the user can move, tile or close | [`window`](window.md) | `xdg_toplevel` | One, id `id` |
 | Dropdown, context menu, tooltip hanging off a panel or window | [`popup`](popup.md) | `xdg_popup` | One, id `id` |
 | Lock screen | [`lock`](lock.md) | `ext_session_lock_surface_v1` | One per output, id `id@output` |
@@ -21,20 +21,20 @@ connector name:
 ```lua,shot
 local bar = panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     height = 32,
     exclusive_zone = true,
-    width = "Fill",
+    width = "fill",
     child = function(output)
         return row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = { left = 8, right = 8 },
             background = "#1e1e2e",
             children = {
                 rect {
-                    align_v = "Center",
+                    align_v = "center",
                     padding = { left = 10, right = 10, top = 3, bottom = 3 },
                     radius = 10,
                     background = "#313244",
@@ -93,7 +93,7 @@ runs with that instance's connector name (`"DP-1"`) on the first pass, and again
 surface root resolves again: a signal the function or the root's own properties read is written, or
 a reload ([what a node reads again](../guide/signals.md#what-a-node-reads-again)). Bind signals to
 properties inside it rather than reading them with `:get()`, and key per-output state by name:
-`state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's instance empty. A `window`, `popup` or `output = "Active"` panel has no output name and refuses a
+`state("wallpaper_" .. output, ...)`. Returning `nil` leaves that output's instance empty. A `window`, `popup` or `output = "active"` panel has no output name and refuses a
 function `child`. Example: [per-output wallpaper](panel.md#per-output-content).
 
 ## Reset on close
@@ -110,7 +110,7 @@ local list_scroll = scroll("picker_list")
 
 return panel {
   id = "picker",
-  layer = "Overlay",
+  layer = "overlay",
   visible = open,
   reset_on_close = { query, list_scroll },
   child = textfield { width = 300, height = 32, on_change = function(text) query:set(text) end },
@@ -145,10 +145,10 @@ focus-follows-mouse pass through to what is below. The engine rebuilds this regi
 | A box's [`mask` child](../guide/paint.md#mask) | Nothing, nor its subtree |
 | A transparent container | Nothing; its children are asked instead |
 | The surface root itself | Nothing, even with a `background`; with a handler, the whole surface |
-| Anything on a `layer = "Background"` panel | Only a node with a handler |
+| Anything on a `layer = "background"` panel | Only a node with a handler |
 
 A claiming box that clips its children ends the walk there; `visible = false` subtrees claim
-nothing. To make an empty area catch clicks, put a `rect { width = "Fill", height = "Fill",
+nothing. To make an empty area catch clicks, put a `rect { width = "fill", height = "fill",
 on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-an-outside-click)).
 
 ## How do I…
@@ -170,9 +170,9 @@ on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-a
 | Trap | Fix |
 | :--- | :--- |
 | `layer = state(...)` or a signal `anchor` is refused | Structural fields take literals; switch between two declared panels, or edit the file |
-| A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "Fill", height = "Fill"` child; on a panel, make the panel `"Fill"` on those axes too |
+| A click on a panel's or window's background reaches the window behind it | The root's own `background` claims no input. Put the background on a `width = "fill", height = "fill"` child; on a panel, make the panel `"fill"` on those axes too |
 | `two surfaces declare` an id | Surface ids are unique across every role; rename one |
-| A function `child` on a `window` or `popup` is refused | Only `panel` (not `output = "Active"`) and `lock` have an output to pass |
+| A function `child` on a `window` or `popup` is refused | Only `panel` (not `output = "active"`) and `lock` have an output to pass |
 
 See also: [nodes](../nodes/index.md), [paint](../guide/paint.md), [input](../guide/input.md),
 [signals](../guide/signals.md), [runtime](../guide/runtime.md), [CLI](../guide/cli.md).

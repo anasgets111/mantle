@@ -19,7 +19,7 @@ pub struct PlayerState {
     pub id: String,
     /// Display name, e.g. `"Spotify"`; empty if unanswered.
     pub identity: String,
-    /// MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"Stopped"` if none.
+    /// MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
     pub play_state: PlayState,
     /// MPRIS `CanGoNext`.
     pub can_go_next: bool,
@@ -83,6 +83,7 @@ pub struct PlayerState {
 /// MPRIS `PlaybackStatus`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum PlayState {
     Playing,
     Paused,

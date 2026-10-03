@@ -87,7 +87,7 @@ fn lay_out(
     let mut outputs = vec![OutputGeometry { name: "DP-1".into(), size }];
     for spec in specs {
         if let SurfaceSpec::Panel(panel) = spec
-            && !matches!(panel.topology.output.as_str(), "All" | "Active")
+            && !matches!(panel.topology.output.as_str(), "all" | "active")
             && outputs.iter().all(|output| output.name != panel.topology.output)
         {
             outputs.push(OutputGeometry { name: panel.topology.output.clone(), size });
@@ -165,7 +165,7 @@ mod tests {
     fn a_config_that_evaluates_reports_each_surface_it_declares() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join("modules")).unwrap();
-        std::fs::write(dir.path().join("modules/bar.lua"), "return panel { id = \"bar\", layer = \"Top\" }\n").unwrap();
+        std::fs::write(dir.path().join("modules/bar.lua"), "return panel { id = \"bar\", layer = \"top\" }\n").unwrap();
         std::fs::write(dir.path().join("shell.lua"), "local bar = require(\"modules.bar\")\nreturn { bar }\n").unwrap();
         let report = super::run(dir.path()).expect("the config must evaluate");
         assert!(report.contains("ok, 1 surface(s)"), "{report}");
@@ -219,7 +219,7 @@ mod tests {
             "local function label()\n\
              \x20 return text { contnet = \"hi\" }\n\
              end\n\
-             return panel { id = \"p\", layer = \"Top\", child = row {\n\
+             return panel { id = \"p\", layer = \"top\", child = row {\n\
              \x20 children = { row {\n\
              \x20   children = { label() },\n\
              \x20 } },\n\
@@ -245,7 +245,7 @@ mod tests {
              local label = count:map(function(n)\n\
              \x20 return n.missing\n\
              end)\n\
-             return panel { id = \"p\", layer = \"Top\", child = text { content = label } }\n",
+             return panel { id = \"p\", layer = \"top\", child = text { content = label } }\n",
         )
         .unwrap();
 
@@ -279,7 +279,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),
-            "return { panel { id = \"bar\", layer = \"Top\", output = \"HDMI-A-1\", child = rect { width = \"Wide\", height = 10 } } }\n",
+            "return { panel { id = \"bar\", layer = \"top\", output = \"HDMI-A-1\", child = rect { width = \"Wide\", height = 10 } } }\n",
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
@@ -293,7 +293,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),
-            r#"return { panel { id = "p", layer = "Top", anchor = { top = true }, width = "Fill", height = 30,
+            r#"return { panel { id = "p", layer = "top", anchor = { top = true }, width = "fill", height = 30,
     child = list {
         source = mantle.workspaces:map(function(s) return s and s.outputs or {} end),
         itemfn = function(o) return text { contnet = o.name } end,
@@ -311,7 +311,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),
-            r#"return panel { id = "launcher", layer = "Top", child = list {
+            r#"return panel { id = "launcher", layer = "top", child = list {
     source = mantle.applications:map(function(s)
         local entries = {}
         for _, app in ipairs(s and s.entries or {}) do
@@ -329,7 +329,7 @@ mod tests {
         assert!(err.contains("contnet"), "{err}");
     }
 
-    /// The first set reads `muted = true` and battery `"Unknown"`, and lists one entry long, so
+    /// The first set reads `muted = true` and battery `"unknown"`, and lists one entry long, so
     /// each row below shows only under a later set.
     #[test]
     fn false_last_variant_and_empty_list_branches_fail_their_own_pass() {
@@ -339,7 +339,7 @@ mod tests {
                 "with alternate sample data",
             ),
             (
-                "mantle.battery:map(function(b) return (b and b.state == 'PendingDischarge') and { 1 } or {} end)",
+                "mantle.battery:map(function(b) return (b and b.state == 'pending_discharge') and { 1 } or {} end)",
                 "with alternate sample data",
             ),
             (
@@ -351,7 +351,7 @@ mod tests {
             std::fs::write(
                 dir.path().join("shell.lua"),
                 format!(
-                    "return panel {{ id = \"p\", layer = \"Top\", child = list {{\n    source = {source},\n    itemfn = function() return text {{ contnet = \"row\" }} end,\n}} }}\n"
+                    "return panel {{ id = \"p\", layer = \"top\", child = list {{\n    source = {source},\n    itemfn = function() return text {{ contnet = \"row\" }} end,\n}} }}\n"
                 ),
             )
             .unwrap();
@@ -451,7 +451,7 @@ local chunk = load("return " .. block, "=block") or assert(load(block, "=block")
 local root = chunk()
 local surfaces = {{ panel = true, window = true, popup = true, lock = true }}
 if type(root) == "table" and root.kind and not surfaces[root.kind] then
-    return panel {{ id = "doc", layer = "Top", child = column {{ padding = 24, children = {{ root }} }} }}
+    return panel {{ id = "doc", layer = "top", child = column {{ padding = 24, children = {{ root }} }} }}
 end
 return root
 "#
@@ -706,7 +706,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
     }
 
     /// Where an `xdg_positioner` puts a `size` popup in its parent: the `anchor` point of
-    /// `anchor_rect`, the popup hung from it towards `gravity`, then `offset`. `SlideX` keeps it
+    /// `anchor_rect`, the popup hung from it towards `gravity`, then `offset`. `"slide_x"` keeps it
     /// within the parent's width; no other adjustment is modelled.
     fn popup_origin(spec: &PopupSpec, size: (u32, u32), parent_width: u32) -> (i32, i32) {
         // 0 at the left or top edge, 1 at the right or bottom, 0.5 between.
@@ -957,7 +957,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         let dir = tempfile::tempdir().unwrap();
         let source = r#"
 under, beside = hover("under"), hover("beside")
-return panel { id = "bar", layer = "Top", height = 20, child = row { children = {
+return panel { id = "bar", layer = "top", height = 20, child = row { children = {
     rect { width = 40, height = 20, hover = under },
     rect { width = 40, height = 20, hover = beside },
 } } }

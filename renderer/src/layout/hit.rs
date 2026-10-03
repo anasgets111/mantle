@@ -26,7 +26,7 @@ pub struct LogicalPoint {
 /// Three rules, all load-bearing:
 ///
 /// - **Containment gates descent.** A node whose rect does not hold the point is not entered and
-///   neither are its children, unless it is `clip = "None"` (ADR-0257). This makes the hittable region of an overflowing child exactly its
+///   neither are its children, unless it is `clip = "none"` (ADR-0257). This makes the hittable region of an overflowing child exactly its
 ///   intersection with every ancestor -- the same region `paint::canvas::run`'s `intersect_scissor`
 ///   chain draws it in, so hitting and painting agree on overflow without either walk carrying a
 ///   clip rect.
@@ -293,7 +293,7 @@ mod tests {
         assert_eq!(top(&tree(1.0)), "column");
     }
 
-    /// A child laid out past a `clip = "None"` parent is painted there, so it is hit there, with the
+    /// A child laid out past a `clip = "none"` parent is painted there, so it is hit there, with the
     /// parent still on its path for a handler to bubble to.
     #[test]
     fn a_child_overflowing_an_unclipped_parent_is_hit_where_it_paints() {

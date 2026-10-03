@@ -46,7 +46,7 @@ local settings = persistent_table {
 local clock_24h = settings.clock_24h:map(function(value) return value ~= false end)
 
 return panel {
-    id = "clock", layer = "Top", anchor = { top = true },
+    id = "clock", layer = "top", anchor = { top = true },
     child = rect {
         on_click = function() settings:set("clock_24h", not clock_24h:get()) end,
         children = {
@@ -240,7 +240,7 @@ local results = query:map(function(needle)
 end)
 
 return panel {
-    id = "launcher", layer = "Overlay", keyboard_interactivity = "OnDemand",
+    id = "launcher", layer = "overlay", keyboard_interactivity = "on_demand",
     child = column {
         width = 320, padding = 12, spacing = 6, background = "#1E1E2E",
         children = {
@@ -276,7 +276,7 @@ palette.quantize(mantle.config_dir .. "/wallpaper.png", { depth = 3 }, function(
 end)
 
 return panel {
-    id = "palette", layer = "Top", anchor = { bottom = true },
+    id = "palette", layer = "top", anchor = { bottom = true },
     child = row {
         children = swatches:map(function(list)
             local chips = {}

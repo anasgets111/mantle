@@ -50,7 +50,7 @@ mod tests {
             return panel { id = "bar", child = function(output)
                 return text { content = "A long label", visible = shown,
                     width = output == "LEFT" and narrow or 500,
-                    height = output == "RIGHT" and height or 10, elide = "End", elided = cut }
+                    height = output == "RIGHT" and height or 10, elide = "end", elided = cut }
             end }"#,
         );
         let mut left = instance_at(&surface, full());
@@ -90,9 +90,9 @@ mod tests {
             items = state("items", { 1 })
             other = state("other", "unchanged")
             return panel { id = "bar", child = column { children = {
-                text { width = 20, content = "Long label", elide = "End", elided = other },
+                text { width = 20, content = "Long label", elide = "end", elided = other },
                 list { source = items, itemfn = function()
-                    return text { width = 20, content = "Long label", elide = "End", elided = cut }
+                    return text { width = 20, content = "Long label", elide = "end", elided = cut }
                 end },
             } } }"#,
         );

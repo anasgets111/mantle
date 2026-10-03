@@ -48,16 +48,16 @@ return {
             visible = visible,
             on_close = close,
             child = column {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 padding = 8,
                 spacing = 8,
                 background = theme.color("bg"),
                 children = {
                     image { source = GIF, width = 160, height = 90, fit = "contain", visible = state("hs_gif", true) },
                     list {
-                        width = "Fill",
-                        height = "Fill",
+                        width = "fill",
+                        height = "fill",
                         spacing = 6,
                         scroll = GRID,
                         source = rows,

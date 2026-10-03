@@ -52,7 +52,7 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 | `itemfn` | `fun(item: any): Node` | Required | Builds a node for every built item, visible or not |
 | `key` | `fun(item: any): string` | None | Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position |
 | `limit` | `integer\|Bound` | None | Build at most this many items; above 10000 acts as 10000, `0` builds none |
-| `direction` | `"Vertical"\|"Horizontal"\|Bound` | `"Vertical"` | Lays out as a `column` or a `row` |
+| `direction` | `"vertical"\|"horizontal"\|Bound` | `"vertical"` | Lays out as a `column` or a `row` |
 | `spacing` | `number\|Bound` | `0` | Px between visible items along `direction`; negative values overlap them |
 | `scroll` | `Bound` | None | A `scroll(name)` signal; makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll)) |
 <!-- End of the generated table. -->
@@ -101,7 +101,7 @@ instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 | Scroll a long list | [Below](#scroll-a-long-list) |
 | Keep items' animations when the order changes | Give `key` a stable per-element string (an id from the data) |
 | Show only the top N matches | `limit = 50` |
-| Lay items out horizontally | `direction = "Horizontal"` |
+| Lay items out horizontally | `direction = "horizontal"` |
 | Filter as the user types | Bind `source` to a `map` of the query, as the [textfield](textfield.md) example does |
 | Show an empty state | A sibling with `visible = items:map(function(all) return not all or #all == 0 end)` |
 
@@ -121,7 +121,7 @@ local items = list {
     scroll = scroll("items"),
     source = names,
     itemfn = function(name)
-        return text { content = name, width = "Fill", padding = 6 }
+        return text { content = name, width = "fill", padding = 6 }
     end,
 }
 ```

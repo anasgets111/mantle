@@ -30,7 +30,7 @@ return row {
     rect {
       padding = { left = 12, right = 12, top = 8, bottom = 8 },
       radius = 8,
-      align_v = "Center",
+      align_v = "center",
       background = "#89b4fa",
       on_click = function() minute:set(minute:get() + 1) end,
       children = { text { content = "Next minute", font_weight = 700, foreground = "#1e1e2e" } },
@@ -172,7 +172,7 @@ local mapped = computed({ open, delay(open, 150) }, function(now, was) return no
 
 local menu = popup {
   id = "menu", parent = "bar", anchor_rect = { x = 0, y = 0, width = 60, height = 28 },
-  anchor = "Bottom", gravity = "Bottom",
+  anchor = "bottom", gravity = "bottom",
   visible = mapped, -- stays mapped 150 ms after `open` goes false
   on_dismiss = function() open:set(false) end,
   child = column {
@@ -215,7 +215,7 @@ cannot loop.
 local track = geometry("track")
 
 column { width = 200, children = {
-  rect { geometry = track, width = "Fill", height = 4, background = "#45475a" },
+  rect { geometry = track, width = "fill", height = 4, background = "#45475a" },
   text { content = track:map(function(rect) return string.format("%d px wide", math.floor(rect.width)) end) },
 } }
 ```
@@ -223,7 +223,7 @@ column { width = 200, children = {
 ### elided: read text truncation
 
 Bind `elided(name)` as a text node's `elided` property. It starts `false`; after layout it is `true`
-when `elide = "End"` removes content or `max_lines` drops wrapped lines, including without an
+when `elide = "end"` removes content or `max_lines` drops wrapped lines, including without an
 ellipsis. Wrapping alone, box or ancestor clipping, scrolling and occlusion do not count.
 
 The result follows the shaped text, styled runs, font metrics and available width. Content changes,
@@ -243,7 +243,7 @@ local clipped = elided("body")
 local expanded = state("body_expanded", false)
 
 return column { width = 240, children = {
-    text { width = "Fill", wrap = "Word", elide = "End", elided = clipped,
+    text { width = "fill", wrap = "word", elide = "end", elided = clipped,
         max_lines = expanded:map(function(open) return open and 0 or 2 end),
         content = "A longer message can wrap across several lines. Expand it to read the rest, then collapse it again." },
     rect {
@@ -427,7 +427,7 @@ local results = settled:map(function(needle)
 end)
 
 column { width = 240, spacing = 4, children = {
-  textfield { width = "Fill", height = 28, placeholder = "Search", on_change = function(text) query:set(text) end },
+  textfield { width = "fill", height = 28, placeholder = "Search", on_change = function(text) query:set(text) end },
   column { spacing = 2, children = results },
 } }
 ```

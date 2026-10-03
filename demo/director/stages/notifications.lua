@@ -39,8 +39,8 @@ local function avatar(name)
         children = {
             text {
                 content = name:match("^[%z\1-\127\194-\244][\128-\191]*") or "?",
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 font_size = 28,
                 font_weight = 700,
                 foreground = theme.crust,
@@ -53,24 +53,24 @@ local function caret()
     return rect {
         width = 2,
         height = 26,
-        align_v = "Center",
+        align_v = "center",
         background = theme.cursor,
         opacity = 1,
         animate = {
-            opacity = { duration = 1000, keyframes = { 1, { value = 1, duration = 500 }, 0, 1 }, loops = "Infinite" },
+            opacity = { duration = 1000, keyframes = { 1, { value = 1, duration = 500 }, 0, 1 }, loops = "infinite" },
         },
     }
 end
 
 local function reply_field(entry)
     return row {
-        width = "Fill",
+        width = "fill",
         height = 56,
         spacing = 10,
         children = {
             rect {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 radius = 14,
                 background = theme.crust,
                 border_width = 1,
@@ -83,19 +83,19 @@ local function reply_field(entry)
                     local typed = d ~= ""
                     local label = text {
                         content = typed and d or (entry.reply_placeholder or "Reply"),
-                        align_v = "Center",
+                        align_v = "center",
                         font_size = 22,
                         foreground = typed and theme.text or theme.muted,
                     }
                     local line = rtl(typed and d or body_text(entry))
-                        and { rect { width = "Fill" }, caret(), label }
-                        or { label, caret(), rect { width = "Fill" } }
-                    return { row { width = "Fill", height = "Fill", spacing = 2, children = line } }
+                        and { rect { width = "fill" }, caret(), label }
+                        or { label, caret(), rect { width = "fill" } }
+                    return { row { width = "fill", height = "fill", spacing = 2, children = line } }
                 end),
             },
             rect {
                 width = 96,
-                height = "Fill",
+                height = "fill",
                 radius = 14,
                 background = computed({ sent, theme.success, theme.accent }, function(s, done, ready)
                     return s and done or
@@ -107,8 +107,8 @@ local function reply_field(entry)
                     icon {
                         name = "mail-send-symbolic",
                         size = 26,
-                        align_h = "Center",
-                        align_v = "Center",
+                        align_h = "center",
+                        align_v = "center",
                         foreground = theme.crust,
                     },
                 },
@@ -144,42 +144,42 @@ local function card(entry)
         translate = { x = 0, y = 0 },
         animate = {
             opacity = { duration = 300, from = 0 },
-            translate = { duration = 450, easing = "OutBack", from = { x = 60, y = 0 } },
+            translate = { duration = 450, easing = "out_back", from = { x = 60, y = 0 } },
         },
         children = {
             row {
-                width = "Fill",
+                width = "fill",
                 spacing = 10,
                 children = {
-                    icon { name = entry.app_icon or "dialog-information", size = 26, align_v = "Center" },
-                    text { content = entry.app_name, align_v = "Center", font_size = 18, foreground = theme.subtext },
-                    rect { width = "Fill" },
-                    text { content = "now", align_v = "Center", font_size = 18, foreground = theme.muted },
+                    icon { name = entry.app_icon or "dialog-information", size = 26, align_v = "center" },
+                    text { content = entry.app_name, align_v = "center", font_size = 18, foreground = theme.subtext },
+                    rect { width = "fill" },
+                    text { content = "now", align_v = "center", font_size = 18, foreground = theme.muted },
                 },
             },
             row {
-                width = "Fill",
+                width = "fill",
                 spacing = 18,
                 children = {
                     avatar(entry.summary),
                     column {
-                        width = "Fill",
+                        width = "fill",
                         spacing = 6,
-                        align_v = "Center",
+                        align_v = "center",
                         children = {
                             text {
                                 content = entry.summary,
-                                width = "Fill",
-                                text_align = "Start",
+                                width = "fill",
+                                text_align = "start",
                                 font_size = 26,
                                 font_weight = 700,
                                 foreground = theme.text,
                             },
                             text {
                                 content = body_text(entry),
-                                width = "Fill",
-                                wrap = "Word",
-                                text_align = "Start",
+                                width = "fill",
+                                wrap = "word",
+                                text_align = "start",
                                 font_size = 22,
                                 foreground = theme.subtext1,
                             },
@@ -195,7 +195,7 @@ end
 
 return panel {
     id = "notifications",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = feed:map(function(f) return #f.feed > 0 end),

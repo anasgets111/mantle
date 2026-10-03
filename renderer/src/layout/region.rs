@@ -59,7 +59,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 ///    walk that missed the ancestor's shift would blur where the card is not. Exact for the
 ///    translation every animation here uses; a rotated or scaled node contributes its bounding box.
 /// 2. **Ancestor clips intersect.** `layout::paint::build_node` clips every child to its parent's
-///    box unless the parent is `clip = "None"`, so a card scrolled out of a `max_height` list is not
+///    box unless the parent is `clip = "none"`, so a card scrolled out of a `max_height` list is not
 ///    drawn and must not blur either.
 /// 3. **The surface root is included**, because a root may paint its own box.
 ///

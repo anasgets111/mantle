@@ -7,10 +7,10 @@ The engine runs every tween on its own surface's compositor frames, so a panel o
 moves at 60 Hz beside one at 165 Hz; no Lua runs between the pass that starts a tween and its last
 frame.
 
-Six knobs slide 200 px over 600 ms. Each uses a different easing; `OutBack` passes the end and
+Six knobs slide 200 px over 600 ms. Each uses a different easing; `"out_back"` passes the end and
 comes back:
 
-<!-- shot-alt: Six coloured knobs slide along their tracks under different easings; the OutBack knob overshoots the end and settles back. -->
+<!-- shot-alt: Six coloured knobs slide along their tracks under different easings; the out_back knob overshoots the end and settles back. -->
 <!-- shot: frames=0..900/30 -->
 ```lua,shot
 local go = state("go", false)
@@ -47,11 +47,11 @@ return column {
     background = "#1e1e2e",
     children = {
         text { content = "Six easings, 600 ms", font_size = 14, font_weight = 700, foreground = "#cdd6f4" },
-        lane("Linear", "Linear", "#89b4fa"),
-        lane("InOutQuad", "InOutQuad", "#cba6f7"),
-        lane("OutCubic", "OutCubic", "#a6e3a1"),
-        lane("OutBack", "OutBack", "#fab387"),
-        lane("OutBounce", "OutBounce", "#f38ba8"),
+        lane("linear", "linear", "#89b4fa"),
+        lane("in_out_quad", "in_out_quad", "#cba6f7"),
+        lane("out_cubic", "out_cubic", "#a6e3a1"),
+        lane("out_back", "out_back", "#fab387"),
+        lane("out_bounce", "out_bounce", "#f38ba8"),
         lane("steps = 4", { steps = 4 }, "#f9e2af"),
     },
 }
@@ -71,7 +71,7 @@ values: a signal nested in an entry does not resolve.
 | :--- | :--- |
 | Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
 | A `path`'s `commands` | Tweens point by point against a list with the same ops and `hole` flags in the same order; any other list snaps. A spring retargeted mid-flight restarts from rest |
-| `"Fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }`, `"50%"` to `"Fill"`) | Snaps |
+| `"fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }`, `"50%"` to `"fill"`) | Snaps |
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
@@ -137,7 +137,7 @@ return row {
         rect {
             width = 32,
             height = 32,
-            align_v = "Center",
+            align_v = "center",
             children = {
                 path { width = 32, height = 32, stroke = "#313244", stroke_width = 4, commands = ring(360) },
                 path {
@@ -147,12 +147,12 @@ return row {
                     stroke_width = 4,
                     commands = ring(0),
                     animate = {
-                        commands = { duration = 1200, easing = "Linear", keyframes = { ring(0), ring(360) }, loops = "Infinite" },
+                        commands = { duration = 1200, easing = "linear", keyframes = { ring(0), ring(360) }, loops = "infinite" },
                     },
                 },
             },
         },
-        text { content = "Syncing photos", font_size = 14, foreground = "#cdd6f4", align_v = "Center" },
+        text { content = "Syncing photos", font_size = 14, foreground = "#cdd6f4", align_v = "center" },
     },
 }
 ```
@@ -184,12 +184,12 @@ one of three motions: eased (`duration`), keyframes (`keyframes` + `duration`) o
 | Key | Values | Rules |
 | :--- | :--- | :--- |
 | `duration` | Whole ms, `[1, 60000]` | Required unless `spring` is set. With `keyframes` it is the default length of each segment |
-| `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"InOutQuad"`. Not with `spring` |
+| `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"in_out_quad"`. Not with `spring` |
 | `delay` | Whole ms, `[0, 60000]` | Holds the start value first, like CSS `transition-delay`. Offsets a keyframe run once, not each loop |
 | `from` | A value of the property's shape | Start value for a property with nothing on screen yet. Refused with `keyframes` |
 | `spring` | `{ stiffness, damping }` | `stiffness` in `(0, 100000]`, `damping` in `(0, 10000]`, both required. Refuses `duration`, `easing`, `keyframes` and `loops` |
 | `keyframes` | At least 2 frames | See [keyframes](#keyframes) |
-| `loops` | Whole count `[1, 10000]` or `"Infinite"` | Default 1. Only with `keyframes` |
+| `loops` | Whole count `[1, 10000]` or `"infinite"` | Default 1. Only with `keyframes` |
 
 A `duration` or `delay` that is not a number (`"200"`) is refused rather than read as absent.
 
@@ -197,13 +197,13 @@ A `duration` or `delay` that is not a number (`"200"`) is refused rather than re
 
 | Family | Names |
 | :--- | :--- |
-| Linear | `Linear` |
-| Quad, Cubic, Quart, Quint | `InQuad`, `OutQuad`, `InOutQuad`, `InCubic`, `OutCubic`, `InOutCubic`, `InQuart`, `OutQuart`, `InOutQuart`, `InQuint`, `OutQuint`, `InOutQuint` |
-| Sine, Expo, Circ | `InSine`, `OutSine`, `InOutSine`, `InExpo`, `OutExpo`, `InOutExpo`, `InCirc`, `OutCirc`, `InOutCirc` |
-| Back, Elastic, Bounce | `InBack`, `OutBack`, `InOutBack`, `InElastic`, `OutElastic`, `InOutElastic`, `InBounce`, `OutBounce`, `InOutBounce` |
+| Linear | `"linear"` |
+| Quad, Cubic, Quart, Quint | `"in_quad"`, `"out_quad"`, `"in_out_quad"`, `"in_cubic"`, `"out_cubic"`, `"in_out_cubic"`, `"in_quart"`, `"out_quart"`, `"in_out_quart"`, `"in_quint"`, `"out_quint"`, `"in_out_quint"` |
+| Sine, Expo, Circ | `"in_sine"`, `"out_sine"`, `"in_out_sine"`, `"in_expo"`, `"out_expo"`, `"in_out_expo"`, `"in_circ"`, `"out_circ"`, `"in_out_circ"` |
+| Back, Elastic, Bounce | `"in_back"`, `"out_back"`, `"in_out_back"`, `"in_elastic"`, `"out_elastic"`, `"in_out_elastic"`, `"in_bounce"`, `"out_bounce"`, `"in_out_bounce"` |
 
-`In` starts slow, `Out` ends slow, `InOut` does both. `Back` and `Elastic` overshoot, and the
-range clamp above catches it; `Bounce` stays inside the range.
+`in_` starts slow, `out_` ends slow, `in_out_` does both. The `back` and `elastic` families
+overshoot, and the range clamp above catches it; `bounce` stays inside the range.
 
 | Table easing | Meaning |
 | :--- | :--- |
@@ -287,7 +287,7 @@ owns the property: the value the pass resolves is ignored.
 | Jump | A frame with `duration = 0` (allowed only on a frame) cuts straight to its value |
 | Hold | A segment between two equal values holds still for its duration |
 | List | At least 2 frames, no holes (`{ [1] = 0, [3] = 1 }` is refused), at least one segment that takes time |
-| End | A counted run holds its last frame as long as the entry stays. An `"Infinite"` run never ends |
+| End | A counted run holds its last frame as long as the entry stays. An `"infinite"` run never ends |
 | Continuity | The same list on the next pass is the same run; any change to the frames, timing or `loops` starts a new run from the first frame |
 
 To replay a finished run, take the entry away and put it back. [`pulse`](signals.md#pulse-mark-a-change) does both in
@@ -298,11 +298,11 @@ one expression: it reads `true` for a window after its source changes.
 ```lua,shot
 local taps = state("taps", 0)
 -- Three 120 ms segments: `duration` times each one, so the run takes 360 ms.
-local BOUNCE = { scale = { duration = 120, easing = "OutQuad", keyframes = { 1, 1.25, 0.9, 1 } } }
+local BOUNCE = { scale = { duration = 120, easing = "out_quad", keyframes = { 1, 1.25, 0.9, 1 } } }
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true },
     padding = 8, -- room for the overshoot: a scaled node paints past its box
     child = rect {
@@ -313,7 +313,7 @@ return panel {
         on_click = function() taps:set(taps:get() + 1) end,
         -- pulse is true for 400 ms after each tap: the entry appears, plays once, then goes.
         animate = pulse(taps, 400):map(function(on) return on and BOUNCE or {} end),
-        children = { icon { name = "starred-symbolic", size = 24, foreground = "#f9e2af", align_h = "Center", align_v = "Center" } },
+        children = { icon { name = "starred-symbolic", size = 24, foreground = "#f9e2af", align_h = "center", align_v = "center" } },
     },
 }
 ```
@@ -324,11 +324,11 @@ An endless spinner needs no signal. A hidden spinner stops requesting frames by 
 <!-- shot: frames=0..950/50 -->
 ```lua,shot
 local busy = state("busy", true)
-local SPIN = { rotate = { duration = 1000, easing = "Linear", keyframes = { 0, 360 }, loops = "Infinite" } }
+local SPIN = { rotate = { duration = 1000, easing = "linear", keyframes = { 0, 360 }, loops = "infinite" } }
 
 return panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true },
     child = row {
         padding = 10,
@@ -337,8 +337,8 @@ return panel {
         background = "#1e1e2e",
         visible = busy,
         children = {
-            icon { name = "view-refresh-symbolic", size = 16, foreground = "#89b4fa", align_v = "Center", animate = SPIN },
-            text { content = "Checking for updates", font_size = 13, foreground = "#cdd6f4", align_v = "Center" },
+            icon { name = "view-refresh-symbolic", size = 16, foreground = "#89b4fa", align_v = "center", animate = SPIN },
+            text { content = "Checking for updates", font_size = 13, foreground = "#cdd6f4", align_v = "center" },
         },
     },
 }
@@ -351,7 +351,7 @@ return panel {
 values to ease to.
 
 ```lua
-exit = { duration = 150, easing = "InQuad", opacity = 0, translate = { y = 16 } }
+exit = { duration = 150, easing = "in_quad", opacity = 0, translate = { y = 16 } }
 ```
 
 | Rule | Detail |
@@ -388,33 +388,33 @@ local card = row {
     opacity = 1,
     translate = { y = 0 },
     children = {
-        icon { name = "audio-volume-medium-symbolic", size = 20, foreground = "#89b4fa", align_v = "Center" },
+        icon { name = "audio-volume-medium-symbolic", size = 20, foreground = "#89b4fa", align_v = "center" },
         rect {
-            width = "Fill",
+            width = "fill",
             height = 6,
             radius = 3,
             background = "#313244",
-            align_v = "Center",
+            align_v = "center",
             children = { rect { width = "42%", height = 6, radius = 3, background = "#89b4fa" } },
         },
-        text { content = "42%", font_size = 13, foreground = "#cdd6f4", align_v = "Center" },
+        text { content = "42%", font_size = 13, foreground = "#cdd6f4", align_v = "center" },
     },
     animate = {
         opacity = { duration = 200, from = 0 },
-        translate = { duration = 200, easing = "OutCubic", from = { y = 16 } },
-        exit = { duration = 150, easing = "InQuad", opacity = 0, translate = { y = 16 } },
+        translate = { duration = 200, easing = "out_cubic", from = { y = 16 } },
+        exit = { duration = 150, easing = "in_quad", opacity = 0, translate = { y = 16 } },
     },
 }
 
 return panel {
     id = "osd",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { bottom = true },
     width = 260,
     height = 64, -- room for the exit's 16 px slide
     visible = mapped,
     child = column {
-        height = "Fill",
+        height = "fill",
         children = shown:map(function(on) return on and { card } or {} end),
     },
 }
@@ -455,13 +455,13 @@ local card = rect {
 }
 
 return {
-    panel { id = "bar", layer = "Top", anchor = { top = true }, child = text { content = "12:30", padding = 8, hover = over } },
+    panel { id = "bar", layer = "top", anchor = { top = true }, child = text { content = "12:30", padding = 8, hover = over } },
     popup {
         id = "clock_tooltip",
         parent = "bar",
         anchor_rect = hover_rect("clock"),
-        anchor = "Bottom",
-        gravity = "Bottom",
+        anchor = "bottom",
+        gravity = "bottom",
         grab = false,
         visible = mapped,
         child = rect {
@@ -498,10 +498,10 @@ local function card(index, note)
         translate = { x = 0 },
         animate = {
             opacity = { duration = 300, delay = wait, from = 0 },
-            translate = { duration = 300, delay = wait, easing = "OutCubic", from = { x = -24 } },
+            translate = { duration = 300, delay = wait, easing = "out_cubic", from = { x = -24 } },
         },
         children = {
-            icon { name = note.icon, size = 20, foreground = note.color, align_v = "Center" },
+            icon { name = note.icon, size = 20, foreground = note.color, align_v = "center" },
             column {
                 spacing = 2,
                 children = {
@@ -558,12 +558,12 @@ local function card(note)
         border_width = 1,
         border_color = "#45475a",
         on_click = function() dismiss(note.title) end,
-        animate = { exit = { duration = 200, easing = "InCubic", opacity = 0, translate = { x = 300 } } },
+        animate = { exit = { duration = 200, easing = "in_cubic", opacity = 0, translate = { x = 300 } } },
         children = {
-            icon { name = note.icon, size = 20, foreground = note.color, align_v = "Center" },
+            icon { name = note.icon, size = 20, foreground = note.color, align_v = "center" },
             column {
                 spacing = 2,
-                align_v = "Center",
+                align_v = "center",
                 children = {
                     text { content = note.title, font_size = 13, font_weight = 700, foreground = "#cdd6f4" },
                     text { content = note.body, font_size = 12, foreground = "#a6adc8" },
@@ -584,7 +584,7 @@ end
 
 return panel {
     id = "notifications",
-    layer = "Overlay",
+    layer = "overlay",
     anchor = { top = true, right = true },
     width = 300,
     height = 400,
@@ -604,8 +604,8 @@ return panel {
 | A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |
 | A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
-| A looping motion driven by a `timer` costs CPU on every tick | Use `keyframes` with `loops = "Infinite"` ([Lua cost](#lua-cost)) |
-| `width` will not overshoot below `0` with `OutBack` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
+| A looping motion driven by a `timer` costs CPU on every tick | Use `keyframes` with `loops = "infinite"` ([Lua cost](#lua-cost)) |
+| `width` will not overshoot below `0` with `"out_back"` | The property's range clamps every frame. Use `margin` or `translate` for motion that must go negative |
 
 See also: [signals](signals.md) (`pulse`, `delay`, `hover`), [nodes](../nodes/index.md) (properties and
 identity), [input](input.md) (hover and clicks that drive motion), [paint](paint.md) (what the

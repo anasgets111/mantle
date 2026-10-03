@@ -380,7 +380,7 @@ pub(crate) mod tests {
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
     /// back a global. A node would reject a probe key no `nodes::properties` field declares.
     pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
-        loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"Top\" }}")).unwrap();
+        loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"top\" }}")).unwrap();
         loader.lua().globals().get(name).unwrap()
     }
 
@@ -457,7 +457,7 @@ pub(crate) mod tests {
         let module = dir.path().join("theme.lua");
         std::fs::write(&module, r#"return { accent = "first" }"#).unwrap();
         let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
-        let source = r#"return panel { id = "bar", layer = "Top", background = require("theme").accent }"#;
+        let source = r#"return panel { id = "bar", layer = "top", background = require("theme").accent }"#;
 
         let first = loader.evaluate(source).unwrap();
         assert_eq!(accent(&first), "first");
@@ -487,7 +487,7 @@ pub(crate) mod tests {
         let source = r#"
             runs = (runs or 0)
             idle:register_threshold(30, function() runs = runs + 1 end, function() end)
-            return panel { id = "bar", layer = "Top" }
+            return panel { id = "bar", layer = "top" }
         "#;
 
         loader.evaluate(source).unwrap();
@@ -507,7 +507,7 @@ pub(crate) mod tests {
     fn clearing_the_module_cache_leaves_the_standard_library_loaded() {
         let dir = tempfile::tempdir().unwrap();
         let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
-        loader.evaluate(r#"return panel { id = "bar", layer = "Top" }"#).unwrap();
+        loader.evaluate(r#"return panel { id = "bar", layer = "top" }"#).unwrap();
 
         let intact: bool = loader
             .lua()
@@ -527,9 +527,9 @@ pub(crate) mod tests {
     fn a_config_that_deletes_the_package_table_fails_its_next_reload_loudly() {
         let dir = tempfile::tempdir().unwrap();
         let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
-        loader.evaluate(r#"package = nil return panel { id = "bar", layer = "Top" }"#).unwrap();
+        loader.evaluate(r#"package = nil return panel { id = "bar", layer = "top" }"#).unwrap();
 
-        let second = loader.evaluate(r#"return panel { id = "bar", layer = "Top" }"#);
+        let second = loader.evaluate(r#"return panel { id = "bar", layer = "top" }"#);
         assert!(
             matches!(second, Err(LoaderError::Eval(_))),
             "the next reload has to report, not quietly skip the cache clear: {second:?}"
@@ -552,7 +552,7 @@ pub(crate) mod tests {
             .evaluate(
                 r#"local w = require("widget")
                    has_state, has_json = w.has_state, w.has_json
-                   return panel { id = "bar", layer = "Top", child = w.node }"#,
+                   return panel { id = "bar", layer = "top", child = w.node }"#,
             )
             .unwrap();
         assert!(loader.lua().globals().get::<bool>("has_state").unwrap());
@@ -571,7 +571,7 @@ pub(crate) mod tests {
     fn a_non_node_in_the_surface_list_names_which_element_and_what_it_was() {
         let loader = test_loader();
         let err = loader
-            .evaluate(r#"return { panel { id = "bar", layer = "Top" }, "/home/me/.config/mantle/widgets/lock.lua" }"#)
+            .evaluate(r#"return { panel { id = "bar", layer = "top" }, "/home/me/.config/mantle/widgets/lock.lua" }"#)
             .unwrap_err();
 
         assert!(
@@ -591,7 +591,7 @@ pub(crate) mod tests {
         let err = loader
             .evaluate(
                 r#"local missing
-return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "Top" } }"#,
+return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "top" } }"#,
             )
             .unwrap_err();
 
@@ -899,7 +899,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
     #[test]
     fn evaluate_accepts_a_single_top_level_surface() {
         let loader = test_loader();
-        let output = loader.evaluate(r#"return panel { id = "bar", layer = "Top" }"#).unwrap();
+        let output = loader.evaluate(r#"return panel { id = "bar", layer = "top" }"#).unwrap();
         assert_eq!(output.surfaces.len(), 1);
         assert_eq!(output.surfaces[0].kind, "panel");
     }
@@ -911,7 +911,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
         let output = loader
             .evaluate(
                 r#"return {
-                    panel { id = "bar", layer = "Top" },
+                    panel { id = "bar", layer = "top" },
                     window { id = "settings", title = "Settings" },
                     popup { id = "menu", parent = "bar", width = 200, height = 120, anchor_rect = { x = 0, y = 0, width = 86, height = 24 } },
                 }"#,
@@ -1054,7 +1054,7 @@ return { panel { id = "a", layer = "Top" }, missing, panel { id = "c", layer = "
     fn evaluate_file_reads_and_evaluates_a_real_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shell.lua");
-        std::fs::write(&path, r#"return panel { id = "bar", layer = "Top" }"#).unwrap();
+        std::fs::write(&path, r#"return panel { id = "bar", layer = "top" }"#).unwrap();
 
         let loader = test_loader();
         let output = loader.evaluate_file(&path).unwrap();

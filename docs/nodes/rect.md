@@ -17,11 +17,11 @@ local bell = rect {
     background = "#313244",
     children = {
         icon { name = "notification-symbolic", size = 22, foreground = "#CDD6F4",
-               align_h = "Center", align_v = "Center" },
+               align_h = "center", align_v = "center" },
         rect {
             visible = unread:map(function(n) return (n or 0) > 0 end),
-            align_h = "End",
-            align_v = "Start",
+            align_h = "end",
+            align_v = "start",
             margin = { top = 4, right = 4 },
             padding = { left = 5, right = 5 },
             radius = 8,
@@ -55,25 +55,25 @@ Without `width` and `height`, a `rect` is the union of its children, and 0 × 0 
 | :--- | :--- |
 | Layer a badge over an icon | The example above |
 | Centre something | [Below](#centre-something) |
-| Draw a divider line | `rect { width = "Fill", height = 1, background = "#45475A" }` |
-| Round an image's corners | [image](image.md#round-an-images-corners): a `rect` with `radius` and `clip = "Rounded"` |
+| Draw a divider line | `rect { width = "fill", height = 1, background = "#45475A" }` |
+| Round an image's corners | [image](image.md#round-an-images-corners): a `rect` with `radius` and `clip = "rounded"` |
 | Dim everything behind a dialog | A full-size `rect` with a translucent `background`, the dialog as its child ([paint](../guide/paint.md#dim-the-background-behind-a-modal)) |
 | Overlap two views while they swap | Make the parent a `rect` ([switching views](index.md#switching-views-with-ids)) |
 
 ### Centre something
 
-A stacking parent places each child on its own, so `align_h` and `align_v` of `"Center"` centre it.
+A stacking parent places each child on its own, so `align_h` and `align_v` of `"center"` centre it.
 Here a card sits in the middle of a full-screen dimmed layer.
 
 ```lua
 local dialog = rect {
-    width = "Fill",
-    height = "Fill",
+    width = "fill",
+    height = "fill",
     background = "#00000080",
     children = {
         column {
-            align_h = "Center",
-            align_v = "Center",
+            align_h = "center",
+            align_v = "center",
             padding = 24,
             radius = 12,
             background = "#1E1E2E",
@@ -83,7 +83,7 @@ local dialog = rect {
 }
 ```
 
-Inside a `row`, set `align_h = "Center"` on the row instead: it packs its children, and they ignore
+Inside a `row`, set `align_h = "center"` on the row instead: it packs its children, and they ignore
 their own `align_h`.
 
 ## Gotchas

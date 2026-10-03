@@ -248,7 +248,7 @@ impl App {
         visible: bool,
         measured: layout::LogicalSize,
     ) {
-        // An empty name is `"Active"`, which has no output to find (ADR-0246).
+        // An empty name is `"active"`, which has no output to find (ADR-0246).
         let output = outputs.get(&instance.output);
         if output.is_none() && !instance.output.is_empty() {
             debug!(2; "instance {:?} names an output that has since gone; skipping", instance.instance_id);
@@ -461,7 +461,7 @@ impl LayerShellHandler for App {
         let Some(index) = self.index_of_surface(layer.wl_surface()) else {
             return;
         };
-        // An `"Active"` panel outlives its output (ADR-0246 decision 4). Mapped only, so a surface
+        // An `"active"` panel outlives its output (ADR-0246 decision 4). Mapped only, so a surface
         // refused at creation is not retried every pass.
         if let TrackedRole::Panel { output: None, .. } = self.surfaces[index].role
             && self.surfaces[index].map_state == MapState::Mapped
@@ -636,7 +636,7 @@ mod tests {
     #[test]
     fn an_exclusive_bar_reserves_its_configured_height_and_a_dock_its_width() {
         // Derived from the size the compositor granted, which is why this is a configure-time
-        // computation: at creation a `"Fill"`-sized bar has no height to reserve.
+        // computation: at creation a `"fill"`-sized bar has no height to reserve.
         let bar = node::Anchor { top: true, right: true, bottom: false, left: true };
         assert_eq!(exclusive_zone_for(bar, (1920, 32)), 32);
 
@@ -664,7 +664,7 @@ mod tests {
                 id: id.to_string(),
                 layer: LayerKind::Top,
                 anchor: node::Anchor { top: true, right: true, bottom: false, left: true },
-                output: "All".to_string(),
+                output: "all".to_string(),
                 namespace: format!("mantle-{id}"),
             },
             keyboard_interactivity: node::KeyboardInteractivity::None,
@@ -833,7 +833,7 @@ mod tests {
 
     #[test]
     fn a_size_change_a_signal_could_make_is_refused_by_the_same_guard_creation_uses() {
-        // A `Signal` can turn a fixed 32 into `"Fill"` at runtime, and `set_size(_, 0)` on a
+        // A `Signal` can turn a fixed 32 into `"fill"` at runtime, and `set_size(_, 0)` on a
         // surface anchored to one vertical edge is a protocol error that kills the shell. The guard
         // has to run on the update path, not only at creation.
         let applied = panel("bar");

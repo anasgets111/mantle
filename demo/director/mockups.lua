@@ -18,7 +18,7 @@ end)
 local sidebar_width = size:map(function(s) return math.min(360, math.floor(s.width * 0.42)) end)
 
 local function label(content, size_px, color, extra)
-    local node = { content = content, font_size = size_px, foreground = color, align_v = "Center" }
+    local node = { content = content, font_size = size_px, foreground = color, align_v = "center" }
     for k, v in pairs(extra or {}) do
         node[k] = v
     end
@@ -31,13 +31,13 @@ local function initial_avatar(name, color, px)
         height = px,
         radius = px / 2,
         background = color,
-        align_h = "Center",
-        align_v = "Center",
+        align_h = "center",
+        align_v = "center",
         children = {
             text {
                 content = name:match("^[%z\1-\127\194-\244][\128-\191]*") or "?",
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 font_size = math.floor(px * 0.42),
                 font_weight = 700,
                 foreground = theme.crust,
@@ -49,7 +49,7 @@ end
 local function window(id, title, app_icon, body)
     return panel {
         id = "mock:" .. id,
-        layer = "Top",
+        layer = "top",
         anchor = { top = true, left = true },
         margin = size:map(function(s) return { top = s.top, left = s.left } end),
         visible = app:map(function(a) return a == id end),
@@ -57,7 +57,7 @@ local function window(id, title, app_icon, body)
             width = size:map(function(s) return s.width end),
             height = size:map(function(s) return s.height end),
             radius = 18,
-            clip = "Box",
+            clip = "box",
             background = theme.base,
             border_width = 1,
             border_color = theme.overlay,
@@ -65,22 +65,22 @@ local function window(id, title, app_icon, body)
             scale = shown:map(function(on) return on and 1 or 0.97 end),
             animate = {
                 opacity = { duration = 280, from = 0 },
-                scale = { duration = 380, easing = "OutCubic", from = 0.94 },
+                scale = { duration = 380, easing = "out_cubic", from = 0.94 },
             },
             children = {
                 row {
-                    width = "Fill",
+                    width = "fill",
                     height = TITLE,
                     padding = { left = 18, right = 18 },
                     spacing = 12,
                     background = theme.mantle,
                     children = {
-                        icon { name = app_icon, size = 26, align_v = "Center" },
+                        icon { name = app_icon, size = 26, align_v = "center" },
                         label(title, 19, theme.subtext1),
-                        rect { width = "Fill" },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.overlay },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.overlay },
-                        rect { width = 14, height = 14, radius = 7, align_v = "Center", background = theme.danger },
+                        rect { width = "fill" },
+                        rect { width = 14, height = 14, radius = 7, align_v = "center", background = theme.overlay },
+                        rect { width = 14, height = 14, radius = 7, align_v = "center", background = theme.overlay },
+                        rect { width = 14, height = 14, radius = 7, align_v = "center", background = theme.danger },
                     },
                 },
                 body,
@@ -101,7 +101,7 @@ local CHATS = {
 local function sidebar()
     return column {
         width = sidebar_width,
-        height = "Fill",
+        height = "fill",
         padding = 14,
         spacing = 6,
         background = theme.mantle,
@@ -109,7 +109,7 @@ local function sidebar()
             local rows = {}
             for k, entry in ipairs(CHATS) do
                 rows[k] = row {
-                    width = "Fill",
+                    width = "fill",
                     padding = 12,
                     spacing = 14,
                     radius = 14,
@@ -117,12 +117,12 @@ local function sidebar()
                     children = {
                         initial_avatar(entry.name, entry.color, 52),
                         column {
-                            width = "Fill",
+                            width = "fill",
                             spacing = 4,
-                            align_v = "Center",
+                            align_v = "center",
                             children = {
-                                label(entry.name, 21, theme.text, { width = "Fill", text_align = "Start" }),
-                                label(entry.preview, 18, theme.subtle, { width = "Fill", text_align = "Start" }),
+                                label(entry.name, 21, theme.text, { width = "fill", text_align = "start" }),
+                                label(entry.preview, 18, theme.subtle, { width = "fill", text_align = "start" }),
                             },
                         },
                     },
@@ -144,33 +144,33 @@ local function bubble(message, rtl)
         translate = { x = 0, y = 0 },
         animate = {
             opacity = { duration = 250, from = 0 },
-            translate = { duration = 350, easing = "OutCubic", from = { x = 0, y = 16 } },
+            translate = { duration = 350, easing = "out_cubic", from = { x = 0, y = 16 } },
         },
         children = {
             label(message.text .. (mine and "   ✓✓" or ""), 22, mine and theme.crust or theme.text,
-                { width = "Fill", wrap = "Word" }),
+                { width = "fill", wrap = "word" }),
         },
     }
     -- A right-to-left chat mirrors: your own messages sit on the left.
     local at_end = mine ~= rtl
     return row {
         id = "bubble:" .. message.text,
-        width = "Fill",
-        children = at_end and { rect { width = "Fill" }, node } or { node, rect { width = "Fill" } },
+        width = "fill",
+        children = at_end and { rect { width = "fill" }, node } or { node, rect { width = "fill" } },
     }
 end
 
 local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
-    width = "Fill",
-    height = "Fill",
+    width = "fill",
+    height = "fill",
     children = {
         sidebar(),
         column {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             children = {
                 row {
-                    width = "Fill",
+                    width = "fill",
                     height = 76,
                     padding = { left = 24, right = 24 },
                     spacing = 14,
@@ -182,7 +182,7 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                         return {
                             initial_avatar(c.name, color, 48),
                             column {
-                                align_v = "Center",
+                                align_v = "center",
                                 spacing = 2,
                                 children = {
                                     label(c.name, 22, theme.text, { font_weight = 700 }),
@@ -192,14 +192,14 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                         }
                     end),
                 },
-                rect { width = "Fill", height = 1, background = theme.surface },
+                rect { width = "fill", height = 1, background = theme.surface },
                 column {
-                    width = "Fill",
-                    height = "Fill",
+                    width = "fill",
+                    height = "fill",
                     padding = 28,
                     spacing = 14,
                     children = chat:map(function(c)
-                        local out = { rect { height = "Fill" } }
+                        local out = { rect { height = "fill" } }
                         for _, message in ipairs(c.messages) do
                             out[#out + 1] = bubble(message, c.rtl)
                         end
@@ -207,11 +207,11 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                     end),
                 },
                 row {
-                    width = "Fill",
+                    width = "fill",
                     padding = 18,
                     children = {
                         rect {
-                            width = "Fill",
+                            width = "fill",
                             height = 54,
                             radius = 27,
                             background = theme.mantle,
@@ -221,7 +221,7 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                                     chat:map(function(c) return c.rtl and "اكتب رسالة" or "Write a message" end),
                                     20,
                                     theme.muted,
-                                    { width = "Fill", text_align = "Start", height = "Fill" }
+                                    { width = "fill", text_align = "start", height = "fill" }
                                 ),
                             },
                         },
@@ -244,8 +244,8 @@ local PEOPLE = {
 -- `speaking` is the colour its border pulses in: keyframes take literals, so a re-theme rebuilds it.
 local function tile(person, speaking)
     return rect {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         radius = 16,
         padding = 18,
         background = person.tint,
@@ -256,15 +256,15 @@ local function tile(person, speaking)
             border_color = {
                 duration = 1400,
                 keyframes = { speaking, speaking .. "00", speaking },
-                loops = "Infinite",
+                loops = "infinite",
             },
         } or nil,
         children = {
             initial_avatar(person.name, person.color, 120),
             text {
                 content = person.name,
-                align_h = "Start",
-                align_v = "End",
+                align_h = "start",
+                align_v = "end",
                 font_size = 20,
                 foreground = theme.text,
             },
@@ -280,32 +280,32 @@ local function control(icon_name, background)
         background = background,
         animate = { background = 200 },
         children = {
-            icon { name = icon_name, size = 28, align_h = "Center", align_v = "Center", foreground = theme.text },
+            icon { name = icon_name, size = 28, align_h = "center", align_v = "center", foreground = theme.text },
         },
     }
 end
 
 local call_window = window("call", "Meet · Weekly sync", "camera-web-symbolic", column {
-    width = "Fill",
-    height = "Fill",
+    width = "fill",
+    height = "fill",
     padding = 18,
     spacing = 14,
     background = theme.crust,
     children = {
         row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             spacing = 14,
             children = theme.success:map(function(c) return { tile(PEOPLE[1]), tile(PEOPLE[2], c) } end),
         },
         row {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             spacing = 14,
             children = { tile(PEOPLE[3]), tile(PEOPLE[4]) },
         },
         row {
-            align_h = "Center",
+            align_h = "center",
             spacing = 18,
             children = {
                 control("audio-input-microphone-symbolic", theme.surface),
@@ -324,11 +324,11 @@ local call_window = window("call", "Meet · Weekly sync", "camera-web-symbolic",
 
 local function browser_window(wallpaper)
     return window("browser", "Zen Browser", "zen-browser", column {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         children = {
             row {
-                width = "Fill",
+                width = "fill",
                 height = 58,
                 padding = { left = 16, right = 16 },
                 spacing = 12,
@@ -338,69 +338,69 @@ local function browser_window(wallpaper)
                         width = 360,
                         height = 40,
                         radius = 10,
-                        align_v = "Center",
+                        align_v = "center",
                         background = theme.surface,
                         padding = { left = 16, right = 16 },
-                        children = { label("Aurora timelapse · 4K", 18, theme.text, { height = "Fill" }) },
+                        children = { label("Aurora timelapse · 4K", 18, theme.text, { height = "fill" }) },
                     },
                     rect {
-                        width = "Fill",
+                        width = "fill",
                         height = 40,
                         radius = 20,
-                        align_v = "Center",
+                        align_v = "center",
                         background = theme.crust,
                         padding = { left = 20, right = 20 },
                         children = {
                             label("videos.example/watch?v=aurora", 18, theme.subtext, {
-                                width = "Fill",
-                                height = "Fill",
+                                width = "fill",
+                                height = "fill",
                                 font = "CaskaydiaCove Nerd Font Mono",
-                                elide = "End",
+                                elide = "end",
                             }),
                         },
                     },
                 },
             },
             rect {
-                width = "Fill",
-                height = "Fill",
+                width = "fill",
+                height = "fill",
                 background = "#000000",
-                clip = "Box",
+                clip = "box",
                 children = {
-                    image { source = wallpaper, width = "Fill", height = "Fill", fit = "cover" },
+                    image { source = wallpaper, width = "fill", height = "fill", fit = "cover" },
                     rect {
                         width = 120,
                         height = 120,
                         radius = 60,
-                        align_h = "Center",
-                        align_v = "Center",
+                        align_h = "center",
+                        align_v = "center",
                         background = theme.fade("crust", "cc"),
                         visible = playing:map(function(p) return not p end),
                         children = {
                             icon {
                                 name = "media-playback-start-symbolic",
                                 size = 56,
-                                align_h = "Center",
-                                align_v = "Center",
+                                align_h = "center",
+                                align_v = "center",
                                 foreground = theme.text,
                             },
                         },
                     },
                     rect {
-                        width = "Fill",
+                        width = "fill",
                         height = 8,
-                        align_v = "End",
+                        align_v = "end",
                         margin = { left = 24, right = 24, bottom = 24 },
                         radius = 4,
                         background = "#ffffff40",
                         children = {
                             rect {
-                                height = "Fill",
+                                height = "fill",
                                 radius = 4,
                                 background = theme.danger,
                                 width = playing:map(function(p) return p and "100%" or "46%" end),
                                 animate = {
-                                    width = { duration = 9000, easing = "Linear", from = "20%" },
+                                    width = { duration = 9000, easing = "linear", from = "20%" },
                                 },
                             },
                         },

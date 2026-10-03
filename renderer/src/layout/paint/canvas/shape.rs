@@ -40,7 +40,7 @@ const HAIR: f32 = 0.05;
 /// A box whose sides differ by a hair is a circle. A hair-length straight run between the two
 /// caps is worse than a bevel: for a box 2 µm narrower than it is tall, the vertical-cap path's
 /// fill fan folds over and paints the whole bounding square (`a_box_a_hair_narrower_than_tall_is_
-/// still_a_circle`). Tweens produce exactly that: a `width = "Fill"` circle inside a cell whose
+/// still_a_circle`). Tweens produce exactly that: a `width = "fill"` circle inside a cell whose
 /// width and padding both ease lands a rounding error either side of its height on different
 /// frames, and the narrow frames flashed as squares.
 pub(super) fn box_path(rect: LogicalRect, radius: f32) -> Path {
@@ -455,8 +455,8 @@ mod tests {
     /// out to the edges.
     #[test]
     fn a_gradient_background_follows_css_geometry() {
-        let child = r##"rect { width = "Fill", height = "Fill",
-            background = { gradient = "Linear", stops = { { 0, "#FF0000" }, { 1, "#0000FF" } } } }"##;
+        let child = r##"rect { width = "fill", height = "fill",
+            background = { gradient = "linear", stops = { { 0, "#FF0000" }, { 1, "#0000FF" } } } }"##;
         let Some(px) = paint_points(child, &[(32, 0), (32, 63), (32, 32)]) else { return };
         assert!(px[0].0 > 245 && px[0].2 < 10, "top is the first stop, got {:?}", px[0]);
         assert!(px[1].2 > 245 && px[1].0 < 10, "bottom is the last stop, got {:?}", px[1]);
@@ -464,15 +464,15 @@ mod tests {
 
         let turned = |shape: &str| {
             format!(
-                r##"rect {{ width = "Fill", height = "Fill",
+                r##"rect {{ width = "fill", height = "fill",
                     background = {{ {shape}, stops = {{ {{ 0, "#FF0000" }}, {{ 1, "#0000FF" }} }} }} }}"##
             )
         };
-        let Some(px) = paint_points(&turned(r#"gradient = "Linear", angle = 90"#), &[(0, 32), (63, 32)]) else {
+        let Some(px) = paint_points(&turned(r#"gradient = "linear", angle = 90"#), &[(0, 32), (63, 32)]) else {
             return;
         };
         assert!(px[0].0 > 245 && px[1].2 > 245, "90 degrees runs left to right, got {px:?}");
-        let Some(px) = paint_points(&turned(r#"gradient = "Radial""#), &[(32, 32), (32, 0), (0, 0)]) else { return };
+        let Some(px) = paint_points(&turned(r#"gradient = "radial""#), &[(32, 32), (32, 0), (0, 0)]) else { return };
         assert!(px[0].0 > 245 && px[1].2 > 245 && px[2].2 > 245, "centre out to the edges, got {px:?}");
     }
 
@@ -512,7 +512,7 @@ mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 64, height = 64, child = rect {
-                width = 40, height = 40, radius = 12, corner_shape = "Scoop", background = "#FF000080",
+                width = 40, height = 40, radius = 12, corner_shape = "scoop", background = "#FF000080",
             } }"##,
             LogicalSize { width: 64.0, height: 64.0 },
         );
@@ -558,7 +558,7 @@ mod tests {
     /// across every scoop.
     #[test]
     fn a_scooped_border_follows_the_scoop_and_paints_once() {
-        let child = r##"rect { width = 40, height = 40, radius = 12, corner_shape = "Scoop",
+        let child = r##"rect { width = 40, height = 40, radius = 12, corner_shape = "scoop",
             border_width = 3, border_color = "#FF000080" }"##;
         let Some(px) = paint_points(child, &[(1, 1), (9, 9), (20, 1), (1, 20), (20, 20)]) else { return };
         assert_eq!(px[0].3, 0, "the cut corner stays empty, got {:?}", px[0]);
@@ -840,9 +840,9 @@ mod tests {
         );
     }
 
-    // ---- `clip = "Rounded"` ----
+    // ---- `clip = "rounded"` ----
 
-    /// A `width = "Fill"` circle in a tweening cell lands a rounding error narrower than its
+    /// A `width = "fill"` circle in a tweening cell lands a rounding error narrower than its
     /// height on some frames. That box took the vertical-cap branch, whose hair-length straight run
     /// folded the fill fan over the whole square; the wider case never did, which is why it showed
     /// on some frames and not others.

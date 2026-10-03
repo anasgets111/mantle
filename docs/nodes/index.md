@@ -22,22 +22,22 @@ end
 
 local bar = panel {
     id = "bar",
-    layer = "Top",
+    layer = "top",
     anchor = { top = true, left = true, right = true },
     exclusive_zone = 32,
-    width = "Fill",
+    width = "fill",
     height = 32,
     child = row {
-        width = "Fill",
-        height = "Fill",
+        width = "fill",
+        height = "fill",
         padding = { left = 12, right = 12 },
         background = "#1E1E2ECC",
         children = {
-            row { width = "Fill", align_v = "Center", spacing = 6, children = {
+            row { width = "fill", align_v = "center", spacing = 6, children = {
                 workspace(true), workspace(false), workspace(false),
             } },
-            text { content = clock, align_v = "Center", font_weight = 700, foreground = "#CDD6F4" },
-            row { width = "Fill", align_h = "End", align_v = "Center", spacing = 12, children = {
+            text { content = clock, align_v = "center", font_weight = 700, foreground = "#CDD6F4" },
+            row { width = "fill", align_h = "end", align_v = "center", spacing = 12, children = {
                 status("network-wireless-symbolic"), status("audio-volume-high-symbolic"), status("bluetooth-active-symbolic"),
             } },
         },
@@ -47,7 +47,7 @@ local bar = panel {
 return { bar }
 ```
 
-The two side rows are `"Fill"`, so they split what the clock leaves equally, and the clock sits at
+The two side rows are `"fill"`, so they split what the clock leaves equally, and the clock sits at
 the exact centre whatever its width. The right row packs its children at its end.
 
 ## Kinds
@@ -115,19 +115,19 @@ and `textfield` have no intrinsic size: without `width` and `height` they are 0 
 | :--- | :--- |
 | Omitted | Content: `text` and `icon` measure themselves, containers wrap their children, other leaves are 0 |
 | Number | Pixels, `[0, 8192]` |
-| `"Fill"` | Along the parent's main axis: an equal share of the space the fixed and content-sized siblings leave. Across it, or in a stacking parent: the whole slot, whatever `align_h`/`align_v` say |
+| `"fill"` | Along the parent's main axis: an equal share of the space the fixed and content-sized siblings leave. Across it, or in a stacking parent: the whole slot, whatever `align_h`/`align_v` say |
 | `"NN%"` (`"50%"`, `"12.5%"`) | A fraction of the parent's content box (inside its padding). It needs a parent with a definite size on that axis |
 
-There is no `"Content"` literal; omit the property instead.
+There is no `"content"` literal; omit the property instead.
 
 Children never shrink. Fixed and content-sized children that overflow a row keep their sizes and
-spill out, cut by the parent's `clip`, and `"Fill"` siblings get 0. A `"Fill"` child along the main
+spill out, cut by the parent's `clip`, and `"fill"` siblings get 0. A `"fill"` child along the main
 axis of a content-sized parent also gets 0: there is no remainder to share. Across the axis,
-`"Fill"` in a content-sized parent takes the largest sibling's size.
+`"fill"` in a content-sized parent takes the largest sibling's size.
 
-`min_width`, `min_height`, `max_width` and `max_height` are pixels `[0, 8192]` (not `"Fill"` or
-percents). They clamp every size, content, fixed and `"Fill"` alike, as in CSS: a `"Fill"` capped
-by `max_width` leaves the rest to its `"Fill"` siblings. A floor above a ceiling wins. Content past
+`min_width`, `min_height`, `max_width` and `max_height` are pixels `[0, 8192]` (not `"fill"` or
+percents). They clamp every size, content, fixed and `"fill"` alike, as in CSS: a `"fill"` capped
+by `max_width` leaves the rest to its `"fill"` siblings. A floor above a ceiling wins. Content past
 a ceiling overflows; a `scroll` on the same node scrolls it ([scroll](../guide/input.md#scroll)).
 
 ### Spacing, padding and margin
@@ -143,7 +143,7 @@ missing edges 0. Negative margin is accepted; each padding edge must be within `
 
 ### Alignment
 
-`align_h` and `align_v` take `"Start"`, `"Center"`, `"End"` or `"Stretch"`, default `"Start"`, and
+`align_h` and `align_v` take `"start"`, `"center"`, `"end"` or `"stretch"`, default `"start"`, and
 act by axis:
 
 | Where | `align_h` / `align_v` does |
@@ -151,10 +151,10 @@ act by axis:
 | A child in a stacking parent | Places the child in the parent's content box on that axis |
 | A child in a flow, across its main axis | Places the child across the row's height or the column's width |
 | A child in a flow, along the main axis | Ignored: the parent packs that axis |
-| A `row`'s own `align_h`, a `column`'s own `align_v` (a `list`'s along its `direction`) | Packs its children along the main axis (`"Stretch"` packs like `"Start"`). The same value also places the container itself in its parent |
+| A `row`'s own `align_h`, a `column`'s own `align_v` (a `list`'s along its `direction`) | Packs its children along the main axis (`"stretch"` packs like `"start"`). The same value also places the container itself in its parent |
 
-`"Stretch"` across an axis fills the slot and overrides a fixed size on that axis. To space items
-out along a row, use `"Fill"` children as spacers.
+`"stretch"` across an axis fills the slot and overrides a fixed size on that axis. To space items
+out along a row, use `"fill"` children as spacers.
 
 `text_align` on [`text`](text.md) and [`textfield`](textfield.md) is separate: it places lines
 inside the node's own box, and matters only when that box is wider than the text.
@@ -176,8 +176,8 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `min_height` | `number\|Bound`, `[0, 8192]` | None | Pixel floor, as `min_width` |
 | `margin` | `number\|Edges\|Bound` | `0` | Outside the box; part of the room the node takes in its parent. A number sets all four edges; not range-checked ([spacing](#spacing-padding-and-margin)) |
 | `padding` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Inside the box, around its children or text. A number sets all four edges; each edge is within `[0, 8192]` ([spacing](#spacing-padding-and-margin)) |
-| `align_h` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
-| `align_v` | `"Start"\|"Center"\|"End"\|"Stretch"\|Bound` | `"Start"` | See [alignment](#alignment) |
+| `align_h` | `"start"\|"center"\|"end"\|"stretch"\|Bound` | `"start"` | See [alignment](#alignment) |
+| `align_v` | `"start"\|"center"\|"end"\|"stretch"\|Bound` | `"start"` | See [alignment](#alignment) |
 | `visible` | `boolean\|Bound` | `true` | `false` removes the node from layout, paint and spacing and freezes its subtree ([showing and hiding](#showing-hiding-and-switching)) |
 | `opacity` | `number\|Bound`, `[0, 1]` | `1` | Multiplied down the tree. At `0` the node still takes space and input |
 | `z` | `number\|Bound` | `0` | Sibling paint and hit order. Higher paints later and hits first; ties keep declaration order. Layout and focus ignore it; `animate` refuses it |
@@ -275,13 +275,13 @@ local function page(name, title, icon_name, items)
     local rows = { text { content = title, font_size = 14, font_weight = 700, foreground = "#CDD6F4" } }
     for _, item in ipairs(items) do
         rows[#rows + 1] = row { spacing = 10, children = {
-            icon { name = icon_name, size = 16, foreground = "#89B4FA", align_v = "Center" },
-            text { content = item, foreground = "#CDD6F4", align_v = "Center" },
+            icon { name = icon_name, size = 16, foreground = "#89B4FA", align_v = "center" },
+            text { content = item, foreground = "#CDD6F4", align_v = "center" },
         } }
     end
     return column {
         id = name, -- a new id per view: the old view leaves and fades instead of being reused
-        width = "Fill",
+        width = "fill",
         padding = 14,
         spacing = 10,
         radius = 12,
@@ -311,12 +311,12 @@ return body
 
 | Task | Answer |
 | :--- | :--- |
-| Split a bar into left, centre and right | The [bar at the top](#nodes): two `"Fill"` rows around a content-sized middle |
+| Split a bar into left, centre and right | The [bar at the top](#nodes): two `"fill"` rows around a content-sized middle |
 | Centre something | [rect: centre something](rect.md#centre-something) |
 | Put a badge over an icon | [rect](rect.md): a stacking parent with the badge aligned to a corner |
-| Push items to the far end of a row | [row and column](row-column.md#push-items-apart): a `"Fill"` spacer |
-| Show a progress bar | The [meter](row-column.md): a percentage-width `rect` in a `"Fill"` track |
-| Truncate long text | `width` (or `"Fill"`) plus `elide = "End"`; see [text](text.md) |
+| Push items to the far end of a row | [row and column](row-column.md#push-items-apart): a `"fill"` spacer |
+| Show a progress bar | The [meter](row-column.md): a percentage-width `rect` in a `"fill"` track |
+| Truncate long text | `width` (or `"fill"`) plus `elide = "end"`; see [text](text.md) |
 | Make something clickable | Give it `on_click`; to make a whole row clickable, put `on_click` on the `row` ([pointer](../guide/input.md#pointer)) |
 | Build rows from data, or a grid | [list](list.md) |
 | Scroll a long list | [list: scroll a long list](list.md#scroll-a-long-list) |
@@ -331,9 +331,9 @@ return body
 
 | Trap | Fix |
 | :--- | :--- |
-| `width = "Content"` is refused | Omit the property; content size is the default |
-| An `image`, `capture`, `path`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"Fill"` in a sized parent |
-| A `"Fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
+| `width = "content"` is refused | Omit the property; content size is the default |
+| An `image`, `capture`, `path`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"fill"` in a sized parent |
+| A `"fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
 | `"50%"` resolves to 0 | The parent has no definite size on that axis |
 | Items in a `rect` overlap | They stack their children; put a `row` inside for side by side |
 | A switched view snaps in without its entry or exit animation | Same kind at the same position is reused, not replaced. Give each view its own `id` |

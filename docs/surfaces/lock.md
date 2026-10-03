@@ -28,19 +28,19 @@ local lock_screen = lock {
     background = "#11111b",
     child = function(output)
         return column {
-            width = "Fill", height = "Fill", align_v = "Center", spacing = 12,
+            width = "fill", height = "fill", align_v = "center", spacing = 12,
             opacity = up:map(function(on) return on and 1 or 0 end),
             animate = { opacity = { duration = 200, from = 0 } },
             children = {
-                text { content = now("%H:%M"), font_size = 72, font_weight = 700, foreground = "#cdd6f4", align_h = "Center" },
-                text { content = now("%A, %d %B"), font_size = 16, foreground = "#a6adc8", align_h = "Center" },
-                text { content = output, font_size = 12, foreground = "#6c7086", align_h = "Center", margin = { top = 24 } },
+                text { content = now("%H:%M"), font_size = 72, font_weight = 700, foreground = "#cdd6f4", align_h = "center" },
+                text { content = now("%A, %d %B"), font_size = 16, foreground = "#a6adc8", align_h = "center" },
+                text { content = output, font_size = 12, foreground = "#6c7086", align_h = "center", margin = { top = 24 } },
                 rect {
-                    width = 300, align_h = "Center", padding = { left = 16, right = 16, top = 10, bottom = 10 },
+                    width = 300, align_h = "center", padding = { left = 16, right = 16, top = 10, bottom = 10 },
                     radius = 999, background = "#1e1e2e", border_width = 1, border_color = "#45475a",
                     children = {
                         textfield {
-                            width = "Fill",
+                            width = "fill",
                             height = 20,
                             placeholder = "Password",
                             mask_character = "•",
@@ -51,7 +51,7 @@ local lock_screen = lock {
                 text {
                     content = hint,
                     foreground = mantle.lock:map(function(lock) return lock and lock.error ~= "" and "#f38ba8" or "#a6adc8" end),
-                    align_h = "Center",
+                    align_h = "center",
                 },
             },
         }
@@ -76,7 +76,7 @@ the ones the protocol owns.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "Active"` keeps the bare `id` |
+| `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id` |
 | `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
 | `width` | `nil` | None | Refused: the lock covers each output |
 | `height` | `nil` | None | Refused, as `width` |
@@ -84,7 +84,7 @@ the ones the protocol owns.
 <!-- End of the generated table. -->
 
 `output` and `anchor` are refused too: the protocol owns coverage and lifetime. The root is the
-output's size; give children `"Fill"` to cover it. A reload that renames `id` while the session is
+output's size; give children `"fill"` to cover it. A reload that renames `id` while the session is
 locked is refused with a warning in `mantle log`. A config declares at most one `lock`; a second
 is refused at evaluation.
 

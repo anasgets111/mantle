@@ -137,7 +137,7 @@ pub fn run(
     };
 
     // Binding delivers outputs and seat capabilities as a burst; two roundtrips populate the
-    // initial output list (`output = "All"` expands per monitor) and keyboard capability.
+    // initial output list (`output = "all"` expands per monitor) and keyboard capability.
     event_queue.roundtrip(&mut app)?;
     event_queue.roundtrip(&mut app)?;
 

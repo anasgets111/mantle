@@ -28,8 +28,8 @@ local function cell(day, in_month)
         children = {
             text {
                 content = tostring(day),
-                align_h = "Center",
-                align_v = "Center",
+                align_h = "center",
+                align_v = "center",
                 font_size = 12,
                 foreground = in_month and theme.color("fg") or theme.color("muted"),
             },
@@ -74,8 +74,8 @@ return function(visible, close)
         visible = visible,
         on_close = close,
         child = column {
-            width = "Fill",
-            height = "Fill",
+            width = "fill",
+            height = "fill",
             padding = 10,
             spacing = 4,
             background = theme.color("bg"),

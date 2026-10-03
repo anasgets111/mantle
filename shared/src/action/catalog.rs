@@ -226,6 +226,7 @@ pub enum PlayerCommand {
 /// MPRIS `LoopStatus`, also the `set_loop_status` argument.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum LoopStatus {
     /// Plays through once.
     None,
@@ -303,13 +304,11 @@ pub enum NotificationsAction {
 /// Notification urgency, also the `set_sound` tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum Urgency {
-    #[serde(rename = "low")]
     Low,
     #[default]
-    #[serde(rename = "normal")]
     Normal,
-    #[serde(rename = "critical")]
     Critical,
 }
 
