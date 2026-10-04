@@ -48,8 +48,7 @@ return panel {
         background = theme.base,
         border_width = 1,
         border_color = theme.overlay,
-        shadow_color = "#00000099",
-        shadow_blur = 60,
+        shadows = { { color = "#00000099", blur = 60 } },
         opacity = shown:map(function(on) return on and 1 or 0 end),
         scale = shown:map(function(on) return on and 1 or 0.94 end),
         animate = {

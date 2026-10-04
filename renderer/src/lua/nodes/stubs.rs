@@ -10,19 +10,20 @@ use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kin
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, CornersInput, Easing, EdgesInput, ExitBlock,
-    Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor, SpringConstants, TextRun,
-    TransitionInput,
+    Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor, ShadowLayer, SpringConstants,
+    TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 16] = [
+const NODE_SHAPES: [fn(String) -> String; 17] = [
     fill::<PathCommand>,
     fill::<EdgesInput>,
     fill::<CornersInput>,
     fill::<BorderColor>,
     fill::<Axes>,
+    fill::<ShadowLayer>,
     fill::<KeyframeInput>,
     fill::<SpringConstants>,
     fill::<TextRun>,
@@ -321,6 +322,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
 ---@alias BorderColors {BorderColors}
 ---@alias Axes {Axes}
+---@alias ShadowLayer {ShadowLayer}
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.

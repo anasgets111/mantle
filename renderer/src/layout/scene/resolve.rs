@@ -88,7 +88,8 @@ pub(super) fn resolve(
             node::advance(&mut tweens, Rc::make_mut(&mut properties), now, lua)?;
         }
         let injected = drop_injected_sizes(&mut properties, &memo.raw);
-        let style = if moving || injected { LayoutStyle::parse(&properties)? } else { *r.layout_style };
+        let style =
+            if moving || injected { LayoutStyle::parse(&properties)? } else { LayoutStyle::clone(&r.layout_style) };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo });
     }

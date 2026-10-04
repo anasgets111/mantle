@@ -14,9 +14,7 @@ column {
     radius = 12,
     border_width = 1,
     border_color = "#FFFFFF1A",
-    shadow_color = "#00000099",
-    shadow_blur = 18,
-    shadow_offset = { x = 0, y = 8 },
+    shadows = { { color = "#00000099", blur = 18, offset = { x = 0, y = 8 } } },
     children = {
         row {
             width = "fill",
@@ -65,7 +63,7 @@ or, with none close, listing them all.
 
 | Properties | Taken by |
 | :--- | :--- |
-| `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread`, `content_blur`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
+| `shadows`, `content_blur`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
 | `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `backdrop_blur`, `behind_blur` | Box kinds only |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
@@ -272,15 +270,19 @@ Mask alpha does not change the content's input or desktop blur region.
 
 ## Shadows
 
-A shadow draws when `shadow_color` has alpha above 0 and at least one of `shadow_blur`,
-`shadow_offset` or `shadow_spread` is set. The terms are CSS's `box-shadow`.
+`shadows` is a list of layers, CSS's `box-shadow: a, b`: the first layer is on top and a node takes
+at most 8. A layer is a table, and draws when its `color` has alpha above 0 and at least one of
+`blur`, `offset` or `spread` is set. A single shadow is `shadows = { { blur = 8 } }`.
+
+| Layer key | Values | Default |
+| :--- | :--- | :--- |
+| `color` | Colour | `"#000000"` |
+| `blur` | CSS blur radius in px `[0, 8192]`; the Gaussian's sigma is half of it | 0 |
+| `offset` | `{ x, y }` px, each `[-8192, 8192]`, missing axis 0 | `{ x = 0, y = 0 }` |
+| `spread` | px `[-8192, 8192]` the shape grows (negative shrinks) per side. On a non-box shadow it scales the shadow about the box centre instead | 0 |
 
 | Property | Values | Default |
 | :--- | :--- | :--- |
-| `shadow_color` | Colour | `"#000000"` |
-| `shadow_blur` | CSS blur radius in px `[0, 8192]`; the Gaussian's sigma is half of it | 0 |
-| `shadow_offset` | `{ x, y }` px, each `[-8192, 8192]`, missing axis 0 | `{ x = 0, y = 0 }` |
-| `shadow_spread` | px `[-8192, 8192]` the shape grows (negative shrinks) per side. On a non-box shadow it scales the shadow about the box centre instead | 0 |
 | `shadow_mode` | Box kinds only. `"box"`: CSS `box-shadow`, cast by the box's shape and cut out under the box. `"content"`: CSS `drop-shadow`, cast by everything the node and its subtree paint | `"box"` |
 
 Non-box nodes (`text`, `icon`, `image`, ...) have no box to cast, so their shadow is always the
@@ -296,9 +298,7 @@ local function card(label, mode)
         border_width = 2,
         border_color = "#89B4FA",
         shadow_mode = mode,
-        shadow_color = "#000000",
-        shadow_blur = 4,
-        shadow_offset = { x = 5, y = 6 },
+        shadows = { { color = "#000000", blur = 4, offset = { x = 5, y = 6 } } },
         children = {
             icon { name = "starred-symbolic", size = 22, foreground = "#F9E2AF", align_v = "center" },
             text { content = label, font_size = 20, foreground = "#CDD6F4", align_v = "center" },
@@ -322,8 +322,29 @@ and the glyphs.
 | :--- | :--- |
 | Box mode on a round box, any fill | One gradient quad around the box. On a translucent box it is cut out under the box, so it never shows through the fill |
 | An opaque box (solid colour fill with alpha 1, no mask, no `content_blur`, `opacity` 1), either mode | The same gradient quad; the box covers what is under it |
-| Content mode on anything else, any non-box node, an opaque scoop | An offscreen layer: the subtree is drawn, blurred and tinted `shadow_color` |
+| Content mode on anything else, any non-box node, an opaque scoop | An offscreen layer: the subtree is drawn, blurred and tinted each layer's `color` |
 | Box mode on a translucent scoop | A layer of the scoop's silhouette, cut out under the box |
+
+### Layered shadows
+
+A tight key shadow under a wide ambient one:
+
+```lua
+rect {
+    width = 160,
+    height = 64,
+    radius = 12,
+    background = "#1E1E2E",
+    shadows = {
+        { color = "#0000004D", blur = 2, offset = { y = 1 } },
+        { color = "#00000026", blur = 6, offset = { y = 2 }, spread = 2 },
+    },
+}
+```
+
+In content mode each layer is a blur pass over the same offscreen, so it costs one blur per layer.
+`animate.shadows` tweens layer by layer, and a layer only one side has fades in or out at its own
+geometry. A `spring` on `shadows` restarts from rest when its target changes mid-flight.
 
 ## Blurs
 
@@ -474,10 +495,12 @@ column {
     padding = 16,
     radius = 12,
     background = "#313244",
-    shadow_color = "#00000099",
-    shadow_blur = lifted:map(function(on) return on and 36 or 12 end),
-    shadow_offset = lifted:map(function(on) return { x = 0, y = on and 20 or 6 } end),
-    animate = { shadow_blur = 200, shadow_offset = 200 },
+    shadows = { {
+        color = "#00000099",
+        blur = lifted:map(function(on) return on and 36 or 12 end),
+        offset = lifted:map(function(on) return { x = 0, y = on and 20 or 6 } end),
+    } },
+    animate = { shadows = 200 },
     children = { text { content = "Hover me" } },
 }
 ```
@@ -588,8 +611,7 @@ panel {
                 radius = 16,
                 background = "#1E1E2EE0",
                 behind_blur = true,
-                shadow_color = "#00000080",
-                shadow_blur = 32,
+                shadows = { { color = "#00000080", blur = 32 } },
                 children = {
                     text { content = "Log out?", font_size = 18, foreground = "#CDD6F4" },
                     text { content = "Unsaved work in open apps will be lost.", foreground = "#A6ADC8" },

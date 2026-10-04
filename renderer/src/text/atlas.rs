@@ -33,9 +33,9 @@ const SCRATCH_SIZES: usize = 16;
 pub(crate) const LAYER_PAINTS: u64 = 1000;
 const LAYER_BYTES: usize = 64 << 20;
 
-/// A layer's shadow, if it casts one, and content, finished at `size` on one surface for the
+/// A layer's shadows, one image per layer it casts, and content, finished at `size` on one surface for the
 /// command that drew them, with the paint that last held it.
-type KeptLayer = (String, DrawCmd, (Option<ImageId>, ImageId), (usize, usize), u64);
+type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), (usize, usize), u64);
 
 /// Cache key for shaped lines in [`TextPainter`].
 struct TextLineKey {
@@ -244,15 +244,18 @@ impl TextPainter {
     }
 
     /// What `command` last finished into on `surface`.
-    pub fn layer(&self, surface: &str, command: &DrawCmd) -> Option<(Option<ImageId>, ImageId)> {
-        self.layers.iter().find(|(on, kept, ..)| on == surface && kept == command).map(|(_, _, images, ..)| *images)
+    pub fn layer(&self, surface: &str, command: &DrawCmd) -> Option<(Vec<ImageId>, ImageId)> {
+        self.layers
+            .iter()
+            .find(|(on, kept, ..)| on == surface && kept == command)
+            .map(|(_, _, images, ..)| images.clone())
     }
 
     pub fn keep_layer(
         &mut self,
         surface: &str,
         command: &DrawCmd,
-        images: (Option<ImageId>, ImageId),
+        images: (Vec<ImageId>, ImageId),
         size: (usize, usize),
     ) {
         self.layers.push((surface.to_owned(), command.clone(), images, size, self.paints));
@@ -270,9 +273,9 @@ impl TextPainter {
         self.layers.sort_unstable_by_key(|(.., held)| std::cmp::Reverse(*held));
         let (paints, mut bytes) = (self.paints, 0);
         let (kept, retired): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, (cast, _), (width, height), held)| {
+            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, (casts, _), (width, height), held)| {
                 let live = if on == surface { *held == paints } else { paints - held <= LAYER_PAINTS };
-                let size = (1 + usize::from(cast.is_some())) * width * height * 4;
+                let size = (1 + casts.len()) * width * height * 4;
                 live && bytes + size <= LAYER_BYTES && {
                     bytes += size;
                     true
@@ -281,7 +284,7 @@ impl TextPainter {
         self.layers = kept;
         retired
             .into_iter()
-            .flat_map(|(.., (cast, content), size, _)| cast.into_iter().chain([content]).map(move |id| (id, size)))
+            .flat_map(|(.., (casts, content), size, _)| casts.into_iter().chain([content]).map(move |id| (id, size)))
             .collect()
     }
 

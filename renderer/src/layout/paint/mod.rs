@@ -767,7 +767,7 @@ mod tests {
     fn a_moved_shadow_damages_both_its_old_and_new_extent() {
         let at = |y: i32| {
             effect_surface(&format!(
-                r##"rect {{ width = 40, height = 20, background = "#ffffff", shadow_offset = {{ y = {y} }} }}"##
+                r##"rect {{ width = 40, height = 20, background = "#ffffff", shadows = {{ {{ offset = {{ y = {y} }} }} }} }}"##
             ))
         };
         let damage = at(30).damage_since(&at(10), true);

@@ -209,6 +209,7 @@ mod tests {
             ("return lock { margin = 4 }", "margin"),
             (r#"return panel { align_h = "end" }"#, "align_h"),
             (r#"return lock { align_v = "end" }"#, "align_v"),
+            ("return rect { shadow_blur = 8 }", "shadow_blur"),
         ] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             let err = deserialize_lua_table(&table).unwrap_err();
@@ -679,7 +680,7 @@ mod meta_stub_tests {
         match (field, ty) {
             ("opacity" | "trim_start" | "trim_end", _) => return Some("0.5".to_string()),
             ("animate", ty) if ty.ends_with("Animations") => return Some("{ opacity = 200.5 }".to_string()),
-            ("scale", "Axes") | ("translate" | "shadow_offset", _) => return Some("{ x = 1, y = 2 }".to_string()),
+            ("scale", "Axes") | ("translate", _) => return Some("{ x = 1, y = 2 }".to_string()),
             ("scale", _) => return Some("1.5".to_string()),
             ("rotate", _) => return Some("7.5".to_string()),
             ("origin", _) => return Some("{ x = 0.5, y = 0.5 }".to_string()),
@@ -696,6 +697,9 @@ mod meta_stub_tests {
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
             // `shader.source` refuses a relative path; `image.source` takes either.
             ("source", "string") => return Some("\"/x\"".to_string()),
+            ("shadows", _) => {
+                return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
+            }
             ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
             ("fill" | "stroke", "Gradient") => return sample("background", "Gradient"),
             ("params", _) => return Some("{ a = 0.5, b = { 1, 2, 3, 4 } }".to_string()),

@@ -150,7 +150,7 @@ impl ResolvedNode {
 /// answer for the measure and the placement. The parent parses a
 /// child before recursing because it needs the margin and size for the solver (ADR-0077); ignored
 /// fields are still validated so a later kind change cannot hide a malformed property (ADR-0068).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LayoutStyle {
     margin: EdgeInsets,
     padding: EdgeInsets,

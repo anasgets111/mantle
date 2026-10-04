@@ -198,7 +198,7 @@ fn xy(row: &Property, value: &Value) -> Result<(f32, f32), LayoutError> {
     Ok((row_within(row, x.unwrap_or(axis_default(property)))?, row_within(row, y.unwrap_or(axis_default(property)))?))
 }
 
-// `translate`, `origin`, `shadow_offset`: a per-axis pair, which `xy` reads as `(x, y)`.
+// `translate`, `origin`: a per-axis pair, which `xy` reads as `(x, y)`.
 lua_shape! {
     /// A missing axis takes the property's default.
     #[alias = "Axes"]
@@ -331,13 +331,21 @@ pub struct Shadow {
     pub spread: f32,
 }
 
-/// What a node's own painted output is filtered by (ADR-0254). `blur` is `content_blur`, CSS
-/// `filter: blur()`'s sigma; `backdrop` is `backdrop_blur`, `backdrop-filter: blur()`'s (ADR-0256).
-/// `0` is off. `content_shadow` is `shadow_mode = "content"`: the shadow is cast by the painted
-/// subtree, not the box's shape (ADR-0260).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
+impl Shadow {
+    /// Qt's `MultiEffect` rule: a shadow shows once it has alpha and a blur, an offset or a spread.
+    fn shows(&self) -> bool {
+        self.color.a > 0.0 && (self.blur > 0.0 || self.spread != 0.0 || self.offset != (0.0, 0.0))
+    }
+}
+
+/// What a node's own painted output is filtered by (ADR-0254). `shadows` are the layers that
+/// show, first on top; `blur` is `content_blur`, CSS `filter: blur()`'s sigma; `backdrop` is
+/// `backdrop_blur`, `backdrop-filter: blur()`'s (ADR-0256). `0` is off. `content_shadow` is
+/// `shadow_mode = "content"`: the shadows are cast by the painted subtree, not the box's shape
+/// (ADR-0260).
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
-    pub shadow: Option<Shadow>,
+    pub shadows: Vec<Shadow>,
     pub blur: f32,
     pub backdrop: f32,
     pub content_shadow: bool,
@@ -352,17 +360,71 @@ keywords! {
     }
 }
 
-/// `shadow_*` and `content_blur`, every kind, and a box's `backdrop_blur` and `shadow_mode`. `None` when the shadow
-/// would draw nothing, so paint never opens an offscreen for it.
+// ponytail: 8 layers, each a gradient quad or, in content mode, a blur pass; raise it with a measured budget.
+const MAX_SHADOWS: usize = 8;
+/// A layer's `blur`, and its `offset` and `spread`, in px; the tween clamps into the same ranges.
+pub(super) const SHADOW_BLUR: (f32, f32) = (0.0, 8192.0);
+pub(super) const SHADOW_REACH: (f32, f32) = (-8192.0, 8192.0);
+
+lua_shape! {
+    /// One `shadows` layer.
+    #[alias = "ShadowLayer"]
+    pub(crate) struct ShadowLayer {
+        color: Option<Rgba>,
+        blur: Option<f32>,
+        offset: Option<Axes>,
+        spread: Option<f32>,
+    }
+}
+
+/// `shadows`: CSS `box-shadow`'s list, first on top. `None` when absent.
+pub(crate) struct Shadows;
+
+spelled!(Shadows => Vec::<ShadowLayer>::lua());
+
+impl Prop for Shadows {
+    type Out = Option<Vec<Shadow>>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        let table = match value {
+            None => return Ok(None),
+            Some(Value::Table(table)) => table,
+            Some(value) => {
+                return Err(invalid(row.name, format!("expected a layer array, got {}", preview_for_error(value))));
+            }
+        };
+        let within = |n: f32, (low, high): (f32, f32)| {
+            if (low..=high).contains(&n) {
+                Ok(n)
+            } else {
+                Err(invalid(row.name, format!("must be within [{low}, {high}], got {n}")))
+            }
+        };
+        let len = input::array_len(row.name, table, MAX_SHADOWS)?;
+        let mut shadows = Vec::with_capacity(len);
+        for i in 1..=len {
+            let name = format!("{}[{i}]", row.name);
+            let layer: mlua::Table = table.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
+            let ShadowLayer { color, blur, offset, spread } = ShadowLayer::read(&name, &layer)?;
+            let Axes { x, y } = offset.unwrap_or(Axes { x: None, y: None });
+            shadows.push(Shadow {
+                color: color.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                blur: within(blur.unwrap_or(0.0), SHADOW_BLUR)?,
+                offset: (within(x.unwrap_or(0.0), SHADOW_REACH)?, within(y.unwrap_or(0.0), SHADOW_REACH)?),
+                spread: within(spread.unwrap_or(0.0), SHADOW_REACH)?,
+            });
+        }
+        Ok(Some(shadows))
+    }
+}
+
+/// `shadows`, `content_blur`, every kind, and a box's `backdrop_blur` and `shadow_mode`. Only
+/// layers that would draw are kept, so paint never opens an offscreen for one.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     use fields::{common, paint};
-    let color = common::shadow_color.read(properties)?.expect("`shadow_color` has a default");
-    let offset = common::shadow_offset.read(properties)?;
-    let blur = common::shadow_blur.read(properties)?;
-    let spread = common::shadow_spread.read(properties)?;
-    let shows = color.a > 0.0 && (blur > 0.0 || spread != 0.0 || offset != (0.0, 0.0));
+    let mut shadows = common::shadows.read(properties)?.unwrap_or_default();
+    shadows.retain(Shadow::shows);
     Ok(Effect {
-        shadow: shows.then_some(Shadow { color, blur, offset, spread }),
+        shadows,
         blur: common::content_blur.read(properties)?,
         backdrop: paint::backdrop_blur.read(properties)?,
         content_shadow: paint::shadow_mode.read(properties)? == ShadowMode::Content,
@@ -1003,12 +1065,18 @@ mod tests {
         let lua = Lua::new();
         let parse = |src: &str| parse_effect(&rect_props(&lua, src));
         assert_eq!(parse("return {}").unwrap(), Effect::default());
-        assert_eq!(parse(r##"return { shadow_color = "#ff000080" }"##).unwrap().shadow, None);
+        assert!(parse(r##"return { shadows = { { color = "#ff000080" } } }"##).unwrap().shadows.is_empty());
         let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
+        let shadow = Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0 };
         assert_eq!(
-            parse("return { shadow_blur = 8, shadow_offset = { y = -2 }, shadow_spread = -1 }").unwrap().shadow,
-            Some(Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0 })
+            parse("return { shadows = { { blur = 8, offset = { y = -2 }, spread = -1 } } }").unwrap().shadows,
+            [shadow]
         );
+        // Each layer takes the defaults, keeps its order, and drops when it would not show.
+        let layers = r##"return { shadows = { { blur = 8, offset = { y = -2 }, spread = -1 }, { color = "#ff0000" },
+            { color = "#ff000000", blur = 4 }, { offset = { x = 3 } } } }"##;
+        let below = Shadow { blur: 0.0, offset: (3.0, 0.0), spread: 0.0, ..shadow };
+        assert_eq!(parse(layers).unwrap().shadows, [shadow, below]);
         assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { blur: 3.0, ..Effect::default() });
         assert_eq!(parse("return { backdrop_blur = 8 }").unwrap(), Effect { backdrop: 8.0, ..Effect::default() });
         let content = Effect { content_shadow: true, ..Effect::default() };
@@ -1017,9 +1085,11 @@ mod tests {
         for (src, property) in [
             ("return { content_blur = -1 }", "content_blur"),
             ("return { backdrop_blur = -1 }", "backdrop_blur"),
-            ("return { shadow_blur = -1 }", "shadow_blur"),
-            ("return { shadow_color = 3, shadow_blur = 1 }", "shadow_color"),
+            ("return { shadows = { { color = 3, blur = 1 } } }", "shadows[1]"),
             (r#"return { shadow_mode = "Drop" }"#, "shadow_mode"),
+            ("return { shadows = { { blur = -1 } } }", "shadows"),
+            ("return { shadows = { { blur = 1, glow = 2 } } }", "shadows[1]"),
+            ("return { shadows = { {}, {}, {}, {}, {}, {}, {}, {}, {} } }", "shadows"),
         ] {
             let err = parse(src).unwrap_err();
             assert!(

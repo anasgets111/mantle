@@ -810,9 +810,7 @@ local pointer_pane = panel {
                 translate = pointer_at,
                 scale = pressed:map(function(on) return on and 0.86 or 1 end),
                 origin = { x = 0, y = 0 },
-                shadow_color = "#00000066",
-                shadow_blur = 8,
-                shadow_offset = { y = 2 },
+                shadows = { { color = "#00000066", blur = 8, offset = { y = 2 } } },
                 animate = {
                     translate = { duration = 600, easing = "in_out_cubic" },
                     scale = { duration = 160, easing = "out_cubic" },

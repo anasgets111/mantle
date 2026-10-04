@@ -143,8 +143,8 @@ pub(super) fn solve_instance(
     shaping: &ShapingHandle,
     now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
-    let style = prepared.style;
-    let forced = forced_root_size(prepared.allocated_axes, &style, available);
+    let style = &prepared.style;
+    let forced = forced_root_size(prepared.allocated_axes, style, available);
     let mut root_style = tree.style(prepared.taffy).map_err(taffy_failed)?.clone();
     root_style.size = taffy::Size {
         width: match forced.0.or_else(|| resolve_non_content(style.width_mode, available.width)) {
@@ -708,7 +708,6 @@ fn finish(
     let mut node = ResolvedNode {
         mask_target,
         allocated_axes,
-        layout_style: std::rc::Rc::new(style),
         taffy: Some(taffy_id),
         id,
         kind,
@@ -720,7 +719,8 @@ fn finish(
         z: style.z,
         transform: style.transform,
         behind_blur: style.behind_blur,
-        effect: style.effect,
+        effect: style.effect.clone(),
+        layout_style: std::rc::Rc::new(style),
         properties,
         paint,
         displayed_source,

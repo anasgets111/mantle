@@ -12,10 +12,10 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use super::prop::Prop;
-use super::style::{axis_default, parse_percent, range_of};
+use super::style::{SHADOW_BLUR, SHADOW_REACH, axis_default, parse_percent, range_of};
 use super::{
-    Axes, CornersInput, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, fields, invalid,
-    parse_hex_color, tweened, value_as_f32,
+    Axes, CornersInput, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, Shadow, Shadows,
+    fields, invalid, parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -56,6 +56,17 @@ pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 fn hex_of(color: Rgba) -> String {
     let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}{:02x}", byte(color.r), byte(color.g), byte(color.b), byte(color.a))
+}
+
+/// `a` to `b` at `t`, each channel kept in `[0, 1]`.
+fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
+    let mix = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 1.0);
+    Rgba { r: mix(a.r, b.r), g: mix(a.g, b.g), b: mix(a.b, b.b), a: mix(a.a, b.a) }
+}
+
+/// `shadow` at zero alpha: an unset layer paints nothing, without a second hue to cross.
+fn faded(shadow: &Shadow) -> Shadow {
+    Shadow { color: Rgba { a: 0.0, ..shadow.color }, ..*shadow }
 }
 
 /// How one property eases: `animate = { width = 200 }` or
@@ -124,7 +135,7 @@ pub fn depart(
 /// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the
 /// axes `{ x, y }`, an absent key reading as the property's default (`0`, or `1` for a `scale`).
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
-/// and hole flags. Two different shapes snap, so a fill that switches between `"45%"` and `"fill"`
+/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. Two different shapes snap, so a fill that switches between `"45%"` and `"fill"`
 /// or a margin that switches between a number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Animatable {
@@ -133,16 +144,18 @@ pub enum Animatable {
     Color(Rgba),
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
+    Shadows(Vec<Shadow>),
 }
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
     CornersInput::lua(),
     Axes::lua(),
-    PathCommands::lua()
+    PathCommands::lua(),
+    Shadows::lua()
 ));
 
 impl Animatable {
@@ -157,6 +170,7 @@ impl Animatable {
                 Self::Number(if matches!(property, "opacity" | "trim_end") { 1.0 } else { axis_default(property) })
             }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
+            Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
             Self::Percent(_) => Self::Percent(0.0),
@@ -173,6 +187,9 @@ impl Animatable {
         // By name: a command array has no shape of its own that a table of edges or axes lacks.
         if property == "commands" {
             return Ok(Some(Self::Path(PathCommands::read(&fields::path::commands.row, Some(value))?)));
+        }
+        if property == "shadows" {
+            return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
         }
         match value {
             Value::String(s) => {
@@ -222,7 +239,7 @@ impl Animatable {
                 }
             }
             (Self::Color(a), Self::Color(b)) => out = [a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a],
-            // ponytail: a path hands a spring no rate and restarts still; a per-point velocity would carry it.
+            // ponytail: a path or shadow list hands a spring no rate and restarts still; a per-point velocity would carry it.
             _ => {}
         }
         out
@@ -243,9 +260,25 @@ impl Animatable {
                 }
                 Self::Fields { keys, values }
             }
-            (Self::Color(a), Self::Color(b)) => {
-                let mix = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 1.0);
-                Self::Color(Rgba { r: mix(a.r, b.r), g: mix(a.g, b.g), b: mix(a.b, b.b), a: mix(a.a, b.a) })
+            (Self::Color(a), Self::Color(b)) => Self::Color(mix(*a, *b, t)),
+            // The shorter list pads with the other's layers faded out, as `identity` fades them.
+            (Self::Shadows(a), Self::Shadows(b)) => {
+                let at = |list: &[Shadow], other: &[Shadow], i: usize| {
+                    list.get(i).copied().unwrap_or_else(|| faded(&other[i]))
+                };
+                let clamp = |n: f32, (low, high): (f32, f32)| n.clamp(low, high);
+                let layers = (0..a.len().max(b.len())).map(|i| {
+                    let (x, y) = (at(a, b, i), at(b, a, i));
+                    let lerp = |p: f32, q: f32| p + (q - p) * t;
+                    let offset = |p: f32, q: f32| clamp(lerp(p, q), SHADOW_REACH);
+                    Shadow {
+                        color: mix(x.color, y.color, t),
+                        blur: clamp(lerp(x.blur, y.blur), SHADOW_BLUR),
+                        offset: (offset(x.offset.0, y.offset.0), offset(x.offset.1, y.offset.1)),
+                        spread: clamp(lerp(x.spread, y.spread), SHADOW_REACH),
+                    }
+                });
+                Self::Shadows(layers.collect())
             }
             (Self::Path(a), Self::Path(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |path| Self::Path(Rc::new(path))),
             // The two shapes come from the same property, so this pair cannot be mixed; snap to
@@ -270,6 +303,19 @@ impl Animatable {
                 Value::Table(table)
             }
             Self::Path(ref path) => tweened(lua, path)?,
+            Self::Shadows(ref layers) => {
+                let list = lua.create_table_with_capacity(layers.len(), 0)?;
+                for shadow in layers {
+                    let offset = lua.create_table_from([("x", shadow.offset.0), ("y", shadow.offset.1)])?;
+                    let layer = lua.create_table_with_capacity(0, 4)?;
+                    layer.set("color", hex_of(shadow.color))?;
+                    layer.set("blur", shadow.blur)?;
+                    layer.set("offset", offset)?;
+                    layer.set("spread", shadow.spread)?;
+                    list.push(layer)?;
+                }
+                Value::Table(list)
+            }
         })
     }
 }
@@ -551,10 +597,7 @@ const PAINT_ONLY: &[&str] = &[
     "trim_start",
     "trim_end",
     "radius",
-    "shadow_color",
-    "shadow_blur",
-    "shadow_offset",
-    "shadow_spread",
+    "shadows",
     "content_blur",
     "backdrop_blur",
     "translate",
@@ -1090,6 +1133,31 @@ mod tests {
         // A number against a table snaps: a `scale = 2` meeting `scale = { x = 2 }`.
         let snapped = Animatable::Number(2.0).lerp(&table("return { x = 2 }", "scale"), 0.5, "scale");
         assert_eq!(snapped, table("return { x = 2 }", "scale"));
+    }
+
+    /// Layer by layer; a layer only one side has fades in at its own geometry, and a spring's
+    /// overshoot stops at the blur's floor.
+    #[test]
+    fn shadow_layers_tween_pairwise_and_an_extra_layer_fades() {
+        let lua = Lua::new();
+        let layers = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("shadows", Some(&value)).unwrap().unwrap()
+        };
+        let from = layers(r##"return { { color = "#000000", blur = 4, offset = { y = 2 } } }"##);
+        let to = layers(
+            r##"return { { color = "#000000", blur = 8, offset = { y = 6 } }, { color = "#ff0000", spread = 2 } }"##,
+        );
+        let Animatable::Shadows(mid) = from.lerp(&to, 0.5, "shadows") else { panic!("a shadow list") };
+        assert_eq!((mid[0].blur, mid[0].offset), (6.0, (0.0, 4.0)));
+        assert_eq!((mid[1].color.r, mid[1].color.a, mid[1].spread), (1.0, 0.5, 2.0));
+        let Animatable::Shadows(under) = from.lerp(&to, -2.0, "shadows") else { panic!("a shadow list") };
+        assert_eq!(under[0].blur, 0.0, "clamped to the blur's range");
+        let back = layers(
+            r##"return { { color = "#000000", blur = 8, offset = { y = 6 } }, { color = "#ff0000", spread = 2 } }"##,
+        );
+        let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
+        assert_eq!(Animatable::from_value("shadows", Some(&Value::Table(written))).unwrap(), Some(back));
     }
 
     #[test]

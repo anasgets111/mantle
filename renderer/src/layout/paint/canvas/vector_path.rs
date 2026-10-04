@@ -249,7 +249,7 @@ mod tests {
     fn paths_share_gradient_fills_shadows_and_content_blur() {
         let shape = r##"commands={{op='M',points={16,8}},{op='L',points={16,24}},{op='L',points={32,24}},{op='L',points={32,8}},{op='Z',points={}}}"##;
         let src = format!(
-            r##"path {{width=64,height=64,fill={{gradient='linear',stops={{{{0,'#ff0000'}},{{1,'#0000ff'}}}}}},shadow_color='#00ff00',shadow_offset={{x=0,y=24}}, {shape}}}"##
+            r##"path {{width=64,height=64,fill={{gradient='linear',stops={{{{0,'#ff0000'}},{{1,'#0000ff'}}}}}},shadows={{{{color='#00ff00',offset={{x=0,y=24}}}}}}, {shape}}}"##
         );
         let px = paint_points(&src, &[(24, 16), (24, 40), (8, 40)]).expect("headless EGL required");
         assert!(px[0].0 > 150 && px[0].2 > 30, "{px:?}");

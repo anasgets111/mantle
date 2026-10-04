@@ -21,8 +21,8 @@ use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
     LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands,
-    PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode,
-    StrokeCap, StrokeJoin, TextAlign, TransitionSpec, Wrap,
+    PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows, SizeHint,
+    SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -248,16 +248,10 @@ props! {
         translate: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
         /// Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
         origin: Bound<Axes> = range(0.0, 1.0).absent(Lua("{ x = 0.5, y = 0.5 }"));
-        /// Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
+        /// Drop shadows, CSS `box-shadow`'s list: the first draws on top; at most 8. Each layer is `{ color, blur, offset = { x, y }, spread }`: `color` defaults to `"#000000"`, `blur` (CSS blur radius in px) to `0` within `[0, 8192]`, `offset` (px per axis, following the node's transform) to `{ x = 0, y = 0 }` and `spread` (px the shadow grows per side; negative shrinks it, and on non-box content scales it about the box centre) to `0`, each in `[-8192, 8192]`. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
         ///
-        /// Book: A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set
-        shadow_color: Bound<Color> = absent(Lua(r##""#000000""##));
-        /// CSS `box-shadow` blur radius in px (ADR-0262).
-        shadow_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
-        /// Shadow offset in px per axis. Follows the node's transform.
-        shadow_offset: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
-        /// Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre.
-        shadow_spread: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
+        /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
+        shadows: Bound<Shadows>;
         /// Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()`. Clipped like a shadow (ADR-0254).
         ///
         /// Book: Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow

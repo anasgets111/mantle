@@ -83,7 +83,7 @@ and box properties but `margin`, `align_h` and `align_v`, and stack their one `c
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
 | Strings | Capped at 64 KB |
 | Arrays | `children`, `list.source` and `text` runs take at most 10000 elements. A `nil` hole in `children` is an error; in `list.source` and runs it ends the array |
-| Tables | A table property (`padding`, `anchor`, `shadow_offset`, `transition`, an `animate` entry, a run, ...) refuses a key it does not take, so `{ topp = 4 }` names `topp` |
+| Tables | A table property (`padding`, `anchor`, `origin`, `transition`, an `animate` entry, a run, ...) refuses a key it does not take, so `{ topp = 4 }` names `topp` |
 | Callbacks and booleans | Every `on_*` takes only a function, and every `boolean` property (`visible`, `submit`, ...) only `true` or `false`. `on_click = "x"` or `submit = 1` is an error. For a conditional handler write `cond and fn or nil`: `false` is refused too |
 
 ## Layout model
@@ -189,10 +189,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `rotate` | `number\|Bound`, `[-8192, 8192]` | `0` | Degrees clockwise about `origin`. Paint only |
 | `translate` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only |
 | `origin` | `Axes\|Bound`, `[0, 1]` | `{ x = 0.5, y = 0.5 }` | Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5` |
-| `shadow_color` | `Color\|Bound` | `"#000000"` | A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set |
-| `shadow_blur` | `number\|Bound`, `[0, 8192]` | `0` | CSS `box-shadow` blur radius in px |
-| `shadow_offset` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Shadow offset in px per axis. Follows the node's transform |
-| `shadow_spread` | `number\|Bound`, `[-8192, 8192]` | `0` | Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre |
+| `shadows` | `ShadowLayer[]\|Bound` | None | Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set |
 | `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
 | `animate` | `Animations\|Bound` | None | Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |

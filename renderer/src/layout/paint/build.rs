@@ -120,7 +120,7 @@ fn build_node(
     };
     let clip = parent_clip.intersect(snap_to_physical(rect, scale));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
-    let effect = node.effect;
+    let effect = &node.effect;
     let read = snap_to_physical(grow(rect, reach(effect.backdrop)), scale);
     let opacity = inherited_opacity * node.opacity;
     // ADR-0254 decision 2, ADR-0260. An opaque box draws as it did in either mode.
@@ -135,14 +135,18 @@ fn build_node(
         _ => (Radii::default(), false, false),
     };
     // A gradient cannot draw a scoop, so a scoop's box shadow is its silhouette's.
-    let cast = effect.shadow.filter(|_| boxed || (opaque && !radius.scoop()));
-    let layered = node::Effect { shadow: effect.shadow.filter(|_| cast.is_none()), ..effect };
-    let own = layer_bounds(rect, layered, scale);
-    let reach = match cast.filter(|_| !radius.scoop()) {
-        Some(shadow) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale)
-            .union(if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) }),
-        None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
-        None => child_clip,
+    let casts = !effect.shadows.is_empty() && (boxed || (opaque && !radius.scoop()));
+    let layered = if casts { node::Effect { shadows: Vec::new(), ..*effect } } else { effect.clone() };
+    let own = layer_bounds(rect, &layered, scale);
+    let reach = if casts && !radius.scoop() {
+        let body = if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) };
+        effect.shadows.iter().fold(body, |reach, shadow| {
+            reach.union(snap_to_physical(grow(shadow_rect(rect, rect, *shadow), 1.5 * shadow.blur), scale))
+        })
+    } else if !effect.shadows.is_empty() || effect.blur > 0.0 {
+        layer_bounds(rect, effect, scale)
+    } else {
+        child_clip
     };
     // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
     if parent_clip.intersect(reach).is_empty() {
@@ -176,18 +180,21 @@ fn build_node(
         out.push(cmd(parent_clip.intersect(read), draw));
     }
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
-    if let Some(shadow) = cast {
-        let shadow = node::Shadow { color: fade(shadow.color, opacity), ..shadow };
-        let draw = if !radius.scoop() {
-            Draw::Shadow { shadow, radius, knockout: boxed }
+    if casts {
+        let faded = effect.shadows.iter().map(|shadow| node::Shadow { color: fade(shadow.color, opacity), ..*shadow });
+        if !radius.scoop() {
+            // CSS paints the first layer on top, so the last draws first.
+            for shadow in faded.rev() {
+                out.push(cmd(parent_clip.intersect(reach), Draw::Shadow { shadow, radius, knockout: boxed }));
+            }
         } else {
-            let effect = node::Effect { shadow: Some(shadow), ..node::Effect::default() };
+            let effect = node::Effect { shadows: faded.collect(), ..node::Effect::default() };
             let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
             let fill =
                 Draw::Box { background: black, radius, colors: BorderColor::default(), widths: EdgeInsets::default() };
-            Draw::Layer { effect, silhouette: true, commands: vec![cmd(clip, fill)] }
-        };
-        out.push(cmd(parent_clip.intersect(reach), draw));
+            let draw = Draw::Layer { effect, silhouette: true, commands: vec![cmd(clip, fill)] };
+            out.push(cmd(parent_clip.intersect(reach), draw));
+        }
     }
     let body = out.len();
     match rounded_clip(node) {
@@ -274,15 +281,15 @@ fn build_node(
             ),
         });
     }
-    if (layered.shadow.is_some() || layered.blur > 0.0) && out.len() > body {
+    if (!layered.shadows.is_empty() || layered.blur > 0.0) && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
         let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).fold(own, PhysicalRect::union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
         // invert `shadow_rect` about the box.
-        let pad = layered
-            .shadow
-            .map_or(0.0, |shadow| self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()));
+        let pad = layered.shadows.iter().fold(0.0_f32, |pad, shadow| {
+            pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
+        });
         let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur))), scale);
         let draw = Draw::Layer { effect: layered, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
@@ -337,7 +344,11 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
         }
         Draw::Layer { effect, silhouette, commands } => Draw::Layer {
-            effect: node::Effect { shadow: effect.shadow.map(shadow), blur: effect.blur * scale, ..effect },
+            effect: node::Effect {
+                shadows: effect.shadows.into_iter().map(shadow).collect(),
+                blur: effect.blur * scale,
+                ..effect
+            },
             silhouette,
             commands,
         },
@@ -655,11 +666,14 @@ fn reach(sigma: f32) -> f32 {
 
 /// A layer's offscreen: the box padded for the further-reaching blur, and where that padded box
 /// lands as the shadow.
-fn layer_bounds(rect: LogicalRect, effect: node::Effect, scale: f32) -> PhysicalRect {
-    let shadow_reach = effect.shadow.map_or(0.0, |shadow| reach(shadow.blur / 2.0));
+fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> PhysicalRect {
+    let shadow_reach = effect.shadows.iter().fold(0.0_f32, |most, shadow| most.max(reach(shadow.blur / 2.0)));
     let padded = grow(rect, shadow_reach.max(reach(effect.blur)));
     let own = snap_to_physical(padded, scale);
-    effect.shadow.map_or(own, |shadow| own.union(snap_to_physical(shadow_rect(rect, padded, shadow), scale)))
+    effect
+        .shadows
+        .iter()
+        .fold(own, |own, shadow| own.union(snap_to_physical(shadow_rect(rect, padded, *shadow), scale)))
 }
 
 #[cfg(test)]
@@ -1177,7 +1191,7 @@ mod tests {
         }
         let src = r##"return panel { id = "bar", width = 100, height = 20,
             child = rect { width = 40, height = 20, margin = { left = 110 }, background = "#102030ff", clip = "box",
-                shadow_blur = 30, shadow_color = "#000000ff", children = {
+                shadows = { { blur = 30, color = "#000000ff" } }, children = {
                     rect { width = 40, height = 20, background = "#445566ff", translate = { x = -30 } } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
         assert!(!blue(&list.commands), "{list:?}");
@@ -1745,7 +1759,7 @@ mod tests {
         let card = |rest: &str| {
             effect_surface(&format!(
                 r##"rect {{ width = 40, height = 20, radius = 6, background = "#ffffff", {rest}
-                    shadow_color = "#00000080", shadow_blur = 8, shadow_offset = {{ y = 4 }}, shadow_spread = 2 }}"##
+                    shadows = {{ {{ color = "#00000080", blur = 8, offset = {{ y = 4 }}, spread = 2 }} }}}}"##
             ))
         };
         let list = card("opacity = 0.5,");
@@ -1762,22 +1776,48 @@ mod tests {
         assert_eq!(card(r#"shadow_mode = "content","#), opaque, "the same in either mode (ADR-0260)");
     }
 
+    /// `shadows` paints its layers bottom first, so the first is on top: one gradient each under a
+    /// box, every layer cast from one offscreen in content mode.
+    #[test]
+    fn shadow_layers_paint_bottom_first() {
+        let layers = r##"shadows = { { color = "#0000ffff", offset = { y = 4 } }, { color = "#00000000", blur = 9 },
+            { color = "#00ff00ff", blur = 8, offset = { y = 12 } } }"##;
+        let colors = |shadows: &[node::Shadow]| shadows.iter().map(|shadow| shadow.color.g).collect::<Vec<_>>();
+        let list =
+            effect_surface(&format!(r##"rect {{ width = 40, height = 20, background = "#ffffff", {layers} }}"##));
+        let drawn: Vec<_> = list
+            .commands
+            .iter()
+            .filter_map(|cmd| match cmd.draw {
+                Draw::Shadow { shadow, .. } => Some(shadow),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(colors(&drawn), [1.0, 0.0], "the transparent layer drops; the last draws first");
+        let last = list.commands.iter().rposition(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
+        assert!(matches!(list.commands[last + 1].draw, Draw::Box { .. }), "the fill over both");
+
+        let list = effect_surface(&format!(r##"text {{ content = "hi", {layers} }}"##));
+        let Some(Draw::Layer { effect, .. }) = list.commands.last().map(|cmd| &cmd.draw) else { panic!("a layer") };
+        assert_eq!(colors(&effect.shadows), [0.0, 1.0], "listed first on top");
+    }
+
     /// ADR-0254. Anything but an opaque box casts the shadow of its pixels, so its subtree goes
     /// offscreen as one group. Its content already carries the opacity, so the shadow colour
     /// does not fade twice.
     #[test]
     fn text_or_a_translucent_box_casts_its_shadow_through_one_offscreen_layer() {
         for child in [
-            r##"text { content = "hi", opacity = 0.5, shadow_blur = 4, shadow_offset = { x = 3 } }"##,
-            r##"rect { width = 40, height = 20, background = "#ffffff80", opacity = 0.5, shadow_blur = 4,
-                shadow_offset = { x = 3 }, shadow_mode = "content", children = { text { content = "hi" } } }"##,
+            r##"text { content = "hi", opacity = 0.5, shadows = { { blur = 4, offset = { x = 3 } } } }"##,
+            r##"rect { width = 40, height = 20, background = "#ffffff80", opacity = 0.5,
+                shadows = { { blur = 4, offset = { x = 3 } } }, shadow_mode = "content", children = { text { content = "hi" } } }"##,
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
-            let Draw::Layer { effect: node::Effect { shadow: Some(shadow), blur, .. }, commands, .. } = &layer.draw
-            else {
+            let Draw::Layer { effect: node::Effect { shadows, blur, .. }, commands, .. } = &layer.draw else {
                 panic!("{child}: expected a layer, got {:?}", layer.draw)
             };
+            let [shadow] = shadows.as_slice() else { panic!("{child}: one shadow, got {shadows:?}") };
             assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
             assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
             // The blur reaches 3 sigma, 6px, around the box, and the offset shifts its right edge 3.
@@ -1793,7 +1833,7 @@ mod tests {
     fn a_translucent_box_casts_its_box_shadow_as_a_knocked_out_gradient() {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
-                shadow_blur = 4, shadow_offset = { y = 4 }, children = { text { content = "hi" } } }"##,
+                shadows = { { blur = 4, offset = { y = 4 } } }, children = { text { content = "hi" } } }"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
         let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
@@ -1811,20 +1851,24 @@ mod tests {
     #[test]
     fn a_box_shadow_never_rides_the_bodys_layer() {
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, background = "#ffffff40", content_blur = 2, shadow_offset = { y = 4 } }"##,
+            r##"rect { width = 40, height = 20, background = "#ffffff40", content_blur = 2, shadows = { { offset = { y = 4 } } }}"##,
         );
         assert!(matches!(list.commands[1].draw, Draw::Shadow { knockout: true, .. }), "{:?}", list.commands);
-        assert!(matches!(list.commands[2].draw, Draw::Layer { effect: node::Effect { shadow: None, .. }, .. }));
+        assert!(matches!(&list.commands[2].draw, Draw::Layer { effect, .. } if effect.shadows.is_empty()));
         assert_eq!(list.commands[2].clip, PhysicalRect { x0: 34, y0: 34, x1: 86, y1: 66 }, "the blur's reach alone");
 
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 6, corner_shape = "scoop", background = "#ffffff40",
-                opacity = 0.5, shadow_offset = { y = 4 }, children = { text { content = "hi" } } }"##,
+                opacity = 0.5, shadows = { { offset = { y = 4 } } }, children = { text { content = "hi" } } }"##,
         );
         let Draw::Layer { effect, silhouette: true, commands } = &list.commands[1].draw else {
             panic!("{:?}", list.commands)
         };
-        assert_eq!(effect.shadow.map(|shadow| shadow.color.a), Some(0.5), "faded with the node");
+        assert_eq!(
+            effect.shadows.iter().map(|shadow| shadow.color.a).collect::<Vec<_>>(),
+            [0.5],
+            "faded with the node"
+        );
         let [DrawCmd { draw: Draw::Box { background: Some(node::Fill::Color(fill)), radius, .. }, .. }] =
             commands.as_slice()
         else {
@@ -1844,7 +1888,7 @@ mod tests {
             ));
             let layer = list.commands.last().unwrap();
             assert!(
-                matches!(layer.draw, Draw::Layer { effect: node::Effect { shadow: None, .. }, .. }),
+                matches!(&layer.draw, Draw::Layer { effect, .. } if effect.shadows.is_empty()),
                 "got {:?}",
                 layer.draw
             );
@@ -1858,7 +1902,7 @@ mod tests {
     fn a_box_just_outside_its_parent_still_casts_the_shadow_reaching_in() {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, clip = "box", children = { rect { width = 40, height = 20, margin = { top = 24 },
-                background = "#ffffff", shadow_offset = { y = -10 } } } }"##,
+                background = "#ffffff", shadows = { { offset = { y = -10 } } }} } }"##,
         );
         let shadow = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
         assert_eq!((shadow.clip.y0, shadow.clip.y1), (54, 60), "the part of it inside the parent");
@@ -1872,7 +1916,7 @@ mod tests {
         let wrapped = |clip: &str| {
             effect_surface(&format!(
                 r##"column {{ clip = "{clip}", children = {{ rect {{ width = 40, height = 20, background = "#ffffff",
-                    shadow_blur = 8, shadow_offset = {{ y = 4 }} }} }} }}"##
+                    shadows = {{ {{ blur = 8, offset = {{ y = 4 }} }} }}}} }} }}"##
             ))
         };
         let shadow = |list: &DisplayList| {
@@ -1934,7 +1978,7 @@ mod tests {
     fn a_layer_under_unclipped_ancestors_stops_near_the_surface() {
         let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "none", child = rect {
             width = 40, height = 20, clip = "none", content_blur = 1,
-            shadow_blur = 4, shadow_offset = { x = 5 }, shadow_mode = "content",
+            shadows = { { blur = 4, offset = { x = 5 } } }, shadow_mode = "content",
             children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
         let layer = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer");
@@ -1946,7 +1990,7 @@ mod tests {
     fn a_list_built_at_scale_two_doubles_every_draws_geometry() {
         let src = r##"return panel { id = "bar", width = 200, height = 100, padding = 10, child = rect {
             width = 40, height = 20, radius = 4, border_width = 1, border_color = "#ffffff",
-            shadow_blur = 2, shadow_offset = { x = 3 }, shadow_spread = 1,
+            shadows = { { blur = 2, offset = { x = 3 }, spread = 1 } },
             children = { text { content = "a", font_size = 12 } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 2.0, None);
         let shadow = list.commands.iter().find_map(|cmd| match cmd.draw {
@@ -1987,7 +2031,7 @@ mod tests {
     fn a_backdrop_blur_draws_first_outside_the_nodes_layer_and_reaches_three_sigma() {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
-                backdrop_blur = 4, shadow_offset = { y = 4 } }"##,
+                backdrop_blur = 4, shadows = { { offset = { y = 4 } } }}"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
         assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: Radii::from(6.0), alpha: 0.5 });
@@ -1995,7 +2039,7 @@ mod tests {
         // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.
         assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");
         let content = effect_surface(
-            r##"rect { width = 40, height = 20, background = "#ffffff40", backdrop_blur = 4, shadow_offset = { y = 4 },
+            r##"rect { width = 40, height = 20, background = "#ffffff40", backdrop_blur = 4, shadows = { { offset = { y = 4 } } },
                 shadow_mode = "content" }"##,
         );
         let at = content.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).unwrap();

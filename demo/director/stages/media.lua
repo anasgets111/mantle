@@ -104,9 +104,7 @@ local card = panel {
                 height = cover_px,
                 radius = 22,
                 clip = "rounded",
-                shadow_color = "#00000080",
-                shadow_blur = 30,
-                shadow_offset = { y = 10 },
+                shadows = { { color = "#00000080", blur = 30, offset = { y = 10 } } },
                 children = {
                     image {
                         id = "cover",

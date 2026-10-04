@@ -43,7 +43,7 @@ pub use paint_style::{CaptureTarget, PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]
-pub(crate) use style::GradientStop;
+pub(crate) use style::{GradientStop, ShadowLayer};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;
@@ -52,7 +52,7 @@ pub use style::{
     Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{
-    Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrCorners, NumberOrEdges, Scale, ShadowMode,
+    Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrCorners, NumberOrEdges, Scale, ShadowMode, Shadows,
 };
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 #[cfg(test)]

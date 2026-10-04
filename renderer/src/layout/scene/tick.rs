@@ -188,7 +188,7 @@ pub(super) fn prepare_retained(
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
     let changed = changed || injected;
-    let style = if changed { LayoutStyle::parse(&node.properties)? } else { *node.layout_style };
+    let style = if changed { LayoutStyle::parse(&node.properties)? } else { LayoutStyle::clone(&node.layout_style) };
     let ResolvedNode {
         id,
         layout_style: _,
@@ -226,13 +226,13 @@ pub(super) fn prepare_retained(
         id,
         kind,
         allocated_axes,
+        children: Vec::with_capacity(if style.visible { children.len() } else { 0 }),
         style,
         properties,
         paint,
         displayed_source,
         dissolve: advanced_dissolve(dissolve, now),
         taffy: taffy_id,
-        children: Vec::with_capacity(if style.visible { children.len() } else { 0 }),
         frozen: children,
         tweens,
         move_spec,
@@ -404,7 +404,7 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
             let style = std::rc::Rc::make_mut(&mut node.layout_style);
             style.opacity = opacity;
             style.transform = transform;
-            style.effect = effect;
+            style.effect = effect.clone();
             node.opacity = opacity;
             node.transform = transform;
             node.effect = effect;
@@ -1399,12 +1399,10 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"local up = state("up", false)
             return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff",
-                shadow_color = "#000000", shadow_blur = up:map(function(u) return u and 8 or 0 end),
-                shadow_offset = up:map(function(u) return u and { x = 0, y = 4 } or { x = 0, y = 0 } end),
+                shadows = up:map(function(u) return { { blur = u and 8 or 0, offset = { y = u and 4 or 0 } } } end),
                 content_blur = up:map(function(u) return u and 2 or 0 end),
                 backdrop_blur = up:map(function(u) return u and 8 or 0 end),
-                animate = { shadow_blur = { duration = 100, easing = "linear" },
-                            shadow_offset = { duration = 100, easing = "linear" },
+                animate = { shadows = { duration = 100, easing = "linear" },
                             content_blur = { duration = 100, easing = "linear" },
                             backdrop_blur = { duration = 100, easing = "linear" } } } }"##,
         );
@@ -1415,8 +1413,8 @@ mod tests {
         assert!(root.tick_is_paint_only(), "an effect asks the solver nothing");
         let started = root.children[0].tweens[0].started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let effect = scene.surface("bar@TEST").unwrap().children[0].effect;
-        let shadow = effect.shadow.expect("halfway, the shadow shows");
+        let effect = &scene.surface("bar@TEST").unwrap().children[0].effect;
+        let shadow = effect.shadows.first().expect("halfway, the shadow shows");
         assert!((shadow.blur - 4.0).abs() < 0.01 && (shadow.offset.1 - 2.0).abs() < 0.01, "got {shadow:?}");
         assert!((effect.blur - 1.0).abs() < 0.01, "got {}", effect.blur);
         assert!((effect.backdrop - 4.0).abs() < 0.01, "got {}", effect.backdrop);

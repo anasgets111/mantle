@@ -53,7 +53,7 @@ fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
     path
 }
 
-/// A subtree under its own shadow and `content_blur` (ADR-0254). Both are blurs into
+/// A subtree under its own shadows and `content_blur` (ADR-0254). Both are blurs into
 /// pooled targets, and an unchanged layer composites what it last finished (ADR-0258).
 pub(super) fn draw_layer(
     painter: &mut TextPainter,
@@ -63,11 +63,11 @@ pub(super) fn draw_layer(
     frame: Frame,
 ) {
     let Draw::Layer { effect, silhouette, commands } = &command.draw else { return };
-    let (node::Effect { shadow, blur, .. }, silhouette) = (*effect, *silhouette);
+    let (node::Effect { shadows, blur, .. }, silhouette) = (effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
-    let (cast, content) = match painter.layer(walk.surface, command) {
+    let (casts, content) = match painter.layer(walk.surface, command) {
         Some(kept) => kept,
         None => {
             // Whole: the blur and the shadow read past the repaint's edge.
@@ -76,23 +76,25 @@ pub(super) fn draw_layer(
             else {
                 return;
             };
-            let cast = shadow.and_then(|shadow| cast_shadow(painter, walk, content, size, shadow, target));
-            let sharp = blur < MIN_SIGMA;
-            let blurred = blurred(painter, walk, content, size, blur);
+            let casts: Vec<ImageId> =
+                shadows.iter().map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target)).collect();
+            let sharp = *blur < MIN_SIGMA;
+            let blurred = blurred(painter, walk, content, size, *blur);
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
-            let filtered = shadow.is_none() == cast.is_none() && sharp == blurred.is_none();
+            let filtered = casts.len() == shadows.len() && sharp == blurred.is_none();
             let content = blurred.unwrap_or(content);
             // A glass reads what is under the layer's box, which this command does not name.
             if filtered && !any_draw_matches(commands, |draw| volatile(draw) || matches!(draw, Draw::Backdrop { .. })) {
-                walk.scratch.retain(|(id, _)| Some(*id) != cast && *id != content);
-                painter.keep_layer(walk.surface, command, (cast, content), size);
+                walk.scratch.retain(|(id, _)| !casts.contains(id) && *id != content);
+                painter.keep_layer(walk.surface, command, (casts.clone(), content), size);
             }
-            (cast, content)
+            (casts, content)
         }
     };
     let canvas = painter.canvas_mut();
-    if let (Some(shadow), Some(cast)) = (shadow, cast) {
-        let at = shadow_rect(rect, area, shadow);
+    // CSS paints the first shadow on top, so the last draws first.
+    for (shadow, &cast) in shadows.iter().zip(&casts).rev() {
+        let at = shadow_rect(rect, area, *shadow);
         match commands.as_slice() {
             // The hole's part outside `at` would take the cast's clamped edge.
             [DrawCmd { draw: Draw::Box { radius, .. }, .. }] if silhouette => {
@@ -314,26 +316,43 @@ mod tests {
     }
 
     /// ADR-0254's gradient path: an opaque box's shadow lands offset under it, sharp without a
-    /// blur and fading over `shadow_blur` either side of its edge with one.
+    /// blur and fading over a layer's `blur` either side of its edge with one.
     #[test]
     fn an_opaque_boxs_shadow_is_painted_offset_under_it() {
-        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadow_offset = { y = 16 }"##) else { return };
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadows = { { offset = { y = 16 } } }"##) else {
+            return;
+        };
         assert!(near(px[0], (255, 255, 255)) && near(px[1], (255, 0, 0)), "{px:?}");
         assert!(near(px[5], (0, 0, 0)), "the shadow shows below the box: {px:?}");
         assert!(near(px[7], (255, 255, 255)), "and ends 16px below it: {px:?}");
 
-        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_blur = 8"##)
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", shadows = { { offset = { y = 16 }, blur = 8 } }"##)
         else {
             return;
         };
         assert!((90..170).contains(&px[6].0), "half dark at the shadow's edge: {px:?}");
-        assert!(near(px[7], (255, 255, 255)), "and gone `shadow_blur` past it: {px:?}");
+        assert!(near(px[7], (255, 255, 255)), "and gone `blur` past it: {px:?}");
+    }
+
+    /// Both `shadows` layers paint, the first over the second where they overlap, on the gradient
+    /// path and the layer path alike.
+    #[test]
+    fn every_shadow_layer_paints_and_the_first_is_on_top() {
+        let layers = r##"shadows = { { color = "#0000FFFF", offset = { y = 16 } }, { color = "#00FF00FF", offset = { y = 32 } } }"##;
+        for body in [r##"background = "#FF0000FF""##, r##"background = "#FF0000FE", shadow_mode = "content""##] {
+            let points = [(32, 32), (32, 56), (32, 72), (32, 88)];
+            let Some(px) = paint_effect_at(&format!("{body}, {layers}"), &points) else { return };
+            assert!(near(px[0], (255, 0, 0)), "{body}: the box over both: {px:?}");
+            assert!(near(px[1], (0, 0, 255)), "{body}: the first over the second: {px:?}");
+            assert!(near(px[2], (0, 255, 0)), "{body}: the second past the first: {px:?}");
+            assert!(near(px[3], (255, 255, 255)), "{body}: {px:?}");
+        }
     }
 
     /// A radius past half the box is a circle, and its shadow is that circle's, not nothing.
     #[test]
     fn a_circle_past_its_half_radius_still_casts_a_shadow() {
-        let effect = r##"background = "#FF0000FF", radius = 999, shadow_offset = { y = 16 }"##;
+        let effect = r##"background = "#FF0000FF", radius = 999, shadows = { { offset = { y = 16 } } }"##;
         let Some(px) = paint_effect(effect) else { return };
         assert!(near(px[5], (0, 0, 0)), "the circle's shadow below it: {px:?}");
     }
@@ -341,7 +360,7 @@ mod tests {
     /// CSS: a square box's spread shadow keeps square corners.
     #[test]
     fn a_square_boxs_spread_shadow_keeps_square_corners() {
-        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_spread = 4"##;
+        let effect = r##"background = "#FF0000FF", shadows = { { offset = { y = 16 }, spread = 4 } }"##;
         let Some(px) = paint_effect_at(effect, &[(12, 67)]) else { return };
         assert!(near(px[0], (0, 0, 0)), "the spread shadow's corner pixel: {px:?}");
     }
@@ -350,7 +369,7 @@ mod tests {
     #[test]
     fn the_gradient_and_the_layer_cast_the_same_blurred_shadow() {
         let column = [58, 60, 62, 64, 66, 68, 70].map(|y| (32, y));
-        let shadow = r##"shadow_offset = { y = 16 }, shadow_blur = 8"##;
+        let shadow = r##"shadows = { { offset = { y = 16 }, blur = 8 } }"##;
         let Some(gradient) = paint_effect_at(&format!(r##"background = "#FF0000FF", {shadow}"##), &column) else {
             return;
         };
@@ -367,7 +386,7 @@ mod tests {
     /// composites over it rather than beside it.
     #[test]
     fn a_translucent_box_casts_a_shadow_at_its_own_alpha_under_itself() {
-        let content = r##"background = "#FF000080", shadow_mode = "content", shadow_offset = { y = 16 }"##;
+        let content = r##"background = "#FF000080", shadow_mode = "content", shadows = { { offset = { y = 16 } } }"##;
         let Some(px) = paint_effect(content) else { return };
         assert!(near(px[0], (255, 255, 255)), "{px:?}");
         assert!(near(px[1], (255, 127, 127)), "the box alone: {px:?}");
@@ -375,7 +394,7 @@ mod tests {
         assert!(near(px[5], (127, 127, 127)), "the shadow alone, at the box's alpha: {px:?}");
         assert!(near(px[7], (255, 255, 255)), "{px:?}");
 
-        let Some(px) = paint_effect(&format!("{content}, shadow_blur = 8")) else { return };
+        let Some(px) = paint_effect(&content.replace("y = 16 }", "y = 16 }, blur = 8")) else { return };
         assert!((180..205).contains(&px[6].0), "a quarter dark at the blurred shadow's edge: {px:?}");
         assert!(px[7].0 >= 250, "and gone 3 sigma past it: {px:?}");
     }
@@ -394,7 +413,7 @@ mod tests {
     /// A mask cuts the pixels the shadow is cast from: the masked-away half casts nothing.
     #[test]
     fn a_masked_box_casts_the_shadow_of_what_its_mask_keeps() {
-        let effect = r##"background = "#FF0000FF", shadow_offset = { y = 16 }, shadow_mode = "content",
+        let effect = r##"background = "#FF0000FF", shadows = { { offset = { y = 16 } } }, shadow_mode = "content",
             mask = { gradient = "linear", angle = 90,
                 stops = { { 0, "#FFFFFFFF" }, { 0.5, "#FFFFFFFF" }, { 0.5, "#FFFFFF00" }, { 1, "#FFFFFF00" } } }"##;
         let Some(px) = paint_effect_at(effect, &[(20, 30), (44, 30), (20, 56), (44, 56)]) else { return };
@@ -406,14 +425,16 @@ mod tests {
     /// shadow, and past the edge it is the opaque box's shadow, pixel for pixel.
     #[test]
     fn a_box_shadow_is_knocked_out_under_a_translucent_box() {
-        let shadow = r##"shadow_offset = { y = 16 }, shadow_blur = 8"##;
+        let shadow = r##"shadows = { { offset = { y = 16 }, blur = 8 } }"##;
         let column: Vec<(usize, usize)> = (50..80).map(|y| (32, y)).collect();
         let Some(opaque) = paint_effect_at(&format!(r##"background = "#FF0000FF", {shadow}"##), &column) else {
             return;
         };
         let Some(glass) = paint_effect_at(&format!(r##"background = "#FF000080", {shadow}"##), &column) else { return };
         assert_eq!(glass, opaque, "the shadow outside the box");
-        let Some(px) = paint_effect(r##"background = "#FF000080", shadow_offset = { y = 16 }"##) else { return };
+        let Some(px) = paint_effect(r##"background = "#FF000080", shadows = { { offset = { y = 16 } } }"##) else {
+            return;
+        };
         assert!(near(px[3], (255, 127, 127)), "the box alone over its shadow: {px:?}");
         assert!(near(px[5], (0, 0, 0)), "the shadow at full strength: {px:?}");
     }
@@ -430,7 +451,7 @@ mod tests {
     /// ADR-0260. A box whose shadow lands outside its parent, or collapses, still draws.
     #[test]
     fn a_box_draws_when_its_shadow_does_not() {
-        for shadow in ["shadow_offset = { y = 100 }", "shadow_spread = -20"] {
+        for shadow in ["shadows = { { offset = { y = 100 } } }", "shadows = { { spread = -20 } }"] {
             let Some(px) = paint_effect_at(&format!(r##"background = "#FF000080", {shadow}"##), &[(32, 32)]) else {
                 return;
             };
@@ -468,11 +489,12 @@ mod tests {
         let body: Vec<(usize, usize)> =
             (8..88).flat_map(|x| (8..40).map(move |y| (x, y))).filter(|&(x, y)| inside(x, y)).collect();
         let Some(plain) = paint_with_gl(&src(""), (96, 48), &body) else { return };
-        let Some(boxed) = paint_with_gl(&src("shadow_blur = 8, shadow_offset = { y = 4 },"), (96, 48), &body) else {
+        let Some(boxed) = paint_with_gl(&src("shadows = { { blur = 8, offset = { y = 4 } } },"), (96, 48), &body)
+        else {
             return;
         };
         assert!(plain == boxed, "the body unchanged by its box shadow");
-        let content = src(r#"shadow_blur = 8, shadow_offset = { y = 4 }, shadow_mode = "content","#);
+        let content = src(r#"shadows = { { blur = 8, offset = { y = 4 } } }, shadow_mode = "content","#);
         let Some(cast) = paint_with_gl(&content, (96, 48), &body) else { return };
         assert!(cast != plain, "a content shadow shows through the glass");
     }
@@ -481,7 +503,8 @@ mod tests {
     /// them, the shadow's notches stay clear, and the body is knocked out.
     #[test]
     fn a_scooped_box_shadow_is_its_silhouette_knocked_out() {
-        let effect = r##"background = "#FF000080", radius = 12, corner_shape = "scoop", shadow_offset = { y = 16 }"##;
+        let effect =
+            r##"background = "#FF000080", radius = 12, corner_shape = "scoop", shadows = { { offset = { y = 16 } } }"##;
         let strip: Vec<(usize, usize)> = (18..31).map(|y| (32, y)).collect();
         let Some(px) = paint_effect_at(effect, &[&[(32, 40), (32, 56), (17, 46), (17, 63)], &strip[..]].concat())
         else {
@@ -559,7 +582,7 @@ mod tests {
         let src = format!(
             r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF",
                 padding = {{ top = 16, left = 16 }}, child = shader {{ width = 32, height = 32,
-                source = "{}", shadow_offset = {{ y = 16 }} }} }}"##,
+                source = "{}", shadows = {{ {{ offset = {{ y = 16 }} }} }}}} }}"##,
             frag.display()
         );
         let Some(px) = paint_with_gl(&src, (64, 96), &[(32, 32), (32, 56), (32, 76)]) else { return };
@@ -801,9 +824,9 @@ mod tests {
         let mut image =
             || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
         let (small_id, big_id) = (image(), image());
-        painter.keep_layer("other", &small, (None, small_id), (8, 8));
+        painter.keep_layer("other", &small, (Vec::new(), small_id), (8, 8));
         painter.recycle_scratch([]);
-        painter.keep_layer("test", &big, (None, big_id), (5000, 5000));
+        painter.keep_layer("test", &big, (Vec::new(), big_id), (5000, 5000));
         let retired = painter.sweep_layers("test", |_| true);
         assert_eq!(retired, [(big_id, (5000, 5000))]);
         assert!(painter.layer("other", &small).is_some());

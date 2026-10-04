@@ -7826,3 +7826,19 @@ Rejected: a live two-way `text` binding, which round-trips Lua and a resolve pas
 fights caret and IME composition, and needs a rule for reconciling Lua's value with typing
 (ADR-0323). The seed is uncontrolled like HTML `defaultValue`; `set_text` pushes. Also rejected:
 seeding whenever the draft is empty, which refills a field the user just cleared.
+
+## 0331. One `shadows` list replaces the four `shadow_*` properties
+
+1. **One spelling.** `shadows = { { color, blur, offset = { x, y }, spread }, ... }` is the only
+   drop shadow, as CSS `box-shadow: a, b`: the first layer draws on top, each field binds on its
+   own, and one shadow is `shadows = { { blur = 8 } }`. `shadow_color`, `shadow_blur`,
+   `shadow_offset` and `shadow_spread` are gone and get the unknown-property error.
+2. **Same rules per layer.** Ranges and defaults are the old properties'; a layer draws when its
+   alpha is above 0 and it sets a blur, offset or spread.
+3. **Tweens pair layers.** `animate.shadows` tweens layer by layer; a layer only one side has fades
+   in or out at its own geometry.
+
+Rejected: keeping both spellings beside each other, numbered properties (`shadow2_*`), and a fixed
+`[Shadow; 8]` to keep `Effect` `Copy`, which copies 8 layers per node for the usual zero or one.
+Ceiling: 8 layers (`MAX_SHADOWS`); a spring retargeted mid-flight restarts from rest, since a list
+carries no per-layer velocity. Cost: breaking for every config that set a shadow.
