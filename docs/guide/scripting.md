@@ -265,9 +265,10 @@ Tie order is the caller's: `table.sort` is unstable, so end the comparator on a 
 
 ## palette.quantize
 
-Median-cut dominant colours of an image, computed on a background thread. Put a raster image at
-`wallpaper.png` in your config directory, or change the path below to an existing image. The book
-checks this file-dependent snippet's syntax; the callback runs only in a live Renderer.
+Dominant colours of an image by Material's quantizers, computed on a background thread. Put a
+raster image at `wallpaper.png` in your config directory, or change the path below to an existing
+image. The book checks this file-dependent snippet's syntax; the callback runs only in a live
+Renderer.
 
 ```lua,fragment
 local swatches = state("swatches", {})
@@ -295,7 +296,8 @@ return panel {
 | Signature | `palette.quantize(path, opts?, on_done)` → handle |
 | `path` | Local raster image; no SVG or URL |
 | `opts.depth` | `0` to `8`, default `3`: up to `2^depth` colours, fewer when the image has fewer. Out of range raises |
-| `opts` | Only `depth` and `rescale`; another key raises |
+| `opts.method` | `"celebi"` (default; Wu, then k-means in Lab, as matugen does) or `"wu"` (Wu alone, faster, rougher). Another raises |
+| `opts` | Only `depth`, `method` and `rescale`; another key raises |
 | `opts.rescale` | Longest edge in px before counting, default `128`; `0` is full size. Negative raises. A cached freedesktop thumbnail that covers it is used instead of decoding |
 | `on_done(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged as a warning |
 | Handle | `handle:cancel()` drops the callback; the work still finishes |

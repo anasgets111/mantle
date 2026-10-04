@@ -7,12 +7,12 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, Sender};
 
-use mlua::{Function, Lua, Table};
+use mlua::{Function, Lua, Table, Value};
 
 use super::luacats::{As, lua_class, lua_fn, lua_shape, spelled};
 use shared::warn;
 
-use crate::image::quantize::quantize_file;
+use crate::image::quantize::{Method, quantize_file};
 use crate::image::thumbnails;
 use crate::lua::call_logged;
 
@@ -37,7 +37,7 @@ lua_shape! {
 /// `palette.quantize`'s `opts`, read field by field against its own ranges.
 struct Options;
 
-spelled!(Options => r#"{ depth?: integer, rescale?: integer, [string]: "no such property" }"#);
+spelled!(Options => r#"{ depth?: integer, method?: "celebi"|"wu", rescale?: integer, [string]: "no such property" }"#);
 
 #[derive(Clone)]
 pub struct PaletteRegistry(Rc<RefCell<Inner>>);
@@ -69,7 +69,7 @@ impl PaletteRegistry {
         })))
     }
 
-    fn quantize(&self, path: String, depth: u8, rescale: u32, on_done: Function) -> PaletteHandle {
+    fn quantize(&self, path: String, depth: u8, method: Method, rescale: u32, on_done: Function) -> PaletteHandle {
         let mut inner = self.0.borrow_mut();
         let id = inner.next_id;
         inner.next_id += 1;
@@ -78,14 +78,14 @@ impl PaletteRegistry {
         // ponytail: a thread per call, outside the image pool's `Budget`, so a quantize can briefly
         // push decodes past `DECODE_POOL_BYTES`. Share the `Budget` if that is ever measured.
         std::thread::spawn(move || {
-            let swatches = match quantize_file(Path::new(&path), depth, rescale, cache_root.as_deref()) {
+            let swatches = match quantize_file(Path::new(&path), depth, method, rescale, cache_root.as_deref()) {
                 Ok(buckets) => {
                     let total: u32 = buckets.iter().map(|(count, _)| count).sum();
                     Some(
                         buckets
                             .into_iter()
-                            .map(|(count, [r, g, b])| PaletteSwatch {
-                                color: format!("#{r:02X}{g:02X}{b:02X}"),
+                            .map(|(count, rgb)| PaletteSwatch {
+                                color: format!("#{:06X}", rgb.as_u32()),
                                 share: f64::from(count) / f64::from(total),
                             })
                             .collect(),
@@ -135,6 +135,33 @@ lua_class! {
     }
 }
 
+fn method(opts: &Option<Table>) -> mlua::Result<Method> {
+    let value = match opts {
+        Some(opts) => opts.get::<Value>("method")?,
+        None => Value::Nil,
+    };
+    let valid = || Method::NAMES.map(|(name, _)| name).join(", ");
+    match value {
+        Value::Nil => Ok(Method::Celebi),
+        Value::String(name) => {
+            Method::NAMES.into_iter().find(|(known, _)| name.as_bytes() == known.as_bytes()).map(|(_, m)| m).ok_or_else(
+                || {
+                    mlua::Error::runtime(format!(
+                        "palette.quantize: options: unknown `method` `{}`; it takes {}",
+                        name.to_string_lossy(),
+                        valid()
+                    ))
+                },
+            )
+        }
+        other => Err(mlua::Error::runtime(format!(
+            "palette.quantize: options: `method` must be a string ({}), got {}",
+            valid(),
+            other.type_name()
+        ))),
+    }
+}
+
 fn opt(opts: &Option<Table>, key: &str, default: i64) -> mlua::Result<i64> {
     Ok(match opts {
         Some(opts) => opts.get::<Option<i64>>(key)?.unwrap_or(default),
@@ -153,24 +180,25 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
             _lua,
             /// A local raster file; no SVG or URL.
             path: String,
-            /// `depth` 0 to 8, default 3: up to `2^depth` colours. `rescale` caps the longest edge before
+            /// `depth` 0 to 8, default 3: up to `2^depth` colours. `method` `"celebi"` (default) or `"wu"`. `rescale` caps the longest edge before
             /// counting, default 128, `0` for full size. Out of range raises.
             opts: As<Option<Table>, Option<Options>>,
             on_done: fn(swatches: Option<Vec<PaletteSwatch>>),
         ) -> PaletteHandle {
             let (opts, on_done) = (opts.0, on_done.0);
             if let Some(opts) = &opts {
-                super::marshal::only_keys(opts, &["depth", "rescale"])
+                super::marshal::only_keys(opts, &["depth", "method", "rescale"])
                     .map_err(|detail| mlua::Error::runtime(format!("palette.quantize: options: {detail}")))?;
             }
             let depth = opt(&opts, "depth", DEFAULT_DEPTH)?;
+            let method = method(&opts)?;
             let rescale = opt(&opts, "rescale", DEFAULT_RESCALE)?;
             let (Ok(depth @ 0..=8), Ok(rescale)) = (u8::try_from(depth), u32::try_from(rescale)) else {
                 return Err(mlua::Error::runtime(format!(
                     "palette.quantize: depth must be 0..=8 and rescale not negative, got {depth} and {rescale}"
                 )));
             };
-            Ok(registry.quantize(path, depth, rescale, on_done))
+            Ok(registry.quantize(path, depth, method, rescale, on_done))
         }
     )?;
     super::scheme::register(lua)
@@ -259,6 +287,16 @@ mod tests {
             let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
             assert!(is_nil, "a cancelled callback must never run");
         }
+    }
+
+    #[test]
+    fn method_picks_the_quantizer_and_an_unknown_one_lists_the_valid_names() {
+        let (lua, _registry) = lua_with_palette();
+        for name in ["celebi", "wu"] {
+            lua.load(format!(r#"palette.quantize("x.png", {{ method = "{name}" }}, function() end)"#)).exec().unwrap();
+        }
+        let err = lua.load(r#"palette.quantize("x.png", { method = "median" }, function() end)"#).exec().unwrap_err();
+        assert!(err.to_string().contains("celebi, wu"), "expected the valid names in the error, got: {err}");
     }
 
     #[test]

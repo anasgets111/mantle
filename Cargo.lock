@@ -2152,6 +2152,7 @@ version = "0.2.0"
 dependencies = [
  "accesskit",
  "accesskit_unix",
+ "ahash",
  "cursor-icon",
  "fast_image_resize",
  "femtovg",
@@ -2162,6 +2163,7 @@ dependencies = [
  "gif",
  "glow",
  "image",
+ "indexmap",
  "khronos-egl",
  "libc",
  "material-colors",

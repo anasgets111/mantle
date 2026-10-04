@@ -1,92 +1,71 @@
-//! Median cut (ADR-0249).
+//! Dominant colours of an image (ADR-0249).
 
 use std::path::Path;
+
+use material_colors::color::Rgb;
+use material_colors::quantize::{Quantizer, QuantizerCelebi, QuantizerMap, QuantizerWu};
 
 use super::MAX_DECODE_EDGE;
 use super::budget::Charge;
 use super::decode::{decode_within_limits, downscale, fit_inside};
 use super::thumbnails;
 
-type Rgb = [u8; 3];
-
-struct Bucket {
-    pixels: Vec<Rgb>,
+/// Material's quantizers (ADR-0249, ADR-0319).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum Method {
+    /// Wu, then WSMeans k-means in Lab.
+    Celebi,
+    /// Wu alone.
+    Wu,
 }
 
-impl Bucket {
-    fn widest_channel(&self) -> (usize, u8) {
-        let mut min = [u8::MAX; 3];
-        let mut max = [0u8; 3];
-        for pixel in &self.pixels {
-            for c in 0..3 {
-                min[c] = min[c].min(pixel[c]);
-                max[c] = max[c].max(pixel[c]);
-            }
-        }
-        let ranges = [max[0] - min[0], max[1] - min[1], max[2] - min[2]];
-        // `max_by_key` keeps the last of equal maxima, so a tie prefers green, then red, then blue.
-        let channel = [2, 0, 1].into_iter().max_by_key(|&c| ranges[c]).unwrap();
-        (channel, ranges[channel])
-    }
-
-    /// Leaves a bucket of one colour whole, so an image with few colours returns fewer than
-    /// `2^depth` rather than duplicates.
-    fn split(mut self) -> Result<(Bucket, Bucket), Bucket> {
-        if self.pixels.len() < 2 {
-            return Err(self);
-        }
-        let (channel, range) = self.widest_channel();
-        if range == 0 {
-            return Err(self);
-        }
-        self.pixels.sort_unstable_by_key(|p| p[channel]);
-        let right = self.pixels.split_off(self.pixels.len() / 2);
-        Ok((Bucket { pixels: self.pixels }, Bucket { pixels: right }))
-    }
-
-    fn mean(&self) -> Rgb {
-        let mut sum = [0u64; 3];
-        for pixel in &self.pixels {
-            for c in 0..3 {
-                sum[c] += u64::from(pixel[c]);
-            }
-        }
-        let n = self.pixels.len() as u64;
-        [(sum[0] / n) as u8, (sum[1] / n) as u8, (sum[2] / n) as u8]
-    }
+impl Method {
+    pub(crate) const NAMES: [(&str, Method); 2] = [("celebi", Method::Celebi), ("wu", Method::Wu)];
 }
 
 /// `(pixel count, colour)` pairs, most common first. `rescale_size` 0 skips the downscale.
 pub(crate) fn quantize_file(
     path: &Path,
     depth: u8,
+    method: Method,
     rescale_size: u32,
     cache_root: Option<&Path>,
 ) -> Result<Vec<(u32, Rgb)>, String> {
     let rgba = load_rgba(path, rescale_size, cache_root)?;
-    let pixels: Vec<Rgb> = rgba.pixels().filter(|p| p.0[3] != 0).map(|p| [p.0[0], p.0[1], p.0[2]]).collect();
+    let pixels: Vec<Rgb> = rgba.pixels().filter(|p| p.0[3] != 0).map(|p| Rgb::new(p.0[0], p.0[1], p.0[2])).collect();
     if pixels.is_empty() {
         return Err("no opaque pixels to quantize".to_string());
     }
 
-    let mut buckets = vec![Bucket { pixels }];
-    for _ in 0..depth {
-        let mut next = Vec::with_capacity(buckets.len() * 2);
-        for bucket in buckets {
-            match bucket.split() {
-                Ok((left, right)) => {
-                    next.push(left);
-                    next.push(right);
-                }
-                Err(unsplit) => next.push(unsplit),
+    let max_colors = 1usize << depth;
+    let mut colors: Vec<(u32, Rgb)> = match method {
+        Method::Celebi => QuantizerCelebi::quantize(&pixels, max_colors)
+            .color_to_count
+            .into_iter()
+            .map(|(rgb, count)| (count, rgb))
+            .collect(),
+        Method::Wu => {
+            // Wu returns only its palette (every count 0), so each distinct colour joins its nearest entry.
+            let mut palette: Vec<(u32, Rgb)> =
+                QuantizerWu::quantize(&pixels, max_colors).color_to_count.into_keys().map(|rgb| (0, rgb)).collect();
+            for (rgb, count) in QuantizerMap::quantize(&pixels, max_colors).color_to_count {
+                let nearest = palette.iter_mut().min_by_key(|(_, p)| distance(*p, rgb)).expect("a non-empty image");
+                nearest.0 += count;
             }
+            palette.retain(|(count, _)| *count > 0);
+            palette
         }
-        buckets = next;
-    }
-
-    let mut colors: Vec<(u32, Rgb)> = buckets.into_iter().map(|b| (b.pixels.len() as u32, b.mean())).collect();
-    colors.sort_unstable_by_key(|(count, _)| std::cmp::Reverse(*count));
+    };
+    // The map's order is a hash order; the colour breaks count ties so the result is stable.
+    colors.sort_unstable_by_key(|(count, rgb)| (std::cmp::Reverse(*count), rgb.as_u32()));
     Ok(colors)
+}
+
+fn distance(a: Rgb, b: Rgb) -> i32 {
+    [(a.red, b.red), (a.green, b.green), (a.blue, b.blue)]
+        .into_iter()
+        .map(|(x, y)| (i32::from(x) - i32::from(y)).pow(2))
+        .sum()
 }
 
 /// Prefers a thumbnail already on disk that covers `rescale_size`.
@@ -110,48 +89,78 @@ fn load_rgba(path: &Path, rescale_size: u32, cache_root: Option<&Path>) -> Resul
 mod tests {
     use super::*;
 
-    #[test]
-    fn depth_zero_averages_the_whole_image() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("solid.png");
-        ::image::RgbaImage::from_pixel(4, 2, ::image::Rgba([10, 20, 30, 255])).save(&path).unwrap();
+    fn rgb(hex: u32) -> Rgb {
+        Rgb::from_u32(hex)
+    }
 
-        let colors = quantize_file(&path, 0, 0, None).unwrap();
-        assert_eq!(colors, vec![(8, [10, 20, 30])]);
+    fn save(name: &str, image: ::image::RgbaImage) -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(name);
+        image.save(&path).unwrap();
+        (dir, path)
     }
 
     #[test]
-    fn depth_one_on_a_two_color_image_splits_along_the_widest_channel() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("halves.png");
-        let mut image = ::image::RgbaImage::new(4, 2);
-        for y in 0..2 {
-            for x in 0..4 {
-                let pixel = if x < 2 { [255, 0, 0, 255] } else { [0, 0, 255, 255] };
-                image.put_pixel(x, y, ::image::Rgba(pixel));
-            }
+    fn a_solid_image_is_one_colour_under_either_method() {
+        let (_dir, path) = save("solid.png", ::image::RgbaImage::from_pixel(4, 2, ::image::Rgba([10, 20, 30, 255])));
+        for (_, method) in Method::NAMES {
+            assert_eq!(quantize_file(&path, 3, method, 0, None).unwrap(), vec![(8, rgb(0x0A141E))], "{method:?}");
         }
-        image.save(&path).unwrap();
+    }
 
-        let mut colors = quantize_file(&path, 1, 0, None).unwrap();
-        colors.sort_unstable_by_key(|(_, rgb)| *rgb);
-        assert_eq!(colors, vec![(4, [0, 0, 255]), (4, [255, 0, 0])]);
+    #[test]
+    fn two_colours_come_back_most_common_first_with_ties_by_colour() {
+        let mut image = ::image::RgbaImage::from_pixel(4, 2, ::image::Rgba([0, 0, 255, 255]));
+        for x in 0..3 {
+            image.put_pixel(x, 0, ::image::Rgba([255, 0, 0, 255]));
+        }
+        let (_dir, path) = save("two.png", image);
+        for (_, method) in Method::NAMES {
+            let colors = quantize_file(&path, 3, method, 0, None).unwrap();
+            assert_eq!(colors, vec![(5, rgb(0x0000FF)), (3, rgb(0xFF0000))], "{method:?}");
+        }
+
+        let tied = ::image::RgbaImage::from_fn(4, 2, |x, _| {
+            ::image::Rgba(if x < 2 { [255, 0, 0, 255] } else { [0, 0, 255, 255] })
+        });
+        let (_dir, path) = save("tied.png", tied);
+        let colors = quantize_file(&path, 3, Method::Wu, 0, None).unwrap();
+        assert_eq!(colors, vec![(4, rgb(0x0000FF)), (4, rgb(0xFF0000))]);
+    }
+
+    #[test]
+    fn depth_zero_merges_a_busy_image_into_one_colour() {
+        let noisy =
+            ::image::RgbaImage::from_fn(16, 16, |x, y| ::image::Rgba([(x * 16) as u8, (y * 16) as u8, 90, 255]));
+        let (_dir, path) = save("noisy.png", noisy);
+        for (_, method) in Method::NAMES {
+            let colors = quantize_file(&path, 0, method, 0, None).unwrap();
+            assert_eq!(colors.len(), 1, "{method:?}");
+            assert_eq!(colors[0].0, 256, "{method:?}");
+        }
+    }
+
+    #[test]
+    fn depth_caps_the_colour_count() {
+        let noisy = ::image::RgbaImage::from_fn(32, 32, |x, y| ::image::Rgba([(x * 8) as u8, (y * 8) as u8, 90, 255]));
+        let (_dir, path) = save("noisy.png", noisy);
+        for (_, method) in Method::NAMES {
+            assert!(quantize_file(&path, 2, method, 0, None).unwrap().len() <= 4, "{method:?}");
+        }
     }
 
     #[test]
     fn fully_transparent_pixels_are_excluded_from_the_average() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("border.png");
         let mut image = ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([0, 0, 0, 0]));
         for y in 1..3 {
             for x in 1..3 {
                 image.put_pixel(x, y, ::image::Rgba([100, 150, 200, 255]));
             }
         }
-        image.save(&path).unwrap();
+        let (_dir, path) = save("border.png", image);
 
-        let colors = quantize_file(&path, 0, 0, None).unwrap();
-        assert_eq!(colors, vec![(4, [100, 150, 200])], "the transparent border must not skew the average toward black");
+        let colors = quantize_file(&path, 0, Method::Celebi, 0, None).unwrap();
+        assert_eq!(colors, vec![(4, rgb(0x6496C8))], "the transparent border must not count");
     }
 
     #[test]
@@ -160,14 +169,14 @@ mod tests {
         let path = dir.path().join("wallpaper.png");
         ::image::RgbaImage::from_pixel(512, 512, ::image::Rgba([50, 60, 70, 255])).save(&path).unwrap();
 
-        let colors = quantize_file(&path, 0, 64, None).unwrap();
-        assert_eq!(colors[0].1, [50, 60, 70]);
+        let colors = quantize_file(&path, 0, Method::Celebi, 64, None).unwrap();
+        assert_eq!(colors[0].1, rgb(0x323C46));
         assert!(colors[0].0 <= 64 * 64, "a 64px rescale must not decode at full 512px resolution");
     }
 
     #[test]
     fn a_missing_source_fails_cleanly() {
-        assert!(quantize_file(Path::new("/nonexistent/wall.png"), 3, 128, None).is_err());
+        assert!(quantize_file(Path::new("/nonexistent/wall.png"), 3, Method::Celebi, 128, None).is_err());
     }
 
     #[test]
@@ -175,7 +184,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("wide.png");
         ::image::RgbaImage::from_pixel(MAX_DECODE_EDGE + 1, 1, ::image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
-        assert!(quantize_file(&path, 3, 0, None).is_err());
+        assert!(quantize_file(&path, 3, Method::Celebi, 0, None).is_err());
     }
 
     #[test]
@@ -187,10 +196,10 @@ mod tests {
         let slot = thumbnails::Slot::for_file(&cache, &source, (128, 128)).unwrap();
         slot.write(&[9, 8, 7, 255].repeat(4), 2, 2).unwrap();
 
-        let colors = quantize_file(&source, 0, 128, Some(&cache)).unwrap();
+        let colors = quantize_file(&source, 0, Method::Celebi, 128, Some(&cache)).unwrap();
         assert_eq!(
             colors,
-            vec![(4, [9, 8, 7])],
+            vec![(4, rgb(0x090807))],
             "the thumbnail's pixels must win over the (differently coloured) source"
         );
     }

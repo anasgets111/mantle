@@ -7559,3 +7559,19 @@ fallback), checked against upstream's test vectors. The crate's own Score sits b
 `IndexMap<_, _, AHasher>` alias, and calls `unwrap_unchecked` on a `partial_cmp` that a NaN score
 reaches. Cost: upstream Score fixes need a manual port. Mantle's median-cut quantizer stays, so
 seeds can differ slightly from matugen's Celebi on the same wallpaper.
+
+## 0319. `palette.quantize` runs Material's Celebi or Wu quantizer
+
+Supersedes ADR-0249 item 3 (hand-written median cut) and updates ADR-0318. `palette.quantize`
+runs `material-colors`' `QuantizerCelebi` (Wu, then WSMeans k-means in Lab), the quantizer matugen
+and Google feed to Score, so a wallpaper gives matugen's seed. `opts.method = "wu"` runs Wu alone.
+`depth` still means up to `2^depth` colours. Swatches stay `{ color, share }`, most common first,
+ties broken by colour so the crate's hash order never shows. Wu returns a palette without counts,
+so each distinct colour joins its nearest Wu entry in RGB to give `share`.
+
+The crate's `quantize` feature adds ahash, zerocopy and getrandom, which ADR-0318 avoided; the
+median cut's 108 lines go in exchange. `palette.score` now calls the crate's Score instead of
+ADR-0318's port: `share`s scale to integer counts summing to about 1e9, which keeps their ratios to
+1e-9 and leaves no count at 0, so upstream's `unwrap_unchecked` sort never meets a NaN. Naming the
+map type it takes makes `ahash` and `indexmap` direct dependencies, both already built. Cost: Celebi takes 15 ms on a 128 px image in a debug build, on the call's own
+thread, and existing configs get different swatches from the same image.

@@ -1,13 +1,17 @@
 //! `palette.scheme` and `palette.score`: Material 3 colour roles from a seed, and M3's seed ranking
 //! of `palette.quantize`'s swatches. Pure and synchronous: one scheme took 0.53 ms in a debug test build.
 
+use std::hash::BuildHasherDefault;
 use std::marker::PhantomData;
+
+use ahash::AHasher;
+use indexmap::IndexMap;
 
 use material_colors::color::Rgb;
 use material_colors::dynamic_color::{DynamicScheme, Platform, SpecVersion, Variant as M3Variant};
 use material_colors::hct::Hct;
 use material_colors::scheme::Scheme;
-use material_colors::utils::math::{difference_degrees, sanitize_degrees_int};
+use material_colors::score::Score;
 use mlua::{IntoLua, Lua, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, spelled};
@@ -83,58 +87,16 @@ fn generate(seed: Rgb, variant: M3Variant, dark: bool, contrast: f64) -> Roles {
     Roles(Scheme::from(scheme))
 }
 
-/// Material Color Utilities' `Score.score` with its defaults (4 picks, filtering on, Google Blue
-/// fallback), over `(colour, weight)` pairs: only the weights' ratios matter.
+/// Material Color Utilities' `Score.score` at its defaults (4 picks, filtering on, Google Blue
+/// fallback). Weights become counts summing to about 1e9, so their ratios hold to 1e-9 and none is
+/// 0: an all-zero population would hand upstream's `unwrap_unchecked` sort NaN scores.
 fn score(colors: &[(Rgb, f64)]) -> Vec<Rgb> {
-    const DESIRED: usize = 4;
     let total: f64 = colors.iter().map(|(_, weight)| weight).sum();
-    let mut hue_population = [0.0; 360];
-    let hcts: Vec<Hct> = colors
-        .iter()
-        .map(|&(rgb, weight)| {
-            let hct = Hct::new(rgb);
-            hue_population[hct.get_hue().floor() as usize] += weight;
-            hct
-        })
-        .collect();
-    let mut excited = [0.0; 360];
-    for (hue, population) in hue_population.iter().enumerate() {
-        for neighbour in hue as i32 - 14..hue as i32 + 16 {
-            excited[sanitize_degrees_int(neighbour) as usize] += population / total;
-        }
+    let mut population = IndexMap::<Rgb, u32, BuildHasherDefault<AHasher>>::default();
+    for &(rgb, weight) in colors {
+        *population.entry(rgb).or_default() += ((weight / total * 1e9).round() as u32).max(1);
     }
-    let mut scored: Vec<(Hct, f64)> = hcts
-        .into_iter()
-        .filter_map(|hct| {
-            let proportion = excited[sanitize_degrees_int(hct.get_hue().round() as i32) as usize];
-            if hct.get_chroma() < 5.0 || proportion <= 0.01 {
-                return None;
-            }
-            let chroma_weight = if hct.get_chroma() < 48.0 { 0.1 } else { 0.3 };
-            Some((hct, proportion * 100.0 * 0.7 + (hct.get_chroma() - 48.0) * chroma_weight))
-        })
-        .collect();
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    // Widest hue spread first: 90 degrees apart, relaxing to 15 until `DESIRED` fit.
-    let mut chosen: Vec<Hct> = Vec::new();
-    for spread in (15..=90).rev() {
-        chosen.clear();
-        for (hct, _) in &scored {
-            if chosen.iter().all(|c| difference_degrees(hct.get_hue(), c.get_hue()) >= f64::from(spread)) {
-                chosen.push(*hct);
-            }
-            if chosen.len() >= DESIRED {
-                break;
-            }
-        }
-        if chosen.len() >= DESIRED {
-            break;
-        }
-    }
-    if chosen.is_empty() {
-        return vec![Rgb::from_u32(0x4285F4)];
-    }
-    chosen.into_iter().map(Rgb::from).collect()
+    Score::score(&population, None, None, None)
 }
 
 fn options(opts: Option<Table>) -> Result<(bool, M3Variant, f64), String> {
@@ -261,7 +223,7 @@ mod tests {
         assert_ne!(high, "#65558F", "contrast must reach the scheme");
     }
 
-    /// Upstream `score_test`'s vectors, at the defaults this port fixes.
+    /// Upstream `score_test`'s vectors, through the weight-to-count conversion.
     #[test]
     fn score_ranks_like_material_color_utilities() {
         let ranked = |pairs: &[(u32, f64)]| -> Vec<String> {
