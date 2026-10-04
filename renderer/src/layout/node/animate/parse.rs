@@ -179,6 +179,9 @@ pub(super) fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec,
     // The bare form says the duration and nothing else: `animate = { width = 200 }`.
     let Value::Table(spec) = entry else {
         let field = format!("animate.{property}");
+        if matches!(entry, Value::UserData(_)) {
+            return Err(LayoutError::UnsupportedSignalProperty(field));
+        }
         let duration = parse_millis(&field, "duration", entry, 1)?
             .ok_or_else(|| invalid(&field, format!("expected a duration in ms, got {}", preview_for_error(entry))))?;
         let motion = Motion::Eased { duration, easing: Easing::default() };

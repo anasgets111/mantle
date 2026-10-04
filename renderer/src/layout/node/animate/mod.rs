@@ -639,6 +639,13 @@ mod tests {
     }
 
     #[test]
+    fn a_signal_as_an_entry_names_the_animation() {
+        let lua = crate::layout::node::signal_lua();
+        let err = parse_animate("rect", &rect_props(&lua, "return { animate = { width = state(200) } }")).unwrap_err();
+        assert!(matches!(err, LayoutError::UnsupportedSignalProperty(ref path) if path == "animate.width"), "{err:?}");
+    }
+
+    #[test]
     fn steps_reads_a_metamethod_once_even_when_its_next_value_would_disagree() {
         for (values, accepted) in [("4, 'bad'", true), ("'bad', 4", false)] {
             let lua = Lua::new();
