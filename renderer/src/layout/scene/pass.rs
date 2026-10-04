@@ -6,7 +6,7 @@ use mlua::{Lua, Value};
 
 use super::fit::fit_text_to_box;
 use super::resolve::{DroppedValues, Resolved, resolve};
-use super::scroll::scroll_children;
+use super::scroll::{ease_reveal, scroll_children};
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, release_solver_nodes,
     set_solver_children, solve, taffy_failed, update_solver_node,
@@ -665,10 +665,7 @@ fn finish(
         // ADR-0069 decision 4.
         let scrolled = match main_axis_of(kind, &properties)? {
             Some(axis) => {
-                // ponytail: a reveal snaps and stops a smooth scroll; upgrade: retarget the run to it here.
-                if node::signal_at(&properties, "scroll").is_some_and(|signal| signal.reveal_pending()) {
-                    tweens.retain(|tween| tween.property != "scroll");
-                }
+                ease_reveal(kind, &properties, &style, size, axis, &children, &mut tweens, now)?;
                 scroll_children(&properties, &style, size, axis, &mut children, 0.0)
             }
             None => 0.0,

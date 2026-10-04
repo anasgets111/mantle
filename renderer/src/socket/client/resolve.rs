@@ -1224,6 +1224,24 @@ mod tests {
         assert_eq!(step(&mut client, ms(400)), (0, (205.0, 205.0)), "the run is gone");
     }
 
+    /// Under `animate.scroll` a `:reveal` eases the run to the child like a notch would.
+    #[test]
+    fn a_reveal_eases_under_animate_scroll() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        let t0 = std::time::Instant::now();
+        client.loader.lua().load("s:reveal(5)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(shown(&client), (0.0, 0.0), "the pass starts the run and moves nothing yet");
+        client.advance_scrolls(&["bar@TEST".to_string()], t0 + std::time::Duration::from_millis(50));
+        client.re_resolve_if_dirty();
+        let (read, drawn) = shown(&client);
+        assert!(read > 0.0 && read < 150.0 && read == drawn, "{read} on its way to 150, read as drawn");
+        client.advance_scrolls(&["bar@TEST".to_string()], t0 + std::time::Duration::from_secs(1));
+        client.re_resolve_if_dirty();
+        assert_eq!(shown(&client), (150.0, 150.0), "tile 5 ends flush with the right edge");
+        assert_eq!(signal.scroll_offset(), Some(150.0));
+    }
+
     /// Without `animate.scroll` a notch writes its offset at once, as before.
     #[test]
     fn a_notch_without_animate_scroll_moves_at_once() {

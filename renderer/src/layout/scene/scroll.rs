@@ -272,24 +272,67 @@ fn reveal_child(
     let Some(index) = signal.take_reveal() else {
         return;
     };
-    let Some(child) = children.iter().filter(|c| c.in_flow()).nth(index - 1) else {
-        return;
-    };
-    let (start, extent) = match axis {
-        MainAxis::Horizontal => (child.rect.x - padding_start, child.rect.width),
-        MainAxis::Vertical => (child.rect.y - padding_start, child.rect.height),
-    };
     let asked = signal.scroll_offset().unwrap_or(0.0);
-    let wanted = if start < asked {
-        start
-    } else if start + extent > asked + content_main {
-        start + extent - content_main
-    } else {
+    let Some(wanted) = revealed(children, axis, padding_start, content_main, index, asked) else {
         return;
     };
     if let Some(handle) = signal.scroll_handle() {
         handle.set_quiet(Value::Number(f64::from(wanted)));
     }
+}
+
+/// The least move from `asked` that shows the `index`-th visible child, or `None` when it is in view
+/// or does not exist.
+fn revealed(
+    children: &[ResolvedNode],
+    axis: MainAxis,
+    padding_start: f32,
+    content_main: f32,
+    index: usize,
+    asked: f32,
+) -> Option<f32> {
+    let child = children.iter().filter(|c| c.in_flow()).nth(index - 1)?;
+    let (start, extent) = match axis {
+        MainAxis::Horizontal => (child.rect.x - padding_start, child.rect.width),
+        MainAxis::Vertical => (child.rect.y - padding_start, child.rect.height),
+    };
+    if start < asked {
+        Some(start)
+    } else if start + extent > asked + content_main {
+        Some(start + extent - content_main)
+    } else {
+        None
+    }
+}
+
+/// A pending `:reveal` on a container whose `animate` names `scroll`: the run eases to the least
+/// move from its target that shows the child, clamped like a notch. Without the entry the reveal is
+/// left for [`reveal_child`], which places it at once. `children` are unscrolled.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn ease_reveal(
+    kind: &str,
+    properties: &PropMap,
+    style: &LayoutStyle,
+    size: LogicalSize,
+    axis: MainAxis,
+    children: &[ResolvedNode],
+    tweens: &mut Vec<node::Tween>,
+    now: Instant,
+) -> Result<(), node::LayoutError> {
+    let Some(signal) = node::signal_at(properties, "scroll") else { return Ok(()) };
+    let Some(index) = signal.pending_reveal() else { return Ok(()) };
+    if !node::eases_scroll(kind, properties)? {
+        return Ok(());
+    }
+    signal.take_reveal();
+    let (content_main, padding_start) = viewport(style, size, axis);
+    let shown = signal.scroll_offset().unwrap_or(0.0);
+    let aimed = node::scroll_target(tweens).unwrap_or(shown);
+    if let Some(wanted) = revealed(children, axis, padding_start, content_main, index, aimed) {
+        let room = (extent_along(children, axis, style.spacing) - content_main).max(0.0);
+        node::retarget_scroll(kind, properties, tweens, shown, wanted.clamp(0.0, room), now)?;
+    }
+    Ok(())
 }
 
 /// How far this container is scrolled along its main axis, clamped to what there is to scroll, and

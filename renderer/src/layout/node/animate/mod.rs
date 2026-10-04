@@ -619,6 +619,11 @@ pub fn retarget_scroll(
     Ok(true)
 }
 
+/// Whether a container's `animate` names `scroll`.
+pub fn eases_scroll(kind: &str, properties: &PropMap) -> Result<bool, LayoutError> {
+    Ok(parse::parse_animate(kind, properties)?.0.contains_key("scroll"))
+}
+
 /// Where a running scroll tween is bound for.
 pub fn scroll_target(tweens: &[Tween]) -> Option<f32> {
     tweens.iter().find(|tween| tween.property == "scroll").and_then(|tween| match tween.to {

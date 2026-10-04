@@ -296,9 +296,9 @@ impl Signal {
         true
     }
 
-    /// Whether a reveal waits for the next positioning pass.
-    pub(crate) fn reveal_pending(&self) -> bool {
-        matches!(&self.0, SignalKind::Scroll { reveal, .. } if reveal.get().is_some())
+    /// The reveal waiting for the next positioning pass, left in place.
+    pub(crate) fn pending_reveal(&self) -> Option<usize> {
+        if let SignalKind::Scroll { reveal, .. } = &self.0 { reveal.get() } else { None }
     }
 
     /// Consumes the reveal in `layout::scene`'s positioning pass, so a later wheel event does not

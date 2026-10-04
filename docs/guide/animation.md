@@ -389,8 +389,9 @@ Parent and surface clips can cut moving pixels; leave room or use `clip = "none"
 each mouse-wheel notch. It takes a duration in milliseconds, an eased entry or a `spring`;
 `keyframes` are refused. Notches add to a target that stops at either end of the content, and a
 notch mid-run eases on from the offset on screen, carrying a spring's velocity. The signal holds
-the offset on screen, so a `map` of it reflows with every frame. A touchpad, which reports
-distances rather than notches, and `:reveal` move the offset at once and stop the run.
+the offset on screen, so a `map` of it reflows with every frame. `:reveal` eases the same way, to
+the least move from the target that shows the child. A touchpad, which reports distances rather
+than notches, moves the offset at once and stops the run.
 
 ```lua
 local rows = {}
