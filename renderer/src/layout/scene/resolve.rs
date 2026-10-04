@@ -96,11 +96,13 @@ pub(super) fn resolve(
     let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish() });
+    let paint = node::paint_style(kind, &properties)?;
     let text_memo = retained
-        .filter(|r| kind == "text" && text_measure_matches(&properties, &r.properties))
+        .filter(|r| {
+            kind == "text" && text_measure_matches((&properties, paint.as_ref()), (&r.properties, r.paint.as_ref()))
+        })
         .and_then(|r| r.text_memo);
     let style = LayoutStyle::parse(&properties)?;
-    let paint = node::paint_style(kind, &properties)?;
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo, text_memo })
 }
 

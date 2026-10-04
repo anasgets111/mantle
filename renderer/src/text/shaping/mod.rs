@@ -258,6 +258,16 @@ impl ShapingHandle {
         Self::spawn_with(None)
     }
 
+    /// A worker that sees only `fixtures/variable`: Inter Variable subset to "Mantle", with `wght` and
+    /// `opsz`, so axis tests run on any machine.
+    #[cfg(test)]
+    pub(crate) fn spawn_variable_fixture() -> Self {
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/variable/fonts.conf");
+        let handle = Self::spawn_with(Some(config));
+        handle.set_chain(&["Inter Variable".into()]);
+        handle
+    }
+
     /// [`spawn`](Self::spawn), resolving fonts through `fontconfig` (a `fonts.conf`) when given.
     pub(crate) fn spawn_with(fontconfig: Option<std::path::PathBuf>) -> Self {
         let (tx, rx) = mpsc::channel::<Request>();
@@ -931,10 +941,7 @@ mod tests {
     /// variable family's bold is one face at another `wght`, and Inter's `opsz` moves advances.
     #[test]
     fn weights_runs_and_font_variations_reach_the_coords_paint_draws_at() {
-        if !fonts::fc_lists("Inter Variable") {
-            return;
-        }
-        let handle = ShapingHandle::spawn();
+        let handle = ShapingHandle::spawn_variable_fixture();
         let inter = |request| handle.shape_glyphs(ShapeRequest { font: Some("Inter Variable".into()), ..request });
         let weight = |weight| coords_at(&inter(ShapeRequest { font_weight: weight, ..req("Mantle", 20.0) }), 0);
         let run = |run| inter(ShapeRequest { font_weight: 600.0, runs: vec![run], ..req("Mantle", 20.0) });

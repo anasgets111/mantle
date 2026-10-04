@@ -270,10 +270,10 @@ impl Prop for FontVariations {
             .ok_or_else(|| {
                 invalid(row.name, format!("keys are 4-character axis tags, got {}", preview_for_error(&key)))
             })?;
-            let field = format!("{}.{}", row.name, String::from_utf8_lossy(&tag));
-            let number = value_as_f32(&field, &value)?.filter(|number| number.is_finite()).ok_or_else(|| {
-                invalid(&field, format!("expected a finite number, got {}", preview_for_error(&value)))
-            })?;
+            let Ok(Some(number)) = value_as_f32(row.name, &value).map(|n| n.filter(|n| n.is_finite())) else {
+                let field = format!("{}.{}", row.name, String::from_utf8_lossy(&tag));
+                return Err(invalid(&field, format!("expected a finite number, got {}", preview_for_error(&value))));
+            };
             if out.len() == MAX_AXES {
                 return Err(invalid(row.name, format!("at most {MAX_AXES} axes")));
             }

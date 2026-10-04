@@ -1321,51 +1321,62 @@ pub(crate) mod tests {
         assert!(painter.font_id(face).is_some());
     }
 
+    /// Summed green channel of one `text` node's ink, a proxy for how much of the glyph is drawn.
+    fn ink(painter: &mut TextPainter, lua: &Lua, text: &str) -> f32 {
+        let root = resolved_surface(
+            lua,
+            &format!(
+                r##"return panel {{ id = "bar", width = 240, height = 40, background = "#000000FF", child = text {{
+                    font_size = 24, foreground = "#FFFFFFFF", {text} }} }}"##
+            ),
+            LogicalSize { width: 240.0, height: 40.0 },
+        );
+        paint_tree(painter, &mut ImageCache::new(), &root, 1.0);
+        let mut sum = 0u32;
+        for y in 0..40 {
+            for x in 0..240 {
+                sum += u32::from(pixel_at(painter.canvas_mut(), x, y).1);
+            }
+        }
+        sum as f32
+    }
+
     /// A variable family ships bold as one file's `wght` axis: Parley shapes a bold run at 700,
     /// so paint must draw that instance, not the file's default, or bold spacing holds regular ink.
-    /// `font_variations` reaches the outlines the same way: Material Symbols' star fills at `FILL = 1`.
     #[test]
-    fn a_bold_run_or_an_axis_in_a_variable_family_draws_that_instance() {
+    fn a_bold_run_in_a_variable_family_draws_the_bold_instance() {
         let Some(instance) = init_headless_egl(240, 40) else { return };
-        let (family, icons) = ("Inter Variable", "Material Symbols Rounded");
-        if !crate::text::fonts::fc_match_available() || !crate::text::fonts::fc_lists(family) {
-            eprintln!("skip: {family} is not installed");
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn_variable_fixture();
+        let Some(mut painter) = text_painter(&instance, &shaping, 240, 40) else { return };
+        let mut word = |bold| {
+            let content = format!(r#"font = "Inter Variable", content = {{ {{ text = "Mantle", bold = {bold} }} }}"#);
+            ink(&mut painter, &lua, &content)
+        };
+        let (regular, bold) = (word(false), word(true));
+        assert!(bold > regular * 1.2, "bold ink {bold} should clearly exceed regular ink {regular}");
+    }
+
+    /// `font_variations` reaches the outlines: Material Symbols' star fills at `FILL = 1`. Skips
+    /// without the system font; no icon-font fixture is small enough to keep.
+    #[test]
+    fn font_variations_draw_the_instance_they_name() {
+        let Some(instance) = init_headless_egl(240, 40) else { return };
+        let icons = "Material Symbols Rounded";
+        if !crate::text::fonts::fc_match_available() || !crate::text::fonts::fc_lists(icons) {
+            eprintln!("skip: {icons} is not installed");
             return;
         }
         let lua = Lua::new();
         let shaping = ShapingHandle::spawn();
-        shaping.ensure_family(&std::sync::Arc::from(family));
         shaping.ensure_family(&std::sync::Arc::from(icons));
         let Some(mut painter) = text_painter(&instance, &shaping, 240, 40) else { return };
-        let mut ink = |text: String| {
-            let root = resolved_surface(
-                &lua,
-                &format!(
-                    r##"return panel {{ id = "bar", width = 240, height = 40, background = "#000000FF", child = text {{
-                        font_size = 24, foreground = "#FFFFFFFF", {text} }} }}"##
-                ),
-                LogicalSize { width: 240.0, height: 40.0 },
-            );
-            paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-            let mut sum = 0u32;
-            for y in 0..40 {
-                for x in 0..240 {
-                    sum += u32::from(pixel_at(painter.canvas_mut(), x, y).1);
-                }
-            }
-            sum as f32
+        let mut star = |fill| {
+            let content = format!(r#"font = "{icons}", content = "\u{{e838}}", font_variations = {{ FILL = {fill} }}"#);
+            ink(&mut painter, &lua, &content)
         };
-        let mut word =
-            |bold| ink(format!(r#"font = "{family}", content = {{ {{ text = "Mantle", bold = {bold} }} }}"#));
-        let (regular, bold) = (word(false), word(true));
-        assert!(bold > regular * 1.2, "bold ink {bold} should clearly exceed regular ink {regular}");
-        if crate::text::fonts::fc_lists(icons) {
-            let mut star = |fill| {
-                ink(format!(r#"font = "{icons}", content = "\u{{e838}}", font_variations = {{ FILL = {fill} }}"#))
-            };
-            let (outline, solid) = (star(0), star(1));
-            assert!(solid > outline * 1.2, "filled star ink {solid} should clearly exceed the outline's {outline}");
-        }
+        let (outline, solid) = (star(0), star(1));
+        assert!(solid > outline * 1.2, "filled star ink {solid} should clearly exceed the outline's {outline}");
     }
 
     /// A `text` node's content wider than the box layout gave it must stop at that box's edge, not

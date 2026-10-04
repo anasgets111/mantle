@@ -372,21 +372,22 @@ pub(super) fn hold_leavers(
     tree.set_style(id, solver_style).map_err(taffy_failed)
 }
 
-pub(super) const TEXT_MEASURE_KEYS: &[&str] = &[
-    "content",
-    "font_size",
-    "line_height",
-    "letter_spacing",
-    "font_weight",
-    "italic",
-    "font_variations",
-    "font",
-    "wrap",
-    "max_lines",
-];
+pub(super) const TEXT_MEASURE_KEYS: &[&str] =
+    &["content", "font_size", "line_height", "letter_spacing", "font_weight", "italic", "font", "wrap", "max_lines"];
 
-pub(super) fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {
-    TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k))
+/// `font_variations` compares as the axes last parsed: a table is equal to itself after an in-place
+/// edit, so its raw value cannot tell.
+pub(super) fn text_measure_matches(
+    (fresh, fresh_paint): (&PropMap, Option<&PaintStyle>),
+    (retained, retained_paint): (&PropMap, Option<&PaintStyle>),
+) -> bool {
+    fn axes(paint: Option<&PaintStyle>) -> Option<&shaping::Variations> {
+        match paint {
+            Some(PaintStyle::Text { variations, .. }) => Some(variations),
+            _ => None,
+        }
+    }
+    TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k)) && axes(fresh_paint) == axes(retained_paint)
 }
 
 /// Whether a running tween moves what this `text` measures from, so advancing it voids the memo.
@@ -1394,11 +1395,8 @@ pub(super) mod tests {
     /// Inter's `opsz` changes advances, so a memo kept across the change would keep the old box.
     #[test]
     fn font_variations_change_invalidates_text_memo() {
-        if !crate::text::fonts::fc_lists("Inter Variable") {
-            return;
-        }
         let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
+        let shaping = ShapingHandle::spawn_variable_fixture();
         let (lua, surface) = surface_from(
             r#"return panel { id = "bar", child = text { content = "Mantle", font = "Inter Variable",
                 font_variations = state("axes", { opsz = 14 }) } }"#,
@@ -1409,6 +1407,25 @@ pub(super) mod tests {
         };
         let text = width();
         lua.load(r#"state("axes", {}):set({ opsz = 32 })"#).exec().unwrap();
+        assert_ne!(width(), text);
+    }
+
+    /// A table compares by address, so an axis changed in place must be seen in the parsed axes.
+    #[test]
+    fn font_variations_mutated_in_place_invalidate_text_memo() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn_variable_fixture();
+        let (lua, surface) = surface_from(
+            r##"axes = { opsz = 14 }
+            return panel { id = "bar", child = text { content = "Mantle", font = "Inter Variable",
+                font_variations = axes, foreground = state("fg", "#FFFFFFFF") } }"##,
+        );
+        let mut width = || {
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            scene.surface("bar@TEST").unwrap().children[0].rect.width
+        };
+        let text = width();
+        lua.load(r##"axes.opsz = 32 state("fg", "#FFFFFFFF"):set("#000000FF")"##).exec().unwrap();
         assert_ne!(width(), text);
     }
 }
