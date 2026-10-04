@@ -151,10 +151,38 @@ Like `hover`, the name is the identity and survives reloads.
 | :--- | :--- |
 | Axis | A `column` or vertical `list` scrolls with the vertical wheel, a `row` or horizontal `list` with the horizontal one only |
 | Distance | One wheel notch is 39 px; a touchpad scrolls the distance it reports |
-| Bound | The offset stays within `[0, content − viewport]`: the wheel stops at the ends the last layout measured, and layout clamps again and writes the clamped value back. A `map` of it that read an offset layout then moved (content that shrank, or a `:reveal`) lays out again before the frame is drawn. The container needs a bounded size on its axis (fixed, `"fill"` or `max_*`); one sized by its content has nothing to scroll |
+| Bound | The offset stays within `[0, content − viewport]`: the wheel stops at the ends the last layout measured, and layout clamps again and writes the clamped value back. A `map` of it that read an offset layout then moved (content that shrank, or a `:reveal` or `:scroll_to`) lays out again before the frame is drawn. The container needs a bounded size on its axis (fixed, `"fill"` or `max_*`); one sized by its content has nothing to scroll |
 | Cost | While only `scroll` properties read the signal, the wheel moves the laid-out children without a layout pass. A `map` or `:get()` of it, or a `scroll` inside a `list` item, costs a pass per wheel event, or per frame while an eased notch runs |
-| Smooth | `animate = { scroll = 160 }` on the container eases each wheel notch: notches add to a target that stops at the ends, and the offset follows it frame by frame. The signal holds the offset on screen, so a `map` of it lays out each frame from what that frame draws. `:reveal` eases too; a touchpad, a high-resolution wheel and `reset_on_close` move it at once. See [animation](animation.md#scroll) |
+| Smooth | `animate = { scroll = 160 }` on the container eases each wheel notch: notches add to a target that stops at the ends, and the offset follows it frame by frame. The signal holds the offset on screen, so a `map` of it lays out each frame from what that frame draws. `:reveal`, `:scroll_to` and `:scroll_by` ease too; a touchpad, a high-resolution wheel and `reset_on_close` move it at once. See [animation](animation.md#scroll) |
 | `:reveal(index)` | On the next pass, scrolls the least distance that shows the `index`-th visible child (1-based; a `list`'s items in source order). An index past the end does nothing; below 1 raises. Only a `scroll` signal has it |
+| `:scroll_to(offset)` | On the next pass, moves to `offset` px, clamped to the bound. NaN and infinity raise. Only a `scroll` signal has it |
+| `:scroll_by(delta)` | Like `:scroll_to`, but adds `delta` to where the offset is headed, as a wheel notch does: during an eased run the signal reads the offset on screen, so `:scroll_to(s:get() + step)` would fall short, while clicks of `:scroll_by(step)` add up |
+
+Arrow buttons for a carousel; `strip:scroll_to(0)` would rewind it:
+
+```lua
+local strip = scroll("carousel")
+local cards = {}
+for i = 1, 12 do cards[i] = rect { width = 120, height = 80, radius = 8, background = "#313244" } end
+local function arrow(label, step)
+    return rect {
+        padding = 6,
+        accessible_name = label,
+        on_click = function() strip:scroll_by(step) end,
+        children = { text { content = label } },
+    }
+end
+
+return panel {
+    id = "carousel",
+    layer = "top",
+    child = row { spacing = 8, children = {
+        arrow("<", -128),
+        row { width = 376, spacing = 8, scroll = strip, animate = { scroll = 200 }, children = cards },
+        arrow(">", 128),
+    } },
+}
+```
 
 ## Keyboard controls and accessibility
 

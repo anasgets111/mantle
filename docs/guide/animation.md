@@ -390,7 +390,8 @@ each mouse-wheel notch. It takes a duration in milliseconds, an eased entry or a
 `keyframes` are refused. Notches add to a target that stops at either end of the content, and a
 notch mid-run eases on from the offset on screen, carrying a spring's velocity. The signal holds
 the offset on screen, so a `map` of it reflows with every frame. `:reveal` eases the same way, to
-the least move from the target that shows the child. A touchpad or a high-resolution wheel, which
+the least move from the target that shows the child, as do `:scroll_to(offset)` and
+`:scroll_by(delta)`, which adds to the target. A touchpad or a high-resolution wheel, which
 report fractions of a notch, and `reset_on_close` move the offset at once and stop the run. The
 offset never passes the ends, even under an overshooting easing or content that shrinks mid-run;
 content that grows mid-run does not move the target. A run hidden with its container finishes

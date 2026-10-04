@@ -329,6 +329,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `sig:map(fn)` | signal | `fn(value)`, run again when read, at most once per layout pass. Works on capabilities |
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
+| `sig:scroll_to(px)`, `sig:scroll_by(px)` | nothing | `scroll` signals only; moves to an offset, or by a distance from where it is headed ([input](input.md#scroll)) |
 | `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
 | `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
 | `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
@@ -345,7 +346,7 @@ counts as a new value on every push.
 ### Who writes each kind
 
 Only `state` can be written from Lua. `:set` on any other kind raises an error that names the kind.
-`:reveal` works only on a `scroll` signal.
+`:reveal`, `:scroll_to` and `:scroll_by` work only on a `scroll` signal.
 
 | Kind | Made by | `:set` | `:reveal` | Written by |
 | :--- | :--- | :---: | :---: | :--- |

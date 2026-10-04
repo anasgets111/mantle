@@ -718,7 +718,8 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
 ---[docs](https://anasgets111.github.io/mantle/guide/signals.html#reference)
 ---@class Signal<T>: userdata
 ---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
----snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
+---snapshot. `set` works only on a `state`, and `reveal`, `scroll_to` and `scroll_by` only on a
+---`scroll`; elsewhere they raise.
 ---Stub note: `: userdata` keeps tables out of signal-typed slots, and methods must stay `---@field`s
 ---or `T` does not bind in callbacks. A subclass names `userdata` again: LuaLS does not follow a
 ---generic parent such as `Signal<number>` when checking assignment.

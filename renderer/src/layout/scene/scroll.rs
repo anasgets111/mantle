@@ -7,7 +7,7 @@ use super::pass::publish_geometry;
 use super::solver::{MainAxis, main_axis_of};
 use super::{LayoutStyle, LogicalSize, ResolvedNode, Scene};
 use crate::layout::node::{self, PropMap};
-use crate::lua::signal::{CellId, Signal};
+use crate::lua::signal::{CellId, ScrollRequest, Signal};
 
 /// What a wheel event does to a `scroll` signal: see [`Scene::wheel`].
 #[derive(Debug, PartialEq)]
@@ -247,7 +247,7 @@ pub(super) fn scroll_children(
     from: f32,
 ) -> f32 {
     let (content_main, padding_start) = viewport(style, size, axis);
-    reveal_child(properties, children, axis, padding_start - from, content_main);
+    place_request(properties, children, axis, padding_start - from, content_main);
     let offset = scroll_offset(properties, room(children, axis, style.spacing, content_main));
     let by = offset - from;
     if by != 0.0 {
@@ -276,14 +276,11 @@ pub(super) fn extent_along(children: &[ResolvedNode], axis: MainAxis, spacing: f
     extents + spacing * visible.saturating_sub(1) as f32
 }
 
-/// Honours a pending `signal:reveal(index)` on this container's scroll signal (ADR-0112): moves the
-/// asked offset the least distance that puts the `index`-th visible child's border box inside the
-/// viewport, or leaves it alone when the child is already in view. Written quietly, ahead of
-/// [`scroll_offset`], which then clamps it like any wheel ask -- so a reveal past the end lands on
-/// the end, and a reveal of a child that does not exist changes nothing. Children are still at
-/// their unscrolled positions here, which is what makes `rect` minus the leading padding the
-/// child's place in the content.
-fn reveal_child(
+/// Honours a pending `:reveal`, `:scroll_to` or `:scroll_by` on this container's scroll signal
+/// (ADR-0112) by writing the offset it asks for quietly, ahead of [`scroll_offset`], which then
+/// clamps it like any wheel ask. Children are still at their unscrolled positions here, which is
+/// what makes `rect` minus the leading padding the child's place in the content.
+fn place_request(
     properties: &PropMap,
     children: &[ResolvedNode],
     axis: MainAxis,
@@ -293,15 +290,31 @@ fn reveal_child(
     let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return;
     };
-    let Some(index) = signal.take_reveal() else {
+    let Some(request) = signal.take_scroll() else {
         return;
     };
     let asked = signal.scroll_offset().unwrap_or(0.0);
-    let Some(wanted) = revealed(children, axis, padding_start, content_main, index, asked) else {
+    let Some(wanted) = requested(request, children, axis, padding_start, content_main, asked) else {
         return;
     };
     if let Some(handle) = signal.scroll_handle() {
         handle.set_quiet(Value::Number(f64::from(wanted)));
+    }
+}
+
+/// The unclamped offset `request` asks for from `from`, or `None` when it asks for no move.
+fn requested(
+    request: ScrollRequest,
+    children: &[ResolvedNode],
+    axis: MainAxis,
+    padding_start: f32,
+    content_main: f32,
+    from: f32,
+) -> Option<f32> {
+    match request {
+        ScrollRequest::Reveal(index) => revealed(children, axis, padding_start, content_main, index, from),
+        ScrollRequest::To(to) => Some(to),
+        ScrollRequest::By(by) => Some(from + by),
     }
 }
 
@@ -329,11 +342,11 @@ fn revealed(
     }
 }
 
-/// A pending `:reveal` on a container whose `animate` names `scroll`: the run eases to the least
-/// move from its target that shows the child, clamped like a notch. Without the entry the reveal is
-/// left for [`reveal_child`], which places it at once. `children` are unscrolled.
+/// A pending request on a container whose `animate` names `scroll`: the run eases from its target,
+/// clamped to the room, like a notch. Without the entry the request is left for
+/// [`place_request`], which places it at once. `children` are unscrolled.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn ease_reveal(
+pub(super) fn ease_request(
     kind: &str,
     properties: &PropMap,
     style: &LayoutStyle,
@@ -344,15 +357,15 @@ pub(super) fn ease_reveal(
     now: Instant,
 ) -> Result<(), node::LayoutError> {
     let Some(signal) = node::signal_at(properties, "scroll") else { return Ok(()) };
-    let Some(index) = signal.pending_reveal() else { return Ok(()) };
+    let Some(request) = signal.pending_scroll() else { return Ok(()) };
     let Some(spec) = node::scroll_spec(kind, properties)? else { return Ok(()) };
-    signal.take_reveal();
+    signal.take_scroll();
     let (content_main, padding_start) = viewport(style, size, axis);
+    let room = room(children, axis, style.spacing, content_main);
     let shown = signal.scroll_offset().unwrap_or(0.0);
-    let aimed = node::scroll_target(tweens).unwrap_or(shown);
-    if let Some(wanted) = revealed(children, axis, padding_start, content_main, index, aimed) {
-        let target = wanted.clamp(0.0, room(children, axis, style.spacing, content_main));
-        node::retarget_scroll(spec, tweens, shown, target, now);
+    let aimed = node::scroll_target(tweens).unwrap_or(shown).clamp(0.0, room);
+    if let Some(wanted) = requested(request, children, axis, padding_start, content_main, aimed) {
+        node::retarget_scroll(spec, tweens, shown, wanted.clamp(0.0, room), now);
     }
     Ok(())
 }
@@ -456,14 +469,14 @@ mod tests {
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(f64::from(offset)));
-        assert!(signal.request_reveal(index));
+        assert!(signal.request_scroll(crate::lua::signal::ScrollRequest::Reveal(index)));
 
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let container = &scene.surface("bar@TEST").unwrap().children[0];
         let ys = container.children.iter().map(|c| c.rect.y).collect();
-        assert!(signal.take_reveal().is_none(), "the pass consumed the ask");
+        assert!(signal.take_scroll().is_none(), "the pass consumed the ask");
         (ys, signal.scroll_offset().unwrap())
     }
 

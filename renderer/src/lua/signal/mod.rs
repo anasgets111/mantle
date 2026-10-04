@@ -77,10 +77,10 @@ enum SignalKind {
         id: CellId,
         cell: Rc<RefCell<Value>>,
         dirty: DirtyFlag,
-        /// One-shot 1-based child request from `signal:reveal(index)` (ADR-0112), consumed by the
-        /// next viewport positioning pass. Separate from offset because only that pass knows child
-        /// position and viewport height.
-        reveal: Rc<Cell<Option<usize>>>,
+        /// One-shot request from `:reveal`, `:scroll_to` or `:scroll_by` (ADR-0112), consumed by
+        /// the next viewport positioning pass. Separate from offset because only that pass knows
+        /// child position and the room to clamp to.
+        request: Rc<Cell<Option<ScrollRequest>>>,
     },
     /// Lua-authored writable state (ADR-0044 decision 5), built by `state`. Separate from `Live`
     /// even with identical storage: accepting `set` on `Live` would let config overwrite a pushed
@@ -109,6 +109,27 @@ enum SignalKind {
     /// (ADR-0152). A read compares against the value it last saw, arms the wake, and falls back to
     /// `false` on the read after the window closes, which the wake writing `cell` prompts.
     Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>>, cell: CellId },
+}
+
+/// A move Lua asks of a `scroll` signal's containers; the pass turns it into an offset.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum ScrollRequest {
+    /// The least move that shows this 1-based visible child.
+    Reveal(usize),
+    To(f32),
+    /// Added to the run's target, like a wheel notch, so repeated calls mid-run accumulate.
+    By(f32),
+}
+
+/// `offset` as a pixel request for `method`, refusing NaN and infinity.
+fn finite(method: &str, offset: f64) -> mlua::Result<f32> {
+    let pixels = offset as f32;
+    if !pixels.is_finite() {
+        return Err(mlua::Error::runtime(format!(
+            "signal:{method}() takes a finite number of pixels, and {offset} is not one"
+        )));
+    }
+    Ok(pixels)
 }
 
 impl SignalKind {
@@ -283,28 +304,43 @@ impl Signal {
             id: next_cell_id(),
             cell: Rc::new(RefCell::new(Value::Number(0.0))),
             dirty,
-            reveal: Rc::new(Cell::new(None)),
+            request: Rc::new(Cell::new(None)),
         })
     }
 
-    /// Requests the next positioning pass scroll visible child `index` (1-based) into view, marking
-    /// dirty (ADR-0112). Other kinds return false for `signal:reveal()`'s named refusal.
-    pub(crate) fn request_reveal(&self, index: usize) -> bool {
-        let SignalKind::Scroll { id, reveal, dirty, .. } = &self.0 else { return false };
-        reveal.set(Some(index));
+    /// Asks the next positioning pass for `asked`, marking dirty (ADR-0112). The last request
+    /// wins, except that a `By` adds to a pending `To` or `By`. Other kinds return false for the
+    /// method's named refusal.
+    pub(crate) fn request_scroll(&self, asked: ScrollRequest) -> bool {
+        let SignalKind::Scroll { id, request, dirty, .. } = &self.0 else { return false };
+        request.set(Some(match (request.get(), asked) {
+            (Some(ScrollRequest::To(to)), ScrollRequest::By(by)) => ScrollRequest::To(to + by),
+            (Some(ScrollRequest::By(first)), ScrollRequest::By(by)) => ScrollRequest::By(first + by),
+            _ => asked,
+        }));
         dirty.mark_cell(*id);
         true
     }
 
-    /// The reveal waiting for the next positioning pass, left in place.
-    pub(crate) fn pending_reveal(&self) -> Option<usize> {
-        if let SignalKind::Scroll { reveal, .. } = &self.0 { reveal.get() } else { None }
+    /// The request waiting for the next positioning pass, left in place.
+    pub(crate) fn pending_scroll(&self) -> Option<ScrollRequest> {
+        if let SignalKind::Scroll { request, .. } = &self.0 { request.get() } else { None }
     }
 
-    /// Consumes the reveal in `layout::scene`'s positioning pass, so a later wheel event does not
-    /// fight an already honored request.
-    pub(crate) fn take_reveal(&self) -> Option<usize> {
-        if let SignalKind::Scroll { reveal, .. } = &self.0 { reveal.take() } else { None }
+    /// Consumes the request in `layout::scene`'s positioning pass, so a later wheel event does not
+    /// fight an already honored one.
+    pub(crate) fn take_scroll(&self) -> Option<ScrollRequest> {
+        if let SignalKind::Scroll { request, .. } = &self.0 { request.take() } else { None }
+    }
+
+    fn scroll_request(&self, method: &str, asked: ScrollRequest) -> mlua::Result<()> {
+        if self.request_scroll(asked) {
+            return Ok(());
+        }
+        Err(mlua::Error::runtime(format!(
+            "signal:{method}() is only valid on a scroll(name) signal, and this is {} signal",
+            self.0.describe()
+        )))
     }
 
     /// Scroll write end for wheel and positioning clamp; `None` for other kinds keeps wheels off
@@ -531,13 +567,13 @@ impl UserData for Signal {
                     "signal:reveal() takes a 1-based child index, and {index} is not one"
                 )));
             };
-            if !this.request_reveal(index) {
-                return Err(mlua::Error::runtime(format!(
-                    "signal:reveal() is only valid on a scroll(name) signal, and this is {} signal",
-                    this.0.describe()
-                )));
-            }
-            Ok(())
+            this.scroll_request("reveal", ScrollRequest::Reveal(index))
+        });
+        methods.add_method("scroll_to", |_, this, offset: f64| {
+            this.scroll_request("scroll_to", ScrollRequest::To(finite("scroll_to", offset)?))
+        });
+        methods.add_method("scroll_by", |_, this, delta: f64| {
+            this.scroll_request("scroll_by", ScrollRequest::By(finite("scroll_by", delta)?))
         });
         // ADR-0044 decision 5's only Lua write path. Other kinds refuse by name, so
         // `network:set(...)`

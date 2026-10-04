@@ -7722,6 +7722,12 @@ Amends ADR-0069 decisions 4 and 6 and the main-loop order of ADR-0145.
    on the signal, hidden containers included.
 8. **Hidden runs freeze.** Being time-based, a run in a hidden container finishes on the first
    frame after it shows; that frame's pass draws the old offset once.
+9. **`:scroll_to` and `:scroll_by` request like `:reveal`.** One pending request per signal (a
+   reveal, an offset or a delta) is consumed by the next pass; under `animate.scroll` it retargets
+   the run, clamped to the room, otherwise it places the offset at once. `:scroll_by` adds to the
+   run's target, as a notch does, because the signal reads the drawn offset and
+   `scroll_to(get() + step)` falls short mid-run. A pending `:scroll_by` adds to a pending
+   `:scroll_to` or `:scroll_by`; otherwise the last request wins.
 
 Rejected: easing in Lua from a timer, which re-runs the config per frame for a visual the engine
 owns, and advancing runs in the tick for the next pass to read, which draws readers a frame behind

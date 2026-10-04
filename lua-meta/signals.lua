@@ -5,7 +5,8 @@
 ---[docs](https://anasgets111.github.io/mantle/guide/signals.html#reference)
 ---@class Signal<T>: userdata
 ---A read-only reactive `T`. Pass the signal itself to a node property to keep it live; `:get()` is a
----snapshot. `set` works only on a `state` and `reveal` only on a `scroll`; elsewhere they raise.
+---snapshot. `set` works only on a `state`, and `reveal`, `scroll_to` and `scroll_by` only on a
+---`scroll`; elsewhere they raise.
 ---Stub note: `: userdata` keeps tables out of signal-typed slots, and methods must stay `---@field`s
 ---or `T` does not bind in callbacks. A subclass names `userdata` again: LuaLS does not follow a
 ---generic parent such as `Signal<number>` when checking assignment.
@@ -100,9 +101,11 @@ function geometry(name) end
 ---@class ScrollSignal: Signal<number>, userdata
 ---What `scroll` returns.
 ---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
+---@field scroll_to fun(self: ScrollSignal, offset: number) On the next pass, moves to `offset` pixels, clamped to `[0, content − viewport]`; eased under `animate.scroll`, at once without it. NaN and infinity raise.
+---@field scroll_by fun(self: ScrollSignal, delta: number) Like `scroll_to`, but adds `delta` to where the offset is headed, as a wheel notch does, so calls during an eased run add up. NaN and infinity raise.
 
 ---A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
----writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
+---writes it and layout clamps it (ADR-0069); Lua asks for moves with `:reveal`, `:scroll_to` and `:scroll_by`.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
 ---@param name string Bind the result as a `row`, `column` or `list`'s `scroll`. One name, one signal, across reloads.
 ---@return ScrollSignal

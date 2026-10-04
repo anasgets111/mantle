@@ -398,7 +398,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     lua_fn!(
         lua,
         /// A viewport's scroll offset along its main axis, in logical pixels from the top or left. The wheel
-        /// writes it and layout clamps it (ADR-0069); `:reveal` is the only request Lua makes.
+        /// writes it and layout clamps it (ADR-0069); Lua asks for moves with `:reveal`, `:scroll_to` and `:scroll_by`.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#scroll)
         fn scroll(
             lua,
@@ -445,7 +445,7 @@ impl LuaType for StateSignal {
     }
 }
 
-/// What `scroll` returns: a [`Signal`] whose `reveal` works; see [`StateSignal`] for why its class
+/// What `scroll` returns: a [`Signal`] whose `reveal`, `scroll_to` and `scroll_by` work; see [`StateSignal`] for why its class
 /// is written here.
 pub(crate) struct ScrollSignal(Signal);
 
@@ -465,6 +465,8 @@ impl LuaType for ScrollSignal {
             r#"---@class ScrollSignal: Signal<number>, userdata
 ---What `scroll` returns.
 ---@field reveal fun(self: ScrollSignal, index: integer) On the next pass, scrolls the least distance that shows the viewport's `index`-th visible child (1-based; a `list`'s items in source order), then the wheel takes over (ADR-0112). An index with no child does nothing; below 1 raises.
+---@field scroll_to fun(self: ScrollSignal, offset: number) On the next pass, moves to `offset` pixels, clamped to `[0, content − viewport]`; eased under `animate.scroll`, at once without it. NaN and infinity raise.
+---@field scroll_by fun(self: ScrollSignal, delta: number) Like `scroll_to`, but adds `delta` to where the offset is headed, as a wheel notch does, so calls during an eased run add up. NaN and infinity raise.
 "#
             .to_string(),
         );

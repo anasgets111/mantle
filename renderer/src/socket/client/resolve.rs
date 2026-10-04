@@ -1330,6 +1330,64 @@ mod tests {
         assert_eq!(shown(&client), (40.0, 40.0));
     }
 
+    /// `:scroll_to` under `animate.scroll` eases like a notch, its reader evaluated once a frame,
+    /// and settles on the target clamped to the room.
+    #[test]
+    fn a_scroll_to_eases_under_animate_scroll_and_stops_at_the_ends() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        client.loader.lua().load("s:scroll_to(900)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        assert_eq!(shown(&client), (0.0, 0.0), "the pass starts the run and moves nothing yet");
+        let (evaluations, (read, drawn)) = frame(&mut client, ms(50));
+        assert!(evaluations == 1 && (100.0..200.0).contains(&read) && read == drawn, "{evaluations}: {read}, {drawn}");
+        assert_eq!(frame(&mut client, ms(1000)), (1, (200.0, 200.0)), "six tiles leave 200 px");
+        assert_eq!(signal.scroll_offset(), Some(200.0));
+        client.loader.lua().load("s:scroll_to(-50)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(frame(&mut client, ms(2000)).1, (0.0, 0.0));
+    }
+
+    /// Without `animate.scroll` both requests land in the pass, clamped; bad arguments raise.
+    #[test]
+    fn a_scroll_request_without_animate_scroll_moves_at_once() {
+        let (mut client, _signal, _dir) = scrolled_row("{}");
+        for (src, used) in [
+            ("s:scroll_to(120)", 120.0),
+            ("s:scroll_by(30)", 150.0),
+            ("s:scroll_by(900)", 200.0),
+            ("s:scroll_to(-5)", 0.0),
+        ] {
+            client.loader.lua().load(src).exec().unwrap();
+            assert!(client.re_resolve_if_dirty());
+            assert_eq!(shown(&client), (used, used), "{src}");
+        }
+        for src in ["s:scroll_to(0/0)", "s:scroll_by(math.huge)", "n:scroll_to(1)"] {
+            let err = client.loader.lua().load(src).exec().unwrap_err().to_string();
+            assert!(err.contains("finite number") || err.contains("only valid on a scroll"), "{src}: {err}");
+        }
+        assert!(!client.re_resolve_if_dirty(), "a refused request asks for nothing");
+    }
+
+    /// An arrow's `:scroll_by` adds to the run's target, not to the drawn offset, so clicks mid-run
+    /// add up, and two in one turn both count.
+    #[test]
+    fn repeated_scroll_by_mid_run_adds_to_the_target() {
+        let (mut client, _signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        client.loader.lua().load("s:scroll_by(50)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        assert!(frame(&mut client, ms(50)).1.0 < 50.0, "mid-run");
+        client.loader.lua().load("s:scroll_by(50)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(frame(&mut client, ms(1000)).1, (100.0, 100.0));
+        client.loader.lua().load("s:scroll_by(30) s:scroll_by(30)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(frame(&mut client, ms(2000)).1, (160.0, 160.0));
+    }
+
     /// The wheel clamps against the room the last layout measured, so a getter reads the used offset
     /// in one evaluation; the follow-up pass is left for content that resized in the same turn.
     #[test]
