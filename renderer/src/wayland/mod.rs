@@ -204,6 +204,8 @@ pub struct App {
     focused_text_field: Option<FocusedTextField>,
     /// Text and selection of plain fields that lost focus to another field, until their node goes (ADR-0108).
     parked_drafts: HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>,
+    /// `initial_text` seeds of fields whose surface has no `wl_surface` yet; applied once it has one.
+    pending_seeds: Vec<(layout::scene::NodeId, String)>,
     focused_control: Option<FocusedControl>,
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,

@@ -523,7 +523,9 @@ props! {
         disabled: Bound<Flag> = absent(Bool(false));
         /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.
         max_length: Bound<MaxLines> = absent(Number(0.0));
-        /// Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
+        /// Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB.
+        initial_text: Bound<Text> = absent(Lua(r#""""#));
+        /// Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112). A field with `initial_text` keeps its draft and calls no `on_change`.
         autofocus: Bound<Flag> = absent(Bool(false));
         /// Full text after every edit.
         on_change(text: String);

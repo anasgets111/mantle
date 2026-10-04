@@ -13,6 +13,11 @@ struct Requests {
 
 pub(crate) struct FocusHandle(String);
 
+/// The paste path's limits, so a set or seeded text is one a paste could have typed.
+pub(crate) fn is_settable(text: &str) -> bool {
+    super::marshal::check_string(text).is_ok() && !text.chars().any(char::is_control)
+}
+
 lua_class! {
     /// A named plain textfield focus target.
     impl FocusHandle {
@@ -27,8 +32,7 @@ lua_class! {
 
         /// Sets the text of every plain textfield with this name, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
         fn set_text(lua, this, text: String) {
-            // The paste path's limits, so a set text is one a paste could have typed.
-            if super::marshal::check_string(&text).is_err() || text.chars().any(char::is_control) {
+            if !is_settable(&text) {
                 return Err(mlua::Error::runtime("set_text() takes at most 64 KiB without control characters"));
             }
             super::app_data_or_default::<Requests>(lua).texts.push((this.0.clone(), text));

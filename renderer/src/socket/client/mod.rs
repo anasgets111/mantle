@@ -461,6 +461,11 @@ impl RendererClient {
         moved
     }
 
+    /// `initial_text` of the fields created since the last call; see [`Scene::take_seeds`].
+    pub fn take_seeds(&mut self) -> Vec<(crate::layout::scene::NodeId, String)> {
+        self.scene.take_seeds()
+    }
+
     /// This turn's resolve split, for the idle report; see [`Scene::take_resolve_split`].
     pub fn take_resolve_split(&mut self) -> crate::layout::scene::ResolveSplit {
         self.scene.take_resolve_split()

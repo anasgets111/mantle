@@ -7807,3 +7807,22 @@ per step needed a Bezier fitted to the spring.
 Rejected: stretching the spring to the step, which avoids the jump but ties the ringing frequency
 to `duration`; and a spring `Easing` variant, which would leak spring easing into plain tweens,
 `move` and `exit` (ADR-0154 decision 4). Not built: velocity carried across segments.
+
+## 0330. A textfield's `initial_text` seeds its draft once, when the field enters the tree
+
+Builds on ADR-0323.
+
+1. **Seeded at creation, not when empty.** A plain field's draft takes `initial_text` (string or
+   signal, read then) when its node enters the tree; a changed `id` or `key`, or leaving and
+   returning, is a new node and seeds again. Later changes are ignored, and a field emptied by
+   Enter, Escape or `set_text("")` stays empty.
+2. **`set_text`'s path.** `max_length` cut, caret at the end, no undo history, no `on_change`.
+   Hidden, disabled and per-output instances each get a seed; one for a surface not yet live waits
+   for it. `secure_submit` refuses a seed, so a secret never sits in Lua.
+3. **`autofocus` keeps a seed.** A seeded field keeps its draft and calls no `on_change("")`;
+   fields without a seed still start empty.
+
+Rejected: a live two-way `text` binding, which round-trips Lua and a resolve pass per keystroke,
+fights caret and IME composition, and needs a rule for reconciling Lua's value with typing
+(ADR-0323). The seed is uncontrolled like HTML `defaultValue`; `set_text` pushes. Also rejected:
+seeding whenever the draft is empty, which refills a field the user just cleared.

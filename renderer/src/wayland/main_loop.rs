@@ -117,6 +117,7 @@ pub fn run(
         focused_secure_submit: None,
         focused_text_field: None,
         parked_drafts: HashMap::new(),
+        pending_seeds: Vec::new(),
         focused_control: None,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),
@@ -292,6 +293,7 @@ pub fn run(
         phases.mark_tick();
         phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty() || !scrolled.is_empty();
+        app.apply_seeds();
         app.apply_text_requests();
         app.apply_focus_request();
         if re_resolved {

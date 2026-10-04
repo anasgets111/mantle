@@ -220,8 +220,15 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
             textfield::focus_target.read(properties)?;
             let color = textfield::foreground.read(properties)?.expect("`foreground` has a default");
+            let target = textfield::secure_submit.read(properties)?;
+            if target.is_some() && !textfield::initial_text.read(properties)?.is_empty() {
+                return Err(LayoutError::InvalidProperty {
+                    property: "textfield.initial_text".into(),
+                    detail: "a `secure_submit` field never holds text a config gave it".into(),
+                });
+            }
             PaintStyle::TextField {
-                target: textfield::secure_submit.read(properties)?,
+                target,
                 placeholder: textfield::placeholder.read(properties)?,
                 // Drawn once per typed character: `""` draws nothing, a longer string its first one.
                 mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),

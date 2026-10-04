@@ -88,6 +88,13 @@ fn autofocus_field_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<(
     None
 }
 
+/// Whether the node `id` in `tree` sets a non-empty `initial_text`.
+fn sets_initial_text(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId) -> bool {
+    let path = tree.and_then(|tree| layout::hit::path_to_node(tree, id));
+    path.and_then(|path| path.last().map(|node| node::fields::textfield::initial_text.read(&node.properties)))
+        .is_some_and(|text| text.is_ok_and(|text| !text.is_empty()))
+}
+
 /// First visible plain field bound to `name` on this one surface.
 fn requested_field(tree: &layout::ResolvedNode, name: &str) -> Option<FieldTarget> {
     first_plain_field(tree, |node| {
@@ -549,6 +556,25 @@ impl App {
         }
     }
 
+    /// Seeds the draft of each field created since the last turn with its `initial_text`, through
+    /// the same path as `set_text`. A field whose surface is not live yet waits; a gone one is dropped.
+    pub(in crate::wayland) fn apply_seeds(&mut self) {
+        self.pending_seeds.extend(self.client.take_seeds());
+        for (id, text) in std::mem::take(&mut self.pending_seeds) {
+            let surface = self
+                .client
+                .scene()
+                .surfaces()
+                .find(|(_, tree)| layout::hit::contains_node(tree, id))
+                .map(|(surface_id, _)| surface_id.to_string());
+            match surface {
+                Some(surface_id) if self.surface_is_live(&surface_id) => self.set_draft(surface_id, id, &text),
+                Some(_) => self.pending_seeds.push((id, text)),
+                None => {}
+            }
+        }
+    }
+
     /// The `max_length` of the node `(surface_id, id)`, if it is a field that sets one.
     pub(in crate::wayland) fn field_max_length(&self, surface_id: &str, id: layout::scene::NodeId) -> Option<usize> {
         let path = layout::hit::path_to_node(self.client.scene().surface(surface_id)?, id)?;
@@ -583,10 +609,14 @@ impl App {
         if !self.surface_is_live(&surface_id) {
             return;
         }
-        let opened = on_change.clone();
+        // A seeded field keeps its draft and tells the config nothing.
+        let seeded = sets_initial_text(self.client.scene().surface(&surface_id), id);
+        let opened = on_change.clone().filter(|_| !seeded);
         debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
         // Autofocus starts empty, so a parked draft must not come back.
-        self.parked_drafts.remove(&(surface_id.clone(), id));
+        if !seeded {
+            self.parked_drafts.remove(&(surface_id.clone(), id));
+        }
         self.focus_text_field(Some(requested_focus(
             surface_id.clone(),
             FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate },
@@ -1338,6 +1368,19 @@ mod tests {
         std::rc::Rc::make_mut(&mut mute.properties).insert("autofocus", Value::Boolean(true));
         let none = tree_with(&lua, vec![masked, mute, plain_textfield(&lua)]);
         assert!(autofocus_field_in_scope(&[("launcher@eDP-1", &none)]).is_none());
+    }
+
+    #[test]
+    fn autofocus_tells_a_seeded_field_from_an_unseeded_one() {
+        let lua = Lua::new();
+        let mut seeded = plain_textfield(&lua);
+        std::rc::Rc::make_mut(&mut seeded.properties)
+            .insert("initial_text", Value::String(lua.create_string("hi").unwrap()));
+        let plain = plain_textfield(&lua);
+        let (seeded_id, plain_id) = (seeded.id, plain.id);
+        let tree = tree_with(&lua, vec![seeded, plain]);
+        assert!(sets_initial_text(Some(&tree), seeded_id));
+        assert!(!sets_initial_text(Some(&tree), plain_id));
     }
 
     #[test]

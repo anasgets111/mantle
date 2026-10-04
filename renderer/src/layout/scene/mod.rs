@@ -443,6 +443,8 @@ pub struct Scene {
     /// a failed pass or tick, whose writes it may hold.
     solver_trees: HashMap<String, taffy::TaffyTree<solver::Measure>>,
     next_id: u64,
+    /// `initial_text` of fields created since the app last drained them, for the app to seed.
+    seeds: Vec<(NodeId, String)>,
     resolve_split: ResolveSplit,
     tick_split: TickSplit,
 }
@@ -540,6 +542,23 @@ impl Scene {
         })
     }
 
+    pub fn take_seeds(&mut self) -> Vec<(NodeId, String)> {
+        std::mem::take(&mut self.seeds)
+    }
+
+    /// Queues the seed of a plain field the pass just created.
+    fn queue_seed(&mut self, id: NodeId, properties: &PropMap) -> Result<(), LayoutError> {
+        let text = node::fields::textfield::initial_text.read(properties)?;
+        if text.is_empty() {
+            return Ok(());
+        }
+        if !crate::lua::focus::is_settable(&text) {
+            return Err(node::invalid("initial_text", "takes at most 64 KiB without control characters"));
+        }
+        self.seeds.push((id, text));
+        Ok(())
+    }
+
     fn alloc_id(&mut self) -> NodeId {
         let id = NodeId(self.next_id);
         self.next_id += 1;
@@ -607,6 +626,7 @@ impl Scene {
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
     ) -> Result<Option<LayoutError>, LayoutError> {
         let next_id_snapshot = self.next_id;
+        let seeds_snapshot = self.seeds.len();
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
         // runs, and individually legal 2.5ms getters cannot add up without a pass deadline.
         let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
@@ -620,6 +640,7 @@ impl Scene {
                 self.restore(key, tree);
             }
             self.next_id = next_id_snapshot;
+            self.seeds.truncate(seeds_snapshot);
         } else {
             self.publish_elision(lua);
         }

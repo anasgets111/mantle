@@ -341,7 +341,13 @@ pub(super) fn prepare(
     let allocated_axes = allocated_axes(kind, &properties)?;
     let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
         Some(r) => (r.id, r.taffy, r.displayed_source, r.dissolve, r.children, r.list_memo, r.child_table),
-        None => (scene.alloc_id(), None, None, None, Vec::new(), None, None),
+        None => {
+            let id = scene.alloc_id();
+            if kind == "textfield" {
+                scene.queue_seed(id, &properties)?;
+            }
+            (id, None, None, None, Vec::new(), None, None)
+        }
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
     // still fading.
@@ -1621,6 +1627,88 @@ mod tests {
             99.0,
             "but its geometry must still refresh"
         );
+    }
+
+    fn field_panel(field: &str) -> (mlua::Lua, VirtualNode) {
+        surface_from(&format!(r#"panel {{ id = "bar", child = row {{ children = {{ {field} }} }} }}"#))
+    }
+
+    /// `lives` keeps each pass's Lua alive: the retained tree still holds its strings.
+    fn seeds_after(scene: &mut Scene, lives: &mut Vec<mlua::Lua>, field: &str) -> Vec<String> {
+        let (lua, surface) = field_panel(field);
+        apply_at(scene, &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap();
+        lives.push(lua);
+        scene.take_seeds().into_iter().map(|(_, text)| text).collect()
+    }
+
+    #[test]
+    fn a_textfield_is_seeded_once_when_its_node_enters_the_tree() {
+        let mut scene = Scene::new();
+        let mut lives = Vec::new();
+        let field = |id: &str, text: &str| {
+            format!(r#"textfield {{ id = "{id}", initial_text = "{text}", on_change = function() end }}"#)
+        };
+        assert_eq!(seeds_after(&mut scene, &mut lives, &field("a", "one")), ["one"]);
+        assert!(seeds_after(&mut scene, &mut lives, &field("a", "two")).is_empty(), "a later value is ignored");
+        assert_eq!(seeds_after(&mut scene, &mut lives, &field("b", "two")), ["two"], "a changed id is a new node");
+        assert!(seeds_after(&mut scene, &mut lives, "rect { id = \"b\", width = 1, height = 1 }").is_empty());
+        assert_eq!(
+            seeds_after(&mut scene, &mut lives, &field("b", "three")),
+            ["three"],
+            "leaving and returning re-seeds"
+        );
+    }
+
+    #[test]
+    fn hidden_disabled_and_per_output_fields_each_queue_a_seed_and_no_seed_queues_nothing() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let mut lives = Vec::new();
+        let seeded = |extra: &str| format!(r#"textfield {{ initial_text = "x", {extra} on_change = function() end }}"#);
+        let both = [seeded("visible = false,"), seeded("disabled = true,")].join(", ");
+        assert_eq!(seeds_after(&mut scene, &mut lives, &both).len(), 2);
+        assert!(
+            seeds_after(
+                &mut scene,
+                &mut lives,
+                r#"textfield { id = "n", initial_text = "", on_change = function() end }"#
+            )
+            .is_empty()
+        );
+        let (lua, surface) = field_panel(&seeded(""));
+        apply_on_two_outputs(&mut scene, &surface, &shaping, &lua).unwrap();
+        assert_eq!(scene.take_seeds().len(), 2, "each output instance gets its own");
+    }
+
+    #[test]
+    fn a_seed_reads_a_signals_current_value() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let value = Value::String(lua.create_string("now").unwrap());
+        let signal = crate::lua::signal::Signal::new_live(value, crate::lua::signal::DirtyFlag::new()).0;
+        lua.globals().set("seed", signal).unwrap();
+        let table: mlua::Table = lua
+            .load(
+                r#"return panel { id = "bar", child = textfield { initial_text = seed, on_change = function() end } }"#,
+            )
+            .eval()
+            .unwrap();
+        apply_at(&mut scene, &[deserialize_lua_table(&table).unwrap()], full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.take_seeds().into_iter().map(|(_, text)| text).collect::<Vec<_>>(), ["now"]);
+    }
+
+    #[test]
+    fn a_secure_submit_seed_or_an_unsettable_one_fails_the_pass_and_a_failed_pass_queues_none() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let secure = r#"textfield { initial_text = "hunter2", secure_submit = { capability = "lock", action = "authenticate" } }"#;
+        let (lua, surface) = field_panel(secure);
+        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err().to_string();
+        assert!(err.contains("initial_text"), "{err}");
+        let (lua, surface) = field_panel(r#"textfield { initial_text = "a\nb", on_change = function() end }"#);
+        assert!(apply_at(&mut scene, &[surface], full(), &shaping, &lua).is_err());
+        assert!(scene.take_seeds().is_empty(), "a rolled-back pass leaves no seed for a reused id");
     }
 
     #[test]
