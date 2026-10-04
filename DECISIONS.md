@@ -7647,3 +7647,28 @@ Supersedes the single-draft consequence of ADR-0108.
 
 Rejected: a declarative `text` property, which would need a rule for reconciling it with what the
 user types; firing `on_change` on a set, which loops a config that mirrors the field into a signal.
+
+## 0324. A live pass drops an invalid property value for its default
+
+Amends ADR-0068 (a bad value fails the pass) and ADR-0321 (its rejected CSS option, reload, and
+output size).
+
+1. **Dropped, not failed.** In a startup or dirty pass, a value its property rows refuse is removed
+   after signal resolution and before tweens retarget, when the default reads cleanly. The node
+   reads the default, nothing animates toward the bad value, and the rest applies. The error keeps
+   its path, logs, and holds rescue like a failure.
+2. **Still a failure**, isolated per instance as ADR-0321 says: rows with no default,
+   `child`/`children` (the default would empty the node), `secure_submit` (failing closed, so no
+   plain field ever receives a password), raw and structural rows, raising getters, and
+   cross-property errors.
+3. **Reload and `mantle check` stay strict.** The atomic path installs no drop list, so a reload's
+   outcome is what check reports, and a refused reload keeps the known-good shell.
+4. **Pinned while it stands.** A node or list item that dropped a value is never kept by its memo,
+   so every whole-scene pass (ADR-0244 item 4) reports it until it is fixed. A hidden ancestor's
+   frozen subtree is not walked, so a value dropped under it stops reporting while it is hidden.
+5. **A failed instance keeps the tree solved at its old size** after an output resize until a pass
+   applies it; re-solving it would need the getters that just failed.
+
+Rejected: substituting the default inside `Field::read`, which left the bad value in the property
+map for ticks, input and tween targets to read again. Cost: a resolved node validates each value
+that differs from its retained one a second time.

@@ -5,7 +5,7 @@ use std::time::Instant;
 use mlua::{Lua, Value};
 
 use super::fit::fit_text_to_box;
-use super::resolve::{Resolved, resolve};
+use super::resolve::{DroppedValues, Resolved, resolve};
 use super::scroll::scroll_children;
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, release_solver_nodes,
@@ -428,12 +428,14 @@ pub(super) fn prepare(
         // read of an impure `margin` could answer differently.
         // A list item's reads are its own (ADR-0273).
         let item = node.list_memo.is_some().then(|| ComputedFrame::enter(lua));
+        let dropped_before = DroppedValues::count(lua);
         let child = (|| {
             let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, Ok)?;
             prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), thawing, lua, now, depth + 1)
         })();
+        let dropped = DroppedValues::under_child(lua, dropped_before, here);
         if let (Some(memo), Some(item)) = (node.list_memo.as_mut(), item) {
-            memo.item_read(index, &item.finish());
+            memo.item_read(index, &item.finish(), dropped);
         }
         // A broken child does not stop its siblings, so one pass names every broken node. Too deep
         // does: a node holding itself twice would otherwise walk 2^64 paths to the cap.

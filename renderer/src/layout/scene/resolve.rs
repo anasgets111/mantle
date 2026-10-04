@@ -27,6 +27,8 @@ pub struct ResolveMemo {
     lua: WeakLua,
     stamp: u64,
     cells: Vec<CellId>,
+    /// A value was dropped: never kept, so every pass reports it until it is fixed.
+    dropped: bool,
 }
 
 /// One node's properties for this pass, displayed values and parse included, and the memo they
@@ -61,6 +63,7 @@ pub(super) fn resolve(
     }
     let keep = if let Some(memo) = retained.as_deref().and_then(|r| r.resolve_memo.as_ref())
         && memo.lua == lua.weak()
+        && !memo.dropped
         && same_declaration(&memo.raw, &raw)
     {
         if signal::written_since(memo.stamp, &memo.cells) {
@@ -93,9 +96,10 @@ pub(super) fn resolve(
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_properties(raw.clone(), kind, lua)?)?;
+    let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
     let properties = Rc::new(properties);
-    let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish() });
+    let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped });
     let paint = node::paint_style(kind, &properties)?;
     let text_memo = retained
         .filter(|r| {
@@ -104,6 +108,76 @@ pub(super) fn resolve(
         .and_then(|r| r.text_memo);
     let style = LayoutStyle::parse(&properties)?;
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo, text_memo })
+}
+
+/// The values a pass dropped, each named down to its node as the walk returns. Present only
+/// while a startup or dirty pass runs: a reload and `mantle check` refuse a bad value instead.
+#[derive(Default)]
+pub(super) struct DroppedValues(Vec<LayoutError>);
+
+impl DroppedValues {
+    pub(super) fn count(lua: &Lua) -> usize {
+        lua.app_data_ref::<Self>().map_or(0, |dropped| dropped.0.len())
+    }
+
+    /// Names the child the values dropped since `from` sat in; whether there were any.
+    pub(super) fn under_child(lua: &Lua, from: usize, here: impl Fn(LayoutError) -> LayoutError) -> bool {
+        let Some(mut dropped) = lua.app_data_mut::<Self>() else { return false };
+        let tail = dropped.0.split_off(from);
+        let any = !tail.is_empty();
+        dropped.0.extend(tail.into_iter().map(here));
+        any
+    }
+
+    pub(super) fn take(lua: &Lua) -> Vec<LayoutError> {
+        lua.app_data_mut::<Self>().map(|mut dropped| std::mem::take(&mut dropped.0)).unwrap_or_default()
+    }
+}
+
+/// Drops each value a row of `kind` refuses, as CSS drops an invalid declaration: the node reads
+/// the default and nothing animates toward the value. Errors where the row has no default, for
+/// `child`/`children`, whose default would empty the node, and for `secure_submit`, whose default
+/// would hand a password to `on_change`. A value the retained node holds already passed.
+fn drop_refused_values(
+    kind: &str,
+    properties: &mut PropMap,
+    retained: Option<&PropMap>,
+    lua: &Lua,
+) -> Result<bool, LayoutError> {
+    if lua.app_data_ref::<DroppedValues>().is_none() {
+        return Ok(false);
+    }
+    let bit = crate::lua::nodes::properties::kind_bit(kind).unwrap_or(0);
+    // Sorted, so which values a report names comes from the config, not the hasher.
+    let mut keys: Vec<&'static str> = properties.keys().copied().collect();
+    keys.sort_unstable();
+    let mut refused = Vec::new();
+    for name in keys {
+        let value = properties.get(name);
+        if matches!(name, "child" | "children" | "secure_submit")
+            || retained.is_some_and(|kept| kept.get(name) == value)
+        {
+            continue;
+        }
+        let rows = crate::lua::nodes::properties::properties()
+            .filter(|row| row.kinds & bit != 0 && row.name == name && !row.raw && !row.refused);
+        // Every row: a root's own row and the common one both parse its `width`.
+        for row in rows {
+            if let Err(err) = (row.check)(row, value) {
+                if (row.check)(row, None).is_err() {
+                    return Err(err);
+                }
+                refused.push((name, err));
+                break;
+            }
+        }
+    }
+    let dropped = !refused.is_empty();
+    for (name, err) in refused {
+        properties.remove(name);
+        lua.app_data_mut::<DroppedValues>().expect("checked above").0.push(err);
+    }
+    Ok(dropped)
 }
 
 /// Drops a `width`/`height` a layout injected for a content-sized axis (`pass::measure_content_sizes`)

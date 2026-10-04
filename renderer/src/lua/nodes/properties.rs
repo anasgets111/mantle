@@ -20,9 +20,9 @@ use crate::layout::node::prop::{
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
-    LayerKind, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor,
-    PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign,
-    TransitionSpec, Wrap,
+    LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands,
+    PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode,
+    TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -48,7 +48,7 @@ pub(crate) enum Absent {
 }
 
 #[derive(Clone, Copy, Debug)]
-#[cfg_attr(not(test), expect(dead_code, reason = "`ty`, `doc` and `raw` are for `stubs.rs`, a test"))]
+#[cfg_attr(not(test), expect(dead_code, reason = "`ty` and `doc` are for `stubs.rs`, a test"))]
 pub(crate) struct Property {
     pub name: &'static str,
     /// Bits of [`KINDS`].
@@ -67,6 +67,12 @@ pub(crate) struct Property {
     pub raw: bool,
     /// [`Prop::REFUSED`]: declared only to refuse.
     pub refused: bool,
+    /// [`Prop::read`] without its output, for a pass that drops a refused value.
+    pub check: fn(&Property, Option<&Value>) -> Result<(), LayoutError>,
+}
+
+fn check<T: Prop>(row: &Property, value: Option<&Value>) -> Result<(), LayoutError> {
+    T::read(row, value).map(drop)
 }
 
 /// A row for a field of type `T` with the name, kinds and `///` block `props!` hands it.
@@ -83,6 +89,7 @@ pub(crate) const fn row<T: Prop>(name: &'static str, kinds: u16, doc: &'static s
         doc,
         raw: T::RAW,
         refused: T::REFUSED,
+        check: check::<T>,
     }
 }
 

@@ -136,9 +136,11 @@ How each failure ends:
 | Failure | Result |
 | :--- | :--- |
 | Startup evaluation raises | No scene. Surfaces paint nothing. `mantle.rescue` is set as below. The next successful reload brings the shell up |
-| Startup evaluation succeeds but the scene rejects part of it | Each surface it rejects paints nothing; the others come up. `mantle.rescue` is set. The error is logged |
+| Startup evaluation succeeds but a property value is invalid | The node uses that property's default and everything else comes up. `mantle.rescue` is set until the value is fixed. The error is logged |
+| Startup evaluation succeeds but the scene rejects part of it (a getter raises, a malformed `children`) | Each surface it rejects paints nothing; the others come up. `mantle.rescue` is set. The error is logged |
 | Reload evaluation raises (syntax error, runtime error, bad top-level return) | The previous scene stays on screen. [`mantle.rescue`](../capabilities/index.md#renderer-members) becomes `{ is_rescue = true, error_log = "<the error>" }`. The error is logged |
 | Reload evaluates but the scene rejects it (bad property value, a map over budget) | The whole reload is refused, even if one surface broke: the previous scene stays. `mantle.rescue` is set. The error is logged, one line per broken node, as [`mantle check`](cli.md#what-check-covers) prints it |
+| A live update makes a property value invalid | The node uses that property's default and the update applies. `mantle.rescue` is set until the value is fixed. Logged as an error, once until the message changes |
 | A live update fails later (a pushed value breaks a map) | Each surface it breaks keeps its last applied tree; the others, an error banner included, keep updating. `mantle.rescue` is set until a pass applies every surface. Logged as an error, once until the message changes |
 | The session lock is refused, or the compositor ends it | `mantle.rescue` becomes `{ is_rescue = true, error_log = "<the reason>" }`. The error is logged ([lock](../surfaces/lock.md)) |
 | A reload would recreate the lock surface while locked | Refused with a warning and `mantle.rescue`; save again after unlocking |
@@ -208,9 +210,9 @@ it.
 | Signal nesting | 32 levels | Signal reads nested inside other signal reads (a `map` of a `map` of ..., a computed reading itself) | Raises `signal nesting exceeded its maximum depth of 32 levels` |
 | Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and every surface keeps its last applied tree |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
-| Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused: it exits 1 and logs a warning. A node property fails the pass |
-| Numeric properties | `[0, 8192]` logical px for most sizes and each `padding` edge. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](../nodes/index.md)) | The pass fails, naming the property |
-| Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails |
+| Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused: it exits 1 and logs a warning. A node property is invalid, as below |
+| Numeric properties | `[0, 8192]` logical px for most sizes and each `padding` edge. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](../nodes/index.md)) | A startup or live pass uses the property's default; a reload and `mantle check` fail. Each names the property |
+| Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails; a startup or live pass gives a `content` its default instead |
 | `delay`, `pulse` duration | `[1, 60000]` ms | `delay(signal, ms)`, `pulse(signal, ms)` ([signals](signals.md)) | Raises at the call |
 | `timer` and `interval` delay | `[1, 86400000]` ms (one day) | `timer(ms, fn)`, `interval(ms, fn)` ([scripting](scripting.md#timer)) | Raises at the call |
 | Action answer | 1 MiB of JSON | What an `action` handler returns | The `mantle call` fails |

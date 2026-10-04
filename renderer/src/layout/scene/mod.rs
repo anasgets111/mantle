@@ -30,7 +30,7 @@ use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 use pass::{build_child_for_output, prepare, publish_geometry, solve_instance};
-use resolve::{ResolveMemo, resolve};
+use resolve::{DroppedValues, ResolveMemo, resolve};
 pub(crate) use solver::{MainAxis, main_axis_of};
 use solver::{forget_solver_nodes, new_solver_tree};
 
@@ -535,8 +535,9 @@ impl Scene {
 
     /// Every production apply. While the session is locked the same rule vetoes each one, so no
     /// path can drop the password field (ADR-0052 decision 3). An `atomic` apply, for a reload and
-    /// `mantle check`, rolls back on any failure; otherwise a failing instance keeps its prior tree
-    /// and `Ok(Some)` carries the failures of a pass that applied the rest (ADR-0321).
+    /// `mantle check`, rolls back on any failure, a bad value included. Otherwise a bad value is
+    /// dropped for its default, a failing instance keeps its prior tree, and `Ok(Some)` reports
+    /// both for a pass that applied the rest (ADR-0321).
     pub fn apply_locked(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -546,10 +547,15 @@ impl Scene {
         locked: bool,
         atomic: bool,
     ) -> Result<Option<LayoutError>, LayoutError> {
-        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |scene, failed| match failed {
+        if !atomic {
+            lua.set_app_data(DroppedValues::default());
+        }
+        let outcome = self.apply_admitting(fresh_surfaces, instances, shaping, lua, |scene, failed| match failed {
             Some(err) if atomic => Err(err),
             failed => lock_stays_authenticatable(scene, instances, locked).map(|()| failed),
-        })
+        });
+        lua.remove_app_data::<DroppedValues>();
+        outcome
     }
 
     /// Reconciles one retained tree per mapped instance against `fresh_surfaces`, using each
@@ -629,7 +635,10 @@ impl Scene {
         let mut failed_count = 0;
         let mut seen = std::collections::HashSet::new();
         for instance in instances {
-            if let Err(err) = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback) {
+            let applied = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback);
+            // A dropped value is reported and applies; only a failure keeps the prior tree.
+            let mut errors = DroppedValues::take(lua);
+            if let Err(err) = applied {
                 // Blame first: a hook interruption is about the pass, not this instance.
                 if budget.exceeded() {
                     return Err(LayoutError::PassBudgetExceeded);
@@ -638,10 +647,11 @@ impl Scene {
                 if let Some((key, tree)) = rollback.pop_if(|(key, _)| *key == instance.instance_id) {
                     self.restore(key, tree);
                 }
-                for err in err.into_each() {
-                    if seen.insert((instance.declared_id.as_str(), err.to_string())) {
-                        failed.push(err.on_surface(&instance.instance_id));
-                    }
+                errors.extend(err.into_each());
+            }
+            for err in errors {
+                if seen.insert((instance.declared_id.as_str(), err.to_string())) {
+                    failed.push(err.on_surface(&instance.instance_id));
                 }
             }
         }
@@ -1501,6 +1511,74 @@ pub(super) mod tests {
         assert!(apply(&mut scene, &declare(false, 20)).unwrap().is_none());
         apply(&mut scene, &declare(true, 30)).unwrap().expect("the lock fails");
         assert_eq!(scene.surface("dock@TEST").unwrap().children[0].rect.width, 30.0, "the kept lock admits the pass");
+    }
+
+    #[test]
+    fn a_bad_value_applies_its_default_and_stays_reported_until_it_is_fixed() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let table: Vec<mlua::Table> = lua
+            .load(
+                r#"op = state("op", 2) w = state("w", 10) kids = state("kids", {})
+                return { panel { id = "bar", child = column { children = {
+                    rect { width = 10, height = 10, opacity = op },
+                    list { source = { 1 }, itemfn = function() return rect { width = 5, height = 5, opacity = op } end },
+                    rect { width = w, height = 10 },
+                } } }, panel { id = "dock", child = column { children = kids } } }"#,
+            )
+            .eval()
+            .unwrap();
+        let surfaces: Vec<VirtualNode> = table.iter().map(|table| deserialize_lua_table(table).unwrap()).collect();
+        let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
+        let apply = |scene: &mut Scene| scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, false);
+        let column = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].clone();
+
+        let first = apply(&mut scene).unwrap().expect("the bad values are reported").to_string();
+        assert!(
+            first.contains("on `bar@TEST`: column[0] (") && first.contains("> must be within [0, 1], got 2"),
+            "{first}"
+        );
+        assert!(first.contains("> list[1] ("), "the list item's too: {first}");
+        let bar = column(&scene);
+        assert_eq!((bar.children[0].opacity, bar.children[1].children[0].opacity), (1.0, 1.0), "the default");
+
+        // A pass whose memos would hold for the bad nodes still reports them; the rest apply.
+        lua.load(r#"w:set(20) kids:set("not a list")"#).exec().unwrap();
+        let report = apply(&mut scene).unwrap().expect("still reported").to_string();
+        assert!(report.starts_with(&first.replace("2 nodes", "3 nodes")), "{report}");
+        assert!(report.contains("dock@TEST"), "{report}");
+        assert_eq!(column(&scene).children[2].rect.width, 20.0, "the sibling updates");
+        assert!(scene.surface("dock@TEST").unwrap().children[0].children.is_empty(), "a bad structure isolates");
+
+        lua.load(r#"op:set(0.5) kids:set({})"#).exec().unwrap();
+        assert!(apply(&mut scene).unwrap().is_none(), "fixed, nothing to report");
+        assert_eq!(column(&scene).children[0].opacity, 0.5);
+
+        // A reload and `mantle check` refuse the value, naming it as the live pass does.
+        lua.load("op:set(2)").exec().unwrap();
+        let strict = scene.apply_locked(&surfaces[..1], &instances[..1], &shaping, &lua, false, true).unwrap_err();
+        assert_eq!(strict.to_string(), first);
+        assert_eq!(column(&scene).children[0].opacity, 0.5, "and roll back");
+    }
+
+    #[test]
+    fn a_bad_secure_submit_fails_its_surface_instead_of_leaving_a_plain_field() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let tables: Vec<mlua::Table> = lua
+            .load(
+                r#"return { panel { id = "prompt", child = textfield { width = 10, secure_submit = { capability = "polkit" } } },
+                            panel { id = "bar" } }"#,
+            )
+            .eval()
+            .unwrap();
+        let surfaces: Vec<VirtualNode> = tables.iter().map(|table| deserialize_lua_table(table).unwrap()).collect();
+        let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
+        let report = scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, false).unwrap().unwrap();
+        assert!(report.to_string().contains("`secure_submit`"), "{report}");
+        assert!(scene.surface("prompt@TEST").is_none() && scene.surface("bar@TEST").is_some());
     }
 
     #[test]

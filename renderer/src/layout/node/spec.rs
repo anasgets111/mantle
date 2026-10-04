@@ -282,6 +282,8 @@ pub struct ItemMemo {
     built: Vec<CellId>,
     /// What resolving its subtree read: a write to one resolves the kept declaration again.
     resolved: Vec<CellId>,
+    /// Its subtree dropped a value, so it resolves again each pass to report it.
+    dropped: bool,
 }
 
 /// What a pass does with one item of a list whose own build still holds.
@@ -328,9 +330,10 @@ impl ListMemo {
             || self.items.iter().any(|item| item.built.contains(&cell) || item.resolved.contains(&cell))
     }
 
-    /// Adds what item `index`'s subtree read.
-    pub fn item_read(&mut self, index: usize, cells: &[CellId]) {
+    /// Adds what item `index`'s subtree read, and whether it dropped a value.
+    pub fn item_read(&mut self, index: usize, cells: &[CellId], dropped: bool) {
         extend_unique(&mut self.items[index].resolved, cells);
+        self.items[index].dropped = dropped;
     }
 }
 
@@ -343,7 +346,7 @@ impl ItemMemo {
             return ItemPass::Build;
         }
         signal::note_reads(lua, &self.built);
-        if !signal::written_since(self.stamp, &self.resolved) {
+        if !self.dropped && !signal::written_since(self.stamp, &self.resolved) {
             signal::note_reads(lua, &self.resolved);
             return ItemPass::Keep;
         }
@@ -368,6 +371,7 @@ impl ItemMemo {
             stamp,
             built: frame.finish(),
             resolved: Vec::new(),
+            dropped: false,
         };
         Ok((node, memo))
     }
@@ -441,8 +445,15 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
             let node = build_item(&itemfn, &element);
             let built = frame.finish();
             let mut node = node?;
-            let mut memo =
-                ItemMemo { element: element.clone(), key: None, site: node.site, stamp, built, resolved: Vec::new() };
+            let mut memo = ItemMemo {
+                element: element.clone(),
+                key: None,
+                site: node.site,
+                stamp,
+                built,
+                resolved: Vec::new(),
+                dropped: false,
+            };
 
             if let Some(key_fn) = &key_fn {
                 let frame = ComputedFrame::enter(lua);

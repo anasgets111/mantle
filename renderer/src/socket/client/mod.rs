@@ -2176,29 +2176,26 @@ mod tests {
     }
 
     #[test]
-    fn a_push_that_makes_a_property_invalid_keeps_the_prior_scene_in_rescue_until_a_pass_applies() {
+    fn a_push_that_makes_a_property_invalid_drops_it_in_rescue_until_it_is_fixed() {
         let dir = tempfile::tempdir().unwrap();
         let path =
             write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
         let (mut client, _outbound_rx) = test_client(&path);
-        push_workspace(&mut client, 1, serde_json::json!(true));
+        push_workspace(&mut client, 1, serde_json::json!(false));
         run_startup(&mut client);
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
 
-        // `visible` requires boolean; a table makes re-resolve fail.
+        // `visible` requires a boolean; a table is dropped for its default, `true`.
         push_workspace(&mut client, 2, serde_json::json!({ "not": "a boolean" }));
-        assert!(!client.re_resolve_if_dirty());
-
-        assert!(
-            client.scene.surface("bar@TEST").unwrap().visible,
-            "Scene::apply rolls back to its pre-call state on error, so the prior good scene must survive"
-        );
+        assert!(client.re_resolve_if_dirty());
+        assert!(client.scene.surface("bar@TEST").unwrap().visible, "the default, not the prior tree");
         let (is_rescue, error_log) = rescue_state(&client.loader);
-        assert!(is_rescue && error_log.contains("visible"), "a failed re-resolve must reach rescue: {error_log}");
+        assert!(is_rescue && error_log.contains("visible"), "a dropped value must reach rescue: {error_log}");
 
         push_workspace(&mut client, 3, serde_json::json!(false));
         assert!(client.re_resolve_if_dirty());
-        assert_eq!(rescue_state(&client.loader), (false, String::new()), "the pass that applies clears it");
+        assert!(!client.scene.surface("bar@TEST").unwrap().visible);
+        assert_eq!(rescue_state(&client.loader), (false, String::new()), "the fixed value clears it");
     }
 
     #[test]

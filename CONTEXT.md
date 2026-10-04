@@ -62,6 +62,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | :--- | :--- |
 | **Retained scene** | A generation's persistent node tree per surface instance, reconciled across evaluations and passes. |
 | **Retained-scene transaction** | One atomic reconcile and resolve of the retained scene. Unmatched children are dropped or become leaving nodes; a failure rolls back. |
+| **Dropped value** | A property value its rows refuse, removed by a startup or dirty pass so the node reads the default. Reported like a failure; a reload or check fails on it instead. |
 | **Signal resolution** | Reading a signal's current value while resolving a node property. `:get()` is a snapshot, not a live property. |
 | **Kept node** | A node whose declaration is unchanged and every cell its last resolve read is unwritten since, so the pass reuses its resolved properties and runs no getter (`ResolveMemo`, ADR-0270). |
 | **Kept list** | A `list` whose last build's inputs and every cell it read are unwritten since, so the pass lays out its retained items instead of building them (`ListMemo`, ADR-0269). |

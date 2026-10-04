@@ -235,6 +235,19 @@ mod tests {
         );
     }
 
+    /// A live pass drops a bad value for its default; the check still fails on it.
+    #[test]
+    fn a_bad_value_fails_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "return panel { id = \"p\", layer = \"top\", child = rect { opacity = 2 } }\n",
+        )
+        .unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        assert!(err.contains("invalid value for `opacity`") && err.contains("got 2"), "{err}");
+    }
+
     /// A getter's failure names the line that made the signal, not only the line inside its function.
     #[test]
     fn a_failing_map_names_where_the_signal_was_created() {

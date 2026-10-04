@@ -393,14 +393,16 @@ mod tests {
     #[test]
     fn a_boot_apply_failure_clears_when_a_re_resolve_applies() {
         let dir = tempfile::tempdir().unwrap();
-        let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
+        let path = write_shell_lua(
+            dir.path(),
+            r#"return panel { id = "bar", layer = "top", child = column { children = mantle.workspace } }"#,
+        );
         let (mut client, _outbound_rx) = test_client(&path);
-        push_workspace(&mut client, 1, serde_json::json!("not a boolean"));
+        push_workspace(&mut client, 1, serde_json::json!("not a list"));
         assert!(!run_startup(&mut client));
         assert!(rescue_state(&client.loader).0);
 
-        push_workspace(&mut client, 2, serde_json::json!(true));
+        push_workspace(&mut client, 2, serde_json::json!([]));
         assert!(client.re_resolve_if_dirty());
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
@@ -823,14 +825,14 @@ mod tests {
             r#"
             armed = state("armed", false)
             return panel { id = "bar", layer = "top", child = text { content = "m",
-                opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
+                opacity = computed({armed}, function(a) if a then error("broken") else return 1.0 end end) } }
             "#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
         assert!(run_startup(&mut client));
 
         client.loader.lua().load("armed:set(true)").exec().unwrap();
-        assert!(!client.re_resolve_if_dirty(), "an invalid property must fail the pass");
+        assert!(!client.re_resolve_if_dirty(), "a raising getter must fail the pass");
         // The rescue write the failure made is a change of its own; it earns one retry.
         client.re_resolve_if_dirty();
         assert!(!client.dirty.take(), "a failed pass must not re-dirty the scene");
@@ -850,7 +852,7 @@ mod tests {
             r#"
             armed = state("armed", false)
             return panel { id = "bar", layer = "top", child = text { content = "m",
-                opacity = computed({armed}, function(a) if a then return 2.0 else return 1.0 end end) } }
+                opacity = computed({armed}, function(a) if a then error("broken") else return 1.0 end end) } }
             "#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
@@ -874,7 +876,7 @@ mod tests {
             q = state("q", true)
             armed = state("armed", false)
             local modal_opacity = computed({armed}, function(a)
-                if a then return 2.0 else return 1.0 end
+                if a then error("broken") else return 1.0 end
             end)
             return {
                 panel { id = "bar", layer = "top", visible = q },
@@ -888,7 +890,7 @@ mod tests {
 
         // Fail modal resolution.
         client.loader.lua().load("armed:set(true)").exec().unwrap();
-        assert!(!client.re_resolve_if_dirty(), "pass with invalid property must fail");
+        assert!(!client.re_resolve_if_dirty(), "pass with a raising getter must fail");
         assert!(client.scene.surface("bar@TEST").unwrap().visible, "retained tree preserved");
 
         // Disarm failure.
@@ -902,7 +904,7 @@ mod tests {
         assert!(!client.scene.surface("bar@TEST").unwrap().visible);
     }
 
-    /// One out-of-range value froze every surface, the rescue banner included, until it was fixed.
+    /// One broken getter froze every surface, the rescue banner included, until it was fixed.
     #[test]
     fn a_broken_surface_keeps_its_prior_tree_while_the_others_and_the_banner_update() {
         let dir = tempfile::tempdir().unwrap();
@@ -915,7 +917,7 @@ mod tests {
                 panel { id = "bar", layer = "top", visible = q },
                 panel { id = "menu", layer = "top", child = column { children = {
                     rect { height = 1, width = q:map(function(v) return v and 10 or 20 end) },
-                    text { content = "m", opacity = armed:map(function(a) return a and 2.0 or 1.0 end) },
+                    text { content = "m", opacity = armed:map(function(a) return a and error("broken") or 1.0 end) },
                 } } },
                 panel { id = "banner", layer = "top",
                     visible = mantle.rescue:map(function(r) return r ~= nil and r.is_rescue end) },
@@ -943,6 +945,56 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert_eq!(menu_rect(&client).width, 20.0, "fixed, it catches up");
         assert_eq!(rescue_state(&client.loader), (false, String::new()));
+    }
+
+    /// A bad value drops for its default and the rest of its surface applies: it froze the whole
+    /// surface, a sibling's text and handlers included.
+    #[test]
+    fn a_bad_value_applies_its_default_while_its_siblings_update_and_rescue_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            op = state("op", 0.5)
+            label = state("label", "a")
+            clicked = state("clicked", "")
+            return {
+                panel { id = "menu", layer = "top", child = column { children = {
+                    text { content = "m", opacity = op },
+                    text { content = label, on_click = label:map(function(l)
+                        return function() clicked:set(l) end
+                    end) },
+                } } },
+                panel { id = "banner", layer = "top",
+                    visible = mantle.rescue:map(function(r) return r ~= nil and r.is_rescue end) },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let menu = |client: &RendererClient| client.scene.surface("menu@TEST").unwrap().children[0].clone();
+        let lua = client.loader.lua().clone();
+
+        lua.load(r#"op:set(2) label:set("b")"#).exec().unwrap();
+        assert!(client.re_resolve_if_dirty(), "the pass applies");
+        let column = menu(&client);
+        assert_eq!(column.children[0].opacity, 1.0, "the bad node draws at the default");
+        let on_click = crate::layout::node::fields::pointer::on_click.read(&column.children[1].properties);
+        on_click.unwrap().expect("the sibling's handler").call::<()>(()).unwrap();
+        assert_eq!(lua.load("return clicked:get()").eval::<String>().unwrap(), "b", "and it is the new one");
+        let (is_rescue, error_log) = rescue_state(&client.loader);
+        assert!(is_rescue && error_log.contains("`opacity`") && error_log.contains("got 2"), "{error_log}");
+        assert!(client.re_resolve_if_dirty(), "the rescue write's pass");
+        assert!(client.scene.surface("banner@TEST").unwrap().visible, "the banner shows it");
+
+        lua.load(r#"label:set("c")"#).exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!(rescue_state(&client.loader).0, "an unrelated pass still reports the standing value");
+
+        lua.load("op:set(0.25)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(menu(&client).children[0].opacity, 0.25);
+        assert_eq!(rescue_state(&client.loader), (false, String::new()), "fixed, rescue clears");
     }
 
     #[test]
