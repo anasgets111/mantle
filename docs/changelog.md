@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `palette.hct(color)` returns a colour's `{ hue, chroma, tone }` in HCT, so a config can apply its own seed rule; `palette.score` documents that each seed is one input swatch's colour.
 - `palette.quantize` now uses Material's Celebi quantizer instead of median cut, so existing configs get different swatches (colours and `share`s) from the same image. `opts.method = "wu"` picks Wu alone.
 - `palette.scheme(seed, opts?)` returns the 49 Material 3 colour roles for a seed, with `dark`, `variant` and `contrast` options; `palette.score(swatches)` ranks `palette.quantize` swatches into seed colours as Material 3 does.
 - `animate.width` and `animate.height` ease a content-sized axis: when a label changes, the box grows from the size on screen to the new content size, and siblings follow. Only eased entries animate it; springs and keyframes snap.

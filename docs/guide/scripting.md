@@ -22,7 +22,7 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
 | Pull colours out of a wallpaper | [`palette.quantize`](#palettequantize) |
-| Build Material 3 colours from a seed or a wallpaper | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore) |
+| Build Material 3 colours from a seed or a wallpaper | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
 What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
@@ -344,7 +344,28 @@ end)
 | :--- | :--- |
 | Signature | `palette.score(swatches)` → `{ "#RRGGBB", ... }` |
 | `swatches` | `{ color = "#RRGGBB", share }` entries; only the ratios of the `share`s count. A bad colour or a `share` not above `0` raises |
-| Result | Up to 4 colours, best first, at least 15° of hue apart. Colours with chroma under 5 or hues under 1% of the image drop out; with none left it is `{ "#4285F4" }` |
+| Result | Up to 4 colours, best first, at least 15° of hue apart. Each is one input swatch's colour as uppercase `#RRGGBB`, so a quantize swatch looks it up by `color`. Colours with chroma under 5 or hues under 1% of the image drop out; with none left it is `{ "#4285F4" }` |
+
+## palette.hct
+
+A colour's hue, chroma and tone in HCT, Material's colour space, which Score and every scheme work
+in. A config can rank or filter swatches by its own rule: tonal spot's primary palette uses chroma
+36, so a seed far below that comes out muted.
+
+```lua
+local seed = "#6750A4"
+local hct = palette.hct(seed) -- hue ≈ 299, chroma ≈ 48, tone ≈ 40
+
+return text { content = hct.chroma >= 36 and "vivid" or "muted" }
+```
+
+| Part | Contract |
+| :--- | :--- |
+| Signature | `palette.hct(color)` → `{ hue, chroma, tone }` (`PaletteHct` in the stubs) |
+| `color` | `"#RRGGBB"`; anything else, alpha included, raises |
+| `hue` | Degrees, `0` to under `360`; a grey still gets a number |
+| `chroma` | Colourfulness from `0`. Greys stay under `5`, the cutoff below which Score ignores a colour |
+| `tone` | Lightness, `0` (black) to `100` (white) |
 
 ## fonts
 

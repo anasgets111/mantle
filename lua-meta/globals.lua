@@ -263,8 +263,20 @@ function palette.quantize(path, opts, on_done) end
 ---@return PaletteScheme
 function palette.scheme(seed, opts) end
 
+---A colour in HCT, Material's colour space.
+---@class PaletteHct
+---@field hue number Hue in degrees, 0 to under 360.
+---@field chroma number Colourfulness from 0; tonal spot's primary palette uses 36.
+---@field tone number Lightness, 0 to 100.
+
+---A colour's hue, chroma and tone in HCT, the space Score and schemes work in.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettehct)
+---@param color Color `#RRGGBB`.
+---@return PaletteHct
+function palette.hct(color) end
+
 ---Up to 4 seed colours ranked by Material 3's Score: chromatic, common and far apart in hue.
----`#4285F4` when none qualifies.
+---Each is one input swatch's colour as uppercase `#RRGGBB`; `#4285F4` when none qualifies.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescore)
 ---@param swatches PaletteSwatch[] `palette.quantize`'s swatches; only the ratios of their `share`s count.
 ---@return Color[]

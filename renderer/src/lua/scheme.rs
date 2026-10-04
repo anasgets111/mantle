@@ -14,7 +14,7 @@ use material_colors::scheme::Scheme;
 use material_colors::score::Score;
 use mlua::{IntoLua, Lua, Table, Value};
 
-use super::luacats::{As, LuaType, lua_fn, spelled};
+use super::luacats::{As, LuaType, lua_fn, lua_shape, spelled};
 use super::palette::PaletteSwatch;
 use crate::layout::node::prop::Color;
 
@@ -30,6 +30,19 @@ const VARIANTS: [(&str, M3Variant); 9] = [
     ("rainbow", M3Variant::Rainbow),
     ("fruit_salad", M3Variant::FruitSalad),
 ];
+
+lua_shape! {
+    /// A colour in HCT, Material's colour space.
+    #[record = "PaletteHct"]
+    struct PaletteHct {
+        /// Hue in degrees, 0 to under 360.
+        hue: f64,
+        /// Colourfulness from 0; tonal spot's primary palette uses 36.
+        chroma: f64,
+        /// Lightness, 0 to 100.
+        tone: f64,
+    }
+}
 
 /// `palette.scheme`'s `opts`.
 struct Options;
@@ -166,8 +179,23 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua_fn!(
         lua,
+        /// A colour's hue, chroma and tone in HCT, the space Score and schemes work in.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettehct)
+        fn palette.hct(
+            _lua,
+            /// `#RRGGBB`.
+            color: As<String, Color>,
+        ) -> PaletteHct {
+            let rgb = parse(&color.0)
+                .ok_or_else(|| mlua::Error::runtime(format!("palette.hct: color must be #RRGGBB, got `{}`", color.0)))?;
+            let hct = Hct::new(rgb);
+            Ok(PaletteHct { hue: hct.get_hue(), chroma: hct.get_chroma(), tone: hct.get_tone() })
+        }
+    )?;
+    lua_fn!(
+        lua,
         /// Up to 4 seed colours ranked by Material 3's Score: chromatic, common and far apart in hue.
-        /// `#4285F4` when none qualifies.
+        /// Each is one input swatch's colour as uppercase `#RRGGBB`; `#4285F4` when none qualifies.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescore)
         fn palette.score(
             _lua,
@@ -252,6 +280,22 @@ mod tests {
         assert_eq!(top, "#0000FF");
     }
 
+    /// Upstream's CAM16 vectors (`cam_test`): HCT's hue and chroma are CAM16's, its tone L*.
+    #[test]
+    fn hct_matches_material_and_a_grey_has_a_real_hue() {
+        let lua = lua();
+        let hct = |color: &str| -> [f64; 3] {
+            let t: Table = lua.load(format!("return palette.hct('{color}')")).eval().unwrap();
+            ["hue", "chroma", "tone"].map(|k| t.get(k).unwrap())
+        };
+        for (color, expected) in [("#FF0000", [27.408, 113.357, 53.24]), ("#0000FF", [282.788, 87.230, 32.30])] {
+            let got = hct(color);
+            assert!(got.iter().zip(expected).all(|(g, e)| (g - e).abs() < 0.5), "{color}: {got:?}");
+        }
+        let [hue, chroma, _] = hct("#808080");
+        assert!((0.0..360.0).contains(&hue) && chroma < 5.0, "grey: {hue} {chroma}");
+    }
+
     #[test]
     fn bad_input_raises_naming_the_problem() {
         let lua = lua();
@@ -263,6 +307,7 @@ mod tests {
             (r##"palette.scheme("#6750A4", { contrast = 0/0 })"##, "`contrast` must be -1 to 1"),
             (r##"palette.scheme("#6750A4", { dark = "yes" })"##, "`dark` must be a boolean, got string"),
             (r##"palette.scheme("#6750A4", { darke = true })"##, "unknown key `darke`"),
+            (r##"palette.hct("#6750A4FF")"##, "palette.hct: color must be #RRGGBB, got `#6750A4FF`"),
             (r#"palette.score({ { color = "blue", share = 1 } })"#, "swatch 1: `color` must be #RRGGBB"),
             (r##"palette.score({ { color = "#0000FF", share = 0 } })"##, "swatch 1: `share` must be above 0"),
         ] {
