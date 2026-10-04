@@ -54,6 +54,7 @@ pub enum Draw {
         letter_spacing: f32,
         font_weight: f32,
         italic: bool,
+        variations: crate::text::shaping::Variations,
         /// The family this was measured and drawn in, or `None` for the declared chain
         /// (ADR-0144).
         font: Option<std::sync::Arc<str>>,

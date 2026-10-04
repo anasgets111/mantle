@@ -444,6 +444,7 @@ fn draw_for(
             letter_spacing,
             font_weight,
             italic,
+            variations,
             font,
             color,
             align,
@@ -462,6 +463,7 @@ fn draw_for(
             letter_spacing: *letter_spacing,
             font_weight: *font_weight,
             italic: *italic,
+            variations: variations.clone(),
             font: font.clone(),
             color: fade(*color, opacity),
             align: *align,
@@ -570,6 +572,7 @@ fn draw_for(
                 letter_spacing: 0.0,
                 font_weight: 400.0,
                 italic: false,
+                variations: Default::default(),
                 // A `textfield` draws its placeholder and its masked content in the declared
                 // chain; nothing lets one name a family.
                 font: None,

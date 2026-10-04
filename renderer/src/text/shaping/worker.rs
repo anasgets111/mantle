@@ -4,7 +4,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 
 use parley::fontique::{Blob, Collection, CollectionOptions};
-use parley::{FontContext, FontFamilyName, FontStyle, FontWeight, Layout, LayoutContext, LineHeight, StyleProperty};
+use parley::setting::Tag;
+use parley::{
+    FontContext, FontFamilyName, FontStyle, FontVariation, FontWeight, Layout, LayoutContext, LineHeight, StyleProperty,
+};
 use shared::debug;
 
 use super::{FontData, FontFace, Glyph, SHAPE_CACHE_CAPACITY, ShapeRequest, ShapeResult, ShapedLine};
@@ -156,6 +159,7 @@ pub(super) fn shape(
                 lines: Vec::new().into(),
                 line_ranges: Vec::new().into(),
                 shaped: Vec::new().into(),
+                coords: Vec::new().into(),
             },
             Vec::new(),
         );
@@ -173,6 +177,12 @@ pub(super) fn shape(
     builder.push_default(StyleProperty::LetterSpacing(request.letter_spacing));
     builder.push_default(StyleProperty::FontWeight(FontWeight::new(request.font_weight)));
     builder.push_default(StyleProperty::FontStyle(if request.italic { FontStyle::Italic } else { FontStyle::Normal }));
+    let variations: Vec<_> = request
+        .variations
+        .iter()
+        .map(|(tag, value)| FontVariation::new(Tag::from_bytes(*tag), f32::from_bits(*value)))
+        .collect();
+    builder.push_default(StyleProperty::FontVariations(variations.as_slice().into()));
     for run in &request.runs {
         let start = run.range.start.min(request.text.len());
         let end = run.range.end.min(request.text.len());
@@ -193,6 +203,7 @@ pub(super) fn shape(
     let mut lines = Vec::new();
     let mut line_ranges = Vec::new();
     let mut shaped = Vec::new();
+    let mut coords: Vec<Box<[i16]>> = Vec::new();
     let mut missing = Vec::new();
     let bidi = unicode_bidi::BidiInfo::new(&request.text, None);
     for line in layout.lines() {
@@ -212,7 +223,10 @@ pub(super) fn shape(
         for run in line.runs() {
             let key = (run.font().data.id(), run.font().index);
             let face = fonts.faces.get(&key).copied();
-            let weight = run.font_attrs().weight.value();
+            let instance = coords.iter().position(|at| **at == *run.normalized_coords()).unwrap_or_else(|| {
+                coords.push(run.normalized_coords().into());
+                coords.len() - 1
+            }) as u32;
             for cluster in run.visual_clusters() {
                 let mut range = cluster.text_range();
                 range.end = range.end.min(request.text.len());
@@ -224,7 +238,7 @@ pub(super) fn shape(
                     if glyphs && let Some(face) = face {
                         placed.push(Glyph {
                             face,
-                            weight,
+                            coords: instance,
                             id: glyph.id as u16,
                             x: pen + glyph.x,
                             y: glyph.y,
@@ -256,6 +270,7 @@ pub(super) fn shape(
         lines: lines.into(),
         line_ranges: line_ranges.into(),
         shaped: shaped.into(),
+        coords: coords.into(),
     };
     (result, missing)
 }
@@ -329,17 +344,7 @@ mod tests {
 
         let mut fonts = WorkerFonts::new(&["Noto Sans", "Noto Sans Mono"]);
 
-        let request = ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle Engine Renderer".into(),
-            font_size: 24.0,
-            line_height: 28.8,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        };
+        let request = ShapeRequest { line_height: 28.8, ..req("Mantle Engine Renderer", 24.0) };
         let (proportional, _) = shape(&mut fonts, "Noto Sans", &request, false);
         let (monospace, _) = shape(&mut fonts, "Noto Sans Mono", &request, false);
 

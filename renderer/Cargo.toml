@@ -16,7 +16,6 @@ workspace = true
 [dependencies]
 # Fontique receives only the files selected by `text/fonts.rs`; system discovery stays off.
 parley = { version = "0.11.1", default-features = false, features = ["std"] }
-skrifa = "0.44.0"
 # `swash` is what makes the text look hinted. Without the feature femtovg falls back to
 # `render_glyph`: it tessellates the font outline and supersamples it 8x on the GPU, which
 # runs no hinting bytecode and throws the subpixel position away, so every stem lands as two
@@ -93,6 +92,8 @@ ahash = "0.8.12"
 indexmap = "2.14.2"
 
 [dev-dependencies]
+# Reads font tables in a shaping test; already in the tree through Parley.
+skrifa = "0.44.0"
 tempfile.workspace = true
 # `time` is test-only (`socket/mod.rs` timeouts).
 tokio = { workspace = true, features = ["time"] }

@@ -48,6 +48,7 @@ pub(super) enum Measure {
         letter_spacing: f32,
         font_weight: f32,
         italic: bool,
+        variations: shaping::Variations,
         /// The family the box is measured against, so the reserved width is the one the same
         /// family will paint into (ADR-0144).
         font: Option<std::sync::Arc<str>>,
@@ -369,8 +370,18 @@ pub(super) fn hold_leavers(
     tree.set_style(id, solver_style).map_err(taffy_failed)
 }
 
-pub(super) const TEXT_MEASURE_KEYS: &[&str] =
-    &["content", "font_size", "line_height", "letter_spacing", "font_weight", "italic", "font", "wrap", "max_lines"];
+pub(super) const TEXT_MEASURE_KEYS: &[&str] = &[
+    "content",
+    "font_size",
+    "line_height",
+    "letter_spacing",
+    "font_weight",
+    "italic",
+    "font_variations",
+    "font",
+    "wrap",
+    "max_lines",
+];
 
 pub(super) fn text_measure_matches(fresh: &PropMap, retained: &PropMap) -> bool {
     TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k))
@@ -401,6 +412,7 @@ pub(super) fn measure_for(
                 letter_spacing,
                 font_weight,
                 italic,
+                variations,
                 font,
                 wrap,
                 max_lines,
@@ -417,6 +429,7 @@ pub(super) fn measure_for(
                 letter_spacing: *letter_spacing,
                 font_weight: *font_weight,
                 italic: *italic,
+                variations: variations.clone(),
                 font: font.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
@@ -509,6 +522,7 @@ pub(super) fn solve(
                         letter_spacing,
                         font_weight,
                         italic,
+                        variations,
                         font,
                         wrap,
                         max_lines,
@@ -544,6 +558,7 @@ pub(super) fn solve(
                             letter_spacing: *letter_spacing,
                             font_weight: *font_weight,
                             italic: *italic,
+                            variations: variations.clone(),
                             max_width,
                             runs: runs.clone(),
                             font: font.clone(),
@@ -1352,5 +1367,26 @@ pub(super) mod tests {
         let width_24 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
 
         assert!(width_24 > width_12 * 1.5, "larger font_size must produce larger box: {width_12} vs {width_24}");
+    }
+
+    /// Inter's `opsz` changes advances, so a memo kept across the change would keep the old box.
+    #[test]
+    fn font_variations_change_invalidates_text_memo() {
+        if !crate::text::fonts::fc_lists("Inter Variable") {
+            return;
+        }
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = text { content = "Mantle", font = "Inter Variable",
+                font_variations = state("axes", { opsz = 14 }) } }"#,
+        );
+        let mut width = || {
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            scene.surface("bar@TEST").unwrap().children[0].rect.width
+        };
+        let text = width();
+        lua.load(r#"state("axes", {}):set({ opsz = 32 })"#).exec().unwrap();
+        assert_ne!(width(), text);
     }
 }

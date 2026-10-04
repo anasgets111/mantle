@@ -65,6 +65,7 @@ pub enum PaintStyle {
         letter_spacing: f32,
         font_weight: f32,
         italic: bool,
+        variations: crate::text::shaping::Variations,
         /// The family this node named, or `None` for the declared chain (ADR-0144).
         font: Option<Arc<str>>,
         color: Rgba,
@@ -155,6 +156,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 letter_spacing: text::letter_spacing.read(properties)?,
                 font_weight: text::font_weight.read(properties)?,
                 italic: text::italic.read(properties)?,
+                variations: text::font_variations.read(properties)?,
                 font: text::font.read(properties)?,
                 color: text::foreground.read(properties)?.expect("`foreground` has a default"),
                 align: text::text_align.read(properties)?,

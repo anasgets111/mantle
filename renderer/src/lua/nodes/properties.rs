@@ -19,9 +19,10 @@ use crate::layout::node::prop::{
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
-    CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, Items, KeyboardInteractivity, LayerKind, Limit, Live,
-    Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset,
-    Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
+    CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
+    LayerKind, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor,
+    PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign,
+    TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -373,6 +374,10 @@ props! {
         font_weight: Bound<Num> = range(1.0, 1000.0).absent(Number(400.0));
         /// Use the family's italic face when available. A run with `italic = true` stays italic.
         italic: Bound<Flag> = absent(Bool(false));
+        /// OpenType variation axes by 4-character tag, as CSS `font-variation-settings`: `{ FILL = 1, GRAD = -25, opsz = 24 }`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; `animate` does not tween it.
+        ///
+        /// Book: OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](#variable-fonts)
+        font_variations: Bound<FontVariations> = absent(Lua("{}"));
         /// A run's `color` overrides it.
         ///
         /// Book: A [colour](../guide/paint.md#colours); a run's `color` overrides it

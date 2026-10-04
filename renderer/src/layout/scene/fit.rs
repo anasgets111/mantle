@@ -26,6 +26,7 @@ pub(super) fn fit_text_to_box(
         letter_spacing,
         font_weight,
         italic,
+        variations,
         font,
         elide,
         wrap,
@@ -62,6 +63,7 @@ pub(super) fn fit_text_to_box(
         letter_spacing: *letter_spacing,
         font_weight: *font_weight,
         italic: *italic,
+        variations: variations.clone(),
         family: font.clone(),
     };
     // The output is taken off the builder before the borrow of `content` ends, which is what lets
@@ -163,6 +165,7 @@ fn wrapped_to_fit<'s>(
         letter_spacing: face.letter_spacing,
         font_weight: face.font_weight,
         italic: face.italic,
+        variations: face.variations.clone(),
         max_width: Some(content_width),
         runs: node::font_runs(runs),
         font: face.family.clone(),
@@ -204,6 +207,7 @@ struct Face {
     letter_spacing: f32,
     font_weight: f32,
     italic: bool,
+    variations: crate::text::shaping::Variations,
     family: Option<std::sync::Arc<str>>,
 }
 
@@ -217,6 +221,7 @@ fn measured_width(text: &str, runs: &[StyleRun], face: &Face, shaping: &ShapingH
             letter_spacing: face.letter_spacing,
             font_weight: face.font_weight,
             italic: face.italic,
+            variations: face.variations.clone(),
             max_width: None,
             runs: node::font_runs(runs),
             font: face.family.clone(),
@@ -501,6 +506,7 @@ mod tests {
                     letter_spacing: 0.0,
                     font_weight: 400.0,
                     italic: false,
+                    variations: Default::default(),
                     text: LONG.to_string(),
                     font_size: 12.0,
                     line_height,

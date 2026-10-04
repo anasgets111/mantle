@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use mlua::Value;
 
-use crate::text::shaping::FontRun;
+use crate::text::shaping::{FontRun, Variations};
 use crate::text::snap::LogicalRect;
 
 use super::prop::keywords;
@@ -235,6 +235,52 @@ impl Prop for Font {
             return Err(invalid("font", "must be a family name, got an empty string".to_string()));
         }
         Ok(Some(Arc::from(family)))
+    }
+}
+
+/// `text.font_variations`: OpenType axis tag to value, like CSS `font-variation-settings`.
+pub(crate) struct FontVariations;
+
+spelled!(FontVariations => format!("table<{}, {}>", String::lua(), f32::lua()));
+
+/// More axes than any shipped variable font declares; bounds what one table puts in every cache key.
+const MAX_AXES: usize = 64;
+
+impl Prop for FontVariations {
+    type Out = Variations;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Variations, LayoutError> {
+        let table = match value {
+            None | Some(Value::Nil) => return Ok(Variations::default()),
+            Some(Value::Table(table)) => table,
+            Some(other) => {
+                return Err(invalid(
+                    row.name,
+                    format!("expected a table of axis tags, got {}", preview_for_error(other)),
+                ));
+            }
+        };
+        let mut out = Vec::new();
+        for pair in table.pairs::<Value, Value>() {
+            let (key, value) = pair.map_err(|e| invalid(row.name, e.to_string()))?;
+            // Shaping clamps to the face's range and skips axes it lacks; only the tag's form is checked here.
+            let tag = match &key {
+                Value::String(s) => parley::setting::Tag::parse(&s.to_string_lossy()).map(|tag| tag.to_bytes()),
+                _ => None,
+            }
+            .ok_or_else(|| {
+                invalid(row.name, format!("keys are 4-character axis tags, got {}", preview_for_error(&key)))
+            })?;
+            let field = format!("{}.{}", row.name, String::from_utf8_lossy(&tag));
+            let number = value_as_f32(&field, &value)?.filter(|number| number.is_finite()).ok_or_else(|| {
+                invalid(&field, format!("expected a finite number, got {}", preview_for_error(&value)))
+            })?;
+            if out.len() == MAX_AXES {
+                return Err(invalid(row.name, format!("at most {MAX_AXES} axes")));
+            }
+            out.push((tag, number.to_bits()));
+        }
+        out.sort_unstable_by_key(|(tag, _)| *tag);
+        Ok(out.into())
     }
 }
 
@@ -616,6 +662,24 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
         let err = fields::text::wrap.read(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("word"), "the error should name the modes that do exist, got {err}");
+    }
+
+    /// Lua iterates a table in no fixed order, so the axes are sorted for one table to key one entry.
+    #[test]
+    fn font_variations_sort_by_tag_and_refuse_a_bad_tag_or_value() {
+        let lua = mlua::Lua::new();
+        let read = |source: &str| {
+            let table: mlua::Table =
+                lua.load(format!("return {{ kind = \"text\", font_variations = {source} }}")).eval().unwrap();
+            fields::text::font_variations.read(&props_from_table(&table))
+        };
+        assert!(read("nil").unwrap().is_empty());
+        let axes = read("{ opsz = 24, FILL = 1, GRAD = -25 }").unwrap();
+        assert_eq!(axes.iter().map(|(tag, _)| tag).collect::<Vec<_>>(), [b"FILL", b"GRAD", b"opsz"]);
+        assert_eq!(f32::from_bits(axes[1].1), -25.0);
+        for bad in ["{ FIL = 1 }", "{ FILLED = 1 }", "{ [1] = 1 }", "{ FILL = 0/0 }", "{ FILL = '1' }", "1"] {
+            assert!(read(bad).is_err(), "{bad} must be refused");
+        }
     }
 
     /// Zero is the uncapped spelling a `Bound` needs, since a signal has no way to be absent. A

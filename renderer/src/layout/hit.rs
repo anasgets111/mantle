@@ -63,6 +63,7 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
         letter_spacing,
         font_weight,
         italic,
+        variations,
         font,
         align,
         ..
@@ -83,6 +84,7 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
             letter_spacing: *letter_spacing,
             font_weight: *font_weight,
             italic: *italic,
+            variations,
         },
         font.as_ref(),
     ) {
@@ -146,6 +148,7 @@ pub(crate) fn field_line(text: &str, font_size: f32, shaping: &ShapingHandle) ->
                 letter_spacing: 0.0,
                 font_weight: 400.0,
                 italic: false,
+                variations: &Default::default(),
             },
             None,
         )
@@ -484,6 +487,7 @@ mod tests {
             letter_spacing: 0.0,
             font_weight: 400.0,
             italic: false,
+            variations: Default::default(),
             font: None,
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align,
@@ -505,6 +509,7 @@ mod tests {
                 letter_spacing: 0.0,
                 font_weight: 400.0,
                 italic: false,
+                variations: Default::default(),
                 text: text.to_string(),
                 font_size: 14.0,
                 line_height: shaping::line_height(14.0),

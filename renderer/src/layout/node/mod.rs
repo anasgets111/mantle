@@ -35,7 +35,7 @@ pub(crate) use animate::{Animations, Params};
 pub use animate::{
     Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget, retarget_measured,
 };
-pub(crate) use content::{Content, Font, Live, MaxLines, Region};
+pub(crate) use content::{Content, Font, FontVariations, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 #[cfg(test)]
 pub(crate) use content::{SpanKind, TextRun};

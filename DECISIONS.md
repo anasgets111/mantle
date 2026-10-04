@@ -7615,3 +7615,19 @@ declaration. It touches every `Field::read`, needs a side channel so check and r
 error, and must pin memo hits so a substituted node keeps re-resolving; it is the next slice.
 Per-node freezing: a frozen subtree inside a re-solved parent breaks taffy wiring and leavers
 (ADR-0266 decision 2).
+
+## 0322. Paint draws at the axis coordinates Parley shaped at, and `text.font_variations` sets them
+
+Amends ADR-0211 item 6. `text.font_variations` maps OpenType axis tags to numbers
+(`{ FILL = 1, opsz = 24 }`) and reaches Parley as `FontVariations` after the `wght` derived from
+`font_weight`, so an explicit `wght` wins, as with CSS `font-variation-settings`. Each
+`ShapeResult` carries every run's normalized coordinates (`Run::normalized_coords`) and
+`Glyph.coords` indexes them; `TextPainter` hands that slice to `fill_glyph_run`. This replaces the
+painter's own `wght` derivation: two derivations could disagree (synthesized `slnt`, user axes)
+and draw outlines at one instance with advances from another. Clamping and unknown axes are left to
+read-fonts, as CSS leaves them to the font. Every cache before the atlas keys on the axes (shape
+memo, line cache, solver memo, `Draw::Text`); femtovg's atlas already keys on a hash of the coords.
+
+Rejected: re-deriving coords in the painter (a second source of truth); a per-glyph `Arc<[i16]>`
+(`Glyph` stops being `Copy`). Axes snap under `animate`: the `Fields` tween knows only fixed key
+sets.

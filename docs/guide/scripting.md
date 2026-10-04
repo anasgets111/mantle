@@ -381,7 +381,7 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | Argument | Dense array of family-name strings. A hole, a named key or a non-string raises |
 | Resolution | Through `fc-match`. The first family that resolves is the primary and also loads its bold and italic faces; a family with no install is skipped (logged at `-vvv`) |
 | Default | Without a call: `sans-serif`, `Noto Sans CJK JP`, `Noto Color Emoji` |
-| Per node | A `text` node's `font` goes in front of the chain ([nodes](../nodes/text.md)) |
+| Per node | A `text` node's `font` goes in front of the chain ([nodes](../nodes/text.md)); `font_variations` sets a variable font's axes ([variable fonts](../nodes/text.md#variable-fonts)) |
 | Uncovered glyph | fontconfig is asked for any installed face that covers it |
 | SVG `<text>` | Images, icons and file masks draw it with the loaded chain; declare a family it names ([image](../nodes/image.md)) |
 | Lifetime | Read once at startup. Last call wins; an edit needs a shell restart |

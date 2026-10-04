@@ -28,6 +28,10 @@ pub struct FontRun {
     pub italic: bool,
 }
 
+/// `font_variations`: OpenType axis tags and values as `f32` bits, sorted by tag so equal tables key
+/// equal. Parley applies them after the `wght` it derives from the weight, so an explicit axis wins.
+pub type Variations = Arc<[([u8; 4], u32)]>;
+
 /// A shaping request: the text to measure and the metrics to shape it at.
 pub struct ShapeRequest {
     pub text: String,
@@ -36,6 +40,7 @@ pub struct ShapeRequest {
     pub letter_spacing: f32,
     pub font_weight: f32,
     pub italic: bool,
+    pub variations: Variations,
     /// Logical-pixel width to wrap at. `None` measures the text unconstrained, on one line.
     pub max_width: Option<f32>,
     /// The parts of `text` in another face than the regular one, in order, non-overlapping, on
@@ -50,12 +55,13 @@ pub struct ShapeRequest {
 
 /// Styles shared by each separately painted paragraph of one text node.
 #[derive(Clone, Copy)]
-pub struct ShapingStyle {
+pub struct ShapingStyle<'a> {
     pub font_size: f32,
     pub line_height: f32,
     pub letter_spacing: f32,
     pub font_weight: f32,
     pub italic: bool,
+    pub variations: &'a Variations,
 }
 
 /// The measured result of shaping a request: its tight bounding box in logical pixels, plus the
@@ -79,6 +85,9 @@ pub struct ShapeResult {
     /// How each of `lines` is laid out, parallel to it (ADR-0211). Paint and link hit-testing
     /// read these glyphs rather than shaping the line a second time.
     pub shaped: Arc<[ShapedLine]>,
+    /// The normalized axis coordinates Parley shaped each run at, in `fvar` order, indexed by
+    /// [`Glyph::coords`]: paint rasterizes at exactly these, so outlines match the advances.
+    pub coords: Arc<[Box<[i16]>]>,
 }
 
 /// One laid-out line (ADR-0211): which way it reads, how far its baseline sits below the line's
@@ -91,13 +100,13 @@ pub struct ShapedLine {
     pub glyphs: Box<[Glyph]>,
 }
 
-/// One placed glyph: the face, weight and glyph Parley chose, its pen position from the line's
-/// left edge and baseline, its advance, and the byte of the request's text it came from.
+/// One placed glyph: the face, axis coordinates and glyph Parley chose, its pen position from the
+/// line's left edge and baseline, its advance, and the byte of the request's text it came from.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Glyph {
     pub face: fontdb::ID,
-    /// What a variable face was shaped at ([`FontFace::coords`]).
-    pub weight: f32,
+    /// Index into [`ShapeResult::coords`].
+    pub coords: u32,
     pub id: u16,
     pub x: f32,
     pub y: f32,
@@ -134,19 +143,6 @@ pub struct FontFace {
     pub data: FontData,
     pub index: u32,
     pub id: fontdb::ID,
-}
-
-impl FontFace {
-    /// The normalized axis coordinates Parley shapes this face at for `weight`, in `fvar`
-    /// order; empty for a face with no axes.
-    pub fn coords(&self, weight: f32) -> Vec<i16> {
-        use skrifa::{FontRef, MetadataProvider, Tag};
-        let Ok(font) = FontRef::from_index(self.data.as_ref(), self.index) else {
-            return Vec::new();
-        };
-        let location = font.axes().location([(Tag::new(b"wght"), weight)]);
-        location.coords().iter().map(|coord| coord.to_bits()).collect()
-    }
 }
 
 impl FontData {
@@ -231,6 +227,7 @@ struct ShapeKey {
     letter_spacing: u32,
     font_weight: u32,
     italic: bool,
+    variations: Variations,
     max_width: Option<u32>,
     runs: Vec<FontRun>,
     font: Option<Arc<str>>,
@@ -365,7 +362,7 @@ impl ShapingHandle {
         &self,
         text: &str,
         runs: &[FontRun],
-        style: ShapingStyle,
+        style: ShapingStyle<'_>,
         font: Option<&Arc<str>>,
     ) -> Vec<(usize, ShapeResult)> {
         paragraph_ranges(text)
@@ -389,6 +386,7 @@ impl ShapingHandle {
                     letter_spacing: style.letter_spacing,
                     font_weight: style.font_weight,
                     italic: style.italic,
+                    variations: Arc::clone(style.variations),
                     max_width: None,
                     runs,
                     font: font.cloned(),
@@ -408,6 +406,7 @@ impl ShapingHandle {
             letter_spacing: request.letter_spacing.to_bits(),
             font_weight: request.font_weight.to_bits(),
             italic: request.italic,
+            variations: request.variations,
             max_width: request.max_width.map(f32::to_bits),
             runs: request.runs,
             font: request.font,
@@ -429,6 +428,7 @@ impl ShapingHandle {
                     letter_spacing: f32::from_bits(key.letter_spacing),
                     font_weight: f32::from_bits(key.font_weight),
                     italic: key.italic,
+                    variations: Arc::clone(&key.variations),
                     max_width: key.max_width.map(f32::from_bits),
                     runs: key.runs.clone(),
                     font: key.font.clone(),
@@ -610,6 +610,7 @@ mod tests {
             letter_spacing: 0.0,
             font_weight: 400.0,
             italic: false,
+            variations: Variations::default(),
             max_width: None,
             runs: Vec::new(),
             font: None,
@@ -917,26 +918,41 @@ mod tests {
         assert!(handle.shape(ShapeRequest { max_width: Some(boundary), ..spaced_request }).lines.len() > 1);
     }
 
+    fn coords_at(result: &ShapeResult, start: usize) -> Vec<i16> {
+        let glyph = result.shaped[0].glyphs.iter().find(|glyph| glyph.start == start).unwrap();
+        result.coords[glyph.coords as usize].to_vec()
+    }
+
+    fn axes(pairs: &[(&[u8; 4], f32)]) -> Variations {
+        pairs.iter().map(|(tag, value)| (**tag, value.to_bits())).collect()
+    }
+
+    /// Paint rasterizes at the coords shaping used, so outlines match advances (ADR-0211): a
+    /// variable family's bold is one face at another `wght`, and Inter's `opsz` moves advances.
     #[test]
-    fn node_weight_and_italic_reach_glyphs_and_rich_runs_inherit_them() {
+    fn weights_runs_and_font_variations_reach_the_coords_paint_draws_at() {
+        if !fonts::fc_lists("Inter Variable") {
+            return;
+        }
         let handle = ShapingHandle::spawn();
-        let request = ShapeRequest {
-            font_weight: 600.0,
-            italic: true,
-            runs: vec![FontRun { range: 0..1, bold: false, italic: true }],
-            ..req("AB", 20.0)
-        };
-        let result = handle.shape_glyphs(request);
-        let a = result.shaped[0].glyphs.iter().find(|glyph| glyph.start == 0).unwrap();
-        assert_eq!(a.weight, 600.0, "an italic-only run keeps the node weight");
-        let bold = handle.shape_glyphs(ShapeRequest {
-            runs: vec![FontRun { range: 1..2, bold: true, italic: false }],
-            ..req("AB", 20.0)
-        });
-        let b = bold.shaped[0].glyphs.iter().find(|glyph| glyph.start == 1).unwrap();
-        assert_eq!(b.weight, 700.0, "a bold run overrides the regular node weight");
-        let fractional = handle.shape_glyphs(ShapeRequest { font_weight: 625.5, ..req("A", 20.0) });
-        assert_eq!(fractional.shaped[0].glyphs[0].weight, 625.5);
+        let inter = |request| handle.shape_glyphs(ShapeRequest { font: Some("Inter Variable".into()), ..request });
+        let weight = |weight| coords_at(&inter(ShapeRequest { font_weight: weight, ..req("Mantle", 20.0) }), 0);
+        let run = |run| inter(ShapeRequest { font_weight: 600.0, runs: vec![run], ..req("Mantle", 20.0) });
+        let italic = run(FontRun { range: 0..1, bold: false, italic: true });
+        assert_eq!(coords_at(&italic, 1), weight(600.0), "the node weight reaches the coords");
+        let bold = run(FontRun { range: 0..1, bold: true, italic: false });
+        assert_eq!(coords_at(&bold, 0), weight(700.0), "a bold run overrides the node weight");
+        assert_ne!(weight(625.5), weight(600.0), "a fractional weight is its own instance");
+
+        let shape = |pairs| inter(ShapeRequest { variations: axes(pairs), ..req("Mantle", 20.0) });
+        let (text, display) = (shape(&[(b"opsz", 14.0)]), shape(&[(b"opsz", 32.0)]));
+        assert_ne!(text.width, display.width, "opsz must reach shaping");
+        assert_ne!(coords_at(&text, 0), coords_at(&display, 0), "and the coords paint draws at");
+        assert_eq!(coords_at(&shape(&[(b"opsz", 99.0)]), 0), coords_at(&display, 0), "clamped to the face's range");
+        assert_eq!(coords_at(&shape(&[(b"ABCD", 3.0)]), 0), weight(400.0), "an axis the face lacks is ignored");
+        let wght =
+            inter(ShapeRequest { font_weight: 700.0, variations: axes(&[(b"wght", 400.0)]), ..req("Mantle", 20.0) });
+        assert_eq!(coords_at(&wght, 0), weight(400.0), "an explicit `wght` beats `font_weight`");
     }
 
     #[test]
@@ -999,17 +1015,7 @@ mod tests {
     fn each_line_range_slices_the_source_to_exactly_that_line() {
         let handle = ShapingHandle::spawn();
         let text = "first paragraph that wraps\nsecond";
-        let result = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: text.into(),
-            font_size: 14.0,
-            line_height: line_height(14.0),
-            max_width: Some(90.0),
-            runs: Vec::new(),
-            font: None,
-        });
+        let result = handle.shape(ShapeRequest { max_width: Some(90.0), ..req(text, 14.0) });
         assert_eq!(result.lines.len(), result.line_ranges.len());
         assert!(result.lines.len() >= 3, "the first paragraph wraps and the second is its own line");
         for (line, range) in result.lines.iter().zip(result.line_ranges.iter()) {
@@ -1055,65 +1061,14 @@ mod tests {
         let handle = ShapingHandle::spawn();
         handle.shape(req("abc", 13.0));
         for (label, request) in [
-            (
-                "text",
-                ShapeRequest {
-                    letter_spacing: 0.0,
-                    font_weight: 400.0,
-                    italic: false,
-                    text: "abd".into(),
-                    font_size: 13.0,
-                    line_height: 15.6,
-                    max_width: None,
-                    runs: Vec::new(),
-                    font: None,
-                },
-            ),
-            (
-                "font_size",
-                ShapeRequest {
-                    letter_spacing: 0.0,
-                    font_weight: 400.0,
-                    italic: false,
-                    text: "abc".into(),
-                    font_size: 26.0,
-                    line_height: 15.6,
-                    max_width: None,
-                    runs: Vec::new(),
-                    font: None,
-                },
-            ),
-            (
-                "line_height",
-                ShapeRequest {
-                    letter_spacing: 0.0,
-                    font_weight: 400.0,
-                    italic: false,
-                    text: "abc".into(),
-                    font_size: 13.0,
-                    line_height: 40.0,
-                    max_width: None,
-                    runs: Vec::new(),
-                    font: None,
-                },
-            ),
-            (
-                "max_width",
-                ShapeRequest {
-                    letter_spacing: 0.0,
-                    font_weight: 400.0,
-                    italic: false,
-                    text: "abc".into(),
-                    font_size: 13.0,
-                    line_height: 15.6,
-                    max_width: Some(10.0),
-                    runs: Vec::new(),
-                    font: None,
-                },
-            ),
+            ("text", ShapeRequest { text: "abd".into(), ..req("abc", 13.0) }),
+            ("font_size", ShapeRequest { font_size: 26.0, ..req("abc", 13.0) }),
+            ("line_height", ShapeRequest { line_height: 40.0, ..req("abc", 13.0) }),
+            ("max_width", ShapeRequest { max_width: Some(10.0), ..req("abc", 13.0) }),
             ("letter_spacing", ShapeRequest { letter_spacing: 2.0, ..req("abc", 13.0) }),
             ("font_weight", ShapeRequest { font_weight: 700.0, ..req("abc", 13.0) }),
             ("italic", ShapeRequest { italic: true, ..req("abc", 13.0) }),
+            ("variations", ShapeRequest { variations: axes(&[(b"FILL", 1.0)]), ..req("abc", 13.0) }),
         ] {
             let before = handle.cached_len();
             handle.shape(request);
@@ -1162,17 +1117,7 @@ mod tests {
     #[test]
     fn shapes_nonempty_text_to_a_nonzero_box() {
         let handle = ShapingHandle::spawn();
-        let result = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle".into(),
-            font_size: 14.0,
-            line_height: 18.0,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        });
+        let result = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle", 14.0) });
         assert!(result.width > 0.0, "expected nonzero width, got {}", result.width);
         assert_eq!(result.height, 18.0);
     }
@@ -1180,45 +1125,15 @@ mod tests {
     #[test]
     fn empty_text_measures_to_zero_width() {
         let handle = ShapingHandle::spawn();
-        let result = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: String::new(),
-            font_size: 14.0,
-            line_height: 18.0,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        });
+        let result = handle.shape(ShapeRequest { line_height: 18.0, ..req("", 14.0) });
         assert_eq!(result.width, 0.0);
     }
 
     #[test]
     fn longer_text_measures_wider_than_shorter_text() {
         let handle = ShapingHandle::spawn();
-        let short = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "O".into(),
-            font_size: 14.0,
-            line_height: 18.0,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        });
-        let long = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle Engine".into(),
-            font_size: 14.0,
-            line_height: 18.0,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        });
+        let short = handle.shape(ShapeRequest { line_height: 18.0, ..req("O", 14.0) });
+        let long = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle Engine", 14.0) });
         assert!(long.width > short.width);
     }
 
@@ -1287,17 +1202,7 @@ mod tests {
         let unconstrained = handle.shape(req(TEXT, 14.0));
         assert_eq!(&*unconstrained.lines, [TEXT], "an unwrapped string is one line holding all of it");
 
-        let wrapped = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: TEXT.into(),
-            font_size: 14.0,
-            line_height: line_height(14.0),
-            max_width: Some(unconstrained.width / 2.0),
-            runs: Vec::new(),
-            font: None,
-        });
+        let wrapped = handle.shape(ShapeRequest { max_width: Some(unconstrained.width / 2.0), ..req(TEXT, 14.0) });
         assert!(wrapped.lines.len() > 1, "expected a break, got {:?}", wrapped.lines);
         assert_eq!(
             wrapped.lines.join(" "),
@@ -1313,15 +1218,9 @@ mod tests {
     fn the_measured_height_is_the_lines_it_reports() {
         let handle = ShapingHandle::spawn();
         let result = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle Engine Renderer".into(),
-            font_size: 14.0,
             line_height: 18.0,
             max_width: Some(40.0),
-            runs: Vec::new(),
-            font: None,
+            ..req("Mantle Engine Renderer", 14.0)
         });
         assert_eq!(result.height, result.lines.len() as f32 * 18.0);
     }
@@ -1338,27 +1237,11 @@ mod tests {
     #[test]
     fn a_max_width_narrower_than_the_unconstrained_text_wraps_to_more_lines() {
         let handle = ShapingHandle::spawn();
-        let unconstrained = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle Engine Renderer".into(),
-            font_size: 14.0,
-            line_height: 18.0,
-            max_width: None,
-            runs: Vec::new(),
-            font: None,
-        });
+        let unconstrained = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle Engine Renderer", 14.0) });
         let wrapped = handle.shape(ShapeRequest {
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            text: "Mantle Engine Renderer".into(),
-            font_size: 14.0,
             line_height: 18.0,
             max_width: Some(unconstrained.width / 2.0),
-            runs: Vec::new(),
-            font: None,
+            ..req("Mantle Engine Renderer", 14.0)
         });
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
