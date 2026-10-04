@@ -146,14 +146,16 @@ spelled!(Animatable => format!(
 ));
 
 impl Animatable {
-    /// `property`'s value when it is not set, in this value's shape: `1` for `opacity` and
-    /// `scale`, `0` otherwise, per axis or edge for a table. A percent or a colour has no identity
+    /// `property`'s value when it is not set, in this value's shape: `1` for `opacity`, `trim_end`
+    /// and `scale`, `0` otherwise, per axis or edge for a table. A percent or a colour has no identity
     /// to speak of and stays where it is.
     fn identity(&self, property: &str) -> Self {
         match *self {
             // No empty drawing has this one's ops to tween from.
             Self::Path(_) => self.clone(),
-            Self::Number(_) => Self::Number(if property == "opacity" { 1.0 } else { axis_default(property) }),
+            Self::Number(_) => {
+                Self::Number(if matches!(property, "opacity" | "trim_end") { 1.0 } else { axis_default(property) })
+            }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
@@ -544,6 +546,8 @@ const PAINT_ONLY: &[&str] = &[
     "fill",
     "stroke",
     "stroke_width",
+    "trim_start",
+    "trim_end",
     "radius",
     "shadow_color",
     "shadow_blur",
@@ -858,6 +862,11 @@ mod tests {
         assert_eq!(started["width"].from, Animatable::Number(40.0), "the displayed width");
         assert_eq!(started["opacity"].from, Animatable::Number(1.0), "an absent opacity is opaque");
         assert_eq!(started["opacity"].to, Animatable::Number(0.0));
+        let table = lua.load("return { kind = 'path', animate = { exit = { duration = 100, trim_end = 0 } } }");
+        let mut path = crate::layout::node::props_from_table(&table.eval().unwrap());
+        let mut trims = Vec::new();
+        assert!(depart("path", &mut trims, &mut path, now, &lua).unwrap());
+        assert_eq!(trims[0].from, Animatable::Number(1.0), "an absent trim_end strokes the whole path");
 
         // Nothing to ease: the caller drops the node instead of holding it for a frame.
         let mut nothing = rect_props(&lua, "return { width = 40 }");

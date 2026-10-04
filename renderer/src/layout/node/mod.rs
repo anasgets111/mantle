@@ -12,7 +12,7 @@ mod paint_style;
 mod vector_path;
 #[cfg(test)]
 pub(crate) use vector_path::PathCommand;
-pub(crate) use vector_path::{PathCommands, PathData, PathOp, VectorPath, tweened};
+pub(crate) use vector_path::{PathCommands, PathData, PathOp, StrokeCap, StrokeJoin, VectorPath, tweened};
 pub(crate) mod prop;
 mod spec;
 mod style;

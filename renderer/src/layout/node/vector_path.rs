@@ -11,6 +11,16 @@ keywords! {
     pub enum PathOp { M = "M", L = "L", Q = "Q", C = "C", A = "A", Z = "Z" }
 }
 
+keywords! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum StrokeCap { Butt, Round, Square }
+}
+
+keywords! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum StrokeJoin { Miter, Round, Bevel }
+}
+
 lua_shape! {
     /// Node-local logical pixels. Q has one control point, C has two, then the endpoint. A is
     /// centre x, centre y, radius, start and sweep in degrees clockwise from the +x axis. `hole`
@@ -127,6 +137,10 @@ pub struct VectorPath {
     pub fill: Option<super::Fill>,
     pub stroke: Option<super::Fill>,
     pub stroke_width: f32,
+    pub stroke_cap: StrokeCap,
+    pub stroke_join: StrokeJoin,
+    /// `trim_start` and `trim_end`: the stroked fraction of the path's whole length.
+    pub trim: (f32, f32),
 }
 
 pub(crate) struct PathCommands;
@@ -255,5 +269,25 @@ mod tests {
             parse("(function() local a={} for i=1,4096 do a[i]={op='M',points={-8192,8192}} end return a end)()")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn stroke_caps_joins_and_trims_parse_and_refuse_out_of_range() {
+        let lua = mlua::Lua::new();
+        let style = |fields: &str| -> Result<_, LayoutError> {
+            let table: Table = lua.load(format!("return {{ kind = 'path', {fields} }}")).eval().unwrap();
+            match super::super::paint_style("path", &super::super::props_from_table(&table))? {
+                Some(super::super::PaintStyle::Path(path)) => Ok((path.stroke_cap, path.stroke_join, path.trim)),
+                other => panic!("a path paints, got {other:?}"),
+            }
+        };
+        assert_eq!(style("").unwrap(), (StrokeCap::Butt, StrokeJoin::Miter, (0.0, 1.0)));
+        assert_eq!(
+            style("stroke_cap = 'round', stroke_join = 'bevel', trim_start = 0.25, trim_end = 0.5").unwrap(),
+            (StrokeCap::Round, StrokeJoin::Bevel, (0.25, 0.5))
+        );
+        for bad in ["stroke_cap = 'rounded'", "stroke_join = 1", "trim_start = -0.1", "trim_end = 1.5"] {
+            assert!(style(bad).is_err(), "accepted {bad}");
+        }
     }
 }

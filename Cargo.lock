@@ -2165,6 +2165,7 @@ dependencies = [
  "image",
  "indexmap",
  "khronos-egl",
+ "kurbo",
  "libc",
  "material-colors",
  "md5",

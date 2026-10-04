@@ -1,15 +1,16 @@
 //! Vector leaves use the same fills, canvas state and subtree effects as box paint.
 use super::shape::fill_paint;
-use crate::layout::node::{PathOp, VectorPath};
+use crate::layout::node::{PathOp, StrokeCap, StrokeJoin, VectorPath};
 use crate::text::snap::LogicalRect;
 use std::f32::consts::FRAC_PI_2;
 
-use femtovg::{Canvas, Path, Solidity, renderer::OpenGl};
+use femtovg::{Canvas, LineCap, LineJoin, Path, Solidity, Verb, renderer::OpenGl};
+use kurbo::{CubicBez, Line, ParamCurve, ParamCurveArclen, PathSeg, Point};
 
 pub(super) fn paint(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    VectorPath { commands, fill, stroke, stroke_width }: &VectorPath,
+    VectorPath { commands, fill, stroke, stroke_width, stroke_cap, stroke_join, trim }: &VectorPath,
 ) {
     if rect.is_empty() || commands.segments.is_empty() {
         return;
@@ -85,8 +86,75 @@ pub(super) fn paint(
     if let Some(stroke) = stroke.as_ref().filter(|_| *stroke_width > 0.0) {
         let mut paint = fill_paint(stroke, rect);
         paint.set_line_width(*stroke_width);
-        canvas.stroke_path(&path, &paint);
+        paint.set_line_cap(match stroke_cap {
+            StrokeCap::Butt => LineCap::Butt,
+            StrokeCap::Round => LineCap::Round,
+            StrokeCap::Square => LineCap::Square,
+        });
+        paint.set_line_join(match stroke_join {
+            StrokeJoin::Miter => LineJoin::Miter,
+            StrokeJoin::Round => LineJoin::Round,
+            StrokeJoin::Bevel => LineJoin::Bevel,
+        });
+        if *trim == (0.0, 1.0) {
+            canvas.stroke_path(&path, &paint);
+        } else if trim.0 < trim.1 {
+            canvas.stroke_path(&trimmed(&path, *trim), &paint);
+        }
     }
+}
+
+/// The part of `path` from `start` to `end` of its whole length, closing segments included. A
+/// subpath kept whole ends where it began, which femtovg strokes as closed.
+fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
+    const ACCURACY: f64 = 0.01;
+    let point = |x: f32, y: f32| Point::new(x.into(), y.into());
+    // Each segment, whether it begins its subpath, and its length.
+    let mut segments = Vec::new();
+    let (mut pen, mut first, mut begins) = (Point::ZERO, Point::ZERO, false);
+    for verb in path.verbs() {
+        let segment = match verb {
+            Verb::MoveTo(x, y) => {
+                (pen, first, begins) = (point(x, y), point(x, y), true);
+                continue;
+            }
+            Verb::LineTo(x, y) => PathSeg::Line(Line::new(pen, point(x, y))),
+            Verb::BezierTo(ax, ay, bx, by, x, y) => {
+                PathSeg::Cubic(CubicBez::new(pen, point(ax, ay), point(bx, by), point(x, y)))
+            }
+            Verb::Close => PathSeg::Line(Line::new(pen, first)),
+            Verb::Solid | Verb::Hole => continue,
+        };
+        segments.push((segment, begins, segment.arclen(ACCURACY)));
+        (pen, begins) = (segment.end(), false);
+    }
+    let total: f64 = segments.iter().map(|s| s.2).sum();
+    let (from, to) = (f64::from(start) * total, f64::from(end) * total);
+    let mut out = Path::new();
+    // Where this segment begins along the path, and whether `out` continues at the pen.
+    let (mut at, mut drawing) = (0.0, false);
+    let p = |p: Point| (p.x as f32, p.y as f32);
+    for (segment, begins, length) in segments {
+        drawing &= !begins;
+        let (a, b) = (from.max(at) - at, to.min(at + length) - at);
+        at += length;
+        if a < b {
+            let part = segment.subsegment(segment.inv_arclen(a, ACCURACY)..segment.inv_arclen(b, ACCURACY));
+            if !drawing {
+                let (x, y) = p(part.start());
+                out.move_to(x, y);
+                drawing = true;
+            }
+            if let PathSeg::Cubic(c) = part {
+                let ((ax, ay), (bx, by), (x, y)) = (p(c.p1), p(c.p2), p(c.p3));
+                out.bezier_to(ax, ay, bx, by, x, y);
+            } else {
+                let (x, y) = p(part.end());
+                out.line_to(x, y);
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -130,6 +198,51 @@ mod tests {
             let px = paint_points(&src, &[(16, 16), (15, 16)]).expect("headless EGL required");
             assert!(px.iter().all(|p| p.3 == 0), "{commands}: {px:?}");
         }
+    }
+
+    #[test]
+    fn strokes_take_caps_and_joins() {
+        // Width 8, from (16,48) up to a corner at (16,16): (12,12) is inside a miter's square
+        // corner only, (14,50) inside a round or square cap, (12,51) inside a square cap only.
+        for (style, expect) in [
+            ("", [255, 0, 0]),
+            ("stroke_cap='round',stroke_join='round',", [0, 255, 0]),
+            ("stroke_cap='square',stroke_join='bevel',", [0, 255, 255]),
+        ] {
+            let src = format!(
+                r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=8,{style}commands={{
+                {{op='M',points={{16,48}}}},{{op='L',points={{16,16}}}},{{op='L',points={{48,16}}}}
+            }} }}"##
+            );
+            let px = paint_points(&src, &[(12, 12), (14, 50), (12, 51)]).expect("headless EGL required");
+            assert_eq!([px[0].3, px[1].3, px[2].3], expect, "{style}: {px:?}");
+        }
+    }
+
+    #[test]
+    fn trims_stroke_a_fraction_of_the_whole_path_closing_segments_included() {
+        let square = "{op='M',points={16,16}},{op='L',points={48,16}},{op='L',points={48,48}},{op='L',points={16,48}},{op='Z',points={}}";
+        // Top, right, bottom, then the closing left side: 32 of the 128 px each.
+        for (trim, expect) in [
+            ("trim_end=0.5", [255, 255, 255, 0, 0]),
+            ("trim_end=0.125", [255, 0, 0, 0, 0]),
+            ("trim_start=0.75", [0, 0, 0, 0, 255]),
+            ("trim_start=0.5,trim_end=0.5", [0, 0, 0, 0, 0]),
+        ] {
+            let src = format!(
+                r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=4,{trim},commands={{{square}}} }}"##
+            );
+            let px =
+                paint_points(&src, &[(24, 16), (40, 16), (48, 32), (32, 48), (16, 32)]).expect("headless EGL required");
+            assert_eq!(px.iter().map(|p| p.3).collect::<Vec<_>>(), expect, "{trim}: {px:?}");
+        }
+        // The length runs on across subpaths: three quarters is all of the first and half the second.
+        let src = r##"path { width=64,height=64,stroke='#ffffff',stroke_width=4,trim_end=0.75,commands={
+            {op='M',points={8,8}},{op='L',points={24,8}},{op='L',points={24,24}},{op='L',points={8,24}},{op='Z',points={}},
+            {op='A',points={48,48,8,0,360}}
+        } }"##;
+        let px = paint_points(src, &[(8, 16), (53, 53), (48, 56), (40, 48), (48, 40)]).expect("headless EGL required");
+        assert_eq!(px.iter().map(|p| p.3).collect::<Vec<_>>(), [255, 255, 255, 0, 0], "{px:?}");
     }
 
     #[test]

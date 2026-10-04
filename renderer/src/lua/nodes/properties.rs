@@ -22,7 +22,7 @@ use crate::layout::node::{
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
     LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands,
     PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode,
-    TextAlign, TransitionSpec, Wrap,
+    StrokeCap, StrokeJoin, TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -472,10 +472,18 @@ props! {
         commands: Bound<PathCommands> = absent(Lua("{}"));
         /// Fill colour or gradient across the node box. Open subpaths close for filling.
         fill: Bound<Fill>;
-        /// Stroke colour or gradient across the node box. Butt caps and miter joins.
+        /// Stroke colour or gradient across the node box.
         stroke: Bound<Fill>;
         /// Stroke width in logical pixels; centered on the path.
         stroke_width: Bound<Num> = range(0.0, 8192.0).absent(Number(1.0));
+        /// How each open stroke end, trimmed ones included, finishes.
+        stroke_cap: Bound<OneOf<StrokeCap>> = absent(Choice("butt"));
+        /// How stroked segments meet at a corner.
+        stroke_join: Bound<OneOf<StrokeJoin>> = absent(Choice("miter"));
+        /// Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed.
+        trim_start: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
+        /// Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke.
+        trim_end: Bound<Num> = range(0.0, 1.0).absent(Number(1.0));
     }
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.

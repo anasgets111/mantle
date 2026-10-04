@@ -9,8 +9,12 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 | :--- | :--- | :--- | :--- |
 | `commands` | `PathCommand[]\|Bound` | `{}` | Up to 4096 commands. Each has op M/L/Q/C/A/Z and points containing 2/2/4/6/5/0 numbers. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite |
 | `fill` | `Color\|Gradient\|Bound` | None | Fill colour or gradient across the node box. Open subpaths close for filling |
-| `stroke` | `Color\|Gradient\|Bound` | None | Stroke colour or gradient across the node box. Butt caps and miter joins |
+| `stroke` | `Color\|Gradient\|Bound` | None | Stroke colour or gradient across the node box |
 | `stroke_width` | `number\|Bound`, `[0, 8192]` | `1` | Stroke width in logical pixels; centered on the path |
+| `stroke_cap` | `"butt"\|"round"\|"square"\|Bound` | `"butt"` | How each open stroke end, trimmed ones included, finishes |
+| `stroke_join` | `"miter"\|"round"\|"bevel"\|Bound` | `"miter"` | How stroked segments meet at a corner |
+| `trim_start` | `number\|Bound`, `[0, 1]` | `0` | Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed |
+| `trim_end` | `number\|Bound`, `[0, 1]` | `1` | Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke |
 <!-- End of the generated table. -->
 
 Each command has `op` and `points`. `M` moves, `L` draws a line, `Q` takes a control point and
@@ -29,9 +33,9 @@ command that begins a subpath to cut it out of the fill instead. Each solid subp
 each hole -1 at a point, and any count but 0 paints: a hole outside every solid subpath, or two
 holes overlapping inside one, fills.
 
-Strokes use butt caps and miter joins. Open paths close for filling. The layout box does not grow
-to include strokes; leave padding inside it. Ancestor clipping, masks, opacity, transforms,
-shadows and content blur use the existing paint pipeline.
+`stroke_cap` shapes open stroke ends and `stroke_join` the corners. Open paths close for
+filling. The layout box does not grow to include strokes; leave padding inside it. Ancestor
+clipping, masks, opacity, transforms, shadows and content blur use the existing paint pipeline.
 
 A painted path claims its whole box for input, not the drawn shape; an unpainted one is
 click-through unless it has a pointer handler ([input region](../surfaces/index.md#input-region)).
@@ -105,6 +109,26 @@ return row {
             },
         },
     },
+}
+```
+
+`trim_start` and `trim_end` stroke only part of the path, as fractions of its whole length:
+every subpath in order, a `Z`'s closing line included. The fill stays whole. Animate `trim_end`
+to grow an arc along a fixed path instead of morphing its commands; with round caps this is a
+progress indicator:
+
+```lua
+local value = state("download", 0.4)
+
+return path {
+    width = 48,
+    height = 48,
+    stroke = "#89b4fa",
+    stroke_width = 4,
+    stroke_cap = "round",
+    trim_end = value,
+    commands = { { op = "A", points = { 24, 24, 20, -90, 360 } } },
+    animate = { trim_end = { duration = 300, easing = "out_cubic" } },
 }
 ```
 

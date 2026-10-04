@@ -158,6 +158,9 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             fill: path::fill.read(properties)?,
             stroke: path::stroke.read(properties)?,
             stroke_width: path::stroke_width.read(properties)?,
+            stroke_cap: path::stroke_cap.read(properties)?,
+            stroke_join: path::stroke_join.read(properties)?,
+            trim: (path::trim_start.read(properties)?, path::trim_end.read(properties)?),
         }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;

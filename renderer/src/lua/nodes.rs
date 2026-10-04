@@ -667,7 +667,7 @@ mod meta_stub_tests {
     /// `border_color`'s `Edges` holds colors while `margin`'s holds lengths.
     fn sample(field: &str, ty: &str) -> Option<String> {
         match (field, ty) {
-            ("opacity", _) => return Some("0.5".to_string()),
+            ("opacity" | "trim_start" | "trim_end", _) => return Some("0.5".to_string()),
             ("animate", ty) if ty.ends_with("Animations") => return Some("{ opacity = 200.5 }".to_string()),
             ("scale", "Axes") | ("translate" | "shadow_offset", _) => return Some("{ x = 1, y = 2 }".to_string()),
             ("scale", _) => return Some("1.5".to_string()),

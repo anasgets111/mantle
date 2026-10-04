@@ -413,6 +413,9 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             fill: path.fill.as_ref().map(|fill| fade_fill(fill, opacity)),
             stroke: path.stroke.as_ref().map(|fill| fade_fill(fill, opacity)),
             stroke_width: path.stroke_width,
+            stroke_cap: path.stroke_cap,
+            stroke_join: path.stroke_join,
+            trim: path.trim,
         })),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
