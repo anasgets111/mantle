@@ -7680,10 +7680,11 @@ Replaces the movement-only offset in `layout/paint/build.rs` and `layout/region.
 
 1. **Mapped back, not carried along.** A transformed node's group matrix moves everything inside
    it, so the ancestors' clip enters the group through the inverse of that matrix, in paint and in
-   blur regions alike. A child that translates, scales or rotates past its parent is cut at the
-   parent's box, as hit testing already treated it.
+   blur regions alike. A child that translates, scales or rotates past a clipping parent is cut at
+   the parent's box, as hit testing already treated it.
 2. **Overflow by transform is opt-in.** Hover scale-ups, overshooting easings and slide-outs that
-   should spill set `clip = "none"` on the parent; the docs' own examples did.
+   should spill set `clip = "none"` on the parent; the docs' own examples did. Superseded by
+   ADR-0328: boxes no longer clip by default, so overflow is the default and cutting is opt-in.
 3. **Exact at the edge.** The group command keeps the outer clip, and the canvas intersects each
    scissor inside the group with it, so a child scaled 6x is cut on the parent's pixel edge. The
    clip mapped into the group stays for culling and layer bounds, rounded out to whole pixels.
