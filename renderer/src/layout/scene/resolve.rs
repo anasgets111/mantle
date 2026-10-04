@@ -28,6 +28,8 @@ pub struct ResolveMemo {
     cells: Vec<CellId>,
     /// A value was dropped: never kept, so every pass reports it until it is fixed.
     dropped: bool,
+    /// No table property held a signal when `raw` was declared ([`node::tables_plain`]).
+    tables_plain: bool,
 }
 
 /// One node's properties for this pass, displayed values and parse included, and the memo they
@@ -58,13 +60,18 @@ pub(super) fn resolve(
     if let Some(slot) = node::signal_at(&raw, "scroll").and_then(|signal| signal.cell_id()) {
         signal::note_reads(lua, &[slot]);
     }
+    let same = retained
+        .as_deref()
+        .and_then(|r| r.resolve_memo.as_deref())
+        .filter(|memo| memo.lua == lua.weak() && same_declaration(&memo.raw, &raw));
+    let tables_plain = same.map_or_else(|| node::tables_plain(&raw), |memo| memo.tables_plain);
     let keep = if let Some(memo) = retained.as_deref().and_then(|r| r.resolve_memo.as_ref())
         && memo.lua == lua.weak()
         && !memo.dropped
         && same_declaration(&memo.raw, &raw)
     {
         if signal::written_since(memo.stamp, &memo.cells) {
-            node::settle_property_signals(&raw, kind, lua)?;
+            node::settle_property_signals(&raw, kind, tables_plain, lua)?;
         }
         !signal::written_since(memo.stamp, &memo.cells)
     } else {
@@ -91,11 +98,11 @@ pub(super) fn resolve(
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
-    let mut properties = build(node::resolve_properties(raw.clone(), kind, lua)?)?;
+    let mut properties = build(node::resolve_declared(raw.clone(), kind, tables_plain, lua)?)?;
     let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
     let properties = Rc::new(properties);
-    let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped });
+    let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain });
     let paint = node::paint_style(kind, &properties)?;
     let style = LayoutStyle::parse(&properties)?;
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
@@ -353,6 +360,31 @@ mod tests {
         assert!(std::rc::Rc::ptr_eq(&before, bar.child(0).resolve_memo.as_ref().unwrap()), "kept");
         bar.run("gap:set(4)");
         assert_eq!(bar.child(0).margin.left, 4.0);
+    }
+
+    /// A same-declaration re-resolve keeps the verdict that its tables held no signal, so a signal put
+    /// into one in place is refused by the parser instead of read; a new declaration is scanned again.
+    #[test]
+    fn a_re_resolve_of_one_declaration_does_not_scan_its_tables_again() {
+        let source = |margin: &str| {
+            format!(
+                r##"gap = state("gap", 7)
+                accent = state("accent", "#101010")
+                m = {{ left = 2 }}
+                return panel {{ id = "bar", child = column {{ children = {{
+                    rect {{ width = 10, height = 10, background = accent, margin = {margin} }} }} }} }}"##
+            )
+        };
+        let mut bar = Fixture::new(&source("m"));
+        assert_eq!(bar.child(0).margin.left, 2.0);
+        bar.lua.load(r##"m.left = gap; accent:set("#303030")"##).exec().unwrap();
+        let err = bar.apply().unwrap_err().to_string();
+        assert!(err.contains("margin"), "the in-place signal is refused loudly: {err}");
+
+        let mut bar = Fixture::new(&source("{ left = gap }"));
+        assert_eq!(bar.child(0).margin.left, 7.0);
+        bar.run(r##"accent:set("#303030")"##);
+        assert_eq!(bar.child(0).margin.left, 7.0, "a new declaration with a signal resolves it");
     }
 
     /// A kept node keeps its parse too: the edge table's `__index` runs on the first pass only.

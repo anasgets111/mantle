@@ -447,7 +447,7 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
     Ok(Rgba { r: channel(0..2), g: channel(2..4), b: channel(4..6), a })
 }
 
-/// Whether `property` is one [`resolve_properties`] copies through untouched on a node of this
+/// Whether `property` is one [`resolve_declared`] copies through untouched on a node of this
 /// `kind`: its field's type reads it raw ([`prop::Prop::RAW`]), so
 /// [`reject_signal_in_structural_field`] still sees a signal to refuse and a [`prop::Handle`] keeps
 /// the signal it names. Resolving then rejecting is unimplementable: once read, a signal's value is
@@ -490,8 +490,20 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
 /// properties remain untouched in the map. When no signal is present, at the top level or in a
 /// table, resolution completes in place with no allocations or sorting.
-pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
-    if holds_signals(&properties) {
+#[cfg(test)]
+pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
+    resolve_declared(properties, kind, false, lua)
+}
+
+/// Resolves `properties` as the scan above describes; `tables_plain` (see [`tables_plain`]) vouches
+/// that the walked tables hold no signal, so they are not scanned again.
+pub(crate) fn resolve_declared(
+    mut properties: PropMap,
+    kind: &str,
+    tables_plain: bool,
+    lua: &Lua,
+) -> Result<PropMap, LayoutError> {
+    if holds_signals(&properties, tables_plain) {
         // Sorted, and the sort is the point: unsorted, two failing properties on one node name
         // whichever bucket the hasher put first. `renderer/src/socket/client/resolve.rs` puts this message in the
         // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
@@ -510,7 +522,7 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
                 }
                 continue;
             }
-            match resolved_value(&properties, kind, property, lua)? {
+            match resolved_value(&properties, kind, property, tables_plain, lua)? {
                 Some(Value::Nil) => properties.remove(property),
                 Some(value) => properties.insert(property, value),
                 None => continue,
@@ -551,15 +563,20 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
 }
 
 /// Settle derived property outputs before a retained node checks whether its reads changed.
-pub(crate) fn settle_property_signals(properties: &PropMap, kind: &str, lua: &Lua) -> Result<(), LayoutError> {
-    if !holds_signals(properties) {
+pub(crate) fn settle_property_signals(
+    properties: &PropMap,
+    kind: &str,
+    tables_plain: bool,
+    lua: &Lua,
+) -> Result<(), LayoutError> {
+    if !holds_signals(properties, tables_plain) {
         return Ok(());
     }
     let mut keys: Vec<_> = properties.keys().copied().collect();
     keys.sort_unstable();
     for property in keys {
         if !is_structural_property(kind, property) {
-            resolved_value(properties, kind, property, lua)?;
+            resolved_value(properties, kind, property, tables_plain, lua)?;
         }
     }
     Ok(())
@@ -584,16 +601,24 @@ fn walked_table<'a>(property: &str, value: &'a Value) -> Option<&'a mlua::Table>
     }
 }
 
-/// Whether any property holds a userdata, or a walked table may hold a signal.
-fn holds_signals(properties: &PropMap) -> bool {
+/// Whether no walked table of `properties` may hold a signal. The resolve memo keeps the answer
+/// while its declaration holds; a signal put into a table afterwards is not seen, and the parser
+/// refuses it.
+pub(crate) fn tables_plain(properties: &PropMap) -> bool {
+    !properties.iter().any(|(property, value)| walked_table(property, value).is_some_and(may_hold_signal))
+}
+
+/// Whether any property holds a userdata, or (unless `tables_plain`) a walked table may hold a signal.
+fn holds_signals(properties: &PropMap, tables_plain: bool) -> bool {
     properties.iter().any(|(property, value)| {
-        matches!(value, Value::UserData(_)) || walked_table(property, value).is_some_and(may_hold_signal)
+        matches!(value, Value::UserData(_))
+            || !tables_plain && walked_table(property, value).is_some_and(may_hold_signal)
     })
 }
 
 /// Whether a walk of `table` may find a signal, scanned without allocating; a scan past
 /// [`SCAN_TABLES`] says yes and leaves the answer to the walk.
-/// ponytail: each scanned value goes through mlua (~70 ns), 1.8 µs for a five-table node. Upgrade: keep the verdict on the resolve memo.
+/// ponytail: each scanned value goes through mlua (~70 ns), 1.8 µs for a five-table node, paid on a new declaration. Upgrade: a raw lua_next scan.
 fn may_hold_signal(table: &mlua::Table) -> bool {
     fn scan(table: &mlua::Table, path: &mut TablePath, depth: usize, budget: &mut usize) -> bool {
         let at = table.to_pointer();
@@ -616,9 +641,15 @@ fn may_hold_signal(table: &mlua::Table) -> bool {
 
 /// `property`'s value with its signals read, top level or nested; `Some(Nil)` makes it absent and
 /// `None` means it holds no signal.
-fn resolved_value(properties: &PropMap, kind: &str, property: &str, lua: &Lua) -> Result<Option<Value>, LayoutError> {
+fn resolved_value(
+    properties: &PropMap,
+    kind: &str,
+    property: &str,
+    tables_plain: bool,
+    lua: &Lua,
+) -> Result<Option<Value>, LayoutError> {
     let value = &properties[property];
-    if let Some(table) = walked_table(property, value).filter(|table| may_hold_signal(table)) {
+    if let Some(table) = walked_table(property, value).filter(|table| !tables_plain && may_hold_signal(table)) {
         let mut path = [std::ptr::null(); NESTED_SIGNAL_DEPTH];
         let walked = resolve_nested(table, kind, 0, &mut path, &mut Default::default(), lua);
         return Ok(walked.map_err(|e| e.under(property))?.map(Value::Table));
@@ -729,7 +760,7 @@ fn resolve_signal(
 /// `pair_children_by_id_then_position`'s reconcile identity, matched once per `Scene::apply` to
 /// pair a fresh child against its retained counterpart; a later-changing value would make "the
 /// same node as last time" ambiguous. ADR-0044 decision 1 leaves both out: a gap, not a rejected
-/// case. This only works because [`resolve_properties`] passes the keys
+/// case. This only works because [`resolve_declared`] passes the keys
 /// [`is_structural_property`] names through raw: these fields alone read the un-resolved value,
 /// since a resolved signal is indistinguishable from a literal by the time it reaches a map.
 fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<(), LayoutError> {

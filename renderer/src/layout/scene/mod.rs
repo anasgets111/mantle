@@ -157,7 +157,7 @@ pub(crate) struct LayoutStyle {
 
 impl LayoutStyle {
     /// The one parse of one node's geometry for one pass. `properties` must already be a
-    /// [`node::resolve_properties`] result: this reads values, it does not resolve signals.
+    /// [`node::resolve_declared`] result: this reads values, it does not resolve signals.
     fn parse(properties: &PropMap) -> Result<Self, LayoutError> {
         // Validated and not kept: the pointer path reads the name back off `properties` when it
         // needs it (`layout::hit::cursor_under`), and a pass is the place a misspelling fails.

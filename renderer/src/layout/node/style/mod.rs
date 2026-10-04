@@ -39,7 +39,7 @@ pub(super) fn parse_percent(s: &str) -> Option<f32> {
 spelled!(SizeMode => "Length");
 
 /// `width`/`height`: pixels within the row's range (ADR-0021), `"fill"`, or `"NN%"`. The map is a
-/// [`resolve_properties`] result, so absent covers both omission and a signal resolving to `nil`.
+/// [`super::resolve_declared`] result, so absent covers both omission and a signal resolving to `nil`.
 impl Prop for SizeMode {
     type Out = SizeMode;
     fn read(row: &Property, value: Option<&Value>) -> Result<SizeMode, LayoutError> {

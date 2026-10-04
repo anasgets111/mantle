@@ -7746,9 +7746,11 @@ Amends ADR-0044 §1 and ADR-0145 §1, and the refusal in `layout/node/input.rs`.
    plain.
 6. **No holes.** A signal inside an array that reads nil is refused by its path rather than
    compacted, since a hole would shift every later entry.
-7. **Signal-free tables are found by a raw scan** that allocates nothing. Its per-value mlua
-   conversion, about 1.8 µs for a five-table node on a resolve miss, is the ceiling; keeping the
-   verdict on the resolve memo would remove it.
+7. **Signal-free tables are scanned once per declaration.** A raw scan that allocates nothing
+   finds them, and the resolve memo keeps its verdict while the declaration holds, so a re-resolve
+   skips it (about 4.4 µs for a five-table node with a gradient). A signal put into a cached
+   signal-free table in place is not read; its parser refuses it. The scan's ceiling is mlua's
+   per-value conversion (~70 ns); the upgrade is a raw `lua_next` scan.
 
 Rejected: resolving in each parser, which would read signals during ticks, outside read tracking,
 and once per parse; and opting in row by row, a second rule for a cost paid only on resolve misses.
