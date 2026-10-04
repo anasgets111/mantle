@@ -489,8 +489,7 @@ pub fn retarget(
 /// interrupted run starts where it was. Returns the size to lay out at, or `None` when the axis
 /// follows its content.
 ///
-/// ponytail: eased motion only. A spring or keyframes entry on a content-sized axis snaps; a
-/// reversal does not shorten its run as `retarget`'s does.
+/// ponytail: eased only (springs and keyframes snap), and a reversal does not shorten its run.
 pub fn retarget_measured(
     kind: &str,
     properties: &PropMap,

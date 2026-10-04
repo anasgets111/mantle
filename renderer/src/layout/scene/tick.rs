@@ -4,6 +4,7 @@ use mlua::{Lua, Value};
 use shared::debug;
 
 use super::pass::{prior_position, publish_geometry, solve_instance};
+use super::resolve::drop_injected_sizes;
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,
     taffy_style, text_measure_tweening, update_solver_node,
@@ -173,6 +174,7 @@ pub(super) fn prepare_retained(
 ) -> Result<PreparedNode, LayoutError> {
     let (parent_axis, _) = parent_flow;
     let prior_position = (move_on_solve && !thawing).then(|| prior_position(&node, tree, parent_flow)).flatten();
+    let prior_size = (move_on_solve && !thawing).then_some((node.rect.width, node.rect.height));
     let old_scroll = node.scrolled;
     if thawing {
         node.movement = None;
@@ -186,6 +188,10 @@ pub(super) fn prepare_retained(
     let text_tweening = text_measure_tweening(node.kind, &node.tweens);
     let changed = node.tweens.iter().any(|tween| !tween.resting);
     node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
+    // A tick keeps the size its running tween pins; a pass measures again.
+    let injected = move_on_solve
+        && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
+    let changed = changed || injected;
     let style = if changed { LayoutStyle::parse(&node.properties)? } else { *node.layout_style };
     let ResolvedNode {
         id,
@@ -238,7 +244,7 @@ pub(super) fn prepare_retained(
         move_spec,
         movement,
         prior_position,
-        prior_size: None,
+        prior_size,
         leaving: Vec::new(),
         list_memo,
         child_table,
@@ -478,54 +484,117 @@ mod tests {
     }
 
     #[test]
-    fn a_content_sized_width_eases_between_measured_sizes_and_moves_its_siblings() {
-        // The pill's child reads `w`, the pill resolves nothing: the content change reaches it
-        // only through layout.
+    fn a_content_sized_width_and_height_ease_between_measured_sizes_and_move_their_parent() {
+        // The pill resolves nothing: its content change reaches it only through layout. The
+        // explicit-width rect inside it must keep its own `width`.
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = row { children = {
-                rect { animate = { width = { duration = 100, easing = "linear" } },
-                    children = { rect { width = state("w", 40), height = 20 } } },
-                rect { width = 10, height = 20 },
-            } } }"#,
+            r#"panel { id = "bar", child = column {
+                animate = { width = { duration = 100, easing = "linear" },
+                            height = { duration = 100, easing = "linear" } },
+                children = {
+                    rect { width = state("w", 40), height = state("h", 20) },
+                    rect { width = 30, height = 5, animate = { width = { duration = 100, easing = "linear" } } },
+                } } }"#,
         );
         let instances = [instance_at(&surface, full())];
         let layout = |scene: &Scene| {
-            let row = &scene.surface("bar@TEST").unwrap().children[0];
-            (row.children[0].rect.width, row.children[1].rect.x)
+            let root = scene.surface("bar@TEST").unwrap();
+            let pill = &root.children[0];
+            (pill.rect.width, pill.rect.height, root.rect.width, pill.children[1].rect.width)
         };
-        let pill_tween = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].clone();
         let ms = std::time::Duration::from_millis;
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(layout(&scene), (40.0, 40.0));
+        assert_eq!(layout(&scene), (40.0, 25.0, 40.0, 30.0));
         assert!(!scene.surface("bar@TEST").unwrap().animating(), "a first layout is taken as it is");
 
-        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        lua.load(r#"state("w", 40):set(90) state("h", 20):set(60)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(layout(&scene), (40.0, 40.0), "the pass starts from the size on screen");
+        assert_eq!(layout(&scene), (40.0, 25.0, 40.0, 30.0), "the pass starts from the size on screen");
         // An unrelated pass keeps the run.
-        let started = pill_tween(&scene).started;
+        let started = child_tween(&scene).started;
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(pill_tween(&scene).started, started);
+        assert_eq!(child_tween(&scene).started, started);
         scene.tick(&instances, &shaping, &lua, started + ms(50));
-        assert_eq!(layout(&scene), (65.0, 65.0), "the sibling follows the eased box");
+        assert_eq!(layout(&scene), (65.0, 45.0, 65.0, 30.0), "the parent follows the eased box");
 
         // A new size starts from where the pill is.
         lua.load(r#"state("w", 40):set(140)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let retargeted = pill_tween(&scene);
+        let retargeted = child_tween(&scene);
         assert_eq!((retargeted.from, retargeted.to), (node::Animatable::Number(65.0), node::Animatable::Number(140.0)));
 
         scene.tick(&instances, &shaping, &lua, retargeted.started + ms(100));
-        assert_eq!(layout(&scene), (140.0, 140.0));
+        assert_eq!(layout(&scene), (140.0, 65.0, 140.0, 30.0));
         assert!(!scene.surface("bar@TEST").unwrap().animating());
 
         // Settled, the pill follows its content again instead of holding the last eased size.
         lua.load(r#"state("w", 40):set(60)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(layout(&scene), (140.0, 140.0));
+        assert_eq!(layout(&scene), (140.0, 65.0, 140.0, 30.0));
         assert!(scene.surface("bar@TEST").unwrap().animating());
+    }
+
+    #[test]
+    fn a_text_whose_content_changes_mid_run_keeps_easing_from_its_size_on_screen() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = text { content = state("t", "a"),
+                animate = { width = { duration = 100, easing = "linear" } } } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        lua.load(r#"state("t", "a"):set("aaaaaaaaaaaa")"#).exec().unwrap();
+        apply(&mut scene);
+        let started = child_tween(&scene).started;
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let shown = child_width(&scene);
+
+        lua.load(r#"state("t", "a"):set("aaaaaaaaaaaaaaaaaaaaaaaa")"#).exec().unwrap();
+        apply(&mut scene);
+        let tween = child_tween(&scene);
+        assert_eq!(tween.from, node::Animatable::Number(shown));
+        assert_ne!(tween.to, node::Animatable::Number(shown));
+        assert_eq!(child_width(&scene), shown);
+    }
+
+    #[test]
+    fn a_reused_list_item_eases_its_content_width_and_drops_the_pin_when_it_settles() {
+        // The item stretches to the column; the list reads nothing the column's width writes,
+        // so every pass past the first reuses it.
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column { width = state("cw", 100), children = {
+                list { width = "fill", source = { "a" }, itemfn = function(name)
+                    return rect { height = 10, align_h = "stretch", animate = { width = { duration = 100, easing = "linear" } } }
+                end } } } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let item = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].children[0].clone();
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let ms = std::time::Duration::from_millis;
+        apply(&mut scene);
+        assert_eq!(item(&scene).rect.width, 100.0);
+
+        lua.load(r#"state("cw", 100):set(200)"#).exec().unwrap();
+        apply(&mut scene);
+        let node = item(&scene);
+        assert_eq!((node.rect.width, node.tweens.len()), (100.0, 1), "a reused item eases too");
+        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+        assert_eq!(item(&scene).rect.width, 200.0);
+
+        lua.load(r#"state("cw", 100):set(150)"#).exec().unwrap();
+        apply(&mut scene);
+        let node = item(&scene);
+        assert_eq!((node.rect.width, node.tweens.len()), (200.0, 1), "the settled pin is gone");
+        scene.tick(&instances, &shaping, &lua, node.tweens[0].started + ms(100));
+        assert_eq!(item(&scene).rect.width, 150.0);
     }
 
     #[test]

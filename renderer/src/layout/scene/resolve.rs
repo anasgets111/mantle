@@ -85,15 +85,7 @@ pub(super) fn resolve(
         if moving {
             node::advance(&mut tweens, Rc::make_mut(&mut properties), now, lua)?;
         }
-        // A size a layout injected for a content-sized axis (`pass::measure_content_sizes`) is not
-        // the declaration's: drop it so the next solve measures the content again.
-        let mut injected = false;
-        for key in ["width", "height"] {
-            if properties.contains_key(key) && !memo.raw.contains_key(key) {
-                Rc::make_mut(&mut properties).remove(key);
-                injected = true;
-            }
-        }
+        let injected = drop_injected_sizes(&mut properties, &memo.raw);
         let style = if moving || injected { LayoutStyle::parse(&properties)? } else { *r.layout_style };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo, text_memo });
@@ -110,6 +102,19 @@ pub(super) fn resolve(
     let style = LayoutStyle::parse(&properties)?;
     let paint = node::paint_style(kind, &properties)?;
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo, text_memo })
+}
+
+/// Drops a `width`/`height` a layout injected for a content-sized axis (`pass::measure_content_sizes`)
+/// and the declaration `raw` lacks, so the next solve measures the content again.
+pub(super) fn drop_injected_sizes(properties: &mut Rc<PropMap>, raw: &PropMap) -> bool {
+    let mut dropped = false;
+    for key in ["width", "height"] {
+        if properties.contains_key(key) && !raw.contains_key(key) {
+            Rc::make_mut(properties).remove(key);
+            dropped = true;
+        }
+    }
+    dropped
 }
 
 /// What `node::retarget` reads off a retained node.

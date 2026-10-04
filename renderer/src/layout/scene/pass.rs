@@ -185,12 +185,13 @@ fn measure_content_sizes(
     }
     let Some(shown) = node.prior_size.filter(|_| node.properties.contains_key("animate")) else { return Ok(pinned) };
     let solved = tree.layout(node.taffy).map_err(taffy_failed)?.size;
+    // The compositor sizes an allocated root axis, so it never eases.
     let axes = [
-        ("width", node.style.width_mode, shown.0, solved.width),
-        ("height", node.style.height_mode, shown.1, solved.height),
+        ("width", node.style.width_mode, shown.0, solved.width, node.allocated_axes.0),
+        ("height", node.style.height_mode, shown.1, solved.height, node.allocated_axes.1),
     ];
-    for (property, mode, shown, measured) in axes {
-        if mode != SizeMode::Content {
+    for (property, mode, shown, measured, allocated) in axes {
+        if mode != SizeMode::Content || allocated {
             continue;
         }
         let Some(size) =
@@ -200,14 +201,13 @@ fn measure_content_sizes(
         };
         Rc::make_mut(&mut node.properties).insert(property, Value::Number(f64::from(size)));
         let mut style = tree.style(node.taffy).map_err(taffy_failed)?.clone();
-        let dimension = taffy::Dimension::length(size);
-        if property == "width" {
-            style.size.width = dimension;
-            node.style.width_mode = SizeMode::Pixels(size);
+        let (dimension, size_mode) = if property == "width" {
+            (&mut style.size.width, &mut node.style.width_mode)
         } else {
-            style.size.height = dimension;
-            node.style.height_mode = SizeMode::Pixels(size);
-        }
+            (&mut style.size.height, &mut node.style.height_mode)
+        };
+        *dimension = taffy::Dimension::length(size);
+        *size_mode = SizeMode::Pixels(size);
         tree.set_style(node.taffy, style).map_err(taffy_failed)?;
         pinned = true;
     }
