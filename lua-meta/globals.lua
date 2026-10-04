@@ -96,7 +96,7 @@ local FocusHandle = {}
 ---Give this field the keyboard after the current click updates its surface.
 function FocusHandle:request() end
 
----Replaces the draft of every visible plain textfield bound to this name, as if typed: the caret goes to the end and undo history clears. Calls no `on_change`, and a field being composed in loses the composition. Text with control characters or over 64 KiB raises. Takes effect when the current callback returns.
+---Sets the text of every plain textfield with this name, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
 ---@param text string
 function FocusHandle:set_text(text) end
 

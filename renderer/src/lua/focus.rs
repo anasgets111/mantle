@@ -11,9 +11,6 @@ struct Requests {
     texts: Vec<(String, String)>,
 }
 
-/// The longest text `set_text` takes, the same ceiling as a paste.
-const MAX_TEXT_BYTES: usize = 64 * 1024;
-
 pub(crate) struct FocusHandle(String);
 
 lua_class! {
@@ -28,9 +25,10 @@ lua_class! {
             Ok(())
         }
 
-        /// Replaces the draft of every visible plain textfield bound to this name, as if typed: the caret goes to the end and undo history clears. Calls no `on_change`, and a field being composed in loses the composition. Text with control characters or over 64 KiB raises. Takes effect when the current callback returns.
+        /// Sets the text of every plain textfield with this name, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
         fn set_text(lua, this, text: String) {
-            if text.len() > MAX_TEXT_BYTES || text.chars().any(char::is_control) {
+            // The paste path's limits, so a set text is one a paste could have typed.
+            if super::marshal::check_string(&text).is_err() || text.chars().any(char::is_control) {
                 return Err(mlua::Error::runtime("set_text() takes at most 64 KiB without control characters"));
             }
             super::app_data_or_default::<Requests>(lua).texts.push((this.0.clone(), text));
@@ -70,6 +68,11 @@ pub(crate) fn end_click(lua: &Lua) {
     super::app_data_or_default::<Requests>(lua).click_surface = None;
 }
 
+/// Drops texts queued for the tree this evaluation replaces.
+pub(crate) fn begin_evaluation(lua: &Lua) {
+    super::app_data_or_default::<Requests>(lua).texts.clear();
+}
+
 pub(crate) fn take_texts(lua: &Lua) -> Vec<(String, String)> {
     std::mem::take(&mut super::app_data_or_default::<Requests>(lua).texts)
 }
@@ -106,6 +109,7 @@ mod tests {
         lua.globals().set("target", handle).unwrap();
         lua.load("target:set_text('héllo')").exec().unwrap();
         assert!(lua.load("target:set_text('a\\nb')").exec().is_err());
+        assert!(lua.load("target:set_text(('x'):rep(65537))").exec().is_err());
         assert_eq!(take_texts(&lua), vec![("search".to_string(), "héllo".to_string())]);
         assert!(take_texts(&lua).is_empty());
     }

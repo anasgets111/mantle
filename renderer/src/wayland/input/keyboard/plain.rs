@@ -99,18 +99,19 @@ fn first_plain_field(
     tree: &layout::ResolvedNode,
     matches: impl Fn(&layout::ResolvedNode) -> bool,
 ) -> Option<FieldTarget> {
-    plain_fields(tree, matches).next()
+    plain_fields(tree, false, matches).next()
 }
 
-/// Visible plain fields passing `matches`, in document order.
+/// Plain fields passing `matches`, in document order; hidden subtrees only when `hidden`.
 fn plain_fields<'a>(
     tree: &'a layout::ResolvedNode,
+    hidden: bool,
     matches: impl Fn(&layout::ResolvedNode) -> bool + 'a,
 ) -> impl Iterator<Item = FieldTarget> + 'a {
     let mut stack = vec![tree];
     std::iter::from_fn(move || {
         while let Some(node) = stack.pop() {
-            if !node.visible || node.leaving {
+            if (!node.visible && !hidden) || node.leaving {
                 continue;
             }
             stack.extend(node.content_children().rev());
@@ -499,8 +500,8 @@ impl App {
         self.set_control_focus(control);
     }
 
-    /// Applies `focus_target(name):set_text` to the fields bound to `name`: the focused one is
-    /// rewritten in place, any other has its parked draft replaced (or dropped for `""`).
+    /// Applies `focus_target(name):set_text` to the fields bound to `name`, hidden ones too: the
+    /// focused one is rewritten in place, any other has its parked draft replaced (or dropped for `""`).
     pub(in crate::wayland) fn apply_text_requests(&mut self) {
         for (name, text) in crate::lua::focus::take_texts(self.client.lua()) {
             let named = |node: &layout::ResolvedNode| {
@@ -511,7 +512,7 @@ impl App {
                 .scene()
                 .surfaces()
                 .flat_map(|(surface_id, tree)| {
-                    plain_fields(tree, named).filter_map(move |target| match target {
+                    plain_fields(tree, true, named).filter_map(move |target| match target {
                         FieldTarget::Plain { id, .. } => Some((surface_id.to_string(), id)),
                         FieldTarget::Masked { .. } => None,
                     })
@@ -1379,7 +1380,7 @@ mod tests {
     }
 
     #[test]
-    fn plain_fields_lists_every_visible_plain_field_with_the_name() {
+    fn plain_fields_lists_plain_fields_with_the_name_and_hidden_ones_on_request() {
         let lua = Lua::new();
         crate::lua::focus::register(&lua).unwrap();
         let handle = Value::UserData(lua.load("return focus_target('q')").eval().unwrap());
@@ -1391,15 +1392,18 @@ mod tests {
         let mut hidden = named(plain_textfield(&lua));
         hidden.visible = false;
         let masked = named(textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate"))));
-        let (a_id, b_id) = (a.id, b.id);
+        let (a_id, hidden_id, b_id) = (a.id, hidden.id, b.id);
         let tree = tree_with(&lua, vec![a, hidden, masked, b]);
-        let ids: Vec<_> = plain_fields(&tree, |_| true)
-            .map(|target| match target {
-                FieldTarget::Plain { id, .. } => id,
-                FieldTarget::Masked { .. } => unreachable!(),
-            })
-            .collect();
-        assert_eq!(ids, vec![a_id, b_id]);
+        let ids = |hidden| -> Vec<_> {
+            plain_fields(&tree, hidden, |_| true)
+                .map(|target| match target {
+                    FieldTarget::Plain { id, .. } => id,
+                    FieldTarget::Masked { .. } => unreachable!(),
+                })
+                .collect()
+        };
+        assert_eq!(ids(false), vec![a_id, b_id]);
+        assert_eq!(ids(true), vec![a_id, hidden_id, b_id]);
     }
 
     #[test]

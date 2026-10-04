@@ -236,6 +236,7 @@ impl Loader {
             idle.forget_thresholds();
         }
         signal::begin_evaluation(&self.lua);
+        focus::begin_evaluation(&self.lua);
         let value: Value = self.lua.load(source).set_name(format!("@{name}")).eval()?;
         Ok(LoadOutput { surfaces: collect_surfaces(value)? })
     }
@@ -1061,6 +1062,14 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         let output = loader.evaluate_file(&path).unwrap();
         assert_eq!(output.surfaces.len(), 1);
         assert_eq!(output.surfaces[0].kind, "panel");
+    }
+
+    #[test]
+    fn an_evaluation_drops_set_text_queued_for_the_tree_it_replaces() {
+        let loader = test_loader();
+        loader.lua().load("focus_target('q'):set_text('old')").exec().unwrap();
+        loader.evaluate(r#"focus_target('q'):set_text('new'); return panel { id = "bar", layer = "top" }"#).unwrap();
+        assert_eq!(focus::take_texts(loader.lua()), vec![("q".to_string(), "new".to_string())]);
     }
 
     /// Rejection output must name the config file and line, not `renderer/src/lua/mod.rs:74:127`.
