@@ -134,6 +134,7 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ThreadState {
                 fullscreen: Some(false),
                 minimized: Some(false),
                 maximized: Some(false),
+                urgent: false,
             },
         );
     }

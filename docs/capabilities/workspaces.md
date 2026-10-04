@@ -88,6 +88,7 @@ One workspace. Draw `idx`, send `id`.
 | `idx` | `integer` | Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates. |
 | `name?` | `string` | Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number. |
 | `populated` | `boolean` | Whether a window sits here. |
+| `urgent` | `boolean` | Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`. |
 | `window_id?` | `string` | `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty. |
 
 ## Actions

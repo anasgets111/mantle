@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `workspaces` entries and `windows` entries have `urgent`: niri reports it as set; Hyprland sets it on an `urgent` event and clears it when the window gains focus or closes. It is always `false` on wlr-foreign-toplevel.
+
 ## 0.1.1 - 2026-10-03
 
 - Bluetooth `pairing_request` has an `id` and supports `"pin_entry"` and `"passkey_entry"`; answer these with `secure_submit = { capability = "bluetooth", action = "pair", name = request.id .. "/" .. request.mac }`. A present adapter takes over when the tracked adapter is removed.

@@ -77,6 +77,10 @@ pub struct WorkspaceEntry {
     /// `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub window_id: Option<String>,
+    /// Whether a window here is asking for attention. Clears when the compositor clears it, on
+    /// Hyprland when that window gains focus. Hyprland special workspaces carry none; their
+    /// windows report it in `windows`.
+    pub urgent: bool,
 }
 
 /// The focused window.

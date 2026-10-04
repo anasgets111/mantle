@@ -180,6 +180,7 @@ mod tests {
             fullscreen: None,
             minimized: None,
             maximized: None,
+            urgent: false,
         }
     }
 

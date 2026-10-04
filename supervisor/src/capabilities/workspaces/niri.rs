@@ -38,6 +38,7 @@ fn workspace_rows(
                 populated: standing.is_some(),
                 app_id: standing.and_then(|window| window.app_id.clone()).filter(|id| !id.is_empty()),
                 window_id: standing.map(|w| w.id.to_string()),
+                urgent: workspace.is_urgent,
             }
         })
         .collect()
@@ -65,6 +66,7 @@ fn window_rows(
             fullscreen: None,
             minimized: None,
             maximized: None,
+            urgent: window.is_urgent,
         })
         .collect()
 }
@@ -125,12 +127,10 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
             if keyboard.apply_niri(&mut layout_names, &event) {
                 continue;
             }
-            // No published row reads layouts, focus timestamps or urgency.
+            // No published row reads layouts or focus timestamps.
             let moves_rows = !matches!(
                 event,
-                niri_ipc::Event::WindowLayoutsChanged { .. }
-                    | niri_ipc::Event::WindowFocusTimestampChanged { .. }
-                    | niri_ipc::Event::WindowUrgencyChanged { .. }
+                niri_ipc::Event::WindowLayoutsChanged { .. } | niri_ipc::Event::WindowFocusTimestampChanged { .. }
             );
             if let Some(event) = niri_workspaces.apply(event)
                 && let Some(event) = niri_windows.apply(event)
@@ -248,6 +248,7 @@ mod tests {
                 populated: true,
                 app_id: Some("kitty".to_string()),
                 window_id: Some("2".to_string()),
+                urgent: false,
             }]
         );
     }
@@ -278,6 +279,18 @@ mod tests {
         let rows = workspace_rows(&workspaces, &unfocused);
         assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().app_id.as_deref(), Some("kitty"), "lowest id");
         assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().window_id.as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn urgency_passes_through_from_niri_workspaces_and_windows() {
+        let mut ws = workspace(5, 1, "eDP-1", true, true);
+        ws.is_urgent = true;
+        let mut win = window(2, "Inbox", "thunderbird", false, false);
+        win.is_urgent = true;
+        let (workspaces, windows) = (map(vec![(5, ws)]), map(vec![(2, win)]));
+
+        assert!(workspace_rows(&workspaces, &windows)[0].urgent);
+        assert!(window_rows(&windows, &workspaces)[0].urgent);
     }
 
     #[test]

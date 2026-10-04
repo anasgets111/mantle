@@ -38,6 +38,7 @@ pub struct WorkspaceRow {
     pub populated: bool,
     pub app_id: Option<String>,
     pub window_id: Option<String>,
+    pub urgent: bool,
 }
 
 /// The focused toplevel reduced to the `active_client` fields.
@@ -78,6 +79,7 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
                     populated: workspace.populated,
                     app_id: workspace.app_id.clone(),
                     window_id: workspace.window_id.clone(),
+                    urgent: workspace.urgent,
                 })
                 .collect();
             Some(OutputWorkspaces { name: name.to_string(), active_workspace, focused_workspace, workspaces })
@@ -204,6 +206,7 @@ mod tests {
             populated: false,
             app_id: None,
             window_id: None,
+            urgent: false,
         }
     }
 

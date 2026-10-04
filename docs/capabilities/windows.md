@@ -47,6 +47,7 @@ One toplevel window. `nil` optional fields are ones the backend does not report.
 | `minimized?` | `boolean` | Whether the window is minimized; `nil` except on wlr. |
 | `output?` | `string` | Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on. |
 | `title` | `string` | Window title; empty when unset. |
+| `urgent` | `boolean` | Whether the window is asking for attention; always `false` on wlr, which has no such state. |
 | `workspace_id?` | `integer` | `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces. |
 
 ## Actions

@@ -42,4 +42,6 @@ pub struct WindowEntry {
     /// Whether the window is maximized; `nil` on niri.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub maximized: Option<bool>,
+    /// Whether the window is asking for attention; always `false` on wlr, which has no such state.
+    pub urgent: bool,
 }

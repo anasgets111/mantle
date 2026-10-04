@@ -34,6 +34,7 @@
 //!
 //! `spawn_reader` also folds every `clients` entry into a `windows` row, from the same reads.
 
+use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -181,6 +182,7 @@ fn workspace_rows(
                 populated: workspace.windows > 0,
                 app_id,
                 window_id,
+                urgent: false,
             }
         })
         .collect()
@@ -266,6 +268,7 @@ fn window_rows(
             fullscreen: Some(client.fullscreen.is_fullscreen()),
             minimized: None,
             maximized: Some(client.fullscreen.is_maximized()),
+            urgent: false,
         })
         .collect()
 }
@@ -306,6 +309,8 @@ struct Burst {
     layout: bool,
     /// `(address, title)` per `windowtitlev2`, the address as `j/clients` spells it.
     titles: Vec<(String, String)>,
+    /// Address per `urgent`, spelled as `j/clients` does.
+    urgent: Vec<String>,
 }
 
 /// Blocks for one line, then takes every complete line already buffered. `None` at socket end.
@@ -323,7 +328,14 @@ fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Op
         match event.strip_prefix("windowtitlev2>>").and_then(|rest| rest.split_once(',')) {
             Some((address, title)) => burst.titles.push((format!("0x{address}"), title.to_string())),
             None if event.starts_with("activelayout>>") => burst.layout = true,
-            None => burst.reread |= is_trigger(event),
+            // Re-read so a window the last read missed is in the list `mark_urgent` checks.
+            None => match event.strip_prefix("urgent>>") {
+                Some(address) => {
+                    burst.urgent.push(format!("0x{address}"));
+                    burst.reread = true;
+                }
+                None => burst.reread |= is_trigger(event),
+            },
         }
         if !reader.buffer().contains(&b'\n') {
             return Ok(Some(burst));
@@ -340,6 +352,19 @@ fn patch_title(state: &mut State, address: &str, title: &str) {
         {
             focused.title = title.to_string();
         }
+    }
+}
+
+/// Stamps `urgent` on windows and their workspaces. `j/clients` has no urgent field, so urgency
+/// comes from `urgent` events and ends when the window gains focus or closes (assumed: Hyprland
+/// clears a window's urgency on focus and sends no event for it).
+fn mark_urgent(state: &mut State, urgent: &mut HashSet<String>) {
+    urgent.retain(|address| state.3.iter().any(|window| window.id == *address && !window.focused));
+    for window in &mut state.3 {
+        window.urgent = urgent.contains(&window.id);
+    }
+    for row in &mut state.0 {
+        row.urgent = state.3.iter().any(|window| window.urgent && window.workspace_id == Some(row.id));
     }
 }
 
@@ -420,6 +445,7 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
         let mut reader = BufReader::new(stream);
         keyboard.read_hyprland(&command_path);
         let mut last = read_state(&command_path);
+        let mut urgent = HashSet::new();
         loop {
             if let Some((rows, focused, special, windows)) = &last {
                 publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
@@ -435,15 +461,14 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
             if burst.layout {
                 keyboard.read_hyprland(&command_path);
             }
+            urgent.extend(burst.urgent);
+            // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
             if burst.reread {
-                let Some(state) = read_state(&command_path) else { continue };
+                let Some(mut state) = read_state(&command_path) else { continue };
+                mark_urgent(&mut state, &mut urgent);
                 last = Some(state);
-            } else if let Some(state) = &mut last
-                && !burst.titles.is_empty()
-            {
+            } else if let Some(state) = &mut last {
                 burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
-            } else {
-                continue;
             }
         }
         error!("Hyprland event socket closed; workspaces and windows will no longer update");
@@ -618,6 +643,7 @@ mod tests {
                 populated: true,
                 app_id: Some("kitty".to_string()),
                 window_id: Some("0x55d1c0a3b2c0".to_string()),
+                urgent: false,
             }]
         );
     }
@@ -739,7 +765,32 @@ mod tests {
         assert!(is_trigger("openwindow>>55d1c0a3b2c0,3,kitty,~"));
         assert!(!is_trigger("activelayout>>at-translated-set-2-keyboard,English (US)"));
         assert!(!is_trigger("submap>>resize"));
-        assert!(!is_trigger("urgent>>55d1c0a3b2c0"));
+    }
+
+    #[test]
+    fn urgency_comes_from_events_and_clears_on_focus_or_close() {
+        let workspaces = workspaces(serde_json::json!([workspace(1, "1", "DP-1", 1), workspace(2, "2", "DP-1", 1)]));
+        let at = |address: &str, workspace| {
+            let mut client = client("kitty", "~", workspace, 0, false);
+            client["address"] = address.into();
+            client
+        };
+        let clients = clients(serde_json::json!([at("0xa", 1), at("0xb", 2)]));
+        let read = |active| -> State {
+            (workspace_rows(&workspaces, &[], &clients), None, vec![], window_rows(&clients, &[], active))
+        };
+        let mut state = read(None);
+        let mut urgent = HashSet::from(["0xa".to_string(), "0xgone".to_string()]);
+
+        mark_urgent(&mut state, &mut urgent);
+        assert_eq!((state.3[0].urgent, state.3[1].urgent), (true, false));
+        assert_eq!((state.0[0].urgent, state.0[1].urgent), (true, false));
+        assert_eq!(urgent.len(), 1, "a window that left the list is forgotten");
+
+        let mut state = read(Some("0xa"));
+        mark_urgent(&mut state, &mut urgent);
+        assert!(!state.3[0].urgent && !state.0[0].urgent, "focus clears it");
+        assert!(urgent.is_empty());
     }
 
     #[test]
@@ -755,9 +806,17 @@ mod tests {
         let burst = read_burst(&mut reader).unwrap().unwrap();
         assert_eq!(
             burst,
-            Burst { reread: false, layout: false, titles: vec![("0xa11ce".to_string(), "vim".to_string())] }
+            Burst {
+                reread: false,
+                layout: false,
+                titles: vec![("0xa11ce".to_string(), "vim".to_string())],
+                urgent: vec![]
+            }
         );
         assert_eq!(read_burst(&mut reader).unwrap(), None, "socket end");
+        let mut reader = BufReader::new(&b"urgent>>a11ce\n"[..]);
+        let burst = read_burst(&mut reader).unwrap().unwrap();
+        assert_eq!((burst.urgent, burst.reread), (vec!["0xa11ce".to_string()], true));
     }
 
     #[test]

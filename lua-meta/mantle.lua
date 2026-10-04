@@ -418,6 +418,7 @@
 ---@field minimized? boolean Whether the window is minimized; `nil` except on wlr.
 ---@field output? string Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
 ---@field title string Window title; empty when unset.
+---@field urgent boolean Whether the window is asking for attention; always `false` on wlr, which has no such state.
 ---@field workspace_id? integer `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
 
 ---@class WorkspaceEntry
@@ -427,6 +428,7 @@
 ---@field idx integer Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates.
 ---@field name? string Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
 ---@field populated boolean Whether a window sits here (ADR-0117).
+---@field urgent boolean Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`.
 ---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
 
 ---@class ApplicationsState
