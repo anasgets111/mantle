@@ -776,6 +776,11 @@ impl Scene {
         self.surfaces.get(instance_id)
     }
 
+    /// Every instance's tree with its id.
+    pub fn surfaces(&self) -> impl Iterator<Item = (&str, &ResolvedNode)> {
+        self.surfaces.iter().map(|(id, tree)| (id.as_str(), tree))
+    }
+
     /// Drops the retained tree for an instance that no longer exists.
     ///
     /// [`Self::apply_admitting`] visits only the instances it is given, and says so: retained

@@ -99,20 +99,30 @@ fn first_plain_field(
     tree: &layout::ResolvedNode,
     matches: impl Fn(&layout::ResolvedNode) -> bool,
 ) -> Option<FieldTarget> {
+    plain_fields(tree, matches).next()
+}
+
+/// Visible plain fields passing `matches`, in document order.
+fn plain_fields<'a>(
+    tree: &'a layout::ResolvedNode,
+    matches: impl Fn(&layout::ResolvedNode) -> bool + 'a,
+) -> impl Iterator<Item = FieldTarget> + 'a {
     let mut stack = vec![tree];
-    while let Some(node) = stack.pop() {
-        if !node.visible || node.leaving {
-            continue;
+    std::iter::from_fn(move || {
+        while let Some(node) = stack.pop() {
+            if !node.visible || node.leaving {
+                continue;
+            }
+            stack.extend(node.content_children().rev());
+            if node.kind == "textfield"
+                && matches(node)
+                && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
+            {
+                return Some(target);
+            }
         }
-        if node.kind == "textfield"
-            && matches(node)
-            && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
-        {
-            return Some(target);
-        }
-        stack.extend(node.content_children().rev());
-    }
-    None
+        None
+    })
 }
 
 type Parked = std::collections::HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>;
@@ -135,6 +145,30 @@ fn swap_drafts(parked: &mut Parked, old: Option<&FocusedTextField>, next: Option
     {
         (next.buffer, next.selection) = (buffer, selection);
     }
+}
+
+/// Replaces the draft of `(surface_id, id)`: in place when it is the focused field, else in the
+/// parked map. Returns whether the focused field took it.
+fn store_draft(
+    parked: &mut Parked,
+    focused: Option<&mut FocusedTextField>,
+    surface_id: &str,
+    id: layout::scene::NodeId,
+    text: &str,
+) -> bool {
+    let end = (text.len(), text.len());
+    if let Some(field) = focused.filter(|field| field.surface_id == surface_id && field.id == id) {
+        (field.buffer, field.selection) = (text.to_owned(), end);
+        field.history.clear();
+        return true;
+    }
+    let key = (surface_id.to_owned(), id);
+    if text.is_empty() {
+        parked.remove(&key);
+    } else {
+        parked.insert(key, (text.to_owned(), end));
+    }
+    false
 }
 
 /// A parked draft lives only as long as its node and surface.
@@ -463,6 +497,38 @@ impl App {
             kind: super::focus::ControlKind::Plain,
         });
         self.set_control_focus(control);
+    }
+
+    /// Applies `focus_target(name):set_text` to the fields bound to `name`: the focused one is
+    /// rewritten in place, any other has its parked draft replaced (or dropped for `""`).
+    pub(in crate::wayland) fn apply_text_requests(&mut self) {
+        for (name, text) in crate::lua::focus::take_texts(self.client.lua()) {
+            let named = |node: &layout::ResolvedNode| {
+                node::fields::textfield::focus_target.read(&node.properties).ok().flatten().as_deref() == Some(&*name)
+            };
+            let hits: Vec<_> = self
+                .client
+                .scene()
+                .surfaces()
+                .flat_map(|(surface_id, tree)| {
+                    plain_fields(tree, named).filter_map(move |target| match target {
+                        FieldTarget::Plain { id, .. } => Some((surface_id.to_string(), id)),
+                        FieldTarget::Masked { .. } => None,
+                    })
+                })
+                .collect();
+            for (surface_id, id) in hits {
+                self.set_draft(surface_id, id, &text);
+            }
+        }
+    }
+
+    fn set_draft(&mut self, surface_id: String, id: layout::scene::NodeId, text: &str) {
+        if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), &surface_id, id, text) {
+            self.cancel_text_input_composition();
+            self.text_input.note_other_change();
+        }
+        self.mark_field_input_changed(&surface_id);
     }
 
     /// Give keys to `autofocus` with a fresh empty buffer (ADR-0112). ADR-0108 preserves drafts
@@ -1293,6 +1359,47 @@ mod tests {
         parked.insert(("panel@TEST".into(), layout::scene::NodeId::test(999)), ("b".into(), (1, 1)));
         forget_gone_drafts(&mut parked, |_, id| layout::hit::contains_node(&tree, id));
         assert_eq!(parked.keys().map(|(_, id)| *id).collect::<Vec<_>>(), vec![kept_id]);
+    }
+
+    #[test]
+    fn set_text_rewrites_the_focused_draft_and_parks_for_any_other() {
+        let mut parked = Parked::new();
+        let mut field = draft(1, "old");
+        field.history.record(("o".into(), (0, 0)), None);
+        let id = field.id;
+        assert!(store_draft(&mut parked, Some(&mut field), "calendar@eDP-1", id, "héllo"));
+        assert_eq!((field.buffer.as_str(), field.selection), ("héllo", (6, 6)));
+        assert!(field.history.undo.is_empty() && parked.is_empty());
+
+        let other = layout::scene::NodeId::test(2);
+        assert!(!store_draft(&mut parked, Some(&mut field), "calendar@eDP-1", other, "prefill"));
+        assert_eq!(parked[&("calendar@eDP-1".to_string(), other)], ("prefill".to_string(), (7, 7)));
+        assert!(!store_draft(&mut parked, None, "calendar@eDP-1", other, ""));
+        assert!(parked.is_empty(), "an empty text clears a parked draft");
+    }
+
+    #[test]
+    fn plain_fields_lists_every_visible_plain_field_with_the_name() {
+        let lua = Lua::new();
+        crate::lua::focus::register(&lua).unwrap();
+        let handle = Value::UserData(lua.load("return focus_target('q')").eval().unwrap());
+        let named = |mut node: layout::ResolvedNode| {
+            std::rc::Rc::make_mut(&mut node.properties).insert("focus_target", handle.clone());
+            node
+        };
+        let (a, b) = (named(plain_textfield(&lua)), named(plain_textfield(&lua)));
+        let mut hidden = named(plain_textfield(&lua));
+        hidden.visible = false;
+        let masked = named(textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate"))));
+        let (a_id, b_id) = (a.id, b.id);
+        let tree = tree_with(&lua, vec![a, hidden, masked, b]);
+        let ids: Vec<_> = plain_fields(&tree, |_| true)
+            .map(|target| match target {
+                FieldTarget::Plain { id, .. } => id,
+                FieldTarget::Masked { .. } => unreachable!(),
+            })
+            .collect();
+        assert_eq!(ids, vec![a_id, b_id]);
     }
 
     #[test]

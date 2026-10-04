@@ -7631,3 +7631,19 @@ memo, line cache, solver memo, `Draw::Text`); femtovg's atlas already keys on a 
 Rejected: re-deriving coords in the painter (a second source of truth); a per-glyph `Arc<[i16]>`
 (`Glyph` stops being `Copy`). Axes snap under `animate`: the `Fields` tween knows only fixed key
 sets.
+
+## 0323. Each plain textfield keeps its own draft, and Lua may replace it
+
+Supersedes the single-draft consequence of ADR-0108.
+
+1. **One draft per plain field**, keyed by surface and node, beside the focused one. Leaving a
+   field for another parks its non-empty text and selection; returning restores them, and an
+   unfocused field paints its parked draft. Undo history and IME composition still end on
+   leaving. A draft goes when its node or surface does. Secure drafts are never parked.
+2. **`focus_target(name):set_text(text)`** replaces the draft of every visible plain field bound
+   to that name, so per-output copies of a panel agree. It applies when the calling callback
+   returns, calls no `on_change`, takes at most 64 KiB without control characters, and never
+   reaches a `secure_submit` field.
+
+Rejected: a declarative `text` property, which would need a rule for reconciling it with what the
+user types; firing `on_change` on a set, which loops a config that mirrors the field into a signal.

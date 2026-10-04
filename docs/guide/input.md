@@ -237,7 +237,7 @@ where it is.
 ## Text fields
 
 A `textfield` is a single-line text input. The engine holds what the user types (the *draft*); Lua
-sees it only through callbacks and cannot set it. The field with *focus* is the one keys go to. It
+sees it through callbacks, and sets it only with `:set_text`. The field with *focus* is the one keys go to. It
 has no intrinsic width, so give it `width`; `height` defaults to one line ([nodes](../nodes/textfield.md)).
 
 A field takes the keyboard only when both hold:
@@ -258,6 +258,7 @@ a press.
 | `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Tab and Backtab arrive when fewer than two controls can take focus. Repeats while held. The draft is untouched |
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
 | `focus_target` | A `focus_target(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
+| `focus_target(name):set_text(text)` | Replaces the draft of every visible plain field with that `focus_target`, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters or over 64 KiB raise |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
 | `placeholder`, `placeholder_color`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
 

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `focus_target(name):set_text(text)` prefills or clears the draft of the visible plain textfields with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
 - Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
 - A `textfield` without `height` is one line of `font_size` tall instead of 0 px, so its placeholder shows. `width` is still required.

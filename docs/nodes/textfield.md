@@ -1,7 +1,7 @@
 # textfield
 
 A single-line text input: a search box, a launcher query, a password. The engine holds what the user
-types (the *draft*); Lua sees it only through callbacks and cannot set it. Focus, editing keys, the
+types (the *draft*); Lua sees it through callbacks and sets it only with [`focus_target(name):set_text`](../guide/input.md#text-fields). Focus, editing keys, the
 draft's lifetime and password fields are on [input](../guide/input.md#text-fields).
 
 A launcher: the field filters a list as the user types, the arrow keys move a selection, Enter
@@ -117,7 +117,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 | The field does not appear | It has no intrinsic width. Give it `width` |
 | Typing does nothing | The surface needs keyboard focus (`keyboard_interactivity` on a panel), and the field needs `on_change`, `on_submit` or `secure_submit` |
 | `on_cancel` or `on_navigate` alone never fires | Neither makes the field focusable. Add `on_change` or `on_submit` |
-| You cannot set or clear the draft from Lua | The draft is the engine's. Enter and Escape clear it; removing the node drops it |
+| You cannot read the draft from Lua | It arrives only through `on_change` and `on_submit`. `focus_target(name):set_text` writes it; Enter and Escape clear it; removing the node drops it |
 | `on_submit` never fires on a password field | A `secure_submit` field sends to its capability instead |
 | `font` on a `textfield` is refused | Fields use the `fonts` chain |
 | `background` on a `textfield` is refused | It is not a box. Wrap it in a `rect` |

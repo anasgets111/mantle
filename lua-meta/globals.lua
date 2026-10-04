@@ -96,6 +96,10 @@ local FocusHandle = {}
 ---Give this field the keyboard after the current click updates its surface.
 function FocusHandle:request() end
 
+---Replaces the draft of every visible plain textfield bound to this name, as if typed: the caret goes to the end and undo history clears. Calls no `on_change`, and a field being composed in loses the composition. Text with control characters or over 64 KiB raises. Takes effect when the current callback returns.
+---@param text string
+function FocusHandle:set_text(text) end
+
 ---Names a plain textfield that an `on_click` can focus with `:request()`.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
 ---@param name string Shared with the textfield's `focus_target` property.

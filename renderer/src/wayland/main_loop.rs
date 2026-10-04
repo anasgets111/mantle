@@ -286,6 +286,7 @@ pub fn run(
         phases.mark_tick();
         phases.mark_tick_split(app.client.take_tick_split());
         let re_resolved = passed || !ticked.is_empty();
+        app.apply_text_requests();
         app.apply_focus_request();
         if re_resolved {
             app.prune_secure_focus_after_resolve();
