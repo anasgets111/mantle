@@ -54,23 +54,36 @@ pub(in crate::wayland) struct ArmedSerial {
 /// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
 /// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
 /// is transparent. `layout::node::resolve_properties` refuses an `on_click` that is not a function.
-fn click_target(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Option<Function>, bool)> {
+fn click_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint) -> Option<Clickable> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         let on_click = pointer::on_click.read(&node.properties).ok().flatten();
         let submit = pointer::submit.read(&node.properties).is_ok_and(|on| on);
         if on_click.is_none() && !submit {
             return None;
         }
-        Some((layout::hit::absolute_rect(&path[..=depth])?, on_click, submit))
+        let rect = layout::hit::absolute_rect(&path[..=depth])?;
+        let at = untransformed_position(&path[..=depth], rect, point);
+        Some(Clickable { rect, handler: on_click, link: None, submit, at })
     })
+}
+
+/// `point` where the node's own box sits untransformed, so `position - rect` is node-local. A
+/// degenerate transform has no inverse; the raw point then stands, as before transforms counted.
+fn untransformed_position(
+    path: &[&layout::ResolvedNode],
+    rect: LogicalRect,
+    point: layout::hit::LogicalPoint,
+) -> (f64, f64) {
+    layout::hit::node_local(path, point)
+        .map_or((point.x as f64, point.y as f64), |local| ((rect.x + local.x) as f64, (rect.y + local.y) as f64))
 }
 
 /// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
 /// so a handle inside a draggable track leaves the track draggable.
-fn drag_target(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Function)> {
+fn drag_target(path: &[&layout::ResolvedNode]) -> Option<(LogicalRect, Function, layout::scene::NodeId)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         let on_drag = pointer::on_drag.read(&node.properties).ok().flatten()?;
-        Some((layout::hit::absolute_rect(&path[..=depth])?, on_drag))
+        Some((layout::hit::absolute_rect(&path[..=depth])?, on_drag, node.id))
     })
 }
 
@@ -88,6 +101,8 @@ pub(in crate::wayland) struct ActiveDrag {
     instance_id: String,
     rect: LogicalRect,
     handler: Function,
+    /// Re-found each event so the pointer is mapped through the node's current transform.
+    id: layout::scene::NodeId,
 }
 
 /// Press/release target: handler, click-identity rect (see [`ArmedClick`]), and link `href`.
@@ -99,6 +114,8 @@ struct Clickable {
     /// `submit = true` sends the scope's armed `secure_submit` field on release, like Enter
     /// (ADR-0114); it is the only pointer path to a password, with no Lua callback.
     submit: bool,
+    /// Pointer in the node's untransformed surface space ([`click_target`]).
+    at: (f64, f64),
 }
 
 /// Links precede `on_click` (ADR-0106): a text `on_link` with an `href` under `point` wins over any
@@ -117,11 +134,9 @@ fn clickable(
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         let local = layout::hit::node_local(&path[..=depth], point)?;
         let href = layout::hit::link_under(node, local, shaping)?;
-        Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false })
+        Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false, at: (0.0, 0.0) })
     });
-    link.or_else(|| {
-        click_target(path).map(|(rect, on_click, submit)| Clickable { rect, handler: on_click, link: None, submit })
-    })
+    link.or_else(|| click_target(path, point))
 }
 
 /// Both targets from decision 1's single [`layout::hit::hit_path`] traversal. Two walks could
@@ -134,7 +149,7 @@ struct PointerHit {
     /// this same walk so one event cannot get two answers.
     caret: Option<usize>,
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
-    drag: Option<(LogicalRect, Function)>,
+    drag: Option<(LogicalRect, Function, layout::scene::NodeId)>,
 }
 
 fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
@@ -405,9 +420,9 @@ impl PointerHandler for App {
                     // free for clicks, and fields drag nothing just as they click nothing.
                     if button == BTN_LEFT
                         && !pressed_a_field
-                        && let Some((rect, handler)) = hit.drag
+                        && let Some((rect, handler, id)) = hit.drag
                     {
-                        self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), rect, handler });
+                        self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), rect, handler, id });
                         self.fire_on_drag(&instance_id, event.position, DragPhase::Start);
                     }
                 }
@@ -452,7 +467,7 @@ impl PointerHandler for App {
                                     self.finish_secure_submit();
                                 }
                                 if let Some(handler) = handler {
-                                    self.fire_on_click(&instance_id, clickable.rect, name, event.position, &handler);
+                                    self.fire_on_click(&instance_id, clickable.rect, name, clickable.at, &handler);
                                 }
                             }
                         }
@@ -535,7 +550,7 @@ impl App {
             caret: held
                 .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
-            drag: drag_target(&path).map(|(rect, handler)| (rect, handler.clone())),
+            drag: drag_target(&path).map(|(rect, handler, id)| (rect, handler.clone(), id)),
         }
     }
 
@@ -563,6 +578,14 @@ impl App {
             return;
         };
         let (rect, handler) = (drag.rect, drag.handler.clone());
+        // Current frame's transform; a node that left the tree keeps the raw point.
+        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let position = self
+            .client
+            .scene()
+            .surface(instance_id)
+            .and_then(|root| layout::hit::path_to_node(root, drag.id))
+            .map_or(position, |path| untransformed_position(&path, rect, point));
         if phase == DragPhase::End {
             self.drag = None;
         }
@@ -750,7 +773,7 @@ mod tests {
         root.children.push(track);
 
         let on_thumb = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let (rect, _) = drag_target(&on_thumb).expect("the track carries the on_drag");
+        let (rect, ..) = drag_target(&on_thumb).expect("the track carries the on_drag");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
         let (depth, rect, _) = wheel_target(&on_thumb).expect("the thumb carries an on_wheel");
         assert_eq!((depth, rect), (2, LogicalRect { x: 15.0, y: 6.0, width: 20.0, height: 20.0 }), "innermost");
@@ -796,14 +819,16 @@ mod tests {
         root.children.push(column.clone());
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let (rect, ..) = click_target(&path).expect("the row carries an on_click");
+        let Clickable { rect, .. } =
+            click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }).expect("the row carries an on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
 
         // The same `text` leaf with its own `on_click` is now the innermost handler.
         column.children[0].children[0] = hit_node(&lua, "text", (6.0, 5.0, 28.0, 14.0), true);
         root.children[0] = column;
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let (rect, ..) = click_target(&path).expect("the text carries an on_click");
+        let Clickable { rect, .. } =
+            click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }).expect("the text carries an on_click");
         assert_eq!(rect, LogicalRect { x: 16.0, y: 9.0, width: 28.0, height: 14.0 });
     }
 
@@ -820,8 +845,35 @@ mod tests {
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
         assert_eq!(path.len(), 3, "the inner rect is still on the path");
-        let (rect, ..) = click_target(&path).expect("the outer rect carries the on_click");
+        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 })
+            .expect("the outer rect carries the on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
+    }
+
+    /// `pointer` is where the node's own box was hit, whatever its drawn transform.
+    #[test]
+    fn on_click_pointer_is_node_local_through_translate_scale_and_rotate() {
+        use crate::wayland::node::apply_affine;
+        let lua = Lua::new();
+        type Case = (&'static str, fn(&mut layout::ResolvedNode));
+        let cases: [Case; 3] = [
+            ("translate", |n| n.transform.translate = (1785.0, 0.0)),
+            ("scale", |n| n.transform.scale = (2.0, 2.0)),
+            ("rotate", |n| n.transform.rotate = 90.0),
+        ];
+        for (name, transform) in cases {
+            let mut node = hit_node(&lua, "rect", (10.0, 4.0, 40.0, 24.0), true);
+            transform(&mut node);
+            let mut root = hit_node(&lua, "panel", (0.0, 0.0, 3000.0, 400.0), false);
+            root.children.push(node);
+            // The node's own point (15, 4) in its box, found where it is drawn.
+            let drawn = apply_affine(layout::hit::path_transform(&[&root, &root.children[0]]), 25.0, 8.0);
+            let point = layout::hit::LogicalPoint { x: drawn.0, y: drawn.1 };
+            let path = layout::hit::hit_path(&root, point);
+            let Clickable { rect, at, .. } = click_target(&path, point).expect(name);
+            let (x, y) = (at.0 as f32 - rect.x, at.1 as f32 - rect.y);
+            assert!((x - 15.0).abs() < 1e-3 && (y - 4.0).abs() < 1e-3, "{name}: {x}, {y}");
+        }
     }
 
     /// ADR-0114: `submit = true` alone makes a node a click target, with no Lua handler to call.
@@ -830,8 +882,9 @@ mod tests {
         let lua = Lua::new();
         let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
         std::rc::Rc::make_mut(&mut row.properties).insert("submit", Value::Boolean(true));
-        let (_, on_click, submit) = click_target(&[&row]).expect("submit arms a click");
-        assert!(on_click.is_none() && submit);
+        let clickable =
+            click_target(&[&row], layout::hit::LogicalPoint { x: 1.0, y: 1.0 }).expect("submit arms a click");
+        assert!(clickable.handler.is_none() && clickable.submit);
     }
 
     #[test]

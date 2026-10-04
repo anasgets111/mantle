@@ -49,8 +49,8 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button, pointer)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` relative to the node, unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
-| `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` relative to the node, unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
+| `on_click(rect, button, pointer)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
+| `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
 
