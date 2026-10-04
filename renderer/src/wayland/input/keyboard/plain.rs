@@ -126,9 +126,14 @@ fn plain_fields<'a>(
     })
 }
 
+/// The live tree `id` is in, or `None` when its node is gone.
+fn tree_holding(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId) -> Option<&layout::ResolvedNode> {
+    tree.filter(|tree| layout::hit::contains_node(tree, id))
+}
+
 /// Whether a field on a live surface can no longer hold focus: its node is gone or disabled.
 fn field_unusable(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId) -> bool {
-    let Some(tree) = tree.filter(|tree| layout::hit::contains_node(tree, id)) else { return true };
+    let Some(tree) = tree_holding(tree, id) else { return true };
     layout::hit::path_to_node(tree, id).is_some_and(|path| path.last().is_some_and(|node| node.is_disabled_field()))
 }
 
@@ -708,8 +713,7 @@ impl App {
         let scene = self.client.scene();
         let mut parked = std::mem::take(&mut self.parked_drafts);
         forget_gone_drafts(&mut parked, |surface_id, id| {
-            self.surface_is_live(surface_id)
-                && scene.surface(surface_id).is_some_and(|tree| layout::hit::contains_node(tree, id))
+            self.surface_is_live(surface_id) && tree_holding(scene.surface(surface_id), id).is_some()
         });
         self.parked_drafts = parked;
         let Some(field) = self.focused_text_field.as_ref() else {
@@ -720,11 +724,7 @@ impl App {
         // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
         // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
         // card that no longer exists, so the next key is what finally lets it go.
-        let node_exists = self
-            .client
-            .scene()
-            .surface(&field.surface_id)
-            .is_some_and(|tree| layout::hit::contains_node(tree, field.id));
+        let node_exists = tree_holding(self.client.scene().surface(&field.surface_id), field.id).is_some();
         if self.surface_is_live(&field.surface_id) && node_exists {
             return;
         }

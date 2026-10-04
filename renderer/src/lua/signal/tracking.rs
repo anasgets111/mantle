@@ -599,7 +599,7 @@ mod tests {
         assert_eq!((before, after), (2, 42));
     }
 
-    /// ADR-0157. `node::resolve_properties` reads one property at a time, so before the pass owned
+    /// ADR-0157. `node::resolve_declared` reads one property at a time, so before the pass owned
     /// the memo this shared computed ran once for every property of every node that reached it --
     /// measured live at 1.35ms of CPU for a single cold getter, against a 2.5ms cap.
     #[test]

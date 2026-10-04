@@ -215,12 +215,12 @@ impl LayoutStyle {
 /// `Clone` exists for `Scene::apply`'s rollback snapshot. Readers take `&` from `Scene::surface`;
 /// nothing outside this module builds one.
 ///
-/// `resolve_properties` ran over this node's raw map exactly once, so this snapshot lets later
+/// `resolve_declared` ran over this node's raw map exactly once, so this snapshot lets later
 /// readers take values without resolving anything. `properties` holds resolved values, never a
 /// `Signal` handle. Structural keys are copied raw by `node::is_structural_property`, whose parsers
 /// reject signals.
 ///
-/// ponytail: absent and nil are one state here (`node::resolve_properties` omits a key whose
+/// ponytail: absent and nil are one state here (`node::resolve_declared` omits a key whose
 /// signal resolved to `Value::Nil`, ADR-0044 decision 1's amendment), so a paint-only property
 /// bound to a still-unresolved capability signal reads as its parser's default. Upgrade path: a
 /// third state, `Value::Nil` retained as "bound but unresolved".
@@ -849,7 +849,7 @@ fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
     }
 }
 
-/// Checks kind and depth before any `resolve_properties` call. Resolution runs Lua (ADR-0044), so
+/// Checks kind and depth before any `resolve_declared` call. Resolution runs Lua (ADR-0044), so
 /// checking afterward once ran a self-generating `children` getter 64 times against the 64-level
 /// cap, and ran every getter on unsupported kinds before refusing them. Children are checked at
 /// `depth + 1`.

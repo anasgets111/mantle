@@ -185,7 +185,7 @@ impl Prop for Children {
 }
 
 /// A `list`'s `source`: absent, or a signal still reading nil before its first push, is an empty
-/// list. Raw past `resolve_properties`: [`list_children`] reads it, and only when the list builds.
+/// list. Raw past `resolve_declared`: [`list_children`] reads it, and only when the list builds.
 pub(crate) struct Items;
 
 spelled!(Items => prop::Bound::<Vec<Value>>::lua());
@@ -223,7 +223,7 @@ impl Prop for Limit {
 }
 
 /// A `list`'s items and the build that made them, `source` read here rather than by
-/// `resolve_properties` so a list that [`ListMemo::still_holds`] reads nothing at all.
+/// `resolve_declared` so a list that [`ListMemo::still_holds`] reads nothing at all.
 pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode>, ListMemo), LayoutError> {
     let mut build = ListMemo {
         inputs: list_inputs(properties),
@@ -858,7 +858,7 @@ mod tests {
         let lua = signal_lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = state("i", "screen-lock") }"#).eval().unwrap();
-        let resolved = resolve_properties(props_from_table(&table), "lock", &lua).unwrap();
+        let resolved = resolve_declared(props_from_table(&table), "lock", false, &lua).unwrap();
         assert!(matches!(
             lock_spec(&resolved).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "id"

@@ -19,7 +19,7 @@ pub(crate) trait Prop: LuaType {
     type Out;
     /// A closed set's names, which the stubs spell as a union or an alias ahead of [`LuaType::lua`].
     const CHOICES: &'static [&'static str] = &[];
-    /// Copied past `resolve_properties` as written, signal and all: [`Structural`] and [`Handle`].
+    /// Copied past `resolve_declared` as written, signal and all: [`Structural`] and [`Handle`].
     const RAW: bool = false;
     /// Declared only to refuse, so it accepts no value and nothing animates it: [`Refused`].
     const REFUSED: bool = false;

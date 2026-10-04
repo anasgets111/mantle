@@ -63,7 +63,7 @@ pub(crate) struct Property {
     /// The field's `///` block: the stub's description, after the range and default it renders
     /// itself, and a `Book:` paragraph when the docs table's cell says more, with links.
     pub doc: &'static str,
-    /// [`Prop::RAW`]: copied past `resolve_properties` as written.
+    /// [`Prop::RAW`]: copied past `resolve_declared` as written.
     pub raw: bool,
     /// [`Prop::REFUSED`]: declared only to refuse.
     pub refused: bool,

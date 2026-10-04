@@ -70,7 +70,7 @@ fn field_target(path: &[&layout::ResolvedNode], disabled_too: bool) -> Option<Fi
     if let Some(target) = target {
         return Some(FieldTarget::Masked { id: field.id, target: target.clone() });
     }
-    // Refused by `resolve_properties` unless a function, so an error here cannot happen.
+    // Refused by `resolve_declared` unless a function, so an error here cannot happen.
     use node::fields::textfield;
     let properties = &field.properties;
     let on_change = textfield::on_change.read(properties).ok().flatten();

@@ -65,11 +65,7 @@ pub(super) fn resolve(
         .and_then(|r| r.resolve_memo.as_deref())
         .filter(|memo| memo.lua == lua.weak() && same_declaration(&memo.raw, &raw));
     let tables_plain = same.map_or_else(|| node::tables_plain(&raw), |memo| memo.tables_plain);
-    let keep = if let Some(memo) = retained.as_deref().and_then(|r| r.resolve_memo.as_ref())
-        && memo.lua == lua.weak()
-        && !memo.dropped
-        && same_declaration(&memo.raw, &raw)
-    {
+    let keep = if let Some(memo) = same.filter(|memo| !memo.dropped) {
         if signal::written_since(memo.stamp, &memo.cells) {
             node::settle_property_signals(&raw, kind, tables_plain, lua)?;
         }

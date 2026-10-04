@@ -1,4 +1,4 @@
-//! Typed, validated properties for `VirtualNode`. `resolve_properties` reads each ordinary `Signal`
+//! Typed, validated properties for `VirtualNode`. `resolve_declared` reads each ordinary `Signal`
 //! at most once per node per pass (ADR-0044 decision 1); `SurfaceTopology`'s five fields and every
 //! node's optional `id` stay raw and reject signals. A `panel`'s other properties are live fields, not
 //! exceptions. Plain tables remain metamethod-backed, so each `table.get` can still run `__index`;
@@ -388,7 +388,7 @@ pub(crate) fn preview_for_error(value: &Value) -> String {
 }
 
 /// Applies the Lua numeric checks before parser ranges, then checks the narrowed `f32`. This covers
-/// literal and `resolve_properties`-resolved numbers, including integers outside `2^53`. A finite
+/// literal and `resolve_declared`-resolved numbers, including integers outside `2^53`. A finite
 /// `1e300` passes `check_number` but becomes `f32::INFINITY`; without the second check, an
 /// unchecked property could reach layout arithmetic, where `inf * 0.0` is `NaN` and
 /// `snap_to_physical`'s `as i32` silently becomes 0 (ADR-0044 decision 1).
@@ -490,12 +490,8 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
 /// properties remain untouched in the map. When no signal is present, at the top level or in a
 /// table, resolution completes in place with no allocations or sorting.
-#[cfg(test)]
-pub fn resolve_properties(properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
-    resolve_declared(properties, kind, false, lua)
-}
-
-/// Resolves `properties` as the scan above describes; `tables_plain` (see [`tables_plain`]) vouches
+///
+/// `tables_plain` (see [`tables_plain`]) vouches
 /// that the walked tables hold no signal, so they are not scanned again.
 pub(crate) fn resolve_declared(
     mut properties: PropMap,
@@ -592,6 +588,12 @@ const SCAN_TABLES: usize = 256;
 /// The enclosing tables of a walk, so a back-reference keeps the original table.
 type TablePath = [*const std::ffi::c_void; NESTED_SIGNAL_DEPTH];
 
+/// Whether a walk leaves `table` (at address `at`) alone: past the depth limit, under a metatable,
+/// or already on the `path` of enclosing tables.
+fn walk_skips(table: &mlua::Table, at: *const std::ffi::c_void, path: &TablePath, depth: usize) -> bool {
+    depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() || path[..depth].contains(&at)
+}
+
 /// Whether `table` under `property` is walked for signals: `child`/`children` hold node tables,
 /// each resolved as its own node, and the child-table cache keys them by address.
 fn walked_table<'a>(property: &str, value: &'a Value) -> Option<&'a mlua::Table> {
@@ -618,11 +620,11 @@ fn holds_signals(properties: &PropMap, tables_plain: bool) -> bool {
 
 /// Whether a walk of `table` may find a signal, scanned without allocating; a scan past
 /// [`SCAN_TABLES`] says yes and leaves the answer to the walk.
-/// ponytail: each scanned value goes through mlua (~70 ns), 1.8 µs for a five-table node, paid on a new declaration. Upgrade: a raw lua_next scan.
+/// ponytail: mlua converts each scanned value (~70 ns); upgrade: a raw lua_next scan.
 fn may_hold_signal(table: &mlua::Table) -> bool {
     fn scan(table: &mlua::Table, path: &mut TablePath, depth: usize, budget: &mut usize) -> bool {
         let at = table.to_pointer();
-        if depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() || path[..depth].contains(&at) {
+        if walk_skips(table, at, path, depth) {
             return false;
         }
         let Some(left) = budget.checked_sub(1) else { return true };
@@ -679,7 +681,7 @@ fn resolve_nested(
     lua: &Lua,
 ) -> Result<Option<mlua::Table>, LayoutError> {
     let at = table.to_pointer();
-    if depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() || path[..depth].contains(&at) {
+    if walk_skips(table, at, path, depth) {
         return Ok(None);
     }
     if let Some(walked) = seen.get(&(at, depth)) {
@@ -821,7 +823,7 @@ mod tests {
         table.set("font_size", outer).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert!(matches!(
-            resolve_properties(node.properties, "text", &lua).unwrap_err(),
+            resolve_declared(node.properties, "text", false, &lua).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "font_size"
         ));
     }
@@ -830,7 +832,7 @@ mod tests {
     /// -- exactly the state every rostered capability's global is in before its first
     /// `StateSnapshot` (`renderer/src/socket/client/mod.rs`'s `RendererClient::new` seeds all of
     /// `shared::Capability::ALL` at `Value::Nil`), which is what a config binding a bare capability
-    /// signal resolves at startup. Routed through [`resolve_properties`] because that is where the
+    /// signal resolves at startup. Routed through [`resolve_declared`] because that is where the
     /// nil rule now lives: the key is omitted from the resolved map rather than each parser
     /// checking for a `Value::Nil` of its own.
     fn props_with_nil_signal(lua: &mlua::Lua, kind: &str, property: &str) -> PropMap {
@@ -839,7 +841,7 @@ mod tests {
         let table = lua.create_table().unwrap();
         table.set("kind", kind).unwrap();
         table.set(property, signal).unwrap();
-        resolve_properties(props_from_table(&table), kind, lua).unwrap()
+        resolve_declared(props_from_table(&table), kind, false, lua).unwrap()
     }
 
     #[test]
@@ -882,7 +884,7 @@ mod tests {
         table.set("id", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
+        let resolved = resolve_declared(node.properties, "rect", false, &lua).unwrap();
 
         assert!(matches!(resolved.get("id"), Some(Value::UserData(_))), "id must survive the resolve step unresolved");
         assert!(
@@ -901,14 +903,14 @@ mod tests {
         ] {
             let table: mlua::Table = lua.load(format!(r#"return {{ kind = "{kind}", {src} }}"#)).eval().unwrap();
             let declared = props_from_table(&table);
-            let resolved = resolve_properties(declared.clone(), kind, &lua).unwrap();
+            let resolved = resolve_declared(declared.clone(), kind, false, &lua).unwrap();
             assert!(same_lua_value(&declared[property], &resolved[property]), "{property}");
         }
         let table: mlua::Table = lua
             .load(r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = state("a", true) } }"#)
             .eval()
             .unwrap();
-        let resolved = resolve_properties(props_from_table(&table), "panel", &lua).unwrap();
+        let resolved = resolve_declared(props_from_table(&table), "panel", false, &lua).unwrap();
         assert!(fields::panel::anchor.read(&resolved).unwrap_err().to_string().contains("`top`"));
     }
 
@@ -918,7 +920,7 @@ mod tests {
         let lua = signal_lua();
         let props =
             rect_props(&lua, "local m = { top = state('top', 4) } for i = 1, 20 do m[i] = m end return { margin = m }");
-        let Value::Table(margin) = &resolve_properties(props, "rect", &lua).unwrap()["margin"] else { panic!() };
+        let Value::Table(margin) = &resolve_declared(props, "rect", false, &lua).unwrap()["margin"] else { panic!() };
         assert_eq!(margin.raw_get::<i64>("top").unwrap(), 4);
         // A back-reference keeps the original table, signal and all, for the parser to refuse.
         assert!(
@@ -928,7 +930,7 @@ mod tests {
             .load(r#"local t = { x = state("x", 1) } for _ = 1, 9 do t = { t } end return { kind = "shader", params = t }"#)
             .eval()
             .unwrap();
-        let mut table = resolve_properties(props_from_table(&shader), "shader", &lua).unwrap()["params"].clone();
+        let mut table = resolve_declared(props_from_table(&shader), "shader", false, &lua).unwrap()["params"].clone();
         while let Value::Table(inner) = table {
             table = inner.raw_get(1).unwrap_or(Value::Nil);
             if table.is_nil() {
@@ -951,7 +953,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let resolved = resolve_properties(props_from_table(&shader), "shader", &lua).unwrap();
+        let resolved = resolve_declared(props_from_table(&shader), "shader", false, &lua).unwrap();
         let x: Value = lua
             .load("return function(p) return p[2][1].x end")
             .eval::<mlua::Function>()
@@ -969,7 +971,7 @@ mod tests {
             &lua,
             r##"return { background = { gradient = "linear", stops = { { 0, "#ffffff" }, { 1, state("hole") } } } }"##,
         );
-        let err = resolve_properties(props, "rect", &lua).unwrap_err();
+        let err = resolve_declared(props, "rect", false, &lua).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background.stops[2][2]"),
             "{err:?}"
@@ -987,7 +989,7 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        assert!(matches!(resolve_properties(node.properties, "rect", &lua).unwrap_err(),
+        assert!(matches!(resolve_declared(node.properties, "rect", false, &lua).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "on_hover"));
     }
 
@@ -1000,7 +1002,7 @@ mod tests {
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got String(\"yes\")"),
         ] {
             let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
-            let err = resolve_properties(props_from_table(&table), "rect", &lua).unwrap_err();
+            let err = resolve_declared(props_from_table(&table), "rect", false, &lua).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property: p, detail } if p == property && detail == expected),
                 "{source}: {err}"
@@ -1018,12 +1020,12 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_properties(node.properties, "rect", &lua).unwrap();
+        let resolved = resolve_declared(node.properties, "rect", false, &lua).unwrap();
         assert!(matches!(resolved.get("on_hover"), Some(Value::Function(_))), "a Function is not a Signal to resolve");
         assert!(matches!(resolved.get("hover"), Some(Value::UserData(_))), "the slot stays the handle it was");
     }
 
-    /// The sort in [`resolve_properties`] (ADR-0024). The fixture is `opacity` and `background`
+    /// The sort in [`resolve_declared`] (ADR-0024). The fixture is `opacity` and `background`
     /// because the map reaches them in that order, so dropping the sort fails this; the first
     /// assertion is what keeps a hasher change from quietly making the second one vacuous.
     #[test]
@@ -1046,7 +1048,7 @@ mod tests {
         let unsorted: Vec<&str> = props.keys().copied().collect();
         assert_eq!(unsorted, ["opacity", "background"], "the fixture must not already be in sorted order");
 
-        let err = resolve_properties(props, "rect", &lua).unwrap_err();
+        let err = resolve_declared(props, "rect", false, &lua).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background"),
             "a broken config must name the property its own text names first, got: {err}"

@@ -368,7 +368,7 @@ mod tests {
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert_eq!(
-            fields::text::content.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap().0,
+            fields::text::content.read(&resolve_declared(node.properties, "text", false, &lua).unwrap()).unwrap().0,
             "hello"
         );
     }
@@ -380,7 +380,7 @@ mod tests {
         let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
         let literal_props = props_from_table(&literal_table);
         let literal_err =
-            fields::text::content.read(&resolve_properties(literal_props, "text", &lua).unwrap()).unwrap_err();
+            fields::text::content.read(&resolve_declared(literal_props, "text", false, &lua).unwrap()).unwrap_err();
 
         let signal = crate::lua::signal::Signal::new_live(Value::Integer(5), crate::lua::signal::DirtyFlag::new()).0;
         let table = lua.create_table().unwrap();
@@ -388,7 +388,7 @@ mod tests {
         table.set("content", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         let signal_err =
-            fields::text::content.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap_err();
+            fields::text::content.read(&resolve_declared(node.properties, "text", false, &lua).unwrap()).unwrap_err();
 
         for err in [&literal_err, &signal_err] {
             assert!(matches!(
@@ -481,9 +481,10 @@ mod tests {
         let resolved = |src: &str| {
             let table: mlua::Table =
                 lua.load(format!(r#"return {{ kind = "text", content = {src} }}"#)).eval().unwrap();
-            fields::text::content.read(&crate::layout::node::resolve_properties(
+            fields::text::content.read(&crate::layout::node::resolve_declared(
                 props_from_table(&table),
                 "text",
+                false,
                 &lua,
             )?)
         };
@@ -750,7 +751,7 @@ mod tests {
         table.set("font_size", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert_eq!(
-            fields::text::font_size.read(&resolve_properties(node.properties, "text", &lua).unwrap()).unwrap(),
+            fields::text::font_size.read(&resolve_declared(node.properties, "text", false, &lua).unwrap()).unwrap(),
             18.0
         );
     }

@@ -467,7 +467,7 @@ pub(crate) use lua_class;
 /// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
 /// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
 /// parser's `only_keys` accepts. Alias and class fields are read through `Input`, and each also
-/// takes a signal, which `resolve_properties` reads. `#[shared = "Name"]` is an alias also handed
+/// takes a signal, which `resolve_declared` reads. `#[shared = "Name"]` is an alias also handed
 /// to Lua, so its fields are spelled without one. `#[record = "Name"]` is a class handed to Lua.
 /// `key: T as S` changes only the Lua spelling.
 macro_rules! lua_shape {

@@ -303,9 +303,10 @@ mod tests {
             stops = {{ {{ 0, {white} }}, {{ 1, "#000000" }} }} }} }}"##
             )
         };
-        let bound = crate::layout::node::resolve_properties(
+        let bound = crate::layout::node::resolve_declared(
             eval_props(&lua, &src(r##"state("white", "#ffffff")"##)),
             "rect",
+            false,
             &lua,
         );
         let plain = fields::paint::background.read(&eval_props(&lua, &src(r##""#ffffff""##))).unwrap();

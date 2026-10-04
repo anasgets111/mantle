@@ -53,7 +53,7 @@ pub(in crate::wayland) struct ArmedSerial {
 
 /// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
 /// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
-/// is transparent. `layout::node::resolve_properties` refuses an `on_click` that is not a function.
+/// is transparent. `layout::node::resolve_declared` refuses an `on_click` that is not a function.
 fn click_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint) -> Option<Clickable> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
         let on_click = pointer::on_click.read(&node.properties).ok().flatten();

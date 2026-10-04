@@ -1,5 +1,5 @@
 //! A field's Rust type supplies its parser, Lua stub spelling and error's expected type,
-//! so the three cannot disagree. A nested signal `resolve_properties` did not read is refused.
+//! so the three cannot disagree. A nested signal `resolve_declared` did not read is refused.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -29,7 +29,7 @@ pub(crate) fn field<T: Input>(property: &str, table: &mlua::Table, key: &str) ->
     read(property, key, table.get(key).map_err(|e| invalid(property, e.to_string()))?)
 }
 
-/// `value` unless it is a signal `resolve_properties` skipped: in a raw row, under a metatable,
+/// `value` unless it is a signal `resolve_declared` skipped: in a raw row, under a metatable,
 /// past its walk depth or inside another signal's result.
 fn plain(property: &str, key: impl std::fmt::Display, value: Value) -> Result<Value, LayoutError> {
     match value {
