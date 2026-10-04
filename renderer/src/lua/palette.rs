@@ -26,7 +26,7 @@ type PaletteResult = (u64, Option<Vec<PaletteSwatch>>);
 // `share` is the fraction of counted pixels, so a config can weigh colourfulness against coverage.
 lua_shape! {
     #[record = "PaletteSwatch"]
-    struct PaletteSwatch {
+    pub(crate) struct PaletteSwatch {
         /// `#RRGGBB`.
         color: String as crate::layout::node::prop::Color,
         /// Fraction of the counted (non-transparent) pixels, 0 to 1.
@@ -172,7 +172,8 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
             };
             Ok(registry.quantize(path, depth, rescale, on_done))
         }
-    )
+    )?;
+    super::scheme::register(lua)
 }
 
 #[cfg(test)]

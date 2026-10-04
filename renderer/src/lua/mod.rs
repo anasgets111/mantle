@@ -17,6 +17,7 @@ pub mod namespace;
 pub mod nodes;
 pub mod palette;
 pub mod process;
+pub mod scheme;
 pub mod session_process;
 pub mod signal;
 pub mod store;

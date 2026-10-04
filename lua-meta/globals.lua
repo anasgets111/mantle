@@ -203,3 +203,69 @@ function PaletteHandle:cancel() end
 ---@param on_done fun(swatches: PaletteSwatch[]?)
 ---@return PaletteHandle
 function palette.quantize(path, opts, on_done) end
+
+---Material 3 colour roles.
+---@class PaletteScheme
+---@field primary Color
+---@field on_primary Color
+---@field primary_container Color
+---@field on_primary_container Color
+---@field inverse_primary Color
+---@field primary_fixed Color
+---@field primary_fixed_dim Color
+---@field on_primary_fixed Color
+---@field on_primary_fixed_variant Color
+---@field secondary Color
+---@field on_secondary Color
+---@field secondary_container Color
+---@field on_secondary_container Color
+---@field secondary_fixed Color
+---@field secondary_fixed_dim Color
+---@field on_secondary_fixed Color
+---@field on_secondary_fixed_variant Color
+---@field tertiary Color
+---@field on_tertiary Color
+---@field tertiary_container Color
+---@field on_tertiary_container Color
+---@field tertiary_fixed Color
+---@field tertiary_fixed_dim Color
+---@field on_tertiary_fixed Color
+---@field on_tertiary_fixed_variant Color
+---@field error Color
+---@field on_error Color
+---@field error_container Color
+---@field on_error_container Color
+---@field surface_dim Color
+---@field surface Color
+---@field surface_tint Color
+---@field surface_bright Color
+---@field surface_container_lowest Color
+---@field surface_container_low Color
+---@field surface_container Color
+---@field surface_container_high Color
+---@field surface_container_highest Color
+---@field on_surface Color
+---@field on_surface_variant Color
+---@field outline Color
+---@field outline_variant Color
+---@field inverse_surface Color
+---@field inverse_on_surface Color
+---@field surface_variant Color
+---@field background Color
+---@field on_background Color
+---@field shadow Color
+---@field scrim Color
+
+---Material 3 colour roles from one seed colour, as Material Color Utilities builds them.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescheme)
+---@param seed Color `#RRGGBB`.
+---@param opts? { dark?: boolean, variant?: "tonal_spot"|"vibrant"|"expressive"|"fidelity"|"content"|"neutral"|"monochrome"|"rainbow"|"fruit_salad", contrast?: number, [string]: "no such property" } `dark` default `false`; `variant` default `"tonal_spot"`; `contrast` -1 to 1, default 0. Anything else raises.
+---@return PaletteScheme
+function palette.scheme(seed, opts) end
+
+---Up to 4 seed colours ranked by Material 3's Score: chromatic, common and far apart in hue.
+---`#4285F4` when none qualifies.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescore)
+---@param swatches PaletteSwatch[] `palette.quantize`'s swatches; only the ratios of their `share`s count.
+---@return Color[]
+function palette.score(swatches) end

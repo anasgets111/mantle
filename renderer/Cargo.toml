@@ -86,6 +86,9 @@ rustc-hash = "2"
 gbm = { version = "0.18.0", default-features = false }
 accesskit = "0.25.1"
 accesskit_unix = "0.24.0"
+# Material 3 roles for `palette.scheme`; no dependencies of its own. Not `quantize`: it gates Score
+# behind ahash, getrandom and zerocopy, so `lua/scheme.rs` ports Score's 60 lines instead.
+material-colors = "0.5.0"
 
 [dev-dependencies]
 tempfile.workspace = true

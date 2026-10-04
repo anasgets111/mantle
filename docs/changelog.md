@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `palette.scheme(seed, opts?)` returns the 49 Material 3 colour roles for a seed, with `dark`, `variant` and `contrast` options; `palette.score(swatches)` ranks `palette.quantize` swatches into seed colours as Material 3 does.
 - `animate.width` and `animate.height` ease a content-sized axis: when a label changes, the box grows from the size on screen to the new content size, and siblings follow. Only eased entries animate it; springs and keyframes snap.
 - `radius` also takes per-corner values, `{ top_left, top_right, bottom_right, bottom_left }`, which `animate` tweens. Corners too big for a side shrink together, as in CSS; a shadow rounds by the mean corner.
 - `hittable = false` lets the pointer through a node and its descendants to what is underneath; a descendant's `hittable = true` takes it back.

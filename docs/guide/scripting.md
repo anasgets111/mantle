@@ -22,6 +22,7 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
 | Pull colours out of a wallpaper | [`palette.quantize`](#palettequantize) |
+| Build Material 3 colours from a seed or a wallpaper | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
 What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
@@ -299,6 +300,50 @@ return panel {
 | `on_done(swatches)` | `{ color = "#RRGGBB", share = 0..1 }` entries, most common first. `share` counts only non-transparent pixels. `nil` on failure, with a logged warning. Runs outside the CPU budget; a raise is logged as a warning |
 | Handle | `handle:cancel()` drops the callback; the work still finishes |
 
+## palette.scheme
+
+Material 3 colour roles from one seed colour, built by Material Color Utilities at spec 2021 on
+the phone platform. Synchronous: one scheme takes about 0.5 ms.
+
+```lua
+local roles = palette.scheme("#6750A4", { dark = true, variant = "tonal_spot" })
+
+return rect {
+    background = roles.surface_container, padding = 12,
+    children = { text { content = "Material", foreground = roles.on_surface } },
+}
+```
+
+| Part | Contract |
+| :--- | :--- |
+| Signature | `palette.scheme(seed, opts?)` → roles |
+| `seed` | `"#RRGGBB"`; anything else raises |
+| `opts.dark` | Boolean, default `false` |
+| `opts.variant` | `"tonal_spot"` (default), `"vibrant"`, `"expressive"`, `"fidelity"`, `"content"`, `"neutral"`, `"monochrome"`, `"rainbow"` or `"fruit_salad"`. Another raises |
+| `opts.contrast` | `-1` to `1`, default `0`; `1` is high contrast. Out of range raises |
+| `opts` | Only those three keys; another raises |
+| Roles | A table of 49 `"#RRGGBB"` strings keyed by role in snake_case: `primary`, `on_primary_container`, `surface_container_highest`, … (`PaletteScheme` in the stubs) |
+
+## palette.score
+
+Ranks [`palette.quantize`](#palettequantize) swatches as Material 3 picks a wallpaper's seed:
+chromatic colours that cover more of the image, spread across hues. Quantize at depth 6 or 7, so
+Score has enough colours to choose from.
+
+```lua,fragment
+local roles = state("roles", palette.scheme("#6750A4"))
+
+palette.quantize(mantle.config_dir .. "/wallpaper.png", { depth = 7 }, function(found)
+    if found then roles:set(palette.scheme(palette.score(found)[1], { dark = true })) end
+end)
+```
+
+| Part | Contract |
+| :--- | :--- |
+| Signature | `palette.score(swatches)` → `{ "#RRGGBB", ... }` |
+| `swatches` | `{ color = "#RRGGBB", share }` entries; only the ratios of the `share`s count. A bad colour or a `share` not above `0` raises |
+| Result | Up to 4 colours, best first, at least 15° of hue apart. Colours with chroma under 5 or hues under 1% of the image drop out; with none left it is `{ "#4285F4" }` |
+
 ## fonts
 
 `fonts { family, ... }` sets the fallback chain every `text` node uses. Each glyph takes the
@@ -345,4 +390,5 @@ See also: [processes](processes.md), [runtime](runtime.md) (reloads, budgets, lo
 Source: [store](../../renderer/src/lua/store.rs),
 [storage controller](../../supervisor/src/capabilities/storage/controller.rs), [timer](../../renderer/src/lua/timer.rs),
 [action](../../renderer/src/lua/action.rs), [json](../../renderer/src/lua/json.rs), [log](../../renderer/src/lua/log.rs),
-[fuzzy](../../renderer/src/lua/fuzzy.rs), [palette](../../renderer/src/lua/palette.rs), [fonts](../../renderer/src/lua/fonts.rs).
+[fuzzy](../../renderer/src/lua/fuzzy.rs), [palette](../../renderer/src/lua/palette.rs),
+[scheme](../../renderer/src/lua/scheme.rs), [fonts](../../renderer/src/lua/fonts.rs).

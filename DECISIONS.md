@@ -7545,3 +7545,17 @@ RGBA at source size first and peaks reached 177 MB at 4K and 313 MB at 6K, uncha
 Thumbnail and palette sizes keep `thumbnail`'s fit-inside rounding (`fit_inside`), so cached
 thumbnails keep their sizes; a texture now scales to exactly `stored_size`, where `thumbnail` could
 come out a pixel narrower.
+
+## 0318. Material 3 schemes come from `material-colors`; Score is ported
+
+`palette.scheme` builds the 49 Material 3 roles with `material-colors` 0.5 (MIT or Apache-2.0, the
+material-color-utilities port matugen uses), default features only, which add no other crates. One
+scheme takes 0.5 ms in a debug build, so the call is synchronous. Schemes use spec 2021 on the
+phone platform, the crate's default and matugen's.
+
+`palette.score` is a 50-line port of upstream `Score.score` (4 picks, filtering on, `#4285F4`
+fallback), checked against upstream's test vectors. The crate's own Score sits behind its
+`quantize` feature, which adds ahash, getrandom and zerocopy, takes a private
+`IndexMap<_, _, AHasher>` alias, and calls `unwrap_unchecked` on a `partial_cmp` that a NaN score
+reaches. Cost: upstream Score fixes need a manual port. Mantle's median-cut quantizer stays, so
+seeds can differ slightly from matugen's Celebi on the same wallpaper.
