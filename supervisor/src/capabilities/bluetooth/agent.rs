@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 use shared::{Zeroizing, debug, error};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
+use zbus::message::Header;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
 use super::proxies::bind_agent_manager;
@@ -241,21 +242,49 @@ impl BluetoothAgent {
     }
 }
 
+/// Stock D-Bus policy lets only root call `Agent1`; this refuses the rest too, so a forged call
+/// cannot read a typed PIN or cancel a real pairing.
+async fn from_bluez(bus: &zbus::Connection, header: &Header<'_>) -> Result<(), AgentError> {
+    if crate::capabilities::sent_by_owner(bus, header, "org.bluez").await {
+        return Ok(());
+    }
+    Err(AgentError::Rejected("only BlueZ may call the agent".to_string()))
+}
+
 #[zbus::interface(name = "org.bluez.Agent1")]
 impl BluetoothAgent {
-    async fn request_pin_code(&self, device: OwnedObjectPath) -> Result<String, AgentError> {
+    async fn request_pin_code(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+    ) -> Result<String, AgentError> {
+        from_bluez(bus, &header).await?;
         let mut secret = self.ask(PairingKind::PinEntry, &device, None).await?;
         // ponytail: zbus requires an owned String; use a secret-aware serializer to remove that copy.
         String::from_utf8(std::mem::take(&mut *secret)).map_err(|_| AgentError::Rejected("invalid PIN".to_string()))
     }
 
-    async fn request_passkey(&self, device: OwnedObjectPath) -> Result<u32, AgentError> {
+    async fn request_passkey(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+    ) -> Result<u32, AgentError> {
+        from_bluez(bus, &header).await?;
         let secret = self.ask(PairingKind::PasskeyEntry, &device, None).await?;
         Ok(secret.iter().fold(0, |value, digit| value * 10 + u32::from(digit - b'0')))
     }
 
     /// An error here cancels the pairing, which is right when nobody was shown the PIN.
-    async fn display_pin_code(&self, device: OwnedObjectPath, pincode: String) -> Result<(), AgentError> {
+    async fn display_pin_code(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+        pincode: String,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         if self.show(PairingKind::Display, &device, Some(pincode), None).await {
             Ok(())
         } else {
@@ -263,33 +292,72 @@ impl BluetoothAgent {
         }
     }
 
-    async fn request_confirmation(&self, device: OwnedObjectPath, passkey: u32) -> Result<(), AgentError> {
+    async fn request_confirmation(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+        passkey: u32,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         self.ask(PairingKind::Confirm, &device, Some(format!("{passkey:06}"))).await.map(|_| ())
     }
 
     /// BlueZ repeats this for every key typed on the device. The first call shows the code, and the
     /// rest find the slot taken by that same code.
-    async fn display_passkey(&self, device: OwnedObjectPath, passkey: u32, _entered: u16) {
+    async fn display_passkey(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+        passkey: u32,
+        _entered: u16,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         self.show(PairingKind::Display, &device, Some(format!("{passkey:06}")), None).await;
+        Ok(())
     }
 
-    async fn authorize_service(&self, device: OwnedObjectPath, _uuid: String) -> Result<(), AgentError> {
+    async fn authorize_service(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+        _uuid: String,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         self.ask(PairingKind::Service, &device, None).await.map(|_| ())
     }
 
-    async fn request_authorization(&self, device: OwnedObjectPath) -> Result<(), AgentError> {
+    async fn request_authorization(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        device: OwnedObjectPath,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         self.ask(PairingKind::Authorize, &device, None).await.map(|_| ())
     }
 
-    async fn cancel(&self) {
+    async fn cancel(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+    ) -> Result<(), AgentError> {
+        from_bluez(bus, &header).await?;
         debug!(2; "pairing cancelled");
         if answer(&self.prompts, None, false, Instant::now()) {
             let _ = self.events.send(BluetoothSignal::PairingChanged);
         }
+        Ok(())
     }
 
-    async fn release(&self) {
-        self.cancel().await;
+    async fn release(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+    ) -> Result<(), AgentError> {
+        self.cancel(header, bus).await
     }
 }
 
@@ -336,24 +404,49 @@ mod tests {
     use super::super::proxies::Device1Proxy;
     use super::super::registry::DeviceEntry;
     use super::*;
-    use crate::capabilities::test_support::p2p_pair_serving;
+    use crate::capabilities::test_support::{PrivateBus, p2p_pair_serving, private_bus};
 
     const MAC: &str = "00:11:22:33:44:55";
 
-    /// A p2p pair with the agent already exported, returned as `(caller, agent, prompts, signals)`.
-    /// `invited` answers every device the same way. Every test here really calls the agent, so it
-    /// goes in through the builder rather than `object_server().at(..)` afterwards; see
-    /// `test_support::p2p_pair` for why that ordering is the difference between a reply and a
-    /// dropped call.
+    /// A private bus with the agent already exported, returned as `(caller, agent, prompts,
+    /// signals)`; the caller owns `org.bluez`, as only BlueZ is answered. `invited` answers every
+    /// device the same way. The agent goes in through the builder rather than
+    /// `object_server().at(..)` afterwards; see `test_support::p2p_pair` for why that ordering is the
+    /// difference between a reply and a dropped call.
     async fn agent_pair(
         invited: bool,
         devices: DeviceRegistry,
-    ) -> (zbus::Connection, zbus::Connection, PromptSlot, UnboundedReceiver<BluetoothSignal>) {
+    ) -> (zbus::Connection, (PrivateBus, zbus::Connection), PromptSlot, UnboundedReceiver<BluetoothSignal>) {
         let prompts = PromptSlot::default();
         let (events, signals) = unbounded_channel();
         let agent = BluetoothAgent { prompts: prompts.clone(), devices, invited: Arc::new(move |_| invited), events };
-        let (caller, agent_side) = p2p_pair_serving(|peer| peer.serve_at(AGENT_OBJECT_PATH, agent)).await;
-        (caller, agent_side, prompts, signals)
+        let bus = private_bus().await;
+        let agent_side = bus.builder().name("org.mantle.Supervisor").unwrap().serve_at(AGENT_OBJECT_PATH, agent);
+        let agent_side = agent_side.unwrap().build().await.unwrap();
+        let caller = bus.builder().name("org.bluez").unwrap().build().await.unwrap();
+        (caller, (bus, agent_side), prompts, signals)
+    }
+
+    #[tokio::test]
+    async fn only_bluez_is_answered() {
+        let (_bluez, (bus, _agent), prompts, _signals) = agent_pair(true, DeviceRegistry::default()).await;
+        let forger = bus.connection().await;
+        let proxy = agent1_proxy(&forger).await;
+        *prompts.lock().unwrap() = Some(PendingPrompt::display(MAC));
+        let device = dummy_device_path();
+        let calls = [
+            proxy.call_method("RequestPinCode", &(&device,)).await,
+            proxy.call_method("RequestPasskey", &(&device,)).await,
+            proxy.call_method("DisplayPinCode", &(&device, "0000")).await,
+            proxy.call_method("RequestConfirmation", &(&device, 1u32)).await,
+            proxy.call_method("DisplayPasskey", &(&device, 1u32, 0u16)).await,
+            proxy.call_method("AuthorizeService", &(&device, "0000110b-0000-1000-8000-00805f9b34fb")).await,
+            proxy.call_method("RequestAuthorization", &(&device,)).await,
+            proxy.call_method("Cancel", &()).await,
+            proxy.call_method("Release", &()).await,
+        ];
+        assert!(calls.into_iter().all(rejected));
+        assert_eq!(prompts.lock().unwrap().as_ref().map(|p| p.request.kind), Some(PairingKind::Display));
     }
 
     async fn agent1_proxy(caller_side: &zbus::Connection) -> zbus::Proxy<'_> {
@@ -366,7 +459,7 @@ mod tests {
             .expect("valid interface name")
             .build()
             .await
-            .expect("failed to build a p2p proxy to the agent")
+            .expect("failed to build a proxy to the agent")
     }
 
     fn dummy_device_path() -> zbus::zvariant::ObjectPath<'static> {

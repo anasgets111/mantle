@@ -113,6 +113,18 @@ pub(crate) fn next_request_id() -> Option<String> {
     NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).ok().map(|id| id.to_string())
 }
 
+/// Whether `header`'s sender owns the well-known `name`. A bus lets any local process call an
+/// exported agent; only the daemon it registered with is answered.
+pub(crate) async fn sent_by_owner(
+    bus: &zbus::Connection,
+    header: &zbus::message::Header<'_>,
+    name: &'static str,
+) -> bool {
+    let name = zbus::names::WellKnownName::from_static_str_unchecked(name).into();
+    let owner = async { zbus::fdo::DBusProxy::new(bus).await?.get_name_owner(name).await };
+    matches!((owner.await, header.sender()), (Ok(owner), Some(sender)) if owner.as_str() == sender.as_str())
+}
+
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.

@@ -115,14 +115,12 @@ fn drop_request(
     true
 }
 
-/// The system bus lets any local process call an agent; only NetworkManager's name owner may.
+/// NetworkManager's policy lets any local process call the agent.
 async fn from_nm(bus: &zbus::Connection, header: &Header<'_>) -> Result<(), AgentError> {
-    let nm = zbus::names::WellKnownName::from_static_str_unchecked(NM_NAME).into();
-    let owner = async { zbus::fdo::DBusProxy::new(bus).await?.get_name_owner(nm).await };
-    match (owner.await, header.sender()) {
-        (Ok(owner), Some(sender)) if owner.as_str() == sender.as_str() => Ok(()),
-        _ => Err(AgentError::PermissionDenied("only NetworkManager may call the secret agent".into())),
+    if crate::capabilities::sent_by_owner(bus, header, NM_NAME).await {
+        return Ok(());
     }
+    Err(AgentError::PermissionDenied("only NetworkManager may call the secret agent".into()))
 }
 
 impl SecretAgent {
