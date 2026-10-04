@@ -48,7 +48,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button)` | `button` is `"left"`, `"right"` or `"middle"` | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
+| `on_click(rect, button, pointer)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` relative to the node, unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
 | `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` relative to the node, unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
@@ -166,8 +166,9 @@ focus scope.
 Tab moves to the next control in document order across the focused surface and its shown popups.
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
 When fewer than two controls can take focus, Tab reaches a plain field's `on_navigate`.
-Enter or Space activates a named control once per press, calling `on_click(rect, "left")` and
-running `submit` when set. Pointer presses also focus named controls.
+Enter or Space activates a named control once per press, calling `on_click(rect, "left", pointer)`
+with `pointer` at the node's centre, and running `submit` when set. Pointer presses also focus
+named controls.
 
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or

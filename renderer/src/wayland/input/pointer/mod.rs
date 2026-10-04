@@ -254,17 +254,29 @@ fn press_chooses_focus(
     }
 }
 
-/// Call `on_click` with its node rect in surface logical coordinates (ADR-0050 decision 3). The
-/// rect round-trips to popup `anchor_rect` through Lua. Error labels distinguish building the
-/// engine's argument from a raised config handler.
+/// `position` (surface coordinates) as the node-local `{ x, y }` table `on_drag` and `on_click` pass.
+fn local_pointer_table(lua: &Lua, rect: LogicalRect, position: (f64, f64)) -> mlua::Result<mlua::Table> {
+    let pointer = lua.create_table()?;
+    pointer.set("x", position.0 as f32 - rect.x)?;
+    pointer.set("y", position.1 as f32 - rect.y)?;
+    Ok(pointer)
+}
+
+/// Call `on_click` with its node rect in surface logical coordinates (ADR-0050 decision 3), the
+/// button, and `position` as a node-local pointer like `on_drag`'s. The rect round-trips to popup
+/// `anchor_rect` through Lua. Error labels distinguish building the engine's argument from a
+/// raised config handler.
 pub(in crate::wayland::input) fn call_on_click(
     lua: &Lua,
     on_click: &Function,
     rect: LogicalRect,
     button: &str,
+    position: (f64, f64),
 ) -> Result<(), (&'static str, mlua::Error)> {
     let argument = rect_table(lua, rect).map_err(|e| ("could not build on_click's rect argument", e))?;
-    on_click.call::<()>((argument, button)).map_err(|e| ("on_click raised, ignoring it", e))
+    let pointer =
+        local_pointer_table(lua, rect, position).map_err(|e| ("could not build on_click's pointer argument", e))?;
+    on_click.call::<()>((argument, button, pointer)).map_err(|e| ("on_click raised, ignoring it", e))
 }
 
 /// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
@@ -278,9 +290,8 @@ fn call_on_drag(
     phase: DragPhase,
 ) -> Result<(), (&'static str, mlua::Error)> {
     let rect_argument = rect_table(lua, rect).map_err(|e| ("could not build on_drag's rect argument", e))?;
-    let pointer = lua.create_table().map_err(|e| ("could not build on_drag's pointer argument", e))?;
-    pointer.set("x", position.0 as f32 - rect.x).map_err(|e| ("could not build on_drag's pointer argument", e))?;
-    pointer.set("y", position.1 as f32 - rect.y).map_err(|e| ("could not build on_drag's pointer argument", e))?;
+    let pointer =
+        local_pointer_table(lua, rect, position).map_err(|e| ("could not build on_drag's pointer argument", e))?;
     on_drag.call::<()>((rect_argument, pointer, phase.name())).map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
@@ -441,7 +452,7 @@ impl PointerHandler for App {
                                     self.finish_secure_submit();
                                 }
                                 if let Some(handler) = handler {
-                                    self.fire_on_click(&instance_id, clickable.rect, name, &handler);
+                                    self.fire_on_click(&instance_id, clickable.rect, name, event.position, &handler);
                                 }
                             }
                         }
@@ -656,11 +667,12 @@ impl App {
         instance_id: &str,
         rect: LogicalRect,
         button: &str,
+        position: (f64, f64),
         on_click: &Function,
     ) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         crate::lua::focus::begin_click(self.client.lua(), instance_id);
-        if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button) {
+        if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, position) {
             warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
         crate::lua::focus::end_click(self.client.lua());
@@ -930,15 +942,17 @@ mod tests {
         // one-argument form keeps working, since Lua drops arguments a function does not declare.
         let lua = Lua::new();
         let seen: Function = lua
-            .load(r#"seen = {} return function(rect, button) seen.x, seen.w, seen.button = rect.x, rect.width, button end"#)
+            .load(r#"seen = {} return function(rect, button, pointer) seen.x, seen.w, seen.button, seen.px, seen.py = rect.x, rect.width, button, pointer.x, pointer.y end"#)
             .eval()
             .unwrap();
-        call_on_click(&lua, &seen, LogicalRect { x: 12.0, y: 4.0, width: 40.0, height: 24.0 }, "right").unwrap();
+        call_on_click(&lua, &seen, LogicalRect { x: 12.0, y: 4.0, width: 40.0, height: 24.0 }, "right", (20.0, 10.0))
+            .unwrap();
 
         let recorded: Table = lua.globals().get("seen").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 12.0);
         assert_eq!(recorded.get::<f32>("w").unwrap(), 40.0);
         assert_eq!(recorded.get::<String>("button").unwrap(), "right");
+        assert_eq!((recorded.get::<f32>("px").unwrap(), recorded.get::<f32>("py").unwrap()), (8.0, 6.0), "node-local");
     }
 
     #[test]
@@ -946,7 +960,8 @@ mod tests {
         // ADR-0050 decision 3's exact worked example, which every config in the tree uses.
         let lua = Lua::new();
         let anchor: Function = lua.load(r#"anchor = nil return function(rect) anchor = rect end"#).eval().unwrap();
-        call_on_click(&lua, &anchor, LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 }, "left").unwrap();
+        call_on_click(&lua, &anchor, LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 }, "left", (41.0, 1.0))
+            .unwrap();
 
         let recorded: Table = lua.globals().get("anchor").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 40.0);

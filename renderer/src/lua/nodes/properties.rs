@@ -289,8 +289,8 @@ props! {
     }
     /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with none is transparent to it.
     mod pointer(ALL) {
-        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. A press on a `textfield` that takes the keyboard goes to the field instead.
-        on_click(rect: LogicalRect, button: MouseButton);
+        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. A press on a `textfield` that takes the keyboard goes to the field instead.
+        on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
         /// Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
         on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase);
         /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.

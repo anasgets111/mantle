@@ -298,7 +298,9 @@ impl App {
             self.finish_secure_submit();
         }
         if let Some(on_click) = on_click {
-            self.fire_on_click(&focus.surface_id, rect, "left", &on_click);
+            // No pointer: report the node's centre, node-local like a click.
+            let centre = ((rect.x + rect.width / 2.0) as f64, (rect.y + rect.height / 2.0) as f64);
+            self.fire_on_click(&focus.surface_id, rect, "left", centre, &on_click);
         }
     }
 
@@ -538,7 +540,7 @@ mod tests {
         for key in [Keysym::Return, Keysym::KP_Enter, Keysym::space] {
             assert!(dispatch_activation(&focused, key, false, Some(41), |serial| {
                 armed = serial;
-                super::super::super::pointer::call_on_click(&lua, &on_click, rect, "left").unwrap();
+                super::super::super::pointer::call_on_click(&lua, &on_click, rect, "left", (15.0, 10.0)).unwrap();
             }));
             assert!(dispatch_activation(&focused, key, true, Some(41), |_| panic!("repeat activated")));
         }
