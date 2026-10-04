@@ -209,17 +209,25 @@ fn collect_input_regions(
     let rect = node.at(origin_x, origin_y);
     let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
     let hittable = node.hittable(inherited);
+    let mut claimed = None;
     if hittable && takes_input_as_a_box(node, paint_claims) {
         let bounds = node::transformed_bounds(matrix, rect);
         if !bounds.is_empty() {
-            out.push(snap_to_physical(bounds, scale));
+            claimed = Some(snap_to_physical(bounds, scale));
+            out.extend(claimed);
         }
         if node.clips_children() {
             return;
         }
     }
+    let start = out.len();
     for child in node.content_children() {
         collect_input_regions(child, rect.x, rect.y, scan, matrix, hittable, out);
+    }
+    // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
+    if let Some(own) = claimed {
+        let overflow: Vec<PhysicalRect> = out.drain(start..).filter(|r| r.intersect(own) != *r).collect();
+        out.extend(overflow);
     }
 }
 
@@ -380,7 +388,7 @@ mod tests {
         // (`layout::paint::build_node`), so blur stops at the same edge.
         let mut card = region_node(4, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
         card.behind_blur = true;
-        let list = region_node(5, "list", (0.0, 0.0, 100.0, 20.0), None, vec![card]);
+        let list = region_node(5, "list", (0.0, 0.0, 100.0, 20.0), None, vec![card]).with_clip(node::ClipShape::Box);
         let root = region_node(6, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![list]);
         assert_eq!(
             blur_regions(&root, 1.0),
@@ -397,7 +405,8 @@ mod tests {
     fn a_child_its_parents_translate_carries_into_view_still_asks_for_blur() {
         let mut card = region_node(1, "rect", (80.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
         card.behind_blur = true;
-        let mut parent = region_node(2, "column", (0.0, 0.0, 100.0, 20.0), None, vec![card]);
+        let mut parent =
+            region_node(2, "column", (0.0, 0.0, 100.0, 20.0), None, vec![card]).with_clip(node::ClipShape::Box);
         parent.transform = node::Transform { translate: (50.0, 0.0), ..node::Transform::default() };
         let root = region_node(3, "panel", (0.0, 0.0, 300.0, 100.0), None, vec![parent]);
 
@@ -426,7 +435,7 @@ mod tests {
             mask: None,
         });
         // Only the top half is inside the list.
-        let list = region_node(2, "list", (0.0, 0.0, 100.0, 50.0), None, vec![card]);
+        let list = region_node(2, "list", (0.0, 0.0, 100.0, 50.0), None, vec![card]).with_clip(node::ClipShape::Box);
         let root = region_node(3, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![list]);
         let regions = blur_regions(&root, 1.0);
 
@@ -639,13 +648,11 @@ mod tests {
         assert!(overlay_input_regions(&root, 1.0).is_empty());
     }
 
-    /// `hit.rs` hits an unclipped box's overflowing child, so the region has to hold it too.
+    /// `hit.rs` hits a default box's overflowing child, so the region has to hold it too.
     #[test]
     fn an_unclipped_solid_box_still_claims_its_overflowing_child() {
         let child = region_node(1, "rect", (60.0, 0.0, 10.0, 10.0), solid_paint(), Vec::new());
-        let mut parent = region_node(2, "rect", (0.0, 0.0, 50.0, 20.0), solid_paint(), vec![child]);
-        let Some(PaintStyle::Box { clip, .. }) = &mut parent.paint else { unreachable!() };
-        *clip = node::ClipShape::None;
+        let parent = region_node(2, "rect", (0.0, 0.0, 50.0, 20.0), solid_paint(), vec![child]);
         let root = region_node(3, "panel", (0.0, 0.0, 100.0, 20.0), None, vec![parent]);
         assert_eq!(
             overlay_input_regions(&root, 1.0),

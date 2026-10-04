@@ -612,7 +612,7 @@ mod tests {
     fn a_glass_reads_nothing_past_its_parents_clip() {
         let src = r##"return panel { id = "bar", width = 64, height = 48, child = column { width = "fill", children = {
             rect { width = "fill", height = 16, background = "#FF0000FF" },
-            rect { width = "fill", height = 32, background = "#0000FFFF",
+            rect { width = "fill", height = 32, background = "#0000FFFF", clip = "box",
                 children = { rect { width = "fill", height = 16, backdrop_blur = 4 } } } } } }"##;
         let Some(px) = paint_with_gl(src, (64, 48), &[(32, 16), (32, 8)]) else { return };
         assert_eq!(px, [(0, 0, 255, 255), (255, 0, 0, 255)]);

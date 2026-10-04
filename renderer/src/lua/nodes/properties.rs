@@ -248,7 +248,7 @@ props! {
         translate: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
         /// Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
         origin: Bound<Axes> = range(0.0, 1.0).absent(Lua("{ x = 0.5, y = 0.5 }"));
-        /// Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "none"` (ADR-0254).
+        /// Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
         ///
         /// Book: A drop shadow ([shadows](../guide/paint.md#shadows)). Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set
         shadow_color: Bound<Color> = absent(Lua(r##""#000000""##));
@@ -341,10 +341,10 @@ props! {
         ///
         /// Book: `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)
         shadow_mode: Bound<OneOf<ShadowMode>> = absent(Choice("box"));
-        /// `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257).
+        /// `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257). A `mask` cuts to the box regardless.
         ///
-        /// Book: `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip. See [Clip](#clip)
-        clip: Bound<OneOf<ClipShape>> = absent(Choice("box"));
+        /// Book: `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip)
+        clip: Bound<OneOf<ClipShape>> = absent(Prose(r#"`"box"` on a surface or a `scroll` viewport, else `"none"`"#));
     }
     mod stack(RECT) {
         /// Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.

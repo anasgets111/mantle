@@ -7762,3 +7762,21 @@ Rejected: resolving in each parser, which would read signals during ticks, outsi
 and once per parse; and opting in row by row, a second rule for a cost paid only on resolve misses.
 Cost: one raw scan per table-valued property on a resolve miss, and one table copy per resolve for
 a property holding a signal, which ADR-0324 then validates again.
+
+## 0328. `clip` defaults to `"none"` except on a scroll viewport and a surface
+
+Replaces ADR-0257 item 1 and amends ADR-0325 item 2.
+
+1. **A box cuts only when it says so,** as CSS `overflow: visible`: children, their shadows and
+   their transforms paint and take the pointer past a box with no `clip`.
+2. **Two kinds still cut by default.** A `row`, `column` or `list` with a `scroll` signal must hide
+   what it scrolled out; a surface's buffer cuts anyway, and its box keeps commands, damage and
+   layers inside it. A declared `clip` is kept as written, `"none"` on a scroll container included.
+3. **One place decides.** `ClipShape::of` sets the default; paint, hit testing and blur regions
+   all read it through `clips_children`, which also cuts a box with a `mask` in all three.
+4. **Input regions stay small.** An unclipped solid box claims its box plus only the descendant
+   rects that stick out of it.
+
+Rejected: keeping `"box"` (ADR-0257), which made every shadow, focus ring, scale-up and overshoot
+need a `clip = "none"` wrapper. Cost: configs that relied on the implicit cut, such as a ripple in
+a button or long text in a fixed-width box, add `clip = "box"`.

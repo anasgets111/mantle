@@ -1085,7 +1085,7 @@ mod tests {
     fn a_childs_clip_never_escapes_its_parents_box() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = rect { background = "#445566ff", width = 40, height = 10,
+            child = rect { background = "#445566ff", width = 40, height = 10, clip = "box",
                 children = { rect { background = "#778899ff", width = 500, height = 500 } } } }"##;
         let list = build(&resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 }), 1.0, None);
         let clips: Vec<_> = list.commands.iter().map(|c| c.clip).collect();
@@ -1164,7 +1164,7 @@ mod tests {
             })
         }
         let src = r##"return panel { id = "bar", width = 100, height = 20,
-            child = rect { width = 40, height = 20, margin = { left = 110 }, background = "#102030ff",
+            child = rect { width = 40, height = 20, margin = { left = 110 }, background = "#102030ff", clip = "box",
                 shadow_blur = 30, shadow_color = "#000000ff", children = {
                     rect { width = 40, height = 20, background = "#445566ff", translate = { x = -30 } } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
@@ -1178,7 +1178,7 @@ mod tests {
     fn a_subtree_clipped_to_nothing_is_left_out_entirely() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = rect { background = "#445566ff", width = 0, height = 0,
+            child = rect { background = "#445566ff", width = 0, height = 0, clip = "box",
                 children = { text { content = "offscreen", foreground = "#ffffffff" } } } }"##;
         let list = build(&resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 }), 1.0, None);
         assert!(
@@ -1840,7 +1840,7 @@ mod tests {
     #[test]
     fn a_box_just_outside_its_parent_still_casts_the_shadow_reaching_in() {
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, children = { rect { width = 40, height = 20, margin = { top = 24 },
+            r##"rect { width = 40, height = 20, clip = "box", children = { rect { width = 40, height = 20, margin = { top = 24 },
                 background = "#ffffff", shadow_offset = { y = -10 } } } }"##,
         );
         let shadow = list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
@@ -1869,6 +1869,46 @@ mod tests {
                 margin = { top = 24 }, background = "#ffffff" } } }"##,
         );
         assert!(list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Box { .. }) && cmd.rect.y == 64.0));
+    }
+
+    /// Without `clip`, a child laid out past its parent paints there, as CSS `overflow: visible`,
+    /// and its change damages where it paints; a scroll viewport, a mask and the surface still cut.
+    #[test]
+    fn only_a_scroll_viewport_a_mask_or_the_surface_cuts_by_default() {
+        fn at(commands: &[DrawCmd], y: f32) -> Option<PhysicalRect> {
+            commands.iter().find_map(|cmd| match &cmd.draw {
+                Draw::Box { .. } if cmd.rect.y == y => Some(cmd.clip),
+                draw => draw.nested().and_then(|inner| at(inner, y)),
+            })
+        }
+        // `effect_surface` pads by 40, so the 20px parent ends at 60 and the child starts at 64.
+        let child = |color: &str| {
+            format!(r##"rect {{ width = 40, height = 20, margin = {{ top = 24 }}, background = "{color}" }}"##)
+        };
+        let list = |parent: &str, color: &str| effect_surface(&parent.replace("CHILD", &child(color)));
+        let spill = PhysicalRect { x0: 40, y0: 64, x1: 80, y1: 84 };
+        for parent in [
+            "rect { width = 40, height = 20, children = { CHILD } }",
+            "column { width = 40, height = 20, children = { CHILD } }",
+            "list { width = 40, height = 20, source = { 1 }, itemfn = function() return CHILD end }",
+        ] {
+            assert_eq!(at(&list(parent, "#ffffff").commands, 64.0), Some(spill), "{parent}");
+            let damage = list(parent, "#000000").damage_since(&list(parent, "#ffffff"), true);
+            assert!(damage.iter().any(|d| d.intersect(spill) == spill), "{parent}: {damage:?}");
+        }
+        for parent in [
+            r#"rect { width = 40, height = 20, clip = "box", children = { CHILD } }"#,
+            r#"column { width = 40, height = 20, scroll = scroll("s"), children = { CHILD } }"#,
+            r#"list { width = 40, height = 20, scroll = scroll("l"), source = { 1 }, itemfn = function() return CHILD end }"#,
+            r#"rect { width = 40, height = 20, mask = { source = "/nonexistent/mask.svg" }, children = { CHILD } }"#,
+        ] {
+            assert_eq!(at(&list(parent, "#ffffff").commands, 64.0), None, "{parent}");
+        }
+        let past_the_panel = effect_surface(
+            r##"rect { width = 40, height = 20, children = { rect { width = 40, height = 20, margin = { top = 80 },
+                background = "#ffffff" } } }"##,
+        );
+        assert_eq!(at(&past_the_panel.commands, 120.0), None, "the 100px panel cuts a child at 120");
     }
 
     /// Under a chain of `clip = "none"` to the surface, a layer's offscreen stops at the surface

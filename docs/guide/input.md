@@ -33,7 +33,7 @@ Every pointer event asks which nodes lie under the pointer, from the surface dow
 | :--- | :--- |
 | Transforms | A node is hit where it is painted, after `scale`, `rotate` and `translate` |
 | Stacking | Siblings are asked topmost first: higher `z`, then later in declaration order |
-| Clipping | A point outside a node reaches none of its children, unless the node has `clip = "none"` |
+| Clipping | A point outside a node that clips (`clip = "box"` or `"rounded"`, a `mask`, a scroll viewport, a surface) reaches none of its children; a child overflowing any other node is hit where it paints |
 | Skipped | `visible = false` subtrees and nodes playing an [exit](animation.md#exit). `opacity = 0` is still hit |
 | Pass-through | `hittable = false` skips a node and its descendants, so a decorative overlay does not swallow the click meant for what is under it. A descendant with `hittable = true` is hit again, and the skipped ancestor's handlers, cursor and hover apply when it is. Hover, cursor, wheel and the surface input region skip it too |
 | Edges | Half-open: two nodes sharing an edge never both take it |

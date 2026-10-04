@@ -299,7 +299,7 @@ fn descend<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::node::{MoveTween, StyleRun, TextAlign};
+    use crate::layout::node::{ClipShape, Mask, MaskSource, MoveTween, StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
     use mlua::Value;
 
@@ -343,7 +343,7 @@ mod tests {
     fn a_translated_child_is_not_hit_past_its_clipping_parent() {
         let mut child = ResolvedNode::test("rect", (0.0, 0.0, 100.0, 20.0), vec![]);
         child.transform.translate = (50.0, 0.0);
-        let parent = ResolvedNode::test("column", (0.0, 0.0, 100.0, 20.0), vec![child]);
+        let parent = ResolvedNode::test("column", (0.0, 0.0, 100.0, 20.0), vec![child]).with_clip(ClipShape::Box);
         let root = ResolvedNode::test("panel", (0.0, 0.0, 300.0, 20.0), vec![parent]);
         assert_eq!(hit_path(&root, LogicalPoint { x: 80.0, y: 10.0 }).len(), 3);
         assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
@@ -377,27 +377,26 @@ mod tests {
     }
 
     /// A child laid out past a `clip = "none"` parent is painted there, so it is hit there, with the
-    /// parent still on its path for a handler to bubble to.
+    /// parent still on its path for a handler to bubble to. A mask cuts paint to the box, so hit too.
     #[test]
     fn a_child_overflowing_an_unclipped_parent_is_hit_where_it_paints() {
-        let overflowing = || vec![ResolvedNode::test("rect", (30.0, 0.0, 10.0, 10.0), vec![])];
-        let mut open = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), overflowing());
-        open.paint = Some(PaintStyle::Box {
-            background: None,
-            radius: Default::default(),
-            colors: Default::default(),
-            widths: Default::default(),
-            clip: crate::layout::node::ClipShape::None,
-            mask: None,
-        });
-        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![open]);
+        let parent = |clip| {
+            let child = ResolvedNode::test("rect", (30.0, 0.0, 10.0, 10.0), vec![]);
+            let column = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), vec![child]).with_clip(clip);
+            ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![column])
+        };
+        let tree = parent(ClipShape::None);
         let path = hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 });
         assert_eq!(path.iter().map(|n| n.kind).collect::<Vec<_>>(), ["panel", "column", "rect"]);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 25.0, y: 5.0 }).len(), 1, "between them is nothing");
 
-        let clipped = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), overflowing());
-        let tree = ResolvedNode::test("panel", (0.0, 0.0, 400.0, 400.0), vec![clipped]);
+        let tree = parent(ClipShape::Box);
         assert_eq!(hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 }).len(), 1, "a clipping parent hides it");
+
+        let mut tree = parent(ClipShape::None);
+        let Some(PaintStyle::Box { mask, .. }) = &mut tree.children[0].paint else { unreachable!() };
+        *mask = Some(Mask { source: MaskSource::Image("/m.png".into()), invert: false });
+        assert_eq!(hit_path(&tree, LogicalPoint { x: 35.0, y: 5.0 }).len(), 1, "a masked parent hides it");
     }
 
     #[test]

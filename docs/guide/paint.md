@@ -95,7 +95,7 @@ colours and no short `#RGB` form.
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `backdrop_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs) |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
-| `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip. See [Clip](#clip) |
+| `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` on a surface or a `scroll` viewport, else `"none"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip) |
 <!-- End of the generated table. -->
 
 A border follows the corners, round or scooped, as CSS draws it. Where two edges meet, the corner
@@ -176,17 +176,21 @@ return row {
 
 ## Clip
 
-`clip` decides what a box cuts its children to.
+`clip` decides what a box cuts its children to. As CSS `overflow: visible`, a box without one cuts
+nothing: a child laid out, shadowed or transformed past it paints there and is hit there. A
+`row`, `column` or `list` with a [`scroll`](input.md#scroll) signal and every surface default to
+`"box"`, since a viewport has to hide what it scrolled out. Set `clip = "box"` on a button whose
+ripple or hover scale-up must stay inside it.
 
-A child's `translate`, `scale` or `rotate` moves its own paint, never the parent's clip: a child that
-transforms past the parent's box is cut there (a rotated one by the box's bounds in its own space)
-unless the parent sets `clip = "none"`.
+A child's `translate`, `scale` or `rotate` moves its own paint, never the parent's clip: under a
+clipping parent, a child that transforms past the parent's box is cut there (a rotated one by the
+box's bounds in its own space).
 
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
 | `"box"` | The box's rectangle | Free (a scissor) |
 | `"rounded"` | The box's `radius` and `corner_shape`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
-| `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box | Free |
+| `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box. The default but on a scroll viewport or a surface | Free |
 
 A rounded clip draws in the order fill, children, border, so the border stays on top of children
 that reach the arc.
@@ -416,7 +420,7 @@ One node paints in this order, each step over the last:
 | Content-mode shadow on a masked node | Cast from the masked result | Expected |
 | Content-mode shadow or `content_blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
 | Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
-| Shadow or `content_blur` near the parent's edge | Cut at the parent's clip, like any child paint | Give the parent padding, or `clip = "none"` on it |
+| Shadow or `content_blur` near a clipping parent's edge (`clip`, a scroll viewport, the surface) | Cut at that clip, like any child paint | Give that parent padding |
 | `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
 | `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
 | A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
@@ -478,7 +482,7 @@ column {
 ```
 
 [`hover`](input.md#hover) drives the shadow and [`animate`](animation.md) eases it. Leave room
-around the card: the parent clips the shadow.
+around the card when its parent clips: a scroll viewport or the surface cuts the shadow.
 
 ### Pill button
 

@@ -7,12 +7,13 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Breaking: `clip` defaults to `"none"`, as CSS `overflow: visible`, so children, their shadows and their transforms paint and take the pointer past a box that does not set it. A `row`, `column` or `list` with `scroll`, a surface and a box with a `mask` still cut to the box. Add `clip = "box"` where a box must cut, such as a button holding a ripple or a fixed-width `rect` holding a long `text`.
 - `scroll(name):scroll_to(offset)` and `:scroll_by(delta)` move a scroll offset from Lua, clamped to the content and eased under `animate.scroll`; `scroll_by` adds to where a run is headed, so repeated arrow clicks add up.
 - `animate.scroll` on a scrolling `row`, `column` or `list` eases each mouse-wheel notch toward a target that stops at the ends; the `scroll` signal holds the offset on screen each frame, so its readers reflow continuously. `:reveal` eases the same way; touchpads, high-resolution wheels and `reset_on_close` still move it at once.
 - The wheel stops at the end of the content the last layout measured, so a `map` of a `scroll` signal runs once per wheel event at an end instead of twice.
 - A signal may sit inside a property table, such as `margin = { top = sig }`, a gradient stop's colour, an `animate` entry or a text run's flag, and is read again once it is written. `children`, a `list`'s `source`, structural fields such as a panel's `anchor`, tables with a metatable and tables a signal returns still refuse one.
 - `textfield.disabled` keeps a field drawn but out of keyboard focus (Tab, press, `autofocus`, `focus_target`); `textfield.max_length` caps the draft in grapheme clusters for typing, paste, IME and `set_text`, `secure_submit` fields included.
-- A parent's `clip` no longer moves with a child's `translate`, `scale` or `rotate`: a child that transforms past the parent's box is cut at the box. Overflow by transform (hover scale-ups, overshoot easings, slide-outs) needs `clip = "none"` on the parent.
+- A parent's `clip` no longer moves with a child's `translate`, `scale` or `rotate`: a child that transforms past a clipping parent's box is cut at the box.
 - `image.radius` rounds the picture's corners, a number or a table per corner like `rect.radius`, with no clipping wrapper. It rounds what shows, so `fit = "contain"` rounds the fitted picture.
 - `path` takes `stroke_cap` (`"butt"`, `"round"`, `"square"`), `stroke_join` (`"miter"`, `"round"`, `"bevel"`), and `trim_start`/`trim_end`, which stroke only that fraction of the path's length and animate like any number.
 - A `map` of a `scroll` signal lays out again in the same frame when layout clamps the offset it read (a wheel past either end) or a `:reveal` moves it; it kept the stale value until the next wheel event, so offset-sized children jumped at the ends.

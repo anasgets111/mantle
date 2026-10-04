@@ -1067,7 +1067,7 @@ pub(crate) mod tests {
     fn a_scaled_child_paints_nothing_outside_its_parents_box() {
         for origin in ["", ", origin = { x = 0, y = 0 }"] {
             let src = format!(
-                r##"return panel {{ id = "bar", width = 300, height = 100, child = rect {{ width = 224, height = 48,
+                r##"return panel {{ id = "bar", width = 300, height = 100, child = rect {{ width = 224, height = 48, clip = "box",
                     children = {{ rect {{ width = 224, height = 48, background = "#ff0000", scale = 6{origin} }} }} }} }}"##
             );
             let Some(px) =
@@ -1517,7 +1517,7 @@ pub(crate) mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 200, height = 50, background = "#0000FFFF", child = rect {
-                width = 40, height = 50, background = "#000000FF", children = {
+                width = 40, height = 50, background = "#000000FF", clip = "box", children = {
                     text { content = "Mantle Engine Renderer Overflow", font_size = 24, foreground = "#FFFFFFFF" },
                 } } }"##,
             LogicalSize { width: 200.0, height: 50.0 },
@@ -1536,7 +1536,7 @@ pub(crate) mod tests {
         }
     }
 
-    /// A `row`/`column`/`rect` container clips its children just as much as a `text` node clips its
+    /// A `clip = "box"` container clips its children just as much as a `text` node clips its
     /// glyphs. A `row` whose children overflow is the same defect as an overflowing `text`, not a
     /// separate case. This is the non-text half of that claim: a child rect explicitly larger than
     /// its parent must not paint past the parent's own box.
@@ -1554,7 +1554,7 @@ pub(crate) mod tests {
         let root = resolved_surface(
             &lua,
             r##"return panel { id = "bar", width = 80, height = 80, background = "#FF00FFFF", padding = { top = 10, left = 10 }, child = rect {
-                width = 30, height = 30, background = "#000000FF", children = {
+                width = 30, height = 30, background = "#000000FF", clip = "box", children = {
                     rect { background = "#00FF00FF", width = 60, height = 60 },
                 } } }"##,
             LogicalSize { width: 80.0, height: 80.0 },
@@ -1772,7 +1772,7 @@ pub(crate) mod tests {
             &lua,
             r##"return panel { id = "bar", width = 96, height = 48, background = "#FF0000FF",
                 padding = { top = 8, left = 8 }, child = rect {
-                    width = 60, height = 32, children = { rect {
+                    width = 60, height = 32, clip = "box", children = { rect {
                         margin = { left = 40 }, width = 64, height = 32, radius = 16, clip = "rounded",
                         children = { rect { width = 64, height = "fill", background = "#0000FFFF" } },
                     } },

@@ -18,7 +18,6 @@ local go = state("go", false)
 local function lane(label, easing, color)
     return row {
         spacing = 12,
-        clip = "none",
         children = {
             text { content = label, width = 88, font_size = 13, foreground = "#bac2de" },
             rect {
@@ -26,7 +25,6 @@ local function lane(label, easing, color)
                 height = 16,
                 radius = 8,
                 background = "#313244",
-                clip = "none",
                 children = {
                     rect {
                         width = 16,
@@ -75,7 +73,7 @@ inside one. An entry's timing read from a signal applies to the run already unde
 | Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, corner table `{ top_left, top_right, bottom_right, bottom_left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge, corner or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
 | A `path`'s `commands` | Tweens point by point against a list with the same ops and `hole` flags in the same order; any other list snaps. A spring retargeted mid-flight restarts from rest |
 | `"fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }` or `{ top_left = 2 }`, `"50%"` to `"fill"`) | Snaps |
-| A `width` or `height` you did not set (sized to its content) with an eased entry | After each pass the engine measures the content and eases the box from its size on screen to the measured one, laying siblings and children out at every frame. Children are cut to the moving box unless `clip = "none"`. A first layout, a spring and keyframe entries snap. A root axis the compositor sizes (`window`, `lock`, a `panel` anchored at both opposite edges) never eases |
+| A `width` or `height` you did not set (sized to its content) with an eased entry | After each pass the engine measures the content and eases the box from its size on screen to the measured one, laying siblings and children out at every frame. Children are cut to the moving box only under `clip = "box"` or `"rounded"`. A first layout, a spring and keyframe entries snap. A root axis the compositor sizes (`window`, `lock`, a `panel` anchored at both opposite edges) never eases |
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
@@ -244,7 +242,6 @@ local go = state("go", false)
 local function lane(label, damping, color)
     return row {
         spacing = 12,
-        clip = "none",
         children = {
             text { content = label, width = 150, font_size = 13, foreground = "#bac2de" },
             rect {
@@ -252,7 +249,6 @@ local function lane(label, damping, color)
                 height = 16,
                 radius = 8,
                 background = "#313244",
-                clip = "none",
                 children = {
                     rect {
                         width = 16,
@@ -381,7 +377,7 @@ The solver, `geometry` and pointer callbacks report the destination rect through
 Paint, hit-testing, text links, carets, input regions and background blur follow the moving
 pixels. A second layout change starts from the last painted position. Scrolling and paint-only
 property tweens do not start a move; an already running move keeps advancing on compositor frames.
-Parent and surface clips can cut moving pixels; leave room or use `clip = "none"`.
+A parent with `clip`, a scroll viewport or the surface can cut moving pixels; leave room there.
 
 ## Scroll
 
@@ -580,7 +576,6 @@ end
 
 return column {
     spacing = 8,
-    clip = "none",
     children = go:map(function(on)
         local cards = {}
         for index, note in ipairs(on and NOTES or {}) do
@@ -644,7 +639,6 @@ local function slot(note)
     return rect {
         width = 280,
         height = 60,
-        clip = "none",
         children = dismissed:map(function(gone) return gone[note.title] and {} or { card(note) } end),
     }
 end
@@ -655,7 +649,7 @@ return panel {
     anchor = { top = true, right = true },
     width = 300,
     height = 400,
-    child = column { spacing = 8, clip = "none", children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
+    child = column { spacing = 8, children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
 }
 ```
 

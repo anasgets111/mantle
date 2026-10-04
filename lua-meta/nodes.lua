@@ -61,7 +61,7 @@
 ---@field rotate? number|Bound `[-8192, 8192]`, default `0`. Degrees clockwise about `origin`. Paint only.
 ---@field translate? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only.
 ---@field origin? Axes|Bound `[0, 1]`, default `{ x = 0.5, y = 0.5 }`. Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
----@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Clipped at the parent's box: pad the parent or give it `clip = "none"` (ADR-0254).
+---@field shadow_color? Color|Bound Default `"#000000"`. Draws when alpha > 0 and `shadow_blur`, `shadow_offset` or `shadow_spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
 ---@field shadow_blur? number|Bound `[0, 8192]`, default `0`. CSS `box-shadow` blur radius in px (ADR-0262).
 ---@field shadow_offset? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Shadow offset in px per axis. Follows the node's transform.
 ---@field shadow_spread? number|Bound `[-8192, 8192]`, default `0`. Px the shadow grows per side; negative shrinks it. On non-box content it scales the shadow about the box centre.
@@ -100,7 +100,7 @@
 ---@field behind_blur? boolean|Bound Default `false`. Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
 ---@field backdrop_blur? number|Bound `[0, 8192]`, default `0`. Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
 ---@field shadow_mode? "box"|"content"|Bound Default `"box"`. `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
----@field clip? "box"|"rounded"|"none"|Bound Default `"box"`. `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257).
+---@field clip? "box"|"rounded"|"none"|Bound Default: `"box"` on a surface or a `scroll` viewport, else `"none"`. `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257). A `mask` cuts to the box regardless.
 
 ---One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
 ---drop image spans, which have no `text` and are refused.

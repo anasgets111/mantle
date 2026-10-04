@@ -235,18 +235,31 @@ impl Prop for Scale {
 }
 
 keywords! {
-    /// Whether a node clips children to its box or lets `radius` shape the clip. `Box` is the
-    /// default because rounded clipping needs an offscreen target and composite, while a square
-    /// clip is a free GPU scissor.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    /// Whether a node clips children to its box, lets `radius` shape the clip, or leaves them on
+    /// the parent's. Rounded clipping needs an offscreen target and composite; a square clip is a
+    /// free GPU scissor.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub enum ClipShape {
         /// The node's rectangle with square corners.
-        #[default]
         Box,
         /// The node's rounded shape, using the same arc as its background fill.
         Rounded,
         /// Nothing: children keep the parent's clip, so a wrapper does not cut their shadows.
         None,
+    }
+}
+
+impl ClipShape {
+    /// `clip` as declared; absent, a surface or a scroll viewport cuts to its box and any other
+    /// node lets its children spill, as CSS `overflow: visible`.
+    pub(crate) fn of(kind: &str, properties: &PropMap) -> Result<Self, LayoutError> {
+        if properties.contains_key(fields::paint::clip.row.name) {
+            return fields::paint::clip.read(properties);
+        }
+        // The buffer cuts a surface anyway; its box keeps every command, damage rect and layer inside it.
+        let surface = fields::kind_bit(kind).is_some_and(|bit| bit & fields::SURFACES != 0);
+        let scrolls = fields::flow::scroll.read(properties)?.is_some();
+        Ok(if surface || scrolls { Self::Box } else { Self::None })
     }
 }
 
@@ -680,10 +693,26 @@ mod tests {
         );
     }
 
+    /// Absent `clip` cuts only a surface or a scroll viewport; a declared one is kept as written.
     #[test]
-    fn clip_absent_defaults_to_the_nodes_box() {
-        let props = PropMap::default();
-        assert_eq!(fields::paint::clip.read(&props).unwrap(), ClipShape::Box);
+    fn clip_absent_cuts_only_a_surface_or_a_scroll_viewport() {
+        let lua = signal_lua();
+        let clip = |kind: &str, fields: &str| {
+            let src = format!(r#"return {{ kind = "{kind}", {fields} }}"#);
+            let table: mlua::Table = lua.load(&src).eval().unwrap();
+            ClipShape::of(kind, &deserialize_lua_table(&table).unwrap().properties).unwrap()
+        };
+        for kind in ["rect", "row", "column", "list"] {
+            assert_eq!(clip(kind, ""), ClipShape::None, "{kind}");
+        }
+        for kind in ["row", "column", "list"] {
+            assert_eq!(clip(kind, r#"scroll = scroll("s")"#), ClipShape::Box, "{kind}");
+        }
+        assert_eq!(clip("row", r#"scroll = scroll("s"), clip = "none""#), ClipShape::None);
+        for kind in ["panel", "window", "popup", "lock"] {
+            assert_eq!(clip(kind, ""), ClipShape::Box, "{kind}");
+        }
+        assert_eq!(clip("rect", r#"clip = "rounded""#), ClipShape::Rounded);
     }
 
     #[test]

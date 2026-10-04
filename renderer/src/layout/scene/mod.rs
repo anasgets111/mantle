@@ -125,6 +125,24 @@ impl ResolvedNode {
             resolve_memo: None,
         }
     }
+
+    /// This node with `clip` set, painting as a box if it did not already.
+    pub(crate) fn with_clip(mut self, shape: node::ClipShape) -> Self {
+        match &mut self.paint {
+            Some(PaintStyle::Box { clip, .. }) => *clip = shape,
+            paint => {
+                *paint = Some(PaintStyle::Box {
+                    background: None,
+                    radius: Default::default(),
+                    colors: Default::default(),
+                    widths: Default::default(),
+                    clip: shape,
+                    mask: None,
+                })
+            }
+        }
+        self
+    }
 }
 
 /// Geometry parsed once per node/pass. A resolved table's `__index` still runs on each access, so
@@ -327,9 +345,15 @@ impl ResolvedNode {
         LogicalRect { x: origin_x + self.rect.x, y: origin_y + self.rect.y, ..self.rect }
     }
 
-    /// `clip = "none"` hands children the parent's clip instead of cutting them to this box.
+    /// Whether children are cut to this box; paint, hit testing and regions all ask here (ADR-0257).
+    /// A mask composites through the box, so it cuts whatever `clip` says.
     pub(super) fn clips_children(&self) -> bool {
-        !matches!(self.paint, Some(PaintStyle::Box { clip: node::ClipShape::None, .. }))
+        match &self.paint {
+            Some(PaintStyle::Box { clip, mask, .. }) => *clip != node::ClipShape::None || mask.is_some(),
+            // A `list` takes no `clip`, so it always has the default; a leaf has no children.
+            None => node::ClipShape::of(self.kind, &self.properties).is_ok_and(|clip| clip != node::ClipShape::None),
+            Some(_) => true,
+        }
     }
 
     /// The mask stays owned, reconciled and laid out among these children, but only paints as alpha.

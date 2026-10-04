@@ -143,7 +143,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             radius: parse_radius(properties)?,
             colors: paint::border_color.read(properties)?,
             widths: paint::border_width.read(properties)?,
-            clip: paint::clip.read(properties)?,
+            clip: ClipShape::of(kind, properties)?,
             mask: paint::mask.read(properties)?,
         },
         "path" => PaintStyle::Path(VectorPath {
@@ -428,7 +428,7 @@ mod tests {
     #[test]
     fn every_surface_role_parses_the_same_box_properties_a_rect_does() {
         let lua = Lua::new();
-        let rect = style(&lua, "return { kind = 'rect', background = '#112233', radius = 4 }").unwrap();
+        let rect = style(&lua, "return { kind = 'rect', background = '#112233', radius = 4, clip = 'box' }").unwrap();
         for role in ["panel", "window", "popup", "lock"] {
             let src = format!("return {{ kind = '{role}', background = '#112233', radius = 4 }}");
             assert_eq!(style(&lua, &src).unwrap(), rect, "{role}");
