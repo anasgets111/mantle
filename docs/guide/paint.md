@@ -177,6 +177,9 @@ return row {
 
 `clip` decides what a box cuts its children to.
 
+A child's `translate`, `scale` or `rotate` moves its own paint, never the parent's clip: a child that
+transforms past the parent's box is cut there unless the parent sets `clip = "none"`.
+
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
 | `"box"` | The box's rectangle | Free (a scissor) |

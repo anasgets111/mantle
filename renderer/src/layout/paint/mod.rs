@@ -741,7 +741,7 @@ mod tests {
     #[test]
     fn a_repaint_takes_every_transformed_group_it_touches_whole() {
         let list = effect_surface(
-            r##"row { spacing = 4, children = {
+            r##"row { spacing = 4, clip = "none", children = {
                 rect { width = 20, height = 20, background = "#ffffff", content_blur = 1 },
                 rect { width = 30, height = 20, radius = 4, clip = "rounded", children = {
                     rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } },

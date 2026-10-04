@@ -18,6 +18,7 @@ local go = state("go", false)
 local function lane(label, easing, color)
     return row {
         spacing = 12,
+        clip = "none",
         children = {
             text { content = label, width = 88, font_size = 13, foreground = "#bac2de" },
             rect {
@@ -25,6 +26,7 @@ local function lane(label, easing, color)
                 height = 16,
                 radius = 8,
                 background = "#313244",
+                clip = "none",
                 children = {
                     rect {
                         width = 16,
@@ -241,6 +243,7 @@ local go = state("go", false)
 local function lane(label, damping, color)
     return row {
         spacing = 12,
+        clip = "none",
         children = {
             text { content = label, width = 150, font_size = 13, foreground = "#bac2de" },
             rect {
@@ -248,6 +251,7 @@ local function lane(label, damping, color)
                 height = 16,
                 radius = 8,
                 background = "#313244",
+                clip = "none",
                 children = {
                     rect {
                         width = 16,
@@ -549,6 +553,7 @@ end
 
 return column {
     spacing = 8,
+    clip = "none",
     children = go:map(function(on)
         local cards = {}
         for index, note in ipairs(on and NOTES or {}) do
@@ -612,6 +617,7 @@ local function slot(note)
     return rect {
         width = 280,
         height = 60,
+        clip = "none",
         children = dismissed:map(function(gone) return gone[note.title] and {} or { card(note) } end),
     }
 end
@@ -622,7 +628,7 @@ return panel {
     anchor = { top = true, right = true },
     width = 300,
     height = 400,
-    child = column { spacing = 8, children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
+    child = column { spacing = 8, clip = "none", children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
 }
 ```
 

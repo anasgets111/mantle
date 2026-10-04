@@ -94,20 +94,21 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    // Clip and effect target stay in the moving node's coordinates; its group matrix puts them back.
-    let (parent_clip, surface) = if let Some(moving) = node.movement.as_ref() {
-        let inverse = node::invert_affine(node.transform.matrix(rect)).unwrap_or(node::IDENTITY_AFFINE);
-        let (dx, dy) = (
-            -(inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1),
-            -(inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1),
-        );
-        let clip = PhysicalRect {
-            x0: clip.x0.saturating_add((dx * scale).floor() as i32),
-            y0: clip.y0.saturating_add((dy * scale).floor() as i32),
-            x1: clip.x1.saturating_add((dx * scale).ceil() as i32),
-            y1: clip.y1.saturating_add((dy * scale).ceil() as i32),
+    // The group matrix carries everything inside it, so the ancestors' clip and the effect target
+    // enter in the node's pre-matrix coordinates and the matrix puts them back where they were.
+    // ponytail: a rotated group gets its clip's bounding box, and a fractional matrix rounds the
+    // clip out to whole pixels; an exact cut needs femtovg's scissor chain across the group.
+    let (parent_clip, surface) = if let Some(matrix) = node.paint_matrix(rect) {
+        let physical = [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4] * scale, matrix[5] * scale];
+        let clip = node::invert_affine(physical).map_or(clip, |inverse| super::transformed(inverse, clip));
+        let surface = match (node.movement.as_ref(), node::invert_affine(node.transform.matrix(rect))) {
+            (Some(moving), Some(inverse)) => LogicalRect {
+                x: surface.x - (inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1),
+                y: surface.y - (inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1),
+                ..surface
+            },
+            _ => surface,
         };
-        let surface = LogicalRect { x: surface.x + dx, y: surface.y + dy, ..surface };
         (clip, surface)
     } else {
         (clip, surface)
@@ -154,9 +155,6 @@ fn build_node(
     // inside stay the untransformed absolute ones this walk computes; the matrix is about the
     // node's absolute origin, so the canvas maps them at draw time. Scissors inside follow the
     // matrix too, femtovg's own rule, which is right for the node's own box.
-    // ponytail: an ancestor's clip is carried along as well, so a scaled child overflowing its
-    // parent is cut by the parent's box scaled with it, not the box itself. Upgrade path: set the
-    // parent clip once outside the group and `intersect_scissor` inside.
     let start = out.len();
     let (x, y) = (rect.x, rect.y);
     let mask = match &node.paint {
@@ -1088,6 +1086,24 @@ mod tests {
         }
     }
 
+    /// A parent's clip stays in the parent's space: the child's group matrix must not carry it along.
+    #[test]
+    fn a_transformed_child_stays_cut_to_its_parents_box() {
+        for transform in ["translate = { x = 30 }", "scale = 2", "translate = { x = 30 }, scale = 0.5"] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 100, height = 20,
+                child = rect {{ width = 100, height = 20, background = "#445566ff", {transform} }} }}"##
+            );
+            let list =
+                build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
+            let group = list.commands.iter().find(|c| matches!(c.draw, Draw::Transformed { .. })).expect("a group");
+            let Draw::Transformed { matrix, commands } = &group.draw else { unreachable!() };
+            let fill = commands.iter().find(|c| matches!(c.draw, Draw::Box { .. })).expect("the child's fill");
+            let drawn = crate::layout::paint::transformed(*matrix, fill.clip);
+            assert!(drawn.x0 >= 0 && drawn.x1 <= 100, "{transform}: the child paints over {drawn:?}, past its parent");
+        }
+    }
+
     /// A node scrolled or positioned entirely outside its parent draws nothing, so it earns no
     /// entry, and, more usefully, moving it around off-screen produces no list change and so no
     /// repaint.
@@ -1833,7 +1849,7 @@ mod tests {
     #[test]
     fn a_layer_covers_a_transformed_child_overflowing_its_box() {
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, content_blur = 1,
+            r##"rect { width = 40, height = 20, content_blur = 1, clip = "none",
                 children = { rect { width = 40, height = 20, background = "#ffffff", scale = 2 } } }"##,
         );
         let layer = list.commands.last().unwrap();

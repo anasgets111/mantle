@@ -66,8 +66,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
     let mut regions = Vec::new();
     // The root intersects itself on the first step, so this only has to not be the limit.
-    let everything =
-        LogicalRect { x: f32::MIN / 4.0, y: f32::MIN / 4.0, width: f32::MAX / 2.0, height: f32::MAX / 2.0 };
+    let everything = LogicalRect { x: -1e9, y: -1e9, width: 2e9, height: 2e9 };
     collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, everything, 1.0, &mut regions);
     regions
 }
@@ -90,17 +89,11 @@ fn collect_blur_regions(
     }
     let rect = node.at(origin_x, origin_y);
     let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
-    // Untransformed, exactly as `layout::paint::build_node` accumulates it: that walk intersects
-    // boxes before any transform and hands the whole group to the canvas under one matrix, so a
-    // node's painted area is its ancestors' clip *and then* the composed transform. Intersecting
-    // transformed boxes instead loses a child that its parent's translate carries back into view.
-    let parent_clip = if let Some(moving) = node.movement.as_ref() {
-        let inverse = node::invert_affine(node.transform.matrix(rect)).unwrap_or(node::IDENTITY_AFFINE);
-        let dx = inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1;
-        let dy = inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1;
-        LogicalRect { x: clip.x - dx, y: clip.y - dy, ..clip }
-    } else {
-        clip
+    // In the node's pre-matrix space, as `layout::paint::build_node` carries it: the group's matrix
+    // moves the node and what it paints, but not the ancestors' clip it is cut by.
+    let parent_clip = match node.paint_matrix(rect).and_then(node::invert_affine) {
+        Some(inverse) => node::transformed_bounds(inverse, clip),
+        None => clip,
     };
     let clip = parent_clip.intersect(rect);
     let child_clip = if node.clips_children() { clip } else { parent_clip };
@@ -303,7 +296,7 @@ mod tests {
         glass.transform.origin = (0.0, 0.0);
         glass.movement = Some(Box::new(MoveTween::test((-40.0, 0.0))));
         let root = region_node(5, "panel", (0.0, 0.0, 100.0, 40.0), None, vec![glass]);
-        assert_eq!(blur_regions(&root, 1.0), [PhysicalRect { x0: 70, y0: 0, x1: 90, y1: 40 }]);
+        assert_eq!(blur_regions(&root, 1.0), [PhysicalRect { x0: 70, y0: 0, x1: 100, y1: 40 }]);
     }
 
     /// ADR-0253. A shader's alpha is unknown on the CPU, so its box claims no input; a morph drawn
@@ -373,15 +366,13 @@ mod tests {
             "the card blurs where its parent's translate paints it, not where the solver left it"
         );
 
-        // A narrower surface does not cut it, and neither does paint: the clip is intersected
-        // before any transform (`layout::paint::build_node`), so a card whose ancestor translate
-        // carries it past the surface edge is still drawn there, and the compositor clips the
-        // region to the surface itself. Cutting here would disagree with the pixels.
+        // A narrower surface cuts it where paint does: the card's own translate cannot carry the
+        // root's clip along (`layout::paint::build_node`).
         let narrow = region_node(7, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![build_slider(8, card)]);
         assert_eq!(
             blur_regions(&narrow, 1.0),
-            [PhysicalRect { x0: 310, y0: 10, x1: 410, y1: 50 }],
-            "the untransformed clip is what paint uses, so the translate is not cut by the surface box"
+            [PhysicalRect { x0: 310, y0: 10, x1: 400, y1: 50 }],
+            "the root's box stays put while the slider's translate moves what it holds"
         );
 
         // The same card scrolled halfway out of a shorter list: paint clips it to the parent box

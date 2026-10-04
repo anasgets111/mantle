@@ -338,6 +338,17 @@ mod tests {
         assert_eq!(hit_path(&tree, LogicalPoint { x: 110.0, y: 110.0 }).len(), 1, "a zero scale takes nothing");
     }
 
+    /// A translated child is hit only inside its clipping parent's own box, as paint cuts it there.
+    #[test]
+    fn a_translated_child_is_not_hit_past_its_clipping_parent() {
+        let mut child = ResolvedNode::test("rect", (0.0, 0.0, 100.0, 20.0), vec![]);
+        child.transform.translate = (50.0, 0.0);
+        let parent = ResolvedNode::test("column", (0.0, 0.0, 100.0, 20.0), vec![child]);
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 300.0, 20.0), vec![parent]);
+        assert_eq!(hit_path(&root, LogicalPoint { x: 80.0, y: 10.0 }).len(), 3);
+        assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
+    }
+
     #[test]
     fn a_moving_parent_takes_the_pointer_with_its_child() {
         let mut parent = ResolvedNode::test(

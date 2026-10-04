@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - `textfield.disabled` keeps a field drawn but out of keyboard focus (Tab, press, `autofocus`, `focus_target`); `textfield.max_length` caps the draft in grapheme clusters for typing, paste, IME and `set_text`, `secure_submit` fields included.
+- A parent's `clip` no longer moves with a child's `translate`, `scale` or `rotate`: a child that transforms past the parent's box is cut at the box. Overflow by transform (hover scale-ups, overshoot easings, slide-outs) needs `clip = "none"` on the parent.
 - `focus_target(name):set_text(text)` prefills or clears the draft of the plain textfields, hidden ones too, with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
 - Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
