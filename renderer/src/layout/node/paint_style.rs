@@ -123,6 +123,8 @@ pub enum PaintStyle {
         mask: String,
         font_size: f32,
         color: Rgba,
+        /// `color` unless `placeholder_color` is set.
+        placeholder_color: Rgba,
         align: TextAlign,
     },
 }
@@ -206,13 +208,15 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         "textfield" => {
             // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
             textfield::focus_target.read(properties)?;
+            let color = textfield::foreground.read(properties)?.expect("`foreground` has a default");
             PaintStyle::TextField {
                 target: textfield::secure_submit.read(properties)?,
                 placeholder: textfield::placeholder.read(properties)?,
                 // Drawn once per typed character: `""` draws nothing, a longer string its first one.
                 mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
                 font_size: textfield::font_size.read(properties)?,
-                color: textfield::foreground.read(properties)?.expect("`foreground` has a default"),
+                color,
+                placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),
                 align: textfield::text_align.read(properties)?,
             }
         }

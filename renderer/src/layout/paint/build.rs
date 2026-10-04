@@ -524,14 +524,14 @@ fn draw_for(
         // character. Wrong-password feedback costs a two-second `pam_fail_delay`; three failures
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
-        PaintStyle::TextField { target, placeholder, mask, font_size, color, align } => {
-            let (content, caret, caret_on, runs) = match focus {
+        PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align } => {
+            let (content, caret, caret_on, runs, color) = match focus {
                 // An empty masked field remains a prompt.
                 Some(FieldFocus::Masked { id, target: focused, filled }) if *filled > 0 => {
                     if *id == node_id && target.as_ref().is_some_and(|declared| declared == *focused) {
-                        (mask.repeat(*filled), None, false, Vec::new())
+                        (mask.repeat(*filled), None, false, Vec::new(), color)
                     } else {
-                        (placeholder.clone(), None, false, Vec::new())
+                        (placeholder.clone(), None, false, Vec::new(), placeholder_color)
                     }
                 }
                 // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
@@ -551,16 +551,16 @@ fn draw_for(
                         color: None,
                         href: None,
                     }];
-                    (content, scroll_caret, *caret_on && caret.is_some(), runs)
+                    (content, scroll_caret, *caret_on && caret.is_some(), runs, color)
                 }
                 Some(FieldFocus::Plain { id, text, caret, caret_on }) if *id == node_id && target.is_none() => {
                     match text.is_empty() && !placeholder.is_empty() {
-                        true => (placeholder.clone(), None, false, Vec::new()),
+                        true => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
                         // The draft remains visible without a caret (ADR-0108).
-                        false => (text.to_string(), *caret, *caret_on, Vec::new()),
+                        false => (text.to_string(), *caret, *caret_on, Vec::new(), color),
                     }
                 }
-                _ => (placeholder.clone(), None, false, Vec::new()),
+                _ => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
             };
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
@@ -1162,6 +1162,25 @@ mod tests {
         let typed =
             build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)), caret_on: true }));
         assert_eq!(drawn_text(&typed), vec!["on my way".to_string()]);
+    }
+
+    #[test]
+    fn the_placeholder_takes_placeholder_color_and_typed_text_takes_foreground() {
+        let lua = Lua::new();
+        let src = r##"return panel { id = "bar", width = 200, height = 40,
+            child = textfield { width = "fill", height = 28, placeholder = "Reply", foreground = "#ff0000",
+                placeholder_color = "#00ff00", on_submit = function(text) end } }"##;
+        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let color = |list: &DisplayList| {
+            list.commands.iter().find_map(|cmd| match &cmd.draw {
+                Draw::Text { color, .. } => Some((color.r, color.g)),
+                _ => None,
+            })
+        };
+        assert_eq!(color(&build(&tree, 1.0, None)), Some((0.0, 1.0)));
+        let id = tree.children[0].id;
+        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
+        assert_eq!(color(&typed), Some((1.0, 0.0)));
     }
 
     #[test]

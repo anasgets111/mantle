@@ -533,6 +533,7 @@ mod tests {
             mask: "*".to_string(),
             font_size: 14.0,
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            placeholder_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align: TextAlign::Start,
         });
         let path = [&field];
@@ -578,6 +579,7 @@ mod tests {
             mask: "*".to_string(),
             font_size: 14.0,
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
+            placeholder_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align: TextAlign::Start,
         });
         assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", 0, &shaping), Some(0));

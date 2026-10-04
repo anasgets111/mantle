@@ -259,7 +259,7 @@ a press.
 | `autofocus` | `true`: take the keys, with an empty draft and a call to `on_change("")`, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
 | `focus_target` | A `focus_target(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `secure_submit`, `mask_character` | See [secure fields](#secure-fields) |
-| `placeholder`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
+| `placeholder`, `placeholder_color`, `font_size`, `foreground`, `text_align` | Appearance; see [textfield](../nodes/textfield.md) |
 
 | Key | Plain field | Secure field |
 | :--- | :--- | :--- |

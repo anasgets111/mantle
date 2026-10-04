@@ -492,9 +492,11 @@ props! {
         focus_target: Focus;
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));
+        /// Colour of the placeholder.
+        placeholder_color: Bound<Color> = absent(Prose("`foreground`"));
         /// Size of the text and placeholder.
         font_size: Bound<Num> = range(1.0, 8192.0).absent(Number(12.0));
-        /// Colour of the text and placeholder.
+        /// Colour of the text, and of the placeholder unless `placeholder_color` is set.
         foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
         /// Aligns the text inside the field's box.
         text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
