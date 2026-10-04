@@ -1022,7 +1022,7 @@ mod tests {
             "animate.commands",
             &value,
             Duration::from_millis(100),
-            Easing::Linear,
+            sequence::Curve::Eased(Easing::Linear),
             None,
         )
         .unwrap()

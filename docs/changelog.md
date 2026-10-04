@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- A `keyframes` entry, or one frame, takes `spring = { stiffness, damping }` in place of `easing`: the segment springs from rest in real time and lands on its frame when its `duration` ends.
 - Breaking: `clip` defaults to `"none"`, as CSS `overflow: visible`, so children, their shadows and their transforms paint and take the pointer past a box that does not set it. A `row`, `column` or `list` with `scroll`, a surface and a box with a `mask` still cut to the box. Add `clip = "box"` where a box must cut, such as a button holding a ripple or a fixed-width `rect` holding a long `text`.
 - `scroll(name):scroll_to(offset)` and `:scroll_by(delta)` move a scroll offset from Lua, clamped to the content and eased under `animate.scroll`; `scroll_by` adds to where a run is headed, so repeated arrow clicks add up. A request waits while its container is hidden, and the next pass drops one when no container holds the signal.
 - `animate.scroll` on a scrolling `row`, `column` or `list` eases each mouse-wheel notch toward a target that stops at the ends; the `scroll` signal holds the offset on screen each frame, so its readers reflow continuously. `:reveal` eases the same way; touchpads, high-resolution wheels and `reset_on_close` still move it at once.

@@ -182,7 +182,7 @@ engine eases between updates.
 
 An entry is a bare number (a duration in ms with the default easing) or a table. Every entry picks
 one of three motions: eased (`duration`), keyframes (`keyframes` + `duration`) or spring
-(`spring`).
+(`spring`). Beside `keyframes`, a `spring` is each segment's curve instead.
 
 | Key | Values | Rules |
 | :--- | :--- | :--- |
@@ -190,7 +190,7 @@ one of three motions: eased (`duration`), keyframes (`keyframes` + `duration`) o
 | `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"in_out_quad"`. Not with `spring` |
 | `delay` | Whole ms, `[0, 60000]` | Holds the start value first, like CSS `transition-delay`. Offsets a keyframe run once, not each loop |
 | `from` | A value of the property's shape | Start value for a property with nothing on screen yet. Refused with `keyframes` |
-| `spring` | `{ stiffness, damping }` | `stiffness` in `(0, 100000]`, `damping` in `(0, 10000]`, both required. Refuses `duration`, `easing`, `keyframes` and `loops` |
+| `spring` | `{ stiffness, damping }` | `stiffness` in `(0, 100000]`, `damping` in `(0, 10000]`, both required. Refuses `easing`, and `duration` and `loops` unless `keyframes` is set ([spring segments](#spring-segments)) |
 | `keyframes` | At least 2 frames | See [keyframes](#keyframes) |
 | `loops` | Whole count `[1, 10000]` or `"infinite"` | Default 1. Only with `keyframes` |
 
@@ -285,7 +285,7 @@ owns the property: the value the pass resolves is ignored.
 
 | Rule | Detail |
 | :--- | :--- |
-| Frames | A bare value, or `{ value = v, duration = ms, easing = e }` overriding the entry's `duration` and `easing` for the segment that arrives at it |
+| Frames | A bare value, or `{ value = v, duration = ms, easing = e }` overriding the entry's `duration` and `easing` for the segment that arrives at it. `spring = { stiffness, damping }` in place of `easing` springs that segment |
 | First frame | Where the run starts; its own `duration` and `easing` are never read |
 | Jump | A frame with `duration = 0` (allowed only on a frame) cuts straight to its value |
 | Hold | A segment between two equal values holds still for its duration |
@@ -345,6 +345,29 @@ return panel {
         },
     },
 }
+```
+
+### Spring segments
+
+A `spring` on a keyframe entry, or on one frame, replaces `easing` for those segments. Each
+segment starts the spring from rest and runs it in real time, so `stiffness` and `damping` look the
+same as on a plain [spring](#spring) and overshoot meets the same range clamp. The segment's
+`duration` still decides when the next frame starts: the frame lands exactly at that instant, and
+a spring that has not settled by then jumps the rest of the way. Give a ringing step a `duration`
+of at least its settle time, roughly `14 / damping` seconds, to avoid the jump.
+
+```lua
+-- A quarter turn every 800 ms, overshooting and settling on each; 14 / 18 is under 0.8 s.
+local TICK = {
+    rotate = {
+        duration = 800,
+        spring = { stiffness = 300, damping = 18 },
+        keyframes = { 0, 90, 180, 270, 360 },
+        loops = "infinite",
+    },
+}
+
+return icon { name = "view-refresh-symbolic", size = 16, animate = TICK }
 ```
 
 ## Move

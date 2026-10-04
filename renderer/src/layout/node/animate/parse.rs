@@ -12,7 +12,7 @@ use super::super::{LayoutError, PropMap, Property, fields, invalid, only_keys, p
 use super::easing::{BezierPoints, Steps};
 #[cfg(test)]
 use super::sequence::KeyframeInput;
-use super::sequence::{Loops, parse_sequence};
+use super::sequence::{Curve, Loops, parse_sequence};
 use super::spring::SpringConstants;
 use super::{Animatable, AnimationSpec, Easing, Motion};
 #[cfg(test)]
@@ -181,7 +181,7 @@ impl Prop for Animations {
 
 /// One entry's spec: a bare duration, or `{ duration, easing, from }`, or those beside a
 /// `keyframes` list and a `loops` count (ADR-0152), or a `spring` instead of any timing at all
-/// (ADR-0154). `from` is read as a value of `property`.
+/// (ADR-0154). Beside `keyframes`, a `spring` is each segment's curve in place of `easing`. `from` is read as a value of `property`.
 pub(super) fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec, LayoutError> {
     // The bare form says the duration and nothing else: `animate = { width = 200 }`.
     let Value::Table(spec) = entry else {
@@ -208,17 +208,15 @@ impl AnimationInput {
             })?),
         };
         let delay = delay.unwrap_or_default();
-        if spring.is_some() && !keyframes.is_nil() {
-            return Err(invalid(
-                &field,
-                "`spring` and `keyframes` are two different motions: a spring settles on one target, a sequence walks a list",
-            ));
-        }
+        // Beside `keyframes` a spring is each segment's curve, so the list's `duration` and `loops` still apply.
+        let keyed = !keyframes.is_nil();
         // Refuse timing fields a spring would ignore, so a config cannot tune a motion with inert keys, ADR-0152.
         if spring.is_some() {
-            for (name, present) in
-                [("duration", duration.is_some()), ("easing", easing.is_some()), ("loops", loops.is_some())]
-            {
+            for (name, present) in [
+                ("duration", duration.is_some() && !keyed),
+                ("easing", easing.is_some()),
+                ("loops", loops.is_some() && !keyed),
+            ] {
                 if present {
                     return Err(invalid(
                         &field,
@@ -226,15 +224,19 @@ impl AnimationInput {
                     ));
                 }
             }
-        } else if keyframes.is_nil() && loops.is_some() {
+        } else if !keyed && loops.is_some() {
             return Err(invalid(&field, "`loops` counts the walks of a `keyframes` list, and this entry has none"));
         }
         let motion = match spring {
-            Some(constants) => Motion::Spring(constants.into_spring(&field)?),
-            None => {
+            Some(constants) if !keyed => Motion::Spring(constants.into_spring(&field)?),
+            spring => {
                 let duration = required_duration(&field, duration)?;
                 let easing = easing.unwrap_or_default();
-                match parse_sequence(property, &field, &keyframes, duration, easing, loops)? {
+                let curve = match spring {
+                    Some(constants) => Curve::Spring(constants.into_spring(&field)?),
+                    None => Curve::Eased(easing),
+                };
+                match parse_sequence(property, &field, &keyframes, duration, curve, loops)? {
                     Some(sequence) => {
                         if from.is_some() {
                             return Err(invalid(

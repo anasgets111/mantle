@@ -7787,3 +7787,23 @@ Replaces ADR-0257 item 1 and amends ADR-0325 item 2.
 Rejected: keeping `"box"` (ADR-0257), which made every shadow, focus ring, scale-up and overshoot
 need a `clip = "none"` wrapper. Cost: configs that relied on the implicit cut, such as a ripple in
 a button or long text in a fixed-width box, add `clip = "box"`.
+
+## 0329. A keyframe segment can spring, in real time, and still lands on its frame
+
+Amends ADR-0154, which refused `spring` beside `keyframes`: a looping motion with a springy settle
+per step needed a Bezier fitted to the spring.
+
+1. **Spelling.** `spring` beside `keyframes`, or on one frame, replaces `easing` for those
+   segments; both on one entry or frame is refused. Without `keyframes` a spring keeps ADR-0154's
+   rules: no `duration`, no `loops`.
+2. **Real time, bounded by the step.** A segment runs `Spring::at` from rest in seconds since it
+   began, so `stiffness` and `damping` mean what they do on a plain spring. The next frame starts
+   at the segment's end; a spring still ringing jumps the rest of the way, so the docs ask for a
+   `duration` of at least the settle time.
+3. **No new state.** `Sequence::at` stays a pure function of elapsed time, so loops stay periodic
+   and nothing carries across reconciliation (ADR-0152). Overshoot passes the same range clamp as
+   `out_back`.
+
+Rejected: stretching the spring to the step, which avoids the jump but ties the ringing frequency
+to `duration`; and a spring `Easing` variant, which would leak spring easing into plain tweens,
+`move` and `exit` (ADR-0154 decision 4). Not built: velocity carried across segments.

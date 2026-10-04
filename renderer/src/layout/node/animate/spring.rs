@@ -486,7 +486,8 @@ mod tests {
 
         let cases: [(&str, &[&str]); 6] = [
             ("duration = 10, spring = { stiffness = 1, damping = 1 }", &["has no `duration`"]),
-            ("spring = { stiffness = 1, damping = 1 }, keyframes = { 0, 1 }", &["two different motions"]),
+            // Beside `keyframes` a spring is each segment's curve, and the segments still need a duration.
+            ("spring = { stiffness = 1, damping = 1 }, keyframes = { 0, 1 }", &["expected a duration in ms"]),
             ("spring = { damping = 26 }", &["`stiffness` must be number"]),
             ("spring = { stiffness = 220, damping = 0 }", &["damping", "(0, 10000]"]),
             ("spring = 220", &["`spring` must be Spring"]),

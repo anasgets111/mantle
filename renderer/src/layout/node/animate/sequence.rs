@@ -5,18 +5,20 @@ use mlua::Value;
 
 use super::Animatable;
 use super::easing::Easing;
+use super::spring::{Spring, SpringConstants};
 use crate::layout::node::{LayoutError, invalid, preview_for_error};
 use crate::lua::luacats::lua_shape;
 
 // The first frame anchors the sequence; only later frames contribute to its duration.
 lua_shape! {
-    /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
+    /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds. `spring` replaces `easing` for this segment.
     #[alias = "Keyframe"]
     #[derive(Debug, Clone, PartialEq)]
     pub struct KeyframeInput {
         pub value: Value as Animatable,
         pub duration: Option<Duration>,
         pub easing: Option<Easing>,
+        pub spring: Option<SpringConstants>,
     }
 }
 
@@ -24,7 +26,25 @@ lua_shape! {
 pub struct Keyframe {
     pub value: Animatable,
     pub duration: Duration,
-    pub easing: Easing,
+    pub curve: Curve,
+}
+
+/// How one segment travels from its start frame to its end frame.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Curve {
+    Eased(Easing),
+    /// A spring from rest, in real seconds from the segment's start; the segment's end cuts off
+    /// whatever tail is left, so the frame timing stays fixed (ADR-0154 amendment).
+    Spring(Spring),
+}
+
+impl Curve {
+    fn progress(&self, into: Duration, length: Duration) -> f32 {
+        match self {
+            Self::Eased(easing) => easing.apply(into.as_secs_f32() / length.as_secs_f32()),
+            Self::Spring(spring) => spring.at(into),
+        }
+    }
 }
 
 /// A property walking a list of values, some number of times (ADR-0152).
@@ -73,7 +93,7 @@ impl Sequence {
         for pair in self.frames.windows(2) {
             let (start, end) = (&pair[0], &pair[1]);
             if at < end.duration {
-                let progress = end.easing.apply(at.as_secs_f32() / end.duration.as_secs_f32());
+                let progress = end.curve.progress(at, end.duration);
                 return start.value.lerp(&end.value, progress, property);
             }
             at -= end.duration;
@@ -106,14 +126,15 @@ impl crate::layout::node::input::Input for Loops {
 }
 
 /// An entry's `keyframes` and `loops`, if it has them. A frame is a bare value, or a table naming
-/// its own `duration` and `easing` in place of the entry's; the first frame is where the property
-/// starts and the timing on it is never read. `loops` is a count or `"infinite"`, one by default.
+/// its own `duration` and `easing` or `spring` in place of the entry's; the first frame is where
+/// the property starts and the timing on it is never read. `loops` is a count or `"infinite"`, one
+/// by default.
 pub(super) fn parse_sequence(
     property: &str,
     field: &str,
     keyframes: &Value,
     duration: Duration,
-    easing: Easing,
+    curve: Curve,
     loops: Option<Loops>,
 ) -> Result<Option<Sequence>, LayoutError> {
     let Value::Table(keyframes) = keyframes else {
@@ -126,19 +147,27 @@ pub(super) fn parse_sequence(
     for (index, frame) in keyframes.sequence_values::<Value>().enumerate() {
         let frame = frame.map_err(|e| invalid(field, e.to_string()))?;
         let at = format!("{field}.keyframes[{}]", index + 1);
-        let (value, duration, easing) = match frame {
+        let (value, duration, curve) = match frame {
             // A frame that names nothing of its own is still a table when the value is one, so an
             // explicit `value` key is what tells the two apart.
             Value::Table(table) if table.contains_key("value").unwrap_or(false) => {
                 let frame = KeyframeInput::read(&at, &table)?;
-                (frame.value, frame.duration.unwrap_or(duration), frame.easing.unwrap_or(easing))
+                let curve = match (frame.easing, frame.spring) {
+                    (Some(_), Some(_)) => {
+                        return Err(invalid(&at, "`easing` and `spring` are two curves for one segment; name one"));
+                    }
+                    (Some(easing), None) => Curve::Eased(easing),
+                    (None, Some(constants)) => Curve::Spring(constants.into_spring(&at)?),
+                    (None, None) => curve,
+                };
+                (frame.value, frame.duration.unwrap_or(duration), curve)
             }
-            plain => (plain, duration, easing),
+            plain => (plain, duration, curve),
         };
         let value = Animatable::from_value(property, Some(&value))?.ok_or_else(|| {
             invalid(&at, format!("must be a value a tween can carry, got {}", preview_for_error(&value)))
         })?;
-        frames.push(Keyframe { value, duration, easing });
+        frames.push(Keyframe { value, duration, curve });
     }
     if frames.len() < 2 {
         return Err(invalid(field, format!("`keyframes` needs at least two values, got {}", frames.len())));
@@ -208,7 +237,7 @@ mod tests {
         assert_eq!(sequence.frames.len(), 3);
         assert_eq!(sequence.frames[1].duration, Duration::from_millis(200), "the entry's duration");
         assert_eq!(sequence.frames[2].duration, Duration::from_millis(50), "its own");
-        assert_eq!(sequence.frames[2].easing, Easing::OutCubic);
+        assert_eq!(sequence.frames[2].curve, Curve::Eased(Easing::OutCubic));
         assert_eq!(sequence.cycle, Duration::from_millis(250), "the first frame's timing is not in it");
     }
 
@@ -435,5 +464,91 @@ mod tests {
         assert!(at(0) < 1e-6 && at(40) < 1e-6, "held on the first frame through the delay");
         assert!((at(90) - 0.5).abs() < 1e-3, "half a cycle in, 40 ms late");
         assert!((at(190) - 0.5).abs() < 1e-3, "and half of the next one, still 40 ms late");
+    }
+
+    fn number(value: Animatable) -> f32 {
+        let Animatable::Number(value) = value else { panic!("a number property carries numbers, got {value:?}") };
+        value
+    }
+
+    /// A spring segment rings past its end frame in real seconds, lands exactly on it once settled,
+    /// and a step shorter than the settle cuts the tail at the frame boundary. The phase is still
+    /// whole nanoseconds, so an endless loop repeats bit for bit.
+    #[test]
+    fn a_spring_segment_overshoots_lands_on_its_frame_and_loops_without_drift() {
+        let lua = Lua::new();
+        let sequence = parse_animate(
+            "rect",
+            &rect_props(
+                &lua,
+                r#"return { animate = { width = { duration = 1000, loops = "infinite",
+                    spring = { stiffness = 400, damping = 20 },
+                    keyframes = { 0, 100, { value = 0, duration = 100 } } } } }"#,
+            ),
+        )
+        .unwrap()
+        .0
+        .remove("width")
+        .unwrap()
+        .sequence()
+        .unwrap();
+        let at = |millis: u64| number(sequence.at(Duration::from_millis(millis), "width"));
+        let peak = (0..1000).step_by(5).map(at).fold(f32::MIN, f32::max);
+        assert!(peak > 110.0, "rings past the frame it heads for: peak {peak}");
+        assert_eq!(at(999), 100.0, "settled before the step ends, pinned on the frame");
+        assert_eq!(at(1000), 100.0, "the next segment starts on it");
+        assert!(at(1099) > 0.5, "a 100 ms step cuts the spring's tail short: {}", at(1099));
+        assert_eq!(at(1100), 0.0, "and the boundary lands on the frame regardless");
+        let cycle = 1100u64;
+        for millis in (0..cycle).step_by(7) {
+            for laps in [1, 1_000, 1_100_000] {
+                assert_eq!(at(millis), at(millis + laps * cycle), "{millis} ms, {laps} laps on");
+            }
+        }
+    }
+
+    /// A frame's own `spring` replaces the entry's easing, and its overshoot meets the same range
+    /// clamp a plain spring's does, so `opacity` never leaves `[0, 1]`.
+    #[test]
+    fn a_frames_spring_replaces_the_entrys_easing_and_its_overshoot_is_clamped() {
+        let lua = Lua::new();
+        let sequence = parse_animate(
+            "rect",
+            &rect_props(
+                &lua,
+                r#"return { animate = { opacity = { duration = 1000, easing = "linear",
+                    keyframes = { 0, { value = 1, spring = { stiffness = 400, damping = 10 } } } } } }"#,
+            ),
+        )
+        .unwrap()
+        .0
+        .remove("opacity")
+        .unwrap()
+        .sequence()
+        .unwrap();
+        let at = |millis: u64| number(sequence.at(Duration::from_millis(millis), "opacity"));
+        assert!(at(100) > 0.9, "a spring, not linear's 0.1: {}", at(100));
+        assert_eq!(at(162), 1.0, "the first swing past 1 is clamped");
+        assert!(at(324) < 0.9, "and it rings back: {}", at(324));
+        assert!((0..1000).map(at).all(|value| (0.0..=1.0).contains(&value)));
+
+        let cases: [(&str, &[&str]); 3] = [
+            (
+                "keyframes = { 0, { value = 1, easing = \"linear\", spring = { stiffness = 1, damping = 1 } } }",
+                &["keyframes[2]", "name one"],
+            ),
+            (
+                "easing = \"linear\", spring = { stiffness = 1, damping = 1 }, keyframes = { 0, 1 }",
+                &["has no `easing`"],
+            ),
+            (
+                "keyframes = { 0, { value = 1, spring = { stiffness = 0, damping = 1 } } }",
+                &["keyframes[2].spring.stiffness"],
+            ),
+        ];
+        for (entry, wanted) in cases {
+            let text = refused(&lua, &format!("return {{ animate = {{ opacity = {{ duration = 1, {entry} }} }} }}"));
+            assert!(wanted.iter().all(|want| text.contains(want)), "{entry}: {text}");
+        }
     }
 }
