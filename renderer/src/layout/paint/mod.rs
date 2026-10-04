@@ -68,6 +68,8 @@ pub enum Draw {
         caret: Option<(usize, usize)>,
         /// The blink's phase; see [`FieldFocus::Plain`].
         caret_on: bool,
+        /// The caret bar's colour; `color` for ordinary text.
+        caret_color: Rgba,
     },
     /// Theme name, resolved in [`execute`]. Icons carry alpha separately because `Paint::image`
     /// takes it as an argument.

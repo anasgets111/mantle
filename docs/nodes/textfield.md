@@ -73,6 +73,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `focus_target` | `FocusHandle` | None | A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass |
 | `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
 | `placeholder_color` | `Color\|Bound` | `foreground` | Colour of the placeholder |
+| `caret_color` | `Color\|Bound` | `foreground` | Colour of the caret; the selection highlight keeps `foreground` |
 | `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
 | `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text, and of the placeholder unless `placeholder_color` is set |
 | `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns the text inside the field's box |

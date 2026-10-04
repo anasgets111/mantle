@@ -135,6 +135,7 @@ pub struct TextDraw<'a> {
     pub caret: Option<(usize, usize)>,
     /// The blink's phase: off drops the bar and keeps the selection and scroll.
     pub caret_on: bool,
+    pub caret_color: Rgba,
 }
 
 /// Registers every face of `font_chain` femtovg does not hold yet, and maps each face's shaping id
@@ -358,6 +359,7 @@ impl TextPainter {
             align,
             caret,
             caret_on,
+            caret_color,
         } = line;
         let physical = snap_to_physical(rect, 1.0);
         let step = line_height * scale;
@@ -460,7 +462,7 @@ impl TextPainter {
                 }
                 // Over them, so a glyph's side bearing cannot swallow it.
                 if let Some((.., at)) = selection.filter(|_| caret_on) {
-                    self.fill(left + caret_x(laid, at) * scale, top, thickness, step, color);
+                    self.fill(left + caret_x(laid, at) * scale, top, thickness, step, caret_color);
                 }
 
                 for run in runs.iter().filter(|run| run.underline) {

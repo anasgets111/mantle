@@ -511,6 +511,8 @@ props! {
         placeholder: Bound<Text> = absent(Lua(r#""""#));
         /// Colour of the placeholder.
         placeholder_color: Bound<Color> = absent(Prose("`foreground`"));
+        /// Colour of the caret; the selection highlight keeps `foreground`.
+        caret_color: Bound<Color> = absent(Prose("`foreground`"));
         /// Size of the text and placeholder.
         font_size: Bound<Num> = range(1.0, 8192.0).absent(Number(12.0));
         /// Colour of the text, and of the placeholder unless `placeholder_color` is set.

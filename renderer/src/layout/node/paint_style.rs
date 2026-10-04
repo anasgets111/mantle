@@ -127,6 +127,8 @@ pub enum PaintStyle {
         color: Rgba,
         /// `color` unless `placeholder_color` is set.
         placeholder_color: Rgba,
+        /// `color` unless `caret_color` is set.
+        caret_color: Rgba,
         align: TextAlign,
         disabled: bool,
         /// Grapheme-cluster cap on the draft; `None` is unlimited.
@@ -226,6 +228,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 font_size: textfield::font_size.read(properties)?,
                 color,
                 placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),
+                caret_color: textfield::caret_color.read(properties)?.unwrap_or(color),
                 align: textfield::text_align.read(properties)?,
                 disabled: textfield::disabled.read(properties)?,
                 max_length: textfield::max_length.read(properties)?,

@@ -470,6 +470,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             centered: false,
             caret: None,
             caret_on: false,
+            caret_color: fade(*color, opacity),
         }),
 
         // Icons use `Contain` and the shorter edge: `size` is a bounding-box diameter.
@@ -528,7 +529,17 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // character. Wrong-password feedback costs a two-second `pam_fail_delay`; three failures
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
-        PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align, .. } => {
+        PaintStyle::TextField {
+            target,
+            placeholder,
+            placeholder_color,
+            caret_color,
+            mask,
+            font_size,
+            color,
+            align,
+            ..
+        } => {
             // The first entry for this node wins: the focused field, then any parked draft. Another
             // node's focus, masked or not, leaves this one to its parked draft or placeholder.
             let (content, caret, caret_on, runs, is_placeholder) = focus
@@ -592,6 +603,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 centered: true,
                 caret,
                 caret_on,
+                caret_color: fade(*caret_color, opacity),
             })
         }
 
@@ -1249,11 +1261,11 @@ mod tests {
     }
 
     #[test]
-    fn the_placeholder_takes_placeholder_color_and_typed_text_takes_foreground() {
+    fn the_placeholder_and_caret_take_their_own_colors_and_typed_text_takes_foreground() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = textfield { width = "fill", height = 28, placeholder = "Reply", foreground = "#ff0000",
-                placeholder_color = "#00ff00", on_submit = function(text) end } }"##;
+                placeholder_color = "#00ff00", caret_color = "#0000ff", on_submit = function(text) end } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let color = |list: &DisplayList| {
             list.commands.iter().find_map(|cmd| match &cmd.draw {
@@ -1265,6 +1277,11 @@ mod tests {
         let id = tree.children[0].id;
         let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
         assert_eq!(color(&typed), Some((1.0, 0.0)));
+        let caret = typed.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Text { caret_color, .. } => Some((caret_color.r, caret_color.b)),
+            _ => None,
+        });
+        assert_eq!(caret, Some((0.0, 1.0)));
     }
 
     #[test]

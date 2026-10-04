@@ -245,6 +245,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 centered,
                 caret,
                 caret_on,
+                caret_color,
             } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
@@ -266,6 +267,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         align: *align,
                         caret: *caret,
                         caret_on: *caret_on,
+                        caret_color: *caret_color,
                     },
                     rect,
                     scale,

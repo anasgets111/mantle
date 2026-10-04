@@ -20,6 +20,7 @@ version is 0.x, a minor release can break the Lua API.
 - `focus_target(name):set_text(text)` prefills or clears the draft of the plain textfields, hidden and disabled ones too, with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
 - Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
+- `textfield.caret_color` colours the caret, not the selection highlight; it defaults to `foreground`, as before.
 - A `textfield` without `height` is one line of `font_size` tall instead of 0 px, so its placeholder shows. `width` is still required.
 - `text` takes `font_variations`, a table of OpenType axis tags to values such as `{ FILL = 1, GRAD = 0, opsz = 24 }`, for variable fonts like Material Symbols. An explicit `wght` overrides `font_weight`.
 - A `text` whose `content` runs table or `font_variations` table is edited in place and set again re-measures; it kept its old size and glyphs.
