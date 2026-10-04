@@ -9,9 +9,6 @@ version is 0.x, a minor release can break the Lua API.
 
 - `workspaces` entries and `windows` entries have `urgent`: niri reports it as set; Hyprland sets it on an `urgent` event and clears it when the window gains focus or closes. It is always `false` on wlr-foreign-toplevel.
 - New `radio` capability: `mantle.radio.radios` lists each rfkill kind with `soft_blocked` and `hard_blocked`; `set_blocked(kind, blocked)` and `set_all_blocked(blocked)` write `/dev/rfkill`.
-
-## 0.1.1 - 2026-10-03
-
 - Bluetooth `pairing_request` has an `id` and supports `"pin_entry"` and `"passkey_entry"`; answer these with `secure_submit = { capability = "bluetooth", action = "pair", name = request.id .. "/" .. request.mac }`. A present adapter takes over when the tracked adapter is removed.
 - `network.wifi_devices` lists Wi-Fi interfaces by name. `scan_device`, `connect_device` and `disconnect_wifi_device` target one; flat join fields describe that join, while other flat Wi-Fi fields and old actions use the primary interface.
 - Breaking: an omitted `panel` width or height now fills the configured root axis when both opposite edges are anchored. To preserve a deliberately narrow root, wrap its content in a sized `child` and move its background there.
