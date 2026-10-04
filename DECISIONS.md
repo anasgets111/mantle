@@ -6239,6 +6239,7 @@ child's own rectangle. CSS and Qt let ink overflow unless the parent opts in to 
 
 1. **An opt-out, not a new default.** `clip = "None"` hands children the parent's clip. The default
    stays `"Box"`: flipping it would change what every existing surface cuts and damages.
+   Superseded by ADR-0328: the default is now `"none"` outside scroll viewports and surfaces.
 2. **Paint, hit testing and blur regions agree.** A child painted past an unclipped parent is hit
    there, with the parent on its path, and its `blur` region is not cut to the parent either.
 3. **A `mask` still cuts to the box**, because the mask is composited through the box's shape.
