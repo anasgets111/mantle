@@ -683,6 +683,7 @@ mod tests {
             &[instance_at(&surface, full())],
             &shaping,
             &lua,
+            false,
             |_| Err(node::invalid("child", "veto")),
         );
         assert!(err.is_err());

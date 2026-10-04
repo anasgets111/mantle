@@ -529,11 +529,12 @@ impl Scene {
         shaping: &ShapingHandle,
         lua: &Lua,
     ) -> Result<(), LayoutError> {
-        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |_| Ok(()))
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, false, |_| Ok(())).map(drop)
     }
 
-    /// Every production apply. While the session is locked the same rule vetoes each one, so no
-    /// path can drop the password field (ADR-0052 decision 3).
+    /// An all-or-nothing apply, for a reload and `mantle check`. While the session is locked the
+    /// same rule vetoes every production apply, so no path can drop the password field (ADR-0052
+    /// decision 3).
     pub fn apply_locked(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -542,7 +543,24 @@ impl Scene {
         lua: &Lua,
         locked: bool,
     ) -> Result<(), LayoutError> {
-        self.apply_admitting(fresh_surfaces, instances, shaping, lua, |scene| {
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, false, |scene| {
+            lock_stays_authenticatable(scene, instances, locked)
+        })
+        .map(drop)
+    }
+
+    /// [`Self::apply_locked`] where a failing instance keeps its prior tree and the rest apply.
+    /// `Ok(Some)` carries the failures of a pass that applied the others; `Err` means nothing
+    /// applied: every instance failed, the budget ran out or the lock veto refused.
+    pub fn apply_isolated(
+        &mut self,
+        fresh_surfaces: &[VirtualNode],
+        instances: &[SurfaceInstance],
+        shaping: &ShapingHandle,
+        lua: &Lua,
+        locked: bool,
+    ) -> Result<Option<LayoutError>, LayoutError> {
+        self.apply_admitting(fresh_surfaces, instances, shaping, lua, true, |scene| {
             lock_stays_authenticatable(scene, instances, locked)
         })
     }
@@ -555,7 +573,8 @@ impl Scene {
     /// `admit` vetoes the finished apply after all instances, asking whether the whole resolved
     /// lock tree remains authenticatable; it rolls back on error. The snapshot restores exactly the
     /// pre-call state because a failing getter may already have changed `next_id` or
-    /// the trees (`CONTEXT.md`, Rollback; `socket/client/mod.rs::reevaluate`).
+    /// the trees (`CONTEXT.md`, Rollback; `socket/client/mod.rs::reevaluate`). With `isolate`, a
+    /// failed instance alone goes back before `admit` runs, unless every instance failed.
     ///
     /// ponytail: every visited instance's tree is cloned as rollback, even on success. Property maps
     /// are shared, so the clone is O(nodes) with no `Value` copied; a 30 Hz write to one node of a
@@ -566,8 +585,9 @@ impl Scene {
         instances: &[SurfaceInstance],
         shaping: &ShapingHandle,
         lua: &Lua,
+        isolate: bool,
         admit: impl Fn(&Scene) -> Result<(), LayoutError>,
-    ) -> Result<(), LayoutError> {
+    ) -> Result<Option<LayoutError>, LayoutError> {
         let next_id_snapshot = self.next_id;
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
         // runs, and individually legal 2.5ms getters cannot add up without a pass deadline.
@@ -576,20 +596,26 @@ impl Scene {
             Err(err) => return Err(node::invalid("layout", err.to_string())),
         };
         let mut rollback = Vec::new();
-        let outcome = self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit);
+        let outcome =
+            self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, isolate, admit);
         if outcome.is_err() {
             for (key, tree) in rollback {
-                self.solver_trees.remove(&key);
-                match tree {
-                    Some(tree) => self.surfaces.insert(key, tree),
-                    None => self.surfaces.remove(&key),
-                };
+                self.restore(key, tree);
             }
             self.next_id = next_id_snapshot;
         } else {
             self.publish_elision(lua);
         }
         outcome
+    }
+
+    /// Puts back one instance's tree as the pass found it; the solver tree was the failed walk's.
+    fn restore(&mut self, key: String, tree: Option<ResolvedNode>) {
+        self.solver_trees.remove(&key);
+        match tree {
+            Some(tree) => self.surfaces.insert(key, tree),
+            None => self.surfaces.remove(&key),
+        };
     }
 
     /// [`Self::apply_admitting`] minus the snapshot and rollback, so the three failure exits are
@@ -603,8 +629,9 @@ impl Scene {
         lua: &Lua,
         budget: &crate::lua::signal::LayoutPassBudget,
         rollback: &mut Vec<(String, Option<ResolvedNode>)>,
+        isolate: bool,
         admit: impl Fn(&Scene) -> Result<(), LayoutError>,
-    ) -> Result<(), LayoutError> {
+    ) -> Result<Option<LayoutError>, LayoutError> {
         // One clock reading for the pass, so every tween it starts shares a start.
         let now = Instant::now();
         // A hook interruption can look like an arbitrary `InvalidProperty`; report the pass budget
@@ -615,6 +642,7 @@ impl Scene {
         // Every instance runs even after one fails, so the report covers the whole scene. One
         // declaration on three outputs is one mistake, reported once under its first instance.
         let mut failed = Vec::new();
+        let mut failed_instances = std::collections::HashSet::new();
         let mut seen = std::collections::HashSet::new();
         for instance in instances {
             if let Err(err) = self.apply_one_instance(fresh_surfaces, instance, shaping, lua, now, rollback) {
@@ -622,6 +650,7 @@ impl Scene {
                 if budget.exceeded() {
                     return Err(LayoutError::PassBudgetExceeded);
                 }
+                failed_instances.insert(instance.instance_id.as_str());
                 for err in err.into_each() {
                     if seen.insert((instance.declared_id.as_str(), err.to_string())) {
                         failed.push(err.on_surface(&instance.instance_id));
@@ -630,14 +659,23 @@ impl Scene {
             }
         }
         if !failed.is_empty() {
-            return Err(LayoutError::many(failed));
+            if !isolate || failed_instances.len() == instances.len() {
+                return Err(LayoutError::many(failed));
+            }
+            // Before `admit`, so the lock veto judges the trees that stay on screen.
+            let (kept, applied): (Vec<_>, Vec<_>) =
+                std::mem::take(rollback).into_iter().partition(|(key, _)| failed_instances.contains(key.as_str()));
+            *rollback = applied;
+            for (key, tree) in kept {
+                self.restore(key, tree);
+            }
         }
         admit(self).map_err(blame_the_budget)?;
         // Lua can catch the hook error with `pcall`; the final deadline check cannot be caught.
         if budget.exceeded() {
             return Err(LayoutError::PassBudgetExceeded);
         }
-        Ok(())
+        Ok((!failed.is_empty()).then(|| LayoutError::many(failed)))
     }
 
     /// One instance's worth of `apply`'s loop body, split out so `apply` can wrap it in a single
@@ -1348,7 +1386,7 @@ pub(super) mod tests {
         let (_lua2, v2) = surface_from(r#"panel { id = "bar", width = 99, height = 99 }"#);
         let instances = [instance_at(&v2, full())];
         let err = scene
-            .apply_admitting(&[v2], &instances, &shaping, &_lua2, |_| {
+            .apply_admitting(&[v2], &instances, &shaping, &_lua2, false, |_| {
                 Err(node::invalid("child", "the finished scene is not admissible"))
             })
             .unwrap_err();
@@ -1405,6 +1443,39 @@ pub(super) mod tests {
         assert_eq!(ids_after, ids_before, "NodeIds must be stable across a failed apply, not reallocated");
         assert_eq!(scene.next_id, next_id_before, "next_id must not be left bumped by the aborted pass");
         assert_eq!(row.children[1].rect.width, 20.0, "the first tree's geometry must still be intact");
+    }
+
+    #[test]
+    fn an_isolated_apply_keeps_only_the_failing_surface_at_its_prior_tree() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let declare = |bar_opacity: f32, dock_width: u32| -> Vec<VirtualNode> {
+            let src = format!(
+                r#"return {{ panel {{ id = "bar", child = rect {{ width = 10, height = 10, opacity = {bar_opacity} }} }},
+                             panel {{ id = "dock", child = rect {{ width = {dock_width}, height = 10 }} }} }}"#
+            );
+            let tables: Vec<mlua::Table> = lua.load(src).eval().unwrap();
+            tables.iter().map(|table| deserialize_lua_table(table).unwrap()).collect()
+        };
+        let apply = |scene: &mut Scene, surfaces: &[VirtualNode]| {
+            let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
+            scene.apply_isolated(surfaces, &instances, &shaping, &lua, false)
+        };
+
+        let first = apply(&mut scene, &declare(2.0, 20)).unwrap().expect("bar fails on its first apply");
+        assert!(first.to_string().contains("on `bar@TEST`"), "{first}");
+        assert!(scene.surface("bar@TEST").is_none(), "no prior tree to keep");
+        assert!(apply(&mut scene, &declare(0.5, 20)).unwrap().is_none());
+
+        let kept = apply(&mut scene, &declare(2.0, 30)).unwrap().expect("bar fails again");
+        assert!(kept.to_string().contains("must be within [0, 1], got 2"), "{kept}");
+        assert_eq!(scene.surface("dock@TEST").unwrap().children[0].rect.width, 30.0, "dock applies");
+        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].opacity, 0.5, "bar keeps its prior tree");
+
+        let surfaces = declare(2.0, 30);
+        let bar_only = [instance_at(&surfaces[0], full())];
+        assert!(scene.apply_isolated(&surfaces, &bar_only, &shaping, &lua, false).is_err(), "nothing applied");
     }
 
     #[test]

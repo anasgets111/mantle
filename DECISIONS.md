@@ -7593,3 +7593,25 @@ keyboard and no field could not close on it. `panel`, `window` and `popup` take 
 Rejected: a general `on_key(key, mods)`, which overlaps field editing, Tab/Enter/Space activation
 and IME and needs a full precedence matrix, and widens what a secure field exposes. DOM-style
 bubbling from the focused node, which needs a key-focus tree the engine does not have.
+
+## 0321. A failed live pass keeps only the failing surfaces' prior trees
+
+Amends ADR-0266 (outcome) and ADR-0265 (log level). ADR-0266 rejected the whole apply when any node
+failed, so one out-of-range value froze every surface, their input, and the `mantle.rescue`
+banner that would have shown the error: the rescue write re-marked the scene and rolled back too.
+
+1. **Startup and dirty passes isolate per surface instance.** A failing instance returns to its
+   prior tree, or has none if it never applied, before the lock veto runs, so the veto judges what
+   stays on screen. The rest apply. Every instance failing, the budget running out or the veto
+   refusing still rolls the whole pass back.
+2. **Reload and `mantle check` stay atomic.** Trees from two evaluations never mix, since a
+   discarded evaluation's signals would stay live in the kept trees, and check reports every
+   error.
+3. **Logged with `error!`**, deduplicated as ADR-0265 does. Rescue holds until a pass applies every
+   surface; while a failure stands every mark re-resolves the whole scene (ADR-0244 item 4).
+
+Rejected for now: dropping only the bad property with its default, as CSS drops an invalid
+declaration. It touches every `Field::read`, needs a side channel so check and rescue still see the
+error, and must pin memo hits so a substituted node keeps re-resolving; it is the next slice.
+Per-node freezing: a frozen subtree inside a re-solved parent breaks taffy wiring and leavers
+(ADR-0266 decision 2).

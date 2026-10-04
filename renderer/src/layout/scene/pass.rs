@@ -1709,7 +1709,7 @@ mod tests {
         } } }"#,
         );
         let error = scene
-            .apply_admitting(std::slice::from_ref(&replacement), &instances, &shaping, &lua, |_| {
+            .apply_admitting(std::slice::from_ref(&replacement), &instances, &shaping, &lua, false, |_| {
                 lua.gc_collect().unwrap();
                 assert!(weak.get::<Option<mlua::Table>>(1).unwrap().is_some());
                 assert!(weak.get::<Option<mlua::Table>>(2).unwrap().is_some());

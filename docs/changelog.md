@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- A property value that fails a live update or the startup apply now freezes only its own surface, which keeps its last applied tree; the other surfaces, an error banner drawn from `mantle.rescue` included, keep updating. The failure is logged as an error, once until its message changes. A reload that fails anywhere is still refused whole.
 - `on_click` and `on_drag` `pointer` is now measured in the node's own untransformed box, so a translated, scaled or rotated node no longer reports coordinates outside its size.
 - `on_escape()` on `panel`, `window` and `popup` fires on Escape when the surface has the keyboard and no focused field took it (a field with text or `on_cancel` keeps it), so a dialog or menu without a field can close.
 - `palette.hct(color)` returns a colour's `{ hue, chroma, tone }` in HCT, so a config can apply its own seed rule; `palette.score` documents that each seed is one input swatch's colour.

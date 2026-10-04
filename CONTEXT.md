@@ -16,8 +16,8 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 | **Instance directory** | ADR-0222, ADR-0227. |
 | **Check mode** | The Supervisor runs the Renderer binary with `CHECK_ENV`. |
 | **In-place reload** | ADR-0216. |
-| **Rollback** | Also keeps the previous surface instances. |
-| **Rescue** | After a startup evaluation failure no surface binds; after a startup apply failure surfaces bind but paint nothing until a reload or push applies. |
+| **Rollback** | Also keeps the previous surface instances. Whole-scene for a reload; per surface instance for a startup apply or a dirty pass. |
+| **Rescue** | After a startup evaluation failure no surface binds; a surface that fails its startup apply binds but paints nothing until a reload or push applies it. |
 | **Surface** | Not "window" or "layer". |
 | **Surface instance** | Keys the retained scene (ADR-0246). |
 | **Lock surface** | ADR-0052. |

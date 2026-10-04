@@ -22,7 +22,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **In-place reload** | A re-evaluation in the same generation and VM, then one apply. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 | **Surface fingerprint** | A declaration's creation-time fields (panel: `id`, `layer`, `anchor`, `output`, `namespace`; other roles: `id`). A change rebuilds that surface; other edits update it live. |
 | **Evaluation-scoped registration** | `action`, `on_change` (capability and `state`) and idle-threshold callbacks, cleared before each evaluation because they close over its locals. The `timer`s an evaluation arms go live only when its result applies. See [what survives a reload](guide/runtime.md#what-survives-a-reload). |
-| **Rollback** | A failed evaluation or apply keeps the previous scene. What stays registered: [runtime](guide/runtime.md#evaluation-reload-and-generations). |
+| **Rollback** | A failed evaluation or reload keeps the previous scene; a failed live update keeps the previous tree of each surface it broke. What stays registered: [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 | **Rescue** | [`mantle.rescue`](capabilities/index.md#renderer-members), `{ is_rescue, error_log }`, set while the shell runs on a scene it could not replace. See [runtime](guide/runtime.md#evaluation-reload-and-generations). |
 
 ## Surfaces

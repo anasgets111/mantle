@@ -10,14 +10,14 @@ use crate::lua;
 use crate::lua::capability::CommandSender;
 
 impl RendererClient {
-    /// Applies the last evaluation to current instances, setting rescue on failure. Returns success
-    /// so `crate::wayland::run` can log a startup that applied nothing. Instances come only from
-    /// [`Self::set_instances`].
+    /// Applies the last evaluation to current instances, setting rescue on failure. Returns whether
+    /// any surface applied, so `crate::wayland::run` can log a startup that applied nothing.
+    /// Instances come only from [`Self::set_instances`].
     pub fn apply_instances(&mut self) -> bool {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
-        let applied = self.scene.apply_locked(
+        let applied = self.scene.apply_isolated(
             &output.surfaces,
             &self.instances,
             &self.shaping,
@@ -25,11 +25,10 @@ impl RendererClient {
             self.holds_session_lock,
         );
         match applied {
-            Ok(()) => {
+            Ok(failed) => {
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
-                log_re_resolve(&mut self.re_resolve_failure, None);
-                self.rescue_applied_output(None);
+                self.note_pass(failed.map(|err| err.to_string()));
                 // Consume `set_screens`'s pre-evaluation seed (ADR-0041 decision 2) only after
                 // success; a failed apply leaves it for the next one.
                 self.dirty.take();
@@ -150,7 +149,7 @@ impl RendererClient {
                 (Some(ids), Cow::Owned(filtered))
             }
         };
-        let applied = self.scene.apply_locked(
+        let applied = self.scene.apply_isolated(
             &output.surfaces,
             &instances,
             &self.shaping,
@@ -158,21 +157,31 @@ impl RendererClient {
             self.holds_session_lock,
         );
         drop(_memo);
-        let failure = applied.err().map(|err| err.to_string());
-        log_re_resolve(&mut self.re_resolve_failure, failure.clone());
-        if let Some(err) = failure {
-            // Rollback keeps the prior scene; the rescue lasts until a pass applies. No re-mark:
-            // only a change can fix the failure, and the wakes between changes cannot.
-            self.rescue_applied_output(Some(&err));
-            crate::lua::signal::reset_read_tracker(self.loader.lua());
-            return false;
-        }
-        self.last_resolved = resolved_scope;
+        // No re-mark on failure: only a change can fix it, and the wakes between changes cannot.
+        let failed = match applied {
+            Ok(failed) => failed,
+            Err(err) => {
+                self.note_pass(Some(err.to_string()));
+                return false;
+            }
+        };
         start_secure_submit_capabilities(&self.scene, &instances, &self.commands);
-        self.rescue_applied_output(None);
+        self.note_pass(failed.map(|err| err.to_string()));
+        self.last_resolved = resolved_scope;
         self.settle_layout();
         dump_layout_if_asked(&self.scene);
         true
+    }
+
+    /// Logs a pass's failure once per run and holds rescue, or clears both when every surface
+    /// applied. Failed instances keep their prior trees; the tracker reset makes every mark retry
+    /// the whole scene until one applies.
+    fn note_pass(&mut self, failure: Option<String>) {
+        log_re_resolve(&mut self.re_resolve_failure, failure.clone());
+        self.rescue_applied_output(failure.as_deref());
+        if failure.is_some() {
+            crate::lua::signal::reset_read_tracker(self.loader.lua());
+        }
     }
 
     /// Sets rescue for a failure to apply `applied_output`, or clears one when it applies. Any other
@@ -220,7 +229,7 @@ impl RendererClient {
 /// [`fold_failure`] owes.
 fn log_re_resolve(run: &mut Option<(String, u32)>, failure: Option<String>) {
     for line in fold_failure(run, failure) {
-        warn!("dirty-scene re-resolve failed, keeping the prior scene: {line}");
+        error!("layout pass failed, keeping each failed surface's last applied tree: {line}");
     }
 }
 
@@ -888,6 +897,49 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]));
         assert!(!client.scene.surface("bar@TEST").unwrap().visible);
+    }
+
+    /// One out-of-range value froze every surface, the rescue banner included, until it was fixed.
+    #[test]
+    fn a_broken_surface_keeps_its_prior_tree_while_the_others_and_the_banner_update() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            q = state("q", true)
+            armed = state("armed", false)
+            return {
+                panel { id = "bar", layer = "top", visible = q },
+                panel { id = "menu", layer = "top", child = column { children = {
+                    rect { height = 1, width = q:map(function(v) return v and 10 or 20 end) },
+                    text { content = "m", opacity = armed:map(function(a) return a and 2.0 or 1.0 end) },
+                } } },
+                panel { id = "banner", layer = "top",
+                    visible = mantle.rescue:map(function(r) return r ~= nil and r.is_rescue end) },
+            }
+            "#,
+        );
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert!(!client.scene.surface("banner@TEST").unwrap().visible);
+
+        client.loader.lua().load("armed:set(true)").exec().unwrap();
+        assert!(!client.re_resolve_if_dirty(), "the narrowed pass held only the broken menu");
+        assert!(client.re_resolve_if_dirty(), "the rescue write's pass applies the other surfaces");
+        assert!(client.scene.surface("banner@TEST").unwrap().visible, "the banner shows the failure");
+
+        client.loader.lua().load("q:set(false)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!(!client.scene.surface("bar@TEST").unwrap().visible, "an unbroken surface keeps updating");
+        let menu_rect =
+            |client: &RendererClient| client.scene.surface("menu@TEST").unwrap().children[0].children[0].rect;
+        assert_eq!(menu_rect(&client).width, 10.0, "the broken one keeps its prior tree");
+        assert!(rescue_state(&client.loader).0);
+
+        client.loader.lua().load("armed:set(false)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(menu_rect(&client).width, 20.0, "fixed, it catches up");
+        assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
 
     #[test]
