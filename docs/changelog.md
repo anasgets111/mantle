@@ -9,6 +9,7 @@ version is 0.x, a minor release can break the Lua API.
 
 - `battery.capacity` reports battery health: full charge as a percent of the design capacity, `nil` when UPower does not know it.
 - `audio` recovers when PipeWire restarts or starts after Mantle. While PipeWire is down, `audio` reads as a machine with no audio hardware and `privacy` clears its microphone and screencast users.
+- `network` rebinds its devices when NetworkManager restarts, so `wifi_devices` and wired state no longer show the old daemon's values.
 
 ## 0.2.0 - 2026-10-04
 

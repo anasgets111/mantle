@@ -252,8 +252,8 @@ pub(super) fn forward<A, B>(
 impl NetworkController {
     /// Rescans devices and restarts their watchers, new before old so no change falls in a gap.
     /// Skips the restart when the Wi-Fi and wired paths are unchanged, as for most veth, bridge and
-    /// VPN additions.
-    pub(super) async fn refresh_devices(&self) {
+    /// VPN additions. `restarted` rebinds anyway: the old proxies cache a dead daemon's properties.
+    pub(super) async fn refresh_devices(&self, restarted: bool) {
         let (wifi, ethernet) = match resolve_devices(&self.connection, &self.nm).await {
             Ok(found) => found,
             Err(err) => {
@@ -266,7 +266,7 @@ impl NetworkController {
             current.wifi.iter().map(|wifi| &wifi.device_path).eq(wifi.iter().map(|wifi| &wifi.device_path))
                 && current.ethernet.iter().map(|device| &device.path).eq(ethernet.iter().map(|device| &device.path))
         };
-        if unchanged {
+        if unchanged && !restarted {
             return;
         }
         debug!("device set changed: wifi={} ethernet={}", wifi.len(), ethernet.len());

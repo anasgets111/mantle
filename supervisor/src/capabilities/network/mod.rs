@@ -55,6 +55,8 @@ pub enum NetworkSignal {
     SavedChanged,
     /// NetworkManager added or removed a device, so the device set is stale.
     DevicesChanged,
+    /// NetworkManager took its name again: its devices are stale even at reused paths.
+    Restarted,
 }
 
 fn root_object_path() -> ObjectPath<'static> {

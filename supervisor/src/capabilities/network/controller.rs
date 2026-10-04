@@ -111,11 +111,13 @@ impl NetworkController {
         tokio::spawn(async move {
             use futures_util::StreamExt;
             super::secret_agent::register(&owner_connection).await;
+            // ponytail: `nm`'s cached manager properties outlive a restart until NM changes them; upgrade: rebuild `nm`.
             while let Some(owner) = owners.next().await
                 && owner_events.send(NetworkSignal::SavedChanged).is_ok()
             {
                 // A restarted NetworkManager forgot the agent. With no owner, a call would D-Bus-activate it.
                 if owner.is_some() {
+                    let _ = owner_events.send(NetworkSignal::Restarted);
                     super::secret_agent::register(&owner_connection).await;
                 }
             }
@@ -154,8 +156,8 @@ impl NetworkController {
                         self.refresh_saved_ssids().await;
                         self.refresh_vpns().await;
                     }
-                    NetworkSignal::DevicesChanged => {
-                        self.refresh_devices().await;
+                    NetworkSignal::DevicesChanged | NetworkSignal::Restarted => {
+                        self.refresh_devices(signal == NetworkSignal::Restarted).await;
                         if let Some(pending) = self.pending_intent()
                             && self.pending_wifi(&pending).is_none()
                         {
@@ -334,6 +336,62 @@ impl NetworkController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::{PrivateBus, private_bus, within};
+
+    struct FakeNm(OwnedObjectPath);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl FakeNm {
+        fn get_all_devices(&self) -> Vec<OwnedObjectPath> {
+            vec![self.0.clone()]
+        }
+    }
+
+    struct FakeWired(u32);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Device")]
+    impl FakeWired {
+        #[zbus(property)]
+        fn device_type(&self) -> u32 {
+            super::super::proxies::DEVICE_TYPE_ETHERNET
+        }
+
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            self.0
+        }
+    }
+
+    /// A NetworkManager with one wired device at `path`, in `state`.
+    async fn serve_nm(bus: &PrivateBus, path: &str, state: u32) -> zbus::Connection {
+        let path = OwnedObjectPath::try_from(path).unwrap();
+        let builder = bus.builder().serve_at("/org/freedesktop/NetworkManager", FakeNm(path.clone())).unwrap();
+        let builder = builder.serve_at(path, FakeWired(state)).unwrap();
+        builder.name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap()
+    }
+
+    /// A restarted NetworkManager can reuse a device path, and announces nothing for objects it
+    /// exported before taking its name, so only the owner change says the devices are new.
+    #[tokio::test]
+    async fn devices_recover_after_networkmanager_restarts() {
+        let bus = private_bus().await;
+        let device = "/org/freedesktop/NetworkManager/Devices/2";
+        let first = serve_nm(&bus, device, DEVICE_STATE_ACTIVATED).await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        let network = NetworkController::new(bus.connection().await, events).await.unwrap();
+        let state = network.handle_signal(NetworkSignal::Changed).await;
+        assert!(state.ethernet_present && state.ethernet_enabled);
+
+        drop(first);
+        for (path, state) in [(device, 30), ("/org/freedesktop/NetworkManager/Devices/3", DEVICE_STATE_ACTIVATED)] {
+            let _restarted = serve_nm(&bus, path, state).await;
+            while network.ethernet().first().map(|wired| wired.path.as_str()) != Some(path)
+                || network.state.lock().unwrap().ethernet_enabled != (state == DEVICE_STATE_ACTIVATED)
+            {
+                network.handle_signal(within(signals.recv()).await.unwrap()).await;
+            }
+        }
+    }
 
     #[test]
     fn a_rebuild_keeps_a_scan_until_it_completes_or_its_device_disappears() {
