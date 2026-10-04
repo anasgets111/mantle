@@ -138,9 +138,24 @@ fn secure_focus_accepts_keys(control: Option<&FocusedControl>, field: Option<&Fo
     control.surface_id == field.surface_id && control.id == field.id && control.kind == ControlKind::Masked
 }
 
-/// The innermost surface in `scope` (focused first, popups after) that declares `on_escape`.
+/// Whether this Escape press reaches the surface: a fresh press without Ctrl, and no focused field with
+/// something to do. Plain `(has text, composing, has on_cancel)`; secure `(buffer non-empty, has on_cancel)`.
+pub(super) fn surface_gets_escape(
+    repeat: bool,
+    ctrl: bool,
+    plain: Option<(bool, bool, bool)>,
+    secure: Option<(bool, bool)>,
+) -> bool {
+    !repeat
+        && !ctrl
+        && !plain.is_some_and(|(text, composing, cancels)| text || composing || cancels)
+        && !secure.is_some_and(|(filled, cancels)| filled || cancels)
+}
+
+/// `on_escape` of the first popup in `scope` (focused surface first, then popups deepest-first) that
+/// declares it, else the focused surface's. Siblings resolve in tracked order.
 pub(super) fn escape_handler<'a>(trees: &[(&'a str, &layout::ResolvedNode)]) -> Option<(&'a str, Function)> {
-    trees.iter().rev().find_map(|(id, tree)| {
+    trees.iter().skip(1).chain(trees.first()).find_map(|(id, tree)| {
         crate::layout::node::fields::closable::on_escape.read(&tree.properties).ok().flatten().map(|f| (*id, f))
     })
 }
@@ -419,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn escape_goes_to_the_innermost_surface_declaring_on_escape() {
+    fn escape_goes_to_the_innermost_popup_declaring_on_escape_else_the_surface() {
         let lua = Lua::new();
         let with = |declares: bool| {
             let mut node = hit_node(&lua, "panel", (0.0, 0.0, 10.0, 10.0), false);
@@ -429,11 +444,36 @@ mod tests {
             }
             node
         };
-        let (bar, menu, tip) = (with(true), with(true), with(false));
-        assert_eq!(escape_handler(&[("bar", &bar), ("menu", &menu), ("tip", &tip)]).map(|(id, _)| id), Some("menu"));
-        assert_eq!(escape_handler(&[("bar", &bar), ("tip", &tip)]).map(|(id, _)| id), Some("bar"));
-        assert!(escape_handler(&[("tip", &tip)]).is_none());
-        assert!(escape_handler(&[]).is_none(), "no keyboard focus, no scope");
+        let (bar, inner, outer, tip) = (with(true), with(true), with(true), with(false));
+        fn id<'a>(trees: &[(&'a str, &layout::ResolvedNode)]) -> Option<&'a str> {
+            escape_handler(trees).map(|(id, _)| id)
+        }
+        // `shown_popups_under` lists a popup's own popups before it.
+        assert_eq!(id(&[("bar", &bar), ("inner", &inner), ("outer", &outer)]), Some("inner"));
+        assert_eq!(id(&[("bar", &bar), ("inner", &tip), ("outer", &outer)]), Some("outer"));
+        assert_eq!(id(&[("bar", &bar), ("tip", &tip)]), Some("bar"));
+        assert!(id(&[("tip", &tip)]).is_none());
+        assert!(id(&[]).is_none(), "no keyboard focus, no scope");
+    }
+
+    #[test]
+    fn a_field_keeps_escape_only_while_it_has_something_to_do() {
+        // (repeat, ctrl, plain, secure, reaches the surface)
+        let cases = [
+            (false, false, None, None, true),
+            (true, false, None, None, false),
+            (false, true, None, None, false),
+            (false, false, Some((true, false, false)), None, false),
+            (false, false, Some((false, true, false)), None, false),
+            (false, false, Some((false, false, true)), None, false),
+            (false, false, Some((false, false, false)), None, true),
+            (false, false, None, Some((true, false)), false),
+            (false, false, None, Some((false, true)), false),
+            (false, false, None, Some((false, false)), true),
+        ];
+        for (repeat, ctrl, plain, secure, want) in cases {
+            assert_eq!(surface_gets_escape(repeat, ctrl, plain, secure), want, "{repeat} {ctrl} {plain:?} {secure:?}");
+        }
     }
 
     #[test]

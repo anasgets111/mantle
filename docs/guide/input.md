@@ -173,9 +173,10 @@ named controls.
 
 A `panel`, `window` or `popup` takes `on_escape()` for dismissing without a field. It fires once per
 Escape press (not on repeat) on the innermost shown popup under the focused surface that declares
-it, else the surface itself, and never on a surface without keyboard focus. A focused field keeps
-its own Escape while it has text to clear (or a composition) or declares `on_cancel`; otherwise
-Escape reaches `on_escape`, so a launcher can clear on the first Escape and close on the second.
+it (no order is promised among sibling popups), else the surface itself, and never on a surface
+without keyboard focus. A focused field keeps its own Escape while it has text to clear (or a
+composition) or declares `on_cancel`; otherwise Escape reaches `on_escape`, so a launcher can clear
+on the first Escape and close on the second.
 
 ```lua
 local open = state("menu_open", true)
@@ -376,6 +377,7 @@ secret or its length.
 | Sending | Enter, or a click on a `submit = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
 | Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Tab to a named button keeps the buffer too: typing stops, Enter on a `submit = true` button sends it, and Escape still clears it and calls `on_cancel`. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
+| `on_escape` | A surface's `on_escape` fires when the buffer is empty and the field has no `on_cancel`, so it reveals that one bit (ADR-0320) |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
 
 ```lua

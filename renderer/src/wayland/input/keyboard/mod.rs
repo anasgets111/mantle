@@ -498,8 +498,7 @@ impl App {
         if self.apply_control_key(event, repeat, serial) {
             return;
         }
-        let escape = event.keysym == Keysym::Escape && !repeat && !self.ctrl_held;
-        let handler = escape.then(|| self.surface_escape_handler()).flatten();
+        let handler = (event.keysym == Keysym::Escape).then(|| self.surface_escape_handler(repeat)).flatten();
         self.apply_secure_key(event, repeat);
         self.apply_plain_key(event, repeat);
         if let Some((id, on_escape)) = handler {
@@ -507,24 +506,21 @@ impl App {
         }
     }
 
-    /// The `on_escape` to fire for this press, resolved before the fields clear or drop focus. A
-    /// focused field with text or a composition to clear, or an `on_cancel`, keeps Escape, so
-    /// "first clears, second closes" needs no `on_cancel`.
-    fn surface_escape_handler(&self) -> Option<(String, Function)> {
-        let plain =
-            self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).is_some_and(|field| {
-                let composing = self.text_input.composing(&field.surface_id, field.id).is_some();
-                !field.buffer.is_empty() || composing || field.on_cancel.is_some()
-            });
-        let secure = self.focused_secure_submit.as_ref().is_some_and(|field| {
+    /// The `on_escape` this Escape press fires, resolved before the fields clear or drop focus.
+    fn surface_escape_handler(&self, repeat: bool) -> Option<(String, Function)> {
+        let plain = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).map(|field| {
+            let composing = self.text_input.composing(&field.surface_id, field.id).is_some();
+            (!field.buffer.is_empty(), composing, field.on_cancel.is_some())
+        });
+        let secure = self.focused_secure_submit.as_ref().map(|field| {
             let cancels = self
                 .client
                 .scene()
                 .surface(&field.surface_id)
                 .is_some_and(|tree| secure::secure_on_cancel(tree, field).is_some());
-            !self.secure_buffer.is_empty() || cancels
+            (!self.secure_buffer.is_empty(), cancels)
         });
-        if plain || secure {
+        if !focus::surface_gets_escape(repeat, self.ctrl_held, plain, secure) {
             return None;
         }
         let scope = self.keyboard_focus_scope();

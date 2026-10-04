@@ -611,7 +611,7 @@ props! {
         visible: Bound<Flag> = absent(Bool(true));
     }
     mod closable(PANEL | WINDOW | POPUP) {
-        /// Escape pressed while this surface or a popup under it has the keyboard and no focused field took it: a field with text to clear or an `on_cancel` keeps its own Escape. Once per press; the innermost shown popup declaring it wins. Never on a surface without `keyboard_interactivity`.
+        /// Escape pressed while this surface or a popup under it has the keyboard and no focused field took it: a field with text to clear or an `on_cancel` keeps its own Escape. Once per press; the innermost shown popup declaring it wins, with no order promised among sibling popups. Never on a surface without `keyboard_interactivity`.
         on_escape();
         /// `state` and `scroll` handles written back when this surface stops being shown: `visible` turning false, a reload removing it, its last output leaving, or its parent closing (a popup). A state returns to its declared `initial`, running its `on_change`; a scroll to the top. Anything else in the list fails the evaluation (ADR-0289).
         ///

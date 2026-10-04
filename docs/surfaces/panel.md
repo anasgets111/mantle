@@ -84,7 +84,7 @@ update it in place ([reload](index.md#reload-and-structural-fields)).
 | `margin` | `number\|Edges\|Bound` | `0` | Offset from the anchored edges, not layout margin; one on an edge the panel is not anchored to does nothing |
 | `visible` | `boolean\|Bound` | `true` | Hiding destroys the layer surface; showing recreates it |
 | `child` | `Node\|fun(output: string): Node?\|Bound` | None | The root's content. A function runs per output instance with its connector name; `nil` leaves that instance empty ([per-output child](index.md#per-output-child)) |
-| `on_escape` | `fun()` | None | Escape pressed while this surface or a popup under it has the keyboard and no focused field took it: a field with text to clear or an `on_cancel` keeps its own Escape. Once per press; the innermost shown popup declaring it wins. Never on a surface without `keyboard_interactivity` |
+| `on_escape` | `fun()` | None | Escape pressed while this surface or a popup under it has the keyboard and no focused field took it: a field with text to clear or an `on_cancel` keeps its own Escape. Once per press; the innermost shown popup declaring it wins, with no order promised among sibling popups. Never on a surface without `keyboard_interactivity` |
 | `reset_on_close` | `(StateSignal<any>\|ScrollSignal)[]` | `{}` | `state` and `scroll` handles written back when the surface stops being shown: a state to its `initial`, a scroll to the top ([reset on close](index.md#reset-on-close)) |
 <!-- End of the generated table. -->
 
