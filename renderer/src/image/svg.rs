@@ -36,11 +36,10 @@ pub(super) fn rasterize_svg(
             .ok_or_else(|| format!("svgz inflates past the {MAX_SVG_BYTES}-byte limit and was not parsed"))?,
         false => data,
     };
-    // GTK's recolour for a symbolic icon that never says `currentColor` (Tela): every shape takes
-    // the colour, as `!important` beats presentation attributes and inline `style`. One that does
-    // (Adwaita) already follows the tint and keeps its hard-coded accents, like battery-caution's
-    // orange. ponytail: also repaints `fill` inside `<mask>`, as GTK does. Upgrade: skip masks.
-    let hard_coded = is_symbolic(path) && !data.windows(12).any(|w| w == b"currentColor");
+    // GTK's recolour for a symbolic icon without `currentColor` (Tela): `!important` beats attributes
+    // and inline `style`. One with it (Adwaita) keeps its hard-coded accents.
+    // ponytail: `<mask>` fills and `fill="none"` stroke-only shapes get filled too, as GTK does.
+    let hard_coded = is_symbolic(path) && !uses_current_color(&data);
     let data = match tint {
         Some(tint) => tinted_svg(&data, tint),
         None => data,
@@ -97,6 +96,12 @@ pub(super) fn packed_rgb(color: Rgba) -> u32 {
     (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
 }
 
+/// CSS keywords are case-insensitive.
+fn uses_current_color(data: &[u8]) -> bool {
+    const KEYWORD: &[u8] = b"currentColor";
+    data.windows(KEYWORD.len()).any(|w| w.eq_ignore_ascii_case(KEYWORD))
+}
+
 /// Replace `currentColor` with `tint`, or leave data untouched without one (ADR-0072). Symbolic
 /// icons use two shapes. Breeze/Adwaita ship `<style id="current-color-scheme">` with
 /// `color:#232629` on each path's class; Plasma rewrites it at load, and so does this, avoiding
@@ -108,7 +113,7 @@ fn tinted_svg(data: &[u8], tint: Rgba) -> Vec<u8> {
     let Ok(text) = std::str::from_utf8(data) else {
         return data.to_vec();
     };
-    if !text.contains("currentColor") {
+    if !uses_current_color(data) {
         return data.to_vec();
     }
     let hex = format!("#{:06x}", packed_rgb(tint));
@@ -295,6 +300,10 @@ pub(super) mod tests {
         std::fs::write(&path, accent).unwrap();
         let pixels = rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0;
         assert_eq!(&pixels[..4], &[0xff, 0x78, 0x00, 0xff], "a currentColor icon keeps its accent");
+        let path = dir.path().join("lower-symbolic.svg");
+        std::fs::write(&path, accent.replace("currentColor", "currentcolor")).unwrap();
+        let pixels = rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0;
+        assert_eq!(&pixels[..4], &[0xff, 0x78, 0x00, 0xff], "`currentcolor` is the same keyword");
         assert!(is_symbolic(Path::new("/i/Adwaita/symbolic/apps/x.svg")));
         assert!(!is_symbolic(Path::new("/i/hicolor/apps/symbolic-ish.svg")));
     }
