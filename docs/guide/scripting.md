@@ -21,8 +21,8 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | Parse or write JSON | [`json.decode`](#jsondecode), [`json.encode`](#jsonencode) |
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
-| Pull colours out of a wallpaper | [`palette.quantize`](#palettequantize) |
-| Build Material 3 colours from a seed or a wallpaper | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct) |
+| Pull colours out of an image | [`palette.quantize`](#palettequantize) |
+| Build Material 3 colours from a seed, or from an image (`quantize`, then `score`, then `scheme`) | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
 What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
