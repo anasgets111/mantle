@@ -299,6 +299,10 @@ props! {
         ///
         /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it
         submit: Bound<Flag> = absent(Bool(false));
+        /// `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again.
+        ///
+        /// Book: `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back ([pass-through](../guide/input.md#hit-testing))
+        hittable: Bound<Flag> = absent(Prose("inherited; `true` at the root"));
     }
     mod paint(BOX) {
         /// Absent draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.

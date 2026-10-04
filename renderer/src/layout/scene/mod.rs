@@ -349,6 +349,14 @@ impl ResolvedNode {
         self.content_children().filter(move |_| sorted).chain(resorted)
     }
 
+    /// Whether the pointer can land on this node: its own `hittable`, else `inherited` from the parent.
+    pub fn hittable(&self, inherited: bool) -> bool {
+        match self.properties.get("hittable") {
+            Some(Value::Boolean(own)) => *own,
+            _ => inherited,
+        }
+    }
+
     /// A node with `submit = true` or a pointer handler (ADR-0214).
     pub fn takes_pointer(&self) -> bool {
         matches!(self.properties.get("submit"), Some(Value::Boolean(true)))

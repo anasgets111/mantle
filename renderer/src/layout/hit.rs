@@ -43,7 +43,7 @@ pub struct LogicalPoint {
 /// `layout::scene::MAX_TREE_DEPTH` refuses a tree deeper than 64 levels at resolve time.
 pub fn hit_path(root: &ResolvedNode, point: LogicalPoint) -> Vec<&ResolvedNode> {
     let mut path = Vec::new();
-    descend(root, point, 0.0, 0.0, &mut path);
+    descend(root, point, 0.0, 0.0, true, &mut path);
     path
 }
 
@@ -258,6 +258,7 @@ fn descend<'a>(
     point: LogicalPoint,
     origin_x: f32,
     origin_y: f32,
+    inherited: bool,
     path: &mut Vec<&'a ResolvedNode>,
 ) -> bool {
     // A leaving node is painted and nothing more (ADR-0150).
@@ -277,12 +278,14 @@ fn descend<'a>(
     } else {
         point
     };
-    let inside = rect.contains(point);
-    if !inside && node.clips_children() {
+    let hittable = node.hittable(inherited);
+    // A `hittable = false` node claims nothing itself but stays on the path above a re-enabled descendant.
+    let inside = hittable && rect.contains(point);
+    if !rect.contains(point) && node.clips_children() {
         return false;
     }
     path.push(node);
-    let child_hit = node.painted_children().rev().any(|child| descend(child, point, rect.x, rect.y, path));
+    let child_hit = node.painted_children().rev().any(|child| descend(child, point, rect.x, rect.y, hittable, path));
     if !inside && !child_hit {
         path.pop();
     }
@@ -745,6 +748,26 @@ mod tests {
             ],
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 25.0, y: 16.0 })), ["panel", "over"]);
+    }
+
+    #[test]
+    fn a_hittable_false_overlay_passes_the_pointer_to_the_sibling_under_it() {
+        let set = |mut node: ResolvedNode, value| {
+            std::rc::Rc::make_mut(&mut node.properties).insert("hittable", Value::Boolean(value));
+            node
+        };
+        let tree = |over: ResolvedNode| {
+            let under = ResolvedNode::test("under", (0.0, 0.0, 50.0, 32.0), vec![]);
+            ResolvedNode::test("panel", (0.0, 0.0, 100.0, 32.0), vec![under, over])
+        };
+        let at = LogicalPoint { x: 25.0, y: 16.0 };
+        let child = || ResolvedNode::test("child", (0.0, 0.0, 50.0, 32.0), vec![]);
+        let layer = ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![child()]);
+        assert_eq!(kinds(&hit_path(&tree(layer.clone()), at)), ["panel", "over", "child"], "default");
+        assert_eq!(kinds(&hit_path(&tree(set(layer.clone(), false)), at)), ["panel", "under"], "subtree skipped");
+        let revived = ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![set(child(), true)]);
+        assert_eq!(kinds(&hit_path(&tree(set(revived, false)), at)), ["panel", "over", "child"], "child re-enables");
+        assert!(hit_path(&set(tree(layer), false), at).is_empty(), "a root opts the surface out");
     }
 
     #[test]

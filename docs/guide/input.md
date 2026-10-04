@@ -35,6 +35,7 @@ Every pointer event asks which nodes lie under the pointer, from the surface dow
 | Stacking | Siblings are asked topmost first: higher `z`, then later in declaration order |
 | Clipping | A point outside a node reaches none of its children, unless the node has `clip = "none"` |
 | Skipped | `visible = false` subtrees and nodes playing an [exit](animation.md#exit). `opacity = 0` is still hit |
+| Pass-through | `hittable = false` skips a node and its descendants, so a decorative overlay does not swallow the click meant for what is under it. A descendant with `hittable = true` is hit again. Hover, cursor, wheel and the surface input region skip it too |
 | Edges | Half-open: two nodes sharing an edge never both take it |
 | Rects | Every `rect` argument and `hover_rect` value is the node's surface-local `{ x, y, width, height }` laid-out box, before transforms |
 
