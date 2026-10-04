@@ -126,7 +126,17 @@ pub enum PaintStyle {
         /// `color` unless `placeholder_color` is set.
         placeholder_color: Rgba,
         align: TextAlign,
+        disabled: bool,
+        /// Grapheme-cluster cap on the draft; `None` is unlimited.
+        max_length: Option<usize>,
     },
+}
+
+impl PaintStyle {
+    /// A disabled `textfield` takes no keyboard focus of either kind.
+    pub fn is_disabled_field(&self) -> bool {
+        matches!(self, Self::TextField { disabled: true, .. })
+    }
 }
 
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
@@ -218,6 +228,8 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 color,
                 placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),
                 align: textfield::text_align.read(properties)?,
+                disabled: textfield::disabled.read(properties)?,
+                max_length: textfield::max_length.read(properties)?,
             }
         }
         _ => return Ok(None),
@@ -303,6 +315,23 @@ mod tests {
     fn a_malformed_background_fails_the_pass_instead_of_defaulting() {
         let lua = Lua::new();
         assert!(style(&lua, "return { kind = 'rect', background = 5 }").is_err());
+    }
+
+    #[test]
+    fn a_textfield_reads_disabled_and_max_length_and_refuses_a_negative_limit() {
+        let lua = Lua::new();
+        let read = |src| match style(&lua, src).unwrap() {
+            Some(PaintStyle::TextField { disabled, max_length, .. }) => (disabled, max_length),
+            _ => unreachable!(),
+        };
+        assert_eq!(read("return { kind = 'textfield' }"), (false, None));
+        assert_eq!(read("return { kind = 'textfield', disabled = true, max_length = 5 }"), (true, Some(5)));
+        assert_eq!(
+            read("return { kind = 'textfield', max_length = 0 }"),
+            (false, None),
+            "0 is unlimited, as max_lines"
+        );
+        assert!(style(&lua, "return { kind = 'textfield', max_length = -1 }").is_err());
     }
 
     #[test]

@@ -113,7 +113,7 @@ pub(in crate::wayland) fn secure_id(
     if !node.visible || node.leaving {
         return None;
     }
-    if let Some(node::PaintStyle::TextField { target: Some(current), .. }) = &node.paint
+    if let Some(node::PaintStyle::TextField { target: Some(current), disabled: false, .. }) = &node.paint
         && current == target
     {
         return Some(node.id);
@@ -127,7 +127,7 @@ pub(in crate::wayland) fn secure_target_at(
 ) -> Option<&node::SecureSubmitTarget> {
     let (node, _) = find(root, id)?;
     match node.paint.as_ref()? {
-        node::PaintStyle::TextField { target: Some(target), .. } => Some(target),
+        node::PaintStyle::TextField { target: Some(target), disabled: false, .. } => Some(target),
         _ => None,
     }
 }
@@ -516,6 +516,21 @@ mod tests {
         let mut found = Vec::new();
         controls("panel@TEST", &root, &mut found);
         assert_eq!(found.iter().map(|control| control.focus.id).collect::<Vec<_>>(), ids);
+    }
+
+    #[test]
+    fn tab_skips_a_disabled_field() {
+        let lua = Lua::new();
+        let off = crate::wayland::input::keyboard::tests::with_property(
+            plain_textfield(&lua),
+            "disabled",
+            mlua::Value::Boolean(true),
+        );
+        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 30.0), false);
+        root.children = vec![off, plain_textfield(&lua)];
+        let mut list = Vec::new();
+        controls("panel@TEST", &root, &mut list);
+        assert_eq!(list.len(), 1);
     }
 
     #[test]

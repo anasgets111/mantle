@@ -203,7 +203,9 @@ impl App {
             PasteTarget::Masked(field)
                 if self.focused_secure_submit.as_ref() == Some(&field) && self.secure_field_takes_keys() =>
             {
-                self.secure_buffer.push_bytes(&bytes);
+                let max = self.field_max_length(&field.surface_id, field.id);
+                let kept = self.secure_buffer.grapheme_count();
+                self.secure_buffer.push_str(super::keyboard::fit_to_limit(text, max, kept));
                 self.mark_focused_secure_submit_changed();
             }
             PasteTarget::Plain { surface_id, id }

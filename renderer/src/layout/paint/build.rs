@@ -518,7 +518,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // character. Wrong-password feedback costs a two-second `pam_fail_delay`; three failures
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
-        PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align } => {
+        PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align, .. } => {
             // The first entry for this node wins: the focused field, then any parked draft. Another
             // node's focus, masked or not, leaves this one to its parked draft or placeholder.
             let (content, caret, caret_on, runs, is_placeholder) = focus

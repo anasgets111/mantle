@@ -225,6 +225,24 @@ impl PlainEdit {
         PlainEdit { changed: false, submitted: false, cancelled: false, navigated: None, moved: false };
 }
 
+/// `text` cut on a grapheme boundary to what `max_length` leaves after `kept` clusters stay.
+/// Counting clusters is how the caret and erase already see characters (ADR-0236).
+pub(in crate::wayland::input) fn fit_to_limit(text: &str, max: Option<usize>, kept: usize) -> &str {
+    let Some(max) = max else { return text };
+    text.grapheme_indices(true).nth(max.saturating_sub(kept)).map_or(text, |(at, _)| &text[..at])
+}
+
+/// An insert of `text` over `replaced` in `buffer`, cut to `max_length`. Over a selection a fully
+/// cut insert would delete it, so that case is refused whole.
+fn limited_append<'a>(buffer: &str, replaced: (usize, usize), text: &'a str, max: Option<usize>) -> KeyAction<'a> {
+    let (from, to) = (replaced.0.min(replaced.1), replaced.0.max(replaced.1));
+    let kept = buffer[..from].graphemes(true).count() + buffer[to..].graphemes(true).count();
+    match fit_to_limit(text, max, kept) {
+        "" if !text.is_empty() => KeyAction::Ignore,
+        fitted => KeyAction::Append(fitted),
+    }
+}
+
 /// Byte offset one word before `at`, taking the run of spaces before that word with it so a single
 /// Ctrl+Backspace crosses the gap and the word together.
 fn previous_word(text: &str, at: usize) -> usize {
@@ -525,7 +543,17 @@ impl App {
         }
     }
 
+    /// The `max_length` of the node `(surface_id, id)`, if it is a field that sets one.
+    pub(in crate::wayland) fn field_max_length(&self, surface_id: &str, id: layout::scene::NodeId) -> Option<usize> {
+        let path = layout::hit::path_to_node(self.client.scene().surface(surface_id)?, id)?;
+        match path.last()?.paint.as_ref()? {
+            node::PaintStyle::TextField { max_length, .. } => *max_length,
+            _ => None,
+        }
+    }
+
     fn set_draft(&mut self, surface_id: String, id: layout::scene::NodeId, text: &str) {
+        let text = fit_to_limit(text, self.field_max_length(&surface_id, id), 0);
         if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), &surface_id, id, text) {
             self.cancel_text_input_composition();
             self.text_input.note_other_change();
@@ -659,7 +687,7 @@ impl App {
     /// half-typed reply loses a sentence, not a secret, so there is no once-a-turn sweep matching
     /// [`App::drop_secure_focus_if_its_surface_is_gone`]; the check before each keystroke is
     /// enough, and a `leave` clears it anyway.
-    pub(in crate::wayland::input) fn prune_text_field_focus(&mut self) {
+    pub(in crate::wayland) fn prune_text_field_focus(&mut self) {
         let scene = self.client.scene();
         let mut parked = std::mem::take(&mut self.parked_drafts);
         forget_gone_drafts(&mut parked, |surface_id, id| {
@@ -675,11 +703,13 @@ impl App {
         // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
         // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
         // card that no longer exists, so the next key is what finally lets it go.
-        let node_exists = self
-            .client
-            .scene()
-            .surface(&field.surface_id)
-            .is_some_and(|tree| layout::hit::contains_node(tree, field.id));
+        // A disabled field is let go like a removed one, except that its draft stays parked.
+        let node_exists = self.client.scene().surface(&field.surface_id).is_some_and(|tree| {
+            layout::hit::contains_node(tree, field.id)
+                && layout::hit::path_to_node(tree, field.id)
+                    .and_then(|path| path.last().copied())
+                    .is_some_and(|node| !node.paint.as_ref().is_some_and(node::PaintStyle::is_disabled_field))
+        });
         if self.surface_is_live(&field.surface_id) && node_exists {
             return;
         }
@@ -739,6 +769,18 @@ impl App {
         }
         // Read before the borrow below: shift turns a caret motion into a selection.
         let shift = self.shift_held;
+        let Some(field) = self.focused_text_field.as_ref() else {
+            return;
+        };
+        let action = match action {
+            KeyAction::Append(text) => limited_append(
+                &field.buffer,
+                ime_range.unwrap_or(field.selection),
+                text,
+                self.field_max_length(&field.surface_id, field.id),
+            ),
+            action => action,
+        };
         let Some(field) = self.focused_text_field.as_mut() else {
             return;
         };
@@ -1378,6 +1420,32 @@ mod tests {
         assert_eq!(parked[&("calendar@eDP-1".to_string(), other)], ("prefill".to_string(), (7, 7)));
         assert!(!store_draft(&mut parked, None, "calendar@eDP-1", other, ""));
         assert!(parked.is_empty(), "an empty text clears a parked draft");
+    }
+
+    #[test]
+    fn max_length_counts_grapheme_clusters_and_cuts_inserts_on_a_boundary() {
+        let family = "👨‍👩‍👧";
+        assert_eq!(fit_to_limit("abcdef", None, 3), "abcdef");
+        assert_eq!(fit_to_limit("abcdef", Some(4), 2), "ab");
+        assert_eq!(fit_to_limit("e\u{301}xyz", Some(2), 0), "e\u{301}x", "a base with a mark is one character");
+        assert_eq!(fit_to_limit(&format!("{family}{family}"), Some(1), 0), family);
+        assert_eq!(fit_to_limit("ab", Some(2), 5), "", "a field over its limit takes nothing more");
+    }
+
+    #[test]
+    fn a_limited_append_counts_what_the_selection_gives_back_and_never_deletes_by_overflow() {
+        let append = |buffer: &str, range, text, max| match limited_append(buffer, range, text, max) {
+            KeyAction::Append(text) => Some(text.to_owned()),
+            KeyAction::Ignore => None,
+            _ => unreachable!(),
+        };
+        assert_eq!(append("abc", (3, 3), "xyz", Some(4)), Some("x".into()));
+        assert_eq!(append("abc", (1, 3), "xyz", Some(3)), Some("xy".into()), "the selection makes room");
+        assert_eq!(append("abc", (3, 3), "x", Some(3)), None, "a full field ignores typing");
+        assert_eq!(append("abcd", (0, 4), "x", Some(2)), Some("x".into()), "an over-long draft can still be replaced");
+        assert_eq!(append("abcd", (1, 4), "xyz", Some(2)), Some("x".into()));
+        assert_eq!(append("abcd", (0, 4), "", Some(2)), Some(String::new()), "deleting is not limited");
+        assert_eq!(append("abc", (3, 3), "xyz", None), Some("xyz".into()));
     }
 
     #[test]

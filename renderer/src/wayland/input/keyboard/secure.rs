@@ -255,7 +255,10 @@ impl App {
         // Append/backspace/clear all change the drawn character count.
         self.mark_focused_secure_submit_changed();
         match action {
-            KeyAction::Append(text) => self.secure_buffer.push_str(text),
+            KeyAction::Append(text) => {
+                let max = self.focused_secure_submit.as_ref().and_then(|f| self.field_max_length(&f.surface_id, f.id));
+                self.secure_buffer.push_str(super::plain::fit_to_limit(text, max, self.secure_buffer.grapheme_count()));
+            }
             // `pop_grapheme` zeroizes dropped bytes, not just the length. Only the backwards one:
             // every other reach needs a caret, and a secret holds none (ADR-0064).
             KeyAction::Erase(Motion::Left) => {

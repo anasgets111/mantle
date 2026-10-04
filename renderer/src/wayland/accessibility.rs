@@ -125,7 +125,11 @@ fn append(
         accessible.add_action(Action::Focus);
         accessible.add_action(Action::Click);
     } else if target == Role::TextInput || target == Role::PasswordInput {
-        accessible.add_action(Action::Focus);
+        if node.paint.as_ref().is_some_and(node::PaintStyle::is_disabled_field) {
+            accessible.set_disabled();
+        } else {
+            accessible.add_action(Action::Focus);
+        }
     }
     let children: Vec<_> = if node.visible && !node.leaving {
         node.content_children().filter(|child| child.visible && !child.leaving).collect()

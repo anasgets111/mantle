@@ -12,7 +12,7 @@ mod focus;
 mod plain;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
-pub(in crate::wayland::input) use plain::EditHistory;
+pub(in crate::wayland::input) use plain::{EditHistory, fit_to_limit};
 
 keywords! {
     /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
@@ -56,9 +56,12 @@ pub(super) enum FieldTarget {
 /// (ADR-0099); [`ArmedClick`] still uses a rect because press/release trees rarely move.
 pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarget> {
     let field = path.iter().rev().find(|node| node.kind == "textfield")?;
-    let node::PaintStyle::TextField { target, .. } = field.paint.as_ref()? else {
+    let node::PaintStyle::TextField { target, disabled, .. } = field.paint.as_ref()? else {
         return None;
     };
+    if *disabled {
+        return None;
+    }
     if let Some(target) = target {
         return Some(FieldTarget::Masked { id: field.id, target: target.clone() });
     }
@@ -562,6 +565,33 @@ pub(in crate::wayland) mod tests {
         // hand could declare a destination the parser would never have found.
         node.paint = node::paint_style(node.kind, &node.properties).unwrap();
         node
+    }
+
+    /// `node` with one more property written, its style re-derived like [`textfield`]'s.
+    pub(in crate::wayland) fn with_property(
+        mut node: layout::ResolvedNode,
+        key: &'static str,
+        value: Value,
+    ) -> layout::ResolvedNode {
+        std::rc::Rc::make_mut(&mut node.properties).insert(key, value);
+        node.paint = node::paint_style(node.kind, &node.properties).unwrap();
+        node
+    }
+
+    #[test]
+    fn a_disabled_field_takes_no_focus_of_either_kind() {
+        let lua = Lua::new();
+        let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
+        let plain = with_property(plain_textfield(&lua), "disabled", Value::Boolean(true));
+        assert!(focused_field(&[&root, &plain]).is_none());
+        let secure = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let (id, target) = (secure.id, masked_target(&[&secure]).unwrap());
+        let secure = with_property(secure, "disabled", Value::Boolean(true));
+        assert!(focused_field(&[&root, &secure]).is_none());
+        let tree = tree_with(&lua, vec![secure]);
+        assert_eq!(sole_secure_submit(&tree), None, "a disabled prompt is not the scope's destination");
+        assert_eq!(focus::secure_target_at(&tree, id), None);
+        assert_eq!(focus::secure_id(&tree, &target), None);
     }
 
     pub(in crate::wayland) fn secure_submit_table(lua: &Lua, capability: &str, action: &str) -> Value {
