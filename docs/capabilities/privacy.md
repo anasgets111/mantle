@@ -47,8 +47,8 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 | `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users`. A PipeWire `Video/Source` from the same pid only supplies the name |
 
 The PipeWire half shares [`audio`'s thread](audio.md#backend). `privacy` pushes its first `/proc`
-scan as soon as it starts. Without PipeWire the microphone and screencast lists
-stay empty and `camera_users` keeps its first scan: the update loop ends with the PipeWire thread.
+scan as soon as it starts. While PipeWire is down, or before it first answers, the microphone and
+screencast lists are empty and cameras lose their PipeWire names; all refill when it reconnects.
 
 ## Gotchas
 

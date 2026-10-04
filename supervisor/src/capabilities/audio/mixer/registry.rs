@@ -4,6 +4,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::time::Duration;
 
 use pipewire as pw;
 use pw::keys;
@@ -12,7 +13,7 @@ use pw::spa::pod::Value;
 use pw::spa::pod::deserialize::PodDeserializer;
 use pw::spa::utils::dict::DictRef;
 use pw::types::ObjectType;
-use shared::{debug, error, warn};
+use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
@@ -37,15 +38,50 @@ use super::write::{apply_command, cap_default_sink};
 /// `updates` currently reaches only a `main()` log (ADR-0017); `privacy_updates` feeds
 /// `privacy::PrivacyController`, enriching cameras (ADR-0034) and fully describing microphones
 /// and screencasts (ADR-0137). ponytail: no shutdown path; `main_loop.run()` ends at process exit
-/// until Phase 7/8's reload orchestrator needs a `quit()` trigger. Unreachable PipeWire logs and
-/// returns because this subsystem is optional.
+/// until Phase 7/8's reload orchestrator needs a `quit()` trigger.
+///
+/// An unreachable or lost PipeWire is retried, so a restart or a late start at login recovers. A
+/// lost connection first publishes empty state, the snapshot of a machine with no audio hardware.
 pub fn run(
     updates: UnboundedSender<AudioState>,
     privacy_updates: watch::Sender<PrivacySources>,
     commands: AudioCommandReceiver,
 ) {
-    if let Err(err) = run_inner(updates, privacy_updates, commands) {
-        error!("pipewire registry listener stopped: {err}");
+    reconnect(None, &updates, &privacy_updates, commands);
+}
+
+/// ponytail: polls 1 s doubling to 30 s; a watch on the socket in `$XDG_RUNTIME_DIR` would reconnect at once.
+const RETRY_FIRST: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+/// A connection that lasted this long resets the backoff; a daemon crashing sooner keeps backing off.
+const STABLE: Duration = Duration::from_secs(10);
+
+/// [`run`]'s loop; `remote` names a socket other than the default, for tests.
+fn reconnect(
+    remote: Option<&str>,
+    updates: &UnboundedSender<AudioState>,
+    privacy_updates: &watch::Sender<PrivacySources>,
+    commands: AudioCommandReceiver,
+) {
+    let mut commands = Some(commands);
+    let mut delay = RETRY_FIRST;
+    loop {
+        let started = std::time::Instant::now();
+        match run_inner(remote, updates, privacy_updates, &mut commands) {
+            Ok(true) => {
+                warn!("lost the PipeWire connection; reconnecting");
+                let _ = updates.send(AudioState::default());
+                privacy_updates.send_replace(PrivacySources::default());
+                if started.elapsed() >= STABLE {
+                    delay = RETRY_FIRST;
+                }
+            }
+            Ok(false) => debug!("PipeWire closed the connection before its first snapshot"),
+            Err(err) if delay == RETRY_FIRST => warn!("cannot reach PipeWire ({err}); retrying"),
+            Err(err) => debug!("cannot reach PipeWire ({err}); retrying in {delay:?}"),
+        }
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(RETRY_MAX);
     }
 }
 
@@ -58,19 +94,21 @@ pub fn command_channel() -> (AudioCommandSender, AudioCommandReceiver) {
     pw::channel::channel()
 }
 
+/// One connection until PipeWire drops it; `Ok` says whether it published, `commands` comes back.
 fn run_inner(
-    updates: UnboundedSender<AudioState>,
-    privacy_updates: watch::Sender<PrivacySources>,
-    commands: AudioCommandReceiver,
-) -> Result<(), pw::Error> {
+    remote: Option<&str>,
+    updates: &UnboundedSender<AudioState>,
+    privacy_updates: &watch::Sender<PrivacySources>,
+    commands: &mut Option<AudioCommandReceiver>,
+) -> Result<bool, pw::Error> {
     pw::init();
 
     let main_loop = pw::main_loop::MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&main_loop, None)?;
-    let core = context.connect_rc(None)?;
+    let core = context.connect_rc(remote.map(|remote| pw::properties::properties! { *keys::REMOTE_NAME => remote }))?;
     let registry = core.get_registry_rc()?;
 
-    let state = Rc::new(RefCell::new(MixerState::new(updates, privacy_updates)));
+    let state = Rc::new(RefCell::new(MixerState::new(updates.clone(), privacy_updates.clone())));
 
     // Weak: the listener is stored on registry's C object, so a captured strong RegistryRc would
     // keep itself alive forever.
@@ -162,7 +200,9 @@ fn run_inner(
         .register();
 
     // The gate itself. `error` opens it too: a core error means no further `done` is coming, and a
-    // shell whose audio never publishes at all is worse than one that publishes early.
+    // shell whose audio never publishes at all is worse than one that publishes early. A lost
+    // connection (`EPIPE`, as `pw-cat` reads it) ends the loop for `reconnect` instead.
+    let main_loop_for_error = main_loop.downgrade();
     let state_for_done = Rc::clone(&state);
     let barrier_for_done = Rc::clone(&barrier);
     let state_for_error = Rc::clone(&state);
@@ -179,8 +219,14 @@ fn run_inner(
             state.publish_audio();
             state.publish_privacy();
         })
-        .error(move |id, _seq, _res, message| {
+        .error(move |id, _seq, res, message| {
             if id != pw::core::PW_ID_CORE {
+                return;
+            }
+            if res == -libc::EPIPE {
+                if let Some(main_loop) = main_loop_for_error.upgrade() {
+                    main_loop.quit();
+                }
                 return;
             }
             let mut state = state_for_error.borrow_mut();
@@ -200,11 +246,22 @@ fn run_inner(
     // Hold it for the loop lifetime; dropping AttachedReceiver detaches the eventfd source and
     // every later command is silently discarded.
     let state_for_command = Rc::clone(&state);
-    let _attached_commands =
-        commands.attach(main_loop.loop_(), move |command| apply_command(&state_for_command, command));
+    let Some(receiver) = commands.take() else { return Ok(false) };
+    let attached = receiver.attach(main_loop.loop_(), move |command| {
+        // Sent before this connection's first snapshot, as during an outage: its ids name nothing live.
+        if !state_for_command.borrow().hydrated {
+            return debug!("dropped {command:?}: PipeWire has not answered yet");
+        }
+        apply_command(&state_for_command, command)
+    });
 
     main_loop.run();
-    Ok(())
+    *commands = Some(attached.deattach());
+    let hydrated = state.borrow().hydrated;
+    state.borrow_mut().release_proxies();
+    drop((_registry_listener, _core_listener));
+    debug_assert_eq!(Rc::strong_count(&state), 1, "a listener still holds the mixer state");
+    Ok(hydrated)
 }
 
 /// A `param` event's pod as a value tree; `None` for an absent or undecodable one.
@@ -591,4 +648,90 @@ fn bind_bluez_device(
     let mut state = state.borrow_mut();
     state.bluez_cards.insert(device_id, BluezCard { mac, ..BluezCard::default() });
     state.bluez_devices.insert(device_id, (device, listener));
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::{Child, Command, Stdio};
+    use std::time::Instant;
+
+    use super::*;
+
+    /// Killed on drop, so a failing test leaves no daemon behind.
+    struct Daemon(Child);
+
+    impl Drop for Daemon {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+
+    /// A private PipeWire with one null sink and no session manager, listening at `dir/pipewire-0`.
+    fn daemon(dir: &std::path::Path) -> Daemon {
+        let config = dir.join("pipewire.conf");
+        std::fs::write(
+            &config,
+            "context.properties = { core.daemon = true core.name = pipewire-0 support.dbus = false }
+            context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }
+            context.modules = [
+                { name = libpipewire-module-protocol-native } { name = libpipewire-module-access }
+                { name = libpipewire-module-adapter }
+            ]
+            context.objects = [ { factory = adapter args = {
+                factory.name = support.null-audio-sink node.name = test-sink media.class = Audio/Sink
+                audio.position = [ FL FR ]
+            } } ]",
+        )
+        .unwrap();
+        let child = Command::new("pipewire")
+            .arg("-c")
+            .arg(&config)
+            .env("PIPEWIRE_RUNTIME_DIR", dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("pipewire must be installed: the reconnect test runs a private daemon");
+        Daemon(child)
+    }
+
+    fn until(updates: &mut tokio::sync::mpsc::UnboundedReceiver<AudioState>, done: impl Fn(&AudioState) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            match updates.try_recv() {
+                Ok(state) if done(&state) => return,
+                Ok(_) => {}
+                Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                Err(err) => panic!("no matching audio state: {err}"),
+            }
+        }
+    }
+
+    /// Absent at start, then up, lost, and back, as a PipeWire started late at login and then
+    /// restarted. A write queued during the outage is dropped; one sent after it lands.
+    #[test]
+    fn a_missing_or_lost_pipewire_is_reconnected() {
+        let dir = tempfile::tempdir().unwrap();
+        let remote = dir.path().join("pipewire-0").to_str().unwrap().to_owned();
+        let (updates, mut published) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy) = watch::channel(PrivacySources::default());
+        let (commands, receiver) = command_channel();
+        std::thread::spawn(move || reconnect(Some(&remote), &updates, &privacy_updates, receiver));
+
+        std::thread::sleep(Duration::from_millis(200));
+        let pipewire = daemon(dir.path());
+        until(&mut published, |audio| audio.sinks.len() == 1);
+        drop(pipewire);
+        until(&mut published, |audio| *audio == AudioState::default());
+
+        commands.send(AudioCommand::SetMasterVolume(0.9)).unwrap();
+        let _pipewire = daemon(dir.path());
+        until(&mut published, |audio| audio.sinks.len() == 1);
+        commands.send(AudioCommand::SetMasterVolume(0.5)).unwrap();
+        until(&mut published, |audio| {
+            let near = |percent: f64| audio.volume.is_some_and(|volume| (volume - percent).abs() < 1.0);
+            assert!(!near(90.0), "the write queued during the outage was replayed");
+            near(50.0)
+        });
+    }
 }

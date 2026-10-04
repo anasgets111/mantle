@@ -135,8 +135,9 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no
 audio hardware still gets one push of empty lists. An unreachable PipeWire is logged and `audio`
-stays `nil`. Nothing reconnects: a PipeWire restart freezes `audio` at its last push until the
-Supervisor restarts.
+stays `nil` until it comes up. A lost connection pushes empty lists, the same as no hardware. Either
+way the Supervisor retries after 1 s, doubling to every 30 s, and the first push after it reconnects
+is a full one.
 
 Writes are not optimistic: state changes when PipeWire reports the new value. An action with no
 target (a stale `id`, no default device, or a volume write or mute toggle before that device's first

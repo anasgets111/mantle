@@ -126,6 +126,17 @@ impl MixerState {
         }
     }
 
+    /// Drops every bound proxy. Their listeners hold this state, so a lost connection that kept
+    /// them would leak itself, sockets included.
+    pub(super) fn release_proxies(&mut self) {
+        self.nodes.clear();
+        self.sink_nodes.clear();
+        self.source_nodes.clear();
+        self.devices.clear();
+        self.bluez_devices.clear();
+        self.metadata = None;
+    }
+
     /// Entry map for one direction, shared by binding and writing.
     pub(super) fn device_entries_mut(&mut self, kind: DefaultDevice) -> &mut HashMap<u32, DeviceEntry> {
         match kind {

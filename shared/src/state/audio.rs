@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 /// `mantle.audio`'s payload (ADR-0053).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioState {
     /// Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients
