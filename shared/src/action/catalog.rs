@@ -291,6 +291,12 @@ pub enum NetworkAction {
     DisconnectWifi,
     /// Disconnects the named Wi-Fi interface.
     DisconnectWifiDevice { id: String },
+    /// Activates the saved VPN or WireGuard profile with this UUID. A missing secret raises `vpn_secret`.
+    ConnectVpn { uuid: String },
+    /// Deactivates the VPN or WireGuard profile with this UUID.
+    DisconnectVpn { uuid: String },
+    /// Declines the pending `vpn_secret` request, failing that activation.
+    CancelVpnSecret,
 }
 
 #[derive(Debug, serde::Deserialize)]

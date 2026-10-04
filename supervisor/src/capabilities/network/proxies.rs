@@ -15,6 +15,7 @@ pub(super) const REASON_USER_REQUESTED: u32 = 39;
 pub(super) const REASON_SSID_NOT_FOUND: u32 = 53;
 pub(super) const ACTIVE_STATE_ACTIVATED: u32 = 2;
 pub(super) const ACTIVE_STATE_DEACTIVATED: u32 = 4;
+pub(super) const ACTIVE_STATE_ACTIVATING: u32 = 1;
 pub(super) const AP_FLAGS_PRIVACY: u32 = 0x1;
 
 #[zbus::proxy(
@@ -44,6 +45,8 @@ pub(super) trait NetworkManager {
     #[zbus(signal)]
     fn device_removed(&self, device_path: ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(property)]
+    fn active_connections(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
+    #[zbus(property)]
     fn networking_enabled(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn primary_connection(&self) -> zbus::Result<OwnedObjectPath>;
@@ -53,6 +56,16 @@ pub(super) trait NetworkManager {
     fn wireless_enabled(&self) -> zbus::Result<bool>;
     #[zbus(property)]
     fn set_wireless_enabled(&self, value: bool) -> zbus::Result<()>;
+}
+
+#[zbus::proxy(
+    interface = "org.freedesktop.NetworkManager.AgentManager",
+    default_service = "org.freedesktop.NetworkManager",
+    default_path = "/org/freedesktop/NetworkManager/AgentManager"
+)]
+pub(super) trait AgentManager {
+    fn register_with_capabilities(&self, identifier: &str, capabilities: u32) -> zbus::Result<()>;
+    fn unregister(&self) -> zbus::Result<()>;
 }
 
 #[zbus::proxy(

@@ -501,7 +501,7 @@ props! {
         on_navigate(key: NavigateKey);
         /// Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `secrets`/`store` with a `name`, or `bluetooth`/`pair` with the request id and MAC in `name`. Makes the field masked.
         ///
-        /// Book: Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields))
+        /// Book: Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `network`/`vpn_secret` with a request id and key in `name`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields))
         secure_submit: Bound<SecureSubmitTarget>;
         /// Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
         mask_character: Bound<Text> = absent(Lua(r#""•""#));

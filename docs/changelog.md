@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `network.vpns` lists saved NetworkManager VPN and WireGuard profiles with `active` and `activating`; `connect_vpn(uuid)` and `disconnect_vpn(uuid)` toggle one and `vpn_error` reports a failed activation. A NetworkManager secret agent raises `vpn_secret` when an activation needs secrets: answer it with `secure_submit = { capability = "network", action = "vpn_secret", name = request.id .. "/" .. field }` fields, or `cancel_vpn_secret()`.
 - `workspaces` entries and `windows` entries have `urgent`: niri reports it as set; Hyprland sets it on an `urgent` event and clears it when the window gains focus or closes. It is always `false` on wlr-foreign-toplevel.
 - New `radio` capability: `mantle.radio.radios` lists each rfkill kind with `soft_blocked` and `hard_blocked`; `set_blocked(kind, blocked)` and `set_all_blocked(blocked)` write `/dev/rfkill`.
 - Bluetooth `pairing_request` has an `id` and supports `"pin_entry"` and `"passkey_entry"`; answer these with `secure_submit = { capability = "bluetooth", action = "pair", name = request.id .. "/" .. request.mac }`. A present adapter takes over when the tracked adapter is removed.

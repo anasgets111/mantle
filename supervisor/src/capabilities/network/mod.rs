@@ -21,6 +21,8 @@ mod join;
 mod profiles;
 mod proxies;
 mod scan;
+mod secret_agent;
+mod vpn;
 
 pub use controller::NetworkController;
 use shared::action::NetworkAction;
@@ -94,5 +96,13 @@ pub fn dispatch(controller: &NetworkController, envelope: &shared::CommandEnvelo
         NetworkAction::DisconnectWifiDevice { id } => {
             tokio::spawn(async move { controller.disconnect_wifi_device(Some(&id)).await });
         }
+        NetworkAction::ConnectVpn { uuid } => {
+            tokio::spawn(async move { controller.connect_vpn(&uuid).await });
+        }
+        NetworkAction::DisconnectVpn { uuid } => {
+            tokio::spawn(async move { controller.disconnect_vpn(&uuid).await });
+        }
+        // Not spawned, like `cancel_connect`: it only answers a waiting agent call.
+        NetworkAction::CancelVpnSecret => controller.cancel_vpn_secret(),
     }
 }

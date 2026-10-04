@@ -15,19 +15,22 @@ use super::{NetworkController, NetworkSignal, PendingNetworkConnect, root_object
 use crate::capabilities::bind;
 
 /// Backstop for an activation that stops answering without a verdict.
-const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
+pub(super) const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
 
 /// Kept separate from `Device` because zbus names both signal types `StateChanged`.
 #[zbus::proxy(
     interface = "org.freedesktop.NetworkManager.Connection.Active",
     default_service = "org.freedesktop.NetworkManager"
 )]
-trait ActiveConnection {
+pub(super) trait ActiveConnection {
     #[zbus(signal, name = "StateChanged")]
     fn active_state_changed(&self, state: u32, reason: u32) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn state(&self) -> zbus::Result<u32>;
+
+    #[zbus(property)]
+    fn uuid(&self) -> zbus::Result<String>;
 }
 
 impl NetworkController {
@@ -158,32 +161,20 @@ impl NetworkController {
         active: &OwnedObjectPath,
         pending: &PendingNetworkConnect,
     ) -> Result<(), Option<u32>> {
-        let proxy = match bind::<ActiveConnectionProxy>(&self.connection, active.clone()).await {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                warn!("failed to bind the active connection {active}: {err}");
-                return Err(None);
-            }
-        };
         let Some(wifi) = self.pending_wifi(pending) else {
             return Err(None);
         };
         // Use the signals, not `receive_state_changed()`: the property stream gives no reason.
-        let (mut changes, mut device_changes) =
-            match tokio::try_join!(proxy.receive_active_state_changed(), wifi.device.receive_device_state_changed()) {
-                Ok(streams) => streams,
-                Err(err) => {
-                    warn!("failed to subscribe to StateChanged for {active}: {err}");
-                    return Err(None);
-                }
-            };
-
-        // Subscription follows activation; read the property to catch an early verdict.
+        let watched = async {
+            zbus::Result::Ok((wifi.device.receive_device_state_changed().await?, self.watch_active(active).await?))
+        };
+        let (mut device_changes, (mut changes, settled)) = watched.await.map_err(|err| {
+            warn!("failed to watch the activation {active}: {err}");
+            None
+        })?;
         // ponytail: an early failure loses its reason. Upgrade path: subscribe before activation.
-        match proxy.state().await {
-            Ok(ACTIVE_STATE_ACTIVATED) => return Ok(()),
-            Ok(ACTIVE_STATE_DEACTIVATED) => return Err(None),
-            _ => {}
+        if let Some(activated) = settled {
+            return activated.then_some(()).ok_or(None);
         }
 
         let mut reason = None;
@@ -210,6 +201,22 @@ impl NetworkController {
                 }
             }
         }
+    }
+
+    /// `active`'s StateChanged stream and, if State already reads settled, whether it activated.
+    /// Subscribing first lets the read cover a verdict that came before it.
+    pub(super) async fn watch_active(
+        &self,
+        active: &OwnedObjectPath,
+    ) -> zbus::Result<(StateChangedStream, Option<bool>)> {
+        let proxy = bind::<ActiveConnectionProxy>(&self.connection, active.clone()).await?;
+        let changes = proxy.receive_active_state_changed().await?;
+        let settled = match proxy.state().await {
+            Ok(ACTIVE_STATE_ACTIVATED) => Some(true),
+            Ok(ACTIVE_STATE_DEACTIVATED) => Some(false),
+            _ => None,
+        };
+        Ok((changes, settled))
     }
 
     async fn connect_inner(&self, pending: &PendingNetworkConnect, secret: &[u8]) -> Result<InFlight, ConnectError> {
@@ -251,7 +258,7 @@ impl NetworkController {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::{Arc, Mutex};
 
     use tokio::sync::mpsc::UnboundedReceiver;
@@ -262,7 +269,9 @@ mod tests {
     use crate::capabilities::test_support::p2p_pair_serving;
 
     /// A controller bound to a peer serving what `serve` installs.
-    async fn attempting<F>(serve: F) -> (NetworkController, UnboundedReceiver<NetworkSignal>, zbus::Connection)
+    pub(crate) async fn attempting<F>(
+        serve: F,
+    ) -> (NetworkController, UnboundedReceiver<NetworkSignal>, zbus::Connection)
     where
         F: FnOnce(zbus::connection::Builder<'static>) -> zbus::Result<zbus::connection::Builder<'static>>,
     {
@@ -277,6 +286,7 @@ mod tests {
             saved_ssids: Arc::default(),
             state: Arc::new(Mutex::new(NetworkState::default())),
             join: Arc::default(),
+            vpn: Arc::default(),
             events,
         };
         (controller, receiver, peer)
@@ -318,7 +328,7 @@ mod tests {
         }
     }
 
-    struct ListedProfiles(Vec<OwnedObjectPath>);
+    pub(crate) struct ListedProfiles(pub(crate) Vec<OwnedObjectPath>);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings")]
     impl ListedProfiles {

@@ -105,6 +105,14 @@ pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
     input[..end].to_string()
 }
 
+/// The next agent prompt's request ID, unique across agents.
+/// ponytail: after 2^64-2 requests, refuse more until Supervisor restarts; never reuse an id.
+pub(crate) fn next_request_id() -> Option<String> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)).ok().map(|id| id.to_string())
+}
+
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.

@@ -221,6 +221,13 @@ impl Capabilities {
         }
     }
 
+    /// `secure_submit(network, vpn_secret)`: one field of the pending VPN secret request.
+    pub fn submit_vpn_secret(&self, target: String, secret: shared::Zeroizing<Vec<u8>>) {
+        if let Some(network) = &self.network {
+            let _ = network.send(Box::new(move |network| network.submit_vpn_secret(&target, secret)));
+        }
+    }
+
     /// Drops what a departed generation asked for. Its replacement starts with fresh state (named
     /// state survives only an in-place reload), so nothing would send the Bluetooth discovery stop
     /// or the Wi-Fi prompt cancel the old one owed, and discovery ran for the rest of the session.
@@ -231,7 +238,10 @@ impl Capabilities {
             let _ = bluetooth.send(Box::new(|bluetooth| bluetooth.set_discovery(false)));
         }
         if let Some(network) = &self.network {
-            let _ = network.send(Box::new(|network| network.cancel_connect()));
+            let _ = network.send(Box::new(|network| {
+                network.cancel_connect();
+                network.cancel_vpn_secret();
+            }));
         }
         if let Some(files) = &self.files {
             files.forget_watches();

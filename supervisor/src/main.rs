@@ -410,6 +410,11 @@ async fn run_supervisor(
                     let secret = shared::Zeroizing::new(std::mem::take(&mut submit.secret));
                     supervisor.capabilities.connect_prompted(submit.generation_id, secret);
                 }
+                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Network && submit.action == "vpn_secret" => {
+                    if let Some(target) = submit.name.take() {
+                        supervisor.capabilities.submit_vpn_secret(target, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
+                    }
+                }
                 RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Bluetooth && submit.action == "pair" => {
                     if let Some(target) = submit.name.take() {
                         supervisor.capabilities.submit_pairing(target, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));

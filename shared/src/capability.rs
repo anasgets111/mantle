@@ -145,6 +145,9 @@ impl Capability {
                 "forget",
                 "disconnect_wifi",
                 "disconnect_wifi_device",
+                "connect_vpn",
+                "disconnect_vpn",
+                "cancel_vpn_secret",
             ],
             Capability::Notifications => &[
                 "dismiss",

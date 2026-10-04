@@ -130,7 +130,7 @@ impl NetworkController {
 
     /// Binds and reads each profile at `paths`. Unreadable profiles are logged under `context` and
     /// skipped.
-    async fn read_profiles(&self, paths: Vec<OwnedObjectPath>, context: &str) -> Vec<SavedProfile> {
+    pub(super) async fn read_profiles(&self, paths: Vec<OwnedObjectPath>, context: &str) -> Vec<SavedProfile> {
         let reads = paths.into_iter().map(|path| async move {
             let connection = match bind::<SettingsConnectionProxy>(&self.connection, path.clone()).await {
                 Ok(connection) => connection,

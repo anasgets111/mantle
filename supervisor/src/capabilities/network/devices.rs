@@ -221,7 +221,8 @@ pub(super) fn spawn_manager_forwarder(nm: NetworkManagerProxy<'static>, events: 
         let mut changes = stream_select!(
             nm.receive_wireless_enabled_changed().await.map(drop).fuse(),
             nm.receive_networking_enabled_changed().await.map(drop).fuse(),
-            nm.receive_primary_connection_changed().await.map(drop).fuse()
+            nm.receive_primary_connection_changed().await.map(drop).fuse(),
+            nm.receive_active_connections_changed().await.map(drop).fuse()
         );
         while changes.next().await.is_some() && events.send(NetworkSignal::Changed).is_ok() {}
     });

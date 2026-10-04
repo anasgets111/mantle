@@ -34,6 +34,8 @@ pub struct NetworkController {
     pub(super) state: Arc<Mutex<NetworkState>>,
     /// The pending intent, prompt and accepted attempt share one lock.
     pub(super) join: Arc<Mutex<JoinState>>,
+    /// Saved VPN profiles, the last activation failure and the pending secret request.
+    pub(super) vpn: Arc<Mutex<super::vpn::VpnState>>,
     /// Signal sender, including scan's FIFO event.
     pub(super) events: UnboundedSender<NetworkSignal>,
 }
@@ -100,11 +102,23 @@ impl NetworkController {
         // Subscribed before the first fill below, so a profile saved in between is not missed.
         let profiles = tokio::try_join!(settings.receive_new_connection(), settings.receive_connection_removed());
         forward(profiles, NetworkSignal::SavedChanged, events.clone());
+        let vpn = Arc::<Mutex<super::vpn::VpnState>>::default();
+        super::secret_agent::export(&connection, Arc::clone(&vpn), events.clone()).await;
+        super::vpn::forward_active_changes(&connection, events.clone()).await;
         let mut owners = settings.inner().receive_owner_changed().await?;
         let owner_events = events.clone();
+        let owner_connection = connection.clone();
         tokio::spawn(async move {
             use futures_util::StreamExt;
-            while owners.next().await.is_some() && owner_events.send(NetworkSignal::SavedChanged).is_ok() {}
+            super::secret_agent::register(&owner_connection).await;
+            while let Some(owner) = owners.next().await
+                && owner_events.send(NetworkSignal::SavedChanged).is_ok()
+            {
+                // A restarted NetworkManager forgot the agent. With no owner, a call would D-Bus-activate it.
+                if owner.is_some() {
+                    super::secret_agent::register(&owner_connection).await;
+                }
+            }
         });
 
         let controller = Self {
@@ -116,9 +130,11 @@ impl NetworkController {
             saved_ssids: Arc::default(),
             state: Arc::new(Mutex::new(NetworkState::default())),
             join: Arc::default(),
+            vpn,
             events,
         };
         controller.refresh_saved_ssids().await;
+        controller.refresh_vpns().await;
         Ok(controller)
     }
 
@@ -134,7 +150,10 @@ impl NetworkController {
             }
             _ => {
                 match signal {
-                    NetworkSignal::SavedChanged => self.refresh_saved_ssids().await,
+                    NetworkSignal::SavedChanged => {
+                        self.refresh_saved_ssids().await;
+                        self.refresh_vpns().await;
+                    }
                     NetworkSignal::DevicesChanged => {
                         self.refresh_devices().await;
                         if let Some(pending) = self.pending_intent()
@@ -155,6 +174,7 @@ impl NetworkController {
             }
         };
         self.join.lock().expect("mutex poisoned").overlay(&mut next);
+        self.vpn.lock().expect("mutex poisoned").overlay(&mut next);
         *self.state.lock().expect("mutex poisoned") = next.clone();
         next
     }
@@ -219,6 +239,10 @@ impl NetworkController {
             password_ssid: None,
             available_networks: primary.map_or_else(Vec::new, |device| device.available_networks.clone()),
             wifi_devices,
+            vpns: self.build_vpns().await,
+            // Overlaid with the VPN state.
+            vpn_error: None,
+            vpn_secret: None,
         }
     }
 

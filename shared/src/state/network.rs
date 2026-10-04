@@ -30,6 +30,48 @@ pub struct JoinError {
     pub message: String,
 }
 
+/// One saved NetworkManager VPN profile in `vpns`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct VpnInfo {
+    /// Profile name.
+    pub id: String,
+    /// `"vpn"` for a plugin VPN, `"wireguard"` for a native WireGuard profile.
+    pub kind: String,
+    /// Profile UUID; pass it to `connect_vpn` and `disconnect_vpn`.
+    pub uuid: String,
+    /// The profile is activated.
+    pub active: bool,
+    /// The profile is being activated, including while it waits for a secret.
+    pub activating: bool,
+}
+
+/// A failed VPN activation, as `vpn_error`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct VpnError {
+    /// The profile the activation was for.
+    pub uuid: String,
+    /// Display text, such as `"login failed"` or `"connection timed out"`.
+    pub message: String,
+}
+
+/// NetworkManager asking for VPN secrets, as `vpn_secret`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct VpnSecretRequest {
+    /// Request ID. A secure field for `fields[i]` uses `name = request.id .. "/" .. fields[i]`.
+    pub id: String,
+    /// UUID of the profile being activated.
+    pub uuid: String,
+    /// Name of that profile.
+    pub vpn_id: String,
+    /// Secret keys still to enter, such as `"password"`; each entered key leaves the list.
+    pub fields: Vec<String>,
+    /// NetworkManager rejected the previous secrets and asks again.
+    pub retry: bool,
+}
+
 /// One Wi-Fi interface, with its own scan, join, address and access points. `connected` means
 /// activated here, while the flat `connected` means a default route; `ssid` never uses `"Ethernet"`.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -113,4 +155,13 @@ pub struct NetworkState {
     /// The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated,
     /// then saved, then strongest. `{}` without Wi-Fi hardware.
     pub available_networks: Vec<AccessPointInfo>,
+    /// Saved VPN and WireGuard profiles, ordered by name.
+    pub vpns: Vec<VpnInfo>,
+    /// The last failed VPN activation, or `nil` before any or after the next `connect_vpn`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vpn_error: Option<VpnError>,
+    /// The one pending VPN secret request, or `nil`. Answer it with `network`/`vpn_secret` secure
+    /// fields or drop it with `cancel_vpn_secret`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vpn_secret: Option<Box<VpnSecretRequest>>,
 }

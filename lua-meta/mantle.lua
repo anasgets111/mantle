@@ -402,6 +402,27 @@
 ---@alias Urgency "low"|"normal"|"critical"
 ---Notification urgency, also the `set_sound` tier.
 
+---@class VpnError
+---A failed VPN activation, as `vpn_error`.
+---@field message string Display text, such as `"login failed"` or `"connection timed out"`.
+---@field uuid string The profile the activation was for.
+
+---@class VpnInfo
+---One saved NetworkManager VPN profile in `vpns`.
+---@field activating boolean The profile is being activated, including while it waits for a secret.
+---@field active boolean The profile is activated.
+---@field id string Profile name.
+---@field kind string `"vpn"` for a plugin VPN, `"wireguard"` for a native WireGuard profile.
+---@field uuid string Profile UUID; pass it to `connect_vpn` and `disconnect_vpn`.
+
+---@class VpnSecretRequest
+---NetworkManager asking for VPN secrets, as `vpn_secret`.
+---@field fields string[] Secret keys still to enter, such as `"password"`; each entered key leaves the list.
+---@field id string Request ID. A secure field for `fields[i]` uses `name = request.id .. "/" .. fields[i]`.
+---@field retry boolean NetworkManager rejected the previous secrets and asks again.
+---@field uuid string UUID of the profile being activated.
+---@field vpn_id string Name of that profile.
+
 ---@class WifiDeviceInfo
 ---One Wi-Fi interface, with its own scan, join, address and access points. `connected` means
 ---activated here, while the flat `connected` means a default route; `ssid` never uses `"Ethernet"`.
@@ -534,6 +555,9 @@
 ---@field scanning boolean A scan is in flight on the primary Wi-Fi device.
 ---@field ssid? string `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An association still getting an address has an `ssid` while `connected` is `false`.
 ---@field strength integer The primary Wi-Fi device's associated network strength, `0` to `100`.
+---@field vpn_error? VpnError The last failed VPN activation, or `nil` before any or after the next `connect_vpn`.
+---@field vpn_secret? VpnSecretRequest The one pending VPN secret request, or `nil`. Answer it with `network`/`vpn_secret` secure fields or drop it with `cancel_vpn_secret`.
+---@field vpns VpnInfo[] Saved VPN and WireGuard profiles, ordered by name.
 ---@field wifi_devices WifiDeviceInfo[] Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths.
 ---@field wifi_enabled boolean Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
 ---@field wifi_ip? string The primary Wi-Fi device's IPv4 address without prefix, or `nil`.
@@ -740,6 +764,9 @@ local IdleCapability = {}
 ---@field forget fun(self: NetworkCapability, ssid: string) Deletes every saved profile for this SSID.
 ---@field disconnect_wifi fun(self: NetworkCapability) Disconnects Wi-Fi; NetworkManager does not autoconnect it again until the next join.
 ---@field disconnect_wifi_device fun(self: NetworkCapability, id: string) Disconnects the named Wi-Fi interface.
+---@field connect_vpn fun(self: NetworkCapability, uuid: string) Activates the saved VPN or WireGuard profile with this UUID. A missing secret raises `vpn_secret`.
+---@field disconnect_vpn fun(self: NetworkCapability, uuid: string) Deactivates the VPN or WireGuard profile with this UUID.
+---@field cancel_vpn_secret fun(self: NetworkCapability) Declines the pending `vpn_secret` request, failing that activation.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/secrets.html)
 ---@class SecretsCapability: ReadOnlyCapability<SecretsState>, userdata

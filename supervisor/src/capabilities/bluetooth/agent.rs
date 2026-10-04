@@ -1,6 +1,5 @@
 //! Hand-written `org.bluez.Agent1`; pairing waits for the user's answer in `pairing_request`.
 
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -16,7 +15,6 @@ use super::{AGENT_OBJECT_PATH, BluetoothSignal, PairingKind, PairingRequest};
 /// How long a newly shown request ignores a yes, so a click meant for a request that was just
 /// replaced cannot accept the one that replaced it.
 pub(super) const ACCEPT_GRACE: Duration = Duration::from_millis(750);
-static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
 /// `org.bluez.Error.Rejected` as the D-Bus error reply; `zbus::fdo::Error::Failed` has the wrong
 /// name (`org.freedesktop.DBus.Error.Failed`).
@@ -199,11 +197,7 @@ impl BluetoothAgent {
             debug!("refused a {kind:?} request from {mac}: not invited, or an unknown service device");
             return false;
         }
-        // ponytail: after 2^64-2 requests, refuse more until Supervisor restarts; never reuse an id.
-        let Ok(id) = NEXT_REQUEST_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)) else {
-            return false;
-        };
-        let id = id.to_string();
+        let Some(id) = crate::capabilities::next_request_id() else { return false };
         {
             let mut slot = self.prompts.lock().expect("mutex poisoned");
             let free = slot.as_ref().is_none_or(|current| current.ready && current.reply.is_none() && reply.is_some());
