@@ -57,7 +57,7 @@ local function window(id, title, app_icon, body)
             width = size:map(function(s) return s.width end),
             height = size:map(function(s) return s.height end),
             radius = 18,
-            clip = "box",
+            clip = "rounded",
             background = theme.base,
             border_width = 1,
             border_color = theme.overlay,

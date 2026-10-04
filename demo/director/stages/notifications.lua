@@ -188,6 +188,6 @@ return panel {
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = feed:map(function(f) return #f.feed > 0 end),
-    keyboard_interactivity = "exclusive",
+    keyboard_interactivity = feed:map(function(f) return f.feed[1] and f.feed[1].has_reply and "exclusive" or "none" end),
     child = feed:map(function(f) return f.feed[1] and card(f.feed[1]) or rect {} end),
 }

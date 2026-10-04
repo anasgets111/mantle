@@ -30,7 +30,7 @@ lua_class! {
             Ok(())
         }
 
-        /// Sets the text of every plain textfield with this name, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
+        /// Sets the text of every plain textfield with this name and an `on_change` or `on_submit`, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
         fn set_text(lua, this, text: String) {
             if !is_settable(&text) {
                 return Err(mlua::Error::runtime("set_text() takes at most 64 KiB without control characters"));

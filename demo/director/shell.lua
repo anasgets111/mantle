@@ -1338,7 +1338,8 @@ local script = {
         read = "Mark as read",
     },
     wait(1500),
-    say("Reply inline.", "has_reply marks a sender that takes mantle.notifications:reply(id, text)."),
+    say("Reply inline.",
+        "A real textfield: engine caret, IME, undo. has_reply senders take mantle.notifications:reply(id, text)."),
     type_call("reply", "On my way, see you in ten!"),
     wait(400),
     deliver("Sarah", false, "Still on for tonight? 8 pm at the usual place.", "On my way, see you in ten!"),
@@ -1346,7 +1347,7 @@ local script = {
     open_app(""),
     wait(400),
 
-    say("Any script, either direction.", "Arabic shapes and runs right to left in the same text node."),
+    say("Any script, either direction.", "Arabic shapes and runs right to left in the same field."),
     notify {
         id = 2,
         from = "أحمد",
@@ -1444,7 +1445,8 @@ local script = {
     feed("mock_lock", lock_state({ active = false })),
     wait(700),
 
-    say("Real numbers, no polling code.", "mantle.sysinfo reads /proc for you: this machine's CPU and memory, live."),
+    say("Real numbers, no polling code.",
+        "mantle.sysinfo reads /proc for you: live CPU and memory, drawn as a path that eases to each reading."),
     edit("18-sysinfo"),
     wait(3000),
 
