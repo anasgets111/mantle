@@ -382,9 +382,7 @@ impl Signal {
     }
 
     /// Reads current value (ADR-0044 decision 1). `layout::node` uses it to resolve signal
-    /// userdata; `&Lua`
-    /// is threaded because `Computed` needs it for [`CpuBudget`] and mlua 0.12 cannot recover Lua
-    /// from `AnyUserData`/`Value`.
+    /// userdata; `Computed` needs `lua` for [`CpuBudget`], and every caller already holds one.
     pub(crate) fn get_value(&self, lua: &Lua) -> mlua::Result<Value> {
         if let Some((id, cell)) = self.cell() {
             note_read(lua, id);

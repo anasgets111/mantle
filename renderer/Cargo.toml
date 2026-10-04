@@ -56,7 +56,7 @@ cursor-icon = "1.2.0"
 khronos-egl = { version = "6.0.0", features = ["static"] }
 # One `mallopt` call at startup (`main.rs`, ADR-0123). Already in the tree through `nix`.
 libc.workspace = true
-mlua = { version = "0.12.1", features = ["lua54", "vendored", "serde"] }
+mlua = { version = "0.12.2", features = ["lua54", "vendored", "serde"] }
 # "resource" is `getrusage`, read only by the env-gated `wayland::idle_profile` (ADR-0132) to
 # split the poll loop's CPU between this thread and the rest of the process.
 nix = { workspace = true, features = ["event", "fs", "poll", "resource", "time"] }
