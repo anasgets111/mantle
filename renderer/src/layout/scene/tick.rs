@@ -812,6 +812,28 @@ mod tests {
     }
 
     #[test]
+    fn a_looping_shift_advances_paint_only() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"return panel { id = "bar", child = path { width = 40, height = 20, stroke = "#ffffff",
+                trim_axis = "x", commands = { { op = "M", points = { 0, 10 } }, { op = "L", points = { 40, 10 } } },
+                animate = { shift = { duration = 200, easing = "linear", loops = "infinite",
+                                      keyframes = { { x = 0, y = 0 }, { x = -20, y = 0 } } } } } }"##,
+        );
+        let instances = [instance_at(&surface, full())];
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(scene.surface("bar@TEST").unwrap().tick_is_paint_only(), "a shift asks the solver nothing");
+        let started = child_tween(&scene).started;
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(100));
+        let Some(node::PaintStyle::Path(path)) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
+            panic!("a path paints");
+        };
+        assert_eq!(path.shift, (-10.0, 0.0));
+        assert_eq!(path.trim_axis, node::TrimAxis::X);
+    }
+
+    #[test]
     fn a_changed_target_starts_a_tween_from_the_value_on_screen_and_a_tick_carries_it() {
         // ADR-0145: the pass that sees `90` lays out `40` and a tween; the ticks do the rest
         // without Lua.

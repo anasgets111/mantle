@@ -596,6 +596,7 @@ const PAINT_ONLY: &[&str] = &[
     "stroke_width",
     "trim_start",
     "trim_end",
+    "shift",
     "radius",
     "shadows",
     "content_blur",

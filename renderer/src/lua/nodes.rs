@@ -680,7 +680,7 @@ mod meta_stub_tests {
         match (field, ty) {
             ("opacity" | "trim_start" | "trim_end", _) => return Some("0.5".to_string()),
             ("animate", ty) if ty.ends_with("Animations") => return Some("{ opacity = 200.5 }".to_string()),
-            ("scale", "Axes") | ("translate", _) => return Some("{ x = 1, y = 2 }".to_string()),
+            ("scale", "Axes") | ("translate" | "shift", _) => return Some("{ x = 1, y = 2 }".to_string()),
             ("scale", _) => return Some("1.5".to_string()),
             ("rotate", _) => return Some("7.5".to_string()),
             ("origin", _) => return Some("{ x = 0.5, y = 0.5 }".to_string()),

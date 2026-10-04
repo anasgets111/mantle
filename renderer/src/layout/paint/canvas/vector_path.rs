@@ -1,22 +1,23 @@
 //! Vector leaves use the same fills, canvas state and subtree effects as box paint.
 use super::shape::fill_paint;
-use crate::layout::node::{PathOp, StrokeCap, StrokeJoin, VectorPath};
+use crate::layout::node::{PathOp, StrokeCap, StrokeJoin, TrimAxis, VectorPath};
 use crate::text::snap::LogicalRect;
 use std::f32::consts::FRAC_PI_2;
 
 use femtovg::{Canvas, LineCap, LineJoin, Path, Solidity, Verb, renderer::OpenGl};
+use kurbo::common::solve_cubic;
 use kurbo::{CubicBez, Line, ParamCurve, ParamCurveArclen, PathSeg, Point};
 
 pub(super) fn paint(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    VectorPath { commands, fill, stroke, stroke_width, stroke_cap, stroke_join, trim }: &VectorPath,
+    VectorPath { commands, fill, stroke, stroke_width, stroke_cap, stroke_join, trim, trim_axis, shift }: &VectorPath,
 ) {
     if rect.is_empty() || commands.segments.is_empty() {
         return;
     }
     let mut path = Path::new();
-    let (x, y) = (rect.x, rect.y);
+    let (x, y) = (rect.x + shift.0, rect.y + shift.1);
     // Where the pen is and where its subpath began, so an arc's joining line is drawn only when it
     // moves: femtovg keeps a repeated point, and anti-aliasing draws the zero-length edge as a spike.
     let (mut pen, mut first) = ((0.0, 0.0), (0.0, 0.0));
@@ -96,7 +97,13 @@ pub(super) fn paint(
             StrokeJoin::Round => LineJoin::Round,
             StrokeJoin::Bevel => LineJoin::Bevel,
         });
-        if *trim == (0.0, 1.0) {
+        if *trim_axis == TrimAxis::X {
+            // The band is the node's box, which `shift` does not move.
+            let band = |t: f32| f64::from(rect.x + t * rect.width);
+            if trim.0 < trim.1 {
+                canvas.stroke_path(&x_trimmed(&path, (band(trim.0), band(trim.1))), &paint);
+            }
+        } else if *trim == (0.0, 1.0) {
             canvas.stroke_path(&path, &paint);
         } else if trim.0 < trim.1 {
             canvas.stroke_path(&trimmed(&path, *trim), &paint);
@@ -104,12 +111,9 @@ pub(super) fn paint(
     }
 }
 
-/// The part of `path` from `start` to `end` of its whole length, closing segments included. A
-/// subpath kept whole ends where it began, which femtovg strokes as closed.
-fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
-    const ACCURACY: f64 = 0.01;
+/// `path`'s segments as kurbo's, each with whether it begins its subpath.
+fn segments(path: &Path) -> Vec<(PathSeg, bool)> {
     let point = |x: f32, y: f32| Point::new(x.into(), y.into());
-    // Each segment, whether it begins its subpath, and its length.
     let mut segments = Vec::new();
     let (mut pen, mut first, mut begins) = (Point::ZERO, Point::ZERO, false);
     for verb in path.verbs() {
@@ -125,32 +129,90 @@ fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
             Verb::Close => PathSeg::Line(Line::new(pen, first)),
             Verb::Solid | Verb::Hole => continue,
         };
-        segments.push((segment, begins, segment.arclen(ACCURACY)));
+        segments.push((segment, begins));
         (pen, begins) = (segment.end(), false);
     }
+    segments
+}
+
+/// Appends `part`, continuing the current subpath unless it starts elsewhere.
+fn append(out: &mut Path, part: PathSeg, continues: bool) {
+    let p = |p: Point| (p.x as f32, p.y as f32);
+    if !continues {
+        let (x, y) = p(part.start());
+        out.move_to(x, y);
+    }
+    if let PathSeg::Cubic(c) = part {
+        let ((ax, ay), (bx, by), (x, y)) = (p(c.p1), p(c.p2), p(c.p3));
+        out.bezier_to(ax, ay, bx, by, x, y);
+    } else {
+        let (x, y) = p(part.end());
+        out.line_to(x, y);
+    }
+}
+
+/// The part of `path` from `start` to `end` of its whole length, closing segments included. A
+/// subpath kept whole ends where it began, which femtovg strokes as closed.
+fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
+    const ACCURACY: f64 = 0.01;
+    let segments: Vec<_> = segments(path).into_iter().map(|(s, begins)| (s, begins, s.arclen(ACCURACY))).collect();
     let total: f64 = segments.iter().map(|s| s.2).sum();
     let (from, to) = (f64::from(start) * total, f64::from(end) * total);
     let mut out = Path::new();
     // Where this segment begins along the path, and whether `out` continues at the pen.
     let (mut at, mut drawing) = (0.0, false);
-    let p = |p: Point| (p.x as f32, p.y as f32);
     for (segment, begins, length) in segments {
         drawing &= !begins;
         let (a, b) = (from.max(at) - at, to.min(at + length) - at);
         at += length;
         if a < b {
             let part = segment.subsegment(segment.inv_arclen(a, ACCURACY)..segment.inv_arclen(b, ACCURACY));
-            if !drawing {
-                let (x, y) = p(part.start());
-                out.move_to(x, y);
-                drawing = true;
+            append(&mut out, part, drawing);
+            drawing = true;
+        }
+    }
+    out
+}
+
+/// The parts of `path` with `lo <= x <= hi`, each segment cut where its x crosses an edge. A
+/// segment that leaves and re-enters the band keeps every piece inside.
+fn x_trimmed(path: &Path, (lo, hi): (f64, f64)) -> Path {
+    const EPS: f64 = 1e-6;
+    let mut out = Path::new();
+    // Where `out`'s last piece ended, if the subpath is still open there.
+    let mut end: Option<Point> = None;
+    for (segment, begins) in segments(path) {
+        if begins {
+            end = None;
+        }
+        let c = segment.to_cubic();
+        let (p0, p1, p2, p3) = (c.p0.x, c.p1.x, c.p2.x, c.p3.x);
+        // x(t) - edge as a power basis polynomial.
+        // A line's cubic form has float-noise c3/c2 that wrecks the solver; its polynomial is linear.
+        let (c3, c2, c1) = match segment {
+            PathSeg::Line(_) => (0.0, 0.0, p3 - p0),
+            _ => (p3 - p0 + 3.0 * (p1 - p2), 3.0 * (p0 - 2.0 * p1 + p2), 3.0 * (p1 - p0)),
+        };
+        // Cut points: both ends and at most three crossings per edge.
+        let mut cuts = [0.0; 8];
+        let mut n = 1;
+        for edge in [lo, hi] {
+            for t in solve_cubic(p0 - edge, c1, c2, c3) {
+                if t > 0.0 && t < 1.0 {
+                    cuts[n] = t;
+                    n += 1;
+                }
             }
-            if let PathSeg::Cubic(c) = part {
-                let ((ax, ay), (bx, by), (x, y)) = (p(c.p1), p(c.p2), p(c.p3));
-                out.bezier_to(ax, ay, bx, by, x, y);
-            } else {
-                let (x, y) = p(part.end());
-                out.line_to(x, y);
+        }
+        cuts[n] = 1.0;
+        n += 1;
+        cuts[..n].sort_by(f64::total_cmp);
+        for w in cuts[..n].windows(2) {
+            let mid = segment.eval((w[0] + w[1]) / 2.0).x;
+            if w[0] < w[1] && mid >= lo - EPS && mid <= hi + EPS {
+                let part = segment.subsegment(w[0]..w[1]);
+                append(&mut out, part, end.is_some_and(|e| e.distance(part.start()) < EPS));
+                end = Some(part.end());
             }
         }
     }
@@ -160,6 +222,7 @@ fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
 #[cfg(test)]
 mod tests {
     use super::super::tests::paint_points;
+    use super::*;
     #[test]
     fn paths_share_ancestor_mask_opacity_and_translation() {
         let src = r##"rect { width=64, height=64, opacity=0.5,
@@ -243,6 +306,63 @@ mod tests {
         } }"##;
         let px = paint_points(src, &[(8, 16), (53, 53), (48, 56), (40, 48), (48, 40)]).expect("headless EGL required");
         assert_eq!(px.iter().map(|p| p.3).collect::<Vec<_>>(), [255, 255, 255, 0, 0], "{px:?}");
+    }
+
+    fn x_range(path: &Path) -> Vec<(PathSeg, bool)> {
+        segments(path)
+    }
+
+    #[test]
+    fn an_x_trim_cuts_a_line_and_a_curve_where_x_crosses_the_band() {
+        let mut line = Path::new();
+        line.move_to(0.0, 10.0);
+        line.line_to(100.0, 10.0);
+        let cut = x_range(&x_trimmed(&line, (20.0, 60.0)));
+        assert_eq!(cut.len(), 1);
+        assert_eq!((cut[0].0.start(), cut[0].0.end()), (Point::new(20.0, 10.0), Point::new(60.0, 10.0)));
+
+        // x(t) = 100t, so the band edges fall at t = 0.2 and 0.6.
+        let mut curve = Path::new();
+        curve.move_to(0.0, 0.0);
+        curve.bezier_to(100.0 / 3.0, 50.0, 200.0 / 3.0, -50.0, 100.0, 0.0);
+        let cut = x_range(&x_trimmed(&curve, (20.0, 60.0)));
+        assert_eq!(cut.len(), 1);
+        let (start, end) = (cut[0].0.start(), cut[0].0.end());
+        assert!((start.x - 20.0).abs() < 1e-4 && (end.x - 60.0).abs() < 1e-4, "{start:?} {end:?}");
+    }
+
+    #[test]
+    fn an_x_trim_keeps_every_piece_of_a_segment_that_crosses_the_band_repeatedly() {
+        // x runs 0 -> 100 -> 0 -> 100: one cubic crossing a band at 40..60 six times.
+        let mut curve = Path::new();
+        curve.move_to(0.0, 0.0);
+        curve.bezier_to(300.0, 10.0, -200.0, 20.0, 100.0, 30.0);
+        let cut = x_range(&x_trimmed(&curve, (40.0, 60.0)));
+        assert!(cut.iter().filter(|(_, begins)| *begins).count() >= 3, "{}", cut.len());
+        for (piece, _) in &cut {
+            for x in [piece.start().x, piece.end().x, piece.eval(0.5).x] {
+                assert!((39.999..=60.001).contains(&x), "outside the band: {x}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_x_trim_caps_its_cut_ends_and_shift_moves_the_geometry_not_the_band() {
+        let line = "{op='M',points={0,32}},{op='L',points={64,32}}";
+        let alpha = |style: &str, at: &[(usize, usize)]| {
+            let src = format!(
+                r##"path {{ width=64,height=64,stroke='#ffffff',stroke_width=8,trim_axis='x',{style},commands={{{line}}} }}"##
+            );
+            paint_points(&src, at).expect("headless EGL required").iter().map(|p| p.3).collect::<Vec<_>>()
+        };
+        // The band is x 16..48; a round cap reaches 4 px past each cut, a butt end stops at it.
+        assert_eq!(
+            alpha("trim_start=0.25,trim_end=0.75,stroke_cap='round'", &[(13, 32), (50, 32), (10, 32)])[..2],
+            [255, 255]
+        );
+        assert_eq!(alpha("trim_start=0.25,trim_end=0.75", &[(13, 32), (50, 32), (10, 32)]), [0, 0, 0]);
+        // Shifted 20 px right the line spans 20..84; the band 0..32 does not follow it.
+        assert_eq!(alpha("trim_end=0.5,shift={x=20,y=0}", &[(10, 32), (25, 32), (40, 32)]), [0, 255, 0]);
     }
 
     #[test]

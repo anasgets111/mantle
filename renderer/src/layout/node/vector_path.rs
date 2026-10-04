@@ -57,6 +57,11 @@ impl PathOp {
     }
 }
 
+keywords! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum TrimAxis { Length, X }
+}
+
 /// Parsed `commands`. The segments are shared by every frame of a tween between two layouts, so
 /// a frame allocates only its numbers.
 #[derive(Debug, Clone, PartialEq)]
@@ -139,8 +144,11 @@ pub struct VectorPath {
     pub stroke_width: f32,
     pub stroke_cap: StrokeCap,
     pub stroke_join: StrokeJoin,
-    /// `trim_start` and `trim_end`: the stroked fraction of the path's whole length.
+    /// `trim_start` and `trim_end`: the stroked fraction of the path's length or of the node's width.
     pub trim: (f32, f32),
+    pub trim_axis: TrimAxis,
+    /// Moves the geometry inside the node box before trimming; logical px, buffer px once built.
+    pub shift: (f32, f32),
 }
 
 pub(crate) struct PathCommands;

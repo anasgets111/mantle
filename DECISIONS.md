@@ -7844,3 +7844,18 @@ Rejected: keeping both spellings beside each other, numbered properties (`shadow
 `[Shadow; 8]` to keep `Effect` `Copy`, which copies 8 layers per node for the usual zero or one.
 Ceiling: 8 layers (`MAX_SHADOWS`); a spring retargeted mid-flight restarts from rest, since a list
 carries no per-layer velocity. Cost: breaking for every config that set a shadow.
+
+## 0332. A `path` trims to a fixed x band, and `shift` moves its geometry through it
+
+A length trim travels with the geometry, so scrolling a shape with `translate` moves its trimmed
+ends too, and an enclosing clip box cuts them flat with no caps.
+
+1. **`trim_axis = "x"`** reads `trim_start` and `trim_end` as fractions of the node's width. The
+   stroke keeps what lies inside that band, cut exactly where each segment's x crosses an edge, so
+   `stroke_cap` applies at every cut end. Fill stays untrimmed. At 0..1 it still cuts to the box.
+2. **`shift`** offsets the geometry inside the node before trimming and stroking; the box, the band
+   and the fill gradient stay put. It is paint-only and tweens and loops like `translate`.
+
+Rejected: a `phase` or period property, which gives the engine a notion of periodic paths when a
+wave is one shape among many; reusing `translate`, which moves the band with the box. Ceiling: x
+only; a y band or a rectangular window would extend `trim_axis`.

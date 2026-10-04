@@ -22,7 +22,7 @@ use crate::layout::node::{
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
     LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands,
     PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows, SizeHint,
-    SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, Wrap,
+    SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -478,6 +478,10 @@ props! {
         trim_start: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
         /// Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke.
         trim_end: Bound<Num> = range(0.0, 1.0).absent(Number(1.0));
+        /// What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it (ADR-0332).
+        trim_axis: Bound<OneOf<TrimAxis>> = absent(Choice("length"));
+        /// Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only.
+        shift: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
     }
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.

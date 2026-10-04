@@ -15,6 +15,8 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 | `stroke_join` | `"miter"\|"round"\|"bevel"\|Bound` | `"miter"` | How stroked segments meet at a corner |
 | `trim_start` | `number\|Bound`, `[0, 1]` | `0` | Where the stroke starts, as a fraction of the length of every subpath in order, closing segments included. The fill is untrimmed |
 | `trim_end` | `number\|Bound`, `[0, 1]` | `1` | Where the stroke ends, as `trim_start`; at or before `trim_start` draws no stroke |
+| `trim_axis` | `"length"\|"x"\|Bound` | `"length"` | What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it |
+| `shift` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only |
 <!-- End of the generated table. -->
 
 Each command has `op` and `points`. `M` moves, `L` draws a line, `Q` takes a control point and
@@ -169,48 +171,45 @@ return path {
 }
 ```
 
-Each property tweens on its own, so a loop on one keeps running while another eases. This wave
-loops its phase on `translate` inside a clipping `rect`, two wavelengths drawn and one shown, and
-eases its amplitude on `commands` when `amplitude` changes. Setting it to `0` flattens the moving
-wave without restarting the loop:
+Each property tweens on its own, so a loop on one keeps running while another eases.
+`trim_axis = "x"` makes `trim_start` and `trim_end` fractions of the node's width instead of the
+path's length: the stroke keeps what lies inside that band of the box, cut at its edges with
+`stroke_cap` on every cut end. `shift` moves the geometry inside the node and leaves the box and
+the band where they are. This wave is trimmed to `progress`, loops its phase on `shift` and eases
+its amplitude on `commands` when `amplitude` changes. Setting it to `0` flattens the moving wave
+without restarting the loop:
 
 ```lua
 local amplitude = state("amplitude", 6)
+local progress = state("progress", 0.6)
 
 local function wave(a)
     local commands = { { op = "M", points = { 0, 12 } } }
-    for i = 0, 3 do
+    for i = 0, 7 do
         local x, crest = i * 30, i % 2 == 0 and -2 * a or 2 * a
         commands[#commands + 1] = { op = "Q", points = { x + 15, 12 + crest, x + 30, 12 } }
     end
     return commands
 end
 
-return rect {
-    width = 60,
+return path {
+    width = 120,
     height = 24,
-    clip = "box",
-    children = {
-        path {
-            width = 120,
-            height = 24,
-            stroke = "#89b4fa",
-            stroke_width = 3,
-            stroke_cap = "round",
-            commands = amplitude:map(wave),
-            animate = {
-                commands = { duration = 300, easing = "out_cubic" },
-                translate = {
-                    duration = 1000,
-                    easing = "linear",
-                    keyframes = { { x = 0, y = 0 }, { x = -60, y = 0 } },
-                    loops = "infinite",
-                },
-            },
+    stroke = "#89b4fa",
+    stroke_width = 3,
+    stroke_cap = "round",
+    trim_axis = "x",
+    trim_end = progress,
+    commands = amplitude:map(wave),
+    animate = {
+        commands = { duration = 300, easing = "out_cubic" },
+        trim_end = { duration = 300, easing = "out_cubic" },
+        shift = {
+            duration = 1000,
+            easing = "linear",
+            keyframes = { { x = 0, y = 0 }, { x = -60, y = 0 } },
+            loops = "infinite",
         },
     },
 }
 ```
-
-Easing a wrapper's `scale.y` toward `0` cannot stand in: it scales the stroke as well, so the line
-thins and vanishes instead of lying flat.

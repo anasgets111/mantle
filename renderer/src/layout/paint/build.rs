@@ -328,6 +328,7 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
                 std::rc::Rc::make_mut(&mut path.commands).for_each_pixel(|point| *point *= scale);
             }
             path.stroke_width *= scale;
+            path.shift = (path.shift.0 * scale, path.shift.1 * scale);
             Draw::Path(path)
         }
         Draw::Clipped { radius, mask, commands } => Draw::Clipped { radius: radius * scale, mask, commands },
@@ -432,6 +433,8 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             stroke_cap: path.stroke_cap,
             stroke_join: path.stroke_join,
             trim: path.trim,
+            trim_axis: path.trim_axis,
+            shift: path.shift,
         })),
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
