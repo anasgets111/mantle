@@ -319,6 +319,8 @@ props! {
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
         /// `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
+        /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
+        corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
@@ -425,6 +427,8 @@ props! {
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it.
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
+        /// Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint.
+        corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
     }
     /// Preview of one output or window (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
     mod capture(CAPTURE) {

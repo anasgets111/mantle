@@ -334,7 +334,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     target_size: frame.size,
                                     target_origin: frame.origin,
                                     opacity: *alpha,
-                                    radii: (*radius * (1.0 / scale)).fit(round.width, round.height).0,
+                                    radii: (*radius * (1.0 / scale)).fit(round.width, round.height),
                                     round,
                                     progress: *progress,
                                     params,
@@ -405,7 +405,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         target_size: frame.size,
                         target_origin: frame.origin,
                         opacity: *alpha,
-                        radii: [0.0; 4],
+                        radii: node::Radii::default(),
                         round: rect,
                         progress: *progress,
                         params,
@@ -1247,6 +1247,54 @@ pub(crate) mod tests {
             let canvas = painter.canvas_mut();
             assert_eq!(pixel_at(canvas, corner.0, corner.1), (0, 0, 0, 0), "{fit} corner");
             assert_eq!(pixel_at(canvas, centre.0, centre.1), (0, 255, 0, 255), "{fit} centre");
+        }
+    }
+
+    /// `corner_smoothing` reaches the plain fill and the shader's SDF alike: pixel (12, 0) of a 64 px
+    /// box at radius 16 is inside the circle and outside the smoothed corner (the shader approximates
+    /// that corner, so its alpha is only low, not zero).
+    #[test]
+    fn an_image_corner_smoothing_reaches_the_plain_fill_and_the_shader_cross() {
+        let dir = tempfile::tempdir().unwrap();
+        let (red, green) = (solid_svg(dir.path(), "red.svg", "red"), solid_svg(dir.path(), "green.svg", "lime"));
+        let image = |smoothing: u8| {
+            format!(
+                r#"return panel {{ id = "bar", width = 64, height = 64, child = image {{ width = 64, height = 64, radius = 16, corner_smoothing = {smoothing}, source = "{}" }} }}"#,
+                red.display()
+            )
+        };
+        let (smooth, circle) = (image(1), image(0));
+        let Some(px) = paint_with_gl(&circle, (64, 64), &[(12, 0)]) else { return };
+        assert!(px[0].3 > 128, "the circle covers (12, 0), got {px:?}");
+        let px = paint_with_gl(&smooth, (64, 64), &[(12, 0), (32, 32)]).unwrap();
+        assert!(px[0].3 < 64 && px[1].3 == 255, "plain fill: the smoothed corner leaves (12, 0), got {px:?}");
+
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        for (src, covers) in [(circle, true), (smooth, false)] {
+            let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 });
+            let mut list = build(&root, 1.0, None);
+            for cmd in &mut list.commands {
+                if let Draw::Image { retained, dissolve, .. } = &mut cmd.draw {
+                    *retained = Some(green.display().to_string());
+                    *dissolve = Some(0.0);
+                }
+            }
+            let gl = test_gl(&instance);
+            let mut stage = image_shader::ShaderStage::default();
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 };
+            let _ = execute("test", &mut painter, images, captures, &list, 1.0, (64.0, 64.0), &[whole], shaders);
+            let canvas = painter.canvas_mut();
+            let alpha = pixel_at(canvas, 12, 0).3;
+            assert_eq!(alpha > 128, covers, "shader cross, circle {covers}: (12, 0) alpha {alpha}");
+            assert!(alpha < 100 || covers, "shader cross: the smoothed corner mostly leaves (12, 0), alpha {alpha}");
+            assert_eq!(pixel_at(canvas, 0, 0), (0, 0, 0, 0));
+            assert_eq!(pixel_at(canvas, 32, 32), (0, 255, 0, 255));
+            // The corner's diagonal midpoint is the circle's: a stand-in with the wrong exponent misses it.
+            assert!(pixel_at(canvas, 6, 6).3 > 200, "shader cross, circle {covers}: the diagonal stays covered");
         }
     }
 

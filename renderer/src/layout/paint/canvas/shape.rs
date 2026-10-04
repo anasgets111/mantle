@@ -5,6 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
+use crate::layout::node::corner::Squircle;
 use crate::layout::node::{BorderColor, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 
@@ -45,7 +46,7 @@ const HAIR: f32 = 0.05;
 /// frames, and the narrow frames flashed as squares.
 ///
 /// Unequal corners go to femtovg's `rounded_rect_varying`, which shrinks them by CSS's rule; a
-/// scoop takes the same rule from [`Radii::fit`].
+/// scoop and a smoothed corner take the same rule from [`Radii::fit`].
 pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
     let [tl, tr, br, bl] = radii.0;
@@ -64,6 +65,8 @@ pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
         path.arc(x + w, y, tr, FRAC_PI_2, PI, Solidity::Hole);
         path.arc(x, y, tl, 0.0, FRAC_PI_2, Solidity::Hole);
         path.close();
+    } else if radii.1 > 0.0 {
+        return smoothed_path(rect, radii);
     } else if tl != tr || tr != br || br != bl {
         path.rounded_rect_varying(x, y, w, h, tl, tr, br, bl);
     } else if tl < w.min(h) / 2.0 {
@@ -88,6 +91,29 @@ pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
     }
 
     path
+}
+
+/// A box with continuous corners, wound left, bottom, right, top like `rounded_rect`. Each corner
+/// is its [`Squircle`] chain, so this is the one outline the border bands, clips and masks share.
+fn smoothed_path(rect: LogicalRect, radii: Radii) -> Path {
+    let LogicalRect { x, y, width: w, height: h } = rect;
+    let squircles = radii.fit(w, h).squircles(w, h);
+    let mut outline = Outline { path: Path::new(), pen: None };
+    // Bottom left, bottom right, top right, top left: each corner's frame and the way it is walked.
+    for (i, origin, toward, reversed) in [
+        (3, (x, y + h), (1.0, -1.0), false),
+        (2, (x + w, y + h), (-1.0, -1.0), true),
+        (1, (x + w, y), (-1.0, 1.0), false),
+        (0, (x, y), (1.0, 1.0), true),
+    ] {
+        let place = |(px, py): (f32, f32)| (origin.0 + toward.0 * px, origin.1 + toward.1 * py);
+        match squircles[i] {
+            Some(squircle) => outline.chain(&squircle, place, if reversed { (1.0, 0.0) } else { (0.0, 1.0) }),
+            None => outline.to(origin),
+        }
+    }
+    outline.close(Solidity::Solid);
+    outline.path
 }
 
 /// The background fill, rounded when the node asked for it. See [`box_path`] for why a radius at
@@ -225,6 +251,8 @@ struct Corner {
     reversed: bool,
     outer: CornerArc,
     inner: CornerArc,
+    /// A smoothed corner's outer and inner outlines, which replace the arcs.
+    smooth: Option<[Squircle; 2]>,
 }
 
 impl Corner {
@@ -235,9 +263,16 @@ impl Corner {
         toward: (f32, f32),
         reversed: bool,
         radius: f32,
+        squircle: Option<Squircle>,
         vertical: f32,
         horizontal: f32,
     ) -> Self {
+        // The inner outline is the outer one scaled to the inner radii, as the circle's is, and
+        // moved in by the two widths.
+        let smooth = squircle.map(|outer| {
+            let (rx, ry) = ((radius - vertical).max(0.0) / radius, (radius - horizontal).max(0.0) / radius);
+            [outer, outer.map(|(x, y)| (vertical + x * rx, horizontal + y * ry))]
+        });
         let (outer, inner) = if radius >= 0.0 {
             // CSS's inner corner: each radius less the width beside it, and a square once a width
             // passes the radius.
@@ -258,7 +293,7 @@ impl Corner {
             };
             (outer, inner)
         };
-        Corner { origin, toward, reversed, outer, inner }
+        Corner { origin, toward, reversed, outer, inner, smooth }
     }
 
     fn place(&self, (x, y): (f32, f32)) -> (f32, f32) {
@@ -292,6 +327,10 @@ impl Outline {
     /// `corner`'s outer or inner arc from `from` to `to` of the way through it, either direction,
     /// as one cubic: no corner turns more than a quarter.
     fn arc(&mut self, corner: &Corner, inner: bool, from: f32, to: f32) {
+        if let Some(curves) = &corner.smooth {
+            let (from, to) = if corner.reversed { (1.0 - from, 1.0 - to) } else { (from, to) };
+            return self.chain(&curves[usize::from(inner)], |point| corner.place(point), (from, to));
+        }
         let arc = if inner { corner.inner } else { corner.outer };
         let (a0, a1) = (corner.angle(arc, from), corner.angle(arc, to));
         let point = |a: f32| corner.place((arc.centre.0 + arc.radii.0 * a.cos(), arc.centre.1 + arc.radii.1 * a.sin()));
@@ -310,6 +349,20 @@ impl Outline {
         let (c1, c2) = (handle(a0, k), handle(a1, -k));
         self.path.bezier_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
         self.pen = Some(end);
+    }
+
+    /// `squircle`'s outline from `from` to `to` of the way through it, in its frame placed by `place`.
+    fn chain(&mut self, squircle: &Squircle, place: impl Fn((f32, f32)) -> (f32, f32), (from, to): (f32, f32)) {
+        for [start, c1, c2, end] in squircle.span(from, to) {
+            self.to(place(start));
+            // Equal points are a zero-length piece, which `to` already dropped for a line.
+            if [c1, c2, end].iter().all(|point| *point == start) {
+                continue;
+            }
+            let (c1, c2, end) = (place(c1), place(c2), place(end));
+            self.path.bezier_to(c1.0, c1.1, c2.0, c2.1, end.0, end.1);
+            self.pen = Some(end);
+        }
     }
 
     fn close(&mut self, solidity: Solidity) {
@@ -345,17 +398,18 @@ fn shaped_border(
     if drawn.iter().all(Option::is_none) {
         return;
     }
-    let [tl, tr, br, bl] = match radius.scoop() {
+    let radius = match radius.scoop() {
         false => radius.fit(w, h),
         true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
-    }
-    .0;
+    };
+    let [tl, tr, br, bl] = radius.0;
+    let [q_tl, q_tr, q_br, q_bl] = radius.squircles(w, h);
     let [top, right, bottom, left] = edges;
     let corners = [
-        Corner::new((x, y), (1.0, 1.0), false, tl, left, top),
-        Corner::new((x + w, y), (-1.0, 1.0), true, tr, right, top),
-        Corner::new((x + w, y + h), (-1.0, -1.0), false, br, right, bottom),
-        Corner::new((x, y + h), (1.0, -1.0), true, bl, left, bottom),
+        Corner::new((x, y), (1.0, 1.0), false, tl, q_tl, left, top),
+        Corner::new((x + w, y), (-1.0, 1.0), true, tr, q_tr, right, top),
+        Corner::new((x + w, y + h), (-1.0, -1.0), false, br, q_br, right, bottom),
+        Corner::new((x, y + h), (1.0, -1.0), true, bl, q_bl, left, bottom),
     ];
     // Where corner `i`'s two colours meet: the share of its sweep the edge before it takes.
     let split = |i: usize| {
@@ -906,6 +960,33 @@ mod tests {
             let Some(px) = paint_points(&src, &[(1, h / 2), (6, 6), (6, h - 7)]) else { return };
             assert!(px.iter().all(|p| *p == (255, 255, 255, 255)), "h={h}: {px:?}");
         }
+    }
+
+    /// A smoothed corner reaches further along the side than the circle and so leaves pixel (12, 0)
+    /// of a 64 px box at radius 16, which the circle covers; fill, border band and clip share it.
+    #[test]
+    fn a_smoothed_corner_cuts_what_the_circle_covers_in_fill_border_and_clip() {
+        let opaque = |smoothing: &str, child: &str| {
+            let corner = format!("width = 64, height = 64, radius = 16, {smoothing}");
+            let src = child.replace("CORNER", &corner);
+            paint_points(&src, &[(12, 0), (32, 32)]).map(|px| (px[0].3, px[1].3))
+        };
+        let fill = r##"rect { CORNER, background = "#000000FF" }"##;
+        let border = r##"rect { CORNER, border_width = { top = 4, left = 2, right = 4, bottom = 2 }, border_color = "#FFFFFFFF" }"##;
+        let clip = r##"rect { CORNER, clip = "rounded",
+            children = { rect { width = "fill", height = "fill", background = "#FF0000FF" } } }"##;
+        for (name, child, inside) in [("fill", fill, 255), ("border", border, 0), ("clip", clip, 255)] {
+            let Some(circle) = opaque("corner_smoothing = 0", child) else { return };
+            let smooth = opaque("corner_smoothing = 1", child).unwrap();
+            assert!(circle.0 > 128, "{name}: the circle covers (12, 0), got {circle:?}");
+            assert!(smooth.0 < 64, "{name}: the smoothed corner leaves it, got {smooth:?}");
+            assert_eq!((circle.1, smooth.1), (inside, inside), "{name}: the middle is unchanged");
+        }
+        // Wound like `rounded_rect`, a translucent fill blends once across the transitions, the arc and the straights.
+        let ghost =
+            r##"rect { width = 64, height = 64, radius = 16, corner_smoothing = 0.6, background = "#00000080" }"##;
+        let px = paint_points(ghost, &[(6, 6), (14, 2), (24, 1), (32, 32), (1, 24)]).unwrap();
+        assert!(px.iter().all(|p| (126..=130).contains(&p.3)), "painted once, got {px:?}");
     }
 
     /// A slider's fill at 0% is a zero-width box; it once drew a 1px line.

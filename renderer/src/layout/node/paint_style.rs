@@ -192,7 +192,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 retain: image::retain.read(properties)? || transition.is_some(),
                 transition,
                 source_blur: image::source_blur.read(properties)?,
-                radius: image::radius.read(properties)?,
+                radius: Radii(image::radius.read(properties)?.0, image::corner_smoothing.read(properties)?),
             }
         }
         "capture" => {

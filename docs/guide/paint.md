@@ -89,12 +89,36 @@ colours and no short `#RGB` form.
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
+| `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
 | `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
 | `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` on a surface or a `scroll` viewport, else `"none"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip) |
 <!-- End of the generated table. -->
+
+### Continuous corners
+
+`corner_smoothing` is Figma's corner smoothing, the model behind Apple's continuous corners:
+`0` is the circular arc, `0.6` is close to iOS, `1` the softest. A smoothed corner spreads up to
+`(1 + corner_smoothing) * radius` along each side as a curve that eases into a shorter circular arc,
+so the edge leaves the straight with no visible kink. Where a side is too short, the radius stays
+and the smoothing gives way; two corners share a side in proportion to their radii. Each corner of
+a `radius` table is smoothed by the one value, and a `"scoop"` refuses it. `image` takes it too.
+
+```lua
+return rect {
+    width = 160, height = 96, radius = 24, corner_smoothing = 0.6,
+    background = "#1E1E2E", border_width = 2, border_color = "#89B4FA",
+    animate = { corner_smoothing = 200 },
+}
+```
+
+Fill, border, `clip = "rounded"`, `mask`, `effect.backdrop` and the `behind_blur` region all follow
+the one outline. Two things are approximate: a `"box"` shadow still takes the circular mean radius,
+and an `image` `transition` shader rounds a smoothed corner by a superellipse through its end points
+and middle, exact only at `0`. A border's inner edge is the outer curve scaled to the inner radii.
+`corner_smoothing` only reshapes the outline, so an `animate` tween on it runs without a layout.
 
 A border follows the corners, round or scooped, as CSS draws it. Where two edges meet, the corner
 splits between their colours in proportion to their widths, so a lone edge curves round both
@@ -188,7 +212,7 @@ box's bounds in its own space).
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
 | `"box"` | The box's rectangle | Free (a scissor) |
-| `"rounded"` | The box's `radius` and `corner_shape`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
+| `"rounded"` | The box's `radius`, `corner_shape` and `corner_smoothing`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
 | `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box. The default but on a scroll viewport or a surface | Free |
 
 A rounded clip draws in the order fill, children, border, so the border stays on top of children

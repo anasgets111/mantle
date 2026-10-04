@@ -47,6 +47,7 @@ return { panel {
 | `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition) |
 | `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it |
+| `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint |
 <!-- End of the generated table. -->
 
 ### transition

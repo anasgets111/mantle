@@ -7892,3 +7892,18 @@ Amends ADR-0333.
 
 Rejected: one folded 4x5 matrix, which cannot clamp between stages as CSS does; linear-light
 filtering, which differs from every browser; a separate pass, a full-size read and write per glass.
+
+## 0335. `corner_smoothing` gives continuous corners on one shared outline
+
+1. **Figma's model.** `corner_smoothing` in `[0, 1]` beside `radius`, after Figma's corner
+   smoothing (Apple's continuous corners; the figma-squircle math, no dependency). A corner spreads
+   to `(1 + s) * r` along each side, cut to the side's share with the radius kept. `"scoop"` with
+   smoothing is refused.
+2. **One outline.** `Radii` carries the smoothing to every consumer: fill, border, clip, mask,
+   backdrop, image and blur regions. At 0 the old circular paths run unchanged.
+3. **Approximations.** The shader SDF is a superellipse through each corner's endpoints and
+   diagonal midpoint, exact at 0; box-mode shadows keep the mean radius; a border's inner edge is
+   the outer curve scaled to the inner radii. Hit testing was never radius-aware and stays so.
+
+Rejected: CSS `corner-shape: superellipse(k)`, since authors bring Figma and Apple values (0.6 on
+iOS) and it would be a second scalar meaning for the same corner.

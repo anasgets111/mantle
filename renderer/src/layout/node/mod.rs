@@ -7,6 +7,7 @@
 
 mod animate;
 mod content;
+pub(crate) mod corner;
 pub(crate) mod input;
 mod paint_style;
 mod vector_path;
@@ -127,10 +128,11 @@ crate::lua::luacats::lua_shape! {
     }
 }
 
-/// Corner radii clockwise from the top left, in px. Negative is a scoop (`corner_shape`), on every
-/// corner at once; zero is square.
+/// Corner radii clockwise from the top left, in px, and the `corner_smoothing` they share. Negative
+/// is a scoop (`corner_shape`), on every corner at once; zero is square. Smoothing is never
+/// combined with a scoop (`parse_radius`).
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Radii(pub [f32; 4]);
+pub struct Radii(pub [f32; 4], pub f32);
 
 impl Radii {
     pub fn is_zero(self) -> bool {
@@ -150,18 +152,30 @@ impl Radii {
         // A side under zero (the scoop's `w - 2 * HAIR`) would flip every arc.
         self * k.max(0.0)
     }
+
+    /// The smoothed outline of each corner of a `w` by `h` box, `None` where it is square or the
+    /// smoothing is `0`, which the circular paths draw as they always have. Each
+    /// corner's budget is its share of the shorter side it meets, as figma-squircle splits a side
+    /// between two corners; call it on [`fit`](Self::fit)ted radii.
+    pub fn squircles(self, w: f32, h: f32) -> [Option<corner::Squircle>; 4] {
+        let [tl, tr, br, bl] = self.0;
+        let share = |r: f32, next: f32, side: f32| if r + next > 0.0 { r / (r + next) * side } else { side };
+        let budget = |r: f32, across: f32, down: f32| share(r, across, w).min(share(r, down, h));
+        [(tl, budget(tl, tr, bl)), (tr, budget(tr, tl, br)), (br, budget(br, bl, tr)), (bl, budget(bl, br, tl))]
+            .map(|(r, budget)| (r > 0.0 && self.1 > 0.0).then(|| corner::Squircle::new(r, self.1, budget)))
+    }
 }
 
 impl std::ops::Mul<f32> for Radii {
     type Output = Self;
     fn mul(self, k: f32) -> Self {
-        Self(self.0.map(|r| r * k))
+        Self(self.0.map(|r| r * k), self.1)
     }
 }
 
 impl From<f32> for Radii {
     fn from(r: f32) -> Self {
-        Self([r; 4])
+        Self([r; 4], 0.0)
     }
 }
 

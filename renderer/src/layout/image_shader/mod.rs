@@ -57,6 +57,8 @@ uniform float u_progress;
 uniform vec2 u_size;
 uniform float mantle_opacity;
 uniform vec4 mantle_radii;
+uniform vec4 mantle_reach;
+uniform vec4 mantle_power;
 uniform vec4 mantle_round;
 "#;
 
@@ -103,12 +105,19 @@ const EPILOGUE: &str = r#"
 void main() {
     mantle_effect();
     // Rounded corners (tl, tr, br, bl in logical px): a box SDF over `mantle_round` (x, y, w, h in logical px from the node corner), antialiased by its own slope.
+    // A smoothed corner reaches `mantle_reach` along each side and is approximated by the superellipse of exponent `mantle_power` through its endpoints and diagonal midpoint, with d taken as (L - reach) over the gradient of L; exact (power 2) for a circular corner.
     if (mantle_radii != vec4(0.0)) {
         vec2 half_size = mantle_round.zw * 0.5;
         vec2 p = v_uv * u_size - mantle_round.xy - half_size;
-        float r = p.x < 0.0 ? (p.y < 0.0 ? mantle_radii.x : mantle_radii.w) : (p.y < 0.0 ? mantle_radii.y : mantle_radii.z);
-        vec2 q = abs(p) - half_size + r;
-        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+        float e = p.x < 0.0 ? (p.y < 0.0 ? mantle_reach.x : mantle_reach.w) : (p.y < 0.0 ? mantle_reach.y : mantle_reach.z);
+        float n = p.x < 0.0 ? (p.y < 0.0 ? mantle_power.x : mantle_power.w) : (p.y < 0.0 ? mantle_power.y : mantle_power.z);
+        vec2 q = abs(p) - half_size + e;
+        vec2 c = max(q, 0.0);
+        float d = length(c) + min(max(q.x, q.y), 0.0) - e;
+        if (n != 2.0 && max(q.x, q.y) > 0.0) {
+            float l = pow(pow(c.x, n) + pow(c.y, n), 1.0 / n);
+            d = (l - e) * pow(max(l, 1e-4), n - 1.0) / length(pow(max(c, 1e-4), vec2(n - 1.0)));
+        }
         fragColor *= 1.0 - smoothstep(-0.5 * fwidth(d), 0.5 * fwidth(d), d);
     }
     fragColor *= mantle_opacity;
@@ -155,6 +164,8 @@ struct Program {
     fill: Option<glow::UniformLocation>,
     opacity: Option<glow::UniformLocation>,
     radii: Option<glow::UniformLocation>,
+    reach: Option<glow::UniformLocation>,
+    power: Option<glow::UniformLocation>,
     round: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
@@ -196,8 +207,8 @@ pub struct Run<'a> {
     pub target_origin: (f32, f32),
     /// What the node inherited, applied by [`EPILOGUE`] after the config's `main`.
     pub opacity: f32,
-    /// Corner radii in logical px (top-left, top-right, bottom-right, bottom-left), already fitted to the box.
-    pub radii: [f32; 4],
+    /// Corner radii in logical px (top-left, top-right, bottom-right, bottom-left) and their smoothing, already fitted to the box.
+    pub radii: node::Radii,
     /// The box `radii` round, in logical px from the node's corner: the visible picture.
     pub round: LogicalRect,
     pub progress: f32,
@@ -398,6 +409,8 @@ impl ShaderStage {
                 fill: named("u_fill"),
                 opacity: named("mantle_opacity"),
                 radii: named("mantle_radii"),
+                reach: named("mantle_reach"),
+                power: named("mantle_power"),
                 round: named("mantle_round"),
                 params,
             })
@@ -491,7 +504,12 @@ impl ShaderStage {
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
-            gl.uniform_4_f32_slice(program.radii.as_ref(), &run.radii);
+            let squircles = run.radii.squircles(run.round.width, run.round.height);
+            let reach: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(run.radii.0[i], |s| s.reach));
+            let power: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(2.0, |s| s.power));
+            gl.uniform_4_f32_slice(program.radii.as_ref(), &run.radii.0);
+            gl.uniform_4_f32_slice(program.reach.as_ref(), &reach);
+            gl.uniform_4_f32_slice(program.power.as_ref(), &power);
             gl.uniform_4_f32(program.round.as_ref(), run.round.x, run.round.y, run.round.width, run.round.height);
             gl.uniform_2_f32(program.size.as_ref(), run.logical_size.0, run.logical_size.1);
 

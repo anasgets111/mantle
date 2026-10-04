@@ -1412,6 +1412,32 @@ mod tests {
         assert_eq!(block.rect, before, "nothing a paint-only tick writes can move a rect");
     }
 
+    /// `corner_smoothing` only reshapes the outline, so its tween ticks without the solver and the
+    /// tick writes the eased value back into the box's radii.
+    #[test]
+    fn a_corner_smoothing_tween_runs_on_the_paint_only_tick() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local up = state("up", false)
+            return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff", radius = 4,
+                corner_smoothing = up:map(function(u) return u and 1 or 0 end),
+                animate = { corner_smoothing = { duration = 100, easing = "linear" } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(root.tick_is_paint_only(), "an outline asks the solver nothing");
+        let started = root.children[0].tweens[0].started;
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
+        let Some(PaintStyle::Box { radius, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
+            panic!("a rect paints a box")
+        };
+        assert_eq!(radius.0, [4.0; 4]);
+        assert!((radius.1 - 0.5).abs() < 0.01, "halfway to 1, got {}", radius.1);
+    }
+
     /// ADR-0254, ADR-0256: a shadow and both blurs tween on the paint-only tick, and the tick re-derives
     /// the node's `effect` from the values it wrote.
     #[test]

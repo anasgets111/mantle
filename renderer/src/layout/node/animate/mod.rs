@@ -644,6 +644,7 @@ const PAINT_ONLY: &[&str] = &[
     "trim_end",
     "shift",
     "radius",
+    "corner_smoothing",
     "shadows",
     "effect",
     "translate",

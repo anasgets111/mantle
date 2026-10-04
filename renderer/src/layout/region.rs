@@ -147,7 +147,8 @@ fn collect_blur_regions(
 /// Rows sharing an inset merge into one strip, which is most of them near the middle of a band.
 ///
 /// A negative radius is a scoop: the circle centres on the corner point, which is a rounded band
-/// mirrored top to bottom and side to side.
+/// mirrored top to bottom and side to side. A smoothed corner reads its inset off the same chain
+/// the painter draws.
 fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<PhysicalRect>) {
     if rect.is_empty() {
         return;
@@ -155,9 +156,18 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     let height = rect.y1 - rect.y0;
     let width = rect.x1 - rect.x0;
     // Corners shrink together, the same rule the painter's arcs follow.
-    let [tl, tr, br, bl] = radii.fit(width as f32, height as f32).0;
-    // How far `row` rows from a corner's own edge is inset from the side: none past its band.
-    let inset = |radius: f32, row: i32| {
+    let radii = radii.fit(width as f32, height as f32);
+    let squircles = radii.squircles(width as f32, height as f32);
+    // How far `row` rows from corner `i`'s own edge is inset from the side: none past its band.
+    let inset = |i: usize, row: i32| {
+        if let Some(squircle) = squircles[i] {
+            return if (row as f32) < squircle.reach.round() {
+                squircle.inset(row as f32 + 0.5).round() as i32
+            } else {
+                0
+            };
+        }
+        let radius = radii.0[i];
         let r = radius.abs().round() as i32;
         match row < r {
             false => 0,
@@ -169,7 +179,7 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     let insets = |row: i32| {
         let up = row;
         let down = height - 1 - row;
-        (inset(tl, up).max(inset(bl, down)), inset(tr, up).max(inset(br, down)))
+        (inset(0, up).max(inset(3, down)), inset(1, up).max(inset(2, down)))
     };
     let mut row = 0;
     while row < height {
@@ -525,18 +535,38 @@ mod tests {
         assert_eq!(square, [PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }], "no radius is one rectangle");
     }
 
+    /// A smoothed corner reaches further along the top edge than the circle, so the first row of a
+    /// blur region starts further in, and the band is `reach` rows tall.
+    #[test]
+    fn a_smoothed_corner_cuts_a_wider_band_into_the_region() {
+        let first_row = |smoothing: f32| {
+            let mut strips = Vec::new();
+            let radii = node::Radii([16.0; 4], smoothing);
+            push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 }, radii, &mut strips);
+            (strips[0].x0, strips.iter().find(|s| s.x0 == 0).map(|s| s.y0))
+        };
+        let (circle, smooth) = (first_row(0.0), first_row(1.0));
+        assert_eq!(circle.0, 12, "the circle's first row");
+        assert!((13..=18).contains(&smooth.0), "the smoothed first row is further in, got {smooth:?}");
+        assert!(circle.1.unwrap() < smooth.1.unwrap(), "and the full width starts lower: {circle:?} {smooth:?}");
+    }
+
     /// Each corner cuts its own band; a square one keeps its pixel, and radii too big for a side
     /// shrink together.
     #[test]
     fn each_corner_of_a_region_takes_its_own_radius() {
         let mut strips = Vec::new();
-        let radii = node::Radii([12.0, 0.0, 12.0, 0.0]);
+        let radii = node::Radii([12.0, 0.0, 12.0, 0.0], 0.0);
         push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, radii, &mut strips);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         assert!(!covers(0, 0) && !covers(39, 39), "rounded corners are cut");
         assert!(covers(39, 0) && covers(0, 39), "square corners are whole");
         let mut small = Vec::new();
-        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 10 }, node::Radii([8.0, 8.0, 0.0, 0.0]), &mut small);
+        push_rounded_rect(
+            PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 10 },
+            node::Radii([8.0, 8.0, 0.0, 0.0], 0.0),
+            &mut small,
+        );
         assert!(!small.iter().any(|s| s.x0 == 0 && s.y0 == 0), "8 + 8 on 10 px of height shrinks to 5 + 5");
     }
 
