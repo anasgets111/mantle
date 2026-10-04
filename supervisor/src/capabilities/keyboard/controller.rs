@@ -19,7 +19,7 @@ use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
 use super::layout::{CompositorLink, HyprlandLink, NiriLink};
-use super::locks::{find_led, read_led_on, resolve_lock_leds};
+use super::locks::{find_leds, read_led_on, resolve_lock_leds};
 
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,10 +106,12 @@ impl KeyboardController {
     }
 }
 
+/// First `*::kbd_backlight` by name with `max_brightness > 0`; a dead sibling must not hide a usable LED.
 fn find_backlight(leds_root: &Path) -> Option<LedBacklight> {
-    let dir = find_led(leds_root, "::kbd_backlight")?;
-    let max = read_attr(&dir, "max_brightness")?.parse().ok().filter(|max| *max > 0)?;
-    Some(LedBacklight { dir, max })
+    find_leds(leds_root, "::kbd_backlight").into_iter().find_map(|dir| {
+        let max = read_attr(&dir, "max_brightness")?.parse().ok().filter(|max| *max > 0)?;
+        Some(LedBacklight { dir, max })
+    })
 }
 
 /// `None` when `brightness` cannot be read.
@@ -306,6 +308,9 @@ mod tests {
         std::fs::write(dir.join("max_brightness"), "0\n").unwrap();
         assert_eq!(find_backlight(root.path()), None);
 
+        // Sorts after the dead one, which must not hide it.
+        let dir = root.path().join("tpacpi::kbd_backlight");
+        std::fs::create_dir(&dir).unwrap();
         std::fs::write(dir.join("max_brightness"), "3\n").unwrap();
         std::fs::write(dir.join("brightness"), "2\n").unwrap();
         let led = find_backlight(root.path()).expect("kbd_backlight with max > 0");

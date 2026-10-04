@@ -14,20 +14,28 @@ pub struct LockLeds {
     pub scroll: PathBuf,
 }
 
-/// Finds a `leds_root` directory ending in `::<suffix>`; LED-class names are
-/// `<device>::<function>`.
-pub(super) fn find_led(leds_root: &Path, suffix: &str) -> Option<PathBuf> {
-    std::fs::read_dir(leds_root)
-        .ok()?
+/// `leds_root` directories ending in `::<suffix>`, sorted by name so the pick does not follow
+/// `read_dir` order; LED-class names are `<device>::<function>`.
+pub(super) fn find_leds(leds_root: &Path, suffix: &str) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(leds_root) else { return Vec::new() };
+    let mut dirs: Vec<PathBuf> = entries
         .flatten()
-        .find_map(|entry| entry.file_name().to_string_lossy().ends_with(suffix).then(|| entry.path()))
+        .filter(|entry| entry.file_name().to_string_lossy().ends_with(suffix))
+        .map(|entry| entry.path())
+        .collect();
+    dirs.sort();
+    dirs
 }
 
+/// The first device, by name, with all three lock LEDs, so they never mix across keyboards.
 pub fn resolve_lock_leds(leds_root: &Path) -> Option<LockLeds> {
-    Some(LockLeds {
-        caps: find_led(leds_root, "capslock")?,
-        num: find_led(leds_root, "numlock")?,
-        scroll: find_led(leds_root, "scrolllock")?,
+    find_leds(leds_root, "::capslock").into_iter().find_map(|caps| {
+        let device = caps.file_name()?.to_str()?.strip_suffix("::capslock")?;
+        let sibling = |function| {
+            let dir = caps.with_file_name(format!("{device}{function}"));
+            dir.is_dir().then_some(dir)
+        };
+        Some(LockLeds { num: sibling("::numlock")?, scroll: sibling("::scrolllock")?, caps })
     })
 }
 
@@ -68,6 +76,18 @@ mod tests {
         // scrolllock deliberately absent.
 
         assert_eq!(resolve_lock_leds(root.path()), None);
+    }
+
+    #[test]
+    fn resolve_lock_leds_takes_all_three_from_one_device() {
+        let root = tempfile::tempdir().unwrap();
+        write_led(root.path(), "input3::capslock", "0");
+        write_led(root.path(), "input3::numlock", "0");
+        let caps = write_led(root.path(), "input5::capslock", "0");
+        let num = write_led(root.path(), "input5::numlock", "0");
+        let scroll = write_led(root.path(), "input5::scrolllock", "0");
+
+        assert_eq!(resolve_lock_leds(root.path()), Some(LockLeds { caps, num, scroll }));
     }
 
     #[test]
