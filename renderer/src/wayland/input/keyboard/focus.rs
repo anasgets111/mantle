@@ -97,8 +97,8 @@ fn dispatch_activation(
     true
 }
 
-fn centre(rect: LogicalRect) -> (f64, f64) {
-    ((rect.x + rect.width / 2.0) as f64, (rect.y + rect.height / 2.0) as f64)
+fn centre(rect: LogicalRect) -> layout::hit::LogicalPoint {
+    layout::hit::LogicalPoint { x: rect.width / 2.0, y: rect.height / 2.0 }
 }
 
 fn find(node: &layout::ResolvedNode, id: layout::scene::NodeId) -> Option<(&layout::ResolvedNode, LogicalRect)> {
@@ -479,7 +479,7 @@ mod tests {
     #[test]
     fn keyboard_activation_reports_the_node_centre() {
         let rect = LogicalRect { x: 10.0, y: 20.0, width: 30.0, height: 8.0 };
-        assert_eq!(centre(rect), (25.0, 24.0));
+        assert_eq!(centre(rect), layout::hit::LogicalPoint { x: 15.0, y: 4.0 });
     }
 
     #[test]
@@ -614,7 +614,14 @@ mod tests {
         for key in [Keysym::Return, Keysym::KP_Enter, Keysym::space] {
             assert!(dispatch_activation(&focused, key, false, Some(41), |serial| {
                 armed = serial;
-                super::super::super::pointer::call_on_click(&lua, &on_click, rect, "left", (15.0, 10.0)).unwrap();
+                super::super::super::pointer::call_on_click(
+                    &lua,
+                    &on_click,
+                    rect,
+                    "left",
+                    layout::hit::LogicalPoint { x: 15.0, y: 10.0 },
+                )
+                .unwrap();
             }));
             assert!(dispatch_activation(&focused, key, true, Some(41), |_| panic!("repeat activated")));
         }
