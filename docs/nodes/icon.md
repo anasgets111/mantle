@@ -38,7 +38,7 @@ return app_badge
 | :--- | :--- | :--- | :--- |
 | `name` | `string\|Bound` | `""` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an absolute image path, used as is. `""` or a name the theme lacks draws nothing |
 | `size` | `number\|Bound` | `12` | The box is `size` × `size` px; not range-checked |
-| `foreground` | `Color\|Bound` | The file's own colours | Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons. Full-colour icons ignore it |
+| `foreground` | `Color\|Bound` | The file's own colours | Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons; a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it |
 <!-- End of the generated table. -->
 
 An explicit `width` or `height` overrides that axis of the square; the icon draws at the shorter

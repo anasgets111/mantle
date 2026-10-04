@@ -393,7 +393,7 @@ props! {
         name: Bound<Text> = absent(Lua(r#""""#));
         /// The box is `size` × `size` px; not range-checked.
         size: Bound<Num> = absent(Number(12.0));
-        /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072). Full-colour icons ignore it.
+        /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072); a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it.
         foreground: Bound<Color> = absent(Prose("the file's own colours"));
     }
     mod image(IMAGE) {

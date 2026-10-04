@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- An `icon` with `foreground` recolours every shape of a `-symbolic` icon that never uses `currentColor`, as GTK does, so themes that hard-code symbolic colours (Tela) follow it. Icons that use `currentColor` keep their accents, and full-colour icons are unchanged.
 - A stacking parent whose size is fixed or capped below its largest child gives every child its content box, so a smaller child no longer centres in the larger one's width.
 - A `text` or `icon` capped by `max_width` or `max_height` sizes its content-sized parent at the cap instead of its full content, so an elided title in a content-sized `row` stays centred.
 - `battery.capacity` reports battery health: full charge as a percent of the design capacity, `nil` when UPower does not know it.

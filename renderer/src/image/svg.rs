@@ -36,10 +36,18 @@ pub(super) fn rasterize_svg(
             .ok_or_else(|| format!("svgz inflates past the {MAX_SVG_BYTES}-byte limit and was not parsed"))?,
         false => data,
     };
+    // GTK's recolour for a symbolic icon that never says `currentColor` (Tela): every shape takes
+    // the colour, as `!important` beats presentation attributes and inline `style`. One that does
+    // (Adwaita) already follows the tint and keeps its hard-coded accents, like battery-caution's
+    // orange. ponytail: also repaints `fill` inside `<mask>`, as GTK does. Upgrade: skip masks.
+    let hard_coded = is_symbolic(path) && !data.windows(12).any(|w| w == b"currentColor");
     let data = match tint {
         Some(tint) => tinted_svg(&data, tint),
         None => data,
     };
+    let style_sheet = tint
+        .filter(|_| hard_coded)
+        .map(|tint| format!("rect,circle,ellipse,path,polygon,polyline{{fill:#{:06x} !important}}", packed_rgb(tint)));
     // ponytail: SVG text uses the fonts already loaded by Mantle. Assets needing other families
     // declare them in fonts {}; runtime discovery would need to join the shaping worker's queue.
     // Asked once per text span, nested SVG images included, even when no face matches. The tree
@@ -56,6 +64,7 @@ pub(super) fn rasterize_svg(
             }),
             select_fallback: resvg::usvg::FontResolver::default_fallback_selector(),
         },
+        style_sheet,
         ..Default::default()
     };
     let tree = resvg::usvg::Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
@@ -73,6 +82,12 @@ pub(super) fn rasterize_svg(
         resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| format!("no pixmap for {width}x{height}"))?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
     Ok((pixmap.take(), width, height, asked_for_a_font.load(Ordering::Relaxed)))
+}
+
+/// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
+fn is_symbolic(path: &Path) -> bool {
+    path.file_stem().is_some_and(|stem| stem.as_encoded_bytes().ends_with(b"-symbolic"))
+        || path.components().any(|part| part.as_os_str() == "symbolic")
 }
 
 /// `0x00RRGGBB` for [`CacheKey`](super::CacheKey). Drop alpha: CSS `color` is `#RRGGBB`; draw-call `alpha` owns
@@ -262,6 +277,26 @@ pub(super) mod tests {
         let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
         assert!(out.contains("color:#cdd6f4"), "the stylesheet's own declaration is repointed: {out}");
         assert!(!out.contains("#232629"), "and the shipped colour is gone: {out}");
+    }
+
+    #[test]
+    fn only_a_symbolic_icon_without_current_color_recolours_its_hard_coded_fills() {
+        let svg = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2"><path fill="#222" style="fill:#333" d="M0 0h2v2h-2z"/></svg>"##;
+        let dir = tempfile::tempdir().unwrap();
+        let render = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, svg).unwrap();
+            rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0
+        };
+        assert_eq!(&render("mic-symbolic.svg")[..4], &[0xcd, 0xd6, 0xf4, 0xff]);
+        assert_eq!(&render("slack.svg")[..4], &[0x33, 0x33, 0x33, 0xff]);
+        let accent = r##"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2 2" fill="currentColor"><path fill="#ff7800" d="M0 0h2v2h-2z"/></svg>"##;
+        let path = dir.path().join("caution-symbolic.svg");
+        std::fs::write(&path, accent).unwrap();
+        let pixels = rasterize_svg(&path, 2, Some(tint()), &FontDatabase::default()).unwrap().0;
+        assert_eq!(&pixels[..4], &[0xff, 0x78, 0x00, 0xff], "a currentColor icon keeps its accent");
+        assert!(is_symbolic(Path::new("/i/Adwaita/symbolic/apps/x.svg")));
+        assert!(!is_symbolic(Path::new("/i/hicolor/apps/symbolic-ish.svg")));
     }
 
     #[test]
