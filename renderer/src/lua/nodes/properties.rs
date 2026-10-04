@@ -252,10 +252,10 @@ props! {
         ///
         /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
         shadows: Bound<Shadows>;
-        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, backdrop = { blur } }`, each a Gaussian sigma in px within `[0, 8192]`, default `0`. `blur` filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop.blur` blurs what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and `backdrop` is a box kind's only. Applied in a fixed order: the backdrop first, then the node over it, the subtree blurred.
+        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only. Applied in a fixed order: the backdrop first, then the node over it; within a level the blur, then `saturate`, `brightness`, `contrast` (ADR-0334).
         ///
-        /// Book: Pixel filters `{ blur, backdrop = { blur } }`, each a Gaussian sigma in px within `[0, 8192]`; see [Blurs](../guide/paint.md#blurs). `backdrop` is for box kinds only
-        effect: Bound<Effects> = range(0.0, 8192.0);
+        /// Book: Pixel filters: `blur` (sigma in px, `[0, 8192]`) and the colour filters `saturate`, `brightness`, `contrast` (`[0, 8]`, `1` is off), at the top level and in `backdrop`; see [Blurs](../guide/paint.md#blurs). `backdrop` is for box kinds only
+        effect: Bound<Effects>;
         /// Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
         ///
         /// Book: Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from`

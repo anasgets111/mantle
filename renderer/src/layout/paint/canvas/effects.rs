@@ -53,7 +53,7 @@ fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
     path
 }
 
-/// A subtree under its own shadows and `content_blur` (ADR-0254). Both are blurs into
+/// A subtree under its own shadows, `effect.blur` and colour filters (ADR-0254, ADR-0334). Both are blurs into
 /// pooled targets, and an unchanged layer composites what it last finished (ADR-0258).
 pub(super) fn draw_layer(
     painter: &mut TextPainter,
@@ -63,7 +63,7 @@ pub(super) fn draw_layer(
     frame: Frame,
 ) {
     let Draw::Layer { effect, silhouette, commands } = &command.draw else { return };
-    let (node::Effect { shadows, blur, .. }, silhouette) = (effect, *silhouette);
+    let (node::Effect { shadows, blur, tone, .. }, silhouette) = (effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
@@ -78,8 +78,8 @@ pub(super) fn draw_layer(
             };
             let mut casts: Vec<ImageId> =
                 shadows.iter().map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target)).collect();
-            let sharp = *blur < MIN_SIGMA;
-            let blurred = blurred(painter, walk, content, size, *blur);
+            let sharp = *blur < MIN_SIGMA && tone.is_identity();
+            let blurred = blurred(painter, walk, content, size, (*blur, *tone));
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
             let filtered = casts.len() == shadows.len() && sharp == blurred.is_none();
             // All or none: the layers kept would be the top ones, the bottom ones missing. The partial
@@ -120,20 +120,22 @@ pub(super) fn draw_layer(
 /// `image_shader`'s blur divides by `u_sigma`.
 const MIN_SIGMA: f32 = 0.01;
 
+/// `source` blurred by `sigma`, then recoloured by `tone` in the same last pass; `None` when both
+/// are off, or the filter could not run.
 fn blurred(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     source: ImageId,
     size: (usize, usize),
-    sigma: f32,
+    (sigma, tone): (f32, node::Tone),
 ) -> Option<ImageId> {
-    if sigma < MIN_SIGMA {
+    if sigma < MIN_SIGMA && tone.is_identity() {
         return None;
     }
     let image = scratch(painter, walk, size)?;
     // A power of two keeps the kernel within 4 to 8 texels at any sigma.
     let factor = 1 << (sigma / 4.0).log2().max(0.0) as u32;
-    gaussian(painter, walk, source, image, size, sigma, factor).then_some(image)
+    gaussian(painter, walk, source, image, size, (sigma, tone), factor).then_some(image)
 }
 
 /// Blurs `source` into `target`, both `size`, at `1 / factor` of that size: halved, blurred
@@ -144,7 +146,7 @@ fn gaussian(
     source: ImageId,
     target: ImageId,
     size: (usize, usize),
-    sigma: f32,
+    (sigma, tone): (f32, node::Tone),
     factor: usize,
 ) -> bool {
     use image_shader::BlurPass;
@@ -159,21 +161,50 @@ fn gaussian(
         let half = (from.1.0.div_ceil(2), from.1.1.div_ceil(2));
         let Some(image) = scratch(painter, walk, half) else { return false };
         let extent = [(2 * half.0) as f32 / from.1.0 as f32, (2 * half.1) as f32 / from.1.1 as f32];
-        passes.push(BlurPass { source: from.0, target: image, extent, axis: [0.0; 2], sigma: 0.0 });
+        passes.push(BlurPass {
+            source: from.0,
+            target: image,
+            extent,
+            axis: [0.0; 2],
+            sigma: 0.0,
+            tone: node::Tone::default(),
+        });
         from = (image, half);
     }
     let (from, low) = from;
-    let Some(across) = scratch(painter, walk, low) else { return false };
-    // The halvings add a `factor`-wide box's variance and the stretch a tent's.
-    let f = factor as f32;
-    let spread = if factor == 1 { 0.0 } else { (3.0 * f * f - 1.0) / 12.0 };
-    let sigma = (sigma * sigma - spread).max(0.0).sqrt() / f;
-    let down = if factor == 1 { target } else { from };
-    passes.push(BlurPass { source: from, target: across, extent: [1.0; 2], axis: [1.0, 0.0], sigma });
-    passes.push(BlurPass { source: across, target: down, extent: [1.0; 2], axis: [0.0, 1.0], sigma });
-    if factor > 1 {
-        let extent = [size.0 as f32 / (factor * low.0) as f32, size.1 as f32 / (factor * low.1) as f32];
-        passes.push(BlurPass { source: down, target, extent, axis: [0.0; 2], sigma: 0.0 });
+    let identity = node::Tone::default();
+    if sigma < MIN_SIGMA {
+        // A colour filter alone is one bilinear read.
+        passes.push(BlurPass { source, target, extent: [1.0; 2], axis: [0.0; 2], sigma: 0.0, tone });
+    } else {
+        let Some(across) = scratch(painter, walk, low) else { return false };
+        // The halvings add a `factor`-wide box's variance and the stretch a tent's.
+        let f = factor as f32;
+        let spread = if factor == 1 { 0.0 } else { (3.0 * f * f - 1.0) / 12.0 };
+        let sigma = (sigma * sigma - spread).max(0.0).sqrt() / f;
+        let down = if factor == 1 { target } else { from };
+        // The colour filter rides the pass that writes `target`.
+        let down_tone = if factor == 1 { tone } else { identity };
+        passes.push(BlurPass {
+            source: from,
+            target: across,
+            extent: [1.0; 2],
+            axis: [1.0, 0.0],
+            sigma,
+            tone: identity,
+        });
+        passes.push(BlurPass {
+            source: across,
+            target: down,
+            extent: [1.0; 2],
+            axis: [0.0, 1.0],
+            sigma,
+            tone: down_tone,
+        });
+        if factor > 1 {
+            let extent = [size.0 as f32 / (factor * low.0) as f32, size.1 as f32 / (factor * low.1) as f32];
+            passes.push(BlurPass { source: down, target, extent, axis: [0.0; 2], sigma: 0.0, tone });
+        }
     }
     let Some(Shaders { gl, stage }) = walk.shaders.as_mut() else { return false };
     // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
@@ -190,7 +221,7 @@ fn cast_shadow(
     target: RenderTarget,
 ) -> Option<ImageId> {
     let sigma = shadow.blur / 2.0;
-    let blurred = blurred(painter, walk, content, size, sigma);
+    let blurred = blurred(painter, walk, content, size, (sigma, node::Tone::default()));
     let cast = blurred.or_else(|| scratch(painter, walk, size))?;
     let (width, height) = (size.0 as f32, size.1 as f32);
     let mut whole = Path::new();
@@ -212,19 +243,19 @@ fn cast_shadow(
     Some(cast)
 }
 
-/// Blurs what the current target holds under `clip`, the 3 sigma the blur reads, into the box
-/// (ADR-0256).
+/// Blurs and recolours (`filter`, sigma and tone) what the current target holds under `clip`, the
+/// 3 sigma the blur reads, into the box (ADR-0256).
 pub(super) fn draw_backdrop(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     rect: LogicalRect,
     clip: PhysicalRect,
-    sigma: f32,
+    filter: (f32, node::Tone),
     radius: Radii,
     alpha: f32,
 ) {
     let Some((copy, size, paint)) = read_target(painter, walk, clip) else { return };
-    let blurred = blurred(painter, walk, copy, size, sigma).unwrap_or(copy);
+    let blurred = blurred(painter, walk, copy, size, filter).unwrap_or(copy);
     replace(painter.canvas_mut(), &box_path(rect, radius), &paint(blurred, alpha), alpha);
 }
 
@@ -318,6 +349,39 @@ mod tests {
     fn near(actual: (u8, u8, u8, u8), expected: (u8, u8, u8)) -> bool {
         let close = |a: u8, e: u8| a.abs_diff(e) <= 3;
         close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
+    }
+
+    /// ADR-0334. The colour filters recolour the straight sRGB colour, as CSS's do, in the order
+    /// saturate, brightness, contrast: `(192, 96, 64)` through CSS's own matrices.
+    #[test]
+    fn a_content_colour_filter_recolours_the_straight_colour_in_order() {
+        for (effect, background, want) in [
+            ("saturate = 2", "#C06040FF", (255, 78, 14)),
+            // Straight, then over white: a premultiplied filter would darken the translucent box.
+            ("saturate = 2", "#C0604080", (255, 166, 134)),
+            ("saturate = 2, brightness = 0.5", "#C06040FF", (128, 39, 7)),
+            ("contrast = 0.5", "#C06040FF", (160, 112, 96)),
+            ("saturate = 1", "#C06040FF", (192, 96, 64)),
+        ] {
+            let src = format!(r##"background = "{background}", effect = {{ {effect} }}"##);
+            let Some(px) = paint_effect_at(&src, &[(32, 32)]) else { return };
+            assert!(near(px[0], want), "{effect} on {background}: {px:?}");
+        }
+    }
+
+    /// ADR-0334. A backdrop colour filter recolours what the glass covers at blur 0, through a
+    /// blur one pass wide and through a stretched one, and leaves the ground outside it alone.
+    #[test]
+    fn a_backdrop_colour_filter_recolours_the_ground_under_the_glass() {
+        for blur in ["", "blur = 2,", "blur = 16,"] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 64, height = 32, background = "#C06040FF",
+                    child = rect {{ width = 32, height = 32, effect = {{ backdrop = {{ {blur} saturate = 2 }} }} }} }}"##
+            );
+            let Some(px) = paint_with_gl(&src, (64, 32), &[(16, 16), (48, 16)]) else { return };
+            assert!(near(px[0], (255, 78, 14)), "under the glass, `{blur}`: {px:?}");
+            assert!(near(px[1], (192, 96, 64)), "beside it, `{blur}`: {px:?}");
+        }
     }
 
     /// ADR-0254's gradient path: an opaque box's shadow lands offset under it, sharp without a
@@ -744,13 +808,13 @@ mod tests {
             canvas.screenshot().expect("screenshot reads back the pbuffer")
         };
         for sigma in [2.0, 6.0, 8.0, 16.0, 32.0] {
-            let engine = blurred(&mut painter, &mut walk, source, size, sigma).unwrap();
+            let engine = blurred(&mut painter, &mut walk, source, size, (sigma, node::Tone::default())).unwrap();
             let engine = read(&mut painter, engine);
             let reference = scratch(&mut painter, &mut walk, size).unwrap();
             if sigma <= 8.0 {
                 painter.canvas_mut().filter_image(reference, femtovg::ImageFilter::GaussianBlur { sigma }, source);
             } else {
-                assert!(gaussian(&mut painter, &mut walk, source, reference, size, sigma, 1));
+                assert!(gaussian(&mut painter, &mut walk, source, reference, size, (sigma, node::Tone::default()), 1));
             }
             let reference = read(&mut painter, reference);
             let diffs = engine

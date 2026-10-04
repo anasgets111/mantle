@@ -439,8 +439,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_layer(painter, walk, command, target, frame);
                 current_clip = None;
             }
-            Draw::Backdrop { sigma, radius, alpha } => {
-                draw_backdrop(painter, walk, rect, clip, *sigma, *radius, *alpha)
+            Draw::Backdrop { sigma, tone, radius, alpha } => {
+                draw_backdrop(painter, walk, rect, clip, (*sigma, *tone), *radius, *alpha)
             }
         }
     }

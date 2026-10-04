@@ -340,15 +340,54 @@ impl Shadow {
 
 /// What a node's own painted output is filtered by (ADR-0254). `shadows` are the layers that
 /// show, first on top; `blur` is `effect.blur`, CSS `filter: blur()`'s sigma; `backdrop` is
-/// `effect.backdrop.blur`, `backdrop-filter: blur()`'s (ADR-0256). `0` is off. `content_shadow` is
+/// `effect.backdrop.blur`, `backdrop-filter: blur()`'s (ADR-0256). `0` is off. `tone` and
+/// `backdrop_tone` are the colour filters after each blur (ADR-0334). `content_shadow` is
 /// `shadow_mode = "content"`: the shadows are cast by the painted subtree, not the box's shape
 /// (ADR-0260).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
     pub shadows: Vec<Shadow>,
     pub blur: f32,
+    pub tone: Tone,
     pub backdrop: f32,
+    pub backdrop_tone: Tone,
     pub content_shadow: bool,
+}
+
+impl Effect {
+    /// Whether the node's own output needs an offscreen: a shadow, a blur or a colour filter.
+    pub fn layers(&self) -> bool {
+        !self.shadows.is_empty() || self.blur > 0.0 || !self.tone.is_identity()
+    }
+}
+
+/// CSS `saturate()`, `brightness()` and `contrast()` in that order, each `1` for off, applied to
+/// straight sRGB as the CSS shorthands do (ADR-0334).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tone {
+    pub saturate: f32,
+    pub brightness: f32,
+    pub contrast: f32,
+}
+
+impl Default for Tone {
+    fn default() -> Self {
+        Self { saturate: 1.0, brightness: 1.0, contrast: 1.0 }
+    }
+}
+
+impl Tone {
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The Filter Effects `saturate()` matrix, column-major for GL: `s` on the diagonal and
+    /// `1 - s` times the luma weights everywhere.
+    pub fn saturate_columns(&self) -> [f32; 9] {
+        const LUMA: [f32; 3] = [0.213, 0.715, 0.072];
+        let s = self.saturate;
+        std::array::from_fn(|i| (1.0 - s) * LUMA[i / 3] + if i % 3 == i / 3 { s } else { 0.0 })
+    }
 }
 
 keywords! {
@@ -364,6 +403,8 @@ keywords! {
 const MAX_SHADOWS: usize = 8;
 /// A layer's `blur` and each `effect` blur, and a layer's `offset` and `spread`, in px; the tween clamps into the same ranges.
 pub(super) const SHADOW_BLUR: (f32, f32) = (0.0, 8192.0);
+/// Each `effect` colour filter's factor; past 8 `saturate` and `contrast` have clipped every channel.
+pub(super) const TONE: (f32, f32) = (0.0, 8.0);
 pub(super) const SHADOW_REACH: (f32, f32) = (-8192.0, 8192.0);
 
 lua_shape! {
@@ -380,21 +421,30 @@ lua_shape! {
 lua_shape! {
     /// `effect.backdrop`: CSS `backdrop-filter`, a box kind's only.
     #[alias = "BackdropEffect"]
+    #[derive(Default)]
     pub(crate) struct BackdropKeys {
         pub(crate) blur: Option<f32>,
+        pub(crate) saturate: Option<f32>,
+        pub(crate) brightness: Option<f32>,
+        pub(crate) contrast: Option<f32>,
     }
 }
 
 lua_shape! {
     /// `effect`: CSS `filter` for a node.
     #[alias = "Effect"]
+    #[derive(Default)]
     pub(crate) struct EffectKeys {
         pub(crate) blur: Option<f32>,
+        pub(crate) saturate: Option<f32>,
+        pub(crate) brightness: Option<f32>,
+        pub(crate) contrast: Option<f32>,
         pub(crate) backdrop: Option<BackdropKeys>,
     }
 }
 
-/// `effect`: the node's pixel filters, each blur in `[0, 8192]`. Absent keys are off.
+/// `effect`: the node's pixel filters, each blur in `[0, 8192]` and each colour filter in `[0, 8]`.
+/// Absent keys are off.
 pub(crate) struct Effects;
 
 spelled!(Effects => EffectKeys::lua());
@@ -403,21 +453,32 @@ impl Prop for Effects {
     type Out = EffectKeys;
     fn read(row: &Property, value: Option<&Value>) -> Result<EffectKeys, LayoutError> {
         let table = match value {
-            None => return Ok(EffectKeys { blur: None, backdrop: None }),
+            None => return Ok(EffectKeys::default()),
             Some(Value::Table(table)) => table,
             Some(value) => {
                 return Err(invalid(row.name, format!("expected a table, got {}", preview_for_error(value))));
             }
         };
         let keys = EffectKeys::read(row.name, table)?;
-        let within = |key: &str, n: Option<f32>| {
-            n.map(|n| within_range(&format!("{}.{key}", row.name), SHADOW_BLUR, n)).transpose()
+        let within = |key: &str, range, n: Option<f32>| {
+            n.map(|n| within_range(&format!("{}.{key}", row.name), range, n)).transpose()
         };
         let backdrop = match keys.backdrop {
-            Some(BackdropKeys { blur }) => Some(BackdropKeys { blur: within("backdrop.blur", blur)? }),
+            Some(b) => Some(BackdropKeys {
+                blur: within("backdrop.blur", SHADOW_BLUR, b.blur)?,
+                saturate: within("backdrop.saturate", TONE, b.saturate)?,
+                brightness: within("backdrop.brightness", TONE, b.brightness)?,
+                contrast: within("backdrop.contrast", TONE, b.contrast)?,
+            }),
             None => None,
         };
-        Ok(EffectKeys { blur: within("blur", keys.blur)?, backdrop })
+        Ok(EffectKeys {
+            blur: within("blur", SHADOW_BLUR, keys.blur)?,
+            saturate: within("saturate", TONE, keys.saturate)?,
+            brightness: within("brightness", TONE, keys.brightness)?,
+            contrast: within("contrast", TONE, keys.contrast)?,
+            backdrop,
+        })
     }
 }
 
@@ -462,10 +523,18 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     let mut shadows = common::shadows.read(properties)?.unwrap_or_default();
     shadows.retain(Shadow::shows);
     let filters = common::effect.read(properties)?;
+    let tone = |saturate: Option<f32>, brightness: Option<f32>, contrast: Option<f32>| Tone {
+        saturate: saturate.unwrap_or(1.0),
+        brightness: brightness.unwrap_or(1.0),
+        contrast: contrast.unwrap_or(1.0),
+    };
+    let backdrop = filters.backdrop.unwrap_or_default();
     Ok(Effect {
         shadows,
         blur: filters.blur.unwrap_or(0.0),
-        backdrop: filters.backdrop.and_then(|b| b.blur).unwrap_or(0.0),
+        tone: tone(filters.saturate, filters.brightness, filters.contrast),
+        backdrop: backdrop.blur.unwrap_or(0.0),
+        backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
         content_shadow: paint::shadow_mode.read(properties)? == ShadowMode::Content,
     })
 }
@@ -1121,12 +1190,28 @@ mod tests {
             parse("return { effect = { backdrop = { blur = 8 } } }").unwrap(),
             Effect { backdrop: 8.0, ..Effect::default() }
         );
+        let tone = |saturate, brightness, contrast| Tone { saturate, brightness, contrast };
+        assert_eq!(
+            parse("return { effect = { saturate = 2, contrast = 0 } }").unwrap(),
+            Effect { tone: tone(2.0, 1.0, 0.0), ..Effect::default() }
+        );
+        assert_eq!(
+            parse("return { effect = { backdrop = { saturate = 8, brightness = 0.5 } } }").unwrap(),
+            Effect { backdrop_tone: tone(8.0, 0.5, 1.0), ..Effect::default() }
+        );
+        assert!(parse("return { effect = { saturate = 1, backdrop = { contrast = 1 } } }").unwrap().tone.is_identity());
         let content = Effect { content_shadow: true, ..Effect::default() };
         assert_eq!(parse(r#"return { shadow_mode = "content" }"#).unwrap(), content);
         assert_eq!(parse(r#"return { shadow_mode = "box" }"#).unwrap(), Effect::default());
         for (src, property) in [
             ("return { effect = { blur = -1 } }", "effect.blur"),
             ("return { effect = { backdrop = { blur = 8193 } } }", "effect.backdrop.blur"),
+            ("return { effect = { saturate = -0.1 } }", "effect.saturate"),
+            ("return { effect = { brightness = 8.5 } }", "effect.brightness"),
+            ("return { effect = { backdrop = { contrast = 9 } } }", "effect.backdrop.contrast"),
+            ("return { effect = { backdrop = { saturate = -1 } } }", "effect.backdrop.saturate"),
+            ("return { effect = { backdrop = { brightness = 8.5 } } }", "effect.backdrop.brightness"),
+            ("return { effect = { contrast = 0.5, hue = 2 } }", "effect"),
             ("return { effect = { blur = 1, glow = 2 } }", "effect"),
             ("return { effect = { backdrop = { blur = 1, glow = 2 } } }", "effect.backdrop"),
             ("return { effect = { backdrop_blur = 2 } }", "effect"),
@@ -1143,5 +1228,21 @@ mod tests {
                 "{src}: {err:?}"
             );
         }
+    }
+
+    /// Filter Effects `saturate()`: the matrix on `(192, 96, 64)` gives the spec's own numbers, `0`
+    /// is the luma grey and `1` leaves the colour alone.
+    #[test]
+    fn the_saturate_matrix_is_the_filter_effects_one() {
+        let apply = |s: f32, rgb: [f32; 3]| {
+            let m = Tone { saturate: s, ..Tone::default() }.saturate_columns();
+            std::array::from_fn::<f32, 3, _>(|row| (0..3).map(|col| m[col * 3 + row] * rgb[col]).sum())
+        };
+        let close = |got: [f32; 3], want: [f32; 3]| got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-3);
+        let colour = [192.0, 96.0, 64.0];
+        assert!(close(apply(2.0, colour), [269.856, 77.856, 13.856]), "{:?}", apply(2.0, colour));
+        assert!(close(apply(0.0, colour), [114.144; 3]), "{:?}", apply(0.0, colour));
+        assert!(close(apply(1.0, colour), colour));
+        assert!(Tone::default().is_identity() && !Tone { contrast: 0.5, ..Tone::default() }.is_identity());
     }
 }

@@ -49,7 +49,7 @@ pub(crate) use style::{BackdropKeys, GradientStop, ShadowLayer};
 pub use spec::LockSpec;
 pub use style::{
     Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, IDENTITY_AFFINE, Mask, MaskSource, Shadow,
-    Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
+    Tone, Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{
     Axes, ColorOrEdges, CornerShape, Cursor, Direction, EffectKeys, Effects, NumberOrCorners, NumberOrEdges, Scale,

@@ -143,7 +143,7 @@ fn build_node(
         effect.shadows.iter().fold(body, |reach, shadow| {
             reach.union(snap_to_physical(grow(shadow_rect(rect, rect, *shadow), 1.5 * shadow.blur), scale))
         })
-    } else if !effect.shadows.is_empty() || effect.blur > 0.0 {
+    } else if effect.layers() {
         layer_bounds(rect, effect, scale)
     } else {
         child_clip
@@ -172,11 +172,11 @@ fn build_node(
     };
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
     if let Some(PaintStyle::Box { radius, .. }) = node.paint
-        && effect.backdrop > 0.0
+        && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity())
         && opacity > 0.0
         && !clip.is_empty()
     {
-        let draw = Draw::Backdrop { sigma: effect.backdrop, radius, alpha: opacity };
+        let draw = Draw::Backdrop { sigma: effect.backdrop, tone: effect.backdrop_tone, radius, alpha: opacity };
         out.push(cmd(parent_clip.intersect(read), draw));
     }
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
@@ -281,7 +281,7 @@ fn build_node(
             ),
         });
     }
-    if (!layered.shadows.is_empty() || layered.blur > 0.0) && out.len() > body {
+    if layered.layers() && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
         // A transformed child overflowing the box keeps the overflow it has without the layer.
         let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).fold(own, PhysicalRect::union);
@@ -353,8 +353,8 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             silhouette,
             commands,
         },
-        Draw::Backdrop { sigma, radius, alpha } => {
-            Draw::Backdrop { sigma: sigma * scale, radius: radius * scale, alpha }
+        Draw::Backdrop { sigma, tone, radius, alpha } => {
+            Draw::Backdrop { sigma: sigma * scale, tone, radius: radius * scale, alpha }
         }
         draw @ (Draw::Text { .. }
         | Draw::Icon { .. }
@@ -2037,7 +2037,10 @@ mod tests {
                 effect = { backdrop = { blur = 4 } }, shadows = { { offset = { y = 4 } } }}"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
-        assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: Radii::from(6.0), alpha: 0.5 });
+        assert_eq!(
+            list.commands[at].draw,
+            Draw::Backdrop { sigma: 4.0, tone: node::Tone::default(), radius: Radii::from(6.0), alpha: 0.5 }
+        );
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });
         // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.
         assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");
@@ -2049,6 +2052,32 @@ mod tests {
         assert!(matches!(content.commands[at + 1].draw, Draw::Layer { .. }), "the layer draws over it");
         let plain = effect_surface(r##"rect { width = 40, height = 20, background = "#ffffff40" }"##);
         assert!(!plain.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })));
+    }
+
+    /// ADR-0334. A colour filter forces a layer or a backdrop read like a blur does, and every
+    /// factor at `1` costs neither.
+    #[test]
+    fn a_colour_filter_forces_a_layer_or_backdrop_and_identity_costs_nothing() {
+        let kinds = |src: &str| {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = "#ffffff", effect = {src} }}"##
+            ));
+            let layer = list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. }));
+            (
+                layer,
+                list.commands.iter().find_map(|cmd| match cmd.draw {
+                    Draw::Backdrop { sigma, tone, .. } => Some((sigma, tone)),
+                    _ => None,
+                }),
+            )
+        };
+        let same =
+            "{ saturate = 1, brightness = 1, contrast = 1, backdrop = { saturate = 1, brightness = 1, contrast = 1 } }";
+        assert_eq!(kinds(same), (false, None));
+        assert_eq!(kinds("{ brightness = 1.5 }"), (true, None));
+        let tone = node::Tone { saturate: 2.0, ..node::Tone::default() };
+        assert_eq!(kinds("{ backdrop = { saturate = 2 } }"), (false, Some((0.0, tone))));
+        assert_eq!(kinds("{ backdrop = { blur = 3, saturate = 2 } }"), (false, Some((3.0, tone))));
     }
 
     /// Nothing to show at opacity 0, so nothing to read.

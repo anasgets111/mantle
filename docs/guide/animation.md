@@ -93,7 +93,7 @@ shape decides whether it moves. The ones that do:
 | `{ top, right, bottom, left }` | `padding`, `margin`, `border_width` as tables |
 | `{ top_left, top_right, bottom_right, bottom_left }` | `radius` as a table |
 | `{ x, y }` | `translate`, `scale`, `origin` |
-| `{ blur, backdrop = { blur } }` | `effect`; a key only one side sets tweens from or to `0` |
+| `{ blur, saturate, brightness, contrast, backdrop = { .. } }` | `effect`; a key only one side sets tweens from or to its off value, `0` for a blur and `1` for a colour filter |
 | Shadow list | `shadows`, layer by layer ([layered shadows](paint.md#layered-shadows)) |
 | Path commands | `commands` on `path` ([morphing](../nodes/path.md)) |
 

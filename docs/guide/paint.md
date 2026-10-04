@@ -44,8 +44,8 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 | Box kind | A node that paints a box: `rect`, `row`, `column` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
 | Repaint | Mantle redraws the changed part of a surface's buffer; an unchanged surface is not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
-| Layer | The offscreen pass that `effect.blur` and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
-| Glass | A box with `effect.backdrop.blur` |
+| Layer | The offscreen pass that `effect.blur`, a colour filter and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
+| Glass | A box with `effect.backdrop.blur` or a backdrop colour filter |
 | Sigma | A Gaussian blur's standard deviation in logical px. The blur reaches about 3 sigma |
 
 ## Output scale
@@ -418,16 +418,39 @@ A frosted pill: the image is painted first, so the pill's `effect.backdrop.blur`
 its rounded shape, and the fill tints it. The same pattern over a full-screen image frosts a lock
 screen's wallpaper.
 
+### Colour filters
+
+`effect` also takes CSS `saturate()`, `brightness()` and `contrast()`, on the node's subtree and, in
+`backdrop`, on the pixels under a box. Each is a factor in `[0, 8]`, default `1`, which is off and
+costs nothing. At one level they apply in a fixed order: blur, then `saturate`, `brightness`,
+`contrast`, whatever order the table lists them in. They work on the straight sRGB colour, as CSS's
+do, so a translucent fill keeps its alpha. A colour filter folds into the blur's last pass; a
+`backdrop` with only a colour filter still copies what is under the box once, and a node with a
+colour filter is drawn into a layer like one with `effect.blur`.
+
+```lua
+rect {
+    width = 360,
+    height = 120,
+    radius = 16,
+    background = "#FFFFFF1F",
+    effect = { backdrop = { blur = 45, saturate = 2 } },
+}
+```
+
+The usual glass: CSS `backdrop-filter: blur(45px) saturate(2)`.
+
 ## Combining effects
 
 One node paints in this order, each step over the last. The order is fixed: the keys of `effect` apply in it, whatever order the table lists them in.
 
-1. **Backdrop** (`effect.backdrop.blur`): replaces the pixels under the box with their blur.
+1. **Backdrop** (`effect.backdrop`): replaces the pixels under the box with their blur, then
+   `saturate`, `brightness` and `contrast`.
 2. **Shadow**, when it is a gradient quad or a silhouette.
 3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
    goes through an offscreen pass.
-4. **Layer**: for `effect.blur` or a layered shadow, the body is drawn offscreen, its shadow cast
-   from it, then the body blurred.
+4. **Layer**: for `effect.blur`, a colour filter or a layered shadow, the body is drawn offscreen,
+   its shadow cast from it, then the body blurred and recoloured.
 5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
 
 | Combination | What happens | Do this |

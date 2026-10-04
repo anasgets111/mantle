@@ -7874,3 +7874,21 @@ only; a y band or a rectangular window would extend `trim_axis`.
 
 Rejected: flat properties, which grow by one per filter and level; a flat `effect.backdrop_blur`,
 which leaves no room for per-level colour filters. Breaking, pre-1.0.
+
+## 0334. `effect` carries CSS colour filters at both levels
+
+Amends ADR-0333.
+
+1. **Keys.** `effect` and `effect.backdrop` each take `saturate`, `brightness` and `contrast` beside
+   `blur`: factors in `[0, 8]`, default `1`. Past 8 `saturate` and `contrast` have clipped every
+   channel, and a cap bounds the tween.
+2. **CSS semantics and order.** The Filter Effects formulas on straight sRGB, as CSS's shorthands
+   and the engine's buffers are. Within a level: blur, `saturate`, `brightness`, `contrast`, each
+   clamped to [0, 1]; the backdrop level runs first (ADR-0333).
+3. **No new pass.** Three uniforms in the Gaussian pass that writes the blur target (ADR-0262); with
+   blur 0 it is one sigma-0 read. A backdrop with only a colour filter still emits `Draw::Backdrop`,
+   so its read area and damage expansion are ADR-0256's. All factors at `1` cost nothing.
+4. **Tween.** A missing key reads its off value: `0` for a blur, `1` for a colour filter.
+
+Rejected: one folded 4x5 matrix, which cannot clamp between stages as CSS does; linear-light
+filtering, which differs from every browser; a separate pass, a full-size read and write per glass.

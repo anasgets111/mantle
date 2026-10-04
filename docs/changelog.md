@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `effect` takes CSS colour filters, `saturate`, `brightness` and `contrast`, each in `[0, 8]` with `1` off, on the node and in `backdrop` (`effect = { backdrop = { blur = 45, saturate = 2 } }`). They apply after the blur in that order on straight sRGB, are bindable, and `animate.effect` tweens them, a missing key reading `1`.
 - Breaking: `content_blur` and `backdrop_blur` are replaced by one `effect` table, `{ blur, backdrop = { blur } }` (CSS `filter` and `backdrop-filter`): each blur is a sigma in `[0, 8192]` and bindable, and `backdrop` is a box kind's, so another kind refuses it. Unknown keys are refused, listing the accepted ones. `animate.effect` tweens both blurs; a key only one side sets tweens from or to `0`. `content_blur = 4, backdrop_blur = 8` becomes `effect = { blur = 4, backdrop = { blur = 8 } }`; `animate = { content_blur = 200 }` becomes `animate = { effect = 200 }`.
 
 ## 0.3.0 - 2026-10-05

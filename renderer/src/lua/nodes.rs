@@ -700,7 +700,7 @@ mod meta_stub_tests {
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
             // `shader.source` refuses a relative path; `image.source` takes either.
             ("source", "string") => return Some("\"/x\"".to_string()),
-            ("effect", _) => return Some("{ blur = 2.5 }".to_string()),
+            ("effect", _) => return Some("{ blur = 2.5, saturate = 2 }".to_string()),
             ("shadows", _) => {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }

@@ -148,9 +148,9 @@ pub enum Draw {
     /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
     Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
-    /// What the target already holds under the node's box, blurred by `sigma` and
-    /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
-    Backdrop { sigma: f32, radius: Radii, alpha: f32 },
+    /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
+    /// and drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
+    Backdrop { sigma: f32, tone: node::Tone, radius: Radii, alpha: f32 },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
@@ -662,7 +662,11 @@ mod tests {
     fn glass(x0: i32, x1: i32) -> DrawCmd {
         let clip = PhysicalRect { x0, y0: 0, x1, y1: 10 };
         let rect = LogicalRect { x: x0 as f32, y: 0.0, width: (x1 - x0) as f32, height: 10.0 };
-        DrawCmd { rect, clip, draw: Draw::Backdrop { sigma: 1.0, radius: Radii::default(), alpha: 1.0 } }
+        DrawCmd {
+            rect,
+            clip,
+            draw: Draw::Backdrop { sigma: 1.0, tone: node::Tone::default(), radius: Radii::default(), alpha: 1.0 },
+        }
     }
 
     /// ADR-0256. A later glass repainting reaches an earlier one whose read it covers, and a read
