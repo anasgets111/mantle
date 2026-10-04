@@ -179,6 +179,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
     let scale = walk.scale;
     let timing = crate::layout::scene::timing_on();
     let mut current_clip: Option<PhysicalRect> = None;
+    let mut pushed = false;
     for command in commands {
         // `command.clip` already contains every ancestor intersection, so set the final scissor.
         let clip = command.clip;
@@ -189,12 +190,24 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             continue;
         }
         if current_clip != Some(scissor) {
-            painter.canvas_mut().scissor(
+            let canvas = painter.canvas_mut();
+            let (x, y, w, h) = (
                 scissor.x0 as f32,
                 scissor.y0 as f32,
                 (scissor.x1 - scissor.x0) as f32,
                 (scissor.y1 - scissor.y0) as f32,
             );
+            if frame.transform.is_some() {
+                // Inside a group the scissor the group was entered under cuts what the matrix moved.
+                if pushed {
+                    canvas.restore();
+                }
+                canvas.save();
+                pushed = true;
+                canvas.intersect_scissor(x, y, w, h);
+            } else {
+                canvas.scissor(x, y, w, h);
+            }
             current_clip = Some(scissor);
         }
         let rect = command.rect;
@@ -428,6 +441,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_backdrop(painter, walk, rect, clip, *sigma, *radius, *alpha)
             }
         }
+    }
+    if pushed {
+        painter.canvas_mut().restore();
     }
 }
 
@@ -1043,6 +1059,24 @@ pub(crate) mod tests {
     pub(super) fn paint_points(child: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
         let src = format!(r#"return panel {{ id = "bar", width = 64, height = 64, child = {child} }}"#);
         paint_with_gl(&src, (64, 64), points)
+    }
+
+    /// A ripple scaled about its centre past its button stays inside the button's box.
+    #[test]
+    fn a_scaled_child_paints_nothing_outside_its_parents_box() {
+        for origin in ["", ", origin = { x = 0, y = 0 }"] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 300, height = 100, child = rect {{ width = 224, height = 48,
+                    children = {{ rect {{ width = 224, height = 48, background = "#ff0000", scale = 6{origin} }} }} }} }}"##
+            );
+            let Some(px) =
+                paint_with_gl(&src, (300, 100), &[(112, 24), (225, 24), (228, 24), (112, 49), (112, 52), (250, 24)])
+            else {
+                return;
+            };
+            assert_eq!(px[0].3, 255, "{origin}: {px:?}");
+            assert!(px[1..].iter().all(|p| p.3 == 0), "{origin}: {px:?}");
+        }
     }
 
     /// A mask multiplies alpha, so the node's own fill and its child fade together: an opaque stop

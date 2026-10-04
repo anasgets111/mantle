@@ -179,7 +179,8 @@ return row {
 `clip` decides what a box cuts its children to.
 
 A child's `translate`, `scale` or `rotate` moves its own paint, never the parent's clip: a child that
-transforms past the parent's box is cut there unless the parent sets `clip = "none"`.
+transforms past the parent's box is cut there (a rotated one by the box's bounds in its own space)
+unless the parent sets `clip = "none"`.
 
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |

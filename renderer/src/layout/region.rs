@@ -92,8 +92,9 @@ fn collect_blur_regions(
     // In the node's pre-matrix space, as `layout::paint::build_node` carries it: the group's matrix
     // moves the node and what it paints, but not the ancestors' clip it is cut by.
     let parent_clip = match node.paint_matrix(rect).and_then(node::invert_affine) {
-        Some(inverse) => node::transformed_bounds(inverse, clip),
-        None => clip,
+        // An empty clip stays empty: mapping would flip its inverted corners into a real rect.
+        Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
+        _ => clip,
     };
     let clip = parent_clip.intersect(rect);
     let child_clip = if node.clips_children() { clip } else { parent_clip };

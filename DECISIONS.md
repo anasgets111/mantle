@@ -7683,10 +7683,13 @@ Replaces the movement-only offset in `layout/paint/build.rs` and `layout/region.
    parent's box, as hit testing already treated it.
 2. **Overflow by transform is opt-in.** Hover scale-ups, overshooting easings and slide-outs that
    should spill set `clip = "none"` on the parent; the docs' own examples did.
-3. **Whole pixels.** `DrawCmd.clip` is a `PhysicalRect`, so the mapped clip rounds out: a
-   fractional slide can show up to 1px past the edge, and a rotated child is cut by the bounding
-   box of the mapped clip.
+3. **Exact at the edge.** The group command keeps the outer clip, and the canvas intersects each
+   scissor inside the group with it, so a child scaled 6x is cut on the parent's pixel edge. The
+   clip mapped into the group stays for culling and layer bounds, rounded out to whole pixels.
+4. **Bounding box where the scissor cannot follow.** A layer, offscreen or shader draw inside a
+   group gets only the rounded mapped clip, and a rotated child is cut by the bounds of the
+   parent's box in its own space.
 
-Rejected: a float clip set once outside the group and intersected inside, which is exact but needs
-a scissor chain across nested groups, layers and damage, all of which compare integer rects. Cost:
-configs that relied on the old spill change appearance until they opt out.
+Rejected: rounding the mapped clip alone, which let a fractional slide leak 1px and a 6x scale
+leak 6px past the edge. Cost: configs that relied on the old spill change appearance until they
+opt out, and each scissor change inside a group adds a canvas save and restore.

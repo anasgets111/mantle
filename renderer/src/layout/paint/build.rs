@@ -94,14 +94,20 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    // The group matrix carries everything inside it, so the ancestors' clip and the effect target
-    // enter in the node's pre-matrix coordinates and the matrix puts them back where they were.
-    // ponytail: a rotated group gets its clip's bounding box, and a fractional matrix rounds the
-    // clip out to whole pixels; an exact cut needs femtovg's scissor chain across the group.
+    // The group matrix moves what is inside it, not the ancestors' clip, so both enter pre-matrix, and the
+    // group's own command carries the exact clip for `canvas::run` to intersect outside the matrix.
+    // ponytail: the pre-matrix copy rounds out to whole pixels, so a layer or shader inside a group is cut by it alone.
+    let outer = clip;
     let (parent_clip, surface) = if let Some(matrix) = node.paint_matrix(rect) {
         let physical = [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4] * scale, matrix[5] * scale];
-        let clip = node::invert_affine(physical).map_or(clip, |inverse| super::transformed(inverse, clip));
-        let surface = match (node.movement.as_ref(), node::invert_affine(node.transform.matrix(rect))) {
+        let inverse = node::invert_affine(physical);
+        // An empty clip stays empty: `transformed` would flip its inverted corners into a real rect.
+        let clip = match inverse {
+            Some(inverse) if !clip.is_empty() => super::transformed(inverse, clip),
+            _ => clip,
+        };
+        // The linear part is the movement-free transform's, so its inverse shifts the effect target.
+        let surface = match (node.movement.as_ref(), inverse) {
             (Some(moving), Some(inverse)) => LogicalRect {
                 x: surface.x - (inverse[0] * moving.offset.0 + inverse[2] * moving.offset.1),
                 y: surface.y - (inverse[1] * moving.offset.0 + inverse[3] * moving.offset.1),
@@ -284,7 +290,7 @@ fn build_node(
     }
     if let Some(matrix) = node.paint_matrix(rect) {
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
-        out.push(cmd(child_clip, Draw::Transformed { matrix, commands }));
+        out.push(cmd(outer, Draw::Transformed { matrix, commands }));
     }
 }
 
@@ -1096,19 +1102,74 @@ mod tests {
     /// A parent's clip stays in the parent's space: the child's group matrix must not carry it along.
     #[test]
     fn a_transformed_child_stays_cut_to_its_parents_box() {
-        for transform in ["translate = { x = 30 }", "scale = 2", "translate = { x = 30 }, scale = 0.5"] {
-            let src = format!(
-                r##"return panel {{ id = "bar", width = 100, height = 20,
-                child = rect {{ width = 100, height = 20, background = "#445566ff", {transform} }} }}"##
-            );
+        // The painted bounds of every fill: mapped out through each group's matrix, cut by its clip.
+        fn painted(commands: &[DrawCmd], groups: &mut Vec<(node::Affine, PhysicalRect)>, out: &mut Vec<PhysicalRect>) {
+            for command in commands {
+                match &command.draw {
+                    Draw::Transformed { matrix, commands } => {
+                        groups.push((*matrix, command.clip));
+                        painted(commands, groups, out);
+                        groups.pop();
+                    }
+                    Draw::Box { .. } => {
+                        out.push(groups.iter().rev().fold(command.clip, |r, (m, clip)| {
+                            crate::layout::paint::transformed(*m, r).intersect(*clip)
+                        }))
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let nested = r##"rect { width = 100, height = 20, translate = { x = 30 }, children = {
+            rect { width = 100, height = 20, background = "#445566ff", scale = 2 } } }"##;
+        for child in [
+            r##"rect { width = 100, height = 20, background = "#445566ff", translate = { x = 30 } }"##,
+            r##"rect { width = 100, height = 20, background = "#445566ff", scale = 2 }"##,
+            r##"rect { width = 100, height = 20, background = "#445566ff", scale = 6 }"##,
+            r##"rect { width = 100, height = 20, background = "#445566ff", scale = 6, origin = { x = 0, y = 1 } }"##,
+            r##"rect { width = 100, height = 20, background = "#445566ff", translate = { x = 30 }, scale = 0.5 }"##,
+            nested,
+        ] {
+            let src = format!(r##"return panel {{ id = "bar", width = 100, height = 20, child = {child} }}"##);
             let list =
                 build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
-            let group = list.commands.iter().find(|c| matches!(c.draw, Draw::Transformed { .. })).expect("a group");
-            let Draw::Transformed { matrix, commands } = &group.draw else { unreachable!() };
-            let fill = commands.iter().find(|c| matches!(c.draw, Draw::Box { .. })).expect("the child's fill");
-            let drawn = crate::layout::paint::transformed(*matrix, fill.clip);
-            assert!(drawn.x0 >= 0 && drawn.x1 <= 100, "{transform}: the child paints over {drawn:?}, past its parent");
+            let mut fills = Vec::new();
+            painted(&list.commands, &mut Vec::new(), &mut fills);
+            assert!(!fills.is_empty(), "{child}: nothing painted");
+            for drawn in fills {
+                assert!(
+                    drawn.x0 >= 0 && drawn.x1 <= 100 && drawn.y0 >= 0 && drawn.y1 <= 20,
+                    "{child}: paints over {drawn:?}, past its parent"
+                );
+            }
         }
+        // A rotated child gets the parent's bounding box in its own space, so x narrows from the
+        // 100px child's rotated 120 px bounds but y keeps the bounds' overshoot.
+        let src = r##"return panel { id = "bar", width = 100, height = 20,
+            child = rect { width = 100, height = 20, background = "#445566ff", rotate = 45 } }"##;
+        let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
+        let mut fills = Vec::new();
+        painted(&list.commands, &mut Vec::new(), &mut fills);
+        let drawn = fills.last().unwrap();
+        assert!(drawn.x0 > 0 && drawn.x1 < 100, "{drawn:?}");
+    }
+
+    /// A clip emptied by an ancestor stays empty under a transformed child, even when the parent
+    /// still recurses for its shadow.
+    #[test]
+    fn a_transformed_child_under_an_empty_clip_draws_nothing() {
+        fn blue(commands: &[DrawCmd]) -> bool {
+            commands.iter().any(|c| {
+                let fill = matches!(&c.draw, Draw::Box { background: Some(Fill::Color(c)), .. } if (c.b * 255.0).round() as u8 == 0x66);
+                fill || c.draw.nested().is_some_and(blue)
+            })
+        }
+        let src = r##"return panel { id = "bar", width = 100, height = 20,
+            child = rect { width = 40, height = 20, margin = { left = 110 }, background = "#102030ff",
+                shadow_blur = 30, shadow_color = "#000000ff", children = {
+                    rect { width = 40, height = 20, background = "#445566ff", translate = { x = -30 } } } } }"##;
+        let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 100.0, height: 20.0 }), 1.0, None);
+        assert!(!blue(&list.commands), "{list:?}");
     }
 
     /// A node scrolled or positioned entirely outside its parent draws nothing, so it earns no
