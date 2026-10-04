@@ -1237,6 +1237,32 @@ pub(super) mod tests {
         );
     }
 
+    /// A content-sized row floored by `min_width` is that wide and its `Fill` child takes the slack,
+    /// whatever flow, stack or alignment holds the row.
+    #[test]
+    fn a_fill_child_of_a_row_with_a_min_width_takes_the_slack() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let kids = r#"children = { rect { width = 40, height = 10 }, rect { width = "fill", height = 10 }, rect { width = 40, height = 10 } }"#;
+        let cases = [
+            format!(r#"row {{ min_width = 220, {kids} }}"#),
+            format!(r#"column {{ children = {{ row {{ min_width = 220, {kids} }} }} }}"#),
+            format!(r#"row {{ align_h = "end", children = {{ row {{ min_width = 220, {kids} }} }} }}"#),
+            format!(r#"rect {{ children = {{ row {{ min_width = 220, align_h = "center", {kids} }} }} }}"#),
+        ];
+        for body in &cases {
+            let (lua, surface) = surface_from(&format!(r#"panel {{ id = "bar", child = {body} }}"#));
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let mut row = &scene.surface("bar@TEST").unwrap().children[0];
+            while row.children.len() == 1 {
+                row = &row.children[0];
+            }
+            assert_eq!(row.rect.width, 220.0, "{body}");
+            assert_eq!(row.children[1].rect.width, 140.0, "{body}");
+            assert_eq!(row.children[2].rect.x, 180.0, "{body}");
+        }
+    }
+
     /// A floor above a ceiling is the size, the way CSS resolves the pair, rather than a tree the
     /// engine refuses: the two are separate properties and nothing stops a config carrying both.
     #[test]
