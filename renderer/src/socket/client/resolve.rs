@@ -1156,7 +1156,7 @@ mod tests {
                 s = scroll("s")
                 n = state("n", 6)
                 runs = 0
-                return panel {{ id = "bar", layer = "top", child = column {{ children = {{
+                return panel {{ id = "bar", layer = "top", reset_on_close = {{ s }}, child = column {{ children = {{
                     row {{ width = 100, height = 20, scroll = s, animate = {animate},
                         children = n:map(function(n)
                             local tiles = {{}}
@@ -1228,9 +1228,10 @@ mod tests {
     #[test]
     fn a_reveal_eases_under_animate_scroll() {
         let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
-        let t0 = std::time::Instant::now();
         client.loader.lua().load("s:reveal(5)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());
+        // After the pass that started the run, so its clock cannot be ahead of this one.
+        let t0 = std::time::Instant::now();
         assert_eq!(shown(&client), (0.0, 0.0), "the pass starts the run and moves nothing yet");
         client.advance_scrolls(&["bar@TEST".to_string()], t0 + std::time::Duration::from_millis(50));
         client.re_resolve_if_dirty();
@@ -1240,6 +1241,84 @@ mod tests {
         client.re_resolve_if_dirty();
         assert_eq!(shown(&client), (150.0, 150.0), "tile 5 ends flush with the right edge");
         assert_eq!(signal.scroll_offset(), Some(150.0));
+    }
+
+    /// One frame of the smooth scrolls on `bar@TEST`, then the pass, as the main loop orders them:
+    /// the reader's evaluations that frame and the offsets read and drawn.
+    fn frame(client: &mut RendererClient, at: std::time::Instant) -> (i64, (f32, f32)) {
+        let before = runs(client);
+        client.advance_scrolls(&["bar@TEST".to_string()], at);
+        client.re_resolve_if_dirty();
+        (runs(client) - before, shown(client))
+    }
+
+    /// `reset_on_close` writes the top while a run is in flight: the run stops instead of dragging
+    /// the offset back on the next frame.
+    #[test]
+    fn a_reset_on_close_stops_a_run() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        client.reset_closed_surfaces(&["bar@TEST"]);
+        client.wheel(&signal, 40.0, true, t0);
+        assert_eq!(frame(&mut client, ms(50)).1, (20.0, 20.0));
+        client.reset_closed_surfaces(&[]);
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(frame(&mut client, ms(80)).1, (0.0, 0.0));
+        assert!(!client.scene.surface("bar@TEST").unwrap().animating());
+    }
+
+    /// An easing that overshoots its target at the end never reports an offset past the room: one
+    /// evaluation a frame, no follow-up pass to pull a reader back.
+    #[test]
+    fn an_overshooting_run_at_the_end_never_reads_past_the_room() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "out_back" } }"#);
+        client.wheel(&signal, 160.0, false, std::time::Instant::now());
+        assert!(client.re_resolve_if_dirty());
+        let t0 = std::time::Instant::now();
+        client.wheel(&signal, 120.0, true, t0);
+        for at in [40, 60, 80, 100] {
+            let (runs, (read, drawn)) = frame(&mut client, t0 + std::time::Duration::from_millis(at));
+            assert!(runs <= 1 && read <= 200.0 && read == drawn, "{at} ms: {runs} runs, read {read}, drawn {drawn}");
+        }
+        assert_eq!(shown(&client), (200.0, 200.0));
+    }
+
+    /// Content that shrinks under a run: frames stop at the new end, and a notch back mid-run moves
+    /// from that end rather than from the target the content no longer reaches.
+    #[test]
+    fn a_run_whose_content_shrinks_stops_at_the_new_end() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        client.wheel(&signal, 900.0, true, t0);
+        assert_eq!(frame(&mut client, ms(50)).1, (100.0, 100.0), "halfway to 200");
+        client.loader.lua().load("n:set(3)").exec().unwrap();
+        assert_eq!(frame(&mut client, ms(60)).1, (50.0, 50.0), "three tiles leave 50 px");
+        assert_eq!(frame(&mut client, ms(70)), (0, (50.0, 50.0)), "held at the end, nothing to re-read");
+        client.wheel(&signal, -40.0, true, ms(70));
+        assert_eq!(frame(&mut client, ms(170)).1, (10.0, 10.0), "back one notch from the end");
+    }
+
+    /// A spring in flight hands its speed to the run a second notch starts, so the motion bends
+    /// instead of starting again from still.
+    #[test]
+    fn a_notch_mid_spring_keeps_its_speed() {
+        let spring = r#"{ scroll = { spring = { stiffness = 200, damping = 20 } } }"#;
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        let (mut moving, signal, _dir) = scrolled_row(spring);
+        moving.wheel(&signal, 40.0, true, t0);
+        let (_, (from, _)) = frame(&mut moving, ms(30));
+        moving.wheel(&signal, 40.0, true, ms(30));
+        let carried = frame(&mut moving, ms(40)).1.0 - from;
+
+        let (mut still, signal, _dir) = scrolled_row(spring);
+        still.wheel(&signal, from, false, t0);
+        assert!(still.re_resolve_if_dirty());
+        still.wheel(&signal, 80.0 - from, true, ms(30));
+        let rested = frame(&mut still, ms(40)).1.0 - from;
+        assert!(carried > rested, "from {from}: moving {carried} px in 10 ms, from still {rested}");
     }
 
     /// Without `animate.scroll` a notch writes its offset at once, as before.

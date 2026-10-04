@@ -21,6 +21,12 @@ fn wheel_delta(pixels: f64, value120: i32) -> f32 {
     value120 as f32 / VALUE120_PER_NOTCH * WHEEL_STEP_PIXELS
 }
 
+/// Whole notches may ease under `animate.scroll`. A high-resolution wheel's fractions arrive many
+/// to a notch and follow the hand like a touchpad's pixels, rather than restart the run each event.
+fn is_notch(value120: i32) -> bool {
+    value120 != 0 && value120 % VALUE120_PER_NOTCH as i32 == 0
+}
+
 /// `on_wheel`'s notches (ADR-0116 decision 2 amendment), positive away from the user. `value120`
 /// wins: a wheel's pixels are not `WHEEL_STEP_PIXELS` per notch.
 fn wheel_steps(pixels: f64, value120: i32) -> f32 {
@@ -86,8 +92,7 @@ impl App {
         if delta == 0.0 {
             return;
         }
-        // A notch (`value120`) may ease under `animate.scroll`; a touchpad's pixels follow the finger.
-        let moved = self.client.wheel(&signal, delta, steps != 0, std::time::Instant::now());
+        let moved = self.client.wheel(&signal, delta, is_notch(steps), std::time::Instant::now());
         // A pass would re-resolve nothing a scroll changes; the tree's own rects are enough.
         if !moved.is_empty() {
             self.mark_surfaces_stale(&moved);
@@ -117,6 +122,13 @@ mod tests {
     #[test]
     fn a_step_count_is_ignored_when_a_distance_came_with_it() {
         assert_eq!(wheel_delta(17.5, 120), 17.5);
+    }
+
+    #[test]
+    fn only_whole_notches_ease() {
+        assert!(is_notch(120) && is_notch(-240), "a click wheel, one or two notches in a frame");
+        assert!(!is_notch(15) && !is_notch(-60), "a free-spinning high-resolution wheel");
+        assert!(!is_notch(0), "a touchpad");
     }
 
     #[test]

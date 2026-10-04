@@ -7712,6 +7712,16 @@ Amends ADR-0069 decisions 4 and 6 and the main-loop order of ADR-0145.
    re-resolves readers of a clamped offset runs only when content resized in the same turn.
 4. **One offset per signal.** A signal scrolling two containers with different extents follows
    the first holder's run.
+5. **`:reveal` eases too.** Under `animate.scroll` it retargets the run to the least move from its
+   target that shows the child, clamped like a notch; without the entry it places the offset at once.
+6. **Kept to the room.** Each frame clamps the run's offset to the container's current room, so an
+   overshooting curve or content that shrank mid-run never reports past the drawn offset. A notch
+   counts from the target clamped to the room; content that grows does not move the target.
+7. **Only whole notches ease.** A high-resolution wheel's fractions of 120 apply at once, like
+   touchpad pixels. A write that is not the run's own (`reset_on_close`) jumps and stops every run
+   on the signal, hidden containers included.
+8. **Hidden runs freeze.** Being time-based, a run in a hidden container finishes on the first
+   frame after it shows; that frame's pass draws the old offset once.
 
 Rejected: easing in Lua from a timer, which re-runs the config per frame for a visual the engine
 owns, and advancing runs in the tick for the next pass to read, which draws readers a frame behind

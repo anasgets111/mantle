@@ -28,6 +28,7 @@ impl RendererClient {
             }
             for signal in &list {
                 lua::signal::reset(self.loader.lua(), signal);
+                self.scene.stop_scroll(signal);
                 self.owes_pass = true;
             }
         }

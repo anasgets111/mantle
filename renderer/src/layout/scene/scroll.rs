@@ -30,19 +30,22 @@ impl Scene {
             each_holder(tree, cell, &mut |node, axis| {
                 let limit = room_of(node, axis);
                 room = Some(room.map_or(limit, |room| room.max(limit)));
-                if notch {
-                    let target = (node::scroll_target(&node.tweens).unwrap_or(node.scrolled) + delta).clamp(0.0, limit);
-                    let (kind, shown) = (node.kind, node.scrolled);
-                    match node::retarget_scroll(kind, &node.properties, &mut node.tweens, shown, target, now) {
-                        Ok(true) => {
-                            eases = true;
-                            return;
-                        }
-                        Ok(false) => {}
-                        Err(err) => debug!("{key}: animate.scroll: {err}"),
+                let spec = match notch.then(|| node::scroll_spec(node.kind, &node.properties)) {
+                    Some(Ok(spec)) => spec,
+                    Some(Err(err)) => {
+                        debug!("{key}: animate.scroll: {err}");
+                        None
                     }
-                }
-                node.tweens.retain(|tween| tween.property != "scroll");
+                    None => None,
+                };
+                let Some(spec) = spec else {
+                    node.tweens.retain(|tween| tween.property != "scroll");
+                    return;
+                };
+                // From a target content has since shrunk under, a notch back would not move.
+                let aimed = node::scroll_target(&node.tweens).unwrap_or(node.scrolled).min(limit);
+                node::retarget_scroll(spec, &mut node.tweens, node.scrolled, (aimed + delta).clamp(0.0, limit), now);
+                eases = true;
             });
             if eases {
                 eased.push(key.clone());
@@ -65,6 +68,15 @@ impl Scene {
             }
         }
         out
+    }
+
+    /// Stops every run on `signal`, hidden containers included: a write that is not the run's own,
+    /// such as `reset_on_close`, jumps like a touchpad.
+    pub fn stop_scroll(&mut self, signal: &Signal) {
+        let Some(cell) = signal.cell_id() else { return };
+        for tree in self.surfaces.values_mut() {
+            stop_runs(tree, cell);
+        }
     }
 
     /// A wheel's `asked` offset for `signal`, applied to the retained trees without a pass
@@ -95,17 +107,12 @@ impl Scene {
 
     /// The clamped or revealed scroll `cells` that Lua also read: those readers laid out from the
     /// asked offset, not the one the container used.
-    pub fn read_by_lua(&self, cells: Vec<CellId>) -> Vec<CellId> {
-        let mut read_by_lua = Vec::new();
-        for cell in cells {
+    pub fn read_by_lua(&self, mut cells: Vec<CellId>) -> Vec<CellId> {
+        cells.retain(|&cell| {
             let read = crate::lua::signal::with_derived(cell);
-            if !read_by_lua.contains(&cell)
-                && !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
-            {
-                read_by_lua.push(cell);
-            }
-        }
-        read_by_lua
+            !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
+        });
+        cells
     }
 }
 
@@ -167,15 +174,29 @@ fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
     moved
 }
 
+fn stop_runs(node: &mut ResolvedNode, cell: CellId) {
+    if node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell) {
+        node.tweens.retain(|tween| tween.property != "scroll");
+    }
+    for child in &mut node.children {
+        stop_runs(child, cell);
+    }
+}
+
+/// How far content of `children` scrolls in a viewport `content_main` long: what an offset clamps to.
+fn room(children: &[ResolvedNode], axis: MainAxis, spacing: f32, content_main: f32) -> f32 {
+    (extent_along(children, axis, spacing) - content_main).max(0.0)
+}
+
 /// How far `node` can scroll along `axis` with the children it laid out last.
 fn room_of(node: &ResolvedNode, axis: MainAxis) -> f32 {
     let size = LogicalSize { width: node.rect.width, height: node.rect.height };
     let (content_main, _) = viewport(&node.layout_style, size, axis);
-    (extent_along(&node.children, axis, node.layout_style.spacing) - content_main).max(0.0)
+    room(&node.children, axis, node.layout_style.spacing, content_main)
 }
 
 fn advance_runs(node: &mut ResolvedNode, now: Instant, out: &mut Vec<(Signal, f32)>) {
-    // Frozen (ADR-0124), and `animating` does not ask frames for it.
+    // ponytail: a run frozen while hidden shows its old offset for one frame on re-show, then its target; upgrade: settle it in the pass.
     if !node.visible {
         return;
     }
@@ -185,11 +206,14 @@ fn advance_runs(node: &mut ResolvedNode, now: Instant, out: &mut Vec<(Signal, f3
         if node.tweens[at].done(now) {
             node.tweens.remove(at);
         }
+        // Within the room the children have now: an overshooting curve or content that shrank
+        // mid-run stops at the end, so the signal is always the offset drawn.
+        let room = main_axis_of(node.kind, &node.properties).ok().flatten().map_or(0.0, |axis| room_of(node, axis));
         // ponytail: one offset per signal, so the first holder's run wins; upgrade: an offset per container.
         if let Some(signal) = node::signal_at(&node.properties, "scroll")
             && !out.iter().any(|(held, _)| held.cell_id() == signal.cell_id())
         {
-            out.push((signal, offset));
+            out.push((signal, offset.clamp(0.0, room)));
         }
     }
     for child in &mut node.children {
@@ -224,7 +248,7 @@ pub(super) fn scroll_children(
 ) -> f32 {
     let (content_main, padding_start) = viewport(style, size, axis);
     reveal_child(properties, children, axis, padding_start - from, content_main);
-    let offset = scroll_offset(properties, content_main, extent_along(children, axis, style.spacing));
+    let offset = scroll_offset(properties, room(children, axis, style.spacing, content_main));
     let by = offset - from;
     if by != 0.0 {
         // A leaver keeps the offset it was dropped at (`finish`).
@@ -321,37 +345,31 @@ pub(super) fn ease_reveal(
 ) -> Result<(), node::LayoutError> {
     let Some(signal) = node::signal_at(properties, "scroll") else { return Ok(()) };
     let Some(index) = signal.pending_reveal() else { return Ok(()) };
-    if !node::eases_scroll(kind, properties)? {
-        return Ok(());
-    }
+    let Some(spec) = node::scroll_spec(kind, properties)? else { return Ok(()) };
     signal.take_reveal();
     let (content_main, padding_start) = viewport(style, size, axis);
     let shown = signal.scroll_offset().unwrap_or(0.0);
     let aimed = node::scroll_target(tweens).unwrap_or(shown);
     if let Some(wanted) = revealed(children, axis, padding_start, content_main, index, aimed) {
-        let room = (extent_along(children, axis, style.spacing) - content_main).max(0.0);
-        node::retarget_scroll(kind, properties, tweens, shown, wanted.clamp(0.0, room), now)?;
+        let target = wanted.clamp(0.0, room(children, axis, style.spacing, content_main));
+        node::retarget_scroll(spec, tweens, shown, target, now);
     }
     Ok(())
 }
 
-/// How far this container is scrolled along its main axis, clamped to what there is to scroll, and
-/// written back so the signal holds the offset actually used (ADR-0069 decision 4).
-///
-/// `content_main` is the viewport and `total_main` the content, both already computed by the
-/// caller for its own alignment arithmetic, so no new parameter is threaded through the recursion.
+/// How far this container is scrolled along its main axis, clamped to `limit`, what there is to
+/// scroll, and written back so the signal holds the offset actually used (ADR-0069 decision 4).
 ///
 /// A container with nothing to scroll returns 0 rather than erroring, so a `Content`-sized column
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
 /// in a `Content` parent for the same reason: no remainder (decision 5).
-fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f32 {
+fn scroll_offset(properties: &PropMap, limit: f32) -> f32 {
     let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return 0.0;
     };
     let Some(asked) = signal.scroll_offset() else {
         return 0.0;
     };
-    let limit = (total_main - content_main).max(0.0);
     let used = asked.clamp(0.0, limit);
     if used != asked
         && let Some(handle) = signal.scroll_handle()
@@ -397,6 +415,17 @@ mod tests {
         let ys: Vec<f32> = column.children.iter().map(|c| c.rect.y).collect();
         assert_eq!(ys, [0.0, 40.0, -20.0], "b and c reflow, a fades where it was");
         assert!(column.children[2].leaving);
+    }
+
+    /// A sequence walks values of its own; a wheel's target is not one of them.
+    #[test]
+    fn keyframes_cannot_drive_a_scroll() {
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = column { width = 100, height = 100, scroll = scroll("s"),
+                animate = { scroll = { duration = 100, keyframes = { 0, 50 } } } } }"#,
+        );
+        let err = apply_at(&mut Scene::new(), &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap_err();
+        assert!(err.to_string().contains("`keyframes` cannot drive it"), "{err}");
     }
 
     /// ADR-0069. Scrolling moves children within a viewport the clip already cuts them to.

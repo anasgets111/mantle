@@ -32,8 +32,8 @@ pub(crate) use animate::TransitionInput;
 pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, SpringConstants, animatable_name, easing_names};
 pub(crate) use animate::{Animations, Params};
 pub use animate::{
-    Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, eases_scroll, is_paint_only, retarget,
-    retarget_measured, retarget_scroll, scroll_target,
+    Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget,
+    retarget_measured, retarget_scroll, scroll_spec, scroll_target,
 };
 pub(crate) use content::{Content, Font, FontVariations, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};

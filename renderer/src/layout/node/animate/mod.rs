@@ -452,13 +452,7 @@ pub fn retarget(
                 } else {
                     None
                 };
-                let spec = match (spec.motion, running) {
-                    (Motion::Spring(spring), Some(running)) => AnimationSpec {
-                        motion: Motion::Spring(spring.handed(running, &displayed, &target, now)),
-                        ..spec
-                    },
-                    (motion, _) => AnimationSpec { motion, ..spec },
-                };
+                let spec = handed_over(spec, running, &displayed, &target, now);
                 Tween { property, from: displayed, to: target, started: now, spec, reversal, resting: false }
             }
             Some(running) if !running.done(now) => {
@@ -594,34 +588,36 @@ pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, 
     Ok(())
 }
 
-/// A wheel notch on a container whose `animate` names `scroll`: the run from `shown`, the offset on
-/// screen, to `target`, bending a spring already in flight. `false` when the container does not ease it.
-pub fn retarget_scroll(
-    kind: &str,
-    properties: &PropMap,
-    tweens: &mut Vec<Tween>,
-    shown: f32,
-    target: f32,
+/// `spec` for a run from `from` to `to` replacing `running`: a moving spring hands over its rate,
+/// so a target that changes mid-flight bends the motion instead of restarting it (ADR-0154).
+fn handed_over(
+    spec: AnimationSpec,
+    running: Option<&Tween>,
+    from: &Animatable,
+    to: &Animatable,
     now: Instant,
-) -> Result<bool, LayoutError> {
-    let Some(spec) = parse::parse_animate(kind, properties)?.0.remove("scroll") else { return Ok(false) };
-    let running = tweens.iter().position(|tween| tween.property == "scroll").map(|at| tweens.remove(at));
-    let (from, to) = (Animatable::Number(shown), Animatable::Number(target));
-    let spec = match (spec.motion, running) {
+) -> AnimationSpec {
+    match (spec.motion, running) {
         (Motion::Spring(spring), Some(running)) => {
-            AnimationSpec { motion: Motion::Spring(spring.handed(&running, &from, &to, now)), ..spec }
+            AnimationSpec { motion: Motion::Spring(spring.handed(running, from, to, now)), ..spec }
         }
         (motion, _) => AnimationSpec { motion, ..spec },
-    };
+    }
+}
+
+/// A container's `animate.scroll` entry, if it names one.
+pub fn scroll_spec(kind: &str, properties: &PropMap) -> Result<Option<AnimationSpec>, LayoutError> {
+    Ok(parse::parse_animate(kind, properties)?.0.remove("scroll"))
+}
+
+/// A wheel notch or `:reveal` under `spec`: the run from `shown`, the offset on screen, to `target`.
+pub fn retarget_scroll(spec: AnimationSpec, tweens: &mut Vec<Tween>, shown: f32, target: f32, now: Instant) {
+    let running = tweens.iter().position(|tween| tween.property == "scroll").map(|at| tweens.remove(at));
+    let (from, to) = (Animatable::Number(shown), Animatable::Number(target));
+    let spec = handed_over(spec, running.as_ref(), &from, &to, now);
     if shown != target {
         tweens.push(Tween { property: "scroll", from, to, started: now, spec, reversal: None, resting: false });
     }
-    Ok(true)
-}
-
-/// Whether a container's `animate` names `scroll`.
-pub fn eases_scroll(kind: &str, properties: &PropMap) -> Result<bool, LayoutError> {
-    Ok(parse::parse_animate(kind, properties)?.0.contains_key("scroll"))
 }
 
 /// Where a running scroll tween is bound for.
