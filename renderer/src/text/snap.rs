@@ -49,6 +49,11 @@ impl PhysicalRect {
         }
     }
 
+    /// Whether `other` lies inside it.
+    pub fn contains(self, other: Self) -> bool {
+        other.x0 >= self.x0 && other.y0 >= self.y0 && other.x1 <= self.x1 && other.y1 <= self.y1
+    }
+
     /// Whether it covers no pixel: an intersection that missed has an edge past its opposite.
     pub fn is_empty(self) -> bool {
         self.x1 <= self.x0 || self.y1 <= self.y0

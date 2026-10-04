@@ -748,6 +748,31 @@ pub(super) mod tests {
         }
     }
 
+    /// The stack track was `minmax(0, 1fr)`; for one track `minmax(0, auto)` must size a definite
+    /// parent's children the same, whatever the content.
+    #[test]
+    fn a_definite_stack_parent_sizes_its_children_as_it_did_with_a_fr_track() {
+        let cases = [
+            ("rect { width = 50, height = 20 }", (50.0, 20.0)),
+            ("rect { width = 50, height = 20, align_h = 'stretch', align_v = 'stretch' }", (200.0, 100.0)),
+            ("rect { width = 'fill', height = 'fill' }", (200.0, 100.0)),
+            ("rect { width = '50%', height = '25%' }", (100.0, 25.0)),
+            ("rect { width = 300, height = 150 }", (300.0, 150.0)),
+        ];
+        for (child, (width, height)) in cases {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let (lua, surface) = surface_from(&format!(
+                "panel {{ id = 'bar', child = rect {{ width = 200, height = 100, children = {{ {child} }} }} }}"
+            ));
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let outer = &scene.surface("bar@TEST").unwrap().children[0];
+            assert_eq!((outer.rect.width, outer.rect.height), (200.0, 100.0), "{child}");
+            let inner = &outer.children[0];
+            assert_eq!((inner.rect.width, inner.rect.height), (width, height), "{child}");
+        }
+    }
+
     #[test]
     fn a_margined_row_child_pushes_its_sibling_apart_instead_of_overlapping() {
         let mut scene = Scene::new();

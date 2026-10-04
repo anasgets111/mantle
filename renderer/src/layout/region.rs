@@ -30,15 +30,18 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let paint_claims =
         !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
     let mut regions = Vec::new();
+    let everything = LogicalRect { x: -1e9, y: -1e9, width: 2e9, height: 2e9 };
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_pointer() {
-        collect_input_regions(surface_root, 0.0, 0.0, (scale, paint_claims), node::IDENTITY_AFFINE, true, &mut regions);
+        let scan = (scale, paint_claims);
+        collect_input_regions(surface_root, 0.0, 0.0, scan, node::IDENTITY_AFFINE, everything, true, &mut regions);
         return regions;
     }
     let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
     let hittable = surface_root.hittable(true);
     for child in surface_root.content_children() {
-        collect_input_regions(child, 0.0, 0.0, (scale, paint_claims), root_matrix, hittable, &mut regions);
+        let scan = (scale, paint_claims);
+        collect_input_regions(child, 0.0, 0.0, scan, root_matrix, everything, hittable, &mut regions);
     }
     regions
 }
@@ -192,13 +195,17 @@ fn inset_at(r: i32, row: i32) -> i32 {
     (r - (r * r - dy * dy).max(0.0).sqrt()).round() as i32
 }
 
-/// `scan` is the per-surface `(scale, paint_claims)`, unchanged down the recursion.
+/// `scan` is the per-surface `(scale, paint_claims)`, unchanged down the recursion. `clip` is the
+/// ancestors' cut in this node's pre-matrix space, as in [`collect_blur_regions`]: hit testing
+/// refuses what a clipping ancestor hides, so a region must too.
+#[allow(clippy::too_many_arguments)]
 fn collect_input_regions(
     node: &ResolvedNode,
     origin_x: f32,
     origin_y: f32,
     scan: (f32, bool),
     matrix: node::Affine,
+    clip: LogicalRect,
     inherited: bool,
     out: &mut Vec<PhysicalRect>,
 ) {
@@ -207,14 +214,25 @@ fn collect_input_regions(
     }
     let (scale, paint_claims) = scan;
     let rect = node.at(origin_x, origin_y);
-    let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
+    let own_matrix = node.paint_matrix(rect);
+    let matrix = own_matrix.map_or(matrix, |own| node::compose_affine(matrix, own));
+    let parent_clip = match own_matrix.and_then(node::invert_affine) {
+        Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
+        _ => clip,
+    };
+    let own_clip = parent_clip.intersect(rect);
+    let child_clip = if node.clips_children() { own_clip } else { parent_clip };
+    if child_clip.is_empty() {
+        return;
+    }
     let hittable = node.hittable(inherited);
     let mut claimed = None;
-    if hittable && takes_input_as_a_box(node, paint_claims) {
-        let bounds = node::transformed_bounds(matrix, rect);
+    // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
+    if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
+        let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), scale);
         if !bounds.is_empty() {
-            claimed = Some(snap_to_physical(bounds, scale));
-            out.extend(claimed);
+            claimed = Some(bounds);
+            out.push(bounds);
         }
         if node.clips_children() {
             return;
@@ -222,12 +240,18 @@ fn collect_input_regions(
     }
     let start = out.len();
     for child in node.content_children() {
-        collect_input_regions(child, rect.x, rect.y, scan, matrix, hittable, out);
+        collect_input_regions(child, rect.x, rect.y, scan, matrix, child_clip, hittable, out);
     }
     // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
     if let Some(own) = claimed {
-        let overflow: Vec<PhysicalRect> = out.drain(start..).filter(|r| r.intersect(own) != *r).collect();
-        out.extend(overflow);
+        let mut kept = start;
+        for i in start..out.len() {
+            if !own.contains(out[i]) {
+                out.swap(kept, i);
+                kept += 1;
+            }
+        }
+        out.truncate(kept);
     }
 }
 
@@ -277,7 +301,12 @@ mod tests {
         paint: Option<PaintStyle>,
         children: Vec<ResolvedNode>,
     ) -> ResolvedNode {
-        ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) }
+        let node = ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) };
+        // A surface root paints as a box that cuts, as `paint_style` makes it.
+        match (kind, node.paint.is_none()) {
+            ("panel", true) => node.with_clip(node::ClipShape::Box),
+            _ => node,
+        }
     }
 
     #[test]
@@ -515,6 +544,37 @@ mod tests {
         for (x, y) in [(20, 0), (0, 20), (20, 20), (10, 10), (12, 0)] {
             assert!(covers(x, y), "({x}, {y}) is outside every scoop");
         }
+    }
+
+    /// Hit testing cuts a child at a clipping ancestor, so a card scrolled out of a transparent
+    /// viewport must not keep a region there: it would catch clicks meant for what is behind.
+    #[test]
+    fn a_child_outside_a_clipping_ancestor_claims_no_input() {
+        let card = |id, y| region_node(id, "rect", (0.0, y, 100.0, 40.0), solid_paint(), Vec::new());
+        for clip in [node::ClipShape::Box, node::ClipShape::Rounded] {
+            let viewport = region_node(3, "column", (0.0, 0.0, 100.0, 50.0), None, vec![card(1, 0.0), card(2, 200.0)])
+                .with_clip(clip);
+            let root = region_node(4, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![viewport]);
+            assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 40 }]);
+        }
+        let half = region_node(5, "column", (0.0, 0.0, 100.0, 50.0), None, vec![card(6, 30.0)])
+            .with_clip(node::ClipShape::Box);
+        let root = region_node(7, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![half]);
+        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 30, x1: 100, y1: 50 }]);
+    }
+
+    /// An unclipped solid box claims itself and what sticks out of it, not every descendant inside.
+    #[test]
+    fn an_unclipped_solid_box_claims_its_box_and_only_the_overflow() {
+        let grandchild = region_node(1, "rect", (0.0, 0.0, 10.0, 10.0), solid_paint(), Vec::new());
+        let inside = region_node(2, "rect", (10.0, 10.0, 20.0, 20.0), solid_paint(), vec![grandchild]);
+        let outside = region_node(3, "rect", (80.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
+        let parent = region_node(4, "rect", (0.0, 0.0, 100.0, 50.0), solid_paint(), vec![inside, outside]);
+        let root = region_node(5, "panel", (0.0, 0.0, 300.0, 300.0), None, vec![parent]);
+        assert_eq!(
+            overlay_input_regions(&root, 1.0),
+            [PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 50 }, PhysicalRect { x0: 80, y0: 0, x1: 120, y1: 20 }]
+        );
     }
 
     /// ADR-0109: a transparent container is walked into; a solid child claims its box; a node

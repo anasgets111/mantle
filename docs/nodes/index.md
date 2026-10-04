@@ -123,9 +123,10 @@ but `textfield` need `height` too. A `textfield` defaults to one line of `font_s
 There is no `"content"` literal; omit the property instead.
 
 Children never shrink. Fixed and content-sized children that overflow a row keep their sizes and
-spill out, cut by the parent's `clip`, and `"fill"` siblings get 0. A `"fill"` child along the main
-axis of a content-sized parent also gets 0: there is no remainder to share. Across the axis,
-`"fill"` in a content-sized parent takes the largest sibling's size.
+overflow it: they paint past a parent with no `clip` and are cut only when it sets one, and
+`"fill"` siblings get 0. A `"fill"` child along the main axis of a content-sized parent also gets 0:
+there is no remainder to share. Across the axis, `"fill"` in a content-sized parent takes the
+largest sibling's size.
 
 `min_width`, `min_height`, `max_width` and `max_height` are pixels `[0, 8192]` (not `"fill"` or
 percents). They clamp every size, content, fixed and `"fill"` alike, as in CSS: a `"fill"` capped

@@ -137,8 +137,8 @@ pub enum PaintStyle {
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
 pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
     let style = match kind {
-        // All containers and surface roles paint as a box.
-        "rect" | "row" | "column" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
+        // All containers and surface roles paint as a box; a `list` carries one for its `clip` (ADR-0328).
+        "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
             background: paint::background.read(properties)?,
             radius: parse_radius(properties)?,
             colors: paint::border_color.read(properties)?,
@@ -305,9 +305,13 @@ mod tests {
     }
 
     #[test]
-    fn a_kind_that_draws_nothing_has_no_style() {
+    fn a_list_has_a_box_that_draws_nothing_and_carries_its_clip() {
         let lua = Lua::new();
-        assert_eq!(style(&lua, "return { kind = 'list', direction = 'row' }").unwrap(), None);
+        let Some(PaintStyle::Box { background: None, clip: ClipShape::None, .. }) =
+            style(&lua, "return { kind = 'list', direction = 'row' }").unwrap()
+        else {
+            panic!("a list paints an empty, unclipping box");
+        };
     }
 
     #[test]

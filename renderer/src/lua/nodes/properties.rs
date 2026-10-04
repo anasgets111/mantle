@@ -341,7 +341,7 @@ props! {
         ///
         /// Book: `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)
         shadow_mode: Bound<OneOf<ShadowMode>> = absent(Choice("box"));
-        /// `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257). A `mask` cuts to the box regardless.
+        /// `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0328). A `mask` cuts to the box regardless.
         ///
         /// Book: `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip)
         clip: Bound<OneOf<ClipShape>> = absent(Prose(r#"`"box"` on a surface or a `scroll` viewport, else `"none"`"#));

@@ -100,7 +100,7 @@
 ---@field behind_blur? boolean|Bound Default `false`. Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
 ---@field backdrop_blur? number|Bound `[0, 8192]`, default `0`. Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
 ---@field shadow_mode? "box"|"content"|Bound Default `"box"`. `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
----@field clip? "box"|"rounded"|"none"|Bound Default: `"box"` on a surface or a `scroll` viewport, else `"none"`. `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0257). A `mask` cuts to the box regardless.
+---@field clip? "box"|"rounded"|"none"|Bound Default: `"box"` on a surface or a `scroll` viewport, else `"none"`. `"box"`: children cut to the rectangle. `"rounded"` also cuts to `radius`, at the cost of an offscreen pass. `"none"` leaves children on the parent's clip (ADR-0328). A `mask` cuts to the box regardless.
 
 ---One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
 ---drop image spans, which have no `text` and are refused.

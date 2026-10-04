@@ -345,13 +345,12 @@ impl ResolvedNode {
         LogicalRect { x: origin_x + self.rect.x, y: origin_y + self.rect.y, ..self.rect }
     }
 
-    /// Whether children are cut to this box; paint, hit testing and regions all ask here (ADR-0257).
+    /// Whether children are cut to this box; paint, hit testing and regions all ask here (ADR-0328).
     /// A mask composites through the box, so it cuts whatever `clip` says.
     pub(super) fn clips_children(&self) -> bool {
         match &self.paint {
             Some(PaintStyle::Box { clip, mask, .. }) => *clip != node::ClipShape::None || mask.is_some(),
-            // A `list` takes no `clip`, so it always has the default; a leaf has no children.
-            None => node::ClipShape::of(self.kind, &self.properties).is_ok_and(|clip| clip != node::ClipShape::None),
+            None => false,
             Some(_) => true,
         }
     }

@@ -146,7 +146,8 @@ focus-follows-mouse pass through to what is below. The engine rebuilds this regi
 | The surface root itself | Nothing, even with a `background`; with a handler, the whole surface |
 | Anything on a `layer = "background"` panel | Only a node with a handler |
 
-A claiming box that clips its children ends the walk there; `visible = false` subtrees claim
+A claiming box that clips its children ends the walk there; one that does not also claims the
+descendants sticking out of it, each cut to any clipping ancestor. `visible = false` subtrees claim
 nothing. To make an empty area catch clicks, put a `rect { width = "fill", height = "fill",
 on_click = ... }` there ([click outside to close](panel.md#close-an-overlay-on-an-outside-click)).
 
