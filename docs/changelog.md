@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-05
+
 - `path.trim_axis = "x"` makes `trim_start` and `trim_end` fractions of the node's width: the stroke keeps what lies inside that band, cut at its edges with `stroke_cap` on every cut end. `path.shift` moves the geometry inside the node before trimming; animate it to scroll a shape through a fixed window.
 - A `keyframes` entry, or one frame, takes `spring = { stiffness, damping }` in place of `easing`: the segment springs from rest in real time and lands on its frame when its `duration` ends.
 - `textfield.initial_text` (string or signal) seeds a plain field's draft once, when the field enters the tree, with the value at that moment: caret at the end, no undo history, no `on_change`. Later changes are ignored and an emptied field stays empty. A changed `id` or `key` is a new field. The value is read without subscribing, so writing the signal alone does not re-resolve the field. `autofocus` resets the draft to `initial_text` (`""` when unset) and calls `on_change` with it. Refused with `secure_submit`.
