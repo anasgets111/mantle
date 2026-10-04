@@ -94,9 +94,8 @@ fn build_node(
     // pill's corner is outside its fill yet still takes a click (four pixels on a 34px control),
     // and a scoop's cut-out still takes the click and counts as input.
     // Upgrade path: hit testing should share this walk instead of a second copy of the rule.
-    // The group matrix moves what is inside it, not the ancestors' clip, so both enter pre-matrix, and the
-    // group's own command carries the exact clip for `canvas::run` to intersect outside the matrix.
-    // ponytail: the pre-matrix copy rounds out to whole pixels, so a layer or shader inside a group is cut by it alone.
+    // The group matrix moves what is inside it, not the ancestors' clip, so the clip enters pre-matrix.
+    // ponytail: a layer or shader inside a group gets only the rounded mapped clip, so a rotated child is cut by a bounding box.
     let outer = clip;
     let (parent_clip, surface) = if let Some(matrix) = node.paint_matrix(rect) {
         let physical = [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4] * scale, matrix[5] * scale];

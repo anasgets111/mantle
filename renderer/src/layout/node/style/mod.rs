@@ -160,8 +160,9 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
 /// only where a consumer refuses the value.
 ///
 /// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is femtovg's:
-/// above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by `acos(1.0) == 0.0`, and `inf as u32` becomes `u32::MAX`, so billions of iterations and tens of
-/// GB of vertices land on the Wayland dispatch thread. Below zero, `radius = -4` silently squares
+/// above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by `acos(1.0) == 0.0`, and
+/// `inf as u32` becomes `u32::MAX`, so billions of iterations and tens of GB of vertices land on
+/// the Wayland dispatch thread. Below zero, `radius = -4` silently squares
 /// corners (`path.rs:458` treats under 0.1 as unrounded) and `border_width = -4` clamps to 0 and
 /// clears paint alpha.
 /// ponytail: femtovg 0.27's `curve_divisions` is unclamped; lift the ceiling once it clamps.
