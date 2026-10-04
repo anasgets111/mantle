@@ -105,17 +105,16 @@ impl RendererClient {
     /// readable through this client's field ordering and decision 1's resolve-at-layout-time rule.
     /// Called once per poll turn after inbound frames; `DirtyFlag::take` coalesces pushes. Returns
     /// whether it re-resolved; `false` means clean or failed.
-    ///
-    /// A pass that clamps or reveals a scroll offset a getter read re-resolves those readers once
-    /// more in the same turn, so they lay out from the offset on screen (a scroll-driven layout is
-    /// a feedback loop: the clamp depends on sizes that depend on the offset).
-    /// ponytail: one follow-up, a second clamp waits for the next write; upgrade: a capped fixed point.
+    /// A scroll offset the pass clamped or revealed under a getter re-resolves its readers once more
+    /// this turn: the clamp depends on sizes that depend on the offset.
+    // ponytail: one follow-up, a second clamp waits for the next write; upgrade: a capped fixed point.
     pub fn re_resolve_if_dirty(&mut self) -> bool {
-        let stamp = lua::signal::write_clock(self.loader.lua());
+        // Wheel clamps applied in place: no Lua reader by construction.
+        self.dirty.take_quiet();
         if !self.pass_if_dirty() {
             return false;
         }
-        let settled = self.scene.scroll_settled_since(stamp);
+        let settled = self.scene.read_by_lua(self.dirty.take_quiet());
         if !settled.is_empty() {
             for cell in settled {
                 self.dirty.mark_cell(cell);
@@ -1115,6 +1114,7 @@ mod tests {
             return panel { id = "bar", layer = "top", child = column { children = {
                 row { width = 100, height = 20, scroll = s, children = tiles },
                 rect { height = 1, width = s:map(function(o) runs = runs + 1 return o + 1 end) },
+                rect { height = 1, width = s:map(function(o) return o + 1 end):map(function(w) return w * 2 end) },
             } } }
             "#,
         );
@@ -1138,6 +1138,8 @@ mod tests {
             signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(asked));
             assert!(client.re_resolve_if_dirty());
             assert_eq!(signal.scroll_offset(), Some(used as f32), "300 px of tiles in a 100 px row");
+            let chained = client.scene.surface("bar@TEST").unwrap().children[0].children[2].rect.width;
+            assert_eq!(chained, (used as f32 + 1.0) * 2.0, "a map of the map follows too");
             assert_eq!(readout(&client), used as f32 + 1.0, "the getter saw {used}, not {asked}");
             assert!(!client.re_resolve_if_dirty(), "nothing is left for the next turn");
         }

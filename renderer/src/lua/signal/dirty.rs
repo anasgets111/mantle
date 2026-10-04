@@ -28,10 +28,11 @@ impl LiveSignalHandle {
 
     /// Writes without dirtying for `layout::scene`'s clamp, which derives the value from geometry
     /// just measured. Positioning uses the clamped value immediately; a getter that read the wheel's
-    /// value gets one follow-up pass in the same turn (`Scene::scroll_settled_since`).
+    /// value gets one follow-up pass in the same turn ([`DirtyFlag::take_quiet`]).
     pub(crate) fn set_quiet(&self, value: Value) {
         *self.1.borrow_mut() = value;
         note_write(self.0);
+        self.2.0.borrow_mut().quiet.push(self.0);
     }
 
     /// [`Self::set`] with equality deduplication. ADR-0062 decision 4 calls it for every
@@ -65,6 +66,8 @@ struct DirtyState {
     instances: rustc_hash::FxHashSet<String>,
     /// The write clock at the last take: a computed stamped since then has readers to re-resolve.
     taken_at: u64,
+    /// Cells written by `set_quiet` since the last `take_quiet`, repeats included.
+    quiet: Vec<CellId>,
 }
 
 /// Shared invalidation flag tracking scene-wide or cell-targeted dirty marks.
@@ -85,6 +88,11 @@ impl DirtyFlag {
     /// changing its size (ADR-0044 decision 2).
     pub(crate) fn mark_instance(&self, instance_id: &str) {
         self.0.borrow_mut().instances.insert(instance_id.to_string());
+    }
+
+    /// The cells a scroll clamp or reveal wrote quietly since the last call.
+    pub(crate) fn take_quiet(&self) -> Vec<CellId> {
+        std::mem::take(&mut self.0.borrow_mut().quiet)
     }
 
     /// Marks a specific reactive cell dirty.

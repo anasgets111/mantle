@@ -34,30 +34,19 @@ impl Scene {
         Some(moved)
     }
 
-    /// The scroll cells a pass since `stamp` clamped or revealed that Lua also read: those readers
-    /// laid out from the asked offset, not the one the container used.
-    pub fn scroll_settled_since(&self, stamp: u64) -> Vec<CellId> {
-        let mut written = Vec::new();
-        for tree in self.surfaces.values() {
-            scroll_cells_written(tree, stamp, &mut written);
-        }
-        written.retain(|&cell| {
+    /// The clamped or revealed scroll `cells` that Lua also read: those readers laid out from the
+    /// asked offset, not the one the container used.
+    pub fn read_by_lua(&self, cells: Vec<CellId>) -> Vec<CellId> {
+        let mut read_by_lua = Vec::new();
+        for cell in cells {
             let read = crate::lua::signal::with_derived(cell);
-            !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
-        });
-        written
-    }
-}
-
-fn scroll_cells_written(node: &ResolvedNode, stamp: u64, out: &mut Vec<CellId>) {
-    if let Some(cell) = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id())
-        && !out.contains(&cell)
-        && crate::lua::signal::written_since(stamp, &[cell])
-    {
-        out.push(cell);
-    }
-    for child in &node.children {
-        scroll_cells_written(child, stamp, out);
+            if !read_by_lua.contains(&cell)
+                && !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
+            {
+                read_by_lua.push(cell);
+            }
+        }
+        read_by_lua
     }
 }
 
