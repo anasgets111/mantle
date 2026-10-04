@@ -2,9 +2,9 @@
 //! watch, and writes through logind (ADR-0053). Its write action is `brightness:set(pct)`, unlike
 //! read-only `battery`.
 //!
-//! No device means no wake-up, not a placeholder: `brightness`
-//! has no absence sentinel, and `0` means "backlight is off", not "no hardware". Lua therefore
-//! keeps `mantle.brightness` `nil` forever (ADR-0037's nil-until-hydrated contract).
+//! No device means no push, not a placeholder: `brightness` has no absence sentinel, and `0`
+//! means "backlight is off", not "no hardware". Lua therefore keeps `mantle.brightness` `nil`
+//! until a device appears (ADR-0037's nil-until-hydrated contract).
 
 pub mod controller;
 

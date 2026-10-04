@@ -11,6 +11,7 @@ version is 0.x, a minor release can break the Lua API.
 - `audio` recovers when PipeWire restarts or starts after Mantle. While PipeWire is down, `audio` reads as a machine with no audio hardware and `privacy` clears its microphone and screencast users.
 - `network` rebinds its devices when NetworkManager restarts, so `wifi_devices` and wired state no longer show the old daemon's values.
 - The Bluetooth pairing agent rejects calls from anyone but bluetoothd.
+- `brightness` picks up a backlight that appears after startup, such as on a dock or a hybrid GPU.
 
 ## 0.2.0 - 2026-10-04
 

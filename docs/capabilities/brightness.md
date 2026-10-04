@@ -47,8 +47,8 @@ Call each as `mantle.brightness:<action>(arguments...)`; `?` marks an argument y
 
 | Contract | Behavior |
 | :--- | :--- |
-| Device | One `/sys/class/backlight` device with `max_brightness > 0`, chosen once at startup: `firmware`, then `platform`, then `raw`, then by name. External monitors are not covered |
-| No device | Stays `nil` for good; `set` is logged and ignored |
+| Device | One `/sys/class/backlight` device with `max_brightness > 0`: `firmware`, then `platform`, then `raw`, then by name. Chosen at startup and again when udev adds or removes one. External monitors are not covered |
+| No device | Stays `nil` until one appears; `set` is logged and ignored. A removed device leaves its last reading, since no value means "gone" |
 | Updates | A udev `backlight` watch re-reads sysfs `brightness` and pushes on change. If the watch cannot start, a 30 s poll replaces it |
 | Writes | logind's `Session.SetBrightness`, so no udev rule or group is needed. logind refuses it from an inactive session; the refusal is logged |
 

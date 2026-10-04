@@ -48,11 +48,10 @@ fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
 }
 
 /// Reads `brightness` (the last requested value), not `actual_brightness`: a driver fade or
-/// rounded request can differ, and `set(50)` must read back `50`. Missing/malformed reads are `0`.
+/// rounded request can differ, and `set(50)` must read back `50`. Missing/malformed reads are `None`.
 /// [`select_backlight_device`] guarantees positive `max`, so the `u8` result is `[0, 100]`.
-fn read_percent(device_dir: &Path, max: i32) -> u8 {
-    let brightness = read_attr(device_dir, "brightness").and_then(|text| text.parse::<i32>().ok()).unwrap_or(0);
-    percent_from_raw(brightness, max).unwrap_or(0)
+fn read_percent(device_dir: &Path, max: i32) -> Option<u8> {
+    percent_from_raw(read_attr(device_dir, "brightness")?.parse().ok()?, max)
 }
 
 /// `org.freedesktop.login1.Session.SetBrightness` on fixed `session/auto`, which logind resolves
@@ -67,8 +66,8 @@ pub(crate) trait Login1Session {
     fn set_brightness(&self, subsystem: &str, name: &str, brightness: u32) -> zbus::Result<()>;
 }
 
-/// The device [`select_backlight_device`] chose at construction. Its `max_brightness` and sysfs
-/// directory do not change at runtime; `name` is cached for each `SetBrightness` call.
+/// The device [`select_backlight_device`] chose. Its `max_brightness` and sysfs directory do not
+/// change while it exists; `name` is cached for each `SetBrightness` call.
 struct BacklightDevice {
     dir: PathBuf,
     name: String,
@@ -81,31 +80,18 @@ const POLL_INTERVAL: Duration = Duration::from_secs(30);
 #[derive(Clone)]
 pub struct BrightnessController {
     state: Arc<Mutex<BrightnessState>>,
-    device: Arc<Option<BacklightDevice>>,
+    device: Arc<Mutex<Option<BacklightDevice>>>,
     system_bus: zbus::Connection,
 }
 
 impl BrightnessController {
     /// `backlight_root` (default `/sys/class/backlight`) is injected for tests. `system_bus` is
-    /// the Supervisor's existing connection used by [`Login1SessionProxy`]. No usable device
-    /// leaves `device` as `None`, skips the read task, and emits no signal (see
-    /// `brightness/mod.rs`).
+    /// the Supervisor's existing connection used by [`Login1SessionProxy`]. Until a usable device
+    /// exists nothing is published (see `brightness/mod.rs`); the watch picks up one added later.
     pub fn new(backlight_root: PathBuf, system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
-        let state = Arc::new(Mutex::new(BrightnessState::default()));
-        let selected = select_backlight_device(&backlight_root);
-        let device = selected.map(|(dir, max)| {
-            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            BacklightDevice { dir, name, max }
-        });
-        match &device {
-            Some(device) => {
-                tokio::spawn(run_brightness_task(device.dir.clone(), device.max, Arc::clone(&state), events));
-            }
-            None => debug!(
-                "no usable backlight device found under {backlight_root:?}; brightness reporting disabled for this run"
-            ),
-        }
-        Self { state, device: Arc::new(device), system_bus }
+        let controller = Self { state: Arc::default(), device: Arc::default(), system_bus };
+        tokio::spawn(run_brightness_task(backlight_root, controller.clone(), events));
+        controller
     }
 
     pub fn snapshot(&self) -> BrightnessState {
@@ -114,7 +100,9 @@ impl BrightnessController {
 
     /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
     pub async fn set(&self, pct: f64) {
-        let Some(device) = self.device.as_ref() else {
+        let Some((name, max)) =
+            self.device.lock().expect("mutex poisoned").as_ref().map(|device| (device.name.clone(), device.max))
+        else {
             debug!("set called but no backlight device was found; ignored");
             return;
         };
@@ -125,41 +113,59 @@ impl BrightnessController {
                 return;
             }
         };
-        let raw = raw_from_percent(pct, device.max) as u32;
+        let raw = raw_from_percent(pct, max) as u32;
         // logind refuses SetBrightness from a non-active session (for example a background VT).
         // Log that error; do not retry it.
-        if let Err(err) = proxy.set_brightness("backlight", &device.name, raw).await {
-            warn!("SetBrightness(backlight, {}, {raw}) failed: {err}", device.name);
+        if let Err(err) = proxy.set_brightness("backlight", &name, raw).await {
+            warn!("SetBrightness(backlight, {name}, {raw}) failed: {err}");
         }
         // State changes arrive through the udev watch/poll loop, not an optimistic local update.
     }
+
+    /// Selects the device again, for one added or removed since, and publishes its reading on
+    /// change. No device, or one failing its read mid-removal, publishes nothing: `brightness` has
+    /// no value meaning "gone", so the last reading stays. Returns false once the receiver is gone.
+    fn refresh(&self, backlight_root: &Path, events: &UnboundedSender<()>) -> bool {
+        let mut device = self.device.lock().expect("mutex poisoned");
+        let Some((dir, max)) = select_backlight_device(backlight_root) else {
+            *device = None;
+            return !events.is_closed();
+        };
+        let Some(percent) = read_percent(&dir, max) else { return !events.is_closed() };
+        let appeared = device.as_ref().is_none_or(|old| old.dir != dir);
+        if appeared {
+            let name = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            *device = Some(BacklightDevice { dir, name, max });
+        }
+        drop(device);
+        let next = BrightnessState { percent };
+        if appeared {
+            // A device's first reading is news even when it equals the default `0`.
+            *self.state.lock().expect("brightness state mutex poisoned") = next;
+            return events.send(()).is_ok();
+        }
+        publish(&self.state, events, next)
+    }
 }
 
-/// Reads and sends the initial percent, then uses [`run_brightness_watch_loop`], falling back to
-/// [`run_brightness_poll_loop`] only when [`build_backlight_watch`] cannot start. Construction has
-/// already found a usable device, so this task cannot stay at the default forever.
-async fn run_brightness_task(
-    device_dir: PathBuf,
-    max: i32,
-    state: Arc<Mutex<BrightnessState>>,
-    events: UnboundedSender<()>,
-) {
-    let initial = read_percent(&device_dir, max);
-    state.lock().expect("brightness state mutex poisoned").percent = initial;
-    if events.send(()).is_err() {
+/// Builds the udev watch first, so a device added during the first read is not missed. Then
+/// publishes, and uses [`run_brightness_watch_loop`], falling back to [`run_brightness_poll_loop`]
+/// only when the watch cannot start.
+async fn run_brightness_task(backlight_root: PathBuf, controller: BrightnessController, events: UnboundedSender<()>) {
+    let watch = build_backlight_watch();
+    if !controller.refresh(&backlight_root, &events) {
         return;
     }
-
-    match build_backlight_watch() {
-        Ok(watch) => run_brightness_watch_loop(watch, device_dir, max, state, events).await,
+    match watch {
+        Ok(watch) => run_brightness_watch_loop(watch, backlight_root, controller, events).await,
         Err(err) => {
             warn!("failed to set up the udev backlight watch ({err}); falling back to a {POLL_INTERVAL:?} poll");
-            run_brightness_poll_loop(device_dir, max, state, events).await;
+            run_brightness_poll_loop(backlight_root, controller, events).await;
         }
     }
 }
 
-/// Builds the `backlight` udev watch.
+/// Builds the `backlight` udev watch: brightness changes and devices added or removed.
 ///
 /// inotify misses sysfs attribute writes. `udevadm monitor --udev --subsystem-match=backlight`
 /// confirmed that brightness changes emit a `change` uevent on the `backlight` subsystem instead.
@@ -172,9 +178,8 @@ fn build_backlight_watch() -> std::io::Result<AsyncFd<MonitorSocket>> {
 /// `readable_mut`, not `readable`, because only udev's `send` feature is enabled, not `sync`.
 async fn run_brightness_watch_loop(
     mut watch: AsyncFd<MonitorSocket>,
-    device_dir: PathBuf,
-    max: i32,
-    state: Arc<Mutex<BrightnessState>>,
+    backlight_root: PathBuf,
+    controller: BrightnessController,
     events: UnboundedSender<()>,
 ) {
     loop {
@@ -184,13 +189,14 @@ async fn run_brightness_watch_loop(
                 warn!(
                     "the udev backlight watch's fd errored ({err}); falling back to a {POLL_INTERVAL:?} poll for the rest of this run"
                 );
-                return run_brightness_poll_loop(device_dir, max, state, events).await;
+                return run_brightness_poll_loop(backlight_root, controller, events).await;
             }
         };
-        for _event in guard.get_inner().iter() {}
+        // Cleared before the drain, so an event landing during it re-arms the fd.
         guard.clear_ready();
+        for _event in guard.get_inner().iter() {}
 
-        if !publish(&state, &events, BrightnessState { percent: read_percent(&device_dir, max) }) {
+        if !controller.refresh(&backlight_root, &events) {
             return;
         }
     }
@@ -198,9 +204,8 @@ async fn run_brightness_watch_loop(
 
 /// Fallback: fixed-timer reads with the primary path's push-on-change filter.
 async fn run_brightness_poll_loop(
-    device_dir: PathBuf,
-    max: i32,
-    state: Arc<Mutex<BrightnessState>>,
+    backlight_root: PathBuf,
+    controller: BrightnessController,
     events: UnboundedSender<()>,
 ) {
     let mut ticker = tokio::time::interval(POLL_INTERVAL);
@@ -208,7 +213,7 @@ async fn run_brightness_poll_loop(
 
     loop {
         ticker.tick().await;
-        if !publish(&state, &events, BrightnessState { percent: read_percent(&device_dir, max) }) {
+        if !controller.refresh(&backlight_root, &events) {
             break;
         }
     }
@@ -285,17 +290,17 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "intel_backlight", &[("brightness", "9600"), ("actual_brightness", "9601")]);
 
-        assert_eq!(read_percent(&root.path().join("intel_backlight"), 19200), 50);
+        assert_eq!(read_percent(&root.path().join("intel_backlight"), 19200), Some(50));
     }
 
     #[test]
-    fn read_percent_is_zero_for_a_missing_or_unparseable_reading() {
+    fn read_percent_is_none_for_a_missing_or_unparseable_reading() {
         let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "no_attr", &[]);
-        assert_eq!(read_percent(&root.path().join("no_attr"), 100), 0);
+        assert_eq!(read_percent(&root.path().join("no_attr"), 100), None);
 
         write_entry(root.path(), "bad_attr", &[("brightness", "not-a-number")]);
-        assert_eq!(read_percent(&root.path().join("bad_attr"), 100), 0);
+        assert_eq!(read_percent(&root.path().join("bad_attr"), 100), None);
     }
 
     #[tokio::test]
@@ -319,20 +324,33 @@ mod tests {
         assert_eq!(controller.snapshot(), BrightnessState { percent: 50 });
     }
 
+    /// A dock or a hybrid GPU can add the backlight after startup; udev's `add` is what reselects.
     #[tokio::test]
-    async fn brightness_controller_never_signals_when_no_backlight_device_exists() {
+    async fn a_backlight_added_later_is_picked_up_and_a_removed_one_keeps_its_reading() {
         let root = tempfile::tempdir().unwrap(); // empty -- the desktop case
         let (_service_side, caller_side) = p2p_pair().await;
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let controller = BrightnessController::new(root.path().to_path_buf(), caller_side, events_tx);
+        let controller = BrightnessController::new(root.path().to_path_buf(), caller_side, events_tx.clone());
+        let quiet = tokio::time::timeout(Duration::from_millis(200), events_rx.recv()).await;
+        assert!(quiet.is_err(), "no device means no signal, not even the default state");
 
-        // No device means `new` drops `events`; `recv` returns `None` instead of hanging.
-        assert_eq!(
-            within(events_rx.recv()).await,
-            None,
-            "no device means no signal is ever sent, not even the default state"
-        );
-        assert_eq!(controller.snapshot(), BrightnessState::default());
+        write_entry(root.path(), "intel_backlight", &[("max_brightness", "19200"), ("brightness", "0")]);
+        assert!(controller.refresh(root.path(), &events_tx));
+        assert_eq!(events_rx.try_recv(), Ok(()), "a device's first reading pushes even at 0");
+
+        std::fs::remove_dir_all(root.path().join("intel_backlight")).unwrap();
+        write_entry(root.path(), "acpi_video0", &[("max_brightness", "100"), ("brightness", "40")]);
+        assert!(controller.refresh(root.path(), &events_tx));
+        assert_eq!((events_rx.try_recv(), controller.snapshot().percent), (Ok(()), 40));
+
+        std::fs::remove_file(root.path().join("acpi_video0/brightness")).unwrap();
+        assert!(controller.refresh(root.path(), &events_tx));
+        assert!(events_rx.try_recv().is_err(), "a device failing its read mid-removal is not off");
+        std::fs::remove_dir_all(root.path().join("acpi_video0")).unwrap();
+        assert!(controller.refresh(root.path(), &events_tx));
+        assert!(events_rx.try_recv().is_err(), "a removed backlight publishes nothing");
+        assert_eq!(controller.snapshot().percent, 40);
+        assert!(controller.device.lock().unwrap().is_none());
     }
 }
