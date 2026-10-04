@@ -104,6 +104,7 @@ pub enum Draw {
         /// `image.source_blur` in physical pixels (ADR-0240). `0` for no blur, which `ImageCache`
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
+        radius: node::Radii,
     },
     /// An output or window's contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
     /// this carries what a draw places it with and what the capture registry paces a source by,

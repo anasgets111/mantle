@@ -46,6 +46,7 @@ return { panel {
 | `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` and a stable `id` |
 | `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition) |
 | `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
+| `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it |
 <!-- End of the generated table. -->
 
 ### transition
@@ -82,18 +83,17 @@ the node falls back to the cross-dissolve.
 
 ### Round an image's corners
 
-An `image` has no `radius`. Put it in a box with `radius` and `clip = "rounded"`
-([clip](../guide/paint.md#clip)):
+`radius` rounds the picture itself, as on a [`rect`](rect.md), so it needs no clipping wrapper. It
+rounds what shows: with `fit = "contain"` that is the fitted picture, not the box.
 
 ```lua
-local cover = rect {
+image {
     width = 96,
     height = 96,
     radius = 12,
-    clip = "rounded", -- cut the image to the corners
-    children = {
-        image { source = "/usr/share/backgrounds/a.jpg", fit = "cover", async = true, width = "fill", height = "fill" },
-    },
+    source = "/usr/share/backgrounds/a.jpg",
+    fit = "cover",
+    async = true,
 }
 ```
 
@@ -106,7 +106,6 @@ local cover = rect {
 | The shell stutters while images load | Inline decode blocks drawing. Set `async = true` |
 | `source = "firefox"` draws nothing | `source` is a path. Use [`icon`](icon.md) for theme names |
 | A relative `source` draws nothing | It resolves against the Renderer's working directory, not the config. Build paths from `mantle.config_dir` |
-| `radius` on an `image` is refused | It is not a box. Wrap it, as [above](#round-an-images-corners) |
 | `transition.params` is refused | `params` needs a `shader` |
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).

@@ -56,6 +56,7 @@ out vec4 fragColor;
 uniform float u_progress;
 uniform vec2 u_size;
 uniform float mantle_opacity;
+uniform vec4 mantle_radii;
 "#;
 
 /// The transition's half of the contract, between [`PRELUDE`] and [`RENAME`].
@@ -100,6 +101,15 @@ const EPILOGUE: &str = r#"
 #undef main
 void main() {
     mantle_effect();
+    // Rounded corners (tl, tr, br, bl in logical px): a box SDF over the node, antialiased by its own slope.
+    if (mantle_radii != vec4(0.0)) {
+        vec2 half_size = u_size * 0.5;
+        vec2 p = v_uv * u_size - half_size;
+        float r = p.x < 0.0 ? (p.y < 0.0 ? mantle_radii.x : mantle_radii.w) : (p.y < 0.0 ? mantle_radii.y : mantle_radii.z);
+        vec2 q = abs(p) - half_size + r;
+        float d = length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+        fragColor *= 1.0 - smoothstep(-0.5 * fwidth(d), 0.5 * fwidth(d), d);
+    }
     fragColor *= mantle_opacity;
 }
 "#;
@@ -143,6 +153,7 @@ struct Program {
     to_rect: Option<glow::UniformLocation>,
     fill: Option<glow::UniformLocation>,
     opacity: Option<glow::UniformLocation>,
+    radii: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
     /// supplying a value for it is not an error. Carries its components per element, its element
@@ -183,6 +194,8 @@ pub struct Run<'a> {
     pub target_origin: (f32, f32),
     /// What the node inherited, applied by [`EPILOGUE`] after the config's `main`.
     pub opacity: f32,
+    /// Corner radii in logical px (top-left, top-right, bottom-right, bottom-left), already fitted to the box.
+    pub radii: [f32; 4],
     pub progress: f32,
     pub params: &'a [node::ShaderParam],
 }
@@ -380,6 +393,7 @@ impl ShaderStage {
                 to_rect: named("u_to_rect"),
                 fill: named("u_fill"),
                 opacity: named("mantle_opacity"),
+                radii: named("mantle_radii"),
                 params,
             })
         }
@@ -472,6 +486,7 @@ impl ShaderStage {
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
+            gl.uniform_4_f32_slice(program.radii.as_ref(), &run.radii);
             gl.uniform_2_f32(program.size.as_ref(), run.logical_size.0, run.logical_size.1);
 
             // Every param the program has, not only the ones this node supplied. A uniform holds

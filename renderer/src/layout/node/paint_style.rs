@@ -100,6 +100,8 @@ pub enum PaintStyle {
         /// compositor to blur the desktop *behind* a box instead of blurring the node's own
         /// pixels, and which `image` does not accept.
         source_blur: f32,
+        /// `radius`: rounds the visible picture, not the box.
+        radius: Radii,
     },
     /// `capture` (ADR-0248): one output or window. An empty or unavailable target draws nothing.
     Capture {
@@ -190,6 +192,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 retain: image::retain.read(properties)? || transition.is_some(),
                 transition,
                 source_blur: image::source_blur.read(properties)?,
+                radius: image::radius.read(properties)?,
             }
         }
         "capture" => {

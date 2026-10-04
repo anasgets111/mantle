@@ -56,7 +56,7 @@ Without `width` and `height`, a `rect` is the union of its children, and 0 × 0 
 | Layer a badge over an icon | The example above |
 | Centre something | [Below](#centre-something) |
 | Draw a divider line | `rect { width = "fill", height = 1, background = "#45475A" }` |
-| Round an image's corners | [image](image.md#round-an-images-corners): a `rect` with `radius` and `clip = "rounded"` |
+| Round an image's corners | [image](image.md#round-an-images-corners): `radius` on the `image` |
 | Dim everything behind a dialog | A full-size `rect` with a translucent `background`, the dialog as its child ([paint](../guide/paint.md#dim-the-background-behind-a-modal)) |
 | Overlap two views while they swap | Make the parent a `rect` ([switching views](index.md#switching-views-with-ids)) |
 

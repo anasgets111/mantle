@@ -478,39 +478,43 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // picture being crossed away from, otherwise the one the node is still covering a decoding
         // source with. One field because the node is never doing both: `displayed_source` has
         // already moved on to `source` by the time a dissolve starts.
-        PaintStyle::Image { source, fit, load, retain, transition, source_blur } => (!source.is_empty()).then(|| {
-            // What goes under the draw. Dropped once the node draws what it names: an equal pair in
-            // the list would be one more thing to compare, and its disappearance ends the cover.
-            let cover = match dissolve {
-                Some(dissolve) => Some(dissolve.from.clone()),
-                None => retained.filter(|_| *retain).filter(|last| *last != source.as_str()).map(str::to_string),
-            };
-            let has_cover = cover.is_some();
-            Draw::Image {
-                node: node_id,
-                // Mid-dissolve the node draws the run's own destination, not whatever a later pass
-                // has since resolved: a third source arriving would otherwise drop the picture this
-                // run is halfway to and cross to one with no texture yet (ADR-0183).
-                source: dissolve.map_or_else(|| source.clone(), |dissolve| dissolve.to.clone()),
-                fit: *fit,
-                box_px: (physical_edge(rect.width, scale), physical_edge(rect.height, scale)),
-                alpha: opacity,
-                load: *load,
-                retained: cover,
-                shader: dissolve
-                    .and_then(|dissolve| dissolve.spec.shader.clone().map(|path| (path, dissolve.spec.params.clone()))),
-                dissolve: match dissolve {
-                    Some(dissolve) => Some(dissolve.progress),
-                    // A declared transition still covering a gap opens its cross *here*, at zero,
-                    // before anything has proved the incoming texture exists, because asking for
-                    // the draw is the only way to prove it (ADR-0183). Drawing the incoming at full
-                    // alpha on that frame and starting the cross on the next one shows it whole,
-                    // snaps back to the outgoing, and only then crosses.
-                    None => (transition.is_some() && has_cover).then_some(0.0),
-                },
-                blur_px: physical_blur(*source_blur, scale),
-            }
-        }),
+        PaintStyle::Image { source, fit, load, retain, transition, source_blur, radius } => {
+            (!source.is_empty()).then(|| {
+                // What goes under the draw. Dropped once the node draws what it names: an equal pair in
+                // the list would be one more thing to compare, and its disappearance ends the cover.
+                let cover = match dissolve {
+                    Some(dissolve) => Some(dissolve.from.clone()),
+                    None => retained.filter(|_| *retain).filter(|last| *last != source.as_str()).map(str::to_string),
+                };
+                let has_cover = cover.is_some();
+                Draw::Image {
+                    node: node_id,
+                    // Mid-dissolve the node draws the run's own destination, not whatever a later pass
+                    // has since resolved: a third source arriving would otherwise drop the picture this
+                    // run is halfway to and cross to one with no texture yet (ADR-0183).
+                    source: dissolve.map_or_else(|| source.clone(), |dissolve| dissolve.to.clone()),
+                    fit: *fit,
+                    box_px: (physical_edge(rect.width, scale), physical_edge(rect.height, scale)),
+                    alpha: opacity,
+                    load: *load,
+                    retained: cover,
+                    shader: dissolve.and_then(|dissolve| {
+                        dissolve.spec.shader.clone().map(|path| (path, dissolve.spec.params.clone()))
+                    }),
+                    dissolve: match dissolve {
+                        Some(dissolve) => Some(dissolve.progress),
+                        // A declared transition still covering a gap opens its cross *here*, at zero,
+                        // before anything has proved the incoming texture exists, because asking for
+                        // the draw is the only way to prove it (ADR-0183). Drawing the incoming at full
+                        // alpha on that frame and starting the cross on the next one shows it whole,
+                        // snaps back to the outgoing, and only then crosses.
+                        None => (transition.is_some() && has_cover).then_some(0.0),
+                    },
+                    blur_px: physical_blur(*source_blur, scale),
+                    radius: *radius * scale,
+                }
+            })
+        }
 
         // A `textfield` shows its placeholder until focused, then one mask character per typed
         // character. Wrong-password feedback costs a two-second `pam_fail_delay`; three failures

@@ -433,6 +433,8 @@ props! {
         ///
         /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
+        /// Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it.
+        radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
     }
     /// Preview of one output or window (ADR-0248). No intrinsic size: without `width`/`height` it draws nothing.
     mod capture(CAPTURE) {

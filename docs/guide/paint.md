@@ -68,6 +68,7 @@ or, with none close, listing them all.
 | `shadow_color`, `shadow_blur`, `shadow_offset`, `shadow_spread`, `content_blur`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
 | `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `backdrop_blur`, `behind_blur` | Box kinds only |
 | `source_blur` | `image` only |
+| `radius` | Box kinds and `image` |
 | `foreground` (`text`, `icon`, `textfield`), `z`, `scale`, `rotate`, `translate`, `origin`, `visible` | Also affect paint; documented on [Nodes](../nodes/index.md) |
 
 Every property can be a [signal](signals.md). A signal nested inside a table (a gradient stop, one

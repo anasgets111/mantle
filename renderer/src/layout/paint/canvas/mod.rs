@@ -266,14 +266,15 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 if let Some(path) = image::icons::resolve(name, *px) {
                     let request =
                         ImageRequest { path: &path, box_px: (*px, *px), tint: *color, fit: Fit::Contain, blur_px: 0 };
-                    let draw = FileDraw { request, rect, alpha: *alpha, load: Load::Inline };
+                    let draw =
+                        FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: node::Radii::default() };
                     let _ = draw_file(painter.canvas_mut(), walk.images, draw);
                 }
                 if let Some(t0) = t0 {
                     walk.split.icons += t0.elapsed();
                 }
             }
-            Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px } => {
+            Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px, radius } => {
                 let request = ImageRequest {
                     path: std::path::Path::new(source),
                     box_px: *box_px,
@@ -281,7 +282,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     fit: *fit,
                     blur_px: *blur_px,
                 };
-                let draw = FileDraw { request, rect, alpha: *alpha, load: *load };
+                let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius: *radius };
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
@@ -310,6 +311,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     target_size: frame.size,
                                     target_origin: frame.origin,
                                     opacity: *alpha,
+                                    radii: (*radius * (1.0 / scale)).fit(rect.width / scale, rect.height / scale).0,
                                     progress: *progress,
                                     params,
                                 };
@@ -331,10 +333,10 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // the test harness; the rest are real and are why this stays.
                         if !crossed {
                             if let Some((id, fitted, _)) = from {
-                                fill_image(painter.canvas_mut(), id, fitted, *alpha);
+                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, *radius, *alpha);
                             }
                             if let Some((id, fitted, _)) = to {
-                                fill_image(painter.canvas_mut(), id, fitted, *alpha * *progress);
+                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, *radius, *alpha * *progress);
                             }
                         }
                     }
@@ -379,6 +381,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         target_size: frame.size,
                         target_origin: frame.origin,
                         opacity: *alpha,
+                        radii: [0.0; 4],
                         progress: *progress,
                         params,
                     };
@@ -625,6 +628,7 @@ struct FileDraw<'a> {
     rect: LogicalRect,
     alpha: f32,
     load: Load,
+    radius: node::Radii,
 }
 
 impl<'a> FileDraw<'a> {
@@ -641,7 +645,7 @@ impl<'a> FileDraw<'a> {
 /// `retain` cover should take the frame (ADR-0180).
 fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, draw: FileDraw) -> Option<bool> {
     let (id, fitted, exact) = file_texture(canvas, images, draw)?;
-    fill_image(canvas, id, fitted, draw.alpha);
+    fill_image_rounded(canvas, id, fitted, draw.rect, draw.radius, draw.alpha);
     Some(exact)
 }
 
@@ -652,7 +656,7 @@ fn file_texture(
     images: &mut ImageCache,
     draw: FileDraw,
 ) -> Option<(ImageId, LogicalRect, bool)> {
-    let FileDraw { request, rect, alpha: _, load } = draw;
+    let FileDraw { request, rect, load, .. } = draw;
     let exact = images.image(canvas, &request, load);
     let id = exact.or_else(|| (load == Load::Background).then(|| images.stand_in(canvas, &request)).flatten())?;
     let (width, height) = canvas.image_size(id).ok()?;
@@ -660,8 +664,26 @@ fn file_texture(
 }
 
 fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alpha: f32) {
-    let mut path = Path::new();
-    path.rect(fitted.x, fitted.y, fitted.width, fitted.height);
+    fill_image_rounded(canvas, id, fitted, fitted, node::Radii::default(), alpha);
+}
+
+/// `radius` rounds what shows: `fitted` clipped to the box, so `Contain` rounds the picture and
+/// `Cover` the box. The pattern keeps `fitted`'s placement.
+fn fill_image_rounded(
+    canvas: &mut Canvas<OpenGl>,
+    id: ImageId,
+    fitted: LogicalRect,
+    rect: LogicalRect,
+    radius: node::Radii,
+    alpha: f32,
+) {
+    let path = if radius.is_zero() {
+        let mut path = Path::new();
+        path.rect(fitted.x, fitted.y, fitted.width, fitted.height);
+        path
+    } else {
+        box_path(fitted.intersect(rect), radius)
+    };
     canvas.fill_path(&path, &Paint::image(id, fitted.x, fitted.y, fitted.width, fitted.height, 0.0, alpha));
 }
 
@@ -1126,6 +1148,65 @@ pub(crate) mod tests {
         );
         let Some(px) = paint_points(&child, &[(8, 32), (56, 32)]) else { return };
         assert_eq!(px, [(0, 255, 0, 255), (0, 0, 0, 0)]);
+    }
+
+    #[test]
+    fn an_image_radius_rounds_the_picture_and_takes_a_table_per_corner() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = dir.path().join("red.svg");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="red"/></svg>"#,
+        )
+        .unwrap();
+        let image = |radius: &str| {
+            format!(r#"image {{ width = "fill", height = "fill", source = "{}", radius = {radius} }}"#, svg.display())
+        };
+        let red = (255, 0, 0, 255);
+        let Some(px) = paint_points(&image("16"), &[(1, 1), (62, 62), (32, 32)]) else { return };
+        assert_eq!(px, [(0, 0, 0, 0), (0, 0, 0, 0), red]);
+        let Some(px) = paint_points(&image("{ top_left = 16 }"), &[(1, 1), (62, 1), (62, 62)]) else { return };
+        assert_eq!(px, [(0, 0, 0, 0), red, red]);
+    }
+
+    /// The cross runs in the shader stage, which rounds by `mantle_radii` rather than the fill path.
+    #[test]
+    fn an_image_radius_rounds_a_shader_cross_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let svg = |name: &str, fill: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(
+                &path,
+                format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="64" height="64" fill="{fill}"/></svg>"#),
+            )
+            .unwrap();
+            path
+        };
+        let (red, green) = (svg("red.svg", "red"), svg("green.svg", "lime"));
+        let src = format!(
+            r#"return panel {{ id = "bar", width = 64, height = 64, child = image {{ width = 64, height = 64, radius = 16, source = "{}" }} }}"#,
+            red.display()
+        );
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 });
+        let mut list = build(&root, 1.0, None);
+        for cmd in &mut list.commands {
+            if let Draw::Image { retained, dissolve, .. } = &mut cmd.draw {
+                *retained = Some(green.display().to_string());
+                *dissolve = Some(0.0);
+            }
+        }
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 };
+        let _ = execute("test", &mut painter, images, captures, &list, 1.0, (64.0, 64.0), &[whole], shaders);
+        let canvas = painter.canvas_mut();
+        assert_eq!(pixel_at(canvas, 1, 1), (0, 0, 0, 0));
+        assert_eq!(pixel_at(canvas, 32, 32), (0, 255, 0, 255));
     }
 
     #[test]
