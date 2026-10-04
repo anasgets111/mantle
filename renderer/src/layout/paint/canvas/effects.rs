@@ -76,12 +76,17 @@ pub(super) fn draw_layer(
             else {
                 return;
             };
-            let casts: Vec<ImageId> =
+            let mut casts: Vec<ImageId> =
                 shadows.iter().map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target)).collect();
             let sharp = *blur < MIN_SIGMA;
             let blurred = blurred(painter, walk, content, size, *blur);
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
             let filtered = casts.len() == shadows.len() && sharp == blurred.is_none();
+            // All or none: the layers kept would be the top ones, the bottom ones missing. The partial
+            // casts stay in `walk.scratch` and recycle with the frame.
+            if casts.len() != shadows.len() {
+                casts.clear();
+            }
             let content = blurred.unwrap_or(content);
             // A glass reads what is under the layer's box, which this command does not name.
             if filtered && !any_draw_matches(commands, |draw| volatile(draw) || matches!(draw, Draw::Backdrop { .. })) {

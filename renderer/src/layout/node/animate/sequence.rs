@@ -11,7 +11,8 @@ use crate::lua::luacats::lua_shape;
 
 // The first frame anchors the sequence; only later frames contribute to its duration.
 lua_shape! {
-    /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds. `spring` replaces `easing` for this segment.
+    /// A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous
+    /// value holds. `spring` replaces `easing` for this segment.
     #[alias = "Keyframe"]
     #[derive(Debug, Clone, PartialEq)]
     pub struct KeyframeInput {
@@ -33,8 +34,7 @@ pub struct Keyframe {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Curve {
     Eased(Easing),
-    /// A spring from rest, in real seconds from the segment's start; the segment's end cuts off
-    /// whatever tail is left, so the frame timing stays fixed (ADR-0154 amendment).
+    /// A spring from rest; the segment's end cuts the tail (ADR-0154 amendment).
     Spring(Spring),
 }
 
@@ -471,27 +471,23 @@ mod tests {
         value
     }
 
+    fn sequence_of(property: &str, entry: &str) -> Sequence {
+        let lua = Lua::new();
+        let source = format!("return {{ animate = {{ {property} = {entry} }} }}");
+        let spec = parse_animate("rect", &rect_props(&lua, &source)).unwrap().0.remove(property).unwrap();
+        spec.sequence().unwrap()
+    }
+
     /// A spring segment rings past its end frame in real seconds, lands exactly on it once settled,
     /// and a step shorter than the settle cuts the tail at the frame boundary. The phase is still
     /// whole nanoseconds, so an endless loop repeats bit for bit.
     #[test]
     fn a_spring_segment_overshoots_lands_on_its_frame_and_loops_without_drift() {
-        let lua = Lua::new();
-        let sequence = parse_animate(
-            "rect",
-            &rect_props(
-                &lua,
-                r#"return { animate = { width = { duration = 1000, loops = "infinite",
-                    spring = { stiffness = 400, damping = 20 },
-                    keyframes = { 0, 100, { value = 0, duration = 100 } } } } }"#,
-            ),
-        )
-        .unwrap()
-        .0
-        .remove("width")
-        .unwrap()
-        .sequence()
-        .unwrap();
+        let sequence = sequence_of(
+            "width",
+            r#"{ duration = 1000, loops = "infinite", spring = { stiffness = 400, damping = 20 },
+                keyframes = { 0, 100, { value = 0, duration = 100 } } }"#,
+        );
         let at = |millis: u64| number(sequence.at(Duration::from_millis(millis), "width"));
         let peak = (0..1000).step_by(5).map(at).fold(f32::MIN, f32::max);
         assert!(peak > 110.0, "rings past the frame it heads for: peak {peak}");
@@ -511,27 +507,18 @@ mod tests {
     /// clamp a plain spring's does, so `opacity` never leaves `[0, 1]`.
     #[test]
     fn a_frames_spring_replaces_the_entrys_easing_and_its_overshoot_is_clamped() {
-        let lua = Lua::new();
-        let sequence = parse_animate(
-            "rect",
-            &rect_props(
-                &lua,
-                r#"return { animate = { opacity = { duration = 1000, easing = "linear",
-                    keyframes = { 0, { value = 1, spring = { stiffness = 400, damping = 10 } } } } } }"#,
-            ),
-        )
-        .unwrap()
-        .0
-        .remove("opacity")
-        .unwrap()
-        .sequence()
-        .unwrap();
+        let sequence = sequence_of(
+            "opacity",
+            r#"{ duration = 1000, easing = "linear",
+                keyframes = { 0, { value = 1, spring = { stiffness = 400, damping = 10 } } } }"#,
+        );
         let at = |millis: u64| number(sequence.at(Duration::from_millis(millis), "opacity"));
         assert!(at(100) > 0.9, "a spring, not linear's 0.1: {}", at(100));
         assert_eq!(at(162), 1.0, "the first swing past 1 is clamped");
         assert!(at(324) < 0.9, "and it rings back: {}", at(324));
         assert!((0..1000).map(at).all(|value| (0.0..=1.0).contains(&value)));
 
+        let lua = Lua::new();
         let cases: [(&str, &[&str]); 3] = [
             (
                 "keyframes = { 0, { value = 1, easing = \"linear\", spring = { stiffness = 1, damping = 1 } } }",

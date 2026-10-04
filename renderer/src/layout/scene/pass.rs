@@ -1718,6 +1718,11 @@ mod tests {
         assert_eq!(held(&scene), "a", "the write left the resolve memo standing");
         let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
         assert_eq!(field.current_initial_text(&lua), "b", "a re-armed autofocus reads the signal now");
+        for unset_or_unsettable in ["nil", r#""a\nb""#, "42"] {
+            lua.load(format!("seed:set({unset_or_unsettable})")).exec().unwrap();
+            assert_eq!(field.current_initial_text(&lua), "", "{unset_or_unsettable} arms an empty draft");
+        }
+        lua.load(r#"seed:set("b")"#).exec().unwrap();
         scene.take_seeds();
         let table: mlua::Table = lua
             .load(

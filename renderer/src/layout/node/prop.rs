@@ -203,11 +203,15 @@ impl Prop for Pixels {
 
 /// `n` inside `row`'s closed range, if it has one.
 pub(crate) fn within(row: &Property, n: f32) -> Result<f32, LayoutError> {
-    match row.range {
-        Some((low, high)) if !(low..=high).contains(&n) => {
-            Err(invalid(row.name, format!("must be within [{low}, {high}], got {n}")))
-        }
-        _ => Ok(n),
+    row.range.map_or(Ok(n), |range| within_range(row.name, range, n))
+}
+
+/// `n` inside the closed range `(low, high)` of the property or field `name`.
+pub(crate) fn within_range(name: &str, (low, high): (f32, f32), n: f32) -> Result<f32, LayoutError> {
+    if (low..=high).contains(&n) {
+        Ok(n)
+    } else {
+        Err(invalid(name, format!("must be within [{low}, {high}], got {n}")))
     }
 }
 

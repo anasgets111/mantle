@@ -209,6 +209,7 @@ mod tests {
             ("return lock { margin = 4 }", "margin"),
             (r#"return panel { align_h = "end" }"#, "align_h"),
             (r#"return lock { align_v = "end" }"#, "align_v"),
+            // Removed for `shadows`; a stale config must fail, not silently lose its shadow.
             ("return rect { shadow_blur = 8 }", "shadow_blur"),
         ] {
             let table: mlua::Table = lua.load(source).eval().unwrap();

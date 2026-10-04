@@ -177,7 +177,8 @@ fn trimmed(path: &Path, (start, end): (f32, f32)) -> Path {
 /// The parts of `path` with `lo <= x <= hi`, each segment cut where its x crosses an edge. A
 /// segment that leaves and re-enters the band keeps every piece inside.
 fn x_trimmed(path: &Path, (lo, hi): (f64, f64)) -> Path {
-    const EPS: f64 = 1e-6;
+    // Pixels, past an f32 ulp (6e-5 at x = 1000) so an edge the band and the path round apart still matches.
+    const EPS: f64 = 1e-3;
     let mut out = Path::new();
     // Where `out`'s last piece ended, if the subpath is still open there.
     let mut end: Option<Point> = None;
@@ -308,16 +309,12 @@ mod tests {
         assert_eq!(px.iter().map(|p| p.3).collect::<Vec<_>>(), [255, 255, 255, 0, 0], "{px:?}");
     }
 
-    fn x_range(path: &Path) -> Vec<(PathSeg, bool)> {
-        segments(path)
-    }
-
     #[test]
     fn an_x_trim_cuts_a_line_and_a_curve_where_x_crosses_the_band() {
         let mut line = Path::new();
         line.move_to(0.0, 10.0);
         line.line_to(100.0, 10.0);
-        let cut = x_range(&x_trimmed(&line, (20.0, 60.0)));
+        let cut = segments(&x_trimmed(&line, (20.0, 60.0)));
         assert_eq!(cut.len(), 1);
         assert_eq!((cut[0].0.start(), cut[0].0.end()), (Point::new(20.0, 10.0), Point::new(60.0, 10.0)));
 
@@ -325,10 +322,19 @@ mod tests {
         let mut curve = Path::new();
         curve.move_to(0.0, 0.0);
         curve.bezier_to(100.0 / 3.0, 50.0, 200.0 / 3.0, -50.0, 100.0, 0.0);
-        let cut = x_range(&x_trimmed(&curve, (20.0, 60.0)));
+        let cut = segments(&x_trimmed(&curve, (20.0, 60.0)));
         assert_eq!(cut.len(), 1);
         let (start, end) = (cut[0].0.start(), cut[0].0.end());
         assert!((start.x - 20.0).abs() < 1e-4 && (end.x - 60.0).abs() < 1e-4, "{start:?} {end:?}");
+    }
+
+    #[test]
+    fn an_x_trim_keeps_a_vertical_segment_on_a_band_edge_the_path_and_band_round_apart() {
+        let mut wall = Path::new();
+        wall.move_to(1000.0003, 0.0);
+        wall.line_to(1000.0003, 50.0);
+        let cut = segments(&x_trimmed(&wall, (1000.0006, 1100.0)));
+        assert_eq!(cut.len(), 1, "{cut:?}");
     }
 
     #[test]
@@ -337,7 +343,7 @@ mod tests {
         let mut curve = Path::new();
         curve.move_to(0.0, 0.0);
         curve.bezier_to(300.0, 10.0, -200.0, 20.0, 100.0, 30.0);
-        let cut = x_range(&x_trimmed(&curve, (40.0, 60.0)));
+        let cut = segments(&x_trimmed(&curve, (40.0, 60.0)));
         assert!(cut.iter().filter(|(_, begins)| *begins).count() >= 3, "{}", cut.len());
         for (piece, _) in &cut {
             for x in [piece.start().x, piece.end().x, piece.eval(0.5).x] {

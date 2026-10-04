@@ -60,8 +60,8 @@ fn hex_of(color: Rgba) -> String {
 
 /// `a` to `b` at `t`, each channel kept in `[0, 1]`.
 fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
-    let mix = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 1.0);
-    Rgba { r: mix(a.r, b.r), g: mix(a.g, b.g), b: mix(a.b, b.b), a: mix(a.a, b.a) }
+    let blend = |x: f32, y: f32| (x + (y - x) * t).clamp(0.0, 1.0);
+    Rgba { r: blend(a.r, b.r), g: blend(a.g, b.g), b: blend(a.b, b.b), a: blend(a.a, b.a) }
 }
 
 /// `shadow` at zero alpha: an unset layer paints nothing, without a second hue to cross.
@@ -135,8 +135,9 @@ pub fn depart(
 /// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the
 /// axes `{ x, y }`, an absent key reading as the property's default (`0`, or `1` for a `scale`).
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
-/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. Two different shapes snap, so a fill that switches between `"45%"` and `"fill"`
-/// or a margin that switches between a number and a table takes the new value at once.
+/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. Two different shapes
+/// snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches between a
+/// number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Animatable {
     Number(f32),
@@ -239,7 +240,7 @@ impl Animatable {
                 }
             }
             (Self::Color(a), Self::Color(b)) => out = [a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a],
-            // ponytail: a path or shadow list hands a spring no rate and restarts still; a per-point velocity would carry it.
+            // ponytail: a path or shadow list gives a spring no velocity; per-point rates would carry it.
             _ => {}
         }
         out

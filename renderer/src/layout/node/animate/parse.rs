@@ -181,7 +181,8 @@ impl Prop for Animations {
 
 /// One entry's spec: a bare duration, or `{ duration, easing, from }`, or those beside a
 /// `keyframes` list and a `loops` count (ADR-0152), or a `spring` instead of any timing at all
-/// (ADR-0154). Beside `keyframes`, a `spring` is each segment's curve in place of `easing`. `from` is read as a value of `property`.
+/// (ADR-0154). Beside `keyframes`, a `spring` is each segment's curve in place of `easing`. `from`
+/// is read as a value of `property`.
 pub(super) fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec, LayoutError> {
     // The bare form says the duration and nothing else: `animate = { width = 200 }`.
     let Value::Table(spec) = entry else {

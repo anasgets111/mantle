@@ -3,7 +3,7 @@
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
-use super::prop::{keywords, within as row_within};
+use super::prop::{keywords, within as row_within, within_range};
 use super::*;
 use crate::lua::luacats::lua_shape;
 
@@ -392,13 +392,7 @@ impl Prop for Shadows {
                 return Err(invalid(row.name, format!("expected a layer array, got {}", preview_for_error(value))));
             }
         };
-        let within = |n: f32, (low, high): (f32, f32)| {
-            if (low..=high).contains(&n) {
-                Ok(n)
-            } else {
-                Err(invalid(row.name, format!("must be within [{low}, {high}], got {n}")))
-            }
-        };
+        let within = |n: f32, range| within_range(row.name, range, n);
         let len = input::array_len(row.name, table, MAX_SHADOWS)?;
         let mut shadows = Vec::with_capacity(len);
         for i in 1..=len {

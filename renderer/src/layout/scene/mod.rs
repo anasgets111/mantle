@@ -309,16 +309,22 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
-    /// This field's `initial_text`, `""` when unset. A signal is read now, not as of the last
-    /// resolve, which a write alone never repeats (the seed read does not subscribe).
+    /// This field's `initial_text` now, `""` when unset, not a string or not settable. A signal is
+    /// read now, not as of the last resolve, which a write alone never repeats (the seed read does
+    /// not subscribe).
     pub(crate) fn current_initial_text(&self, lua: &Lua) -> String {
-        let live = self.resolve_memo.as_ref().and_then(|memo| node::signal_at(memo.raw(), "initial_text")).and_then(
-            |signal| match crate::lua::signal::untracked(lua, || signal.get_value(lua)) {
-                Ok(Value::String(text)) => text.to_str().ok().map(|text| text.to_string()),
-                _ => None,
+        let text = match self.resolve_memo.as_ref().and_then(|memo| node::signal_at(memo.raw(), "initial_text")) {
+            Some(signal) => match crate::lua::signal::untracked(lua, || signal.get_value(lua)) {
+                Ok(Value::String(text)) => text.to_str().map(|text| text.to_string()).unwrap_or_default(),
+                _ => String::new(),
             },
-        );
-        live.unwrap_or_else(|| node::fields::textfield::initial_text.read(&self.properties).unwrap_or_default())
+            None => node::fields::textfield::initial_text.read(&self.properties).unwrap_or_default(),
+        };
+        if crate::lua::focus::is_settable(&text) {
+            return text;
+        }
+        shared::warn!("`initial_text` takes at most 64 KiB without control characters; autofocus starts empty");
+        String::new()
     }
 
     /// A disabled `textfield` takes no keyboard focus of either kind.
