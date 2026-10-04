@@ -311,7 +311,7 @@ impl Signal {
     /// Asks the next positioning pass for `asked`, marking dirty (ADR-0112). The last request
     /// wins, except that a `By` adds to a pending `To` or `By`. Other kinds return false for the
     /// method's named refusal.
-    pub(crate) fn request_scroll(&self, asked: ScrollRequest) -> bool {
+    fn request_scroll(&self, asked: ScrollRequest) -> bool {
         let SignalKind::Scroll { id, request, dirty, .. } = &self.0 else { return false };
         request.set(Some(match (request.get(), asked) {
             (Some(ScrollRequest::To(to)), ScrollRequest::By(by)) => ScrollRequest::To(to + by),

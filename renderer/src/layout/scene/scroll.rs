@@ -27,7 +27,7 @@ impl Scene {
         let (mut eased, mut room) = (Vec::new(), None::<f32>);
         for (key, tree) in &mut self.surfaces {
             let mut eases = false;
-            each_holder(tree, cell, &mut |node, axis| {
+            each_holder(tree, cell, false, &mut |node, axis| {
                 let limit = room_of(node, axis);
                 room = Some(room.map_or(limit, |room| room.max(limit)));
                 let spec = match notch.then(|| node::scroll_spec(node.kind, &node.properties)) {
@@ -74,8 +74,10 @@ impl Scene {
     /// such as `reset_on_close`, jumps like a touchpad.
     pub fn stop_scroll(&mut self, signal: &Signal) {
         let Some(cell) = signal.cell_id() else { return };
+        // A request left pending would scroll the reopened surface away from the top.
+        signal.take_scroll();
         for tree in self.surfaces.values_mut() {
-            stop_runs(tree, cell);
+            each_holder(tree, cell, true, &mut |node, _| node.tweens.retain(|tween| tween.property != "scroll"));
         }
     }
 
@@ -149,38 +151,34 @@ fn read_only_as_scroll(
     node.children.iter().all(|child| read_only_as_scroll(child, cell, read, holders))
 }
 
-/// Calls `visit` on every visible container `cell` scrolls, with its axis.
-fn each_holder(node: &mut ResolvedNode, cell: CellId, visit: &mut impl FnMut(&mut ResolvedNode, MainAxis)) {
-    if !node.in_flow() {
+/// Calls `visit` on every container `cell` scrolls, with its axis; hidden ones only if `hidden_too`.
+fn each_holder(
+    node: &mut ResolvedNode,
+    cell: CellId,
+    hidden_too: bool,
+    visit: &mut impl FnMut(&mut ResolvedNode, MainAxis),
+) {
+    if !hidden_too && !node.in_flow() {
         return;
     }
     if let Some(axis) = scrolls_by(node, cell) {
         visit(node, axis);
     }
     for child in &mut node.children {
-        each_holder(child, cell, visit);
+        each_holder(child, cell, hidden_too, visit);
     }
 }
 
 /// Moves the children of every visible container `cell` scrolls to its offset; whether any moved.
 fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
     let mut moved = false;
-    each_holder(node, cell, &mut |node, axis| {
+    each_holder(node, cell, false, &mut |node, axis| {
         let size = LogicalSize { width: node.rect.width, height: node.rect.height };
         let from = node.scrolled;
         node.scrolled = scroll_children(&node.properties, &node.layout_style, size, axis, &mut node.children, from);
         moved |= node.scrolled != from;
     });
     moved
-}
-
-fn stop_runs(node: &mut ResolvedNode, cell: CellId) {
-    if node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell) {
-        node.tweens.retain(|tween| tween.property != "scroll");
-    }
-    for child in &mut node.children {
-        stop_runs(child, cell);
-    }
 }
 
 /// How far content of `children` scrolls in a viewport `content_main` long: what an offset clamps to.
@@ -370,8 +368,8 @@ pub(super) fn ease_request(
     Ok(())
 }
 
-/// How far this container is scrolled along its main axis, clamped to `limit`, what there is to
-/// scroll, and written back so the signal holds the offset actually used (ADR-0069 decision 4).
+/// How far this container is scrolled along its main axis, clamped to `limit` (what there is to
+/// scroll) and written back so the signal holds the offset actually used (ADR-0069 decision 4).
 ///
 /// A container with nothing to scroll returns 0 rather than erroring, so a `Content`-sized column
 /// (content and viewport the same number by construction) is a no-op, the same answer `Fill` gives
@@ -469,7 +467,7 @@ mod tests {
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(f64::from(offset)));
-        assert!(signal.request_scroll(crate::lua::signal::ScrollRequest::Reveal(index)));
+        lua.load(format!(r#"scroll("s"):reveal({index})"#)).exec().unwrap();
 
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
@@ -478,6 +476,22 @@ mod tests {
         let ys = container.children.iter().map(|c| c.rect.y).collect();
         assert!(signal.take_scroll().is_none(), "the pass consumed the ask");
         (ys, signal.scroll_offset().unwrap())
+    }
+
+    /// ADR-0326 item 9: a delta adds to a pending offset or delta before the room is known, so the
+    /// sum is clamped once, at the pass.
+    #[test]
+    fn a_pending_scroll_by_adds_to_a_pending_request() {
+        use crate::lua::signal::ScrollRequest::{By, To};
+        let lua = scene_lua();
+        let pending = |src: &str| {
+            lua.load(src).exec().unwrap();
+            let signal: mlua::AnyUserData = lua.load(r#"return scroll("m")"#).eval().unwrap();
+            crate::lua::signal::from_userdata(&signal).unwrap().take_scroll()
+        };
+        assert_eq!(pending(r#"local s = scroll("m"); s:scroll_to(900); s:scroll_by(-50)"#), Some(To(850.0)));
+        assert_eq!(pending(r#"local s = scroll("m"); s:scroll_by(5); s:scroll_by(7)"#), Some(By(12.0)));
+        assert_eq!(pending(r#"local s = scroll("m"); s:scroll_by(5); s:scroll_to(7)"#), Some(To(7.0)));
     }
 
     /// ADR-0112: `signal:reveal(index)` moves the least distance that shows the child, and only

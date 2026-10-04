@@ -100,6 +100,15 @@ mod tests {
     }
 
     #[test]
+    fn a_scroll_request_pending_at_close_does_not_outlive_the_surface() {
+        let (_dir, mut client) = started(LAUNCHER);
+        client.loader.lua().load("results:scroll_by(30)").exec().unwrap();
+        client.reset_closed_surfaces(&["bar@TEST", "menu"]);
+        let ud: mlua::AnyUserData = client.loader.lua().globals().get("results").unwrap();
+        assert!(lua::signal::from_userdata(&ud).unwrap().pending_scroll().is_none());
+    }
+
+    #[test]
     fn a_popup_closing_with_its_parent_resets_what_it_lists() {
         let (_dir, mut client) = started(LAUNCHER);
         client.reset_closed_surfaces(&["launcher@TEST"]);
