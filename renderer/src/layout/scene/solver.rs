@@ -175,6 +175,7 @@ pub(super) fn taffy_style(
         // at the content box when a child is larger; an auto track would grow to that child.
         None => {
             out.display = taffy::Display::Grid;
+            // ponytail: min-content is 0 here (flex auto min, nested grids); upgrade: a min-content floor.
             let cell = || vec![taffy::style_helpers::minmax(zero(), fr(1.0))];
             out.grid_template_columns = cell();
             out.grid_template_rows = cell();
