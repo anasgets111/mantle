@@ -7,7 +7,7 @@ use super::pass::{prior_position, publish_geometry, solve_instance};
 use super::resolve::drop_injected_sizes;
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,
-    taffy_style, text_measure_tweening, update_solver_node,
+    taffy_style, update_solver_node,
 };
 use super::{LayoutStyle, LogicalSize, PreparedNode, ResolvedNode, Scene, close, open_span};
 use crate::layout::instance::SurfaceInstance;
@@ -182,10 +182,6 @@ pub(super) fn prepare_retained(
     if !move_on_solve && node.visible {
         node.movement.take_if(|movement| !movement.advance(now));
     }
-    // Checked before `advance`: on the frame a tween lands, `resting` is still false here,
-    // so `text_memo` is cleared and the final layout size is measured before `resting` locks in
-    // the memo on subsequent frames.
-    let text_tweening = text_measure_tweening(node.kind, &node.tweens);
     let changed = node.tweens.iter().any(|tween| !tween.resting);
     node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
     // A tick keeps the size its running tween pins; a pass measures again.
@@ -207,24 +203,22 @@ pub(super) fn prepare_retained(
         movement,
         displayed_source,
         dissolve,
-        text_memo,
         list_memo,
         child_table,
         resolve_memo,
         ..
     } = node;
-    let text_memo = if text_tweening { None } else { text_memo };
     let paint = if changed || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(id) => {
             if changed {
-                let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
+                let measure = measure_for(kind, paint.as_ref(), &properties)?;
                 update_solver_node(tree, id, kind, &properties, &style, parent_axis, measure)?;
             }
             id
         }
         None => {
-            let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
+            let measure = measure_for(kind, paint.as_ref(), &properties)?;
             new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
         }
     };
@@ -1803,6 +1797,5 @@ mod tests {
         // Tick after completion: memo is locked in and text retains the final shaped width.
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(200));
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].rect.width, width_36);
-        assert!(scene.surface("bar@TEST").unwrap().children[0].text_memo.is_some());
     }
 }

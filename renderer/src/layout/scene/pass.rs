@@ -334,7 +334,7 @@ pub(super) fn prepare(
 
     let old_mask_target = retained.as_ref().and_then(|node| node.mask_target);
     let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
-    let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo, text_memo } = resolved;
+    let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo } = resolved;
     let prior_position = retained.as_ref().filter(|_| !thawing).and_then(|r| prior_position(r, tree, parent_flow));
     let prior_size = retained.as_ref().filter(|_| !thawing).map(|r| (r.rect.width, r.rect.height));
     let movement = if thawing { None } else { retained.as_mut().and_then(|r| r.movement.take()) };
@@ -355,7 +355,7 @@ pub(super) fn prepare(
 
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
     // `resolve` parsed rather than parsing them a second time.
-    let measure = measure_for(kind, paint.as_ref(), &properties, text_memo)?;
+    let measure = measure_for(kind, paint.as_ref(), &properties)?;
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
@@ -651,16 +651,14 @@ fn finish(
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
-    let (text_memo, unconstrained_width) = match tree.get_node_context(taffy_id) {
-        Some(Measure::Text { memo: Some((max_width, size)), .. }) => {
-            (Some((*max_width, *size)), if max_width.is_none() { Some(size.width) } else { None })
-        }
-        _ => (None, None),
+    let unconstrained_width = match tree.get_node_context(taffy_id) {
+        Some(Measure::Text { memo: Some((None, size)), .. }) => Some(size.width),
+        _ => None,
     };
 
     // Frozen children come back as they were (see `prepare`): no scroll offset applied again to
     // rects that already carry one, no text refitted to a box that was not laid out.
-    let (children, text_memo, scrolled) = if style.visible {
+    let (children, scrolled) = if style.visible {
         let mut children: Vec<ResolvedNode> =
             children.into_iter().map(|child| finish(tree, child, shaping, now)).collect::<Result<_, _>>()?;
 
@@ -681,9 +679,9 @@ fn finish(
         // upgrade is to carry the offset each leaver was dropped at on the node and subtract the
         // difference here; nothing has asked for it, and lists here scroll far slower than they fade.
         children.extend(leaving);
-        (children, text_memo, scrolled)
+        (children, scrolled)
     } else {
-        (frozen, None, 0.0)
+        (frozen, 0.0)
     };
 
     let mask_target = match &paint {
@@ -723,7 +721,6 @@ fn finish(
         move_spec,
         movement,
         leaving: false,
-        text_memo,
         list_memo,
         child_table,
         resolve_memo,

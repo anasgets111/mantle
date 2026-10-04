@@ -119,7 +119,6 @@ impl ResolvedNode {
             move_spec: None,
             movement: None,
             leaving: false,
-            text_memo: None,
             list_memo: None,
             child_table: None,
             resolve_memo: None,
@@ -280,8 +279,6 @@ pub struct ResolvedNode {
     /// slot) and out of reach (no hit, no input region, no geometry), painted after its live
     /// siblings until the last tween ends, when the next pass drops it.
     pub leaving: bool,
-    /// The last `(max_width, size)` a `text` node measured, carried so unchanged text skips shaping.
-    pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
     /// What a `list` built its items from, so a pass that finds it unchanged keeps them.
     pub list_memo: Option<node::ListMemo>,
     /// What its `children` or `child` table last read as, so a pass holding the same table skips

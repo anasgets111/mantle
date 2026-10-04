@@ -1,5 +1,5 @@
 use super::{LayoutStyle, LogicalSize, ResolvedNode};
-use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode, Tween};
+use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode};
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use taffy::TraversePartialTree;
 use taffy::prelude::{fr, length, line, span, zero};
@@ -291,18 +291,15 @@ pub(super) fn update_solver_node(
     if *current != solver_style {
         tree.set_style(id, solver_style).map_err(taffy_failed)?;
     }
-    // Compared with the kept memo swapped in, so only the inputs decide.
-    let kept = match tree.get_node_context(id) {
-        Some(Measure::Text { memo, .. }) => *memo,
-        _ => None,
-    };
-    let fresh = match measure.as_mut() {
-        Some(Measure::Text { memo, .. }) => std::mem::replace(memo, kept),
-        _ => None,
-    };
+    // Compared with the kept memo swapped in, so only the inputs decide; any other change drops it.
+    if let (Some(Measure::Text { memo: kept, .. }), Some(Measure::Text { memo, .. })) =
+        (tree.get_node_context(id), measure.as_mut())
+    {
+        *memo = *kept;
+    }
     if tree.get_node_context(id) != measure.as_ref() {
         if let Some(Measure::Text { memo, .. }) = measure.as_mut() {
-            *memo = fresh;
+            *memo = None;
         }
         tree.set_node_context(id, measure).map_err(taffy_failed)?;
     }
@@ -372,35 +369,11 @@ pub(super) fn hold_leavers(
     tree.set_style(id, solver_style).map_err(taffy_failed)
 }
 
-pub(super) const TEXT_MEASURE_KEYS: &[&str] =
-    &["content", "font_size", "line_height", "letter_spacing", "font_weight", "italic", "font", "wrap", "max_lines"];
-
-/// `font_variations` compares as the axes last parsed: a table is equal to itself after an in-place
-/// edit, so its raw value cannot tell.
-pub(super) fn text_measure_matches(
-    (fresh, fresh_paint): (&PropMap, Option<&PaintStyle>),
-    (retained, retained_paint): (&PropMap, Option<&PaintStyle>),
-) -> bool {
-    fn axes(paint: Option<&PaintStyle>) -> Option<&shaping::Variations> {
-        match paint {
-            Some(PaintStyle::Text { variations, .. }) => Some(variations),
-            _ => None,
-        }
-    }
-    TEXT_MEASURE_KEYS.iter().all(|k| fresh.get(k) == retained.get(k)) && axes(fresh_paint) == axes(retained_paint)
-}
-
-/// Whether a running tween moves what this `text` measures from, so advancing it voids the memo.
-pub(super) fn text_measure_tweening(kind: &str, tweens: &[Tween]) -> bool {
-    kind == "text" && tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property))
-}
-
 /// What the solver asks a leaf for its size with, for the kinds whose size is their content.
 pub(super) fn measure_for(
     kind: &str,
     paint: Option<&PaintStyle>,
     properties: &PropMap,
-    memo: Option<(Option<f32>, taffy::Size<f32>)>,
 ) -> Result<Option<Measure>, LayoutError> {
     Ok(match flow_kind(kind, properties)? {
         // `node::paint_style` gives every `text` a `PaintStyle::Text` and `flow_kind` cannot route
@@ -436,7 +409,7 @@ pub(super) fn measure_for(
                 font: font.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
-                memo,
+                memo: None,
             })
         }
         "icon" => Some(Measure::Square(node::fields::icon::size.read(properties)?)),
@@ -1427,5 +1400,46 @@ pub(super) mod tests {
         let text = width();
         lua.load(r##"axes.opsz = 32 state("fg", "#FFFFFFFF"):set("#000000FF")"##).exec().unwrap();
         assert_ne!(width(), text);
+    }
+
+    /// A runs table compares by address, so the parsed runs must tell an in-place edit.
+    #[test]
+    fn runs_mutated_in_place_invalidate_text_memo() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"runs = { { text = "ab" } }
+            return panel { id = "bar", child = text { content = state("c", runs) } }"#,
+        );
+        let mut width = || {
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            scene.surface("bar@TEST").unwrap().children[0].rect.width
+        };
+        let short = width();
+        lua.load(r#"runs[1].text = "abcdefgh" state("c", runs):set(runs)"#).exec().unwrap();
+        assert!(width() > short * 2.0);
+    }
+
+    #[test]
+    fn an_unchanged_text_keeps_its_memo() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = text { content = "Hello", font_size = state("fs", 12) } }"#,
+        );
+        let mut memo = || {
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let id = scene.surface("bar@TEST").unwrap().children[0].taffy.unwrap();
+            let tree = scene.solver_trees.values().next().unwrap();
+            match tree.get_node_context(id) {
+                Some(Measure::Text { memo, .. }) => *memo,
+                _ => None,
+            }
+        };
+        let first = memo();
+        assert!(first.is_some());
+        assert_eq!(memo(), first);
+        lua.load(r#"state("fs", 12):set(24)"#).exec().unwrap();
+        assert_ne!(memo(), first);
     }
 }

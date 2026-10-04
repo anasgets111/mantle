@@ -6,7 +6,6 @@ use std::time::Instant;
 
 use mlua::{Lua, Value, WeakLua};
 
-use super::solver::{text_measure_matches, text_measure_tweening};
 use super::{LayoutStyle, ResolvedNode};
 use crate::layout::node::{self, LayoutError, PaintStyle, PropMap, Tween};
 use crate::lua::signal::{self, CellId, ComputedFrame};
@@ -40,8 +39,6 @@ pub(super) struct Resolved {
     pub tweens: Vec<Tween>,
     pub movement: Option<Box<node::MoveSpec>>,
     pub memo: Rc<ResolveMemo>,
-    /// The retained measurement, when this `text` measures from what it measured from last pass.
-    pub text_memo: Option<(Option<f32>, taffy::Size<f32>)>,
 }
 
 /// `raw` resolved, `build` applied (a surface root's function `child`), and its tweens reconciled
@@ -78,7 +75,6 @@ pub(super) fn resolve(
     {
         let memo = r.resolve_memo.take().expect("keep requires a resolve memo");
         signal::note_reads(lua, &memo.cells);
-        let text_memo = if text_measure_tweening(kind, &r.tweens) { None } else { r.text_memo };
         let mut properties = std::mem::take(&mut r.properties);
         let mut tweens = std::mem::take(&mut r.tweens);
         // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
@@ -91,7 +87,7 @@ pub(super) fn resolve(
         let injected = drop_injected_sizes(&mut properties, &memo.raw);
         let style = if moving || injected { LayoutStyle::parse(&properties)? } else { *r.layout_style };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
-        return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo, text_memo });
+        return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo });
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
@@ -101,13 +97,8 @@ pub(super) fn resolve(
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped });
     let paint = node::paint_style(kind, &properties)?;
-    let text_memo = retained
-        .filter(|r| {
-            kind == "text" && text_measure_matches((&properties, paint.as_ref()), (&r.properties, r.paint.as_ref()))
-        })
-        .and_then(|r| r.text_memo);
     let style = LayoutStyle::parse(&properties)?;
-    Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo, text_memo })
+    Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
 }
 
 /// The values a pass dropped, each named down to its node as the walk returns. Present only
