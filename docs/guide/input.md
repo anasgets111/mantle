@@ -171,6 +171,26 @@ Enter or Space activates a named control once per press, calling `on_click(rect,
 with `pointer` at the node's centre, and running `submit` when set. Pointer presses also focus
 named controls.
 
+A `panel`, `window` or `popup` takes `on_escape()` for dismissing without a field. It fires once per
+Escape press (not on repeat) on the innermost shown popup under the focused surface that declares
+it, else the surface itself, and never on a surface without keyboard focus. A focused field keeps
+its own Escape while it has text to clear (or a composition) or declares `on_cancel`; otherwise
+Escape reaches `on_escape`, so a launcher can clear on the first Escape and close on the second.
+
+```lua
+local open = state("menu_open", true)
+
+return panel {
+    id = "menu",
+    layer = "overlay",
+    anchor = { top = true },
+    keyboard_interactivity = "on_demand",
+    visible = open,
+    on_escape = function() open:set(false) end,
+    child = text { content = "Menu" },
+}
+```
+
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or
 `focus_target(name):request()` draws none, and a press hides an outline Tab drew. `focus_ring = false`
@@ -392,6 +412,7 @@ return lock {
 | Make a slider | The example under [pointer](#pointer) |
 | Move a selection through a list with the arrow keys | `on_navigate` under [text fields](#text-fields); the [app launcher](../cookbook/launcher.md) adds `scroll(name):reveal` |
 | Close a search box on a second Escape | The same example: `on_cancel(cleared)` closes only when `cleared` is `false` |
+| Close a dialog or menu on Escape | `on_escape` on the surface ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
 | Reach a button by keyboard or screen reader | Give the node with `on_click` or `submit` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Hide or restyle the focus outline | `focus_ring = false` on the control, and style a wrapper from `focused(name)` ([keyboard controls](#keyboard-controls-and-accessibility)) |

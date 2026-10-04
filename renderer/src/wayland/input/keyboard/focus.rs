@@ -138,6 +138,19 @@ fn secure_focus_accepts_keys(control: Option<&FocusedControl>, field: Option<&Fo
     control.surface_id == field.surface_id && control.id == field.id && control.kind == ControlKind::Masked
 }
 
+/// Escape belongs to a focused field with something to do: text or a composition to clear, or an
+/// `on_cancel`. Otherwise it reaches `on_escape`, so "first clears, second closes" stays expressible.
+pub(super) fn field_takes_escape(has_text: bool, cancels: bool) -> bool {
+    has_text || cancels
+}
+
+/// The innermost surface in `scope` (focused first, popups after) that declares `on_escape`.
+pub(super) fn escape_handler<'a>(trees: &[(&'a str, &layout::ResolvedNode)]) -> Option<(&'a str, Function)> {
+    trees.iter().rev().find_map(|(id, tree)| {
+        crate::layout::node::fields::closable::on_escape.read(&tree.properties).ok().flatten().map(|f| (*id, f))
+    })
+}
+
 /// A button holding focus blocks typing into the retained password, not Escape.
 pub(super) fn secure_key_reaches_field(
     control: Option<&FocusedControl>,
@@ -409,6 +422,31 @@ mod tests {
         std::rc::Rc::make_mut(&mut node.properties)
             .insert("accessible_name", Value::String(lua.create_string(name).unwrap()));
         node
+    }
+
+    #[test]
+    fn escape_goes_to_the_innermost_surface_declaring_on_escape() {
+        let lua = Lua::new();
+        let with = |declares: bool| {
+            let mut node = hit_node(&lua, "panel", (0.0, 0.0, 10.0, 10.0), false);
+            if declares {
+                let f = lua.create_function(|_, ()| Ok(())).unwrap();
+                std::rc::Rc::make_mut(&mut node.properties).insert("on_escape", Value::Function(f));
+            }
+            node
+        };
+        let (bar, menu, tip) = (with(true), with(true), with(false));
+        assert_eq!(escape_handler(&[("bar", &bar), ("menu", &menu), ("tip", &tip)]).map(|(id, _)| id), Some("menu"));
+        assert_eq!(escape_handler(&[("bar", &bar), ("tip", &tip)]).map(|(id, _)| id), Some("bar"));
+        assert!(escape_handler(&[("tip", &tip)]).is_none());
+        assert!(escape_handler(&[]).is_none(), "no keyboard focus, no scope");
+    }
+
+    #[test]
+    fn a_field_keeps_escape_only_while_it_has_text_or_an_on_cancel() {
+        assert!(field_takes_escape(true, false), "the first Escape clears");
+        assert!(field_takes_escape(false, true), "on_cancel owns it even when empty");
+        assert!(!field_takes_escape(false, false), "the second Escape reaches the surface");
     }
 
     #[test]

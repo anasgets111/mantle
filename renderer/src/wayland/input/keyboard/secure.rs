@@ -9,7 +9,7 @@ use crate::lua::call_logged;
 
 /// `on_cancel` of the reachable focused field. Escape reaches Lua; the secret never does
 /// (ADR-0005).
-fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField) -> Option<Function> {
+pub(super) fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField) -> Option<Function> {
     let mut stack = vec![tree];
     while let Some(node) = stack.pop() {
         if !node.visible || node.leaving {

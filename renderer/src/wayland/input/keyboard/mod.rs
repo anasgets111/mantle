@@ -6,6 +6,7 @@ use shared::debug;
 
 use super::*;
 use crate::layout::node::prop::keywords;
+use crate::lua::call_logged;
 
 mod focus;
 mod plain;
@@ -301,7 +302,7 @@ impl KeyboardHandler for App {
         debug!(2; "keyboard focus left {left}");
     }
 
-    // There is no key-handler property, and ADR-0050 adds none: `secure_submit` (ADR-0005) sends
+    // The only key hook is the surface's `on_escape`; `secure_submit` (ADR-0005) sends
     // `KeyEvent` bytes through native `SecureBuffer` to Supervisor, never Lua. See [`key_action`].
     fn press_key(
         &mut self,
@@ -497,8 +498,35 @@ impl App {
         if self.apply_control_key(event, repeat, serial) {
             return;
         }
+        let escape = event.keysym == Keysym::Escape && !repeat && !self.ctrl_held;
+        let handler = escape.then(|| self.surface_escape_handler()).flatten();
         self.apply_secure_key(event, repeat);
         self.apply_plain_key(event, repeat);
+        if let Some((id, on_escape)) = handler {
+            call_logged(&on_escape, (), format_args!("{id}: on_escape"));
+        }
+    }
+
+    /// The `on_escape` to fire for this press, resolved before the fields clear or drop focus.
+    fn surface_escape_handler(&self) -> Option<(String, Function)> {
+        let plain =
+            self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).is_some_and(|field| {
+                let composing = self.text_input.composing(&field.surface_id, field.id).is_some();
+                focus::field_takes_escape(!field.buffer.is_empty() || composing, field.on_cancel.is_some())
+            });
+        let secure = self.focused_secure_submit.as_ref().is_some_and(|field| {
+            let cancels = self
+                .client
+                .scene()
+                .surface(&field.surface_id)
+                .is_some_and(|tree| secure::secure_on_cancel(tree, field).is_some());
+            focus::field_takes_escape(!self.secure_buffer.is_empty(), cancels)
+        });
+        if plain || secure {
+            return None;
+        }
+        let scope = self.keyboard_focus_scope();
+        focus::escape_handler(&self.scoped_trees(&scope)).map(|(id, f)| (id.to_string(), f))
     }
 }
 

@@ -7575,3 +7575,21 @@ ADR-0318's port: `share`s scale to integer counts summing to about 1e9, which ke
 1e-9 and leaves no count at 0, so upstream's `unwrap_unchecked` sort never meets a NaN. Naming the
 map type it takes makes `ahash` and `indexmap` direct dependencies, both already built. Cost: Celebi takes 15 ms on a 128 px image in a debug build, on the call's own
 thread, and existing configs get different swatches from the same image.
+
+## 0320. Surfaces take `on_escape`, after any focused field that has a use for Escape
+
+Escape reached Lua only through a focused `textfield` (ADR-0102), so a dialog or menu with the
+keyboard and no field could not close on it. `panel`, `window` and `popup` take `on_escape()`;
+`lock` does not.
+
+1. **Once per press**, never on repeat or with Ctrl, and only while the surface or a popup under it
+   has keyboard focus.
+2. **A focused field keeps Escape** while it has text or a composition to clear, or an
+   `on_cancel`. Otherwise the key reaches the surface, so "first Escape clears, second closes"
+   needs no `on_cancel`. A secure field contributes only whether its buffer is empty.
+3. **The innermost shown popup that declares it wins**, then outward to the focused surface;
+   exactly one handler fires. It is resolved before the fields run, since `on_cancel` drops focus.
+
+Rejected: a general `on_key(key, mods)`, which overlaps field editing, Tab/Enter/Space activation
+and IME and needs a full precedence matrix, and widens what a secure field exposes. DOM-style
+bubbling from the focused node, which needs a key-focus tree the engine does not have.
