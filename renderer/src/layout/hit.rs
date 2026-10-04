@@ -369,7 +369,7 @@ mod tests {
         let mut open = ResolvedNode::test("column", (0.0, 0.0, 20.0, 20.0), overflowing());
         open.paint = Some(PaintStyle::Box {
             background: None,
-            radius: 0.0,
+            radius: Default::default(),
             colors: Default::default(),
             widths: Default::default(),
             clip: crate::layout::node::ClipShape::None,

@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `radius` also takes per-corner values, `{ top_left, top_right, bottom_right, bottom_left }`, which `animate` tweens. Corners too big for a side shrink together, as in CSS; a shadow rounds by the mean corner.
 - `hittable = false` lets the pointer through a node and its descendants to what is underneath; a descendant's `hittable = true` takes it back.
 - `on_click` takes the pointer as a third argument, `{ x, y }` in node-local coordinates like `on_drag`'s. A keyboard activation passes the node's centre.
 - An `icon` with `foreground` recolours every shape of a `-symbolic` icon that never uses `currentColor`, as GTK does, so themes that hard-code symbolic colours (Tela) follow it. Icons that use `currentColor` keep their accents, and full-colour icons are unchanged.

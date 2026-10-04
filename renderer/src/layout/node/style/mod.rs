@@ -113,10 +113,42 @@ keywords! {
     }
 }
 
+/// `radius`: a number sets all four corners, a table each; an absent corner is 0, and the row's
+/// range bounds every corner.
+pub(crate) struct NumberOrCorners;
+
+spelled!(NumberOrCorners => format!("{}|{}", f32::lua(), CornersInput::lua()));
+
+impl Prop for NumberOrCorners {
+    type Out = Radii;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Radii, LayoutError> {
+        let property = row.name;
+        let Some(value) = value else {
+            return Ok(Radii::default());
+        };
+        let radii = if let Some(n) = value_as_f32(property, value)? {
+            [n; 4]
+        } else {
+            let Value::Table(table) = value else {
+                return Err(invalid(
+                    property,
+                    format!("expected a number or a table, got {}", preview_for_error(value)),
+                ));
+            };
+            let c = CornersInput::read(property, table)?;
+            [c.top_left, c.top_right, c.bottom_right, c.bottom_left].map(|r| r.unwrap_or(0.0))
+        };
+        for n in radii {
+            row_within(row, n)?;
+        }
+        Ok(Radii(radii))
+    }
+}
+
 /// `radius`, negated under `corner_shape = "scoop"`.
-pub fn parse_radius(properties: &PropMap) -> Result<f32, LayoutError> {
+pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
     let radius = fields::paint::radius.read(properties)?;
-    Ok(if fields::paint::corner_shape.read(properties)? == CornerShape::Scoop { -radius } else { radius })
+    Ok(if fields::paint::corner_shape.read(properties)? == CornerShape::Scoop { radius * -1.0 } else { radius })
 }
 
 /// The range an overshooting easing is clamped into: the property table's `range`, else
@@ -686,7 +718,7 @@ mod tests {
     #[test]
     fn radius_absent_defaults_to_zero() {
         let props = PropMap::default();
-        assert_eq!(parse_radius(&props).unwrap(), 0.0);
+        assert_eq!(parse_radius(&props).unwrap(), 0.0.into());
     }
 
     #[test]
@@ -694,7 +726,20 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = 6 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert_eq!(parse_radius(&props).unwrap(), 6.0);
+        assert_eq!(parse_radius(&props).unwrap(), Radii::from(6.0));
+    }
+
+    #[test]
+    fn radius_reads_a_table_per_corner_and_scoop_negates_it() {
+        let lua = Lua::new();
+        let radii = |extra: &str| {
+            let src = format!("return {{ kind = 'rect', radius = {{ top_left = 4, bottom_right = 8 }}, {extra} }}");
+            let table: mlua::Table = lua.load(&src).eval().unwrap();
+            parse_radius(&deserialize_lua_table(&table).unwrap().properties).unwrap()
+        };
+        assert_eq!(radii(""), Radii([4.0, 0.0, 8.0, 0.0]));
+        assert_eq!(radii("corner_shape = 'scoop'"), Radii([-4.0, 0.0, -8.0, 0.0]));
+        assert_eq!(Radii([20.0, 20.0, 0.0, 0.0]).fit(30.0, 100.0), Radii([15.0, 15.0, 0.0, 0.0]));
     }
 
     #[test]

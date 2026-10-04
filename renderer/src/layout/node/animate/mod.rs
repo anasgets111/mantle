@@ -14,8 +14,8 @@ use mlua::{Lua, Value};
 use super::prop::Prop;
 use super::style::{axis_default, parse_percent, range_of};
 use super::{
-    Axes, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, fields, invalid, parse_hex_color,
-    tweened, value_as_f32,
+    Axes, CornersInput, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, fields, invalid,
+    parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -121,7 +121,7 @@ pub fn depart(
 
 /// A value a tween can sit between, told apart by shape rather than by which property holds it.
 /// `Percent` is a `"NN%"` size held as a fraction; `Fields` is a table of numbers under one of
-/// two key sets, the edges `{ top, right, bottom, left }` or the axes `{ x, y }`, an absent key
+/// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the axes `{ x, y }`, an absent key
 /// reading as the property's default (`0`, or `1` for a `scale`). `Path` is a path's `commands`,
 /// which tween point by point only between lists of the same ops and hole flags. Two different
 /// shapes snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches
@@ -136,10 +136,11 @@ pub enum Animatable {
 }
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
+    CornersInput::lua(),
     Axes::lua(),
     PathCommands::lua()
 ));
@@ -181,7 +182,10 @@ impl Animatable {
             }
             Value::Table(table) => {
                 let has = |key: &str| table.contains_key(key).unwrap_or(false);
-                let keys = if Axes::KEYS.iter().any(|key| has(key)) { Axes::KEYS } else { EdgesInput::KEYS };
+                let keys = [Axes::KEYS, CornersInput::KEYS]
+                    .into_iter()
+                    .find(|keys| keys.iter().any(|key| has(key)))
+                    .unwrap_or(EdgesInput::KEYS);
                 // Any other key makes it another shape, such as a gradient (ADR-0255).
                 let known =
                     |key: &Value| matches!(key, Value::String(s) if keys.iter().any(|k| s.as_bytes() == k.as_bytes()));
@@ -908,6 +912,22 @@ mod tests {
             Animatable::from_value("commands", Some(&Value::Integer(1))).is_err(),
             "a bad target fails as the property would"
         );
+    }
+
+    #[test]
+    fn a_corner_table_tweens_per_corner_and_clamps_at_zero() {
+        let lua = Lua::new();
+        let table = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("radius", Some(&value)).unwrap().unwrap()
+        };
+        let (from, to) = (table("return { top_left = 10 }"), table("return { bottom_right = 20 }"));
+        let values = |t| match from.lerp(&to, t, "radius") {
+            Animatable::Fields { keys, values } => (keys == CornersInput::KEYS, values),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(values(0.5), (true, [5.0, 0.0, 10.0, 0.0]));
+        assert_eq!(values(-1.0).1[2], 0.0, "an overshoot never goes negative");
     }
 
     #[test]

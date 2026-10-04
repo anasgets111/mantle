@@ -20,8 +20,8 @@ use crate::layout::node::prop::{
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
     CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, Items, KeyboardInteractivity, LayerKind, Limit, Live,
-    Mask, MaxLines, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
-    SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
+    Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset,
+    Region, Root, Scale, SecureSubmitTarget, ShadowMode, SizeHint, SizeMode, TextAlign, TransitionSpec, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -313,8 +313,8 @@ props! {
         ///
         /// Book: Multiplies the alpha of this node and its subtree; see [Mask](#mask)
         mask: Bound<Mask>;
-        /// Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle.
-        radius: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
+        /// Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner.
+        radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
         /// `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.

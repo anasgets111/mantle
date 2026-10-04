@@ -6,7 +6,7 @@ use femtovg::{Canvas, Color, CompositeOperation, ImageId, Paint, Path, RenderTar
 use glow::HasContext;
 
 use crate::layout::image_shader;
-use crate::layout::node::{self, Rgba};
+use crate::layout::node::{self, Radii, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
@@ -20,7 +20,7 @@ pub(super) fn paint_shadow(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     shadow: node::Shadow,
-    own: f32,
+    own: Radii,
     knockout: bool,
 ) {
     let LogicalRect { x, y, width, height } = shadow_rect(rect, rect, shadow);
@@ -29,11 +29,12 @@ pub(super) fn paint_shadow(
     // instead, 22. Floored at NanoVG's 1, since the gradient divides by it.
     let feather = (1.5 * shadow.blur).max(1.0);
     // A signed distance past half the box is positive everywhere, so the gradient would paint nothing.
-    let radius = spread_radius(own, shadow.spread).min(width.min(height) / 2.0);
+    // The gradient has one radius, so unequal corners cast the shadow of their mean.
+    let radius = spread_radius(own.0.iter().sum::<f32>() / 4.0, shadow.spread).min(width.min(height) / 2.0);
     let color = Color::rgbaf(r, g, b, a);
     let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, Color::rgbaf(r, g, b, 0.0));
     let reach = grow(LogicalRect { x, y, width, height }, feather / 2.0);
-    let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, 0.0) };
+    let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, Radii::default()) };
     canvas.fill_path(&path, &paint);
 }
 
@@ -44,7 +45,7 @@ fn spread_radius(radius: f32, spread: f32) -> f32 {
 }
 
 /// `outside` with the box cut out, which is where a box shadow draws (ADR-0260).
-fn knocked_out(rect: LogicalRect, radius: f32, outside: LogicalRect) -> Path {
+fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
     let mut path = box_path(rect, radius);
     path.solidity(Solidity::Hole);
     path.rect(outside.x, outside.y, outside.width, outside.height);
@@ -212,7 +213,7 @@ pub(super) fn draw_backdrop(
     rect: LogicalRect,
     clip: PhysicalRect,
     sigma: f32,
-    radius: f32,
+    radius: Radii,
     alpha: f32,
 ) {
     let Some((copy, size, paint)) = read_target(painter, walk, clip) else { return };
@@ -696,10 +697,15 @@ mod tests {
         canvas.set_render_target(RenderTarget::Image(source));
         canvas.clear_rect(0, 0, 250, 250, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
         let colour = |r, b| Fill::Color(Rgba { r, g: 0.0, b, a: 1.0 });
-        fill_rect(canvas, LogicalRect { x: 96.0, y: 96.0, width: 64.0, height: 64.0 }, 0.0, &colour(1.0, 0.0));
+        fill_rect(
+            canvas,
+            LogicalRect { x: 96.0, y: 96.0, width: 64.0, height: 64.0 },
+            Radii::default(),
+            &colour(1.0, 0.0),
+        );
         for x in (96..160).step_by(8) {
             let stripe = LogicalRect { x: x as f32, y: 96.0, width: 4.0, height: 64.0 };
-            fill_rect(canvas, stripe, 0.0, &colour(0.0, 1.0));
+            fill_rect(canvas, stripe, Radii::default(), &colour(0.0, 1.0));
         }
         canvas.set_render_target(RenderTarget::Screen);
         let read = |painter: &mut TextPainter, image: ImageId| {

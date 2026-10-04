@@ -6,7 +6,7 @@
 //! `ResolvedNode.rect` is parent-relative, so [`build_node`] accumulates an absolute origin as it
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
-use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintStyle, Rgba, StyleRun};
+use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun};
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -126,13 +126,13 @@ fn build_node(
                 && opacity >= 1.0;
             (*radius, opaque, !opaque && !effect.content_shadow)
         }
-        _ => (0.0, false, false),
+        _ => (Radii::default(), false, false),
     };
     // A gradient cannot draw a scoop, so a scoop's box shadow is its silhouette's.
-    let cast = effect.shadow.filter(|_| boxed || (opaque && radius >= 0.0));
+    let cast = effect.shadow.filter(|_| boxed || (opaque && !radius.scoop()));
     let layered = node::Effect { shadow: effect.shadow.filter(|_| cast.is_none()), ..effect };
     let own = layer_bounds(rect, layered, scale);
-    let reach = match cast.filter(|_| radius >= 0.0) {
+    let reach = match cast.filter(|_| !radius.scoop()) {
         Some(shadow) => snap_to_physical(grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur), scale)
             .union(if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) }),
         None if effect.shadow.is_some() || effect.blur > 0.0 => layer_bounds(rect, effect, scale),
@@ -175,7 +175,7 @@ fn build_node(
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
     if let Some(shadow) = cast {
         let shadow = node::Shadow { color: fade(shadow.color, opacity), ..shadow };
-        let draw = if radius >= 0.0 {
+        let draw = if !radius.scoop() {
             Draw::Shadow { shadow, radius, knockout: boxed }
         } else {
             let effect = node::Effect { shadow: Some(shadow), ..node::Effect::default() };
@@ -204,14 +204,14 @@ fn build_node(
                     commands.extend(inner);
                     Draw::NodeMask {
                         invert: mask.is_some_and(|mask| mask.invert),
-                        radius: radius.unwrap_or(0.0),
+                        radius: radius.unwrap_or_default(),
                         split,
                         commands,
                     }
                 } else {
                     let box_px = (physical_edge(rect.width, scale), physical_edge(rect.height, scale));
                     let mask = mask.cloned().map(|mask| (mask, box_px));
-                    Draw::Clipped { radius: radius.unwrap_or(0.0), mask, commands: inner }
+                    Draw::Clipped { radius: radius.unwrap_or_default(), mask, commands: inner }
                 };
                 out.push(cmd(clip, draw));
             }
@@ -255,7 +255,7 @@ fn build_node(
         let border =
             |color| BorderColor { top: Some(color), right: Some(color), bottom: Some(color), left: Some(color) };
         let widths = EdgeInsets { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 };
-        out.push(cmd(clip, Draw::Box { background: None, radius: 0.0, colors: border(white), widths }));
+        out.push(cmd(clip, Draw::Box { background: None, radius: Radii::default(), colors: border(white), widths }));
         let inner = LogicalRect {
             x: px.x + 2.0 * scale,
             y: px.y + 2.0 * scale,
@@ -265,7 +265,10 @@ fn build_node(
         out.push(DrawCmd {
             rect: inner,
             clip,
-            draw: in_buffer_pixels(Draw::Box { background: None, radius: 0.0, colors: border(black), widths }, scale),
+            draw: in_buffer_pixels(
+                Draw::Box { background: None, radius: Radii::default(), colors: border(black), widths },
+                scale,
+            ),
         });
     }
     if (layered.shadow.is_some() || layered.blur > 0.0) && out.len() > body {
@@ -346,10 +349,10 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
     }
 }
 
-/// The non-zero radius of a node whose children use a rounded clip.
-fn rounded_clip(node: &ResolvedNode) -> Option<f32> {
+/// The non-zero radii of a node whose children use a rounded clip.
+fn rounded_clip(node: &ResolvedNode) -> Option<Radii> {
     match node.paint {
-        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if radius != 0.0 => Some(radius),
+        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if !radius.is_zero() => Some(radius),
         _ => None,
     }
 }
@@ -1518,7 +1521,7 @@ mod tests {
         let Draw::Clipped { radius, mask: Some((mask, box_px)), commands } = &group.draw else {
             panic!("expected a masked group, got {:?}", group.draw)
         };
-        assert_eq!((*radius, *box_px, mask.invert), (0.0, (80, 32), false));
+        assert_eq!((*radius, *box_px, mask.invert), (Radii::default(), (80, 32), false));
         let order: Vec<_> = commands
             .iter()
             .map(|cmd| match &cmd.draw {
@@ -1537,7 +1540,7 @@ mod tests {
                 mask = { source = "/nonexistent/mask.svg" } }"##,
         );
         let Draw::Clipped { radius, mask: Some(_), commands } = &list.commands[1].draw else { panic!("{list:?}") };
-        assert_eq!((*radius, commands.len()), (8.0, 1));
+        assert_eq!((*radius, commands.len()), (Radii::from(8.0), 1));
     }
 
     /// Opacity is baked into the list (ADR-0063), so a gradient fades stop by stop like a colour.
@@ -1611,7 +1614,7 @@ mod tests {
         let list = card("opacity = 0.5,");
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
         let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
-        assert_eq!((radius, knockout), (6.0, true), "a fading card shows no shadow through its body");
+        assert_eq!((radius, knockout), (Radii::from(6.0), true), "a fading card shows no shadow through its body");
         assert!((shadow.color.a - 0.5 * 128.0 / 255.0).abs() < 1e-6, "faded with the node: {shadow:?}");
         assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill covers the shadow");
         // The box is 40..80 x 40..60; the shadow's box is 38..82 x 42..66, blurred 3 sigma, 12, further out.
@@ -1657,7 +1660,7 @@ mod tests {
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
         let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
-        assert_eq!((radius, knockout, shadow.color.a), (6.0, true, 0.5));
+        assert_eq!((radius, knockout, shadow.color.a), (Radii::from(6.0), true, 0.5));
         assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill over it");
         assert!(
             list.commands[at + 2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })),
@@ -1690,7 +1693,7 @@ mod tests {
         else {
             panic!("the silhouette alone: {commands:?}")
         };
-        assert_eq!((fill.a, *radius), (1.0, -6.0));
+        assert_eq!((fill.a, *radius), (1.0, Radii::from(-6.0)));
         assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }
 
@@ -1775,12 +1778,12 @@ mod tests {
         });
         let (rect, shadow, radius) = shadow.expect("a box shadow");
         assert_eq!(rect, LogicalRect { x: 20.0, y: 20.0, width: 80.0, height: 40.0 });
-        assert_eq!((shadow.blur, shadow.offset, shadow.spread, radius), (4.0, (6.0, 0.0), 2.0, 8.0));
+        assert_eq!((shadow.blur, shadow.offset, shadow.spread, radius), (4.0, (6.0, 0.0), 2.0, Radii::from(8.0)));
         let border = list.commands.iter().find_map(|cmd| match cmd.draw {
             Draw::Box { radius, widths, .. } if widths.top > 0.0 => Some((radius, widths.top)),
             _ => None,
         });
-        assert_eq!(border, Some((8.0, 2.0)));
+        assert_eq!(border, Some((Radii::from(8.0), 2.0)));
         let text = list.commands.iter().find_map(|cmd| match cmd.draw {
             Draw::Text { font_size, .. } => Some(font_size),
             _ => None,
@@ -1810,7 +1813,7 @@ mod tests {
                 backdrop_blur = 4, shadow_offset = { y = 4 } }"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
-        assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: 6.0, alpha: 0.5 });
+        assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: Radii::from(6.0), alpha: 0.5 });
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });
         // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.
         assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");

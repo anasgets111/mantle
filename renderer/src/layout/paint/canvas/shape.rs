@@ -5,7 +5,7 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
-use crate::layout::node::{BorderColor, EdgeInsets, Fill, Gradient, GradientShape, Rgba};
+use crate::layout::node::{BorderColor, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 
 /// Below this the two sides of a box count as equal (`box_path`): the 0.05 px band the sweep in
@@ -43,25 +43,31 @@ const HAIR: f32 = 0.05;
 /// still_a_circle`). Tweens produce exactly that: a `width = "fill"` circle inside a cell whose
 /// width and padding both ease lands a rounding error either side of its height on different
 /// frames, and the narrow frames flashed as squares.
-pub(super) fn box_path(rect: LogicalRect, radius: f32) -> Path {
+///
+/// Unequal corners go to femtovg's `rounded_rect_varying`, which shrinks them by CSS's rule; a
+/// scoop takes the same rule from [`Radii::fit`].
+pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
+    let [tl, tr, br, bl] = radii.0;
     let mut path = Path::new();
 
-    if radius == 0.0 || w <= 0.0 || h <= 0.0 {
+    if radii.is_zero() || w <= 0.0 || h <= 0.0 {
         path.rect(x, y, w, h);
-    } else if radius < 0.0 {
+    } else if radii.scoop() {
         // Each arc is centred on a corner point and swept inward; `arc` joins them with the
-        // straight edges. Below half the shorter side, so neighbouring arcs never meet and fold.
+        // straight edges. Short of half the shorter side, so neighbouring arcs never meet and fold.
         // Wound left, bottom, right, top like the shapes below: the other way, femtovg's
         // antialiasing inset pushes the edge up to 3px into the scoop.
-        let r = (-radius).min(w.min(h) / 2.0 - HAIR).max(0.0);
-        path.arc(x, y + h, r, -FRAC_PI_2, 0.0, Solidity::Hole);
-        path.arc(x + w, y + h, r, PI, 3.0 * FRAC_PI_2, Solidity::Hole);
-        path.arc(x + w, y, r, FRAC_PI_2, PI, Solidity::Hole);
-        path.arc(x, y, r, 0.0, FRAC_PI_2, Solidity::Hole);
+        let [tl, tr, br, bl] = radii.fit(w - 2.0 * HAIR, h - 2.0 * HAIR).0.map(|r| -r);
+        path.arc(x, y + h, bl, -FRAC_PI_2, 0.0, Solidity::Hole);
+        path.arc(x + w, y + h, br, PI, 3.0 * FRAC_PI_2, Solidity::Hole);
+        path.arc(x + w, y, tr, FRAC_PI_2, PI, Solidity::Hole);
+        path.arc(x, y, tl, 0.0, FRAC_PI_2, Solidity::Hole);
         path.close();
-    } else if radius < w.min(h) / 2.0 {
-        path.rounded_rect(x, y, w, h, radius);
+    } else if tl != tr || tr != br || br != bl {
+        path.rounded_rect_varying(x, y, w, h, tl, tr, br, bl);
+    } else if tl < w.min(h) / 2.0 {
+        path.rounded_rect(x, y, w, h, tl);
     } else if (w - h).abs() <= HAIR {
         path.circle(x + w / 2.0, y + h / 2.0, w.min(h) / 2.0);
     } else if w > h {
@@ -86,7 +92,7 @@ pub(super) fn box_path(rect: LogicalRect, radius: f32) -> Path {
 
 /// The background fill, rounded when the node asked for it. See [`box_path`] for why a radius at
 /// half the box is its own shape rather than a `rounded_rect` argument.
-pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: f32, fill: &Fill) {
+pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: Radii, fill: &Fill) {
     // femtovg's antialias fringe paints an empty path as a 1px line.
     if rect.is_empty() {
         return;
@@ -134,7 +140,7 @@ pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
 pub(super) fn paint_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    radius: f32,
+    radius: Radii,
     colors: BorderColor,
     widths: EdgeInsets,
     scale: f32,
@@ -145,7 +151,7 @@ pub(super) fn paint_border(
         (Some(t), Some(r), Some(b), Some(l)) if t == r && r == b && b == l
     );
 
-    if uniform_width && uniform_color && widths.top > 0.0 && radius > 0.0 {
+    if uniform_width && uniform_color && widths.top > 0.0 && !radius.is_zero() && !radius.scoop() {
         let color = colors.top.expect("uniform_color's match arm above guarantees Some on every edge");
         // `snap_border_band` rounds a box's own two edges to nearest, so it snaps the node's span
         // on each axis, not only a hairline's thickness. The stroke's thickness is snapped the same
@@ -172,7 +178,7 @@ pub(super) fn paint_border(
         return;
     }
 
-    if radius != 0.0 {
+    if !radius.is_zero() {
         shaped_border(canvas, rect, radius, colors, widths, scale);
         return;
     }
@@ -222,7 +228,7 @@ struct Corner {
 }
 
 impl Corner {
-    /// `radius` as [`box_path`] reads it, negative for a scoop; `vertical` and `horizontal` are the
+    /// `radius` as [`Radii`] holds it, negative for a scoop; `vertical` and `horizontal` are the
     /// widths of the two edges meeting here.
     fn new(
         origin: (f32, f32),
@@ -232,7 +238,7 @@ impl Corner {
         vertical: f32,
         horizontal: f32,
     ) -> Self {
-        let (outer, inner) = if radius > 0.0 {
+        let (outer, inner) = if radius >= 0.0 {
             // CSS's inner corner: each radius less the width beside it, and a square once a width
             // passes the radius.
             let (rx, ry) = ((radius - vertical).max(0.0), (radius - horizontal).max(0.0));
@@ -321,7 +327,7 @@ impl Outline {
 fn shaped_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    radius: f32,
+    radius: Radii,
     colors: BorderColor,
     widths: EdgeInsets,
     scale: f32,
@@ -339,16 +345,17 @@ fn shaped_border(
     if drawn.iter().all(Option::is_none) {
         return;
     }
-    let radius = match radius > 0.0 {
-        true => radius.min(w.min(h) / 2.0),
-        false => -(-radius).min(w.min(h) / 2.0 - HAIR).max(0.0),
-    };
+    let [tl, tr, br, bl] = match radius.scoop() {
+        false => radius.fit(w, h),
+        true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
+    }
+    .0;
     let [top, right, bottom, left] = edges;
     let corners = [
-        Corner::new((x, y), (1.0, 1.0), false, radius, left, top),
-        Corner::new((x + w, y), (-1.0, 1.0), true, radius, right, top),
-        Corner::new((x + w, y + h), (-1.0, -1.0), false, radius, right, bottom),
-        Corner::new((x, y + h), (1.0, -1.0), true, radius, left, bottom),
+        Corner::new((x, y), (1.0, 1.0), false, tl, left, top),
+        Corner::new((x + w, y), (-1.0, 1.0), true, tr, right, top),
+        Corner::new((x + w, y + h), (-1.0, -1.0), false, br, right, bottom),
+        Corner::new((x, y + h), (1.0, -1.0), true, bl, left, bottom),
     ];
     // Where corner `i`'s two colours meet: the share of its sweep the edge before it takes.
     let split = |i: usize| {
@@ -529,6 +536,33 @@ mod tests {
         // not pushed into the scoop.
         assert_eq!(pixel_at(painter.canvas_mut(), 10, 3).3, 0, "the pixel before the arc is empty");
         assert!(pixel_at(painter.canvas_mut(), 12, 3).3 >= 100, "the pixel after the arc is filled");
+    }
+
+    /// `radius = { .. }` rounds only the corners it names, in fill, border, rounded clip and scoop.
+    /// Probes sit 1 px in from each corner, clockwise from the top left.
+    #[test]
+    fn each_corner_takes_its_own_radius_in_fill_border_clip_and_scoop() {
+        let corners = [(1, 1), (38, 1), (38, 38), (1, 38)];
+        let filled =
+            |child: &str| paint_points(child, &corners).map(|px| px.iter().map(|p| p.3 > 128).collect::<Vec<_>>());
+        let rounded = r##"radius = { top_left = 16, bottom_right = 16 }"##;
+        let Some(fill) =
+            filled(&format!(r##"rect {{ width = 40, height = 40, background = "#000000FF", {rounded} }}"##))
+        else {
+            return;
+        };
+        assert_eq!(fill, vec![false, true, false, true], "fill");
+        let border =
+            format!(r##"rect {{ width = 40, height = 40, border_width = 2, border_color = "#FFFFFFFF", {rounded} }}"##);
+        assert_eq!(filled(&border).unwrap(), vec![false, true, false, true], "border");
+        let clip = format!(
+            r##"rect {{ width = 40, height = 40, clip = "rounded", {rounded},
+                children = {{ rect {{ width = "fill", height = "fill", background = "#FF0000FF" }} }} }}"##
+        );
+        assert_eq!(filled(&clip).unwrap(), vec![false, true, false, true], "clip");
+        let scoop = r##"rect { width = 40, height = 40, background = "#000000FF", corner_shape = "scoop",
+            radius = { bottom_right = 12 } }"##;
+        assert_eq!(filled(scoop).unwrap(), vec![true, true, false, true], "scoop");
     }
 
     #[test]
@@ -855,7 +889,7 @@ mod tests {
         for (name, w) in [("a hair narrower", 31.999_998), ("a hair wider", 32.000_004), ("square", 32.0)] {
             let canvas = painter.canvas_mut();
             canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
-            fill_rect(canvas, LogicalRect { x: 8.0, y: 8.0, width: w, height: 32.0 }, 17.0, white);
+            fill_rect(canvas, LogicalRect { x: 8.0, y: 8.0, width: w, height: 32.0 }, Radii::from(17.0), white);
             canvas.flush();
             assert_eq!(pixel_at(canvas, 9, 9), (0, 0, 0, 255), "{name}: the corner outside the circle stays black");
             assert_eq!(pixel_at(canvas, 24, 24), (255, 255, 255, 255), "{name}: the centre is filled");
@@ -871,7 +905,7 @@ mod tests {
         let canvas = painter.canvas_mut();
         canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
         let white = &Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
-        fill_rect(canvas, LogicalRect { x: 24.0, y: 8.0, width: 0.0, height: 32.0 }, 6.0, white);
+        fill_rect(canvas, LogicalRect { x: 24.0, y: 8.0, width: 0.0, height: 32.0 }, Radii::from(6.0), white);
         canvas.flush();
         for x in 22..27 {
             assert_eq!(pixel_at(canvas, x, 24), (0, 0, 0, 255), "column {x} stays black");

@@ -47,7 +47,7 @@ pub enum PaintStyle {
     /// and its subtree (ADR-0255).
     Box {
         background: Option<Fill>,
-        radius: f32,
+        radius: Radii,
         colors: BorderColor,
         widths: EdgeInsets,
         clip: ClipShape,

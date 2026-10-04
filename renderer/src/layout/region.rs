@@ -109,7 +109,7 @@ fn collect_blur_regions(
     if node.behind_blur {
         let radius = match &node.paint {
             Some(PaintStyle::Box { radius, .. }) => *radius,
-            _ => 0.0,
+            _ => node::Radii::default(),
         };
         // The radius travels with the box, so scale it the way the box was scaled. An axis-aligned
         // matrix scales x and y alike here; a rotation would not, and a rounded rotated box is
@@ -148,35 +148,38 @@ fn collect_blur_regions(
 ///
 /// A negative radius is a scoop: the circle centres on the corner point, which is a rounded band
 /// mirrored top to bottom and side to side.
-fn push_rounded_rect(rect: PhysicalRect, radius: f32, out: &mut Vec<PhysicalRect>) {
+fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<PhysicalRect>) {
     if rect.is_empty() {
         return;
     }
     let height = rect.y1 - rect.y0;
     let width = rect.x1 - rect.x0;
-    // A radius cannot exceed half the box in either axis, the same clamp the painter's arcs use.
-    let r = (radius.abs().round() as i32).min(width / 2).min(height / 2);
-    if r <= 0 {
-        out.push(rect);
-        return;
-    }
-    // The straight middle, full width, between the two corner bands. A box exactly twice its own
-    // radius tall has no middle, and an empty rectangle is a request for nothing.
-    if rect.y1 - r > rect.y0 + r {
-        out.push(PhysicalRect { x0: rect.x0, y0: rect.y0 + r, x1: rect.x1, y1: rect.y1 - r });
-    }
-    // One band walked once, mirrored top and bottom.
-    let inset_of = |row| if radius < 0.0 { r - inset_at(r, r - 1 - row) } else { inset_at(r, row) };
+    // Corners shrink together, the same rule the painter's arcs follow.
+    let [tl, tr, br, bl] = radii.fit(width as f32, height as f32).0;
+    // How far `row` rows from a corner's own edge is inset from the side: none past its band.
+    let inset = |radius: f32, row: i32| {
+        let r = radius.abs().round() as i32;
+        match row < r {
+            false => 0,
+            true if radius < 0.0 => r - inset_at(r, r - 1 - row),
+            true => inset_at(r, row),
+        }
+    };
+    // Rows sharing both insets merge into one strip, so the straight middle is a single rectangle.
+    let insets = |row: i32| {
+        let up = row;
+        let down = height - 1 - row;
+        (inset(tl, up).max(inset(bl, down)), inset(tr, up).max(inset(br, down)))
+    };
     let mut row = 0;
-    while row < r {
-        let inset = inset_of(row);
+    while row < height {
+        let (left, right) = insets(row);
         let mut last = row + 1;
-        while last < r && inset_of(last) == inset {
+        while last < height && insets(last) == (left, right) {
             last += 1;
         }
-        if rect.x0 + inset < rect.x1 - inset {
-            out.push(PhysicalRect { x0: rect.x0 + inset, y0: rect.y0 + row, x1: rect.x1 - inset, y1: rect.y0 + last });
-            out.push(PhysicalRect { x0: rect.x0 + inset, y0: rect.y1 - last, x1: rect.x1 - inset, y1: rect.y1 - row });
+        if rect.x0 + left < rect.x1 - right {
+            out.push(PhysicalRect { x0: rect.x0 + left, y0: rect.y0 + row, x1: rect.x1 - right, y1: rect.y0 + last });
         }
         row = last;
     }
@@ -316,7 +319,7 @@ mod tests {
     fn a_box_as_small_as_its_radius_still_produces_a_region_and_never_an_empty_rect() {
         for (w, h, r) in [(2, 2, 1.0), (4, 4, 2.0), (10, 4, 2.0), (3, 9, 1.0)] {
             let mut strips = Vec::new();
-            push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: w, y1: h }, r, &mut strips);
+            push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: w, y1: h }, node::Radii::from(r), &mut strips);
             for s in &strips {
                 assert!(!s.is_empty(), "{w}x{h} r{r} emitted the empty rect {s:?}");
             }
@@ -423,7 +426,7 @@ mod tests {
         card.behind_blur = true;
         card.paint = Some(PaintStyle::Box {
             background: Some(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })),
-            radius: 20.0,
+            radius: node::Radii::from(20.0),
             colors: node::BorderColor::default(),
             widths: crate::layout::node::EdgeInsets::default(),
             clip: node::ClipShape::Box,
@@ -464,9 +467,10 @@ mod tests {
     #[test]
     fn a_rounded_box_becomes_a_middle_and_two_corner_bands_costing_about_its_radius() {
         let mut strips = Vec::new();
-        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 600, y1: 300 }, 12.0, &mut strips);
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 600, y1: 300 }, node::Radii::from(12.0), &mut strips);
 
-        assert_eq!(strips[0], PhysicalRect { x0: 0, y0: 12, x1: 600, y1: 288 }, "the straight middle is one rect");
+        // The band's last rows have no inset left, so they join the middle.
+        assert_eq!(strips.iter().filter(|s| s.x0 == 0 && s.x1 == 600).count(), 1, "the straight middle is one rect");
         assert!(strips.len() < 30, "about the radius in strips, not the height: {}", strips.len());
         // Every strip is inside the box, and none of them reaches a corner pixel.
         for s in &strips {
@@ -477,8 +481,23 @@ mod tests {
         assert!(!corner, "the top-left pixel belongs to the rounding, not to the region");
 
         let mut square = Vec::new();
-        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }, 0.0, &mut square);
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }, node::Radii::default(), &mut square);
         assert_eq!(square, [PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }], "no radius is one rectangle");
+    }
+
+    /// Each corner cuts its own band; a square one keeps its pixel, and radii too big for a side
+    /// shrink together.
+    #[test]
+    fn each_corner_of_a_region_takes_its_own_radius() {
+        let mut strips = Vec::new();
+        let radii = node::Radii([12.0, 0.0, 12.0, 0.0]);
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, radii, &mut strips);
+        let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        assert!(!covers(0, 0) && !covers(39, 39), "rounded corners are cut");
+        assert!(covers(39, 0) && covers(0, 39), "square corners are whole");
+        let mut small = Vec::new();
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 10 }, node::Radii([8.0, 8.0, 0.0, 0.0]), &mut small);
+        assert!(!small.iter().any(|s| s.x0 == 0 && s.y0 == 0), "8 + 8 on 10 px of height shrinks to 5 + 5");
     }
 
     /// A scoop's region is the box less a quarter disc at each corner point: the corner pixel is
@@ -486,7 +505,7 @@ mod tests {
     #[test]
     fn a_scooped_box_region_leaves_out_a_quarter_disc_at_each_corner() {
         let mut strips = Vec::new();
-        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, -12.0, &mut strips);
+        push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, node::Radii::from(-12.0), &mut strips);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         for (x, y) in [(0, 0), (39, 0), (0, 39), (39, 39), (7, 7), (11, 0)] {
             assert!(!covers(x, y), "({x}, {y}) is inside a scoop");

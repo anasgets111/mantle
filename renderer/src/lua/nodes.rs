@@ -727,6 +727,7 @@ mod meta_stub_tests {
                 "Color" => "\"#112233\"",
                 "Percent" => "\"50%\"",
                 "Edges" => "{ top = 1.5 }",
+                "Corners" => "{ top_left = 1.5 }",
                 "[number, number, number, number]" => "{ 0.25, 0.1, 0.25, 1 }",
                 "{ steps: integer, [string]: \"no such property\" }" => "{ steps = 4 }",
                 "Node" => "rect {}",

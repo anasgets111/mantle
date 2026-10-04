@@ -35,7 +35,7 @@ pub(crate) fn compose_preedit(
 }
 
 use crate::image::{self, Fit, Load};
-use crate::layout::node::{self, BorderColor, EdgeInsets, Fill, Rgba, StyleRun, TextAlign};
+use crate::layout::node::{self, BorderColor, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::NodeId;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -44,7 +44,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Option<Fill>, radius: f32, colors: BorderColor, widths: EdgeInsets },
+    Box { background: Option<Fill>, radius: Radii, colors: BorderColor, widths: EdgeInsets },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -130,23 +130,23 @@ pub enum Draw {
     /// A subtree masked by the declaring node's rounded arc and, if it has one, its `mask` with
     /// the physical box an image mask is cached under (ADR-0255). Rectangular clips flatten into
     /// each command; rounded clips and masks stay grouped for [`execute`].
-    Clipped { radius: f32, mask: Option<(node::Mask, (u32, u32))>, commands: Vec<DrawCmd> },
+    Clipped { radius: Radii, mask: Option<(node::Mask, (u32, u32))>, commands: Vec<DrawCmd> },
     /// The subtree of a node with a `scale`/`rotate`/`translate` (ADR-0149), drawn under its
     /// affine. Coordinates inside are the untransformed absolute ones.
     Transformed { matrix: node::Affine, commands: Vec<DrawCmd> },
     /// Commands before `split` supply alpha, the rest supply content. One nested list keeps
     /// texture, capture and cache lifetime walks shared with every other painted group.
-    NodeMask { invert: bool, radius: f32, split: usize, commands: Vec<DrawCmd> },
+    NodeMask { invert: bool, radius: Radii, split: usize, commands: Vec<DrawCmd> },
     /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
     /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
-    Shadow { shadow: node::Shadow, radius: f32, knockout: bool },
+    Shadow { shadow: node::Shadow, radius: Radii, knockout: bool },
     /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
     /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
     Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma` and
     /// drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
-    Backdrop { sigma: f32, radius: f32, alpha: f32 },
+    Backdrop { sigma: f32, radius: Radii, alpha: f32 },
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
@@ -588,7 +588,7 @@ mod tests {
             let rect = LogicalRect { x, y: 10.0, width: 20.0, height: 20.0 };
             let draw = Draw::Box {
                 background: Some(Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })),
-                radius: 0.0,
+                radius: Radii::default(),
                 colors: BorderColor::default(),
                 widths: EdgeInsets::default(),
             };
@@ -658,7 +658,7 @@ mod tests {
     fn glass(x0: i32, x1: i32) -> DrawCmd {
         let clip = PhysicalRect { x0, y0: 0, x1, y1: 10 };
         let rect = LogicalRect { x: x0 as f32, y: 0.0, width: (x1 - x0) as f32, height: 10.0 };
-        DrawCmd { rect, clip, draw: Draw::Backdrop { sigma: 1.0, radius: 0.0, alpha: 1.0 } }
+        DrawCmd { rect, clip, draw: Draw::Backdrop { sigma: 1.0, radius: Radii::default(), alpha: 1.0 } }
     }
 
     /// ADR-0256. A later glass repainting reaches an earlier one whose read it covers, and a read
@@ -678,7 +678,8 @@ mod tests {
     fn a_nested_glass_damages_its_own_read_area_through_its_matrices() {
         let group = |draw| DrawCmd { draw, ..glass(0, 200) };
         let scaled = Draw::Transformed { matrix: [2.0, 0.0, 0.0, 2.0, 0.0, 0.0], commands: vec![glass(10, 20)] };
-        let clipped = Draw::Clipped { radius: 4.0, mask: None, commands: vec![group(scaled), glass(150, 160)] };
+        let clipped =
+            Draw::Clipped { radius: Radii::from(4.0), mask: None, commands: vec![group(scaled), glass(150, 160)] };
         let list = DisplayList { commands: vec![group(clipped)] };
         let mut damage = vec![PhysicalRect { x0: 30, y0: 0, x1: 31, y1: 1 }];
         list.expand_backdrops(&mut damage);

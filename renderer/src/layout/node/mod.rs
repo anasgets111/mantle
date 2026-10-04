@@ -49,7 +49,9 @@ pub use style::{
     Affine, BorderColor, ClipShape, Effect, Fill, Gradient, GradientShape, IDENTITY_AFFINE, Mask, MaskSource, Shadow,
     Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
 };
-pub(crate) use style::{Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrEdges, Scale, ShadowMode};
+pub(crate) use style::{
+    Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrCorners, NumberOrEdges, Scale, ShadowMode,
+};
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 #[cfg(test)]
 pub(crate) use toplevel::Adjustment;
@@ -110,6 +112,54 @@ pub struct EdgeInsets {
 }
 
 spelled!(EdgeInsets => EdgesInput::lua());
+
+crate::lua::luacats::lua_shape! {
+    /// Per-corner radius px; a missing corner is `0`.
+    #[alias = "Corners"]
+    pub(crate) struct CornersInput {
+        top_left: Option<f32>,
+        top_right: Option<f32>,
+        bottom_right: Option<f32>,
+        bottom_left: Option<f32>,
+    }
+}
+
+/// Corner radii clockwise from the top left, in px. Negative is a scoop (`corner_shape`), on every
+/// corner at once; zero is square.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct Radii(pub [f32; 4]);
+
+impl Radii {
+    pub fn is_zero(self) -> bool {
+        self.0.iter().all(|r| *r == 0.0)
+    }
+
+    pub fn scoop(self) -> bool {
+        self.0.iter().any(|r| *r < 0.0)
+    }
+
+    /// CSS's rule for radii too big for a `w` by `h` box: all shrink by one factor until the two
+    /// on each side fit, so corners keep their proportions.
+    pub fn fit(self, w: f32, h: f32) -> Self {
+        let [tl, tr, br, bl] = self.0.map(f32::abs);
+        let sides = [(w, tl + tr), (h, tr + br), (w, br + bl), (h, bl + tl)];
+        let k = sides.iter().filter(|(_, sum)| *sum > 0.0).fold(1.0, |k, (side, sum)| f32::min(k, side / sum));
+        self * k
+    }
+}
+
+impl std::ops::Mul<f32> for Radii {
+    type Output = Self;
+    fn mul(self, k: f32) -> Self {
+        Self(self.0.map(|r| r * k))
+    }
+}
+
+impl From<f32> for Radii {
+    fn from(r: f32) -> Self {
+        Self([r; 4])
+    }
+}
 
 impl EdgeInsets {
     pub fn horizontal(&self) -> f32 {
@@ -789,7 +839,7 @@ mod tests {
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
         };
-        assert_eq!(detail, "expected a number, got String(\"banana\")");
+        assert_eq!(detail, "expected a number or a table, got String(\"banana\")");
     }
 
     #[test]
@@ -801,6 +851,6 @@ mod tests {
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
         };
-        assert_eq!(detail, "expected a number, got Boolean(true)");
+        assert_eq!(detail, "expected a number or a table, got Boolean(true)");
     }
 }

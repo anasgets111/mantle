@@ -9,16 +9,18 @@
 use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
-    Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, Easing, EdgesInput, ExitBlock, Gradient,
-    GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor, SpringConstants, TextRun, TransitionInput,
+    Align, Animatable, AnimationSpec, Animations, Axes, BorderColor, CornersInput, Easing, EdgesInput, ExitBlock,
+    Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor, SpringConstants, TextRun,
+    TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 15] = [
+const NODE_SHAPES: [fn(String) -> String; 16] = [
     fill::<PathCommand>,
     fill::<EdgesInput>,
+    fill::<CornersInput>,
     fill::<BorderColor>,
     fill::<Axes>,
     fill::<KeyframeInput>,
@@ -311,6 +313,7 @@ const NODES_HEADER: &str = r##"---@meta
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
 ---@alias Edges {Edges}
+---@alias Corners {Corners}
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent {PERCENT} `"NN%"` of the parent's box (the output's, on a panel).
@@ -333,7 +336,7 @@ const NODES_HEADER: &str = r##"---@meta
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
 ---@alias MoveAnimation {MoveAnimation} `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
----@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Axes` tween against the same shape; anything else snaps.
+---@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit {Exit} `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs]({DOCS}nodes/index.html#common-properties)

@@ -87,7 +87,7 @@ colours and no short `#RGB` form.
 | :--- | :--- | :--- | :--- |
 | `background` | `Color\|Gradient\|Bound` | None | A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate` |
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
-| `radius` | `number\|Bound`, `[0, 8192]` | `0` | Corner radius px. Above half the shorter side it clamps, so `radius = 999` makes a pill or circle |
+| `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
 | `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
