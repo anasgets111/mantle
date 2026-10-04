@@ -2,7 +2,7 @@ use super::{LayoutStyle, LogicalSize, ResolvedNode};
 use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode};
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use taffy::TraversePartialTree;
-use taffy::prelude::{fr, length, line, span, zero};
+use taffy::prelude::{length, line, span, zero};
 
 /// A solver tree, one per surface instance, kept across passes and ticks so a node that did not
 /// change keeps taffy's layout cache (ADR-0294). Geometry stays fractional until `text::snap`
@@ -172,12 +172,13 @@ pub(super) fn taffy_style(
             out.gap = taffy::Size { width: length(style.spacing), height: length(style.spacing) };
         }
         // ADR-0023's stacking model is one auto-sized grid cell: children overlap and align
-        // independently, while `Content` is their bounding union. `minmax(0, 1fr)` keeps the cell
-        // at the content box when a child is larger; an auto track would grow to that child.
+        // independently, while `Content` is their bounding union. `minmax(0, auto)` keeps the cell
+        // at the content box when a child is larger; an `auto` minimum would grow to that child.
+        // Not `1fr`: taffy 0.14 leaves item margins out of its max-content size (DioxusLabs/taffy#1177).
         None => {
             out.display = taffy::Display::Grid;
             // ponytail: min-content is 0 here (flex auto min, nested grids); upgrade: a min-content floor.
-            let cell = || vec![taffy::style_helpers::minmax(zero(), fr(1.0))];
+            let cell = || vec![taffy::style_helpers::minmax(zero(), taffy::MaxTrackSizingFunction::auto())];
             out.grid_template_columns = cell();
             out.grid_template_rows = cell();
         }
@@ -715,6 +716,36 @@ pub(super) mod tests {
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(row.rect.width, 18.0, "10 + 4 + 4 margin");
         assert_eq!(row.children[0].rect.x, 4.0, "the child's own margin.left offsets it inward");
+    }
+
+    /// A content-sized parent's box counts its child's margin box, as CSS does, so the margined
+    /// child is not cut by the parent's clip.
+    #[test]
+    fn a_content_sized_parent_counts_its_childs_margin() {
+        let margin = "margin = { left = 12, right = 3, top = 5, bottom = 7 }";
+        let children = [
+            format!("rect {{ width = 10, height = 10, {margin} }}"),
+            format!("text {{ content = 'x', {margin} }}"),
+            format!("rect {{ {margin}, children = {{ rect {{ width = 10, height = 10 }} }} }}"),
+        ];
+        for parent in ["rect", "row", "column"] {
+            for child in &children {
+                let mut scene = Scene::new();
+                let shaping = ShapingHandle::spawn();
+                let (lua, surface) =
+                    surface_from(&format!("panel {{ id = 'bar', child = {parent} {{ children = {{ {child} }} }} }}"));
+                apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+                let outer = &scene.surface("bar@TEST").unwrap().children[0];
+                let inner = &outer.children[0];
+                assert!(inner.rect.width > 0.0 && inner.rect.height > 0.0, "{parent} > {child}");
+                assert_eq!((inner.rect.x, inner.rect.y), (12.0, 5.0), "{parent} > {child}: offset by the margin");
+                assert_eq!(
+                    (outer.rect.width, outer.rect.height),
+                    (inner.rect.width + 15.0, inner.rect.height + 12.0),
+                    "{parent} > {child}: the parent holds the child's margin box"
+                );
+            }
+        }
     }
 
     #[test]
