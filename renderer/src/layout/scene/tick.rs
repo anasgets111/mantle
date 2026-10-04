@@ -778,6 +778,39 @@ mod tests {
         assert!(stroke.r > 0.1 && stroke.r < 0.9, "the stroke is between black and white, got {}", stroke.r);
     }
 
+    /// A wave's phase loops on `translate` while its amplitude eases on `commands`: one tick
+    /// advances both, so the wave flattens without stopping.
+    #[test]
+    fn a_commands_tween_runs_beside_a_looping_translate() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local amp = state("amp", 8)
+            return panel { id = "bar", child = path { width = 40, height = 20, stroke = "#ffffff",
+                commands = amp:map(function(a) return {
+                    { op = "M", points = { 0, 10 } }, { op = "Q", points = { 10, 10 - a, 20, 10 } },
+                    { op = "Q", points = { 30, 10 + a, 40, 10 } } } end),
+                animate = { commands = { duration = 100, easing = "linear" },
+                            translate = { duration = 200, easing = "linear", loops = "infinite",
+                                          keyframes = { { x = 0, y = 0 }, { x = -20, y = 0 } } } } } }"##,
+        );
+        let instances = [instance_at(&surface, full())];
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let looped = child_tween(&scene).started;
+        scene.tick(&instances, &shaping, &lua, looped + Duration::from_millis(100));
+        lua.load(r#"state("amp", 8):set(0)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let node = &scene.surface("bar@TEST").unwrap().children[0];
+        let eased = node.tweens.iter().find(|t| t.property == "commands").expect("a commands tween").started;
+        scene.tick(&instances, &shaping, &lua, eased + Duration::from_millis(50));
+
+        let node = &scene.surface("bar@TEST").unwrap().children[0];
+        let Some(node::PaintStyle::Path(path)) = &node.paint else { panic!("a path paints") };
+        assert_eq!(path.commands.points[2..6], [10.0, 6.0, 20.0, 10.0], "halfway is half the amplitude");
+        let phase = (eased + Duration::from_millis(50) - looped).as_secs_f32() * 1000.0 % 200.0;
+        assert!((node.transform.translate.0 + phase / 10.0).abs() < 0.01, "the loop kept its phase");
+    }
+
     #[test]
     fn a_changed_target_starts_a_tween_from_the_value_on_screen_and_a_tick_carries_it() {
         // ADR-0145: the pass that sees `90` lays out `40` and a tween; the ticks do the rest

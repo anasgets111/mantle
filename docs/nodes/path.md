@@ -168,3 +168,49 @@ return path {
     },
 }
 ```
+
+Each property tweens on its own, so a loop on one keeps running while another eases. This wave
+loops its phase on `translate` inside a clipping `rect`, two wavelengths drawn and one shown, and
+eases its amplitude on `commands` when `amplitude` changes. Setting it to `0` flattens the moving
+wave without restarting the loop:
+
+```lua
+local amplitude = state("amplitude", 6)
+
+local function wave(a)
+    local commands = { { op = "M", points = { 0, 12 } } }
+    for i = 0, 3 do
+        local x, crest = i * 30, i % 2 == 0 and -2 * a or 2 * a
+        commands[#commands + 1] = { op = "Q", points = { x + 15, 12 + crest, x + 30, 12 } }
+    end
+    return commands
+end
+
+return rect {
+    width = 60,
+    height = 24,
+    clip = "box",
+    children = {
+        path {
+            width = 120,
+            height = 24,
+            stroke = "#89b4fa",
+            stroke_width = 3,
+            stroke_cap = "round",
+            commands = amplitude:map(wave),
+            animate = {
+                commands = { duration = 300, easing = "out_cubic" },
+                translate = {
+                    duration = 1000,
+                    easing = "linear",
+                    keyframes = { { x = 0, y = 0 }, { x = -60, y = 0 } },
+                    loops = "infinite",
+                },
+            },
+        },
+    },
+}
+```
+
+Easing a wrapper's `scale.y` toward `0` cannot stand in: it scales the stroke as well, so the line
+thins and vanishes instead of lying flat.
