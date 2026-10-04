@@ -272,8 +272,8 @@ impl Corner {
     }
 }
 
-/// A path under construction that never repeats a point: femtovg keeps a repeated point, and
-/// anti-aliasing draws the zero-length edge as a spike.
+/// A path under construction that never repeats a point.
+/// ponytail: femtovg 0.27 draws a repeated point's zero-length edge as a spike; drop once it skips them.
 struct Outline {
     path: Path,
     pen: Option<(f32, f32)>,

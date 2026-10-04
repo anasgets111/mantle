@@ -109,12 +109,10 @@ pub(super) fn taffy_style(
     let mut out = taffy::Style {
         // No shrink: fixed children keep their stated size, even when siblings overflow. Disable
         // taffy's automatic minimum so a `Fill` item can collapse to zero.
-        // On a flex cross axis, leave `min_size` as `auto`: taffy 0.14 otherwise adds the
-        // container's margin to each child's minimum (`constants.margin` instead of `child.margin`
-        // in `determine_flex_base_size`/`determine_container_main_size`). `Some(0) + margin` floors
-        // it; `None + margin` does not. The bug measured a panel body at 1521px wide/one line,
-        // then drew it 378px wide/two lines, making every card a line short
-        // (`a_containers_own_margin_does_not_widen_what_its_children_are_measured_at`).
+        // TODO(DioxusLabs/taffy#1081): give the cross axis a zero `min_size` too once that PR ships.
+        // taffy 0.14 adds the container's margin to each child's cross minimum (`constants.margin`
+        // for `child.margin` in `determine_flex_base_size`); `Some(0) + margin` floors it, `None +
+        // margin` does not (ADR-0111).
         flex_shrink: 0.0,
         // A declared `min_width`/`min_height` takes that axis over; the other keeps the default.
         min_size: {
@@ -1317,7 +1315,7 @@ pub(super) mod tests {
     }
 
     /// taffy 0.14 adds a flex container's own margin to its children's minimum cross size when it
-    /// measures them (see [`taffy_style`]'s `min_size`). The card here is a column
+    /// measures them (see [`taffy_style`]'s `min_size`; fixed by DioxusLabs/taffy#1081). The card here is a column
     /// with a left margin of most of the output, holding a body that wraps at the card's width.
     /// Its height has to be the wrapped body's, whatever the margin.
     #[test]

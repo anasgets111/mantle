@@ -95,8 +95,7 @@ fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(ImageId, Opt
     Ok((image, anim))
 }
 
-/// Every one of femtovg's sixteen `ErrorKind` variants formats as `"canvas error"`; `Debug` names
-/// the actual failure.
+/// ponytail: femtovg 0.27's `ErrorKind` all prints "canvas error"; use `Display` once it doesn't.
 fn femtovg_error(err: ErrorKind) -> String {
     format!("{err:?}")
 }

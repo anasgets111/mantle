@@ -448,10 +448,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
 }
 
 /// Draws `commands` into an offscreen image, then fills the node's rounded path with that image.
-/// femtovg 0.26's `intersect_rounded_scissor` carries one rounded rectangle; on an 80x32 pill at
-/// radius 16 with a 30px child it re-rounded the child and leaked the ground 8% through the pill's
-/// straight top edge. Giving the child the pill's radius instead draws a lozenge. A `mask`
-/// multiplies the target's alpha before that fill, in the same one target (ADR-0255).
+/// On an 80x32 pill at radius 16 with a 30px child, femtovg's `intersect_rounded_scissor` re-rounded
+/// the child and leaked the ground 8% through the pill's straight top edge (measured on 0.26).
+/// Giving the child the pill's radius instead draws a lozenge. A `mask` multiplies the target's
+/// alpha before that fill, in the same one target (ADR-0255).
+/// ponytail: femtovg 0.27's scissor carries one rounded rectangle; clip with it once it intersects two.
 ///
 /// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
 /// of an 8.6 ms repaint (ADR-0217).

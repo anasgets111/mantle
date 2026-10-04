@@ -55,9 +55,9 @@ fn parent_instance_index<'a>(
     first
 }
 /// Popup buffer size. Positive configure axes are authoritative because the compositor may slide,
-/// flip, or resize for positioner constraints. Non-positive axes use the requested size: SCTK's
-/// `PopupInner` starts pending dimensions at `-1`, which would crash `WlEglSurface::new`; clamp to
-/// at least 1.
+/// flip, or resize for positioner constraints. Non-positive axes use the requested size, clamped
+/// to at least 1.
+/// ponytail: SCTK 0.21 starts popup dimensions at -1, crashing `WlEglSurface::new`; drop once it doesn't.
 ///
 /// `requested` is what the positioner was given, not what the spec says: a `Content` axis has no
 /// number in the spec at all (`surface::popup_requested_size`).
@@ -136,8 +136,9 @@ fn configure_positioner(positioner: &XdgPositioner, placement: &Placement) {
     positioner.set_offset(round(placement.offset.x), round(placement.offset.y));
 }
 
-/// `xdg_popup.reposition` arrived in xdg-shell version 3. SCTK's `Popup::reposition` silently does
-/// nothing below it, which would leave a popup quietly the wrong size, so ask first and say so.
+/// `xdg_popup.reposition` arrived in xdg-shell version 3. A popup quietly left the wrong size would
+/// be worse than a logged refusal, so ask first and say so.
+/// ponytail: SCTK 0.21's `Popup::reposition` silently does nothing below it; drop the check once it errors.
 const REPOSITION_SINCE: u32 = 3;
 
 impl App {

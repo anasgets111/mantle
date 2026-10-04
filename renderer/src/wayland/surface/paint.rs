@@ -408,7 +408,7 @@ impl App {
                 surface.set_buffer_scale(self.surfaces[index].scale.buffer_scale());
             }
         }
-        // ponytail: only the swap is guarded; khronos-egl's other wrappers (make_current etc.) still unwrap (upstream #25).
+        // TODO(timothee-haudebourg/khronos-egl#25): guard the other wrappers (make_current etc.) too; they still `unwrap` a failed `get_error`.
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
         let swapped = match (egl.swap_with_damage, &damage) {

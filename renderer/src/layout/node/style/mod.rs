@@ -159,12 +159,12 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
 /// `snap_to_physical` bounds the coordinates that reach `wl_region`. Otherwise, give a row a range
 /// only where a consumer refuses the value.
 ///
-/// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is
-/// femtovg 0.26's: above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by
-/// `acos(1.0) == 0.0`, and `inf as u32` becomes `u32::MAX`, so billions of iterations and tens of
+/// `radius` and `border_width` share the `8192` ceiling with `width`/`height`. It is femtovg's:
+/// above roughly 8.4e6 `curve_divisions` (`path/cache.rs:911`) divides by `acos(1.0) == 0.0`, and `inf as u32` becomes `u32::MAX`, so billions of iterations and tens of
 /// GB of vertices land on the Wayland dispatch thread. Below zero, `radius = -4` silently squares
 /// corners (`path.rs:458` treats under 0.1 as unrounded) and `border_width = -4` clamps to 0 and
 /// clears paint alpha.
+/// ponytail: femtovg 0.27's `curve_divisions` is unclamped; lift the ceiling once it clamps.
 ///
 /// `font_size` alone floors at 1. A zero size gives the shaper a zero line height. Flooring in the
 /// row rather than in a consumer covers the tween too, which clamps into this same range. Icon

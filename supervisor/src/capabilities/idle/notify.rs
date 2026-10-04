@@ -228,8 +228,9 @@ pub(crate) enum NotifyState {
 pub(crate) type RawIdleEventReceiver = UnboundedReceiver<(ListenerId, RawIdleEvent)>;
 
 /// Establishes the separate Wayland connection (ADR-0010), binds `wl_seat` and
-/// `ext_idle_notifier_v1` at up to version 2, and spawns its dispatch thread. `wayland-client` 0.31's
-/// `blocking_dispatch` cannot run on tokio (ADR-0032). Returns the raw receiver for fan-out.
+/// `ext_idle_notifier_v1` at up to version 2, and spawns its dispatch thread (ADR-0032). Returns the
+/// raw receiver for fan-out.
+/// ponytail: wayland-client 0.31's `blocking_dispatch` cannot run on tokio; a thread, or `AsyncFd` on the fd.
 ///
 /// Blocking throughout: call only from [`super::IdleController::new`] inside `spawn_blocking`, bounded by
 /// `controller::IDLE_NOTIFY_SETUP_TIMEOUT`. Its error is `Send + Sync` across that boundary.

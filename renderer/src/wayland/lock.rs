@@ -79,8 +79,9 @@ fn lock_command(locked: bool, declares_lock: bool, can_authenticate: bool, lock_
 /// What one ordered release actually did, given whether `ext_session_lock_v1::locked` had been
 /// dispatched on the lock object being given up (ADR-0052 decision 4). The Supervisor's
 /// `lock::apply` moves its `active` flag on `Unlocked`, so reporting one for a lock never granted
-/// would claim a locked-to-unlocked transition that never happened. SCTK's `SessionLock::unlock` is
-/// a no-op below `is_locked()`, so nothing was sent, and [`LOCK_NEVER_GRANTED`] says so instead.
+/// would claim a locked-to-unlocked transition that never happened. Nothing was sent, and
+/// [`LOCK_NEVER_GRANTED`] says so instead.
+/// ponytail: SCTK 0.21's `SessionLock::unlock` is a no-op below `is_locked()`; drop the gate once it queues.
 fn release_outcome(was_locked: bool) -> LockOutcome {
     if was_locked { LockOutcome::Unlocked } else { LockOutcome::Refused(LOCK_NEVER_GRANTED.to_string()) }
 }

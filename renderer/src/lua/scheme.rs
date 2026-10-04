@@ -101,8 +101,8 @@ fn generate(seed: Rgb, variant: M3Variant, dark: bool, contrast: f64) -> Roles {
 }
 
 /// Material Color Utilities' `Score.score` at its defaults (4 picks, filtering on, Google Blue
-/// fallback). Weights become counts summing to about 1e9, so their ratios hold to 1e-9 and none is
-/// 0: an all-zero population would hand upstream's `unwrap_unchecked` sort NaN scores.
+/// fallback). Weights become counts summing to about 1e9, so their ratios hold to 1e-9 and none is 0.
+/// ponytail: material-colors 0.5 sorts NaN scores with `unwrap_unchecked`; drop the floor at `total_cmp`.
 fn score(colors: &[(Rgb, f64)]) -> Vec<Rgb> {
     let total: f64 = colors.iter().map(|(_, weight)| weight).sum();
     let mut population = IndexMap::<Rgb, u32, BuildHasherDefault<AHasher>>::default();

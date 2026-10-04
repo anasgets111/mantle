@@ -14,6 +14,7 @@ use crate::socket::FrameOutcome;
 /// the same reason: `std::process::exit` skips destructors. Returning an error instead unwinds `App`,
 /// whose EGL surfaces and `wl_surface`s talk to the compositor that just left, which is how a log
 /// out became a `khronos-egl` `unwrap()` panic and exit code 101.
+/// TODO(timothee-haudebourg/khronos-egl#25): unwind through `App` instead once EGL wrappers return errors.
 fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Display) -> ! {
     error!("{what_failed} failed ({err}); there is no compositor to talk to, so exiting");
     std::process::exit(shared::EXIT_COMPOSITOR_GONE);
@@ -235,9 +236,8 @@ pub fn run(
                 // Service immediately: lock declaration is tracked-surface state, not a
                 // capability-push result (ADR-0052 decision 3), and deferring weakens "secure now".
                 FrameOutcome::SetSessionLock(locked) => {
-                    // Round-trip only before unlock: SCTK gates `unlock` on dispatched
-                    // `locked`, not sent. Without it, `unlock` can no-op and `Drop` sends forbidden
-                    // `destroy` (`invalid_destroy`) (ADR-0052). Acquire needs no round-trip because
+                    // ponytail: SCTK 0.21 gates `unlock` on a dispatched `locked`; drop the round-trip once it doesn't.
+                    // Without it, `unlock` can no-op and `Drop` sends a forbidden `destroy` (ADR-0052). Acquire needs no round-trip because
                     // this thread owns its inputs. Do not return on a failed round-trip: that would
                     // strand the session locked; trying the unlock costs at most one failed flush.
                     if !locked && let Err(err) = event_queue.roundtrip(&mut app) {

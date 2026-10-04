@@ -2054,7 +2054,8 @@ omissions stayed config scope, not proof of framework gaps.
 2. Add opt-in per-instance layout dumps for comparing session geometry with test assumptions.
 
 The card was measured at its 1521 px left margin rather than 378 px content width, underestimating
-wrapped height by 13.2 px.
+wrapped height by 13.2 px. Fixed upstream by DioxusLabs/taffy#1081 (open); once it ships, drop
+the cross-axis `auto` mapping and restore a zero minimum on every axis.
 
 ## 0112. A launcher's four missing primitives: `autofocus`, `on_navigate`, `scroll:reveal`, and `obelisk set`
 
