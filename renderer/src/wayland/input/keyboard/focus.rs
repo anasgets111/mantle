@@ -97,6 +97,10 @@ fn dispatch_activation(
     true
 }
 
+fn centre(rect: LogicalRect) -> (f64, f64) {
+    ((rect.x + rect.width / 2.0) as f64, (rect.y + rect.height / 2.0) as f64)
+}
+
 fn find(node: &layout::ResolvedNode, id: layout::scene::NodeId) -> Option<(&layout::ResolvedNode, LogicalRect)> {
     let path = layout::hit::path_to_node(node, id)?;
     Some((*path.last()?, layout::hit::absolute_rect(&path)?))
@@ -299,8 +303,7 @@ impl App {
         }
         if let Some(on_click) = on_click {
             // No pointer: report the node's centre, node-local like a click.
-            let centre = ((rect.x + rect.width / 2.0) as f64, (rect.y + rect.height / 2.0) as f64);
-            self.fire_on_click(&focus.surface_id, rect, "left", centre, &on_click);
+            self.fire_on_click(&focus.surface_id, rect, "left", centre(rect), &on_click);
         }
     }
 
@@ -406,6 +409,12 @@ mod tests {
         std::rc::Rc::make_mut(&mut node.properties)
             .insert("accessible_name", Value::String(lua.create_string(name).unwrap()));
         node
+    }
+
+    #[test]
+    fn keyboard_activation_reports_the_node_centre() {
+        let rect = LogicalRect { x: 10.0, y: 20.0, width: 30.0, height: 8.0 };
+        assert_eq!(centre(rect), (25.0, 24.0));
     }
 
     #[test]
