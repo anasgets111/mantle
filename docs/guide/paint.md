@@ -72,8 +72,8 @@ or, with none close, listing them all.
 
 Every property can be a [signal](signals.md). A signal nested inside a table (a gradient stop, one
 border edge) is refused, so derive the whole table with `:map`. A malformed value fails the pass
-instead of drawing a default: that surface keeps its last applied tree and the error goes to `mantle log`
-([runtime](runtime.md#evaluation-reload-and-generations)).
+instead of drawing a default: that surface keeps its last applied tree and the error goes to
+`mantle log` ([runtime](runtime.md#evaluation-reload-and-generations)).
 
 ## Colours
 

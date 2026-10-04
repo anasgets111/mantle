@@ -96,7 +96,7 @@ fn lay_out(
     let instances = expand_instances(specs, &outputs);
     let mut scene = Scene::new();
     scene
-        .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false)
+        .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false, true)
         .map_err(|err| format!("layout: {err}"))?;
     Ok((scene, instances))
 }
@@ -637,7 +637,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 crate::lua::signal::run_state_handlers(lua);
             }
             scene
-                .apply_locked(&output.surfaces, &instances, shaping, lua, false)
+                .apply_locked(&output.surfaces, &instances, shaping, lua, false, true)
                 .map_err(|err| format!("layout: {err}"))?;
         }
         let start =

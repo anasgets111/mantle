@@ -685,8 +685,7 @@ mod tests {
             &[instance_at(&surface, full())],
             &shaping,
             &lua,
-            false,
-            |_| Err(node::invalid("child", "veto")),
+            |_, _| Err(node::invalid("child", "veto")),
         );
         assert!(err.is_err());
         let after = moved(&scene).movement.as_ref().unwrap();

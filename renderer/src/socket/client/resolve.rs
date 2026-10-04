@@ -17,12 +17,13 @@ impl RendererClient {
         let Some(output) = self.state.applied_output.as_ref() else {
             return false;
         };
-        let applied = self.scene.apply_isolated(
+        let applied = self.scene.apply_locked(
             &output.surfaces,
             &self.instances,
             &self.shaping,
             self.loader.lua(),
             self.holds_session_lock,
+            false,
         );
         match applied {
             Ok(failed) => {
@@ -55,8 +56,9 @@ impl RendererClient {
             &self.shaping,
             self.loader.lua(),
             self.holds_session_lock,
+            true,
         ) {
-            Ok(()) => {
+            Ok(_) => {
                 notice!("shell reloaded");
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
@@ -149,12 +151,13 @@ impl RendererClient {
                 (Some(ids), Cow::Owned(filtered))
             }
         };
-        let applied = self.scene.apply_isolated(
+        let applied = self.scene.apply_locked(
             &output.surfaces,
             &instances,
             &self.shaping,
             self.loader.lua(),
             self.holds_session_lock,
+            false,
         );
         drop(_memo);
         // No re-mark on failure: only a change can fix it, and the wakes between changes cannot.
