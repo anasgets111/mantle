@@ -1,13 +1,13 @@
 //! What changed since the scene last resolved: the shared [`DirtyFlag`], its [`DirtyScope`], and the
 //! write end Rust holds on a live signal.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use mlua::{Lua, Value};
 
 use super::tracking::{EvaluationMemo, ReadTracker, current_clock, downstream, outputs_written_since};
-use super::{CellId, computeds, note_write, read};
+use super::{CellId, ScrollRequest, computeds, note_write, read};
 
 /// Rust handle for [`super::Signal::new_live`] storage, used for `StateSnapshot` pushes. Lua reads the
 /// latest value, with no memoization.
@@ -71,6 +71,15 @@ struct DirtyState {
     taken_at: u64,
     /// Cells written by `set_quiet` since the last `take_quiet`, each once.
     quiet: Vec<CellId>,
+    /// Scroll signals with a request waiting, kept across takes until a pass consumes or drops it.
+    requested: Vec<(CellId, Rc<Cell<Option<ScrollRequest>>>)>,
+}
+
+impl DirtyState {
+    fn clear(&mut self) {
+        let requested = std::mem::take(&mut self.requested);
+        *self = DirtyState { taken_at: current_clock(), requested, ..DirtyState::default() };
+    }
 }
 
 /// Shared invalidation flag tracking scene-wide or cell-targeted dirty marks.
@@ -98,6 +107,29 @@ impl DirtyFlag {
         std::mem::take(&mut self.0.borrow_mut().quiet)
     }
 
+    /// Tracks a scroll signal's waiting request for [`Self::drop_orphan_requests`].
+    pub(super) fn note_scroll_request(&self, id: CellId, request: &Rc<Cell<Option<ScrollRequest>>>) {
+        let requested = &mut self.0.borrow_mut().requested;
+        if !requested.iter().any(|(held, _)| *held == id) {
+            requested.push((id, Rc::clone(request)));
+        }
+    }
+
+    /// After a pass: forgets the consumed requests and drops those whose signal `held` says no
+    /// container holds, so a scroll area that comes back later starts where it was declared.
+    pub(crate) fn drop_orphan_requests(&self, held: impl Fn(CellId) -> bool) {
+        self.0.borrow_mut().requested.retain(|(id, request)| {
+            if request.get().is_none() {
+                return false;
+            }
+            let orphaned = !held(*id);
+            if orphaned {
+                request.take();
+            }
+            !orphaned
+        });
+    }
+
     /// Marks a specific reactive cell dirty.
     pub(crate) fn mark_cell(&self, id: CellId) {
         note_write(id);
@@ -109,7 +141,7 @@ impl DirtyFlag {
     pub fn take(&self) -> bool {
         let mut state = self.0.borrow_mut();
         if state.all || !state.cells.is_empty() || !state.instances.is_empty() {
-            *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
+            state.clear();
             true
         } else {
             false
@@ -130,7 +162,7 @@ impl DirtyFlag {
                 return DirtyScope::Clean;
             }
             if state.all {
-                *state = DirtyState { taken_at: current_clock(), ..DirtyState::default() };
+                state.clear();
                 return DirtyScope::All;
             }
             (std::mem::take(&mut state.cells), std::mem::take(&mut state.instances), state.taken_at)

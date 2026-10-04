@@ -798,7 +798,7 @@ mod tests {
     }
 
     /// One 1920x1080 `"TEST"` output keeps fixture ids readable (`"bar@TEST"`).
-    fn test_outputs() -> Vec<OutputGeometry> {
+    pub(super) fn test_outputs() -> Vec<OutputGeometry> {
         vec![OutputGeometry { name: "TEST".to_string(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } }]
     }
 

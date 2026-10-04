@@ -59,6 +59,7 @@ impl RendererClient {
             true,
         ) {
             Ok(_) => {
+                self.drop_orphan_scrolls();
                 notice!("shell reloaded");
                 log_applied_surfaces(&self.scene, &self.instances);
                 start_secure_submit_capabilities(&self.scene, &self.instances, &self.commands);
@@ -161,6 +162,8 @@ impl RendererClient {
             // Also a follow-up whose moved rects nobody reads, which ends the chain.
             crate::lua::signal::DirtyScope::Clean => {
                 drop(_memo);
+                // A request on a signal no container reads re-lays out no instance.
+                self.drop_orphan_scrolls();
                 self.layout_follow_up = false;
                 return false;
             }
@@ -197,12 +200,19 @@ impl RendererClient {
                 return false;
             }
         };
+        self.drop_orphan_scrolls();
         start_secure_submit_capabilities(&self.scene, &instances, &self.commands);
         self.note_pass(failed.map(|err| err.to_string()));
         self.last_resolved = resolved_scope;
         self.settle_layout();
         dump_layout_if_asked(&self.scene);
         true
+    }
+
+    /// Decided after a pass, not at the call, so a request made with the area it scrolls is consumed
+    /// first; a request no surface's tree holds a container for is dropped.
+    fn drop_orphan_scrolls(&self) {
+        self.dirty.drop_orphan_requests(|cell| self.scene.holds_scroll(cell));
     }
 
     /// Logs a pass's failure once per run and holds rescue, or clears both when every surface
@@ -351,7 +361,8 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{
-        instances_for, push_workspace, queued_starts, rescue_state, run_startup, test_client, write_shell_lua,
+        instances_for, push_workspace, queued_starts, rescue_state, run_startup, test_client, test_outputs,
+        write_shell_lua,
     };
     use super::super::*;
 
@@ -1368,6 +1379,109 @@ mod tests {
             assert!(err.contains("finite number") || err.contains("only valid on a scroll"), "{src}: {err}");
         }
         assert!(!client.re_resolve_if_dirty(), "a refused request asks for nothing");
+    }
+
+    /// A page of `bar` holding a 200 px column (100 px of room) scrolled by `s`; the other page holds
+    /// none. `side` holds a hidden column scrolled by `s` when `extra` is set.
+    fn paged(extra: bool) -> (RendererClient, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let side = if extra {
+            r#", panel { id = "side", layer = "top", child = column { width = 100, height = 100, scroll = s,
+                visible = shown, children = tiles(10) } }"#
+        } else {
+            ""
+        };
+        let path = write_shell_lua(
+            dir.path(),
+            &format!(
+                r#"
+                s = scroll("s")
+                page = state("page", 1)
+                shown = state("shown", false)
+                function tiles(n)
+                    local out = {{}}
+                    for i = 1, n do out[i] = rect {{ width = 10, height = 20 }} end
+                    return out
+                end
+                return {{ panel {{ id = "bar", layer = "top", child = column {{ children = page:map(function(p)
+                    if p == 1 then return {{ column {{ width = 100, height = 100, scroll = s, children = tiles(10) }} }} end
+                    return {{ rect {{ width = 5, height = 5 }} }}
+                end) }} }} {side} }}
+                "#
+            ),
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        (client, dir)
+    }
+
+    fn reload(client: &mut RendererClient, path: &std::path::Path, source: &str) {
+        std::fs::write(path, source).unwrap();
+        assert!(client.reevaluate());
+        let (specs, _) = client.pending_surfaces().unwrap();
+        client.set_instances(crate::layout::instance::expand_instances(&specs, &test_outputs()));
+        assert!(client.handle_apply_pending());
+    }
+
+    /// Runs `src`, then passes until nothing is dirty; the offset `s` reports.
+    fn then_offset(client: &mut RendererClient, src: &str) -> f32 {
+        client.loader.lua().load(src).exec().unwrap();
+        while client.re_resolve_if_dirty() {}
+        let signal: mlua::AnyUserData = client.loader.lua().globals().get("s").unwrap();
+        crate::lua::signal::from_userdata(&signal).unwrap().scroll_offset().unwrap()
+    }
+
+    /// A request made while no container holds the signal is dropped by the next pass, so the area
+    /// that comes back starts at the top.
+    #[test]
+    fn a_scroll_request_with_no_holder_is_dropped_by_the_next_pass() {
+        let (mut client, _dir) = paged(false);
+        then_offset(&mut client, "page:set(2)");
+        then_offset(&mut client, "s:scroll_by(50)");
+        assert_eq!(then_offset(&mut client, "page:set(1)"), 0.0);
+    }
+
+    /// Adding the area and scrolling it in one handler still lands: the pass that builds it
+    /// consumes the request before the check.
+    #[test]
+    fn a_request_made_with_the_area_it_scrolls_lands() {
+        let (mut client, _dir) = paged(false);
+        then_offset(&mut client, "page:set(2)");
+        assert_eq!(then_offset(&mut client, "page:set(1) s:scroll_to(900)"), 100.0, "clamped to its room");
+    }
+
+    /// A container hidden in another surface still holds the signal: the request waits for its show.
+    #[test]
+    fn a_request_held_by_another_surface_waits_for_it() {
+        let (mut client, _dir) = paged(true);
+        then_offset(&mut client, "page:set(2)");
+        then_offset(&mut client, "s:scroll_to(60)");
+        assert_eq!(then_offset(&mut client, "shown:set(true)"), 60.0);
+    }
+
+    /// A named scroll survives a reload, and so does its request: the reload's own pass decides it.
+    #[test]
+    fn a_pending_request_survives_a_reload_that_keeps_its_area() {
+        let (mut client, dir) = paged(false);
+        client.loader.lua().load("s:scroll_to(60)").exec().unwrap();
+        let path = dir.path().join("shell.lua");
+        reload(&mut client, &path, &std::fs::read_to_string(&path).unwrap());
+        let signal: mlua::AnyUserData = client.loader.lua().globals().get("s").unwrap();
+        let signal = crate::lua::signal::from_userdata(&signal).unwrap();
+        while client.re_resolve_if_dirty() {}
+        assert_eq!(signal.scroll_offset(), Some(60.0));
+    }
+
+    /// The same reload without the area: the first pass drops the request.
+    #[test]
+    fn a_pending_request_is_dropped_by_the_reload_that_removes_its_area() {
+        let (mut client, dir) = paged(false);
+        client.loader.lua().load("s:scroll_to(60)").exec().unwrap();
+        let path = dir.path().join("shell.lua");
+        reload(&mut client, &path, r#"s = scroll("s") return panel { id = "bar", layer = "top", child = rect {} }"#);
+        while client.re_resolve_if_dirty() {}
+        let signal: mlua::AnyUserData = client.loader.lua().globals().get("s").unwrap();
+        assert!(crate::lua::signal::from_userdata(&signal).unwrap().pending_scroll().is_none());
     }
 
     /// An arrow's `:scroll_by` adds to the run's target, not to the drawn offset, so clicks mid-run

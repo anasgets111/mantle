@@ -7729,7 +7729,10 @@ Amends ADR-0069 decisions 4 and 6 and the main-loop order of ADR-0145.
    run's target, as a notch does, because the signal reads the drawn offset and
    `scroll_to(get() + step)` falls short mid-run. A pending `:scroll_by` adds to a pending
    `:scroll_to` or `:scroll_by`; otherwise the last request wins. A request waits for its
-   container to be shown, and `reset_on_close` drops it. Merging is unclamped: `:scroll_to(900)`
+   container to be shown, a hidden one in any surface or output instance included. `reset_on_close`
+   drops it, and so does the pass that finds no container in any surface holding the signal,
+   reloads included; the check runs after the pass, so a request made in the same turn as the area
+   it scrolls is consumed first. Merging is unclamped: `:scroll_to(900)`
    then `:scroll_by(-50)` in one turn asks for 850, clamped once at the pass.
 
 Rejected: easing in Lua from a timer, which re-runs the config per frame for a visual the engine

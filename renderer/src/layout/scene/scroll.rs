@@ -70,6 +70,11 @@ impl Scene {
         out
     }
 
+    /// Whether a container in any surface's tree, hidden or not, scrolls by `cell`.
+    pub fn holds_scroll(&self, cell: CellId) -> bool {
+        self.surfaces.values().any(|tree| holds(tree, cell))
+    }
+
     /// Stops every run on `signal`, hidden containers included: a write that is not the run's own,
     /// such as `reset_on_close`, jumps like a touchpad.
     pub fn stop_scroll(&mut self, signal: &Signal) {
@@ -116,6 +121,14 @@ impl Scene {
         });
         cells
     }
+}
+
+fn holds(node: &ResolvedNode, cell: CellId) -> bool {
+    if node.leaving {
+        return false;
+    }
+    let held = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell);
+    held || node.children.iter().any(|child| holds(child, cell))
 }
 
 /// The axis `node` scrolls along by `cell`, if it does.

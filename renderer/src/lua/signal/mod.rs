@@ -318,6 +318,7 @@ impl Signal {
             (Some(ScrollRequest::By(first)), ScrollRequest::By(by)) => ScrollRequest::By(first + by),
             _ => asked,
         }));
+        dirty.note_scroll_request(*id, request);
         dirty.mark_cell(*id);
         true
     }
