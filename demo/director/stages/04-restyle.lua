@@ -25,7 +25,7 @@ local workspaces = list {
             height = 40,
             radius = 20,
             background = w.active and "#89b4fa" or "#313244",
-            animate = { width = { duration = 300, easing = "out_cubic" }, background = 300 },
+            animate = { width = { spring = { stiffness = 400, damping = 18 } }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {

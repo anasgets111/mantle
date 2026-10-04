@@ -18,7 +18,11 @@ return list {
             radius = 20,
             background = calling and theme.fade("danger", "33") or "#00000000",
             scale = 1,
-            animate = { background = 250, scale = { duration = 360, easing = "out_back", from = 0.2 } },
+            animate = {
+                background = 250,
+                scale = { duration = 360, easing = "out_back", from = 0.2 },
+                move = { duration = 180, easing = "out_cubic" },
+            },
             children = {
                 icon { name = item.icon_name, size = 26, align_h = "center", align_v = "center" },
                 rect {

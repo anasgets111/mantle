@@ -20,6 +20,11 @@ local GUTTER = 6
 -- The demo bar's final height, cleared through its exclusive zone.
 local BAR = 56
 local HEADER = 64
+-- A tight key shadow under a wide ambient one; the surface needs a 64 px frame to hold them.
+local SHADOWS = {
+    { color = "#00000055", blur = 48, offset = { y = 18 } },
+    { color = "#00000040", blur = 6,  offset = { y = 2 } },
+}
 
 local frame = mantle.screens:map(function(screens)
     return layout.metrics(screens and screens[1])
@@ -38,6 +43,8 @@ end
 
 local DEMO_DIR = env("MANTLE_DEMO_DIR", env("XDG_RUNTIME_DIR", "/tmp") .. "/mantle-demo")
 local OUT = env("MANTLE_DEMO_OUT", env("HOME", "") .. "/Videos/mantle-demo.mp4")
+-- A preview: start at this edit, with the code before it already saved, and record nothing.
+local FROM = env("MANTLE_DEMO_FROM", nil)
 local STAGES = mantle.config_dir .. "/stages/"
 local WORDMARK = mantle.config_dir .. "/../../docs/theme/m.png"
 local WALLPAPER = mantle.config_dir .. "/wallpaper.svg"
@@ -74,7 +81,7 @@ local texts = {}
 local progress, step_at, finished = 0, 0, false
 
 local version = state("demo_version", 0)
-local top = state("demo_top", 0)
+local code_scroll = scroll("demo_code")
 local status = state("demo_status", "saved")
 local caption = state("demo_caption", "")
 local detail = state("demo_detail", "")
@@ -90,33 +97,48 @@ local backdrop = state("demo_backdrop", WALLPAPER)
 
 local function bump() version:set(version:get() + 1) end
 
+-- The first visible line, where the pane is headed; the scroll eases there.
+local top = 0
+
+local function scroll_top(first)
+    top = first
+    code_scroll:scroll_to(first * line_px:get())
+end
+
 -- Scrolls so `line` sits a third of the way down whenever it strays near an edge.
 local function reveal(line)
-    local shown, count = top:get(), row_count:get()
-    if line > shown + 3 and line <= shown + count - 4 then return end
-    top:set(math.max(0, math.min(line - math.floor(count / 3), #lines - count + 4)))
+    local count = row_count:get()
+    if line > top + 3 and line <= top + count - 4 then return end
+    scroll_top(math.max(0, math.min(line - math.floor(count / 3), #lines - count + 1)))
 end
 
 mantle.screens:on_change(function() reveal(caret.line) end)
 
 -- Code pane ---------------------------------------------------------------------------------
 
--- Only the lines in view: a translated full-length text is not cut by its parent's clip.
-local code = computed({ version, top, theme.state, row_count }, function(_, first, t, count)
+-- Highlighted runs per line text, so a keystroke re-highlights one line; a new theme drops them.
+local highlighted, highlighted_for = {}, nil
+
+local code = computed({ version, theme.state }, function(_, t)
+    if t ~= highlighted_for then highlighted, highlighted_for = {}, t end
     local runs = {}
-    for n = first + 1, math.min(#lines, first + count) do
+    for n, line in ipairs(lines) do
         runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and t.subtext or t.overlay }
-        for _, run in ipairs(syntax.highlight(lines[n])) do
-            runs[#runs + 1] = { text = run.text, color = t[syntax.roles[run.kind]] }
+        local colored = highlighted[line]
+        if not colored then
+            colored = {}
+            for _, run in ipairs(syntax.highlight(line)) do
+                colored[#colored + 1] = { text = run.text, color = t[syntax.roles[run.kind]] }
+            end
+            highlighted[line] = colored
         end
+        table.move(colored, 1, #colored, #runs + 1, runs)
         runs[#runs + 1] = { text = "\n" }
     end
     return runs
 end)
 
-local caret_row = computed({ version, top, line_px }, function(_, first, line)
-    return (caret.line - first - 1) * line
-end)
+local caret_row = computed({ version, line_px }, function(_, line) return (caret.line - 1) * line end)
 
 -- `version` as well: typing along one line moves `caret.col` but leaves `caret_row` unchanged.
 local caret_at = computed({ version, caret_row, char_box }, function(_, y, box)
@@ -151,12 +173,17 @@ local code_pane = panel {
                         align_v = "center",
                         padding = { left = 16, right = 16 },
                         radius = 12,
+                        clip = "box",
                         background = computed({ meter_hot, theme.success, theme.base }, function(hot, on, off)
                             return hot and
                                 on or off
                         end),
                         scale = meter_hot:map(function(hot) return hot and 1.08 or 1 end),
-                        animate = { background = 300, scale = { duration = 400, easing = "out_back" } },
+                        animate = {
+                            background = 300,
+                            scale = { duration = 400, easing = "out_back" },
+                            width = { duration = 200, easing = "out_cubic" },
+                        },
                         children = {
                             text {
                                 content = meter,
@@ -171,15 +198,21 @@ local code_pane = panel {
                             },
                         },
                     },
-                    text {
-                        content = status:map(function(s) return s == "unsaved" and "●  unsaved" or "✓  saved" end),
-                        foreground = computed({ status, theme.warm, theme.success }, function(s, dirty, clean)
-                            return s == "unsaved" and dirty or clean
-                        end),
-                        animate = { foreground = 200 },
+                    rect {
                         align_v = "center",
-                        font = MONO,
-                        font_size = 18,
+                        clip = "box",
+                        animate = { width = { duration = 200, easing = "out_cubic" } },
+                        children = {
+                            text {
+                                content = status:map(function(s) return s == "unsaved" and "●  unsaved" or "✓  saved" end),
+                                foreground = computed({ status, theme.warm, theme.success }, function(s, dirty, clean)
+                                    return s == "unsaved" and dirty or clean
+                                end),
+                                animate = { foreground = 200 },
+                                font = MONO,
+                                font_size = 18,
+                            },
+                        },
                     },
                 },
             },
@@ -197,26 +230,39 @@ local code_pane = panel {
                         font = MONO,
                         font_size = code_size,
                     },
-                    rect {
+                    column {
                         width = "fill",
-                        height = line_px,
-                        background = theme.fade("text", "0a"),
-                        translate = caret_row:map(function(y) return { x = 0, y = y } end),
-                        animate = { translate = 80 },
-                    },
-                    text {
-                        content = code,
-                        font = MONO,
-                        font_size = code_size,
-                        line_height = 1.5,
-                        foreground = theme.text,
-                    },
-                    rect {
-                        width = 3,
-                        height = line_px:map(function(line) return line - 10 end),
-                        background = theme.cursor,
-                        translate = caret_at,
-                        animate = { translate = 60 },
+                        height = "fill",
+                        scroll = code_scroll,
+                        animate = { scroll = { duration = 320, easing = "out_cubic" } },
+                        children = {
+                            rect {
+                                width = "fill",
+                                children = {
+                                    rect {
+                                        width = "fill",
+                                        height = line_px,
+                                        background = theme.fade("text", "0a"),
+                                        translate = caret_row:map(function(y) return { x = 0, y = y } end),
+                                        animate = { translate = 80 },
+                                    },
+                                    text {
+                                        content = code,
+                                        font = MONO,
+                                        font_size = code_size,
+                                        line_height = 1.5,
+                                        foreground = theme.text,
+                                    },
+                                    rect {
+                                        width = 3,
+                                        height = line_px:map(function(line) return line - 10 end),
+                                        background = theme.cursor,
+                                        translate = caret_at,
+                                        animate = { translate = 60 },
+                                    },
+                                },
+                            },
+                        },
                     },
                 },
             },
@@ -261,47 +307,53 @@ local caption_pane = panel {
     id = "caption",
     layer = "overlay",
     anchor = { bottom = true, left = true },
-    margin = { bottom = 48, left = 48 },
+    -- The card sits in a 64 px frame so its shadow is not cut at the surface edge.
+    margin = { bottom = 48 - 64, left = 48 - 64 },
     visible = caption:map(function(title) return title ~= "" end),
     child = computed({ caption, frame }, function(title, m)
         local cap = layout.caption(m)
         return column {
-            id = "caption:" .. title,
-            width = cap.width,
-            padding = { left = 30, right = 30, top = 24, bottom = 24 },
-            spacing = 12,
-            radius = 18,
-            background = theme.fade("crust", "e6"),
-            opacity = 1,
-            translate = { x = 0, y = 0 },
-            animate = {
-                opacity = { duration = 350, from = 0 },
-                translate = { duration = 500, easing = "out_cubic", from = { x = 0, y = 30 } },
-            },
-            children = {
-                text {
-                    content = title,
-                    width = cap.width and "fill" or nil,
-                    wrap = cap.width and "word" or nil,
-                    font_size = cap.title,
-                    font_weight = 800,
-                    foreground = theme.text,
+            width = cap.width and cap.width + 128,
+            padding = 64,
+            children = { column {
+                id = "caption:" .. title,
+                width = cap.width,
+                padding = { left = 30, right = 30, top = 24, bottom = 24 },
+                spacing = 12,
+                radius = 18,
+                background = theme.fade("crust", "e6"),
+                shadows = SHADOWS,
+                opacity = 1,
+                translate = { x = 0, y = 0 },
+                animate = {
+                    opacity = { duration = 350, from = 0 },
+                    translate = { duration = 500, easing = "out_cubic", from = { x = 0, y = 30 } },
                 },
-                text {
-                    content = detail,
-                    visible = detail:map(function(d) return d ~= "" end),
-                    width = cap.width and "fill" or nil,
-                    wrap = cap.width and "word" or nil,
-                    font_size = cap.detail,
-                    foreground = theme.subtext,
+                children = {
+                    text {
+                        content = title,
+                        width = cap.width and "fill" or nil,
+                        wrap = cap.width and "word" or nil,
+                        font_size = cap.title,
+                        font_weight = 800,
+                        foreground = theme.text,
+                    },
+                    text {
+                        content = detail,
+                        visible = detail:map(function(d) return d ~= "" end),
+                        width = cap.width and "fill" or nil,
+                        wrap = cap.width and "word" or nil,
+                        font_size = cap.detail,
+                        foreground = theme.subtext,
+                    },
+                    row {
+                        visible = keys:map(function(k) return k ~= "" end),
+                        margin = { top = 6 },
+                        spacing = 10,
+                        children = key_row,
+                    },
                 },
-                row {
-                    visible = keys:map(function(k) return k ~= "" end),
-                    margin = { top = 6 },
-                    spacing = 10,
-                    children = key_row,
-                },
-            },
+            } },
         }
     end),
 }
@@ -337,7 +389,7 @@ local function feature_chip(index, label)
                 keyframes = {
                     { value = { x = 0, y = 18 } },
                     { value = { x = 0, y = 18 }, duration = wait_ms },
-                    { value = { x = 0, y = 0 } },
+                    { value = { x = 0, y = 0 },  duration = 850,    spring = { stiffness = 260, damping = 17 } },
                 },
             },
         },
@@ -413,7 +465,7 @@ local function set_text(text)
     current = text
     lines = edits.split(text)
     caret.line, caret.col = 1, 1
-    top:set(0)
+    scroll_top(0)
     bump()
 end
 
@@ -474,6 +526,8 @@ local EDITS = {
     "15-idle", "16-updates", "17-lock", "18-sysinfo", "19-banner", "typo", "fix",
 }
 local planned = {}
+-- The edit each `edit()` step plays, so a preview can find where to start.
+local edit_steps = {}
 
 local function prepare()
     local good = texts["19-banner"]
@@ -490,7 +544,7 @@ local function prepare()
 end
 
 local function edit(name)
-    return function(next)
+    local function step(next)
         status:set("unsaved")
         play(planned[name], function()
             current = texts[name]
@@ -501,6 +555,15 @@ local function edit(name)
                 end)
             end)
         end)
+    end
+    edit_steps[step] = name
+    return step
+end
+
+-- The code saved before `name` plays: the previous edit's, or the starter's before the first.
+local function before(name)
+    for k, other in ipairs(EDITS) do
+        if other == name then return texts[EDITS[k - 1] or "00-starter"] end
     end
 end
 
@@ -597,25 +660,7 @@ local function notify(n)
     end
 end
 
--- Types `text` into state `name` one character at a time, as `mantle set` writes.
--- `type_call` does the same through `mantle call`, for a field `set_text` fills.
-local function type_into(name, text)
-    return function(next)
-        local chars = {}
-        for c in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
-            chars[#chars + 1] = c
-        end
-        local function at(k)
-            progress = progress + 1
-            if k > #chars then return next() end
-            session.set_state(DEMO_DIR, name, table.concat(chars, "", 1, k), function()
-                timer(32 + math.random(0, 36) + (chars[k] == " " and 20 or 0), function() at(k + 1) end)
-            end)
-        end
-        at(1)
-    end
-end
-
+-- Types `text` one character at a time through `mantle call name`, as a field `set_text` fills.
 local function type_call(name, text)
     return function(next)
         local chars = {}
@@ -631,6 +676,10 @@ local function type_call(name, text)
         end
         at(1)
     end
+end
+
+local function clear_search(next)
+    session.run("mantle", { "-c", DEMO_DIR, "call", "search", "" }, function() next() end)
 end
 
 -- Sends the reply: the card fades, then the chat opens with the reply arriving under the message.
@@ -1118,7 +1167,7 @@ local function stage(next)
             session.run("cp", { "-r", COVERS, DEMO_DIR .. "/" }, function()
                 session.run("cp", sources, function()
                     render_wallpapers(function()
-                        set_text(texts["00-starter"])
+                        set_text(FROM and before(FROM) or texts["00-starter"])
                         session.write(DEMO_DIR .. "/shell.lua", current, function()
                             session.demo_shell:start("mantle", { "-c", DEMO_DIR })
                             timer(2500, next)
@@ -1187,12 +1236,12 @@ local script = {
     say("Fuzzy search, built in.", "fuzzy() scores each app as fzf does; the ranking stays in Lua."),
     edit("05-search"),
     wait(400),
-    type_into("launcher_query", "tele"),
+    type_call("search", "tele"),
     wait(1600),
-    feed("launcher_query", ""),
-    type_into("launcher_query", "files"),
+    clear_search,
+    type_call("search", "files"),
     wait(1600),
-    feed("launcher_query", ""),
+    clear_search,
     toggle("launcher_open"),
     wait(700),
     say("Shaders on any node.", "A GLSL fragment behind the whole desktop, animated by the engine."),
@@ -1518,6 +1567,23 @@ timer(1, function()
                     end
                 end
                 prepare()
+                if FROM then
+                    -- From the step after the edit before FROM, so its caption and setup play too.
+                    local at, first
+                    for k, step in ipairs(script) do
+                        if step == hide_card then first = k end
+                        if edit_steps[step] == FROM then
+                            at = k
+                            break
+                        end
+                        if edit_steps[step] then first = k end
+                    end
+                    if not at then
+                        log.error("MANTLE_DEMO_FROM names no edit:", FROM)
+                        return finish()
+                    end
+                    script = { setup, stage, hide_card, table.unpack(script, first + 1) }
+                end
                 sequence(script, finish)
                 watchdog(progress)
                 sample()

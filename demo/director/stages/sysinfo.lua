@@ -9,7 +9,7 @@ local history = state("cpu_history", {})
 mantle.sysinfo:on_change(function(now)
     local out = {}
     local past = history:get()
-    for k = math.max(1, #past - SAMPLES + 2), #past do
+    for k = math.max(1, #past - SAMPLES + 1), #past do
         out[#out + 1] = past[k]
     end
     out[#out + 1] = now.cpu_percent
@@ -17,14 +17,16 @@ mantle.sysinfo:on_change(function(now)
 end)
 
 -- A fixed 0..100 scale, so an idle machine is a flat line on the floor, not a graph of noise.
--- Always SAMPLES points, so `animate` eases each new reading point by point.
+-- SAMPLES + 1 points, the first one left of the box: each reading shifts the line one STEP right
+-- and lets it slide back, while `trim_axis = "x"` hides what lies outside the box.
 local W, H = 96, 28
+local STEP = (W - 4) / (SAMPLES - 1)
 
 local function spark(samples)
     local commands = {}
-    for k = 1, SAMPLES do
-        local value = samples[#samples - SAMPLES + k] or 0
-        local x, y = 2 + (k - 1) * (W - 4) / (SAMPLES - 1), H - 2 - value * (H - 4) / 100
+    for k = 1, SAMPLES + 1 do
+        local value = samples[#samples - SAMPLES - 1 + k] or 0
+        local x, y = 2 + (k - 2) * STEP, H - 2 - value * (H - 4) / 100
         commands[k] = { op = k == 1 and "M" or "L", points = { x, y } }
     end
     return commands
@@ -48,6 +50,7 @@ return rect {
     padding = { left = 14, right = 16 },
     radius = 20,
     background = theme.surface,
+    animate = { move = { duration = 180, easing = "out_cubic" } },
     visible = mantle.sysinfo:map(function(s) return s ~= nil end),
     children = {
         row {
@@ -68,8 +71,18 @@ return rect {
                             stroke_width = 2,
                             stroke_cap = "round",
                             stroke_join = "round",
+                            trim_axis = "x",
                             commands = history:map(spark),
-                            animate = { commands = { duration = 400, easing = "out_cubic" } },
+                            animate = pulse(history, 950):map(function(on)
+                                if not on then return {} end
+                                return {
+                                    shift = {
+                                        duration = 1000,
+                                        easing = "linear",
+                                        keyframes = { { x = STEP, y = 0 }, { x = 0, y = 0 } },
+                                    },
+                                }
+                            end),
                         },
                     },
                 },

@@ -73,7 +73,7 @@ local picker = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 320, easing = "out_back", from = { y = -20 } },
+            translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -20 } },
         },
         children = {
             list {

@@ -133,7 +133,7 @@ local function card(entry)
         translate = { x = 0, y = 0 },
         animate = {
             opacity = { duration = 300, from = 0 },
-            translate = { duration = 450, easing = "out_back", from = { x = 60, y = 0 } },
+            translate = { spring = { stiffness = 260, damping = 17 }, from = { x = 60, y = 0 } },
         },
         children = {
             row {

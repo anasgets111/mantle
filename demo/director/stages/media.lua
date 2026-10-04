@@ -18,9 +18,33 @@ local function field(name, fallback)
     return player:map(function(p) return p and p[name] or fallback end)
 end
 local playing = player:map(function(p) return p ~= nil and p.play_state == "playing" end)
-local play_icon = playing:map(function(on)
-    return on and "media-playback-pause-symbolic" or "media-playback-start-symbolic"
-end)
+
+-- Pause and play are two 4-point subpaths each on a 24 px grid, so `animate.commands` morphs them.
+-- The play halves overlap by 0.5 px so the seam does not show.
+local BARS = { { 6, 5, 10, 5, 10, 19, 6, 19 }, { 14, 5, 18, 5, 18, 19, 14, 19 } }
+local TRIANGLE = { { 6, 5, 13, 8.77, 13, 15.23, 6, 19 }, { 12.5, 8.5, 19, 12, 19, 12, 12.5, 15.5 } }
+
+local function play_glyph(size, color)
+    return path {
+        width = size,
+        height = size,
+        align_h = "center",
+        align_v = "center",
+        fill = color,
+        commands = playing:map(function(on)
+            local commands = {}
+            for _, quad in ipairs(on and BARS or TRIANGLE) do
+                for k = 1, 4 do
+                    local point = { quad[2 * k - 1] * size / 24, quad[2 * k] * size / 24 }
+                    commands[#commands + 1] = { op = k == 1 and "M" or "L", points = point }
+                end
+                commands[#commands + 1] = { op = "Z", points = {} }
+            end
+            return commands
+        end),
+        animate = { commands = { duration = 220, easing = "out_cubic" } },
+    }
+end
 
 local function clock(us)
     local s = math.max(0, math.floor(us / 1000000))
@@ -35,9 +59,14 @@ local chip = rect {
     align_v = "center",
     padding = { left = 6, right = 16 },
     radius = 20,
+    clip = "box",
     background = theme.surface,
     scale = 1,
-    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
+    animate = {
+        scale = { duration = 320, easing = "out_back", from = 0.5 },
+        width = { duration = 260, easing = "out_cubic" },
+        move = { duration = 180, easing = "out_cubic" },
+    },
     children = {
         row {
             height = "fill",
@@ -50,7 +79,7 @@ local chip = rect {
                     radius = 15,
                     align_v = "center",
                 },
-                icon { name = play_icon, size = 20, align_v = "center", foreground = theme.accent },
+                play_glyph(20, theme.accent),
                 text { content = field("title", ""), align_v = "center", font_size = 18, foreground = theme.text },
             },
         },
@@ -66,7 +95,7 @@ local function control(name, glyph, size, primary)
         background = primary and theme.accent or theme.surface,
         animate = { background = 200 },
         children = {
-            icon {
+            type(glyph) == "function" and glyph(size, primary and theme.crust or theme.text) or icon {
                 name = glyph,
                 size = size,
                 align_h = "center",
@@ -95,7 +124,7 @@ local card = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 360, easing = "out_back", from = { y = -20 } },
+            translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -20 } },
         },
         children = {
             rect {
@@ -169,7 +198,7 @@ local card = panel {
                         spacing = 18,
                         children = {
                             control("previous", "media-skip-backward-symbolic", 24),
-                            control("play", play_icon, 30, true),
+                            control("play", play_glyph, 30, true),
                             control("next", "media-skip-forward-symbolic", 24),
                         },
                     },

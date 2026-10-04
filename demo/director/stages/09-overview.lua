@@ -6,6 +6,7 @@ fonts {
 
 local launcher_open = state("launcher_open", false)
 local query = state("launcher_query", "")
+require("targets")
 local theme = require("theme")
 local wallpaper = require("wallpaper")
 local taskbar = require("taskbar")
@@ -30,7 +31,7 @@ local workspaces = list {
             height = 40,
             radius = 20,
             background = w.active and theme.accent or theme.surface,
-            animate = { width = { duration = 300, easing = "out_cubic" }, background = 300 },
+            animate = { width = { spring = { stiffness = 400, damping = 18 } }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {
@@ -78,6 +79,7 @@ local launcher = panel {
     anchor = { top = true, left = true },
     margin = { top = 12, left = 12 },
     visible = launcher_open,
+    keyboard_interactivity = "on_demand",
     width = 560,
     background = theme.fade("surface", "70"),
     radius = 24,
@@ -87,12 +89,17 @@ local launcher = panel {
         padding = 10,
         spacing = 6,
         children = {
-            text {
-                content = query:map(function(q) return q == "" and "Search apps" or q end),
-                padding = 12,
+            textfield {
+                focus_target = focus_target("search"),
+                width = "fill",
+                margin = 12,
                 font_size = 26,
                 foreground = theme.text,
-                opacity = query:map(function(q) return q == "" and 0.45 or 1 end),
+                placeholder = "Search apps",
+                placeholder_color = theme.muted,
+                caret_color = theme.accent,
+                autofocus = true,
+                on_change = function(q) query:set(q) end,
             },
             list {
                 width = "fill",
@@ -104,6 +111,8 @@ local launcher = panel {
                         width = "fill",
                         padding = 12,
                         radius = 12,
+                        opacity = 1,
+                        animate = { move = 180, opacity = { duration = 180, from = 0 } },
                         on_click = function() mantle.applications:launch(app.id) end,
                         spacing = 14,
                         children = {

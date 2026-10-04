@@ -89,30 +89,9 @@ local function write(path, text, done)
     run("sh", { "-c", 'printf "%s" "$1" > "$2.part" && mv "$2.part" "$2"', "sh", text, path }, done)
 end
 
--- Enough JSON for the mock payloads: an empty table is an array, since every empty one they hold is.
-local function encode(value)
-    local kind = type(value)
-    if kind == "string" then
-        return '"' .. value:gsub('[%c"\\]', function(c) return string.format("\\u%04x", c:byte()) end) .. '"'
-    elseif kind ~= "table" then
-        return tostring(value)
-    end
-    local parts = {}
-    if next(value) == nil or value[1] ~= nil then
-        for k, item in ipairs(value) do
-            parts[k] = encode(item)
-        end
-        return "[" .. table.concat(parts, ",") .. "]"
-    end
-    for key, item in pairs(value) do
-        parts[#parts + 1] = encode(tostring(key)) .. ":" .. encode(item)
-    end
-    return "{" .. table.concat(parts, ",") .. "}"
-end
-
 -- Writes the demo shell's `state(name)` the way a keybind would.
 local function set_state(dir, name, value, done)
-    run("mantle", { "-c", dir, "set", name, encode(value) }, done)
+    run("mantle", { "-c", dir, "set", name, json.encode(value) }, done)
 end
 
 return {

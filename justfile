@@ -41,6 +41,12 @@ demo out="":
     cargo build --workspace --profile swap
     PATH="$PWD/target/swap:$PATH" MANTLE_DEMO_OUT="{{out}}" target/swap/mantle -c demo/director
 
+# Like `demo`, it stops your shells for the take and restores them after.
+[doc('Play the demo from one edit (`11-media`, `typo`, ...) to the end, without recording.')]
+preview from:
+    cargo build --workspace --profile swap
+    PATH="$PWD/target/swap:$PATH" MANTLE_DEMO_FROM="{{from}}" target/swap/mantle -c demo/director
+
 # Everything a change has to pass before it is done, on what would be committed.
 check:
     just staged-only just fmt-check test lint rustdoc lua types

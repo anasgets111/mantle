@@ -37,6 +37,7 @@ cited only as the why behind behavior the code confirms.
 | `just run [config]` | Build both binaries and run `config` (default `share/starter`). `cargo run -p supervisor` can launch a stale renderer |
 | `just swap [args]` | Build the `swap` profile, replace the installed pair in `$CARGO_HOME/bin` (default `~/.cargo/bin`), restart detached |
 | `just demo [out]` | Record the demo video; stops every running shell for the take, then restarts it |
+| `just preview <edit>` | Play the demo from one edit (`11-media`) to the end without recording |
 | `just heaptrack [renderer\|supervisor] [secs]` | Dev build under heaptrack for `secs` (default 900), then restore the installed shell |
 | `just tag-release X.Y.Z` | Set the version, run `just stubs check`, date the changelog's `Unreleased`, commit and tag `vX.Y.Z`. Pushing the tag publishes the release |
 | `just hooks` | Install pre-commit checks chosen by staged paths; stale generated files are rewritten and the commit refused |

@@ -21,6 +21,12 @@ local function percent(entry)
     return math.floor(math.min(entry.volume, 100) + 0.5)
 end
 
+local function level_icon(entry)
+    local level = (entry.muted or entry.volume == 0) and "muted" or entry.volume < 34 and "low" or
+        entry.volume < 67 and "medium" or "high"
+    return "audio-volume-" .. level .. "-symbolic"
+end
+
 return panel {
     id = "volume_osd",
     layer = "overlay",
@@ -42,10 +48,10 @@ return panel {
         translate = shown:map(function(on) return { y = on and 0 or -16 } end),
         animate = {
             opacity = { duration = 150, from = 0 },
-            translate = { duration = 260, easing = "out_back", from = { y = -16 } },
+            translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -16 } },
         },
         children = {
-            icon { name = "audio-volume-high-symbolic", size = 28, foreground = theme.text, align_v = "center" },
+            icon { name = osd:map(level_icon), size = 28, foreground = theme.text, align_v = "center" },
             rect {
                 width = "fill",
                 height = 8,

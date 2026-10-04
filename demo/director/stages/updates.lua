@@ -21,9 +21,13 @@ local badge = rect {
     align_v = "center",
     padding = { left = 14, right = 18 },
     radius = 20,
+    clip = "box",
     background = theme.surface,
     scale = 1,
-    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
+    animate = {
+        scale = { duration = 320, easing = "out_back", from = 0.5 },
+        width = { duration = 260, easing = "out_cubic" },
+    },
     children = {
         row {
             height = "fill",
@@ -82,7 +86,7 @@ local popover = panel {
         translate = open:map(function(on) return { y = on and 0 or -20 } end),
         animate = {
             opacity = { duration = 200, from = 0 },
-            translate = { duration = 360, easing = "out_back", from = { y = -20 } },
+            translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -20 } },
         },
         children = updates:map(function(u)
             local done = not u.installing and #u.packages == 0

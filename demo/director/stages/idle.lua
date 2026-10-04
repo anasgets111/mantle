@@ -11,8 +11,12 @@ local indicator = rect {
     padding = { left = 16, right = 18 },
     radius = 20,
     background = theme.caution,
+    clip = "box",
     scale = 1,
-    animate = { scale = { duration = 320, easing = "out_back", from = 0.5 } },
+    animate = {
+        scale = { duration = 320, easing = "out_back", from = 0.5 },
+        width = { duration = 260, easing = "out_cubic" },
+    },
     children = {
         row {
             height = "fill",

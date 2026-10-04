@@ -27,9 +27,15 @@ local bar = list {
             height = 44,
             padding = { left = 10, right = w.focused and 16 or 10 },
             radius = 22,
+            clip = "box",
             background = w.focused and theme.surface or "#00000000",
             scale = 1,
-            animate = { background = 200, scale = { duration = 360, easing = "out_back", from = 0.3 } },
+            animate = {
+                background = 200,
+                scale = { duration = 360, easing = "out_back", from = 0.3 },
+                width = { duration = 260, easing = "out_cubic" },
+                move = { duration = 180, easing = "out_cubic" },
+            },
             on_click = function() mantle.windows:focus(w.id) end,
             children = {
                 row {
