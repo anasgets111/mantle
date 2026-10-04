@@ -304,6 +304,15 @@
 ---One app using a camera, microphone or screen capture.
 ---@field app_name string PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`); never empty.
 
+---@class Radio
+---One radio class and the rfkill block state of its devices.
+---@field hard_blocked boolean Hardware switch block, which software cannot clear: any device of this kind is blocked.
+---@field kind RadioKind
+---@field soft_blocked boolean Software block, which `set_blocked` changes: any device of this kind is blocked.
+
+---@alias RadioKind "wlan"|"bluetooth"|"uwb"|"wimax"|"wwan"|"gps"|"fm"|"nfc"
+---A radio class, named as the kernel's rfkill type; discriminants are the kernel type ids.
+
 ---@alias ScrollOrientation "vertical"|"horizontal"
 ---The `tray:scroll` axis, sent to the item as spelled.
 
@@ -476,6 +485,10 @@
 ---@class BrightnessState
 ---`mantle.brightness`'s payload; the capability stays `nil` on a machine with no backlight.
 ---@field percent integer Screen backlight, `0` to `100`: the last requested level (sysfs `brightness`), not the mid-fade one.
+
+---@class RadioState
+---`mantle.radio`'s payload; the capability stays `nil` without `/dev/rfkill` or until a radio exists.
+---@field radios Radio[] One entry per kind with at least one device, ordered by kernel type id.
 
 ---@class FilesState
 ---`mantle.files` payload (ADR-0120).
@@ -667,6 +680,11 @@ local IdleCapability = {}
 ---@class BrightnessCapability: Capability<BrightnessState>, userdata
 ---@field set fun(self: BrightnessCapability, percent: number) Sets the screen backlight, `0` to `100`, fractions allowed; values outside clamp to it.
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/radio.html)
+---@class RadioCapability: Capability<RadioState>, userdata
+---@field set_blocked fun(self: RadioCapability, kind: RadioKind, blocked: boolean) Soft-blocks or unblocks every device of `kind`. A hardware block stays.
+---@field set_all_blocked fun(self: RadioCapability, blocked: boolean) Soft-blocks or unblocks every radio (airplane mode).
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/files.html)
 ---@class FilesCapability: Capability<FilesState>, userdata
 ---@field watch fun(self: FilesCapability, path: string, extensions?: string[]) Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file.
@@ -845,6 +863,7 @@ local PrivacyCapability = {}
 ---@field system SystemCapability Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
 ---@field brightness BrightnessCapability The screen backlight percentage; `nil` without a backlight.
 ---@field workspaces WorkspacesCapability Workspaces per output, special workspaces and the focused window.
+---@field radio RadioCapability rfkill: soft and hard block state per radio kind; `nil` without `/dev/rfkill`.
 ---@field power PowerCapability Power profiles, mains or battery, and battery power draw.
 ---@field applications ApplicationsCapability Installed desktop entries, indexed by window `app_id`.
 ---@field files FilesCapability Live file listings of watched folders.

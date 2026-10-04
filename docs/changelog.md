@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - `workspaces` entries and `windows` entries have `urgent`: niri reports it as set; Hyprland sets it on an `urgent` event and clears it when the window gains focus or closes. It is always `false` on wlr-foreign-toplevel.
+- New `radio` capability: `mantle.radio.radios` lists each rfkill kind with `soft_blocked` and `hard_blocked`; `set_blocked(kind, blocked)` and `set_all_blocked(blocked)` write `/dev/rfkill`.
 
 ## 0.1.1 - 2026-10-03
 

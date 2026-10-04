@@ -50,6 +50,7 @@ pub mod polkit;
 pub mod power;
 pub mod privacy;
 pub mod processes;
+pub mod radio;
 pub mod scale;
 pub mod secrets;
 pub(crate) mod shm_icons;

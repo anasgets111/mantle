@@ -21,6 +21,7 @@ use super::notifications::{self, NotificationsController};
 use super::power::{self, PowerController};
 use super::privacy::PrivacyController;
 use super::processes::{self, ProcessesController};
+use super::radio::{self, RadioController};
 use super::secrets::SecretsController;
 use super::session_bus;
 use super::signals::{Senders, Signal, Signals};
@@ -50,6 +51,7 @@ pub struct Capabilities {
     updates: Option<UpdatesController>,
     battery: Option<BatteryController>,
     brightness: Option<BrightnessController>,
+    radio: Option<RadioController>,
     workspaces: Option<WorkspacesController>,
     windows: Option<WindowsController>,
     power: Option<PowerController>,
@@ -113,6 +115,7 @@ impl Capabilities {
             updates: None,
             battery: None,
             brightness: None,
+            radio: None,
             workspaces: None,
             windows: None,
             power: None,
@@ -380,6 +383,12 @@ impl Capabilities {
                     ));
                 }
             }
+            // `/dev/rfkill` only; no device means no push (see `radio`).
+            Capability::Radio => {
+                if self.radio.is_none() {
+                    self.radio = Some(RadioController::new(Path::new("/dev/rfkill"), self.senders.radio.clone()));
+                }
+            }
             // niri/Hyprland IPC, shared with `windows` (ADR-0247); no implementor means no push.
             Capability::Workspaces => {
                 if self.workspaces.is_none() {
@@ -529,6 +538,7 @@ impl Capabilities {
             Signal::Battery => push_held!(Battery, self.battery),
             // Only emitted when a backlight device exists (ADR-0053).
             Signal::Brightness => push_held!(Brightness, self.brightness),
+            Signal::Radio => push_held!(Radio, self.radio),
             // Controller already filters compositor events to real changes.
             Signal::Workspaces => push_held!(Workspaces, self.workspaces),
             Signal::Windows => push_held!(Windows, self.windows),
@@ -574,6 +584,7 @@ impl Capabilities {
             Capability::Sysinfo => to!(self.sysinfo, sysinfo::dispatch),
             Capability::Keyboard => queue(&self.keyboard, envelope, keyboard::dispatch),
             Capability::Brightness => to!(self.brightness, brightness::dispatch),
+            Capability::Radio => to!(self.radio, radio::dispatch),
             Capability::Workspaces => to!(self.workspaces, workspaces::dispatch),
             Capability::Windows => to!(self.windows, windows::dispatch),
             Capability::Power => to!(self.power, power::dispatch),

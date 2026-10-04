@@ -27,6 +27,7 @@ pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
             schema_for!(crate::state::brightness::BrightnessState),
             Some(schema_for!(crate::action::BrightnessAction)),
         ),
+        ("radio", schema_for!(crate::state::radio::RadioState), Some(schema_for!(crate::action::RadioAction))),
         ("files", schema_for!(crate::state::files::FilesState), Some(schema_for!(crate::action::FilesAction))),
         (
             "processes",

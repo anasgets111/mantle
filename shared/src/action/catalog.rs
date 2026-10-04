@@ -86,6 +86,16 @@ pub enum BrightnessAction {
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
+pub enum RadioAction {
+    /// Soft-blocks or unblocks every device of `kind`. A hardware block stays.
+    SetBlocked { kind: crate::state::radio::RadioKind, blocked: bool },
+    /// Soft-blocks or unblocks every radio (airplane mode).
+    SetAllBlocked { blocked: bool },
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum FilesAction {
     /// Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively,
     /// dot optional; omitted means every file.

@@ -24,6 +24,7 @@ pub enum Signal {
     Keyboard(KeyboardState),
     Battery,
     Brightness,
+    Radio,
     Workspaces,
     Windows,
     Power,
@@ -131,6 +132,7 @@ capability_channels! {
         Battery => battery: (), Some(()) => Signal::Battery;
         System => system: (), Some(()) => Signal::System;
         Brightness => brightness: (), Some(()) => Signal::Brightness;
+        Radio => radio: (), Some(()) => Signal::Radio;
         Workspaces => workspaces: (), Some(()) => Signal::Workspaces;
         Windows => windows: (), Some(()) => Signal::Windows;
         Power => power: (), Some(()) => Signal::Power;

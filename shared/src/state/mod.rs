@@ -16,6 +16,7 @@ pub mod polkit;
 pub mod power;
 pub mod privacy;
 pub mod processes;
+pub mod radio;
 pub mod secrets;
 pub mod storage;
 pub mod sysinfo;

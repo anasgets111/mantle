@@ -58,6 +58,7 @@ roster! {
     System => "system", "Wall and monotonic clocks, pushed once a second until `configure` sets the interval.",
     Brightness => "brightness", "The screen backlight percentage; `nil` without a backlight.",
     Workspaces => "workspaces", "Workspaces per output, special workspaces and the focused window.",
+    Radio => "radio", "rfkill: soft and hard block state per radio kind; `nil` without `/dev/rfkill`.",
     Power => "power", "Power profiles, mains or battery, and battery power draw.",
     Applications => "applications", "Installed desktop entries, indexed by window `app_id`.",
     Files => "files", "Live file listings of watched folders.",
@@ -109,6 +110,7 @@ impl Capability {
                 "answer_pairing",
             ],
             Capability::Brightness => &["set"],
+            Capability::Radio => &["set_blocked", "set_all_blocked"],
             Capability::Files => &["watch", "unwatch"],
             Capability::Processes => &["declare", "start", "signal", "stop"],
             Capability::Keyboard => &["set_backlight", "switch_layout"],
@@ -186,7 +188,7 @@ mod capability_tests {
     fn every_entry_round_trips_through_its_name() {
         // One `roster!` list makes omission from `ALL` or `as_str` unrepresentable; this pins
         // `from_name` agreeing with the two wire-facing matches.
-        assert_eq!(Capability::ALL.len(), 24, "a variant was added or removed; check every iterator over ALL");
+        assert_eq!(Capability::ALL.len(), 25, "a variant was added or removed; check every iterator over ALL");
         for capability in Capability::ALL {
             assert_eq!(Capability::from_name(capability.as_str()), Some(*capability));
         }

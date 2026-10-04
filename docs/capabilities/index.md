@@ -103,6 +103,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`power`](power.md) | Power profiles, on battery, power draw | |
 | [`privacy`](privacy.md) | Apps using the camera, microphone or screen capture | |
 | [`processes`](processes.md) | Programs declared with `session_process` | Use [`session_process`](../guide/processes.md#session_process), not its actions |
+| [`radio`](radio.md) | rfkill soft and hard blocks per radio kind; airplane mode | `nil` without `/dev/rfkill` |
 | [`secrets`](secrets.md) | Status of named Secret Service writes | Values go through `secure_submit`, never Lua |
 | [`storage`](storage.md) | Each `persistent_table` file | Use [`persistent_table`](../guide/scripting.md#persistent_table), not its actions |
 | [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures, disks, GPU, network throughput | `nil` until `configure` |
