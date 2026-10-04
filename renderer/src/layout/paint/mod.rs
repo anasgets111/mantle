@@ -649,7 +649,7 @@ mod tests {
         let surface = |spacing: i32, colour: &str| {
             effect_surface(&format!(
                 r##"row {{ spacing = {spacing}, children = {{ rect {{ width = 10, height = 20, background = "{colour}" }},
-                    rect {{ width = 40, height = 20, backdrop_blur = 4 }} }} }}"##
+                    rect {{ width = 40, height = 20, effect = {{ backdrop = {{ blur = 4 }} }} }} }} }}"##
             ))
         };
         for (spacing, reached) in [(4, true), (30, false)] {
@@ -745,7 +745,7 @@ mod tests {
     fn a_repaint_takes_every_transformed_group_it_touches_whole() {
         let list = effect_surface(
             r##"row { spacing = 4, clip = "none", children = {
-                rect { width = 20, height = 20, background = "#ffffff", content_blur = 1 },
+                rect { width = 20, height = 20, background = "#ffffff", effect = { blur = 1 } },
                 rect { width = 30, height = 20, radius = 4, clip = "rounded", children = {
                     rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } },
                 rect { width = 20, height = 20, background = "#ffffff", scale = 2 } } }"##,

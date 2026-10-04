@@ -339,8 +339,8 @@ impl Shadow {
 }
 
 /// What a node's own painted output is filtered by (ADR-0254). `shadows` are the layers that
-/// show, first on top; `blur` is `content_blur`, CSS `filter: blur()`'s sigma; `backdrop` is
-/// `backdrop_blur`, `backdrop-filter: blur()`'s (ADR-0256). `0` is off. `content_shadow` is
+/// show, first on top; `blur` is `effect.blur`, CSS `filter: blur()`'s sigma; `backdrop` is
+/// `effect.backdrop.blur`, `backdrop-filter: blur()`'s (ADR-0256). `0` is off. `content_shadow` is
 /// `shadow_mode = "content"`: the shadows are cast by the painted subtree, not the box's shape
 /// (ADR-0260).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -362,7 +362,7 @@ keywords! {
 
 // ponytail: 8 layers, each a gradient quad or, in content mode, a blur pass; raise it with a measured budget.
 const MAX_SHADOWS: usize = 8;
-/// A layer's `blur`, and its `offset` and `spread`, in px; the tween clamps into the same ranges.
+/// A layer's `blur` and each `effect` blur, and a layer's `offset` and `spread`, in px; the tween clamps into the same ranges.
 pub(super) const SHADOW_BLUR: (f32, f32) = (0.0, 8192.0);
 pub(super) const SHADOW_REACH: (f32, f32) = (-8192.0, 8192.0);
 
@@ -374,6 +374,50 @@ lua_shape! {
         blur: Option<f32>,
         offset: Option<Axes>,
         spread: Option<f32>,
+    }
+}
+
+lua_shape! {
+    /// `effect.backdrop`: CSS `backdrop-filter`, a box kind's only.
+    #[alias = "BackdropEffect"]
+    pub(crate) struct BackdropKeys {
+        pub(crate) blur: Option<f32>,
+    }
+}
+
+lua_shape! {
+    /// `effect`: CSS `filter` for a node.
+    #[alias = "Effect"]
+    pub(crate) struct EffectKeys {
+        pub(crate) blur: Option<f32>,
+        pub(crate) backdrop: Option<BackdropKeys>,
+    }
+}
+
+/// `effect`: the node's pixel filters, each blur in `[0, 8192]`. Absent keys are off.
+pub(crate) struct Effects;
+
+spelled!(Effects => EffectKeys::lua());
+
+impl Prop for Effects {
+    type Out = EffectKeys;
+    fn read(row: &Property, value: Option<&Value>) -> Result<EffectKeys, LayoutError> {
+        let table = match value {
+            None => return Ok(EffectKeys { blur: None, backdrop: None }),
+            Some(Value::Table(table)) => table,
+            Some(value) => {
+                return Err(invalid(row.name, format!("expected a table, got {}", preview_for_error(value))));
+            }
+        };
+        let keys = EffectKeys::read(row.name, table)?;
+        let within = |key: &str, n: Option<f32>| {
+            n.map(|n| within_range(&format!("{}.{key}", row.name), SHADOW_BLUR, n)).transpose()
+        };
+        let backdrop = match keys.backdrop {
+            Some(BackdropKeys { blur }) => Some(BackdropKeys { blur: within("backdrop.blur", blur)? }),
+            None => None,
+        };
+        Ok(EffectKeys { blur: within("blur", keys.blur)?, backdrop })
     }
 }
 
@@ -411,16 +455,17 @@ impl Prop for Shadows {
     }
 }
 
-/// `shadows`, `content_blur`, every kind, and a box's `backdrop_blur` and `shadow_mode`. Only
-/// layers that would draw are kept, so paint never opens an offscreen for one.
+/// `shadows` and `effect`, every kind, and a box's `shadow_mode`. Only layers that would draw are
+/// kept, so paint never opens an offscreen for one.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     use fields::{common, paint};
     let mut shadows = common::shadows.read(properties)?.unwrap_or_default();
     shadows.retain(Shadow::shows);
+    let filters = common::effect.read(properties)?;
     Ok(Effect {
         shadows,
-        blur: common::content_blur.read(properties)?,
-        backdrop: paint::backdrop_blur.read(properties)?,
+        blur: filters.blur.unwrap_or(0.0),
+        backdrop: filters.backdrop.and_then(|b| b.blur).unwrap_or(0.0),
         content_shadow: paint::shadow_mode.read(properties)? == ShadowMode::Content,
     })
 }
@@ -1071,14 +1116,21 @@ mod tests {
             { color = "#ff000000", blur = 4 }, { offset = { x = 3 } } } }"##;
         let below = Shadow { blur: 0.0, offset: (3.0, 0.0), spread: 0.0, ..shadow };
         assert_eq!(parse(layers).unwrap().shadows, [shadow, below]);
-        assert_eq!(parse("return { content_blur = 3 }").unwrap(), Effect { blur: 3.0, ..Effect::default() });
-        assert_eq!(parse("return { backdrop_blur = 8 }").unwrap(), Effect { backdrop: 8.0, ..Effect::default() });
+        assert_eq!(parse("return { effect = { blur = 3 } }").unwrap(), Effect { blur: 3.0, ..Effect::default() });
+        assert_eq!(
+            parse("return { effect = { backdrop = { blur = 8 } } }").unwrap(),
+            Effect { backdrop: 8.0, ..Effect::default() }
+        );
         let content = Effect { content_shadow: true, ..Effect::default() };
         assert_eq!(parse(r#"return { shadow_mode = "content" }"#).unwrap(), content);
         assert_eq!(parse(r#"return { shadow_mode = "box" }"#).unwrap(), Effect::default());
         for (src, property) in [
-            ("return { content_blur = -1 }", "content_blur"),
-            ("return { backdrop_blur = -1 }", "backdrop_blur"),
+            ("return { effect = { blur = -1 } }", "effect.blur"),
+            ("return { effect = { backdrop = { blur = 8193 } } }", "effect.backdrop.blur"),
+            ("return { effect = { blur = 1, glow = 2 } }", "effect"),
+            ("return { effect = { backdrop = { blur = 1, glow = 2 } } }", "effect.backdrop"),
+            ("return { effect = { backdrop_blur = 2 } }", "effect"),
+            ("return { effect = 3 }", "effect"),
             ("return { shadows = { { color = 3, blur = 1 } } }", "shadows[1]"),
             (r#"return { shadow_mode = "Drop" }"#, "shadow_mode"),
             ("return { shadows = { { blur = -1 } } }", "shadows"),

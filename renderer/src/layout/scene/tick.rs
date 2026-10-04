@@ -1422,11 +1422,10 @@ mod tests {
             r##"local up = state("up", false)
             return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff",
                 shadows = up:map(function(u) return { { blur = u and 8 or 0, offset = { y = u and 4 or 0 } } } end),
-                content_blur = up:map(function(u) return u and 2 or 0 end),
-                backdrop_blur = up:map(function(u) return u and 8 or 0 end),
+                effect = { blur = up:map(function(u) return u and 2 or 0 end),
+                           backdrop = { blur = up:map(function(u) return u and 8 or 0 end) } },
                 animate = { shadows = { duration = 100, easing = "linear" },
-                            content_blur = { duration = 100, easing = "linear" },
-                            backdrop_blur = { duration = 100, easing = "linear" } } } }"##,
+                            effect = { duration = 100, easing = "linear" } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("up", false):set(true)"#).exec().unwrap();

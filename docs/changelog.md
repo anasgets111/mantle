@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Breaking: `content_blur` and `backdrop_blur` are replaced by one `effect` table, `{ blur, backdrop = { blur } }` (CSS `filter` and `backdrop-filter`): each blur is a sigma in `[0, 8192]` and bindable, and `backdrop` is a box kind's, so another kind refuses it. Unknown keys are refused, listing the accepted ones. `animate.effect` tweens both blurs; a key only one side sets tweens from or to `0`. `content_blur = 4, backdrop_blur = 8` becomes `effect = { blur = 4, backdrop = { blur = 8 } }`; `animate = { content_blur = 200 }` becomes `animate = { effect = 200 }`.
+
 ## 0.3.0 - 2026-10-05
 
 - `path.trim_axis = "x"` makes `trim_start` and `trim_end` fractions of the node's width: the stroke keeps what lies inside that band, cut at its edges with `stroke_cap` on every cut end. `path.shift` moves the geometry inside the node before trimming; animate it to scroll a shape through a fixed window.

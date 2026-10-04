@@ -14,8 +14,8 @@ use mlua::{Lua, Value};
 use super::prop::Prop;
 use super::style::{SHADOW_BLUR, SHADOW_REACH, axis_default, parse_percent, range_of};
 use super::{
-    Axes, CornersInput, EdgeInsets, EdgesInput, LayoutError, PathCommands, PathData, PropMap, Rgba, Shadow, Shadows,
-    fields, invalid, parse_hex_color, tweened, value_as_f32,
+    Axes, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData, PropMap,
+    Rgba, Shadow, Shadows, fields, invalid, parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -135,7 +135,8 @@ pub fn depart(
 /// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the
 /// axes `{ x, y }`, an absent key reading as the property's default (`0`, or `1` for a `scale`).
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
-/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. Two different shapes
+/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. `Effect` is an `effect`'s
+/// `[blur, backdrop.blur]`. Two different shapes
 /// snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches between a
 /// number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
@@ -146,15 +147,17 @@ pub enum Animatable {
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
     Shadows(Vec<Shadow>),
+    Effect([f32; 2]),
 }
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
     CornersInput::lua(),
     Axes::lua(),
+    EffectKeys::lua(),
     PathCommands::lua(),
     Shadows::lua()
 ));
@@ -172,6 +175,7 @@ impl Animatable {
             }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
+            Self::Effect(_) => Self::Effect([0.0; 2]),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
             Self::Percent(_) => Self::Percent(0.0),
@@ -188,6 +192,11 @@ impl Animatable {
         // By name: a command array has no shape of its own that a table of edges or axes lacks.
         if property == "commands" {
             return Ok(Some(Self::Path(PathCommands::read(&fields::path::commands.row, Some(value))?)));
+        }
+        if property == "effect" {
+            let EffectKeys { blur, backdrop } = Effects::read(&fields::common::effect.row, Some(value))?;
+            let backdrop = backdrop.and_then(|b| b.blur);
+            return Ok(Some(Self::Effect([blur.unwrap_or(0.0), backdrop.unwrap_or(0.0)])));
         }
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
@@ -239,6 +248,10 @@ impl Animatable {
                     *slot = x - y;
                 }
             }
+            (Self::Effect(a), Self::Effect(b)) => {
+                out[0] = a[0] - b[0];
+                out[1] = a[1] - b[1];
+            }
             (Self::Color(a), Self::Color(b)) => out = [a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a],
             // ponytail: a path or shadow list gives a spring no velocity; per-point rates would carry it.
             _ => {}
@@ -260,6 +273,9 @@ impl Animatable {
                     *slot = (x + (y - x) * t).clamp(low, high);
                 }
                 Self::Fields { keys, values }
+            }
+            (Self::Effect(a), Self::Effect(b)) => {
+                Self::Effect([0, 1].map(|i| (a[i] + (b[i] - a[i]) * t).clamp(SHADOW_BLUR.0, SHADOW_BLUR.1)))
             }
             (Self::Color(a), Self::Color(b)) => Self::Color(mix(*a, *b, t)),
             // The shorter list pads with the other's layers faded out, as `identity` fades them.
@@ -304,6 +320,13 @@ impl Animatable {
                 Value::Table(table)
             }
             Self::Path(ref path) => tweened(lua, path)?,
+            Self::Effect([blur, backdrop]) => {
+                let backdrop = lua.create_table_from([("blur", backdrop)])?;
+                Value::Table(lua.create_table_from([
+                    ("blur", Value::Number(f64::from(blur))),
+                    ("backdrop", Value::Table(backdrop)),
+                ])?)
+            }
             Self::Shadows(ref layers) => {
                 let list = lua.create_table_with_capacity(layers.len(), 0)?;
                 for shadow in layers {
@@ -600,8 +623,7 @@ const PAINT_ONLY: &[&str] = &[
     "shift",
     "radius",
     "shadows",
-    "content_blur",
-    "backdrop_blur",
+    "effect",
     "translate",
     "scale",
     "rotate",
@@ -1160,6 +1182,26 @@ mod tests {
         );
         let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
         assert_eq!(Animatable::from_value("shadows", Some(&Value::Table(written))).unwrap(), Some(back));
+    }
+
+    /// A key only one side sets tweens from or to `0`, and the value round-trips as an `effect` table.
+    #[test]
+    fn effect_keys_tween_and_a_missing_key_reads_zero() {
+        let lua = Lua::new();
+        let effect = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("effect", Some(&value)).unwrap().unwrap()
+        };
+        let (from, to) = (effect("return { blur = 8 }"), effect("return { backdrop = { blur = 4 } }"));
+        let Value::Table(mid) = from.lerp(&to, 0.5, "effect").to_value(&lua).unwrap() else { panic!("a table") };
+        let backdrop: mlua::Table = mid.get("backdrop").unwrap();
+        assert_eq!((mid.get::<f32>("blur").unwrap(), backdrop.get::<f32>("blur").unwrap()), (4.0, 2.0));
+        let empty = effect("return {}");
+        let Value::Table(back) = empty.to_value(&lua).unwrap() else { panic!("a table") };
+        lua.globals().set("e", back).unwrap();
+        let props = crate::layout::node::rect_props(&lua, "return { effect = e }");
+        assert_eq!(crate::layout::node::parse_effect(&props).unwrap(), Default::default());
+        assert!(Animatable::from_value("effect", Some(&lua.load("return { glow = 1 }").eval().unwrap())).is_err());
     }
 
     #[test]

@@ -43,7 +43,7 @@ pub use paint_style::{CaptureTarget, PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]
-pub(crate) use style::{GradientStop, ShadowLayer};
+pub(crate) use style::{BackdropKeys, GradientStop, ShadowLayer};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;
@@ -52,7 +52,8 @@ pub use style::{
     Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{
-    Axes, ColorOrEdges, CornerShape, Cursor, Direction, NumberOrCorners, NumberOrEdges, Scale, ShadowMode, Shadows,
+    Axes, ColorOrEdges, CornerShape, Cursor, Direction, EffectKeys, Effects, NumberOrCorners, NumberOrEdges, Scale,
+    ShadowMode, Shadows,
 };
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 #[cfg(test)]
@@ -525,6 +526,14 @@ pub(crate) fn resolve_declared(
             };
         }
     }
+    // `effect` is every kind's row but `backdrop` is a box's, and a key's kind is no row's.
+    if let Some(Value::Table(effect)) = properties.get("effect")
+        && effect.contains_key("backdrop").unwrap_or(false)
+        && crate::lua::nodes::properties::kind_bit(kind)
+            .is_some_and(|bit| bit & crate::lua::nodes::properties::BOX == 0)
+    {
+        return Err(invalid("effect.backdrop", format!("`{kind}` has no backdrop; it is for box kinds only")));
+    }
     // Callbacks and the two input flags have no parser: the input handlers read them where they
     // fire, where a wrong type could only be ignored. Sorted like the loop above.
     let mut typed: Vec<&'static str> = properties
@@ -912,6 +921,27 @@ mod tests {
             .unwrap();
         let resolved = resolve_declared(props_from_table(&table), "panel", false, &lua).unwrap();
         assert!(fields::panel::anchor.read(&resolved).unwrap_err().to_string().contains("`top`"));
+    }
+
+    /// A key's kind is no row's: `effect` is every kind's, `backdrop` in it a box's.
+    #[test]
+    fn effect_backdrop_is_refused_off_a_box_kind_naming_the_key() {
+        let lua = signal_lua();
+        let src = "return { effect = { blur = state('blur', 2), backdrop = { blur = state('b', 4) } } }";
+        for kind in ["rect", "row", "panel"] {
+            let resolved = resolve_declared(rect_props(&lua, src), kind, false, &lua).unwrap();
+            let Value::Table(effect) = &resolved["effect"] else { panic!() };
+            assert_eq!(effect.raw_get::<i64>("blur").unwrap(), 2, "a nested signal resolves");
+        }
+        for kind in ["text", "image", "list"] {
+            let err = resolve_declared(rect_props(&lua, src), kind, false, &lua).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.backdrop"),
+                "{kind}: {err:?}"
+            );
+        }
+        let blur_only = rect_props(&lua, "return { effect = { blur = 2 } }");
+        assert!(resolve_declared(blur_only, "text", false, &lua).is_ok(), "`blur` is every kind's");
     }
 
     /// A cycle or a table reached many ways is walked once; past the depth limit a signal stays.

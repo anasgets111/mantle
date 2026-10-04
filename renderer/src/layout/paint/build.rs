@@ -696,13 +696,13 @@ mod tests {
         for (child, offset, blurred) in [
             (r##"rect { width = 10, height = 10, margin = { left = 100 }, background = "#ffffff" }"##, -20.0, false),
             (
-                r##"rect { width = 10, height = 10, margin = { left = 150 }, background = "#ffffff", content_blur = 4 }"##,
+                r##"rect { width = 10, height = 10, margin = { left = 150 }, background = "#ffffff", effect = { blur = 4 } }"##,
                 -150.0,
                 true,
             ),
             (
                 r##"rect { width = 10, height = 10, margin = { left = 150 },
-                children = { rect { width = 10, height = 10, background = "#ffffff", content_blur = 4 } } }"##,
+                children = { rect { width = 10, height = 10, background = "#ffffff", effect = { blur = 4 } } } }"##,
                 -150.0,
                 true,
             ),
@@ -1854,7 +1854,7 @@ mod tests {
     #[test]
     fn a_box_shadow_never_rides_the_bodys_layer() {
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, background = "#ffffff40", content_blur = 2, shadows = { { offset = { y = 4 } } }}"##,
+            r##"rect { width = 40, height = 20, background = "#ffffff40", effect = { blur = 2 }, shadows = { { offset = { y = 4 } } }}"##,
         );
         assert!(matches!(list.commands[1].draw, Draw::Shadow { knockout: true, .. }), "{:?}", list.commands);
         assert!(matches!(&list.commands[2].draw, Draw::Layer { effect, .. } if effect.shadows.is_empty()));
@@ -1887,7 +1887,7 @@ mod tests {
     fn a_content_blur_groups_the_subtree_and_reaches_three_sigma() {
         for (blur, reach) in [(2, 6), (12, 36)] {
             let list = effect_surface(&format!(
-                r##"rect {{ width = 40, height = 20, background = "#ffffff", content_blur = {blur} }}"##
+                r##"rect {{ width = 40, height = 20, background = "#ffffff", effect = {{ blur = {blur} }} }}"##
             ));
             let layer = list.commands.last().unwrap();
             assert!(
@@ -1980,7 +1980,7 @@ mod tests {
     #[test]
     fn a_layer_under_unclipped_ancestors_stops_near_the_surface() {
         let src = r##"return panel { id = "bar", width = 200, height = 100, clip = "none", child = rect {
-            width = 40, height = 20, clip = "none", content_blur = 1,
+            width = 40, height = 20, clip = "none", effect = { blur = 1 },
             shadows = { { blur = 4, offset = { x = 5 } } }, shadow_mode = "content",
             children = { rect { width = 8000, height = 8000, margin = { left = -4000 }, background = "#ffffff" } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None);
@@ -2020,7 +2020,7 @@ mod tests {
     #[test]
     fn a_layer_covers_a_transformed_child_overflowing_its_box() {
         let list = effect_surface(
-            r##"rect { width = 40, height = 20, content_blur = 1, clip = "none",
+            r##"rect { width = 40, height = 20, effect = { blur = 1 }, clip = "none",
                 children = { rect { width = 40, height = 20, background = "#ffffff", scale = 2 } } }"##,
         );
         let layer = list.commands.last().unwrap();
@@ -2034,7 +2034,7 @@ mod tests {
     fn a_backdrop_blur_draws_first_outside_the_nodes_layer_and_reaches_three_sigma() {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
-                backdrop_blur = 4, shadows = { { offset = { y = 4 } } }}"##,
+                effect = { backdrop = { blur = 4 } }, shadows = { { offset = { y = 4 } } }}"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
         assert_eq!(list.commands[at].draw, Draw::Backdrop { sigma: 4.0, radius: Radii::from(6.0), alpha: 0.5 });
@@ -2042,7 +2042,7 @@ mod tests {
         // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.
         assert!(matches!(list.commands[at + 1].draw, Draw::Shadow { .. }), "the box shadow draws after");
         let content = effect_surface(
-            r##"rect { width = 40, height = 20, background = "#ffffff40", backdrop_blur = 4, shadows = { { offset = { y = 4 } } },
+            r##"rect { width = 40, height = 20, background = "#ffffff40", effect = { backdrop = { blur = 4 } }, shadows = { { offset = { y = 4 } } },
                 shadow_mode = "content" }"##,
         );
         let at = content.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).unwrap();
@@ -2054,7 +2054,8 @@ mod tests {
     /// Nothing to show at opacity 0, so nothing to read.
     #[test]
     fn a_fully_faded_glass_reads_no_backdrop() {
-        let list = effect_surface(r##"rect { width = 40, height = 20, backdrop_blur = 4, opacity = 0 }"##);
+        let list =
+            effect_surface(r##"rect { width = 40, height = 20, effect = { backdrop = { blur = 4 } }, opacity = 0 }"##);
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })), "{list:?}");
     }
     #[test]

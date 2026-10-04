@@ -19,10 +19,10 @@ use crate::layout::node::prop::{
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
-    CornerShape, Cursor, Direction, Elide, Exclusive, Fill, Font, FontVariations, Items, KeyboardInteractivity,
-    LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params, PathCommands,
-    PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows, SizeHint,
-    SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, TrimAxis, Wrap,
+    CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font, FontVariations, Items,
+    KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params,
+    PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows,
+    SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -252,10 +252,10 @@ props! {
         ///
         /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
         shadows: Bound<Shadows>;
-        /// Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()`. Clipped like a shadow (ADR-0254).
+        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, backdrop = { blur } }`, each a Gaussian sigma in px within `[0, 8192]`, default `0`. `blur` filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop.blur` blurs what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and `backdrop` is a box kind's only. Applied in a fixed order: the backdrop first, then the node over it, the subtree blurred.
         ///
-        /// Book: Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow
-        content_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
+        /// Book: Pixel filters `{ blur, backdrop = { blur } }`, each a Gaussian sigma in px within `[0, 8192]`; see [Blurs](../guide/paint.md#blurs). `backdrop` is for box kinds only
+        effect: Bound<Effects> = range(0.0, 8192.0);
         /// Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
         ///
         /// Book: Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from`
@@ -327,10 +327,6 @@ props! {
         ///
         /// Book: Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background
         behind_blur: Bound<Flag> = absent(Bool(false));
-        /// Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter` (ADR-0256). Never sees the desktop; cut to `radius`/`corner_shape`.
-        ///
-        /// Book: Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs)
-        backdrop_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
         ///
         /// Book: `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)

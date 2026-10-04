@@ -372,7 +372,7 @@ mod tests {
     }
 
     #[test]
-    fn paths_share_gradient_fills_shadows_and_content_blur() {
+    fn paths_share_gradient_fills_shadows_and_the_blur_effect() {
         let shape = r##"commands={{op='M',points={16,8}},{op='L',points={16,24}},{op='L',points={32,24}},{op='L',points={32,8}},{op='Z',points={}}}"##;
         let src = format!(
             r##"path {{width=64,height=64,fill={{gradient='linear',stops={{{{0,'#ff0000'}},{{1,'#0000ff'}}}}}},shadows={{{{color='#00ff00',offset={{x=0,y=24}}}}}}, {shape}}}"##
@@ -381,7 +381,7 @@ mod tests {
         assert!(px[0].0 > 150 && px[0].2 > 30, "{px:?}");
         assert!(px[1].1 > 240 && px[1].3 > 240, "{px:?}");
         assert_eq!(px[2].3, 0);
-        let src = format!(r##"path {{width=64,height=64,fill='#ffffff',content_blur=2,{shape}}}"##);
+        let src = format!(r##"path {{width=64,height=64,fill='#ffffff',effect={{blur=2}},{shape}}}"##);
         let px = paint_points(&src, &[(24, 16), (14, 16), (4, 16)]).expect("headless EGL required");
         assert!(px[0].3 > 240 && px[1].3 > 10 && px[1].3 < 150, "{px:?}");
         assert_eq!(px[2].3, 0);

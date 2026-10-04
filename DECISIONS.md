@@ -7859,3 +7859,18 @@ ends too, and an enclosing clip box cuts them flat with no caps.
 Rejected: a `phase` or period property, which gives the engine a notion of periodic paths when a
 wave is one shape among many; reusing `translate`, which moves the band with the box. Ceiling: x
 only; a y band or a rectangular window would extend `trim_axis`.
+
+## 0333. One `effect` table holds a node's pixel filters
+
+1. **Shape.** `content_blur` and `backdrop_blur` become `effect = { blur, backdrop = { blur } }`,
+   as CSS `filter` beside `backdrop-filter`. The nesting leaves room for colour adjustments at both
+   levels and a top-level `shader`.
+2. **Fixed order,** whatever order the table lists: backdrop filters read what the surface painted
+   below the node, the node paints, a shader then `blur` filter its own subtree. Ranges, clipping
+   and cost stay as ADR-0254, ADR-0256 and ADR-0262 set them.
+3. **`backdrop` is for box kinds.** A leaf kind refuses it naming `effect.backdrop`; a property row
+   has no per-key kind, so the check sits in resolution.
+4. **Bindable and tweened per leaf** (ADR-0327); `animate.effect` is paint-only.
+
+Rejected: flat properties, which grow by one per filter and level; a flat `effect.backdrop_blur`,
+which leaves no room for per-level colour filters. Breaking, pre-1.0.

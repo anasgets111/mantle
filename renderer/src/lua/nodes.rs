@@ -211,6 +211,8 @@ mod tests {
             (r#"return lock { align_v = "end" }"#, "align_v"),
             // Removed for `shadows`; a stale config must fail, not silently lose its shadow.
             ("return rect { shadow_blur = 8 }", "shadow_blur"),
+            ("return rect { content_blur = 2 }", "content_blur"),
+            ("return rect { backdrop_blur = 2 }", "backdrop_blur"),
         ] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             let err = deserialize_lua_table(&table).unwrap_err();
@@ -698,6 +700,7 @@ mod meta_stub_tests {
             ("offset", _) => return Some("{ x = 1.5, y = 1 }".to_string()),
             // `shader.source` refuses a relative path; `image.source` takes either.
             ("source", "string") => return Some("\"/x\"".to_string()),
+            ("effect", _) => return Some("{ blur = 2.5 }".to_string()),
             ("shadows", _) => {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }

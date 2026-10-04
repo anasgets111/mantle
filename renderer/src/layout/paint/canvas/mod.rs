@@ -1860,7 +1860,7 @@ pub(crate) mod tests {
                             angle = 90, stops = {{ {{ 0, "#FFFFFFFF" }}, {{ 1, "#FFFFFF40" }} }} }},
                             children = {{ rect {{ width = 16, height = 16, background = "{corner}" }} }} }},
                         shader {{ width = 20, height = 48, source = "{}", params = {{ tint = {{ {tint} }} }} }},
-                        rect {{ width = 20, height = 20, background = "#0000FFFF", radius = 6, content_blur = 3 }} }} }} }}"##,
+                        rect {{ width = 20, height = 20, background = "#0000FFFF", radius = 6, effect = {{ blur = 3 }} }} }} }} }}"##,
                 frag.display()
             ))
         };
@@ -1888,7 +1888,7 @@ pub(crate) mod tests {
         let pair = |colour: &str| {
             format!(
                 r##"row {{ spacing = 2, children = {{ rect {{ width = 10, height = 20, background = "{colour}" }},
-                    rect {{ width = 40, height = 20, radius = 10, backdrop_blur = 4 }},
+                    rect {{ width = 40, height = 20, radius = 10, effect = {{ backdrop = {{ blur = 4 }} }} }},
                     rect {{ width = 10, height = 20, background = "#0000FFFF" }} }} }}"##
             )
         };
@@ -2039,7 +2039,7 @@ pub(crate) mod tests {
             let Some(px) = paint_points(&child("visible = false,", invert), &[(8, 32), (48, 32)]) else { return };
             assert_eq!(px, if invert { vec![(0, 127, 0, 127); 2] } else { vec![(0, 0, 0, 0); 2] });
         }
-        let nested = r##"opacity = 0.5, translate = { x = 16 }, content_blur = 1,
+        let nested = r##"opacity = 0.5, translate = { x = 16 }, effect = { blur = 1 },
             mask = { node = "inner" }, children = {
                 rect { id = "inner", width = 16, height = 64, background = "#FFFFFF" }
             },"##;

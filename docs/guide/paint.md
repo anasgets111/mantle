@@ -44,8 +44,8 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 | Box kind | A node that paints a box: `rect`, `row`, `column` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
 | Repaint | Mantle redraws the changed part of a surface's buffer; an unchanged surface is not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
-| Layer | The offscreen pass that `content_blur` and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
-| Glass | A box with `backdrop_blur` |
+| Layer | The offscreen pass that `effect.blur` and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
+| Glass | A box with `effect.backdrop.blur` |
 | Sigma | A Gaussian blur's standard deviation in logical px. The blur reaches about 3 sigma |
 
 ## Output scale
@@ -63,8 +63,9 @@ or, with none close, listing them all.
 
 | Properties | Taken by |
 | :--- | :--- |
-| `shadows`, `content_blur`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `backdrop_blur`, `behind_blur` | Box kinds only |
+| `shadows`, `effect`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
+| `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
+| `effect.backdrop` | Box kinds only; the key is refused elsewhere, naming it |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
 | `foreground` (`text`, `icon`, `textfield`), `z`, `scale`, `rotate`, `translate`, `origin`, `visible` | Also affect paint; documented on [Nodes](../nodes/index.md) |
@@ -91,7 +92,6 @@ colours and no short `#RGB` form.
 | `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
-| `backdrop_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over what this surface already painted under the box, CSS `backdrop-filter`; see [Blurs](#blurs) |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
 | `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` on a surface or a `scroll` viewport, else `"none"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip) |
 <!-- End of the generated table. -->
@@ -321,7 +321,7 @@ and the glyphs.
 | Case | How it draws |
 | :--- | :--- |
 | Box mode on a round box, any fill | One gradient quad around the box. On a translucent box it is cut out under the box, so it never shows through the fill |
-| An opaque box (solid colour fill with alpha 1, no mask, no `content_blur`, `opacity` 1), either mode | The same gradient quad; the box covers what is under it |
+| An opaque box (solid colour fill with alpha 1, no mask, no `effect.blur`, `opacity` 1), either mode | The same gradient quad; the box covers what is under it |
 | Content mode on anything else, any non-box node, an opaque scoop | An offscreen layer: the subtree is drawn, blurred and tinted each layer's `color` |
 | Box mode on a translucent scoop | A layer of the scoop's silhouette, cut out under the box |
 
@@ -348,14 +348,14 @@ geometry. A `spring` on `shadows` restarts from rest when its target changes mid
 
 ## Blurs
 
-Four properties blur four different things. Sigmas are in logical px, `[0, 8192]`, 0 is off.
+Four blurs read four different things. Sigmas are in logical px, `[0, 8192]`, 0 is off.
 `source_blur` is a fast box approximation; the others are Gaussian.
 
 | Property | Reads | When it runs | Cost | Pick it for |
 | :--- | :--- | :--- | :--- | :--- |
 | `behind_blur = true` (box kinds) | The desktop behind the surface: other windows and the wallpaper, not this surface's own pixels | Continuously, in the compositor | The compositor's | A translucent bar or panel over windows |
-| `backdrop_blur = sigma` (box kinds) | What this surface has already painted under the box: ancestors, earlier siblings, lower `z`. Never the desktop | Every repaint that touches the box or what it reads, on the GPU | A copy and a blur per repaint; not cached | Glass over the surface's own wallpaper, image or animated content |
-| `content_blur = sigma` (every node) | The node's own subtree | On repaint, on the GPU, into an offscreen layer | A blur when the subtree changes; an unchanged layer is reused. Large sigmas downsample first | A blurred or blur-in element, tweened with `animate` |
+| `effect = { backdrop = { blur = sigma } }` (box kinds) | What this surface has already painted under the box: ancestors, earlier siblings, lower `z`. Never the desktop | Every repaint that touches the box or what it reads, on the GPU | A copy and a blur per repaint; not cached | Glass over the surface's own wallpaper, image or animated content |
+| `effect = { blur = sigma }` (every node) | The node's own subtree | On repaint, on the GPU, into an offscreen layer | A blur when the subtree changes; an unchanged layer is reused. Large sigmas downsample first | A blurred or blur-in element, tweened with `animate` |
 | `source_blur = sigma` (`image`) | The image file's pixels | Once, on the CPU, when the source decodes | Nothing per frame | A static blurred picture on a surface that repaints often |
 
 **`behind_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
@@ -404,7 +404,7 @@ rect {
             background = "#FFFFFF1F",
             border_width = 1,
             border_color = "#FFFFFF33",
-            backdrop_blur = 12,
+            effect = { backdrop = { blur = 12 } },
             children = {
                 text { content = "12:45", font_size = 20, font_weight = 700, foreground = "#FFFFFF", align_v = "center" },
                 text { content = "Thu 24 Sep", font_size = 13, foreground = "#FFFFFFCC", align_v = "center" },
@@ -414,35 +414,35 @@ rect {
 }
 ```
 
-A frosted pill: the image is painted first, so the pill's `backdrop_blur` blurs the image under
+A frosted pill: the image is painted first, so the pill's `effect.backdrop.blur` blurs the image under
 its rounded shape, and the fill tints it. The same pattern over a full-screen image frosts a lock
 screen's wallpaper.
 
 ## Combining effects
 
-One node paints in this order, each step over the last:
+One node paints in this order, each step over the last. The order is fixed: the keys of `effect` apply in it, whatever order the table lists them in.
 
-1. **Backdrop** (`backdrop_blur`): replaces the pixels under the box with their blur.
+1. **Backdrop** (`effect.backdrop.blur`): replaces the pixels under the box with their blur.
 2. **Shadow**, when it is a gradient quad or a silhouette.
 3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
    goes through an offscreen pass.
-4. **Layer**: for `content_blur` or a layered shadow, the body is drawn offscreen, its shadow cast
+4. **Layer**: for `effect.blur` or a layered shadow, the body is drawn offscreen, its shadow cast
    from it, then the body blurred.
 5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
 
 | Combination | What happens | Do this |
 | :--- | :--- | :--- |
-| `mask` and `backdrop_blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
-| `content_blur` and `backdrop_blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
-| `backdrop_blur` inside a parent with `mask`, `content_blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
-| `backdrop_blur` inside `clip = "rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
-| `backdrop_blur` on a surface root | It blurs transparency: it never reads the desktop | `behind_blur = true` |
-| Shadow and `content_blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
+| `mask` and `effect.backdrop.blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
+| `effect.blur` and `effect.backdrop.blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
+| `effect.backdrop.blur` inside a parent with `mask`, `effect.blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
+| `effect.backdrop.blur` inside `clip = "rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
+| `effect.backdrop.blur` on a surface root | It blurs transparency: it never reads the desktop | `behind_blur = true` |
+| Shadow and `effect.blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
 | Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "content"` to cast from what is painted |
 | Content-mode shadow on a masked node | Cast from the masked result | Expected |
-| Content-mode shadow or `content_blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
+| Content-mode shadow or `effect.blur` over an `image`, `icon`, `capture`, image `mask` or glass | The layer is redrawn every repaint instead of reused | Keep those out of animated layers, or accept the cost |
 | Anything under a glass changes | The glass repaints, and so does everything in the area it reads (3 sigma past its box) | Keep glass away from constantly animating content, or keep sigma small |
-| Shadow or `content_blur` near a clipping parent's edge (`clip`, a scroll viewport, the surface) | Cut at that clip, like any child paint | Give that parent padding |
+| Shadow or `effect.blur` near a clipping parent's edge (`clip`, a scroll viewport, the surface) | Cut at that clip, like any child paint | Give that parent padding |
 | `opacity` on a node with effects | Multiplied into every draw once; layers and clips composite at full alpha, so nothing fades twice | Expected |
 | `opacity < 1` on a group whose children overlap | Each child fades on its own, so overlaps show through each other (not CSS group opacity) | For a group fade, give the parent a uniform `mask` (e.g. both stops `"#00000080"`); it costs an offscreen pass |
 | A transform on a node with a glass or shadow | The backdrop, shadow and body move together; the glass reads under its transformed position | Expected |
@@ -452,7 +452,7 @@ One node paints in this order, each step over the last:
 | Task | Answer |
 | :--- | :--- |
 | Frosted glass panel over windows | [Glass sheet](#frosted-glass-panel) below, or the [blur bar](#blurs) |
-| Frost a picture inside my own surface | The [frosted pill](#blurs): an `image`, then a sibling with `backdrop_blur` |
+| Frost a picture inside my own surface | The [frosted pill](#blurs): an `image`, then a sibling with `effect.backdrop.blur` |
 | Card with a shadow | The [card](#paint) at the top; [lift on hover](#card-that-lifts-on-hover) below |
 | Pill button | [Pill button](#pill-button) |
 | Gradient border | [Gradient ring](#gradient-border) |

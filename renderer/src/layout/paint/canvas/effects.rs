@@ -408,7 +408,7 @@ mod tests {
     /// pink over white, never through a dark fringe.
     #[test]
     fn a_content_blur_spreads_the_box_past_its_edge_without_darkening_it() {
-        let Some(px) = paint_effect(r##"background = "#FF0000FF", content_blur = 4"##) else { return };
+        let Some(px) = paint_effect(r##"background = "#FF0000FF", effect = { blur = 4 }"##) else { return };
         assert!(near(px[2], (255, 0, 0)), "the middle stays red: {px:?}");
         assert!(px[4].1 > 30 && px[4].1 < 240, "2px past the edge is pink: {px:?}");
         assert!(near(px[7], (255, 255, 255)), "and 3 sigma past it is white: {px:?}");
@@ -481,7 +481,7 @@ mod tests {
             format!(
                 r##"{STRIPES} return panel {{ id = "bar", width = 96, height = 48, child = rect {{ width = "fill", height = "fill",
                     background = {{ gradient = "linear", angle = 90, stops = stops }}, padding = 8,
-                    children = {{ rect {{ width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                    children = {{ rect {{ width = 80, height = 32, radius = 16, effect = {{ backdrop = {{ blur = 4 }} }},
                         background = "#FFFFFF33", padding = 8, {shadow}
                         children = {{ text {{ content = "hi", foreground = "#FF0000FF" }} }} }} }} }} }}"##
             )
@@ -543,8 +543,8 @@ mod tests {
             let _ = execute(surface, painter, images, captures, list, 1.0, (96.0, 64.0), &[region], shaders);
         };
         let whole = PhysicalRect { x0: 0, y0: 0, x1: 96, y1: 64 };
-        let blurred = list(r##"rect { width = 32, height = 32, background = "#FF0000FF", content_blur = 2 }"##);
-        let red = list(r##"rect { width = 32, height = 32, background = "#FF0000FE", content_blur = 2 }"##);
+        let blurred = list(r##"rect { width = 32, height = 32, background = "#FF0000FF", effect = { blur = 2 } }"##);
+        let red = list(r##"rect { width = 32, height = 32, background = "#FF0000FE", effect = { blur = 2 } }"##);
         let layer = blurred.commands.last().unwrap();
         paint(&mut painter, "a", &blurred, whole);
         paint(&mut painter, "b", &red, whole);
@@ -567,13 +567,13 @@ mod tests {
         paint(&mut painter, "a", &DisplayList::default(), whole);
         assert!(painter.layer("a", layer).is_none(), "gone once its list drops it");
 
-        let textured = list(r#"image { source = "/nonexistent.png", width = 32, height = 32, content_blur = 2 }"#);
+        let textured = list(r#"image { source = "/nonexistent.png", width = 32, height = 32, effect = { blur = 2 } }"#);
         paint(&mut painter, "a", &textured, whole);
         assert!(painter.layer("a", textured.commands.last().unwrap()).is_none());
 
         // A glass inside reads what is under it, which the layer's command does not name (ADR-0256).
         let glass = list(
-            r#"rect { width = 32, height = 32, content_blur = 2, children = { rect { width = 16, height = 16, backdrop_blur = 2 } } }"#,
+            r#"rect { width = 32, height = 32, effect = { blur = 2 }, children = { rect { width = 16, height = 16, effect = { backdrop = { blur = 2 } } } } }"#,
         );
         paint(&mut painter, "a", &glass, whole);
         assert!(painter.layer("a", glass.commands.last().unwrap()).is_none(), "{glass:?}");
@@ -604,7 +604,7 @@ mod tests {
         let src = &(STRIPES.to_owned()
             + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "fill", height = "fill",
                 background = { gradient = "linear", angle = 90, stops = stops }, padding = 8,
-                children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                children = { rect { width = 80, height = 32, radius = 16, effect = { backdrop = { blur = 4 } },
                     border_width = 2, border_color = "#00FF00FF", children = {
                         rect { width = 4, height = 4, margin = { left = 38, top = 14 }, background = "#FF0000FF" } } } } } }"##);
         let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 30)).collect();
@@ -629,7 +629,7 @@ mod tests {
     #[test]
     fn a_fading_backdrop_keeps_an_opaque_ground_opaque_up_to_the_surfaces_edge() {
         let src = r##"return panel { id = "bar", width = 64, height = 32, background = "#FF0000FF",
-            child = rect { width = "fill", height = "fill", backdrop_blur = 4, opacity = 0.5 } }"##;
+            child = rect { width = "fill", height = "fill", effect = { backdrop = { blur = 4 } }, opacity = 0.5 } }"##;
         let Some(px) = paint_with_gl(src, (64, 32), &[(32, 16), (0, 0), (63, 31)]) else { return };
         assert_eq!(px, [(255, 0, 0, 255); 3]);
     }
@@ -641,7 +641,7 @@ mod tests {
         let src = r##"return panel { id = "bar", width = 64, height = 48, child = column { width = "fill", children = {
             rect { width = "fill", height = 16, background = "#FF0000FF" },
             rect { width = "fill", height = 32, background = "#0000FFFF", clip = "box",
-                children = { rect { width = "fill", height = 16, backdrop_blur = 4 } } } } } }"##;
+                children = { rect { width = "fill", height = 16, effect = { backdrop = { blur = 4 } } } } } } } }"##;
         let Some(px) = paint_with_gl(src, (64, 48), &[(32, 16), (32, 8)]) else { return };
         assert_eq!(px, [(0, 0, 255, 255), (255, 0, 0, 255)]);
     }
@@ -655,7 +655,7 @@ mod tests {
             + r##"return panel { id = "bar", width = 96, height = 48, padding = 4,
                 background = { gradient = "linear", angle = 90, stops = stops },
                 child = rect { width = 88, height = 40, radius = 8, clip = "rounded", padding = 4,
-                    children = { rect { width = 80, height = 32, radius = 16, backdrop_blur = 4,
+                    children = { rect { width = 80, height = 32, radius = 16, effect = { backdrop = { blur = 4 } },
                         background = "#0000FF40" } } } }"##);
         let row: Vec<(usize, usize)> = (24..72).map(|x| (x, 20)).collect();
         let points = [&row[..], &[(2, 2), (12, 6), (20, 6)]].concat();
@@ -679,24 +679,24 @@ mod tests {
     #[test]
     fn a_backdrop_is_read_where_the_box_is_in_every_target() {
         let opaque_mask = r##"mask = { gradient = "linear", stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFFFF" } } },"##;
-        for (wrapper, pill) in [
-            ("", ""),
-            (r#"radius = 4, clip = "rounded","#, ""),
-            (opaque_mask, ""),
-            ("", r##"content_blur = 1, border_width = 1, border_color = "#00FF00FF""##),
-            ("translate = { x = 4, y = -4 },", ""),
-            ("", "rotate = 180"),
+        for (wrapper, blur, pill) in [
+            ("", "", ""),
+            (r#"radius = 4, clip = "rounded","#, "", ""),
+            (opaque_mask, "", ""),
+            ("", "blur = 1,", r##"border_width = 1, border_color = "#00FF00FF""##),
+            ("translate = { x = 4, y = -4 },", "", ""),
+            ("", "", "rotate = 180"),
         ] {
             let src = format!(
                 r##"return panel {{ id = "bar", width = 96, height = 96, padding = 8, child = rect {{
                     width = 80, height = 64, {wrapper} children = {{ rect {{ width = "fill", height = "fill",
                         padding = {{ left = 8 }}, background = {{ gradient = "linear", angle = 135, stops = {{ {{ 0, "#FF0000FF" }},
                             {{ 0.25, "#FF0000FF" }}, {{ 0.25, "#0000FFFF" }}, {{ 1, "#0000FFFF" }} }} }},
-                        children = {{ rect {{ width = 64, height = 32, radius = 16, backdrop_blur = 2, {pill} }} }} }} }} }} }}"##
+                        children = {{ rect {{ width = 64, height = 32, radius = 16, effect = {{ {blur} backdrop = {{ blur = 2 }} }}, {pill} }} }} }} }} }} }}"##
             );
             let points = [(26, 14), (30, 22), (26, 26), (56, 28), (13, 12)];
             let Some(px) = paint_with_gl(&src, (96, 96), &points) else { return };
-            let case = format!("wrapper {{ {wrapper} }}, pill {{ {pill} }}: {px:?}");
+            let case = format!("wrapper {{ {wrapper} }}, effect {{ {blur} }}, pill {{ {pill} }}: {px:?}");
             assert!(px[0].0 > 240 && px[0].2 < 15, "red above the split, {case}");
             assert!(px[3].2 > 240 && px[3].0 < 15, "blue below it, {case}");
             assert!(px[1..3].iter().all(|p| (40..=215).contains(&p.0) && (40..=215).contains(&p.2)), "blended, {case}");
@@ -770,7 +770,7 @@ mod tests {
     fn a_blur_past_sigma_8_keeps_widening() {
         let src = r##"return panel { id = "bar", width = 200, height = 160, padding = { left = 68, top = 48 },
             background = "#FFFFFFFF", child = rect { width = 64, height = 64, background = "#000000FF",
-                content_blur = 16 } }"##;
+                effect = { blur = 16 } } }"##;
         let Some(px) = paint_with_gl(src, (200, 160), &[(152, 80)]) else { return };
         assert!((210..=240).contains(&px[0].0), "{px:?}");
     }
@@ -780,10 +780,11 @@ mod tests {
     /// version the probe before them freed, as nothing else was created in between.
     #[test]
     fn repainting_a_blur_allocates_no_texture() {
-        let glass = |width: u32| format!("rect {{ width = {width}, height = 30, backdrop_blur = 32 }},");
+        let glass =
+            |width: u32| format!("rect {{ width = {width}, height = 30, effect = {{ backdrop = {{ blur = 32 }} }} }},");
         let src = format!(
             r##"return panel {{ id = "bar", width = 800, height = 300, padding = 110, background = "#FF0000FF",
-                child = row {{ spacing = 10, children = {{ {} rect {{ width = 30, height = 30, backdrop_blur = 2 }} }} }} }}"##,
+                child = row {{ spacing = 10, children = {{ {} rect {{ width = 30, height = 30, effect = {{ backdrop = {{ blur = 2 }} }} }} }} }} }}"##,
             [10, 20, 30, 40, 50].map(glass).concat()
         );
         let Some(instance) = init_headless_egl(800, 300) else { return };

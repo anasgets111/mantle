@@ -190,7 +190,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `translate` | `Axes\|Bound`, `[-8192, 8192]` | `{ x = 0, y = 0 }` | Pixel offset per axis, a missing one `0`, applied after `scale` and `rotate`. Paint only |
 | `origin` | `Axes\|Bound`, `[0, 1]` | `{ x = 0.5, y = 0.5 }` | Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5` |
 | `shadows` | `ShadowLayer[]\|Bound` | None | Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set |
-| `content_blur` | `number\|Bound`, `[0, 8192]` | `0` | Gaussian sigma in px over this node's painted subtree, CSS `filter: blur()` ([blurs](../guide/paint.md#blurs)). Clipped like a shadow |
+| `effect` | `Effect\|Bound`, `[0, 8192]` | None | Pixel filters `{ blur, backdrop = { blur } }`, each a Gaussian sigma in px within `[0, 8192]`; see [Blurs](../guide/paint.md#blurs). `backdrop` is for box kinds only |
 | `animate` | `Animations\|Bound` | None | Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
 | `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click` or `submit` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
@@ -229,8 +229,8 @@ The compositor draws the shape from its cursor theme.
 ## Box properties
 
 `rect`, `row`, `column` and the four surface roles also take `background`, `radius`,
-`corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `behind_blur`, `backdrop_blur` and
-`shadow_mode`. They are documented on [paint](../guide/paint.md#box-properties). Leaves and `list`
+`corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `behind_blur` and
+`shadow_mode`, and `effect.backdrop`. They are documented on [paint](../guide/paint.md#box-properties). Leaves and `list`
 take none of them: wrap one in a `rect` for a background, border or rounded clip.
 
 ## Identity and reconciliation
