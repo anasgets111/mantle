@@ -296,6 +296,15 @@ pub(crate) fn note_read(lua: &Lua, cell_id: CellId) {
     EvaluationMemo::record_dependency(lua, cell_id);
 }
 
+/// Runs `read` with no instance or enclosing frame noting its reads, so a write to what it read
+/// neither dirties the instance nor stales a resolve memo.
+pub(crate) fn untracked<R>(lua: &Lua, read: impl FnOnce() -> R) -> R {
+    let scope = Evaluation::enter(lua);
+    let value = read();
+    scope.finish();
+    value
+}
+
 /// [`note_read`] for every cell a skipped build read last time, so the instance and any enclosing
 /// frame still depend on them.
 pub(crate) fn note_reads(lua: &Lua, cells: &[CellId]) {

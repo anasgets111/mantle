@@ -1699,6 +1699,38 @@ mod tests {
     }
 
     #[test]
+    fn writing_a_seed_signal_alone_does_not_re_resolve_the_field_but_a_new_field_seeds_it() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"seed = state("seed", "a")
+            return panel { id = "bar", child = row { children = {
+                textfield { id = "old", initial_text = seed, on_change = function() end } } } }"#,
+        );
+        let held = |scene: &Scene| {
+            let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+            node::fields::textfield::initial_text.read(&field.properties).unwrap()
+        };
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(held(&scene), "a");
+        lua.load(r#"seed:set("b")"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(held(&scene), "a", "the write left the resolve memo standing");
+        let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert_eq!(field.current_initial_text(&lua), "b", "a re-armed autofocus reads the signal now");
+        scene.take_seeds();
+        let table: mlua::Table = lua
+            .load(
+                r#"return panel { id = "bar", child = row { children = {
+                    textfield { id = "new", initial_text = seed, on_change = function() end } } } }"#,
+            )
+            .eval()
+            .unwrap();
+        apply_at(&mut scene, &[deserialize_lua_table(&table).unwrap()], full(), &shaping, &lua).unwrap();
+        assert_eq!(scene.take_seeds().into_iter().map(|(_, text)| text).collect::<Vec<_>>(), ["b"]);
+    }
+
+    #[test]
     fn a_secure_submit_seed_or_an_unsettable_one_fails_the_pass_and_a_failed_pass_queues_none() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();

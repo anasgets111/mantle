@@ -7815,12 +7815,14 @@ Builds on ADR-0323.
 1. **Seeded at creation, not when empty.** A plain field's draft takes `initial_text` (string or
    signal, read then) when its node enters the tree; a changed `id` or `key`, or leaving and
    returning, is a new node and seeds again. Later changes are ignored, and a field emptied by
-   Enter, Escape or `set_text("")` stays empty.
+   Enter, Escape or `set_text("")` stays empty. The read does not subscribe (`signal::untracked`),
+   so a field's own `on_change` writing the seed per keystroke never re-resolves it.
 2. **`set_text`'s path.** `max_length` cut, caret at the end, no undo history, no `on_change`.
    Hidden, disabled and per-output instances each get a seed; one for a surface not yet live waits
    for it. `secure_submit` refuses a seed, so a secret never sits in Lua.
-3. **`autofocus` keeps a seed.** A seeded field keeps its draft and calls no `on_change("")`;
-   fields without a seed still start empty.
+3. **One `autofocus` rule.** Arming resets the draft to the seed's value at that moment (`""`
+   when unset) through `set_text`'s path, then calls `on_change` with it; a parked draft never
+   comes back.
 
 Rejected: a live two-way `text` binding, which round-trips Lua and a resolve pass per keystroke,
 fights caret and IME composition, and needs a rule for reconciling Lua's value with typing

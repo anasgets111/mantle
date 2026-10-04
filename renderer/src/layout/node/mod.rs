@@ -516,7 +516,9 @@ pub(crate) fn resolve_declared(
                 }
                 continue;
             }
-            match resolved_value(&properties, kind, property, tables_plain, lua)? {
+            // A seed is read once at creation, so a write to its signal must not re-resolve the node.
+            let read = || resolved_value(&properties, kind, property, tables_plain, lua);
+            match if property == "initial_text" { signal::untracked(lua, read) } else { read() }? {
                 Some(Value::Nil) => properties.remove(property),
                 Some(value) => properties.insert(property, value),
                 None => continue,

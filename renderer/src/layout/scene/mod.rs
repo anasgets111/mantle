@@ -309,6 +309,18 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
+    /// This field's `initial_text`, `""` when unset. A signal is read now, not as of the last
+    /// resolve, which a write alone never repeats (the seed read does not subscribe).
+    pub(crate) fn current_initial_text(&self, lua: &Lua) -> String {
+        let live = self.resolve_memo.as_ref().and_then(|memo| node::signal_at(memo.raw(), "initial_text")).and_then(
+            |signal| match crate::lua::signal::untracked(lua, || signal.get_value(lua)) {
+                Ok(Value::String(text)) => text.to_str().ok().map(|text| text.to_string()),
+                _ => None,
+            },
+        );
+        live.unwrap_or_else(|| node::fields::textfield::initial_text.read(&self.properties).unwrap_or_default())
+    }
+
     /// A disabled `textfield` takes no keyboard focus of either kind.
     pub(crate) fn is_disabled_field(&self) -> bool {
         matches!(self.paint, Some(node::PaintStyle::TextField { disabled: true, .. }))

@@ -88,11 +88,10 @@ fn autofocus_field_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<(
     None
 }
 
-/// Whether the node `id` in `tree` sets a non-empty `initial_text`.
-fn sets_initial_text(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId) -> bool {
+/// The node `id`'s `initial_text` now, `""` when unset or gone.
+fn initial_text_of(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId, lua: &mlua::Lua) -> String {
     let path = tree.and_then(|tree| layout::hit::path_to_node(tree, id));
-    path.and_then(|path| path.last().map(|node| node::fields::textfield::initial_text.read(&node.properties)))
-        .is_some_and(|text| text.is_ok_and(|text| !text.is_empty()))
+    path.and_then(|path| path.last().map(|node| node.current_initial_text(lua))).unwrap_or_default()
 }
 
 /// First visible plain field bound to `name` on this one surface.
@@ -593,9 +592,10 @@ impl App {
         self.mark_field_input_changed(&surface_id);
     }
 
-    /// Give keys to `autofocus` with a fresh empty buffer (ADR-0112). ADR-0108 preserves drafts
-    /// when the user returns manually; automatic handoff must not append to a forgotten search.
-    /// Fire `on_change("")` on every arm so launchers reset selection/scroll and state clears.
+    /// Give keys to `autofocus` with the draft reset to the field's `initial_text`, `""` when unset
+    /// (ADR-0112). ADR-0108 preserves drafts when the user returns manually; automatic handoff must
+    /// not append to a forgotten search. Fire `on_change` with that text on every arm so launchers
+    /// reset selection/scroll and state clears.
     pub(super) fn arm_autofocus_field(&mut self, scope: &[String]) {
         let trees = self.scoped_trees(scope);
         let Some((surface_id, FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate })) =
@@ -609,14 +609,11 @@ impl App {
         if !self.surface_is_live(&surface_id) {
             return;
         }
-        // A seeded field keeps its draft and tells the config nothing.
-        let seeded = sets_initial_text(self.client.scene().surface(&surface_id), id);
-        let opened = on_change.clone().filter(|_| !seeded);
+        let seed = initial_text_of(self.client.scene().surface(&surface_id), id, self.client.lua());
+        let opened = on_change.clone();
         debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
-        // Autofocus starts empty, so a parked draft must not come back.
-        if !seeded {
-            self.parked_drafts.remove(&(surface_id.clone(), id));
-        }
+        // Autofocus starts from the seed, so a parked draft must not come back.
+        self.parked_drafts.remove(&(surface_id.clone(), id));
         self.focus_text_field(Some(requested_focus(
             surface_id.clone(),
             FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate },
@@ -627,8 +624,10 @@ impl App {
             id,
             kind: super::focus::ControlKind::Plain,
         }));
+        self.set_draft(surface_id.clone(), id, &seed);
         if let Some(on_change) = opened {
-            call_logged(&on_change, String::new(), format_args!("{surface_id}: on_change"));
+            let text = self.focused_text_field.as_ref().map(|field| field.buffer.clone()).unwrap_or_default();
+            call_logged(&on_change, text, format_args!("{surface_id}: on_change"));
         }
     }
 
@@ -1371,7 +1370,7 @@ mod tests {
     }
 
     #[test]
-    fn autofocus_tells_a_seeded_field_from_an_unseeded_one() {
+    fn autofocus_resets_a_typed_draft_to_the_fields_seed_or_empty() {
         let lua = Lua::new();
         let mut seeded = plain_textfield(&lua);
         std::rc::Rc::make_mut(&mut seeded.properties)
@@ -1379,8 +1378,12 @@ mod tests {
         let plain = plain_textfield(&lua);
         let (seeded_id, plain_id) = (seeded.id, plain.id);
         let tree = tree_with(&lua, vec![seeded, plain]);
-        assert!(sets_initial_text(Some(&tree), seeded_id));
-        assert!(!sets_initial_text(Some(&tree), plain_id));
+        for (id, expected) in [(seeded_id, "hi"), (plain_id, "")] {
+            let mut field = FocusedTextField { id, ..draft(1, "typed") };
+            let seed = initial_text_of(Some(&tree), id, &lua);
+            assert!(store_draft(&mut Parked::default(), Some(&mut field), "calendar@eDP-1", id, &seed));
+            assert_eq!((field.buffer.as_str(), field.selection), (expected, (expected.len(), expected.len())));
+        }
     }
 
     #[test]
