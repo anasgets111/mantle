@@ -138,12 +138,6 @@ fn secure_focus_accepts_keys(control: Option<&FocusedControl>, field: Option<&Fo
     control.surface_id == field.surface_id && control.id == field.id && control.kind == ControlKind::Masked
 }
 
-/// Escape belongs to a focused field with something to do: text or a composition to clear, or an
-/// `on_cancel`. Otherwise it reaches `on_escape`, so "first clears, second closes" stays expressible.
-pub(super) fn field_takes_escape(has_text: bool, cancels: bool) -> bool {
-    has_text || cancels
-}
-
 /// The innermost surface in `scope` (focused first, popups after) that declares `on_escape`.
 pub(super) fn escape_handler<'a>(trees: &[(&'a str, &layout::ResolvedNode)]) -> Option<(&'a str, Function)> {
     trees.iter().rev().find_map(|(id, tree)| {
@@ -440,13 +434,6 @@ mod tests {
         assert_eq!(escape_handler(&[("bar", &bar), ("tip", &tip)]).map(|(id, _)| id), Some("bar"));
         assert!(escape_handler(&[("tip", &tip)]).is_none());
         assert!(escape_handler(&[]).is_none(), "no keyboard focus, no scope");
-    }
-
-    #[test]
-    fn a_field_keeps_escape_only_while_it_has_text_or_an_on_cancel() {
-        assert!(field_takes_escape(true, false), "the first Escape clears");
-        assert!(field_takes_escape(false, true), "on_cancel owns it even when empty");
-        assert!(!field_takes_escape(false, false), "the second Escape reaches the surface");
     }
 
     #[test]

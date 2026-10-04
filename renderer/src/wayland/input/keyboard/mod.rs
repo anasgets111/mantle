@@ -507,12 +507,14 @@ impl App {
         }
     }
 
-    /// The `on_escape` to fire for this press, resolved before the fields clear or drop focus.
+    /// The `on_escape` to fire for this press, resolved before the fields clear or drop focus. A
+    /// focused field with text or a composition to clear, or an `on_cancel`, keeps Escape, so
+    /// "first clears, second closes" needs no `on_cancel`.
     fn surface_escape_handler(&self) -> Option<(String, Function)> {
         let plain =
             self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).is_some_and(|field| {
                 let composing = self.text_input.composing(&field.surface_id, field.id).is_some();
-                focus::field_takes_escape(!field.buffer.is_empty() || composing, field.on_cancel.is_some())
+                !field.buffer.is_empty() || composing || field.on_cancel.is_some()
             });
         let secure = self.focused_secure_submit.as_ref().is_some_and(|field| {
             let cancels = self
@@ -520,7 +522,7 @@ impl App {
                 .scene()
                 .surface(&field.surface_id)
                 .is_some_and(|tree| secure::secure_on_cancel(tree, field).is_some());
-            focus::field_takes_escape(!self.secure_buffer.is_empty(), cancels)
+            !self.secure_buffer.is_empty() || cancels
         });
         if plain || secure {
             return None;
