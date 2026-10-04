@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
 - A `textfield` without `height` is one line of `font_size` tall instead of 0 px, so its placeholder shows. `width` is still required.
 - `text` takes `font_variations`, a table of OpenType axis tags to values such as `{ FILL = 1, GRAD = 0, opsz = 24 }`, for variable fonts like Material Symbols. An explicit `wght` overrides `font_weight`.

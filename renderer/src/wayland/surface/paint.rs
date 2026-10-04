@@ -243,8 +243,14 @@ impl App {
         let t_build = timing.then(Instant::now);
         let list = {
             let focus = self.field_focus_for(&surface_id);
+            let drafts: Vec<_> = self
+                .parked_drafts
+                .iter()
+                .filter(|((surface, _), _)| *surface == surface_id)
+                .map(|((_, id), (text, _))| (*id, text.as_str()))
+                .collect();
             tree.as_ref()
-                .map(|tree| layout::paint::build_with_control(tree, scale, focus.as_ref(), control))
+                .map(|tree| layout::paint::build_with_control(tree, scale, focus.as_ref(), control, &drafts))
                 .unwrap_or_default()
         };
         // What the compositor re-blurs and recomposites behind this surface; `None` is the whole

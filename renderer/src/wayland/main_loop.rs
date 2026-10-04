@@ -115,6 +115,7 @@ pub fn run(
         reposition_token: 0,
         focused_secure_submit: None,
         focused_text_field: None,
+        parked_drafts: HashMap::new(),
         focused_control: None,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),

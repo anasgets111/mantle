@@ -202,6 +202,8 @@ pub struct App {
     ///
     /// Mutually exclusive with `focused_secure_submit`; the innermost textfield is one kind.
     focused_text_field: Option<FocusedTextField>,
+    /// Text and selection of plain fields that lost focus to another field, until their node goes (ADR-0108).
+    parked_drafts: HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>,
     focused_control: Option<FocusedControl>,
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,

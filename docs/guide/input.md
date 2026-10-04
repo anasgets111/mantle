@@ -288,8 +288,10 @@ composition appears underlined. Preedit alone does not call
 resumes when composition ends. A pointer press or Escape discards uncommitted composition.
 Secure fields do not use an IME.
 
-**Draft lifetime.** Clicking elsewhere, or the surface losing the keyboard, stops typing but keeps
-the draft; clicking the field again resumes it. Enter and Escape clear it. An `autofocus` arm
+**Draft lifetime.** Each field keeps its own draft. Clicking elsewhere, moving to another field, or
+the surface losing the keyboard stops typing but keeps the draft; focusing the field again resumes
+it, though a click that returns to a field puts the caret where it was left. Undo history does not
+survive leaving a field. Enter and Escape clear it. An `autofocus` arm
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
 
 To return typing to a field after a click changes the view, give the field the handle and call

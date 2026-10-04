@@ -115,6 +115,33 @@ fn first_plain_field(
     None
 }
 
+type Parked = std::collections::HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>;
+
+fn park(parked: &mut Parked, field: &FocusedTextField) {
+    if !field.buffer.is_empty() {
+        parked.insert((field.surface_id.clone(), field.id), (field.buffer.clone(), field.selection));
+    }
+}
+
+/// Moves focus from `old` to `next`: a different field's non-empty text is parked, and `next`
+/// takes back what it parked. Only plain fields get here, so no secret is ever held.
+fn swap_drafts(parked: &mut Parked, old: Option<&FocusedTextField>, next: Option<&mut FocusedTextField>) {
+    let Some(next) = next else { return };
+    if let Some(old) = old.filter(|old| (&old.surface_id, old.id) != (&next.surface_id, next.id)) {
+        park(parked, old);
+    }
+    if let Some((buffer, selection)) = parked.remove(&(next.surface_id.clone(), next.id))
+        && next.buffer.is_empty()
+    {
+        (next.buffer, next.selection) = (buffer, selection);
+    }
+}
+
+/// A parked draft lives only as long as its node and surface.
+fn forget_gone_drafts(parked: &mut Parked, alive: impl Fn(&str, layout::scene::NodeId) -> bool) {
+    parked.retain(|(surface_id, id), _| alive(surface_id, *id));
+}
+
 pub(super) fn requested_focus(
     surface_id: String,
     target: FieldTarget,
@@ -456,6 +483,8 @@ impl App {
         }
         let opened = on_change.clone();
         debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
+        // Autofocus starts empty, so a parked draft must not come back.
+        self.parked_drafts.remove(&(surface_id.clone(), id));
         self.focus_text_field(Some(requested_focus(
             surface_id.clone(),
             FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate },
@@ -528,10 +557,11 @@ impl App {
     /// for repainting rather than for scrubbing. There is no secret here to zeroize; what the two
     /// share is that the field they leave must stop drawing a caret and the field they arrive at
     /// must start.
-    pub(in crate::wayland::input) fn focus_text_field(&mut self, next: Option<FocusedTextField>) {
+    pub(in crate::wayland::input) fn focus_text_field(&mut self, mut next: Option<FocusedTextField>) {
         if self.focused_text_field.is_none() && next.is_none() {
             return;
         }
+        swap_drafts(&mut self.parked_drafts, self.focused_text_field.as_ref(), next.as_mut());
         self.mark_focused_text_field_changed();
         if let Some(ref next_field) = next {
             self.mark_field_input_changed(&next_field.surface_id);
@@ -549,6 +579,12 @@ impl App {
         }
     }
 
+    pub(in crate::wayland::input) fn park_focused_draft(&mut self) {
+        if let Some(field) = self.focused_text_field.as_ref() {
+            park(&mut self.parked_drafts, field);
+        }
+    }
+
     /// [`App::prune_secure_focus`]'s counterpart. The same two clauses -- the surface is still
     /// alive, and it is still one the keyboard can reach -- because a plain field goes stale for
     /// exactly the reasons a masked one does. What it does not share is the urgency: dropping a
@@ -556,6 +592,13 @@ impl App {
     /// [`App::drop_secure_focus_if_its_surface_is_gone`]; the check before each keystroke is
     /// enough, and a `leave` clears it anyway.
     pub(in crate::wayland::input) fn prune_text_field_focus(&mut self) {
+        let scene = self.client.scene();
+        let mut parked = std::mem::take(&mut self.parked_drafts);
+        forget_gone_drafts(&mut parked, |surface_id, id| {
+            self.surface_is_live(surface_id)
+                && scene.surface(surface_id).is_some_and(|tree| layout::hit::contains_node(tree, id))
+        });
+        self.parked_drafts = parked;
         let Some(field) = self.focused_text_field.as_ref() else {
             return;
         };
@@ -1218,6 +1261,45 @@ mod tests {
             Some(&previous),
         );
         assert!(changed.buffer.is_empty() && changed.history.undo.is_empty());
+    }
+
+    #[test]
+    fn a_field_keeps_its_own_draft_while_another_has_focus() {
+        let mut parked = Parked::new();
+        let mut one = draft(1, "abc");
+        one.selection = (1, 1);
+        let mut two = draft(2, "");
+        swap_drafts(&mut parked, Some(&one), Some(&mut two));
+        assert!(two.buffer.is_empty(), "a field with no draft starts empty");
+        two.buffer = "xy".into();
+        two.selection = (2, 2);
+        let mut back = draft(1, "");
+        swap_drafts(&mut parked, Some(&two), Some(&mut back));
+        assert_eq!((back.buffer.as_str(), back.selection), ("abc", (1, 1)));
+        let mut again = draft(2, "");
+        swap_drafts(&mut parked, Some(&back), Some(&mut again));
+        assert_eq!((again.buffer.as_str(), again.selection), ("xy", (2, 2)));
+        assert_eq!(parked.len(), 1, "the focused field's entry is consumed");
+    }
+
+    #[test]
+    fn a_parked_draft_goes_with_its_node() {
+        let lua = Lua::new();
+        let kept = plain_textfield(&lua);
+        let kept_id = kept.id;
+        let tree = tree_with(&lua, vec![kept]);
+        let mut parked = Parked::new();
+        parked.insert(("panel@TEST".into(), kept_id), ("a".into(), (1, 1)));
+        parked.insert(("panel@TEST".into(), layout::scene::NodeId::test(999)), ("b".into(), (1, 1)));
+        forget_gone_drafts(&mut parked, |_, id| layout::hit::contains_node(&tree, id));
+        assert_eq!(parked.keys().map(|(_, id)| *id).collect::<Vec<_>>(), vec![kept_id]);
+    }
+
+    #[test]
+    fn dropping_focus_parks_nothing() {
+        let mut parked = Parked::new();
+        swap_drafts(&mut parked, Some(&draft(1, "abc")), None);
+        assert!(parked.is_empty());
     }
 
     #[test]

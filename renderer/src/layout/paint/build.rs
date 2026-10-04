@@ -47,7 +47,7 @@ pub enum FieldFocus<'a> {
 /// Flattens `root` without touching a canvas or GL context.
 #[cfg(test)]
 pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> DisplayList {
-    build_with_control(root, scale, focus, None)
+    build_with_control(root, scale, focus, None, &[])
 }
 
 pub fn build_with_control(
@@ -55,9 +55,10 @@ pub fn build_with_control(
     scale: f32,
     focus: Option<&FieldFocus>,
     control: Option<NodeId>,
+    drafts: &[(NodeId, &str)],
 ) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, control, &mut commands);
+    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, (focus, drafts), control, &mut commands);
     DisplayList { commands }
 }
 
@@ -72,7 +73,7 @@ fn build_node(
     scale: f32,
     (clip, surface): (PhysicalRect, LogicalRect),
     inherited_opacity: f32,
-    focus: Option<&FieldFocus>,
+    (focus, drafts): (Option<&FieldFocus>, &[(NodeId, &str)]),
     control: Option<NodeId>,
     out: &mut Vec<DrawCmd>,
 ) {
@@ -147,7 +148,7 @@ fn build_node(
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
     // A fully clipped node draws nothing, and its children cut to its box return on their own.
-    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus) };
+    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus, drafts) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
     // (ADR-0149), so the group is built into `out` and lifted out of it afterwards. Coordinates
@@ -193,13 +194,13 @@ fn build_node(
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, (focus, drafts), control, &mut inner);
             }
             inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
                 let draw = if let Some(mask_node) = node.mask_child() {
                     let mut commands = Vec::new();
-                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, None, None, &mut commands);
+                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, (None, &[]), None, &mut commands);
                     let split = commands.len();
                     commands.extend(inner);
                     Draw::NodeMask {
@@ -221,7 +222,7 @@ fn build_node(
                 out.push(cmd(clip, draw));
             }
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, control, out);
+                build_node(child, x, y, scale, (child_clip, surface), opacity, (focus, drafts), control, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -233,7 +234,7 @@ fn build_node(
             }
             let mut inner = Vec::new();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, (focus, drafts), control, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -411,6 +412,7 @@ fn draw_for(
     scale: f32,
     opacity: f32,
     focus: Option<&FieldFocus>,
+    drafts: &[(NodeId, &str)],
 ) -> Option<Draw> {
     let node_id = node.id;
     let retained = node.displayed_source.as_deref();
@@ -560,7 +562,11 @@ fn draw_for(
                         false => (text.to_string(), *caret, *caret_on, Vec::new(), color),
                     }
                 }
-                _ => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
+                // A field the keyboard left shows its own draft, caretless.
+                _ => match drafts.iter().find(|(id, _)| *id == node_id && target.is_none()) {
+                    Some((_, text)) => (text.to_string(), None, false, Vec::new(), color),
+                    None => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
+                },
             };
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
@@ -1140,14 +1146,14 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
-        let idle = build_with_control(&tree, 1.0, None, None);
-        let focused = build_with_control(&tree, 1.0, None, Some(id));
+        let idle = build_with_control(&tree, 1.0, None, None, &[]);
+        let focused = build_with_control(&tree, 1.0, None, Some(id), &[]);
         assert_eq!(focused.commands.len(), idle.commands.len() + 2);
         assert!(focused.commands.iter().rev().take(2).all(|cmd| matches!(cmd.draw, Draw::Box { .. })));
 
         let mut ringless = tree.clone();
         std::rc::Rc::make_mut(&mut ringless.children[0].properties).insert("focus_ring", mlua::Value::Boolean(false));
-        assert_eq!(build_with_control(&ringless, 1.0, None, Some(id)).commands.len(), idle.commands.len());
+        assert_eq!(build_with_control(&ringless, 1.0, None, Some(id), &[]).commands.len(), idle.commands.len());
     }
 
     /// The plain half of `textfield` (ADR-0092). Unfocused it is a placeholder like any other
@@ -1181,6 +1187,15 @@ mod tests {
         let id = tree.children[0].id;
         let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
         assert_eq!(color(&typed), Some((1.0, 0.0)));
+    }
+
+    #[test]
+    fn an_unfocused_field_draws_its_parked_draft() {
+        let lua = Lua::new();
+        let tree = reply_surface(&lua);
+        let id = tree.children[0].id;
+        let list = build_with_control(&tree, 1.0, None, None, &[(id, "half a sentence")]);
+        assert_eq!(drawn_text(&list), vec!["half a sentence".to_string()]);
     }
 
     #[test]
