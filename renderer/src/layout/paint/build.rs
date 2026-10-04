@@ -521,7 +521,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align } => {
             // The first entry for this node wins: the focused field, then any parked draft. Another
             // node's focus, masked or not, leaves this one to its parked draft or placeholder.
-            let (content, caret, caret_on, runs, color) = focus
+            let (content, caret, caret_on, runs, is_placeholder) = focus
                 .iter()
                 .find_map(|field| match field {
                     // An empty masked field remains a prompt.
@@ -530,7 +530,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                             && *id == node_id
                             && target.as_ref().is_some_and(|declared| declared == *focused) =>
                     {
-                        Some((mask.repeat(*filled), None, false, Vec::new(), color))
+                        Some((mask.repeat(*filled), None, false, Vec::new(), false))
                     }
                     // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
                     // the caret-only rule hid the prompt of every `autofocus` field, which holds the
@@ -550,18 +550,19 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                             color: None,
                             href: None,
                         }];
-                        Some((content, scroll_caret, *caret_on && caret.is_some(), runs, color))
+                        Some((content, scroll_caret, *caret_on && caret.is_some(), runs, false))
                     }
                     FieldFocus::Plain { id, text, caret, caret_on } if *id == node_id && target.is_none() => {
                         Some(match text.is_empty() && !placeholder.is_empty() {
-                            true => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
+                            true => (placeholder.clone(), None, false, Vec::new(), true),
                             // The draft remains visible without a caret (ADR-0108).
-                            false => (text.to_string(), *caret, *caret_on, Vec::new(), color),
+                            false => (text.to_string(), *caret, *caret_on, Vec::new(), false),
                         })
                     }
                     _ => None,
                 })
-                .unwrap_or_else(|| (placeholder.clone(), None, false, Vec::new(), placeholder_color));
+                .unwrap_or_else(|| (placeholder.clone(), None, false, Vec::new(), true));
+            let color = if is_placeholder { placeholder_color } else { color };
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {

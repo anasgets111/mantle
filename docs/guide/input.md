@@ -237,8 +237,9 @@ where it is.
 ## Text fields
 
 A `textfield` is a single-line text input. The engine holds what the user types (the *draft*); Lua
-sees it through callbacks, and sets it only with `:set_text`. The field with *focus* is the one keys go to. It
-has no intrinsic width, so give it `width`; `height` defaults to one line ([nodes](../nodes/textfield.md)).
+sees it through callbacks, and sets it only with `:set_text`. The field with *focus* is the one keys
+go to. It has no intrinsic width, so give it `width`; `height` defaults to one line
+([nodes](../nodes/textfield.md)).
 
 A field takes the keyboard only when both hold:
 
@@ -559,7 +560,7 @@ return panel {
 | A container's hover stays on while the pointer is over a child | Hover covers the whole subtree. Give the child its own `hover` for innermost-only behaviour |
 | A click is lost when the node grows on press | The release must land on the same laid-out box. Animate `scale` instead |
 | A tooltip or menu anchored to a scaled node is off | Rects are laid-out boxes before transforms. Anchor on an untransformed parent |
-| Lua needs to prefill or clear a field | Not possible: the draft belongs to the engine. `autofocus` re-arms empty; Escape and Enter clear |
+| Lua needs to prefill or clear a field | Call `focus_target(name):set_text(text)`; `""` clears. `autofocus` also re-arms empty, and Escape and Enter clear |
 | A typed password shows up in `on_change` | It cannot: a `secure_submit` field never calls it. Plain fields also stop taking keys while a secure field is armed |
 
 See also: [nodes](../nodes/index.md) ([`textfield`](../nodes/textfield.md), [`list`](../nodes/list.md)), [surfaces](../surfaces/index.md)

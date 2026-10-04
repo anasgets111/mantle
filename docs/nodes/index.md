@@ -106,7 +106,8 @@ over an icon or a label over an image. A parent with its own size gives every ch
 box, even a child larger than it.
 
 Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `path`, `shader`
-and `textfield` have no intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.
+and `textfield` have no intrinsic width: without `width` they are 0 wide and draw nothing, and all
+but `textfield` need `height` too. A `textfield` defaults to one line of `font_size` tall.
 
 ### Sizes
 
@@ -334,7 +335,7 @@ return body
 | Trap | Fix |
 | :--- | :--- |
 | `width = "content"` is refused | Omit the property; content size is the default |
-| An `image`, `capture`, `path`, `shader` or `textfield` does not appear | They have no intrinsic size. Give `width` and `height`, or `"fill"` in a sized parent |
+| An `image`, `capture`, `path`, `shader` or `textfield` does not appear | They have no intrinsic width. Give `width` (and `height`, except for a `textfield`), or `"fill"` in a sized parent |
 | A `"fill"` child is 0 wide | Its parent is content-sized along that axis, or fixed siblings already overflow. Size the parent |
 | `"50%"` resolves to 0 | The parent has no definite size on that axis |
 | Items in a `rect` overlap | They stack their children; put a `row` inside for side by side |

@@ -1,8 +1,9 @@
 # textfield
 
 A single-line text input: a search box, a launcher query, a password. The engine holds what the user
-types (the *draft*); Lua sees it through callbacks and sets it only with [`focus_target(name):set_text`](../guide/input.md#text-fields). Focus, editing keys, the
-draft's lifetime and password fields are on [input](../guide/input.md#text-fields).
+types (the *draft*); Lua sees it through callbacks and sets it only with
+[`focus_target(name):set_text`](../guide/input.md#text-fields). Focus, editing keys, the draft's
+lifetime and password fields are on [input](../guide/input.md#text-fields).
 
 A launcher: the field filters a list as the user types, the arrow keys move a selection, Enter
 launches.
@@ -84,12 +85,13 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
 
-The field has no intrinsic width, so give it `width`; without `height` it is one line of `font_size` tall (1.2 times the size). It draws one line of text and a
-caret, vertically centred, in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font`
-property. Plain fields use `zwp_text_input_v3` for composition when the compositor offers it and
-text-input enters the field's own surface. Raw keys stay active between compositions and are
-suppressed during pending or active composition. Preedit text is underlined; commits and surrounding
-deletions call `on_change`. Secure fields read `wl_keyboard` and never send their
+The field has no intrinsic width, so give it `width`; without `height` it is one line of
+`font_size` tall (1.2 times the size). It draws one line of text and a caret, vertically centred,
+in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font` property. Plain fields use
+`zwp_text_input_v3` for composition when the compositor offers it and text-input enters the field's
+own surface. Raw keys stay active between compositions and are suppressed during pending or active
+composition. Preedit text is underlined; commits and surrounding deletions call `on_change`. Secure
+fields read `wl_keyboard` and never send their
 draft to an input method.
 
 A field with none of `on_change`, `on_submit` and `secure_submit` never takes focus. The draft
