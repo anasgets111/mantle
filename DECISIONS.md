@@ -7672,3 +7672,21 @@ output size).
 Rejected: substituting the default inside `Field::read`, which left the bad value in the property
 map for ticks, input and tween targets to read again. Cost: a resolved node validates each value
 that differs from its retained one a second time.
+
+## 0325. An ancestor's clip stays in the ancestor's space under a child's transform
+
+Replaces the movement-only offset in `layout/paint/build.rs` and `layout/region.rs`.
+
+1. **Mapped back, not carried along.** A transformed node's group matrix moves everything inside
+   it, so the ancestors' clip enters the group through the inverse of that matrix, in paint and in
+   blur regions alike. A child that translates, scales or rotates past its parent is cut at the
+   parent's box, as hit testing already treated it.
+2. **Overflow by transform is opt-in.** Hover scale-ups, overshooting easings and slide-outs that
+   should spill set `clip = "none"` on the parent; the docs' own examples did.
+3. **Whole pixels.** `DrawCmd.clip` is a `PhysicalRect`, so the mapped clip rounds out: a
+   fractional slide can show up to 1px past the edge, and a rotated child is cut by the bounding
+   box of the mapped clip.
+
+Rejected: a float clip set once outside the group and intersected inside, which is exact but needs
+a scissor chain across nested groups, layers and damage, all of which compare integer rects. Cost:
+configs that relied on the old spill change appearance until they opt out.
