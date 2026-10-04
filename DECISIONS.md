@@ -7716,3 +7716,26 @@ Amends ADR-0069 decisions 4 and 6 and the main-loop order of ADR-0145.
 Rejected: easing in Lua from a timer, which re-runs the config per frame for a visual the engine
 owns, and advancing runs in the tick for the next pass to read, which draws readers a frame behind
 and needs an extra wake. Cost: a reader of an eased offset re-evaluates every frame of the run.
+
+## 0327. A signal nested in a property table resolves with its property
+
+Amends ADR-0044 §1 and ADR-0145 §1, and the refusal in `layout/node/input.rs`.
+
+1. **One walk, before the parsers.** `resolve_properties` walks each non-raw table value's raw
+   entries, at most 8 deep, and replaces every table on a path to a signal with a copy holding the
+   signals' values; nil omits the key. Signal-free tables are shared, and a table reached twice is
+   walked once. Parsers, ticks and memos see plain data.
+2. **Settled like a top-level signal.** `settle_property_signals` runs the same walk, so a nested
+   `computed` whose output did not change keeps its node (ADR-0270).
+3. **Still refused:** structural and raw rows, `child`/`children`, list inputs, tables with a
+   metatable, anything deeper than the walk, and a signal inside a signal's result. Resolution
+   stays exactly once.
+4. **A changed nested field is a changed target:** `animate` retargets the whole value from what
+   is on screen, and a bad nested value drops the whole property (ADR-0324).
+5. **Stubs spell each property-shape field `T|Bound`.** `Rect`, also handed to callbacks, stays
+   plain.
+
+Rejected: resolving in each parser, which would read signals during ticks, outside read tracking,
+and once per parse; and opting in row by row, a second rule for a cost paid only on resolve misses.
+Cost: one raw scan per table-valued property on a resolve miss, and one table copy per resolve for
+a property holding a signal, which ADR-0324 then validates again.

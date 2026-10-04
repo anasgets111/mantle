@@ -71,10 +71,10 @@ or, with none close, listing them all.
 | `radius` | Box kinds and `image` |
 | `foreground` (`text`, `icon`, `textfield`), `z`, `scale`, `rotate`, `translate`, `origin`, `visible` | Also affect paint; documented on [Nodes](../nodes/index.md) |
 
-Every property can be a [signal](signals.md). A signal nested inside a table (a gradient stop, one
-border edge) is refused, so derive the whole table with `:map`. A malformed value draws the
-property's default and goes to `mantle log` and `mantle.rescue`; a reload and `mantle check` refuse
-it ([runtime](runtime.md#evaluation-reload-and-generations)).
+Every property can be a [signal](signals.md), and so can a value inside a property table, such as a
+gradient stop's colour or one border edge. A malformed value draws the property's default and goes
+to `mantle log` and `mantle.rescue`; a reload and `mantle check` refuse it
+([runtime](runtime.md#evaluation-reload-and-generations)).
 
 ## Colours
 

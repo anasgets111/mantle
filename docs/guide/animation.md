@@ -66,8 +66,9 @@ Run `mantle set go true` to start the race in your shell, then `mantle set go fa
 `animate` is a table from property names to entries. When a pass resolves a different value for a
 named property, the node moves from the value on screen to the new one. A pass that re-resolves the
 same value leaves a running tween alone, so an unrelated signal does not restart the motion.
-`animate` itself may be a signal (`animate = shown:map(...)`), but the entries inside it are plain
-values: a signal nested in an entry does not resolve.
+`animate` itself may be a signal (`animate = shown:map(...)`), and so may an entry or a field
+inside one. An entry's timing read from a signal applies to the run already under way: a new
+`duration` mid-tween moves where the run is.
 
 | Situation | Result |
 | :--- | :--- |

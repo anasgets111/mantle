@@ -612,6 +612,8 @@ mod meta_stub_tests {
         let mut members = expand(aliases, ty);
         members.sort_by_key(|member| *member == "Bound");
         let mut first: Option<String> = None;
+        // A slot's own literal, so `Bound` probes a signal in the slot, inside the table around it.
+        let mut own: Option<String> = None;
         for member in &members {
             if let Some(inner) = member.strip_prefix('(').and_then(|m| m.strip_suffix(")[]")) {
                 let nested = probe(aliases, kind, required, field, inner, &|l| around(&format!("{{ {l} }}")), report);
@@ -622,8 +624,16 @@ mod meta_stub_tests {
                 // The engine resolves a handle before sibling rules apply, so wrap a sibling's
                 // literal: `image.source` needs a string signal, `list.source` an array. The bare
                 // `hover`/`geometry`/`scroll`/`elided` fall back to their own rows.
-                "Bound" => first.as_ref().map(|l| format!("state(\"probe\", {l})")).or_else(|| sample(field, member)),
-                _ => sample(field, member).map(|l| around(&l)),
+                "Bound" => own
+                    .as_ref()
+                    .map(|l| around(&format!("state(\"probe\", {l})")))
+                    .or_else(|| first.as_ref().map(|l| format!("state(\"probe\", {l})")))
+                    .or_else(|| sample(field, member)),
+                _ => sample(field, member)
+                    .inspect(|l| {
+                        own.get_or_insert_with(|| l.clone());
+                    })
+                    .map(|l| around(&l)),
             };
             let Some(literal) = literal else {
                 report.unsampled.push(format!("  {kind}.{field}: `{member}`"));
@@ -730,7 +740,7 @@ mod meta_stub_tests {
                 "Edges" => "{ top = 1.5 }",
                 "Corners" => "{ top_left = 1.5 }",
                 "[number, number, number, number]" => "{ 0.25, 0.1, 0.25, 1 }",
-                "{ steps: integer, [string]: \"no such property\" }" => "{ steps = 4 }",
+                "{ steps: integer|Bound, [string]: \"no such property\" }" => "{ steps = 4 }",
                 "Node" => "rect {}",
                 "Node[]" => "{ rect {} }",
                 "TextRun[]" => {

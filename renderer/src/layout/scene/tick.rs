@@ -956,6 +956,32 @@ mod tests {
         assert!((child.opacity - 0.5).abs() < 0.01, "got {}", child.opacity);
     }
 
+    /// A nested signal's change is a new target for the whole table, eased from the value on screen.
+    #[test]
+    fn a_nested_margin_edge_changed_mid_tween_eases_on_from_where_it_is() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = rect { width = 10, height = 10,
+                margin = { left = state("l", 0) }, animate = { margin = { duration = 100, easing = "linear" } } } }"#,
+        );
+        let halfway = |scene: &mut Scene, value: i32| {
+            lua.load(format!(r#"state("l", 0):set({value})"#)).exec().unwrap();
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let started = scene.surface("bar@TEST").unwrap().children[0].tweens[0].started;
+            scene.tick(
+                &[instance_at(&surface, full())],
+                &shaping,
+                &lua,
+                started + std::time::Duration::from_millis(50),
+            );
+            scene.surface("bar@TEST").unwrap().children[0].rect.x
+        };
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(halfway(&mut scene, 40), 20.0);
+        assert_eq!(halfway(&mut scene, 80), 50.0, "from 20 on screen, not from 0 or 40");
+    }
+
     /// A leaving `text` is not relaid out, so it keeps the string it was fitted to -- but its
     /// colour is paint, not layout, and freezing the whole of its paint left a label unable to
     /// fade on the way out while every other node could.

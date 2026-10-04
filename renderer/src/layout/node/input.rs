@@ -1,5 +1,5 @@
 //! A field's Rust type supplies its parser, Lua stub spelling and error's expected type,
-//! so the three cannot disagree. Nested signals are refused.
+//! so the three cannot disagree. A nested signal `resolve_properties` did not read is refused.
 
 use std::path::PathBuf;
 use std::time::Duration;
@@ -17,7 +17,7 @@ pub(crate) trait Input: LuaType + Sized {
     fn from_value(property: &str, key: &str, value: &Value) -> Result<Option<Self>, LayoutError>;
 }
 
-/// `value`, the entry at `key` inside `property`, as a `T`; a nested signal is refused.
+/// `value`, the entry at `key` inside `property`, as a `T`; an unread nested signal is refused.
 pub(crate) fn read<T: Input>(property: &str, key: &str, value: Value) -> Result<T, LayoutError> {
     let value = plain(property, key, value)?;
     T::from_value(property, key, &value)?
@@ -29,7 +29,8 @@ pub(crate) fn field<T: Input>(property: &str, table: &mlua::Table, key: &str) ->
     read(property, key, table.get(key).map_err(|e| invalid(property, e.to_string()))?)
 }
 
-/// `value` unless it is a signal, which only a property's top level may hold.
+/// `value` unless it is a signal `resolve_properties` skipped: in a raw row, under a metatable,
+/// past its walk depth or inside another signal's result.
 fn plain(property: &str, key: impl std::fmt::Display, value: Value) -> Result<Value, LayoutError> {
     match value {
         Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}"))),

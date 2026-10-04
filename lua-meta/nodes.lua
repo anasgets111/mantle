@@ -18,32 +18,32 @@
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
----@alias Edges { top?: number, right?: number, bottom?: number, left?: number, [string]: "no such property" } Per-edge pixels; a missing edge is `0`.
----@alias Corners { top_left?: number, top_right?: number, bottom_right?: number, bottom_left?: number, [string]: "no such property" } Per-corner radius px; a missing corner is `0`.
+---@alias Edges { top?: number|Bound, right?: number|Bound, bottom?: number|Bound, left?: number|Bound, [string]: "no such property" } Per-edge pixels; a missing edge is `0`.
+---@alias Corners { top_left?: number|Bound, top_right?: number|Bound, bottom_right?: number|Bound, bottom_left?: number|Bound, [string]: "no such property" } Per-corner radius px; a missing corner is `0`.
 -- ponytail: whole percents only, so a fraction (`"12.5%"`) or one above `"100%"`, which the engine
 -- accepts, is flagged. Upgrade: a pattern type, which LuaLS lacks.
 ---@alias Percent "0%"|"1%"|"2%"|"3%"|"4%"|"5%"|"6%"|"7%"|"8%"|"9%"|"10%"|"11%"|"12%"|"13%"|"14%"|"15%"|"16%"|"17%"|"18%"|"19%"|"20%"|"21%"|"22%"|"23%"|"24%"|"25%"|"26%"|"27%"|"28%"|"29%"|"30%"|"31%"|"32%"|"33%"|"34%"|"35%"|"36%"|"37%"|"38%"|"39%"|"40%"|"41%"|"42%"|"43%"|"44%"|"45%"|"46%"|"47%"|"48%"|"49%"|"50%"|"51%"|"52%"|"53%"|"54%"|"55%"|"56%"|"57%"|"58%"|"59%"|"60%"|"61%"|"62%"|"63%"|"64%"|"65%"|"66%"|"67%"|"68%"|"69%"|"70%"|"71%"|"72%"|"73%"|"74%"|"75%"|"76%"|"77%"|"78%"|"79%"|"80%"|"81%"|"82%"|"83%"|"84%"|"85%"|"86%"|"87%"|"88%"|"89%"|"90%"|"91%"|"92%"|"93%"|"94%"|"95%"|"96%"|"97%"|"98%"|"99%"|"100%" `"NN%"` of the parent's box (the output's, on a panel).
 ---@alias Length number|"fill"|Percent Pixels `[0, 8192]`, the remaining space, or a percent.
 ---@alias Color string `"#RRGGBB"` or `"#RRGGBBAA"`. No shorthand or names.
----@alias BorderColors { top?: Color, right?: Color, bottom?: Color, left?: Color, [string]: "no such property" } Per-edge colours; a signal inside is refused.
----@alias Axes { x?: number, y?: number, [string]: "no such property" } A missing axis takes the property's default.
+---@alias BorderColors { top?: Color|Bound, right?: Color|Bound, bottom?: Color|Bound, left?: Color|Bound, [string]: "no such property" } Per-edge colours.
+---@alias Axes { x?: number|Bound, y?: number|Bound, [string]: "no such property" } A missing axis takes the property's default.
 ---@alias GradientStop [number, Color] Position `[0, 1]` and colour. Positions ascend.
----@alias PathCommand { op: "M"|"L"|"Q"|"C"|"A"|"Z", points: number[], hole?: boolean, [string]: "no such property" } Node-local logical pixels. Q has one control point, C has two, then the endpoint. A is centre x, centre y, radius, start and sweep in degrees clockwise from the +x axis. `hole` on a subpath's first command cuts it out of the fill, whatever its winding.
----@alias Gradient { gradient: "linear"|"radial"|"conic", angle?: number, stops: GradientStop[], [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
----@alias Mask { gradient?: "linear"|"radial"|"conic", angle?: number, stops?: GradientStop[], source?: string, node?: string, invert?: boolean, [string]: "no such property" } Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
+---@alias PathCommand { op: "M"|"L"|"Q"|"C"|"A"|"Z"|Bound, points: number[]|Bound, hole?: boolean|Bound, [string]: "no such property" } Node-local logical pixels. Q has one control point, C has two, then the endpoint. A is centre x, centre y, radius, start and sweep in degrees clockwise from the +x axis. `hole` on a subpath's first command cuts it out of the fill, whatever its winding.
+---@alias Gradient { gradient: "linear"|"radial"|"conic"|Bound, angle?: number|Bound, stops: GradientStop[]|Bound, [string]: "no such property" } At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
+---@alias Mask { gradient?: "linear"|"radial"|"conic"|Bound, angle?: number|Bound, stops?: GradientStop[]|Bound, source?: string|Bound, node?: string|Bound, invert?: boolean|Bound, [string]: "no such property" } Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
 ---@alias EasingName "linear"|"in_quad"|"out_quad"|"in_out_quad"|"in_cubic"|"out_cubic"|"in_out_cubic"|"in_quart"|"out_quart"|"in_out_quart"|"in_quint"|"out_quint"|"in_out_quint"|"in_sine"|"out_sine"|"in_out_sine"|"in_expo"|"out_expo"|"in_out_expo"|"in_circ"|"out_circ"|"in_out_circ"|"in_back"|"out_back"|"in_out_back"|"in_elastic"|"out_elastic"|"in_out_elastic"|"in_bounce"|"out_bounce"|"in_out_bounce" The `back` and `elastic` families overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
----@alias Easing EasingName|[number, number, number, number]|{ steps: integer, [string]: "no such property" } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
----@alias Keyframe number|string|Edges|Corners|Axes|PathCommand[]|{ value: number|string|Edges|Corners|Axes|PathCommand[], duration?: number, easing?: Easing, [string]: "no such property" } A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
----@alias Spring { stiffness: number, damping: number, [string]: "no such property" } Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
----@alias Animation number|{ duration?: number, delay?: number, easing?: Easing, from?: number|string|Edges|Corners|Axes|PathCommand[], spring?: Spring, keyframes?: Keyframe[], loops?: integer|"infinite", [string]: "no such property" } A bare number is `duration`.
+---@alias Easing EasingName|[number, number, number, number]|{ steps: integer|Bound, [string]: "no such property" } A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).
+---@alias Keyframe number|string|Edges|Corners|Axes|PathCommand[]|{ value: number|string|Edges|Corners|Axes|PathCommand[]|Bound, duration?: number|Bound, easing?: Easing|Bound, [string]: "no such property" } A bare value, or a frame with its own timing. `duration = 0` jumps; repeating the previous value holds.
+---@alias Spring { stiffness: number|Bound, damping: number|Bound, [string]: "no such property" } Both required: `stiffness` `(0, 100000]`, `damping` `(0, 10000]`; `2 * math.sqrt(stiffness)` is critical damping. Keeps its velocity when the target changes (ADR-0154).
+---@alias Animation number|{ duration?: number|Bound, delay?: number|Bound, easing?: Easing|Bound, from?: number|string|Edges|Corners|Axes|PathCommand[]|Bound, spring?: Spring|Bound, keyframes?: Keyframe[]|Bound, loops?: integer|"infinite"|Bound, [string]: "no such property" } A bare number is `duration`.
 --- - `duration`: ms `[1, 60000]`, required unless `spring`. `easing` defaults to `"in_out_quad"`.
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
 --- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
----@alias MoveAnimation number|{ duration: number, delay?: number, easing?: Easing, [string]: "no such property" } `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
+---@alias MoveAnimation number|{ duration: number|Bound, delay?: number|Bound, easing?: Easing|Bound, [string]: "no such property" } `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
 ---@alias Animations table<string, Animation> Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
----@alias Exit { duration?: number, delay?: number, easing?: Easing, spring?: Spring, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
+---@alias Exit { duration?: number|Bound, delay?: number|Bound, easing?: Easing|Bound, spring?: Spring|Bound, [string]: any } `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.
 
 ---[docs](https://anasgets111.github.io/mantle/nodes/index.html#common-properties)
 ---@class NodeBase
@@ -105,20 +105,20 @@
 ---One styled stretch of `text.content` (ADR-0104). A notification body's text spans fit as-is;
 ---drop image spans, which have no `text` and are refused.
 ---@class TextRun
----@field text string Empty runs are skipped.
----@field bold? boolean Uses the family's bold face when fontconfig has one.
----@field italic? boolean Uses the family's italic face when fontconfig has one.
----@field underline? boolean Underline in the run's colour.
----@field color? Color Overrides the node's `foreground`.
----@field href? string Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
----@field kind? "text" A notification text span's, so one passes through.
+---@field text string|Bound Empty runs are skipped.
+---@field bold? boolean|Bound Uses the family's bold face when fontconfig has one.
+---@field italic? boolean|Bound Uses the family's italic face when fontconfig has one.
+---@field underline? boolean|Bound Underline in the run's colour.
+---@field color? Color|Bound Overrides the node's `foreground`.
+---@field href? string|Bound Passed to the node's `on_link` when clicked; never opened by the engine (ADR-0106).
+---@field kind? "text"|Bound A notification text span's, so one passes through.
 ---@field [string] "no such property"
 
 ---`image.transition`. Unknown keys are refused.
 ---@class Transition
----@field duration number Required, ms `[1, 60000]`.
----@field easing? Easing Default `"in_out_quad"`; drives `u_progress`.
----@field shader? string Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
+---@field duration number|Bound Required, ms `[1, 60000]`.
+---@field easing? Easing|Bound Default `"in_out_quad"`; drives `u_progress`.
+---@field shader? string|Bound Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
 --- Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
 --- - `v_uv`: box coordinates `0..1`, top-left origin, y down.
 --- - `u_progress`: eased progress, clamped to `0..1`. `u_size`: node size in logical px.
@@ -126,7 +126,7 @@
 --- - `u_from_rect`, `u_to_rect`: each picture's `(x, y, w, h)` in box fractions (may exceed `0..1` under `"cover"`).
 --- - Output: premultiplied RGBA in `fragColor`, same colour space as the inputs. The engine applies `opacity` after.
 --- - Names starting `u_` or `mantle_` are reserved. A shader that fails to compile or link, or declares a uniform other than `float`/`vec2`-`vec4` or an array of one, logs once and falls back to the dissolve. A shader that hangs the GPU hangs the session.
----@field params? table<string, number|number[]> Uniform values by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
+---@field params? table<string, number|number[]>|Bound Uniform values by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
 ---@field [string] "no such property"
 
 ---@alias RectAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, backdrop_blur?: Animation, background?: Animation, behind_blur?: Animation, border_color?: Animation, border_width?: Animation, children?: Animation, clip?: Animation, content_blur?: Animation, corner_shape?: Animation, cursor?: Animation, focus_ring?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hittable?: Animation, hover?: Animation, id?: Animation, margin?: Animation, mask?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, radius?: Animation, rotate?: Animation, scale?: Animation, shadow_blur?: Animation, shadow_color?: Animation, shadow_mode?: Animation, shadow_offset?: Animation, shadow_spread?: Animation, submit?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, move?: MoveAnimation, [string]: "no such property" }

@@ -676,20 +676,33 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_in_a_spring_names_the_animation_and_nested_field() {
+    fn a_signal_in_an_entry_or_its_spring_resolves_with_animate() {
         let lua = crate::layout::node::signal_lua();
-        let props =
-            rect_props(&lua, "return { animate = { width = { spring = { stiffness = state(200), damping = 10 } } } }");
-        let err = parse_animate("rect", &props).unwrap_err();
-        assert!(
-            matches!(err, LayoutError::UnsupportedSignalProperty(path) if path == "animate.width.spring.stiffness")
-        );
+        for (bound, plain) in [
+            ("width = state(\"w\", 200)", "width = 200"),
+            (
+                "width = { spring = { stiffness = state(\"k\", 200), damping = 10 } }",
+                "width = { spring = { stiffness = 200, damping = 10 } }",
+            ),
+        ] {
+            let props = rect_props(&lua, &format!("return {{ animate = {{ {bound} }} }}"));
+            let resolved = crate::layout::node::resolve_properties(props, "rect", &lua).unwrap();
+            let plain =
+                parse_animate("rect", &rect_props(&lua, &format!("return {{ animate = {{ {plain} }} }}"))).unwrap();
+            assert_eq!(parse_animate("rect", &resolved).unwrap(), plain, "{bound}");
+        }
     }
 
+    /// Resolution is exactly once: a signal inside a signal's result is not read.
     #[test]
-    fn a_signal_as_an_entry_names_the_animation() {
+    fn a_signal_inside_a_mapped_animate_entry_names_the_animation() {
         let lua = crate::layout::node::signal_lua();
-        let err = parse_animate("rect", &rect_props(&lua, "return { animate = { width = state(200) } }")).unwrap_err();
+        let props = rect_props(
+            &lua,
+            "return { animate = state(\"on\", 0):map(function() return { width = state(\"w\", 200) } end) }",
+        );
+        let resolved = crate::layout::node::resolve_properties(props, "rect", &lua).unwrap();
+        let err = parse_animate("rect", &resolved).unwrap_err();
         assert!(matches!(err, LayoutError::UnsupportedSignalProperty(ref path) if path == "animate.width"), "{err:?}");
     }
 

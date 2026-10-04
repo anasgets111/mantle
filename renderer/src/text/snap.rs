@@ -10,7 +10,7 @@
 
 crate::lua::luacats::lua_shape! {
     /// A rectangle in logical pixels.
-    #[alias = "Rect"]
+    #[shared = "Rect"]
     #[derive(Debug, Clone, Copy, PartialEq, Default)]
     pub struct LogicalRect {
         pub x: f32,

@@ -466,11 +466,17 @@ pub(crate) use lua_class;
 /// for a header's `---@alias Name {Name}` line: LuaLS checks it inside a union, where a class admits
 /// any table, and it has no place for a field's words. `#[class = "Name"]` is one read as a
 /// `---@class` whose fields carry their words. Both refuse an unknown key, and `KEYS` is what the
-/// parser's `only_keys` accepts. Alias and class fields are read through `Input`.
-/// `#[record = "Name"]` is a class handed to Lua. `key: T as S` changes only the Lua spelling.
+/// parser's `only_keys` accepts. Alias and class fields are read through `Input`, and each also
+/// takes a signal, which `resolve_properties` reads. `#[shared = "Name"]` is an alias also handed
+/// to Lua, so its fields are spelled without one. `#[record = "Name"]` is a class handed to Lua.
+/// `key: T as S` changes only the Lua spelling.
 macro_rules! lua_shape {
     ($(#[doc = $doc:literal])* #[alias = $name:literal] $($rest:tt)*) => {
         $crate::lua::luacats::lua_shape!(@struct alias [$($doc)*] $name $($rest)*);
+        $crate::lua::luacats::lua_shape!(@read $($rest)*);
+    };
+    ($(#[doc = $doc:literal])* #[shared = $name:literal] $($rest:tt)*) => {
+        $crate::lua::luacats::lua_shape!(@struct shared [$($doc)*] $name $($rest)*);
         $crate::lua::luacats::lua_shape!(@read $($rest)*);
     };
     ($(#[doc = $doc:literal])* #[class = $name:literal] $($rest:tt)*) => {
@@ -493,7 +499,10 @@ macro_rules! lua_shape {
                 vec![$((
                     stringify!($field),
                     <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::OPTIONAL,
-                    <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
+                    $crate::lua::luacats::field_spelling(
+                        stringify!($form),
+                        <$crate::lua::luacats::lua_shape!(@lua $field_ty $(, $lua)?) as $crate::lua::luacats::LuaType>::lua(),
+                    ),
                     concat!($($field_doc, "\n",)* ""),
                 )),+]
             }
@@ -514,6 +523,7 @@ macro_rules! lua_shape {
         }
     };
     (@alias $ty:ident $($field:ident)+) => { $crate::lua::luacats::lua_shape!(@class $ty $($field)+); };
+    (@shared $ty:ident $($field:ident)+) => { $crate::lua::luacats::lua_shape!(@class $ty $($field)+); };
     (@class $ty:ident $($field:ident)+) => {
         impl $ty {
             pub(crate) const KEYS: &'static [&'static str] = &[$(stringify!($field)),+];
@@ -571,6 +581,12 @@ pub(crate) use lua_shape;
 #[cfg(test)]
 pub(crate) type ShapeField = (&'static str, bool, String, &'static str);
 
+/// A shape field's type, `|Bound` where a property table's field takes a signal.
+#[cfg(test)]
+pub(crate) fn field_spelling(form: &str, ty: String) -> String {
+    if matches!(form, "alias" | "class") { format!("{ty}|Bound") } else { ty }
+}
+
 /// A `///` block's first paragraph on one line after a space, then each later line as its own `---`
 /// line.
 #[cfg(test)]
@@ -588,7 +604,7 @@ fn paragraphs(doc: &str) -> (String, String) {
 pub(crate) fn shape_stub(form: &str, name: &str, doc: &str, keys: &[(&str, bool, String, &str)]) -> String {
     const UNKNOWN: &str = r#""no such property""#;
     let (words, more) = paragraphs(doc);
-    if form == "alias" {
+    if matches!(form, "alias" | "shared") {
         let keys: String = keys
             .iter()
             .map(|(key, nil, ty, doc)| {

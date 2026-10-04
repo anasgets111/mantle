@@ -254,7 +254,7 @@ keywords! {
 // pass gets the same answer either way. The table form gives no per-edge default, so an absent edge
 // takes `None` rather than an invented one.
 lua_shape! {
-    /// Per-edge colours; a signal inside is refused.
+    /// Per-edge colours.
     #[alias = "BorderColors"]
     #[derive(Debug, Clone, Copy, PartialEq, Default)]
     pub struct BorderColor {
@@ -865,19 +865,18 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_nested_in_a_margin_edge_table_is_rejected_naming_the_edge() {
+    fn a_signal_nested_in_a_margin_edge_table_resolves_and_a_raising_one_names_the_edge() {
         let lua = signal_lua();
-        let signal = crate::lua::signal::Signal::new_live(Value::Integer(4), crate::lua::signal::DirtyFlag::new()).0;
-        let table = lua.create_table().unwrap();
-        table.set("kind", "rect").unwrap();
-        let margin = lua.create_table().unwrap();
-        margin.set("top", signal).unwrap();
-        table.set("margin", margin).unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(
-            fields::common::margin.read(&props).unwrap_err(),
-            LayoutError::UnsupportedSignalProperty(p) if p == "margin.top"
-        ));
+        let props = rect_props(&lua, "return { margin = { top = state('top', 4), left = 2 } }");
+        let resolved = crate::layout::node::resolve_properties(props, "rect", &lua).unwrap();
+        assert_eq!(
+            fields::common::margin.read(&resolved).unwrap(),
+            fields::common::margin.read(&rect_props(&lua, "return { margin = { top = 4, left = 2 } }")).unwrap()
+        );
+        let props =
+            rect_props(&lua, "return { margin = { top = state('boom', 0):map(function() error('boom') end) } }");
+        let err = crate::layout::node::resolve_properties(props, "rect", &lua).unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "margin.top"), "{err:?}");
     }
 
     #[test]
@@ -944,20 +943,15 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_nested_in_a_border_color_edge_table_is_rejected_naming_the_edge() {
+    fn a_signal_nested_in_a_border_color_edge_table_resolves() {
         let lua = signal_lua();
-        let hex = lua.create_string("#ff0000").unwrap();
-        let signal = crate::lua::signal::Signal::new_live(Value::String(hex), crate::lua::signal::DirtyFlag::new()).0;
-        let table = lua.create_table().unwrap();
-        table.set("kind", "rect").unwrap();
-        let border_color = lua.create_table().unwrap();
-        border_color.set("top", signal).unwrap();
-        table.set("border_color", border_color).unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(
-            fields::paint::border_color.read(&props).unwrap_err(),
-            LayoutError::UnsupportedSignalProperty(p) if p == "border_color.top"
-        ));
+        let props = rect_props(&lua, r##"return { border_color = { top = state("red", "#ff0000") } }"##);
+        let resolved = crate::layout::node::resolve_properties(props, "rect", &lua).unwrap();
+        let plain = rect_props(&lua, r##"return { border_color = { top = "#ff0000" } }"##);
+        assert_eq!(
+            fields::paint::border_color.read(&resolved).unwrap(),
+            fields::paint::border_color.read(&plain).unwrap()
+        );
     }
 
     #[test]

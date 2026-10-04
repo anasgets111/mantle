@@ -48,7 +48,7 @@ Click Next minute to update only the Live column. The screenshot captures that f
 | `sig` | Read again once it is written |
 | `sig:map(fn)` | Live: `fn` of `sig`'s current value |
 | `sig:get()` | A plain value, taken when the config was evaluated |
-| A table with a signal inside, e.g. `{ left = sig }` | Refused at layout. Derive the whole table: `sig:map(function(v) return { left = v } end)` |
+| A table with a signal inside, e.g. `{ left = sig }` | Each signal is read again once it is written, as at the top level. Not inside `children`, a `list`'s `source`, a table with a metatable, or a table a signal returned |
 
 A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
 until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.
@@ -381,7 +381,7 @@ again after changing it in place is a write.
 | `signal nesting exceeded its maximum depth of 32 levels` | A derived chain deeper than 32, or one that reads itself |
 | `exceeded the 2.5ms CPU budget for one evaluation` | A map or computed body ran too long ([runtime](runtime.md)) |
 | `a Signal resolved to another Signal` | A map returned a signal; return a plain value |
-| `` `x` is a Signal handle, not a plain value `` | A signal in a structural property or inside a property table (see [gotchas](#gotchas)) |
+| `` `x` is a Signal handle, not a plain value `` | A signal in a structural property, or inside a table a signal returned (see [gotchas](#gotchas)) |
 
 ## How do I…
 
@@ -446,7 +446,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | `content = sig:get()` never updates | Pass `sig` or `sig:map(...)`; `:get()` is a snapshot |
 | A map errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass; return a fallback for `nil` |
 | `visible = cap:map(function(c) return c and c.on end)` shows the node before hydration | `nil` means absent, and `visible` defaults to `true`; return `false` explicitly |
-| `margin = { left = sig }` fails at layout: `` `margin.left` is a Signal handle `` | Signals inside a property table do not resolve. Derive the whole table with `:map` or `computed`; the error's `:get()` advice gives a snapshot |
+| `` `margin.left` is a Signal handle `` | The signal sits where it is not read: in a table a signal returned, under a metatable, or 8 tables deep. Return plain values from the map, or move the signal up |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |
 | `layer`, `anchor`, `output`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |
 | A named state resets on every reload | Its scalar seed changed between evaluations. Keep it stable |

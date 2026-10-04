@@ -77,7 +77,7 @@ and box properties but `margin`, `align_h` and `align_v`, and stack their one `c
 | Rule | Detail |
 | :--- | :--- |
 | Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md), keyed by the node's own properties (`RectAnimations` on a `rect`). A range after the type is checked |
-| Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `scroll` and `geometry` take the signal handle itself. A signal inside a table property is refused: derive the whole table |
+| Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `scroll` and `geometry` take the signal handle itself. A table property takes a signal for any value inside it |
 | `nil` | A signal reading `nil` leaves its property absent, at its default. Capabilities read `nil` until their first push, so binding one never fails layout |
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
@@ -341,7 +341,6 @@ return body
 | Items in a `rect` overlap | They stack their children; put a `row` inside for side by side |
 | A switched view snaps in without its entry or exit animation | Same kind at the same position is reused, not replaced. Give each view its own `id` |
 | `duplicate id` error | Sibling ids, and `list` keys, must be unique |
-| A signal inside a table property (`padding = { top = sig }`) raises an error | Map the whole table: `padding = sig:map(function(v) return { top = v } end)` |
 | `on_click = cond and fn` raises `expected a function` | A false `cond` yields `false`: write `cond and fn or nil` |
 | `children = { a, cond and b, c }` raises `children[1]: expected a node table`, counting from 0 like the rest of the path | A false or nil entry is a hole. Build the array with `table.insert`, or a signal of the whole array |
 | A node table, or a `children` array, changed in place after the config ran does not update | A node reads each `children` or `child` table once and keeps it while it holds that table. Bind the property to a signal, or `:set` a new table |

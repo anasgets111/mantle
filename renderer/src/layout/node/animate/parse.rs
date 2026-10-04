@@ -32,7 +32,7 @@ pub(crate) fn animatable_name(kind: &str, property: &str, field: &str) -> Result
 }
 
 /// `animate`'s table, resolved: which properties ease and how. Absent means none. The table
-/// itself may be a signal, resolved like any other property; entries inside it are plain values.
+/// itself may be a signal, and a signal inside it resolves with it (`node::resolve_properties`).
 /// A name `kind` does not accept is refused, so a misspelling fails the pass instead of silently
 /// snapping; what the value is decides whether it can tween ([`Animatable::from_value`]), the way
 /// Qt registers interpolators by type rather than by property.

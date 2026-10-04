@@ -476,10 +476,23 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_in_a_run_names_its_full_path() {
+    fn a_signal_in_a_run_resolves_and_a_bad_value_names_its_full_path() {
         let lua = crate::layout::node::signal_lua();
-        let err = runs_content(&lua, r#"{ { text = "a", bold = state("yes") } }"#).unwrap_err();
-        assert!(matches!(err, LayoutError::UnsupportedSignalProperty(path) if path == "content[1].bold"));
+        let resolved = |src: &str| {
+            let table: mlua::Table =
+                lua.load(format!(r#"return {{ kind = "text", content = {src} }}"#)).eval().unwrap();
+            fields::text::content.read(&crate::layout::node::resolve_properties(
+                props_from_table(&table),
+                "text",
+                &lua,
+            )?)
+        };
+        assert_eq!(
+            resolved(r#"{ { text = "a", bold = state("bold", true) } }"#).unwrap(),
+            runs_content(&lua, r#"{ { text = "a", bold = true } }"#).unwrap()
+        );
+        let err = resolved(r#"{ { text = "a", bold = state("bad", "yes") } }"#).unwrap_err();
+        assert!(err.to_string().contains("run 1: `bold`"), "{err}");
     }
 
     #[test]

@@ -338,6 +338,23 @@ mod tests {
         assert_eq!(bar.runs(), 2, "the scroll is not the chip's");
     }
 
+    /// A nested computed settles like a top-level one: its source's write re-resolves the node only
+    /// when the output changed.
+    #[test]
+    fn a_nested_computed_resolves_again_only_when_its_output_changes() {
+        let mut bar = Fixture::new(
+            r#"gap = state("gap", 2)
+            return panel { id = "bar", child = column { children = {
+                rect { width = 10, height = 10, margin = { left = gap:map(function(g) return g // 2 * 2 end) } } } } }"#,
+        );
+        assert_eq!(bar.child(0).margin.left, 2.0);
+        let before = bar.child(0).resolve_memo.as_ref().unwrap().clone();
+        bar.run("gap:set(3)");
+        assert!(std::rc::Rc::ptr_eq(&before, bar.child(0).resolve_memo.as_ref().unwrap()), "kept");
+        bar.run("gap:set(4)");
+        assert_eq!(bar.child(0).margin.left, 4.0);
+    }
+
     /// A kept node keeps its parse too: the edge table's `__index` runs on the first pass only.
     #[test]
     fn a_kept_node_does_not_parse_its_properties_again() {

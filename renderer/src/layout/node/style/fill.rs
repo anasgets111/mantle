@@ -294,17 +294,22 @@ mod tests {
         );
     }
 
-    /// A signal binds a whole property, never a key inside one, however deep.
     #[test]
-    fn a_signal_nested_in_a_gradient_is_refused_by_its_path() {
+    fn a_signal_nested_in_a_gradient_stop_resolves_with_its_property() {
         let lua = crate::layout::node::signal_lua();
-        let src = r##"return { kind = "rect", background = { gradient = "linear",
-            stops = { { 0, state("#ffffff") }, { 1, "#000000" } } } }"##;
-        let err = fields::paint::background.read(&eval_props(&lua, src)).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::UnsupportedSignalProperty(path) if path == "background.stops[1][2]"),
-            "{err:?}"
+        let src = |white| {
+            format!(
+                r##"return {{ kind = "rect", background = {{ gradient = "linear",
+            stops = {{ {{ 0, {white} }}, {{ 1, "#000000" }} }} }} }}"##
+            )
+        };
+        let bound = crate::layout::node::resolve_properties(
+            eval_props(&lua, &src(r##"state("white", "#ffffff")"##)),
+            "rect",
+            &lua,
         );
+        let plain = fields::paint::background.read(&eval_props(&lua, &src(r##""#ffffff""##))).unwrap();
+        assert_eq!(fields::paint::background.read(&bound.unwrap()).unwrap(), plain);
     }
 
     #[test]

@@ -51,7 +51,7 @@ stays within one page is in that page's Gotchas table.
 | `exceeded the 2.5ms CPU budget for one evaluation` | A map, `computed`, handler or timer did too much work | [Limits and budgets](runtime.md#limits-and-budgets) |
 | `signal nesting exceeded its maximum depth of 32 levels` | A derived chain reads itself or nests too deep | [Errors](signals.md#errors) |
 | `a Signal resolved to another Signal` | A map returned a signal | [Errors](signals.md#errors) |
-| `` `margin.left` is a Signal handle `` | A signal nested in a property table does not resolve | [signals gotchas](signals.md#gotchas) |
+| `` `margin.left` is a Signal handle `` | A signal inside a table a signal returned, or under a metatable, is not read | [signals gotchas](signals.md#gotchas) |
 | `` `mantle` asked to write state ... and was refused `` | `mantle set`/`toggle` named an undeclared state, or wrote a value it refuses | [Values and arguments](cli.md#values-and-arguments) |
 
 ## Running processes

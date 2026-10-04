@@ -9,6 +9,7 @@ version is 0.x, a minor release can break the Lua API.
 
 - `animate.scroll` on a scrolling `row`, `column` or `list` eases each mouse-wheel notch toward a target that stops at the ends; the `scroll` signal holds the offset on screen each frame, so its readers reflow continuously. Touchpads and `:reveal` still move it at once.
 - The wheel stops at the end of the content the last layout measured, so a `map` of a `scroll` signal runs once per wheel event at an end instead of twice.
+- A signal may sit inside a property table, such as `margin = { top = sig }`, a gradient stop's colour, an `animate` entry or a text run's flag, and is read again once it is written. `children`, a `list`'s `source`, structural fields such as a panel's `anchor`, tables with a metatable and tables a signal returns still refuse one.
 - `textfield.disabled` keeps a field drawn but out of keyboard focus (Tab, press, `autofocus`, `focus_target`); `textfield.max_length` caps the draft in grapheme clusters for typing, paste, IME and `set_text`, `secure_submit` fields included.
 - A parent's `clip` no longer moves with a child's `translate`, `scale` or `rotate`: a child that transforms past the parent's box is cut at the box. Overflow by transform (hover scale-ups, overshoot easings, slide-outs) needs `clip = "none"` on the parent.
 - `image.radius` rounds the picture's corners, a number or a table per corner like `rect.radius`, with no clipping wrapper. It rounds what shows, so `fit = "contain"` rounds the fitted picture.
