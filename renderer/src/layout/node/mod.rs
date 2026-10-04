@@ -146,7 +146,8 @@ impl Radii {
         let [tl, tr, br, bl] = self.0.map(f32::abs);
         let sides = [(w, tl + tr), (h, tr + br), (w, br + bl), (h, bl + tl)];
         let k = sides.iter().filter(|(_, sum)| *sum > 0.0).fold(1.0, |k, (side, sum)| f32::min(k, side / sum));
-        self * k
+        // A side under zero (the scoop's `w - 2 * HAIR`) would flip every arc.
+        self * k.max(0.0)
     }
 }
 

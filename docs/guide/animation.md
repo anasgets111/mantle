@@ -69,9 +69,9 @@ values: a signal nested in an entry does not resolve.
 
 | Situation | Result |
 | :--- | :--- |
-| Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
+| Number, `"NN%"` size, `"#rrggbb[aa]"` colour, number edge table `{ top, right, bottom, left }`, corner table `{ top_left, top_right, bottom_right, bottom_left }`, `{ x, y }` table | Tweens against a new value of the same shape. A missing edge, corner or axis reads as `0` (`1` for `scale`, `0.5` for `origin`) |
 | A `path`'s `commands` | Tweens point by point against a list with the same ops and `hole` flags in the same order; any other list snaps. A spring retargeted mid-flight restarts from rest |
-| `"fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }`, `"50%"` to `"fill"`) | Snaps |
+| `"fill"`, booleans, strings that are not colours, per-edge colour tables, gradients, or a change of shape (`2` to `{ x = 2 }` or `{ top_left = 2 }`, `"50%"` to `"fill"`) | Snaps |
 | A `width` or `height` you did not set (sized to its content) with an eased entry | After each pass the engine measures the content and eases the box from its size on screen to the measured one, laying siblings and children out at every frame. Children are cut to the moving box unless `clip = "none"`. A first layout, a spring and keyframe entries snap |
 | New node, or a property the node did not set last pass | Starts at the entry's `from`, else snaps. `from` needs the node to set the property itself |
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
@@ -90,6 +90,7 @@ shape decides whether it moves. The ones that do:
 | `"NN%"` | `width`, `height` |
 | Colour | `background`, `border_color` (single colour), `shadow_color`, `foreground`; `fill` and `stroke` on `path` |
 | `{ top, right, bottom, left }` | `padding`, `margin`, `border_width` as tables |
+| `{ top_left, top_right, bottom_right, bottom_left }` | `radius` as a table |
 | `{ x, y }` | `translate`, `scale`, `origin`, `shadow_offset` |
 | Path commands | `commands` on `path` ([morphing](../nodes/path.md)) |
 

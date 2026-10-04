@@ -740,6 +740,12 @@ mod tests {
         assert_eq!(radii(""), Radii([4.0, 0.0, 8.0, 0.0]));
         assert_eq!(radii("corner_shape = 'scoop'"), Radii([-4.0, 0.0, -8.0, 0.0]));
         assert_eq!(Radii([20.0, 20.0, 0.0, 0.0]).fit(30.0, 100.0), Radii([15.0, 15.0, 0.0, 0.0]));
+        assert_eq!(Radii::from(4.0).fit(-1.0, 10.0), Radii::default(), "a negative side never flips an arc");
+        for bad in ["{ top_left = -1 }", "{ top_left = 0/0 }", "{ nope = 1 }"] {
+            let src = format!("return {{ kind = 'rect', radius = {bad} }}");
+            let table: mlua::Table = lua.load(&src).eval().unwrap();
+            assert!(parse_radius(&deserialize_lua_table(&table).unwrap().properties).is_err(), "{bad}");
+        }
     }
 
     #[test]

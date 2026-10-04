@@ -896,6 +896,18 @@ mod tests {
         }
     }
 
+    /// Unequal corners at exactly half the box take `rounded_rect_varying`, not the pill special cases.
+    #[test]
+    fn unequal_corners_at_exactly_half_leave_no_seam() {
+        for h in [32, 33] {
+            let src = format!(
+                r##"rect {{ width = 32, height = {h}, background = "#FFFFFF", radius = {{ top_left = 16, bottom_left = 16 }} }}"##
+            );
+            let Some(px) = paint_points(&src, &[(1, h / 2), (6, 6), (6, h - 7)]) else { return };
+            assert!(px.iter().all(|p| *p == (255, 255, 255, 255)), "h={h}: {px:?}");
+        }
+    }
+
     /// A slider's fill at 0% is a zero-width box; it once drew a 1px line.
     #[test]
     fn a_zero_width_box_paints_nothing() {

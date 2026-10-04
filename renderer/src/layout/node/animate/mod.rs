@@ -121,11 +121,11 @@ pub fn depart(
 
 /// A value a tween can sit between, told apart by shape rather than by which property holds it.
 /// `Percent` is a `"NN%"` size held as a fraction; `Fields` is a table of numbers under one of
-/// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the axes `{ x, y }`, an absent key
-/// reading as the property's default (`0`, or `1` for a `scale`). `Path` is a path's `commands`,
-/// which tween point by point only between lists of the same ops and hole flags. Two different
-/// shapes snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches
-/// between a number and a table takes the new value at once.
+/// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the
+/// axes `{ x, y }`, an absent key reading as the property's default (`0`, or `1` for a `scale`).
+/// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
+/// and hole flags. Two different shapes snap, so a fill that switches between `"45%"` and `"fill"`
+/// or a margin that switches between a number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Animatable {
     Number(f32),
@@ -973,6 +973,7 @@ mod tests {
         };
         assert_eq!(values(0.5), (true, [5.0, 0.0, 10.0, 0.0]));
         assert_eq!(values(-1.0).1[2], 0.0, "an overshoot never goes negative");
+        assert_eq!(Animatable::Number(2.0).lerp(&to, 0.5, "radius"), to, "a number against a corner table snaps");
     }
 
     #[test]
