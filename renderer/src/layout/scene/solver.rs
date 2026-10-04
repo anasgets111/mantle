@@ -460,6 +460,30 @@ pub(super) fn solve(
         height: taffy::AvailableSpace::Definite(available.height),
     };
     tree.compute_layout_with_measure(root, space, |input, _node, context, style| {
+        // TODO(DioxusLabs/taffy#1166): remove `ceiling` and `clamp` once that PR ships in a release.
+        // taffy 0.14 lets a `flex_shrink = 0` item's flex basis beat its own max size in an
+        // intrinsic contribution (css-flexbox §9.9.3 clamps by min/max last), so a leaf measured
+        // past `max_width` widened a content-sized row. Answering at the ceiling keeps the basis
+        // under it. Ceilings are border-box pixels; the measure answers for the content box inside.
+        let inset = |start: taffy::LengthPercentage, end: taffy::LengthPercentage| {
+            start.into_raw().value() + end.into_raw().value()
+        };
+        let ceiling = taffy::Size {
+            width: style
+                .max_size
+                .width
+                .resolve_to_option(0.0, |_, _| 0.0)
+                .map(|max| (max - inset(style.padding.left, style.padding.right)).max(0.0)),
+            height: style
+                .max_size
+                .height
+                .resolve_to_option(0.0, |_, _| 0.0)
+                .map(|max| (max - inset(style.padding.top, style.padding.bottom)).max(0.0)),
+        };
+        let clamp = |size: taffy::Size<f32>| taffy::Size {
+            width: ceiling.width.map_or(size.width, |max| size.width.min(max)),
+            height: ceiling.height.map_or(size.height, |max| size.height.min(max)),
+        };
         taffy::compute_leaf_layout(
             input,
             style,
@@ -469,7 +493,7 @@ pub(super) fn solve(
                     return taffy::Size::ZERO;
                 };
                 match measure {
-                    Measure::Square(size) => taffy::Size { width: *size, height: *size },
+                    Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
                     Measure::Text {
                         content,
                         runs,
@@ -492,15 +516,19 @@ pub(super) fn solve(
                         // will paint, not the wrapped height of a box it draws one clipped line in.
                         let max_width = match wrap {
                             node::Wrap::None => None,
-                            node::Wrap::Word => known.width.or(match offered.width {
-                                taffy::AvailableSpace::Definite(width) => Some(width),
-                                taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
-                            }),
+                            node::Wrap::Word => known
+                                .width
+                                .or(match offered.width {
+                                    taffy::AvailableSpace::Definite(width) => Some(width),
+                                    taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+                                })
+                                .map(|width| ceiling.width.map_or(width, |max| width.min(max)))
+                                .or(ceiling.width),
                         };
                         if let Some((key, size)) = memo
                             && *key == max_width
                         {
-                            return *size;
+                            return clamp(*size);
                         }
                         let shaped = shaping.shape(ShapeRequest {
                             text: content.to_string(),
@@ -516,7 +544,7 @@ pub(super) fn solve(
                         let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
                         let size = taffy::Size { width: shaped.width, height: lines as f32 * *line_height };
                         *memo = Some((max_width, size));
-                        size
+                        clamp(size)
                     }
                 }
             },
@@ -1131,6 +1159,24 @@ pub(super) mod tests {
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].rect.width, 300.0);
+    }
+
+    /// Found live: a capped title in a centred content-sized row sized the row to the whole string,
+    /// so the elided caption sat at the left of a box twice its width.
+    #[test]
+    fn a_content_sized_row_takes_a_capped_text_at_its_ceiling() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = row { align_h = "center", children = { row { children = {
+                rect { width = 10, height = 10 },
+                text { content = string.rep("wide title ", 40), max_width = 120, elide = "end" },
+            } } } } }"#,
+        );
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let row = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert_eq!(row.children[1].rect.width, 120.0);
+        assert_eq!(row.rect.width, 130.0, "the row holds the 10 wide rect and the capped text");
     }
 
     /// Found live: a content-sized `column` with 8px of padding reported the
