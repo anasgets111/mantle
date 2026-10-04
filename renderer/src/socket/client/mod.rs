@@ -417,6 +417,41 @@ impl RendererClient {
         &self.scene
     }
 
+    /// A wheel's `delta` for `signal` ([`Scene::wheel`]): the instances to repaint now.
+    pub fn wheel(
+        &mut self,
+        signal: &crate::lua::signal::Signal,
+        delta: f32,
+        notch: bool,
+        now: std::time::Instant,
+    ) -> Vec<String> {
+        match self.scene.wheel(signal, delta, notch, now) {
+            crate::layout::scene::WheelScroll::Eased(animating) => animating,
+            crate::layout::scene::WheelScroll::Write(offset) => self.write_scroll(signal, offset),
+        }
+    }
+
+    /// One frame of every smooth scroll in `due`, ahead of the pass so a reader lays out from the
+    /// offset this frame draws: the instances moved in place.
+    pub fn advance_scrolls(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
+        let mut moved = Vec::new();
+        for (signal, offset) in self.scene.advance_scrolls(due, now) {
+            moved.extend(self.write_scroll(&signal, offset));
+        }
+        moved
+    }
+
+    /// In place when only `scroll` slots read the signal, else a write this turn's pass reads.
+    fn write_scroll(&mut self, signal: &crate::lua::signal::Signal, offset: f32) -> Vec<String> {
+        if let Some(moved) = self.scroll_in_place(signal, offset) {
+            return moved;
+        }
+        if let Some(handle) = signal.scroll_handle() {
+            handle.set_changed(mlua::Value::Number(f64::from(offset)));
+        }
+        Vec::new()
+    }
+
     /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
     pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
         let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());

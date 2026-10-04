@@ -79,7 +79,7 @@ values: a signal nested in an entry does not resolve.
 | Target changes mid-flight | An eased tween returning to its prior endpoint shortens the run according to the progress already covered. Other eased targets and keyframe entries start over from the value on screen. A spring keeps its velocity ([spring](#spring)) |
 | Property removed from `animate` | Its tween stops and the property snaps to the resolved value |
 | Hidden subtree (`visible = false`) | Tweens freeze and request no frames; they settle when it shows again. Showing the subtree cancels its moves |
-| `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry. `move` and `exit` are special entries |
+| `z`, `animate`, or a name the node kind does not accept | Refused: the pass fails with an error naming the entry. `move`, `exit` and `scroll` are special entries |
 
 ### What can animate
 
@@ -381,6 +381,27 @@ Paint, hit-testing, text links, carets, input regions and background blur follow
 pixels. A second layout change starts from the last painted position. Scrolling and paint-only
 property tweens do not start a move; an already running move keeps advancing on compositor frames.
 Parent and surface clips can cut moving pixels; leave room or use `clip = "none"`.
+
+## Scroll
+
+`animate.scroll` on a `row`, `column` or `list` bound to a [`scroll`](input.md#scroll) signal eases
+each mouse-wheel notch. It takes a duration in milliseconds, an eased entry or a `spring`;
+`keyframes` are refused. Notches add to a target that stops at either end of the content, and a
+notch mid-run eases on from the offset on screen, carrying a spring's velocity. The signal holds
+the offset on screen, so a `map` of it reflows with every frame. A touchpad, which reports
+distances rather than notches, and `:reveal` move the offset at once and stop the run.
+
+```lua
+local rows = {}
+for i = 1, 40 do rows[i] = text { content = "Row " .. i } end
+return column {
+    width = 300,
+    height = 200,
+    scroll = scroll("feed"),
+    animate = { scroll = { duration = 160, easing = "out_cubic" } },
+    children = rows,
+}
+```
 
 ## Exit
 

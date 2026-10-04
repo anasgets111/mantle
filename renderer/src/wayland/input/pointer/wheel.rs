@@ -86,20 +86,13 @@ impl App {
         if delta == 0.0 {
             return;
         }
-        let Some(handle) = signal.scroll_handle() else {
-            return;
-        };
-        let asked = signal.scroll_offset().unwrap_or(0.0) + delta;
-        match self.client.scroll_in_place(&signal, asked) {
-            // A pass would re-resolve nothing a scroll changes; the tree's own rects are enough.
-            Some(moved) => {
-                self.mark_surfaces_stale(&moved);
-                self.apply_resolved_surface_state_for(&[&moved]);
-                self.refresh_hover_after_layout();
-            }
-            None => {
-                handle.set_changed(mlua::Value::Number(f64::from(asked)));
-            }
+        // A notch (`value120`) may ease under `animate.scroll`; a touchpad's pixels follow the finger.
+        let moved = self.client.wheel(&signal, delta, steps != 0, std::time::Instant::now());
+        // A pass would re-resolve nothing a scroll changes; the tree's own rects are enough.
+        if !moved.is_empty() {
+            self.mark_surfaces_stale(&moved);
+            self.apply_resolved_surface_state_for(&[&moved]);
+            self.refresh_hover_after_layout();
         }
     }
 }

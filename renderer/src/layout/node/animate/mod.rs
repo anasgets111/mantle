@@ -370,6 +370,11 @@ pub fn retarget(
     let mut tweens = Vec::with_capacity(specs.len());
     for (property, spec) in specs {
         let running = running.iter().find(|t| t.property == property);
+        // The property holds the signal; a wheel starts the run (`retarget_scroll`) and a pass keeps it.
+        if property == "scroll" {
+            tweens.extend(running.cloned());
+            continue;
+        }
         // A sequence drives the property rather than easing to it (ADR-0152), so it needs no
         // target and reads nothing the pass resolved. The same list going round again is the same
         // run, played out or not; a different list is a new one, from its first frame.
@@ -536,7 +541,10 @@ pub fn retarget_measured(
 ///
 /// The transform properties belong here too (ADR-0261): hit testing reads them at event time, and
 /// the regions they move are re-derived for every ticked surface.
+///
+/// `scroll` too: `layout::scene::Scene::advance_scrolls` moves the children, not the tick.
 const PAINT_ONLY: &[&str] = &[
+    "scroll",
     "opacity",
     "background",
     "border_color",
@@ -572,15 +580,51 @@ pub fn is_paint_only(property: &str) -> bool {
 /// has never started (ADR-0152).
 pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
     for tween in tweens.iter_mut() {
-        if tween.resting {
+        // `layout::scene::Scene::advance_scrolls` writes a scroll's offset into its signal.
+        if tween.resting || tween.property == "scroll" {
             continue;
         }
         // A content-sized axis's run holds no key between layouts, so this may insert.
         properties.insert(tween.property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
     }
-    tweens.retain(|tween| matches!(tween.spec.motion, Motion::Sequence(_)) || !tween.done(now));
+    tweens.retain(|tween| {
+        tween.property == "scroll" || matches!(tween.spec.motion, Motion::Sequence(_)) || !tween.done(now)
+    });
     Ok(())
+}
+
+/// A wheel notch on a container whose `animate` names `scroll`: the run from `shown`, the offset on
+/// screen, to `target`, bending a spring already in flight. `false` when the container does not ease it.
+pub fn retarget_scroll(
+    kind: &str,
+    properties: &PropMap,
+    tweens: &mut Vec<Tween>,
+    shown: f32,
+    target: f32,
+    now: Instant,
+) -> Result<bool, LayoutError> {
+    let Some(spec) = parse::parse_animate(kind, properties)?.0.remove("scroll") else { return Ok(false) };
+    let running = tweens.iter().position(|tween| tween.property == "scroll").map(|at| tweens.remove(at));
+    let (from, to) = (Animatable::Number(shown), Animatable::Number(target));
+    let spec = match (spec.motion, running) {
+        (Motion::Spring(spring), Some(running)) => {
+            AnimationSpec { motion: Motion::Spring(spring.handed(&running, &from, &to, now)), ..spec }
+        }
+        (motion, _) => AnimationSpec { motion, ..spec },
+    };
+    if shown != target {
+        tweens.push(Tween { property: "scroll", from, to, started: now, spec, reversal: None, resting: false });
+    }
+    Ok(true)
+}
+
+/// Where a running scroll tween is bound for.
+pub fn scroll_target(tweens: &[Tween]) -> Option<f32> {
+    tweens.iter().find(|tween| tween.property == "scroll").and_then(|tween| match tween.to {
+        Animatable::Number(target) => Some(target),
+        _ => None,
+    })
 }
 
 #[cfg(test)]

@@ -274,18 +274,24 @@ pub fn run(
         // changed" answer different questions. Only a pass can change any tree, so only a pass
         // rules out the narrowed repaint, and only a pass makes every surface's protocol state
         // worth re-deriving.
+        // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
+        // arrives with a push is answered by this repaint, not repeated next turn.
+        let due = std::mem::take(&mut app.animation_frames_due);
+        let now = std::time::Instant::now();
+        // Before the pass, so a reader of a smooth scroll lays out from the offset this frame draws.
+        let scrolled = app.client.advance_scrolls(&due, now);
+        if !scrolled.is_empty() {
+            app.mark_surfaces_stale(&scrolled);
+            app.apply_resolved_surface_state_for(&[&scrolled]);
+        }
         let passed = app.client.re_resolve_if_dirty();
         let targeted_instances = if passed { app.client.take_last_resolved() } else { None };
         phases.mark_resolve();
         phases.mark_resolve_split(app.client.take_resolve_split());
-        // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
-        // arrives with a push is answered by this repaint, not repeated next turn.
-        let due = std::mem::take(&mut app.animation_frames_due);
-        let ticked =
-            if due.is_empty() { Vec::new() } else { app.client.tick_animations(&due, std::time::Instant::now()) };
+        let ticked = if due.is_empty() { Vec::new() } else { app.client.tick_animations(&due, now) };
         phases.mark_tick();
         phases.mark_tick_split(app.client.take_tick_split());
-        let re_resolved = passed || !ticked.is_empty();
+        let re_resolved = passed || !ticked.is_empty() || !scrolled.is_empty();
         app.apply_text_requests();
         app.apply_focus_request();
         if re_resolved {

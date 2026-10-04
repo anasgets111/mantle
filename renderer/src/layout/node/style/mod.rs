@@ -171,6 +171,9 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
 /// `size` needs no floor: it becomes a `Measure::Square` and the painter takes its pixels from the
 /// resolved box, so it never reaches a shaper.
 pub(super) fn range_of(property: &str) -> (f32, f32) {
+    if property == "scroll" {
+        return (0.0, f32::MAX);
+    }
     crate::lua::nodes::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
 }
 

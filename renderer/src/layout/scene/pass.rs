@@ -639,7 +639,7 @@ fn finish(
         taffy: taffy_id,
         children,
         frozen,
-        tweens,
+        mut tweens,
         move_spec,
         movement,
         prior_position,
@@ -664,7 +664,13 @@ fn finish(
 
         // ADR-0069 decision 4.
         let scrolled = match main_axis_of(kind, &properties)? {
-            Some(axis) => scroll_children(&properties, &style, size, axis, &mut children, 0.0),
+            Some(axis) => {
+                // ponytail: a reveal snaps and stops a smooth scroll; upgrade: retarget the run to it here.
+                if node::signal_at(&properties, "scroll").is_some_and(|signal| signal.reveal_pending()) {
+                    tweens.retain(|tween| tween.property != "scroll");
+                }
+                scroll_children(&properties, &style, size, axis, &mut children, 0.0)
+            }
             None => 0.0,
         };
 

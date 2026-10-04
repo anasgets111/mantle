@@ -13,6 +13,7 @@ mod resolve;
 mod scroll;
 mod solver;
 mod tick;
+pub use scroll::WheelScroll;
 pub use tick::TickSplit;
 
 use std::collections::HashMap;

@@ -7693,3 +7693,25 @@ Replaces the movement-only offset in `layout/paint/build.rs` and `layout/region.
 Rejected: rounding the mapped clip alone, which let a fractional slide leak 1px and a 6x scale
 leak 6px past the edge. Cost: configs that relied on the old spill change appearance until they
 opt out, and each scissor change inside a group adds a canvas save and restore.
+
+## 0326. A wheel notch eases a scroll offset that the signal reports as drawn
+
+Amends ADR-0069 decisions 4 and 6 and the main-loop order of ADR-0145.
+
+1. **Opt-in, engine-owned.** `animate.scroll` on a scrolling container (a duration, an eased entry
+   or a `spring`; `keyframes` are refused) makes each wheel notch add to a target held as the
+   container's `scroll` tween, clamped to the room the last layout measured. A later notch
+   retargets from the drawn offset. Touchpad deltas follow the finger: they write at once and stop
+   a run.
+2. **The signal is the drawn offset.** Each frame-callback turn advances scroll runs before the
+   pass. Containers read only by `scroll` slots move in place (ADR-0274); a Lua reader costs one
+   evaluation per frame and lays out from the offset that frame draws.
+3. **The wheel clamps its write.** Without `animate.scroll` the write is clamped to the last
+   measured room, so a getter runs once per wheel event at an end; the follow-up pass that
+   re-resolves readers of a clamped offset runs only when content resized in the same turn.
+4. **One offset per signal.** A signal scrolling two containers with different extents follows
+   the first holder's run.
+
+Rejected: easing in Lua from a timer, which re-runs the config per frame for a visual the engine
+owns, and advancing runs in the tick for the next pass to read, which draws readers a frame behind
+and needs an extra wake. Cost: a reader of an eased offset re-evaluates every frame of the run.

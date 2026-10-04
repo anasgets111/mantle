@@ -352,8 +352,8 @@ fn advance_paint_only(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Resul
     // has no `animate` block at all, which is every `image` that declares one.
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
     node.movement.take_if(|movement| !movement.advance(now));
-    // A played-out sequence rests on its last frame and moves nothing.
-    if node.tweens.iter().any(|tween| !tween.resting) {
+    // A played-out sequence rests on its last frame and moves nothing; `advance_scrolls` moves a scroll.
+    if node.tweens.iter().any(|tween| !tween.resting && tween.property != "scroll") {
         advance_paint_only_node(node, now, lua)?;
     }
     for child in &mut node.children {

@@ -22,7 +22,6 @@ mod toplevel;
 // Paint-only value types are imported, not re-exported; `paint_style` is their sole reader (ADR-0068).
 use style::parse_radius;
 
-#[cfg(test)]
 pub use animate::Animatable;
 #[cfg(test)]
 pub(crate) use animate::KeyframeInput;
@@ -33,7 +32,8 @@ pub(crate) use animate::TransitionInput;
 pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, SpringConstants, animatable_name, easing_names};
 pub(crate) use animate::{Animations, Params};
 pub use animate::{
-    Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget, retarget_measured,
+    Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget,
+    retarget_measured, retarget_scroll, scroll_target,
 };
 pub(crate) use content::{Content, Font, FontVariations, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};

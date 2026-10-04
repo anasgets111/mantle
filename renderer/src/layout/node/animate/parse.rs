@@ -69,7 +69,14 @@ pub(super) fn parse_animate(
             continue;
         }
         let name = animatable_name(kind, &property, "animate")?;
-        out.insert(name, parse_spec(name, &entry)?);
+        let spec = parse_spec(name, &entry)?;
+        if name == "scroll" && matches!(spec.motion, Motion::Sequence(_)) {
+            return Err(invalid(
+                "animate.scroll",
+                "a wheel's target is eased or sprung to; `keyframes` cannot drive it",
+            ));
+        }
+        out.insert(name, spec);
     }
     Ok((out, movement))
 }

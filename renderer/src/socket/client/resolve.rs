@@ -1144,4 +1144,109 @@ mod tests {
             assert!(!client.re_resolve_if_dirty(), "nothing is left for the next turn");
         }
     }
+
+    /// Six 50 px tiles in a 100 px row (200 px of room) scrolled by `s`, and a getter of `s` beside it
+    /// counting its runs. `animate` is the row's.
+    fn scrolled_row(animate: &str) -> (RendererClient, crate::lua::signal::Signal, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            &format!(
+                r#"
+                s = scroll("s")
+                n = state("n", 6)
+                runs = 0
+                return panel {{ id = "bar", layer = "top", child = column {{ children = {{
+                    row {{ width = 100, height = 20, scroll = s, animate = {animate},
+                        children = n:map(function(n)
+                            local tiles = {{}}
+                            for i = 1, n do tiles[i] = rect {{ width = 50, height = 20 }} end
+                            return tiles
+                        end) }},
+                    rect {{ height = 1, width = s:map(function(o) runs = runs + 1 return o + 1 end) }},
+                }} }} }}
+                "#
+            ),
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let signal = crate::lua::signal::from_userdata(&client.loader.lua().globals().get("s").unwrap()).unwrap();
+        (client, signal, dir)
+    }
+
+    fn runs(client: &RendererClient) -> i64 {
+        client.loader.lua().globals().get("runs").unwrap()
+    }
+
+    /// The getter's width less one, and the first tile's x: the offset Lua saw and the one drawn.
+    fn shown(client: &RendererClient) -> (f32, f32) {
+        let column = &client.scene.surface("bar@TEST").unwrap().children[0];
+        (column.children[1].rect.width - 1.0, -column.children[0].children[0].rect.x)
+    }
+
+    /// Smooth wheel scrolling: a notch eases the offset over frames, a second notch mid-run retargets
+    /// from what is on screen, the target stops at an end, and a reader sees each frame's offset in
+    /// that frame with one evaluation.
+    #[test]
+    fn a_notch_eases_the_offset_frame_by_frame_and_its_readers_follow() {
+        let (mut client, signal, _dir) = scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }"#);
+        let t0 = std::time::Instant::now();
+        let ms = |n| t0 + std::time::Duration::from_millis(n);
+        assert_eq!(client.wheel(&signal, 40.0, true, t0), ["bar@TEST"]);
+        assert!(!client.re_resolve_if_dirty(), "the notch writes nothing until a frame");
+        let step = |client: &mut RendererClient, at| {
+            let before = runs(client);
+            client.advance_scrolls(&["bar@TEST".to_string()], at);
+            client.re_resolve_if_dirty();
+            (runs(client) - before, shown(client))
+        };
+        assert_eq!(step(&mut client, ms(50)), (1, (20.0, 20.0)), "halfway, read and drawn in one frame");
+        // A second notch at 20 heads for 80 from 20: no jump.
+        client.wheel(&signal, 40.0, true, ms(50));
+        // A pass that resolves the row again keeps its run.
+        client.loader.lua().load("n:set(7)").exec().unwrap();
+        assert_eq!(step(&mut client, ms(100)), (1, (50.0, 50.0)));
+        assert_eq!(step(&mut client, ms(150)), (1, (80.0, 80.0)), "settled on the target");
+        assert_eq!(step(&mut client, ms(200)), (0, (80.0, 80.0)), "a settled run asks nothing more");
+        assert!(!client.scene.surface("bar@TEST").unwrap().animating());
+
+        client.wheel(&signal, 900.0, true, ms(200));
+        assert_eq!(step(&mut client, ms(250)), (1, (165.0, 165.0)), "halfway to the end, not to 980");
+        assert_eq!(step(&mut client, ms(300)), (1, (250.0, 250.0)), "the target stops at the end of seven tiles");
+        assert_eq!(signal.scroll_offset(), Some(250.0));
+
+        // A touchpad follows the finger: it stops the run and moves from what is on screen.
+        client.wheel(&signal, -100.0, true, ms(300));
+        assert_eq!(step(&mut client, ms(350)), (1, (200.0, 200.0)));
+        client.wheel(&signal, 5.0, false, ms(350));
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(shown(&client), (205.0, 205.0));
+        assert_eq!(step(&mut client, ms(400)), (0, (205.0, 205.0)), "the run is gone");
+    }
+
+    /// Without `animate.scroll` a notch writes its offset at once, as before.
+    #[test]
+    fn a_notch_without_animate_scroll_moves_at_once() {
+        let (mut client, signal, _dir) = scrolled_row("{}");
+        assert!(client.wheel(&signal, 40.0, true, std::time::Instant::now()).is_empty());
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!(shown(&client), (40.0, 40.0));
+    }
+
+    /// The wheel clamps against the room the last layout measured, so a getter reads the used offset
+    /// in one evaluation; the follow-up pass is left for content that resized in the same turn.
+    #[test]
+    fn a_wheel_past_an_end_evaluates_its_reader_once() {
+        let (mut client, signal, _dir) = scrolled_row("{}");
+        let before = runs(&client);
+        client.wheel(&signal, 900.0, false, std::time::Instant::now());
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!((runs(&client) - before, shown(&client)), (1, (200.0, 200.0)));
+
+        let before = runs(&client);
+        client.wheel(&signal, -50.0, false, std::time::Instant::now());
+        client.loader.lua().load("n:set(4)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!((runs(&client) - before, shown(&client)), (2, (100.0, 100.0)), "four tiles leave 100 px");
+    }
 }

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use mlua::{Lua, Value};
 use shared::debug;
 
@@ -7,7 +9,64 @@ use super::{LayoutStyle, LogicalSize, ResolvedNode, Scene};
 use crate::layout::node::{self, PropMap};
 use crate::lua::signal::{CellId, Signal};
 
+/// What a wheel event does to a `scroll` signal: see [`Scene::wheel`].
+#[derive(Debug, PartialEq)]
+pub enum WheelScroll {
+    /// A notch retargeted the eased runs of these instances; frames move the offset from here.
+    Eased(Vec<String>),
+    /// The offset to write now, clamped against the room the last layout measured.
+    Write(f32),
+}
+
 impl Scene {
+    /// A wheel's `delta` for `signal`. A notch (`notch`) on containers whose `animate` names
+    /// `scroll` moves their target, clamped to their room; anything else stops a run in flight.
+    pub fn wheel(&mut self, signal: &Signal, delta: f32, notch: bool, now: Instant) -> WheelScroll {
+        let shown = signal.scroll_offset().unwrap_or(0.0);
+        let Some(cell) = signal.cell_id() else { return WheelScroll::Write(shown + delta) };
+        let (mut eased, mut room) = (Vec::new(), None::<f32>);
+        for (key, tree) in &mut self.surfaces {
+            let mut eases = false;
+            each_holder(tree, cell, &mut |node, axis| {
+                let limit = room_of(node, axis);
+                room = Some(room.map_or(limit, |room| room.max(limit)));
+                if notch {
+                    let target = (node::scroll_target(&node.tweens).unwrap_or(node.scrolled) + delta).clamp(0.0, limit);
+                    let (kind, shown) = (node.kind, node.scrolled);
+                    match node::retarget_scroll(kind, &node.properties, &mut node.tweens, shown, target, now) {
+                        Ok(true) => {
+                            eases = true;
+                            return;
+                        }
+                        Ok(false) => {}
+                        Err(err) => debug!("{key}: animate.scroll: {err}"),
+                    }
+                }
+                node.tweens.retain(|tween| tween.property != "scroll");
+            });
+            if eases {
+                eased.push(key.clone());
+            }
+        }
+        if !eased.is_empty() {
+            return WheelScroll::Eased(eased);
+        }
+        // A pass would clamp too, but after a getter read the unclamped offset (ADR-0069 decision 4).
+        WheelScroll::Write((shown + delta).min(room.unwrap_or(f32::INFINITY)).max(0.0))
+    }
+
+    /// Advances the scroll runs in the trees of `due` to `now`: each running signal and the offset
+    /// it shows this frame. A run that arrives is dropped after its last offset.
+    pub fn advance_scrolls(&mut self, due: &[String], now: Instant) -> Vec<(Signal, f32)> {
+        let mut out = Vec::new();
+        for key in due {
+            if let Some(tree) = self.surfaces.get_mut(key) {
+                advance_runs(tree, now, &mut out);
+            }
+        }
+        out
+    }
+
     /// A wheel's `asked` offset for `signal`, applied to the retained trees without a pass
     /// (ADR-0274): each visible container it scrolls moves its children, clamped against the room
     /// they already take, and the instances whose children moved come back with their `geometry`
@@ -83,22 +142,68 @@ fn read_only_as_scroll(
     node.children.iter().all(|child| read_only_as_scroll(child, cell, read, holders))
 }
 
+/// Calls `visit` on every visible container `cell` scrolls, with its axis.
+fn each_holder(node: &mut ResolvedNode, cell: CellId, visit: &mut impl FnMut(&mut ResolvedNode, MainAxis)) {
+    if !node.in_flow() {
+        return;
+    }
+    if let Some(axis) = scrolls_by(node, cell) {
+        visit(node, axis);
+    }
+    for child in &mut node.children {
+        each_holder(child, cell, visit);
+    }
+}
+
 /// Moves the children of every visible container `cell` scrolls to its offset; whether any moved.
 fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
-    if !node.in_flow() {
-        return false;
-    }
     let mut moved = false;
-    if let Some(axis) = scrolls_by(node, cell) {
+    each_holder(node, cell, &mut |node, axis| {
         let size = LogicalSize { width: node.rect.width, height: node.rect.height };
         let from = node.scrolled;
         node.scrolled = scroll_children(&node.properties, &node.layout_style, size, axis, &mut node.children, from);
-        moved = node.scrolled != from;
+        moved |= node.scrolled != from;
+    });
+    moved
+}
+
+/// How far `node` can scroll along `axis` with the children it laid out last.
+fn room_of(node: &ResolvedNode, axis: MainAxis) -> f32 {
+    let size = LogicalSize { width: node.rect.width, height: node.rect.height };
+    let (content_main, _) = viewport(&node.layout_style, size, axis);
+    (extent_along(&node.children, axis, node.layout_style.spacing) - content_main).max(0.0)
+}
+
+fn advance_runs(node: &mut ResolvedNode, now: Instant, out: &mut Vec<(Signal, f32)>) {
+    // Frozen (ADR-0124), and `animating` does not ask frames for it.
+    if !node.visible {
+        return;
+    }
+    if let Some(at) = node.tweens.iter().position(|tween| tween.property == "scroll")
+        && let node::Animatable::Number(offset) = node.tweens[at].at(now)
+    {
+        if node.tweens[at].done(now) {
+            node.tweens.remove(at);
+        }
+        // ponytail: one offset per signal, so the first holder's run wins; upgrade: an offset per container.
+        if let Some(signal) = node::signal_at(&node.properties, "scroll")
+            && !out.iter().any(|(held, _)| held.cell_id() == signal.cell_id())
+        {
+            out.push((signal, offset));
+        }
     }
     for child in &mut node.children {
-        moved |= scroll_retained(child, cell);
+        advance_runs(child, now, out);
     }
-    moved
+}
+
+/// The content length along `axis` inside the padding, and where it starts.
+fn viewport(style: &LayoutStyle, size: LogicalSize, axis: MainAxis) -> (f32, f32) {
+    let padding = style.padding;
+    match axis {
+        MainAxis::Horizontal => ((size.width - padding.horizontal()).max(0.0), padding.left),
+        MainAxis::Vertical => ((size.height - padding.vertical()).max(0.0), padding.top),
+    }
 }
 
 /// Clamps this container's asked offset against the room its children take and moves them to it
@@ -117,11 +222,7 @@ pub(super) fn scroll_children(
     children: &mut [ResolvedNode],
     from: f32,
 ) -> f32 {
-    let padding = style.padding;
-    let (content_main, padding_start) = match axis {
-        MainAxis::Horizontal => ((size.width - padding.horizontal()).max(0.0), padding.left),
-        MainAxis::Vertical => ((size.height - padding.vertical()).max(0.0), padding.top),
-    };
+    let (content_main, padding_start) = viewport(style, size, axis);
     reveal_child(properties, children, axis, padding_start - from, content_main);
     let offset = scroll_offset(properties, content_main, extent_along(children, axis, style.spacing));
     let by = offset - from;
