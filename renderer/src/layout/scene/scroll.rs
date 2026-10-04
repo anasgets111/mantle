@@ -33,6 +33,32 @@ impl Scene {
         }
         Some(moved)
     }
+
+    /// The scroll cells a pass since `stamp` clamped or revealed that Lua also read: those readers
+    /// laid out from the asked offset, not the one the container used.
+    pub fn scroll_settled_since(&self, stamp: u64) -> Vec<CellId> {
+        let mut written = Vec::new();
+        for tree in self.surfaces.values() {
+            scroll_cells_written(tree, stamp, &mut written);
+        }
+        written.retain(|&cell| {
+            let read = crate::lua::signal::with_derived(cell);
+            !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
+        });
+        written
+    }
+}
+
+fn scroll_cells_written(node: &ResolvedNode, stamp: u64, out: &mut Vec<CellId>) {
+    if let Some(cell) = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id())
+        && !out.contains(&cell)
+        && crate::lua::signal::written_since(stamp, &[cell])
+    {
+        out.push(cell);
+    }
+    for child in &node.children {
+        scroll_cells_written(child, stamp, out);
+    }
 }
 
 /// The axis `node` scrolls along by `cell`, if it does.
@@ -197,8 +223,7 @@ fn scroll_offset(properties: &PropMap, content_main: f32, total_main: f32) -> f3
     if used != asked
         && let Some(handle) = signal.scroll_handle()
     {
-        // Quiet: this number is derived from the geometry of the pass that is running, so marking
-        // the scene dirty would schedule another pass to observe what this one already used.
+        // Quiet: a `scroll` slot already used it; `RendererClient` re-resolves any Lua reader.
         handle.set_quiet(Value::Number(f64::from(used)));
     }
     used

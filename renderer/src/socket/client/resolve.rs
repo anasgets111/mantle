@@ -105,7 +105,37 @@ impl RendererClient {
     /// readable through this client's field ordering and decision 1's resolve-at-layout-time rule.
     /// Called once per poll turn after inbound frames; `DirtyFlag::take` coalesces pushes. Returns
     /// whether it re-resolved; `false` means clean or failed.
+    ///
+    /// A pass that clamps or reveals a scroll offset a getter read re-resolves those readers once
+    /// more in the same turn, so they lay out from the offset on screen (a scroll-driven layout is
+    /// a feedback loop: the clamp depends on sizes that depend on the offset).
+    /// ponytail: one follow-up, a second clamp waits for the next write; upgrade: a capped fixed point.
     pub fn re_resolve_if_dirty(&mut self) -> bool {
+        let stamp = lua::signal::write_clock(self.loader.lua());
+        if !self.pass_if_dirty() {
+            return false;
+        }
+        let settled = self.scene.scroll_settled_since(stamp);
+        if !settled.is_empty() {
+            for cell in settled {
+                self.dirty.mark_cell(cell);
+            }
+            let first = self.last_resolved.take();
+            self.last_resolved = if self.pass_if_dirty() {
+                first.zip(self.last_resolved.take()).map(|(mut ids, more)| {
+                    ids.extend(more);
+                    ids.sort();
+                    ids.dedup();
+                    ids
+                })
+            } else {
+                first
+            };
+        }
+        true
+    }
+
+    fn pass_if_dirty(&mut self) -> bool {
         // Every writer of this turn has returned, so no handler runs inside one (ADR-0288).
         lua::signal::run_state_handlers(self.loader.lua());
         self.owes_pass = false;
@@ -1068,5 +1098,48 @@ mod tests {
         let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
         assert!(table.map.is_empty(), "memo map must be empty when scope is clean");
         assert_eq!(table.depth, 0, "memo depth must be 0 when scope is clean");
+    }
+
+    /// A wheel past either end: the pass clamps the offset after the getter read the wheel's value,
+    /// so the getter re-resolves in the same call and lays out from the offset on screen.
+    #[test]
+    fn a_getter_reads_the_clamped_scroll_offset_in_the_same_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            s = scroll("s")
+            runs = 0
+            local tiles = {}
+            for i = 1, 6 do tiles[i] = rect { width = 50, height = 20 } end
+            return panel { id = "bar", layer = "top", child = column { children = {
+                row { width = 100, height = 20, scroll = s, children = tiles },
+                rect { height = 1, width = s:map(function(o) runs = runs + 1 return o + 1 end) },
+            } } }
+            "#,
+        );
+        let (mut client, _rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let signal = crate::lua::signal::from_userdata(&client.loader.lua().globals().get("s").unwrap()).unwrap();
+        let readout =
+            |client: &RendererClient| client.scene.surface("bar@TEST").unwrap().children[0].children[1].rect.width;
+        let runs = |client: &RendererClient| client.loader.lua().globals().get::<i64>("runs").unwrap();
+
+        // Two wheel frames in one turn: one pass, one evaluation.
+        let before = runs(&client);
+        for asked in [30.0, 60.0] {
+            assert_eq!(client.scroll_in_place(&signal, asked), None, "a getter reads the offset");
+            signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(asked.into()));
+        }
+        assert!(client.re_resolve_if_dirty());
+        assert_eq!((runs(&client) - before, readout(&client)), (1, 61.0));
+
+        for (asked, used) in [(900.0, 200.0), (-40.0, 0.0)] {
+            signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(asked));
+            assert!(client.re_resolve_if_dirty());
+            assert_eq!(signal.scroll_offset(), Some(used as f32), "300 px of tiles in a 100 px row");
+            assert_eq!(readout(&client), used as f32 + 1.0, "the getter saw {used}, not {asked}");
+            assert!(!client.re_resolve_if_dirty(), "nothing is left for the next turn");
+        }
     }
 }

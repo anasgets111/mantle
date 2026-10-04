@@ -27,9 +27,8 @@ impl LiveSignalHandle {
     }
 
     /// Writes without dirtying for `layout::scene`'s clamp, which derives the value from geometry
-    /// just measured. Another pass would observe the same idempotent clamp; cost is one frame of
-    /// staleness only when clamping: same-pass `scroll("x")` sees wheel input, derived readouts see
-    /// the clamped value next pass. Positioning itself uses the clamped value immediately.
+    /// just measured. Positioning uses the clamped value immediately; a getter that read the wheel's
+    /// value gets one follow-up pass in the same turn (`Scene::scroll_settled_since`).
     pub(crate) fn set_quiet(&self, value: Value) {
         *self.1.borrow_mut() = value;
         note_write(self.0);

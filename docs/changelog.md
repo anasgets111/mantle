@@ -11,6 +11,7 @@ version is 0.x, a minor release can break the Lua API.
 - A parent's `clip` no longer moves with a child's `translate`, `scale` or `rotate`: a child that transforms past the parent's box is cut at the box. Overflow by transform (hover scale-ups, overshoot easings, slide-outs) needs `clip = "none"` on the parent.
 - `image.radius` rounds the picture's corners, a number or a table per corner like `rect.radius`, with no clipping wrapper. It rounds what shows, so `fit = "contain"` rounds the fitted picture.
 - `path` takes `stroke_cap` (`"butt"`, `"round"`, `"square"`), `stroke_join` (`"miter"`, `"round"`, `"bevel"`), and `trim_start`/`trim_end`, which stroke only that fraction of the path's length and animate like any number.
+- A `scroll` signal's `map` or getter that read a wheel offset past either end lays out again from the clamped offset in the same frame; it kept the unclamped value until the next wheel event, so offset-sized children jumped at the ends.
 - `focus_target(name):set_text(text)` prefills or clears the draft of the plain textfields, hidden ones too, with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
 - Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
