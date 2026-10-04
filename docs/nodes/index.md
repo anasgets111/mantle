@@ -102,7 +102,8 @@ container either **flows** its children along one axis or **stacks** them on top
 | `text`, `icon`, `image`, `capture`, `path`, `shader`, `textfield` | None (leaves) | None |
 
 A stacking parent's content size is the union of its children, so a `rect` is how you layer a badge
-over an icon or a label over an image.
+over an icon or a label over an image. A parent with its own size gives every child its content
+box, even a child larger than it.
 
 Of the leaves, only `text` and `icon` measure themselves. `image`, `capture`, `path`, `shader`
 and `textfield` have no intrinsic size: without `width` and `height` they are 0 × 0 and draw nothing.

@@ -2,7 +2,7 @@ use super::{LayoutStyle, LogicalSize, ResolvedNode};
 use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode, Tween};
 use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
 use taffy::TraversePartialTree;
-use taffy::prelude::{length, line, span};
+use taffy::prelude::{fr, length, line, span, zero};
 
 /// A solver tree, one per surface instance, kept across passes and ticks so a node that did not
 /// change keeps taffy's layout cache (ADR-0294). Geometry stays fractional until `text::snap`
@@ -171,8 +171,14 @@ pub(super) fn taffy_style(
             out.gap = taffy::Size { width: length(style.spacing), height: length(style.spacing) };
         }
         // ADR-0023's stacking model is one auto-sized grid cell: children overlap and align
-        // independently, while `Content` is their bounding union.
-        None => out.display = taffy::Display::Grid,
+        // independently, while `Content` is their bounding union. `minmax(0, 1fr)` keeps the cell
+        // at the content box when a child is larger; an auto track would grow to that child.
+        None => {
+            out.display = taffy::Display::Grid;
+            let cell = || vec![taffy::style_helpers::minmax(zero(), fr(1.0))];
+            out.grid_template_columns = cell();
+            out.grid_template_rows = cell();
+        }
     }
 
     // Item half. `Fill` off the parent's flow axis means the whole slot and outranks alignment.
@@ -855,6 +861,25 @@ pub(super) mod tests {
         assert_eq!(outer.children[0].rect.x, 0.0);
         assert_eq!(outer.children[1].rect.x, 80.0);
         assert_eq!(outer.children[1].rect.y, 80.0);
+    }
+
+    /// The shared cell is the parent's content box, not its largest child: a child wider than a
+    /// fixed or capped parent overflows alone and does not drag its siblings' alignment out.
+    #[test]
+    fn a_stack_slot_stays_the_parents_size_when_a_child_is_larger() {
+        for parent in ["rect { width = 50, height = 50", "rect { max_width = 50"] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let (lua, surface) = surface_from(&format!(
+                "panel {{ id = 'bar', child = {parent}, children = {{
+                    rect {{ width = 20, height = 20, align_h = 'center' }},
+                    rect {{ width = 80, height = 80 }},
+                }} }} }}"
+            ));
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let stack = &scene.surface("bar@TEST").unwrap().children[0];
+            assert_eq!(stack.children[0].rect.x, 15.0, "{parent}: centred in 50, not in the 80 child");
+        }
     }
 
     #[test]
