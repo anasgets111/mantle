@@ -397,6 +397,11 @@ pub fn retarget(
             continue;
         }
         let Some(target) = Animatable::from_value(property, properties.get(property))? else {
+            // A content-sized axis has no target until layout measures it: keep the run for
+            // `retarget_measured`.
+            if matches!(property, "width" | "height") && properties.get(property).is_none() {
+                tweens.extend(running.cloned());
+            }
             continue;
         };
         let displayed = match shown {
@@ -478,6 +483,47 @@ pub fn retarget(
     Ok((tweens, movement))
 }
 
+/// The tween for a content-sized `width` or `height` after layout measured it: `shown` is the
+/// size on screen, `measured` the size the content wants. A run already bound for `measured` is
+/// kept, so an unrelated pass does not restart it. Any other change eases from `shown`, so an
+/// interrupted run starts where it was. Returns the size to lay out at, or `None` when the axis
+/// follows its content.
+///
+/// ponytail: eased motion only. A spring or keyframes entry on a content-sized axis snaps; a
+/// reversal does not shorten its run as `retarget`'s does.
+pub fn retarget_measured(
+    kind: &str,
+    properties: &PropMap,
+    tweens: &mut Vec<Tween>,
+    property: &'static str,
+    shown: f32,
+    measured: f32,
+    now: Instant,
+) -> Result<Option<f32>, LayoutError> {
+    let running = tweens.iter().position(|tween| tween.property == property).map(|at| tweens.remove(at));
+    let (mut specs, _) = parse::parse_animate(kind, properties)?;
+    let Some(spec) = specs.remove(property).filter(|spec| matches!(spec.motion, Motion::Eased { .. })) else {
+        return Ok(None);
+    };
+    let to = Animatable::Number(measured);
+    let tween = match running {
+        Some(running) if running.to == to && !running.done(now) => running,
+        _ if shown == measured => return Ok(None),
+        _ => Tween {
+            property,
+            from: Animatable::Number(shown),
+            to,
+            started: now,
+            spec,
+            reversal: Some(Reversal { origin: Animatable::Number(shown), factor: 1.0 }),
+            resting: false,
+        },
+    };
+    let Animatable::Number(size) = tween.at(now) else { unreachable!("a size tween holds numbers") };
+    tweens.push(tween);
+    Ok(Some(size))
+}
+
 /// The properties a tween can move without asking the solver anything: what they change is what a
 /// node paints, never the box it was given. `layout::scene::solver::taffy_style` reads none of them, and
 /// `layout::scene::solver::measure_for` reads a text's content, size, family and wrapping but not its
@@ -526,9 +572,8 @@ pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, 
         if tween.resting {
             continue;
         }
-        // `retarget` wrote the key when it started the tween, so this never inserts.
-        *properties.get_mut(tween.property).expect("a tween's property is in the map it was started from") =
-            tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?;
+        // A content-sized axis's run holds no key between layouts, so this may insert.
+        properties.insert(tween.property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
     }
     tweens.retain(|tween| matches!(tween.spec.motion, Motion::Sequence(_)) || !tween.done(now));

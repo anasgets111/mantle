@@ -238,6 +238,7 @@ pub(super) fn prepare_retained(
         move_spec,
         movement,
         prior_position,
+        prior_size: None,
         leaving: Vec::new(),
         list_memo,
         child_table,
@@ -474,6 +475,57 @@ mod tests {
 
     fn child_tween(scene: &Scene) -> Tween {
         scene.surface("bar@TEST").unwrap().children[0].tweens[0].clone()
+    }
+
+    #[test]
+    fn a_content_sized_width_eases_between_measured_sizes_and_moves_its_siblings() {
+        // The pill's child reads `w`, the pill resolves nothing: the content change reaches it
+        // only through layout.
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = row { children = {
+                rect { animate = { width = { duration = 100, easing = "linear" } },
+                    children = { rect { width = state("w", 40), height = 20 } } },
+                rect { width = 10, height = 20 },
+            } } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let layout = |scene: &Scene| {
+            let row = &scene.surface("bar@TEST").unwrap().children[0];
+            (row.children[0].rect.width, row.children[1].rect.x)
+        };
+        let pill_tween = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].clone();
+        let ms = std::time::Duration::from_millis;
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(layout(&scene), (40.0, 40.0));
+        assert!(!scene.surface("bar@TEST").unwrap().animating(), "a first layout is taken as it is");
+
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(layout(&scene), (40.0, 40.0), "the pass starts from the size on screen");
+        // An unrelated pass keeps the run.
+        let started = pill_tween(&scene).started;
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(pill_tween(&scene).started, started);
+        scene.tick(&instances, &shaping, &lua, started + ms(50));
+        assert_eq!(layout(&scene), (65.0, 65.0), "the sibling follows the eased box");
+
+        // A new size starts from where the pill is.
+        lua.load(r#"state("w", 40):set(140)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let retargeted = pill_tween(&scene);
+        assert_eq!((retargeted.from, retargeted.to), (node::Animatable::Number(65.0), node::Animatable::Number(140.0)));
+
+        scene.tick(&instances, &shaping, &lua, retargeted.started + ms(100));
+        assert_eq!(layout(&scene), (140.0, 140.0));
+        assert!(!scene.surface("bar@TEST").unwrap().animating());
+
+        // Settled, the pill follows its content again instead of holding the last eased size.
+        lua.load(r#"state("w", 40):set(60)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(layout(&scene), (140.0, 140.0));
+        assert!(scene.surface("bar@TEST").unwrap().animating());
     }
 
     #[test]

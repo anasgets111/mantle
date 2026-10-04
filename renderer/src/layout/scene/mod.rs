@@ -828,6 +828,8 @@ struct PreparedNode {
     move_spec: Option<Box<MoveSpec>>,
     movement: Option<Box<MoveTween>>,
     prior_position: Option<(f32, f32)>,
+    /// Its retained size on screen; `None` for a new node, a thaw and a tick.
+    prior_size: Option<(f32, f32)>,
     /// Children on their way out (ADR-0150), already advanced this pass. Not in the solver.
     leaving: Vec<ResolvedNode>,
     /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].

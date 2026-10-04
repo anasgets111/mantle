@@ -85,7 +85,16 @@ pub(super) fn resolve(
         if moving {
             node::advance(&mut tweens, Rc::make_mut(&mut properties), now, lua)?;
         }
-        let style = if moving { LayoutStyle::parse(&properties)? } else { *r.layout_style };
+        // A size a layout injected for a content-sized axis (`pass::measure_content_sizes`) is not
+        // the declaration's: drop it so the next solve measures the content again.
+        let mut injected = false;
+        for key in ["width", "height"] {
+            if properties.contains_key(key) && !memo.raw.contains_key(key) {
+                Rc::make_mut(&mut properties).remove(key);
+                injected = true;
+            }
+        }
+        let style = if moving || injected { LayoutStyle::parse(&properties)? } else { *r.layout_style };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo, text_memo });
     }

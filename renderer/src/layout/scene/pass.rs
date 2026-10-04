@@ -138,7 +138,7 @@ fn resolve_non_content(mode: SizeMode, available: f32) -> Option<f32> {
 /// has no parent; descendants take size from the solver.
 pub(super) fn solve_instance(
     tree: &mut taffy::TaffyTree<Measure>,
-    prepared: PreparedNode,
+    mut prepared: PreparedNode,
     available: LogicalSize,
     shaping: &ShapingHandle,
     now: Instant,
@@ -160,7 +160,58 @@ pub(super) fn solve_instance(
         tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
     }
     solve(tree, prepared.taffy, available, shaping)?;
+    if measure_content_sizes(tree, &mut prepared, now)? {
+        solve(tree, prepared.taffy, available, shaping)?;
+    }
     finish(tree, prepared, shaping, now)
+}
+
+/// A content-sized `width` or `height` with an `animate` entry has no target until it is solved.
+/// Eases it from the size on screen to the one just solved ([`node::retarget_measured`]), and
+/// pins the solver node and the properties to the eased size, so siblings, children and ticks lay
+/// out at it. Returns whether anything was pinned and the tree needs solving again. A tick has no
+/// `prior_size` and skips this: its running tween already pins the axis in `properties`.
+fn measure_content_sizes(
+    tree: &mut taffy::TaffyTree<Measure>,
+    node: &mut PreparedNode,
+    now: Instant,
+) -> Result<bool, LayoutError> {
+    if !node.style.visible {
+        return Ok(false);
+    }
+    let mut pinned = false;
+    for child in &mut node.children {
+        pinned |= measure_content_sizes(tree, child, now)?;
+    }
+    let Some(shown) = node.prior_size.filter(|_| node.properties.contains_key("animate")) else { return Ok(pinned) };
+    let solved = tree.layout(node.taffy).map_err(taffy_failed)?.size;
+    let axes = [
+        ("width", node.style.width_mode, shown.0, solved.width),
+        ("height", node.style.height_mode, shown.1, solved.height),
+    ];
+    for (property, mode, shown, measured) in axes {
+        if mode != SizeMode::Content {
+            continue;
+        }
+        let Some(size) =
+            node::retarget_measured(node.kind, &node.properties, &mut node.tweens, property, shown, measured, now)?
+        else {
+            continue;
+        };
+        Rc::make_mut(&mut node.properties).insert(property, Value::Number(f64::from(size)));
+        let mut style = tree.style(node.taffy).map_err(taffy_failed)?.clone();
+        let dimension = taffy::Dimension::length(size);
+        if property == "width" {
+            style.size.width = dimension;
+            node.style.width_mode = SizeMode::Pixels(size);
+        } else {
+            style.size.height = dimension;
+            node.style.height_mode = SizeMode::Pixels(size);
+        }
+        tree.set_style(node.taffy, style).map_err(taffy_failed)?;
+        pinned = true;
+    }
+    Ok(pinned)
 }
 
 /// A configured `Content` axis belongs to the root when its protocol allocated that axis:
@@ -285,6 +336,7 @@ pub(super) fn prepare(
     let old_scroll = retained.as_ref().map_or(0.0, |node| node.scrolled);
     let Resolved { properties, style, paint, tweens, movement: move_spec, memo: resolve_memo, text_memo } = resolved;
     let prior_position = retained.as_ref().filter(|_| !thawing).and_then(|r| prior_position(r, tree, parent_flow));
+    let prior_size = retained.as_ref().filter(|_| !thawing).map(|r| (r.rect.width, r.rect.height));
     let movement = if thawing { None } else { retained.as_mut().and_then(|r| r.movement.take()) };
     let allocated_axes = allocated_axes(kind, &properties)?;
     let (id, old_taffy, displayed_source, dissolve, old_children, list_memo, child_table) = match retained {
@@ -337,6 +389,7 @@ pub(super) fn prepare(
         move_spec,
         movement,
         prior_position,
+        prior_size,
         leaving: Vec::new(),
         list_memo,
         child_table,
@@ -588,6 +641,7 @@ fn finish(
         move_spec,
         movement,
         prior_position,
+        prior_size: _,
         leaving,
         list_memo,
         child_table,
