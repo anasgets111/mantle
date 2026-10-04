@@ -798,7 +798,7 @@ mod tests {
     }
 
     /// One 1920x1080 `"TEST"` output keeps fixture ids readable (`"bar@TEST"`).
-    pub(super) fn test_outputs() -> Vec<OutputGeometry> {
+    fn test_outputs() -> Vec<OutputGeometry> {
         vec![OutputGeometry { name: "TEST".to_string(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } }]
     }
 
@@ -810,6 +810,17 @@ mod tests {
         let instances = expand_instances(&specs, &test_outputs());
         client.set_instances(instances);
         client.apply_instances()
+    }
+
+    /// Reloads `path` with `source` the way `App::apply_pending` does, keeping the one output.
+    pub(super) fn reload(client: &mut RendererClient, path: &std::path::Path, source: &str) -> bool {
+        std::fs::write(path, source).unwrap();
+        if !client.reevaluate() {
+            return false;
+        }
+        let (specs, _) = client.pending_surfaces().unwrap();
+        client.set_instances(expand_instances(&specs, &test_outputs()));
+        client.handle_apply_pending()
     }
 
     /// Instances for exactly `ids`, for tests that seed `state.pending` instead of [`run_startup`].

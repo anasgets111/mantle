@@ -37,7 +37,7 @@ impl RendererClient {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{rescue_state, run_startup, test_client, write_shell_lua};
+    use super::super::tests::{reload, rescue_state, run_startup, test_client, write_shell_lua};
     use super::super::*;
     use crate::layout::instance::{OutputGeometry, expand_instances};
 
@@ -125,19 +125,6 @@ mod tests {
         client.loader.lua().load(r#"query:set("fire")"#).exec().unwrap();
         client.reset_closed_surfaces(&["bar@TEST"]);
         assert_eq!(eval(&client, "query:get()"), "fire");
-    }
-
-    /// Reloads `path` with `source` the way `App::apply_pending` does, keeping the one output.
-    fn reload(client: &mut RendererClient, path: &std::path::Path, source: &str) -> bool {
-        std::fs::write(path, source).unwrap();
-        if !client.reevaluate() {
-            return false;
-        }
-        let (specs, _) = client.pending_surfaces().unwrap();
-        let outputs =
-            [OutputGeometry { name: "TEST".into(), size: layout::LogicalSize { width: 1920.0, height: 1080.0 } }];
-        client.set_instances(expand_instances(&specs, &outputs));
-        client.handle_apply_pending()
     }
 
     #[test]

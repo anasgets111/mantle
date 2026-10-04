@@ -489,10 +489,8 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 ///
 /// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
 /// properties remain untouched in the map. When no signal is present, at the top level or in a
-/// table, resolution completes in place with no allocations or sorting.
-///
-/// `tables_plain` (see [`tables_plain`]) vouches
-/// that the walked tables hold no signal, so they are not scanned again.
+/// table, resolution completes in place with no allocations or sorting. `tables_plain` (see
+/// [`tables_plain`]) vouches that the walked tables hold no signal, so they are not scanned again.
 pub(crate) fn resolve_declared(
     mut properties: PropMap,
     kind: &str,

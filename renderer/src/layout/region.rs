@@ -4,6 +4,9 @@ use crate::layout::node::{self, PaintStyle};
 use crate::layout::scene::ResolvedNode;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
+/// The starting clip: a root intersects itself on the first step, so this only has to not be the limit.
+const EVERYTHING: LogicalRect = LogicalRect { x: -1e9, y: -1e9, width: 2e9, height: 2e9 };
+
 /// The input-region scan: what this surface draws and what it can click, as surface-local
 /// physical rects (ADR-0038 decision 5, ADR-0109). Pure; the `wl_region`/
 /// `wl_surface::set_input_region` push it feeds lives in `crate::wayland::App::apply_input_region`,
@@ -16,6 +19,9 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 /// into, so a full-surface `column` holding two cards yields the cards. Everything else is
 /// click-through and, under focus-follows-mouse, focus-through; the popup's empty space below its
 /// cards therefore takes neither clicks nor keyboard focus.
+///
+/// A claiming box that `clips_children` ends the walk. One that does not also claims the
+/// descendants sticking out of it; the walk carries the clip so each is cut to its clipping ancestors.
 ///
 /// Painting claims input on every layer but `Background`, where a handler is the only thing that
 /// does (ADR-0204). Paint stands in for interactivity because a drawn overlay must not leak a click
@@ -30,18 +36,16 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let paint_claims =
         !matches!(node::fields::panel::layer.read(&surface_root.properties), Ok(node::LayerKind::Background));
     let mut regions = Vec::new();
-    let everything = LogicalRect { x: -1e9, y: -1e9, width: 2e9, height: 2e9 };
+    let scan = (scale, paint_claims);
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_pointer() {
-        let scan = (scale, paint_claims);
-        collect_input_regions(surface_root, 0.0, 0.0, scan, node::IDENTITY_AFFINE, everything, true, &mut regions);
+        collect_input_regions(surface_root, 0.0, 0.0, scan, node::IDENTITY_AFFINE, EVERYTHING, true, &mut regions);
         return regions;
     }
     let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
     let hittable = surface_root.hittable(true);
     for child in surface_root.content_children() {
-        let scan = (scale, paint_claims);
-        collect_input_regions(child, 0.0, 0.0, scan, root_matrix, everything, hittable, &mut regions);
+        collect_input_regions(child, 0.0, 0.0, scan, root_matrix, EVERYTHING, hittable, &mut regions);
     }
     regions
 }
@@ -59,18 +63,16 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
 /// Three differences from [`overlay_input_regions`], because blur follows painted content:
 ///
 /// 1. **Leaving nodes count.** They still paint while their exit runs, but take no input.
-/// 2. **Ancestor clips intersect.** `layout::paint::build_node` clips every child to its parent's
-///    box unless the parent is `clip = "none"`, so a card scrolled out of a `max_height` list is not
-///    drawn and must not blur either.
+/// 2. **Ancestor clips intersect.** `layout::paint::build_node` cuts a child to a parent that
+///    `clips_children`, so a card scrolled out of a `max_height` list is not drawn and must not
+///    blur either.
 /// 3. **The surface root is included**, because a root may paint its own box.
 ///
 /// A claiming node does not stop the walk: a marked child inside a marked parent unions into it,
 /// and a rounded parent that does not clip can have children painting outside its corners.
 pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect> {
     let mut regions = Vec::new();
-    // The root intersects itself on the first step, so this only has to not be the limit.
-    let everything = LogicalRect { x: -1e9, y: -1e9, width: 2e9, height: 2e9 };
-    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, everything, 1.0, &mut regions);
+    collect_blur_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, EVERYTHING, 1.0, &mut regions);
     regions
 }
 
@@ -244,14 +246,11 @@ fn collect_input_regions(
     }
     // Only an unclipped box's overflow adds to it; one rect per descendant inside it would bloat the region.
     if let Some(own) = claimed {
-        let mut kept = start;
-        for i in start..out.len() {
-            if !own.contains(out[i]) {
-                out.swap(kept, i);
-                kept += 1;
-            }
-        }
-        out.truncate(kept);
+        let mut at = 0;
+        out.retain(|region| {
+            at += 1;
+            at <= start || !own.contains(*region)
+        });
     }
 }
 
@@ -303,10 +302,7 @@ mod tests {
     ) -> ResolvedNode {
         let node = ResolvedNode { id: NodeId::test(id), paint, ..ResolvedNode::test(kind, rect, children) };
         // A surface root paints as a box that cuts, as `paint_style` makes it.
-        match (kind, node.paint.is_none()) {
-            ("panel", true) => node.with_clip(node::ClipShape::Box),
-            _ => node,
-        }
+        if kind == "panel" && node.paint.is_none() { node.with_clip(node::ClipShape::Box) } else { node }
     }
 
     #[test]
@@ -446,6 +442,19 @@ mod tests {
             [PhysicalRect { x0: 130, y0: 0, x1: 150, y1: 20 }],
             "the clip is applied before the transform, as paint applies it"
         );
+    }
+
+    /// The input walk maps a clipping ancestor's cut back through a transformed node, as paint does:
+    /// the card is cut at the grandparent's edge, then the group moves.
+    #[test]
+    fn a_clip_above_a_translated_parent_cuts_the_child_in_its_own_space() {
+        let card = region_node(1, "rect", (140.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
+        let mut parent = region_node(2, "column", (0.0, 0.0, 100.0, 20.0), None, vec![card]);
+        parent.transform = node::Transform { translate: (50.0, 0.0), ..node::Transform::default() };
+        let cut = region_node(4, "column", (0.0, 0.0, 200.0, 20.0), None, vec![parent]).with_clip(node::ClipShape::Box);
+        let root = region_node(3, "panel", (0.0, 0.0, 300.0, 100.0), None, vec![cut]);
+
+        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 190, y0: 0, x1: 200, y1: 20 }]);
     }
 
     /// A card scrolled halfway out of a list is cut by a straight edge, so rounding must happen on

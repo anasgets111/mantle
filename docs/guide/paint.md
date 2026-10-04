@@ -180,7 +180,8 @@ return row {
 nothing: a child laid out, shadowed or transformed past it paints there and is hit there. A
 `row`, `column` or `list` with a [`scroll`](input.md#scroll) signal and every surface default to
 `"box"`, since a viewport has to hide what it scrolled out. Set `clip = "box"` on a button whose
-ripple or hover scale-up must stay inside it.
+ripple or hover scale-up must stay inside it. A `list` takes no `clip`: it cuts only when it
+scrolls.
 
 A child's `translate`, `scale` or `rotate` moves its own paint, never the parent's clip: under a
 clipping parent, a child that transforms past the parent's box is cut there (a rotated one by the

@@ -123,18 +123,17 @@ impl Scene {
     }
 }
 
+fn scroll_slot_is(node: &ResolvedNode, cell: CellId) -> bool {
+    node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell)
+}
+
 fn holds(node: &ResolvedNode, cell: CellId) -> bool {
-    if node.leaving {
-        return false;
-    }
-    let held = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell);
-    held || node.children.iter().any(|child| holds(child, cell))
+    !node.leaving && (scroll_slot_is(node, cell) || node.children.iter().any(|child| holds(child, cell)))
 }
 
 /// The axis `node` scrolls along by `cell`, if it does.
 fn scrolls_by(node: &ResolvedNode, cell: CellId) -> Option<MainAxis> {
-    let holds = node::signal_at(&node.properties, "scroll").and_then(|signal| signal.cell_id()) == Some(cell);
-    if holds { main_axis_of(node.kind, &node.properties).ok().flatten() } else { None }
+    if scroll_slot_is(node, cell) { main_axis_of(node.kind, &node.properties).ok().flatten() } else { None }
 }
 
 /// Counts the visible containers `cell` scrolls into `holders`; false when a node a pass resolves

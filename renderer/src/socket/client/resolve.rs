@@ -361,8 +361,7 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{
-        instances_for, push_workspace, queued_starts, rescue_state, run_startup, test_client, test_outputs,
-        write_shell_lua,
+        instances_for, push_workspace, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
     };
     use super::super::*;
 
@@ -1415,14 +1414,6 @@ mod tests {
         (client, dir)
     }
 
-    fn reload(client: &mut RendererClient, path: &std::path::Path, source: &str) {
-        std::fs::write(path, source).unwrap();
-        assert!(client.reevaluate());
-        let (specs, _) = client.pending_surfaces().unwrap();
-        client.set_instances(crate::layout::instance::expand_instances(&specs, &test_outputs()));
-        assert!(client.handle_apply_pending());
-    }
-
     /// Runs `src`, then passes until nothing is dirty; the offset `s` reports.
     fn then_offset(client: &mut RendererClient, src: &str) -> f32 {
         client.loader.lua().load(src).exec().unwrap();
@@ -1459,13 +1450,37 @@ mod tests {
         assert_eq!(then_offset(&mut client, "shown:set(true)"), 60.0);
     }
 
+    /// A surface shown in the turn that scrolls it keeps its tree while hidden, so the request waits
+    /// for the pass that shows it instead of being dropped as orphaned.
+    #[test]
+    fn a_request_made_as_its_surface_opens_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            s = scroll("s")
+            open = state("open", false)
+            local tiles = {}
+            for i = 1, 10 do tiles[i] = rect { width = 10, height = 20 } end
+            return {
+                panel { id = "bar", layer = "top", child = rect { width = 10, height = 10 } },
+                panel { id = "side", layer = "top", visible = open,
+                    child = column { width = 100, height = 100, scroll = s, children = tiles } },
+            }
+            "#,
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert_eq!(then_offset(&mut client, "open:set(true) s:scroll_to(60)"), 60.0);
+    }
+
     /// A named scroll survives a reload, and so does its request: the reload's own pass decides it.
     #[test]
     fn a_pending_request_survives_a_reload_that_keeps_its_area() {
         let (mut client, dir) = paged(false);
         client.loader.lua().load("s:scroll_to(60)").exec().unwrap();
         let path = dir.path().join("shell.lua");
-        reload(&mut client, &path, &std::fs::read_to_string(&path).unwrap());
+        assert!(reload(&mut client, &path, &std::fs::read_to_string(&path).unwrap()));
         let signal: mlua::AnyUserData = client.loader.lua().globals().get("s").unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         while client.re_resolve_if_dirty() {}
@@ -1478,8 +1493,11 @@ mod tests {
         let (mut client, dir) = paged(false);
         client.loader.lua().load("s:scroll_to(60)").exec().unwrap();
         let path = dir.path().join("shell.lua");
-        reload(&mut client, &path, r#"s = scroll("s") return panel { id = "bar", layer = "top", child = rect {} }"#);
-        while client.re_resolve_if_dirty() {}
+        assert!(reload(
+            &mut client,
+            &path,
+            r#"s = scroll("s") return panel { id = "bar", layer = "top", child = rect {} }"#
+        ));
         let signal: mlua::AnyUserData = client.loader.lua().globals().get("s").unwrap();
         assert!(crate::lua::signal::from_userdata(&signal).unwrap().pending_scroll().is_none());
     }

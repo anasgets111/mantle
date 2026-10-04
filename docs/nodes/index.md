@@ -123,7 +123,8 @@ but `textfield` need `height` too. A `textfield` defaults to one line of `font_s
 There is no `"content"` literal; omit the property instead.
 
 Children never shrink. Fixed and content-sized children that overflow a row keep their sizes and
-overflow it: they paint past a parent with no `clip` and are cut only when it sets one, and
+overflow it: they paint past a parent with no `clip` and are cut only when it sets one (a scroll
+viewport and a surface cut by default), and
 `"fill"` siblings get 0. A `"fill"` child along the main axis of a content-sized parent also gets 0:
 there is no remainder to share. Across the axis, `"fill"` in a content-sized parent takes the
 largest sibling's size.
