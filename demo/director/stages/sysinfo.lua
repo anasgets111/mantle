@@ -16,18 +16,18 @@ mantle.sysinfo:on_change(function(now)
     history:set(out)
 end)
 
+-- A fixed 0..100 scale, so an idle machine is a flat line on the floor, not a graph of noise.
+-- Always SAMPLES points, so `animate` eases each new reading point by point.
+local W, H = 96, 28
+
 local function spark(samples)
-    local bars = {}
-    for k, value in ipairs(samples) do
-        bars[k] = rect {
-            width = 4,
-            height = math.max(2, math.floor(value * 26 / 100)),
-            radius = 2,
-            align_v = "end",
-            background = theme.accent,
-        }
+    local commands = {}
+    for k = 1, SAMPLES do
+        local value = samples[#samples - SAMPLES + k] or 0
+        local x, y = 2 + (k - 1) * (W - 4) / (SAMPLES - 1), H - 2 - value * (H - 4) / 100
+        commands[k] = { op = k == 1 and "M" or "L", points = { x, y } }
     end
-    return bars
+    return commands
 end
 
 local function chip(label, value)
@@ -54,7 +54,25 @@ return rect {
             height = "fill",
             spacing = 14,
             children = {
-                row { height = 28, align_v = "center", spacing = 2, children = history:map(spark) },
+                rect {
+                    width = W,
+                    height = H,
+                    align_v = "center",
+                    radius = 6,
+                    background = theme.fade("overlay", "80"),
+                    children = {
+                        path {
+                            width = W,
+                            height = H,
+                            stroke = theme.accent,
+                            stroke_width = 2,
+                            stroke_cap = "round",
+                            stroke_join = "round",
+                            commands = history:map(spark),
+                            animate = { commands = { duration = 400, easing = "out_cubic" } },
+                        },
+                    },
+                },
                 chip("CPU", mantle.sysinfo:map(function(s) return s and (s.cpu_percent .. "%") or "" end)),
                 chip("RAM", mantle.sysinfo:map(function(s) return s and (s.ram_percent .. "%") or "" end)),
             },

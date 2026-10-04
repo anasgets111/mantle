@@ -1,22 +1,22 @@
--- Demo: the director feeds `mock_notifications` in `mantle.notifications`' shape and types into
--- `reply_draft` with `mantle set`, so no real notification of yours reaches the take. A real shell
+-- Demo: the director feeds `mock_notifications` in `mantle.notifications`' shape and types the
+-- reply with `mantle call reply`, so no real notification of yours reaches the take. A real shell
 -- reads `mantle.notifications` and answers with `mantle.notifications:reply(id, text)`.
 local theme = require("theme")
 local layout = require("layout")
 local feed = state("mock_notifications", { dnd = false, feed = {} })
 local draft = state("reply_draft", "")
 local sent = state("reply_sent", false)
+local reply_focus = focus_target("reply")
+
+-- `set_text` does not call `on_change`, so the send button's dim follows this write.
+action("reply", function(text)
+    reply_focus:set_text(text or "")
+    draft:set(text or "")
+end)
 
 local placed = mantle.screens:map(function(screens)
     return layout.dock(screens and screens[1], 660)
 end)
-
--- The first strong character decides a line's direction; Arabic's lead bytes are 0xD8 to 0xDB.
-local function rtl(text)
-    local arabic = text:find("[\216-\219]")
-    local latin = text:find("%a")
-    return arabic ~= nil and (latin == nil or arabic < latin)
-end
 
 local function body_text(entry)
     local out = {}
@@ -49,19 +49,6 @@ local function avatar(name)
     }
 end
 
-local function caret()
-    return rect {
-        width = 2,
-        height = 26,
-        align_v = "center",
-        background = theme.cursor,
-        opacity = 1,
-        animate = {
-            opacity = { duration = 1000, keyframes = { 1, { value = 1, duration = 500 }, 0, 1 }, loops = "infinite" },
-        },
-    }
-end
-
 local function reply_field(entry)
     return row {
         width = "fill",
@@ -79,19 +66,21 @@ local function reply_field(entry)
                 end),
                 animate = { border_color = 200 },
                 padding = { left = 18, right = 18 },
-                children = draft:map(function(d)
-                    local typed = d ~= ""
-                    local label = text {
-                        content = typed and d or (entry.reply_placeholder or "Reply"),
-                        align_v = "center",
+                children = {
+                    textfield {
+                        focus_target = reply_focus,
+                        width = "fill",
+                        height = "fill",
                         font_size = 22,
-                        foreground = typed and theme.text or theme.muted,
-                    }
-                    local line = rtl(typed and d or body_text(entry))
-                        and { rect { width = "fill" }, caret(), label }
-                        or { label, caret(), rect { width = "fill" } }
-                    return { row { width = "fill", height = "fill", spacing = 2, children = line } }
-                end),
+                        foreground = theme.text,
+                        placeholder = entry.reply_placeholder or "Reply",
+                        placeholder_color = theme.muted,
+                        caret_color = theme.cursor,
+                        autofocus = true,
+                        -- A field without `on_change` or `on_submit` takes no keys and no `set_text`.
+                        on_change = function(text) draft:set(text) end,
+                    },
+                },
             },
             rect {
                 width = 96,
@@ -199,5 +188,6 @@ return panel {
     anchor = { top = true, left = true },
     margin = placed:map(function(p) return { top = p.top, left = p.left } end),
     visible = feed:map(function(f) return #f.feed > 0 end),
+    keyboard_interactivity = "exclusive",
     child = feed:map(function(f) return f.feed[1] and card(f.feed[1]) or rect {} end),
 }

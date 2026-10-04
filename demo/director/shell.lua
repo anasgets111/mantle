@@ -591,13 +591,14 @@ local function notify(n)
             transient = false,
             timestamp = 0,
         }
-        session.set_state(DEMO_DIR, "reply_draft", "", function()
+        session.run("mantle", { "-c", DEMO_DIR, "call", "reply", "" }, function()
             feed("mock_notifications", { dnd = false, feed = { entry } })(next)
         end)
     end
 end
 
 -- Types `text` into state `name` one character at a time, as `mantle set` writes.
+-- `type_call` does the same through `mantle call`, for a field `set_text` fills.
 local function type_into(name, text)
     return function(next)
         local chars = {}
@@ -608,6 +609,23 @@ local function type_into(name, text)
             progress = progress + 1
             if k > #chars then return next() end
             session.set_state(DEMO_DIR, name, table.concat(chars, "", 1, k), function()
+                timer(32 + math.random(0, 36) + (chars[k] == " " and 20 or 0), function() at(k + 1) end)
+            end)
+        end
+        at(1)
+    end
+end
+
+local function type_call(name, text)
+    return function(next)
+        local chars = {}
+        for c in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
+            chars[#chars + 1] = c
+        end
+        local function at(k)
+            progress = progress + 1
+            if k > #chars then return next() end
+            session.run("mantle", { "-c", DEMO_DIR, "call", name, table.concat(chars, "", 1, k) }, function()
                 timer(32 + math.random(0, 36) + (chars[k] == " " and 20 or 0), function() at(k + 1) end)
             end)
         end
@@ -910,7 +928,6 @@ local function sample()
             if demo and session.demo_shell.running:get() then
                 meter:set(string.format("demo shell  %d MB  ·  %.1f%% CPU", math.floor(demo.mb + 0.5), demo.cpu))
             end
-            timer(METER_MS, sample)
         end
         if pid and session.demo_shell.running:get() then return measure("demo", pid, show) end
         show()
@@ -1182,7 +1199,7 @@ local script = {
     edit("06-shader"),
     wait(3000),
     say("Wallpapers that theme the shell.",
-        "mantle.files lists the folder; palette.quantize takes the accent from each picture."),
+        "mantle.files lists the folder; palette.score picks a seed and palette.scheme paints the shell."),
     edit("07-wallpaper"),
     wait(600),
     toggle("picker_open"),
@@ -1322,7 +1339,7 @@ local script = {
     },
     wait(1500),
     say("Reply inline.", "has_reply marks a sender that takes mantle.notifications:reply(id, text)."),
-    type_into("reply_draft", "On my way, see you in ten!"),
+    type_call("reply", "On my way, see you in ten!"),
     wait(400),
     deliver("Sarah", false, "Still on for tonight? 8 pm at the usual place.", "On my way, see you in ten!"),
     wait(1800),
@@ -1338,7 +1355,7 @@ local script = {
         read = "تحديد كمقروء",
     },
     wait(1500),
-    type_into("reply_draft", "خمس دقائق وأكون عندكم"),
+    type_call("reply", "خمس دقائق وأكون عندكم"),
     wait(400),
     deliver("أحمد", true, "وصلت؟ الكل بانتظارك", "خمس دقائق وأكون عندكم"),
     wait(2000),
@@ -1502,6 +1519,7 @@ timer(1, function()
                 sequence(script, finish)
                 watchdog(progress)
                 sample()
+                interval(METER_MS, sample)
             end)
         end)
 end)

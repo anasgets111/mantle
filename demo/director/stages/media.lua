@@ -43,13 +43,12 @@ local chip = rect {
             height = "fill",
             spacing = 10,
             children = {
-                rect {
+                image {
+                    source = field("album_art_path", ""),
                     width = 30,
                     height = 30,
                     radius = 15,
-                    clip = "rounded",
                     align_v = "center",
-                    children = { image { source = field("album_art_path", ""), width = "fill", height = "fill" } },
                 },
                 icon { name = play_icon, size = 20, align_v = "center", foreground = theme.accent },
                 text { content = field("title", ""), align_v = "center", font_size = 18, foreground = theme.text },
@@ -103,7 +102,6 @@ local card = panel {
                 width = cover_px,
                 height = cover_px,
                 radius = 22,
-                clip = "rounded",
                 shadows = { { color = "#00000080", blur = 30, offset = { y = 10 } } },
                 children = {
                     image {
@@ -111,6 +109,7 @@ local card = panel {
                         source = field("album_art_path", ""),
                         width = "fill",
                         height = "fill",
+                        radius = 22,
                         transition = { duration = 500, easing = "in_out_sine" },
                     },
                 },

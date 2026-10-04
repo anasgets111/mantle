@@ -46,14 +46,12 @@ local function thumbnail(entry)
         animate = { border_color = 250, scale = { spring = { stiffness = 320, damping = 16 } } },
         on_click = function() choose(entry.name) end,
         children = {
-            rect {
+            image {
+                source = THUMBS .. entry.name,
+                async = true,
                 width = picker_box:map(function(p) return p.tile end),
                 height = picker_box:map(function(p) return p.tile_h end),
                 radius = 14,
-                clip = "rounded",
-                children = {
-                    image { source = THUMBS .. entry.name, async = true, width = "fill", height = "fill" },
-                },
             },
         },
     }
