@@ -47,18 +47,17 @@ pub enum FieldFocus<'a> {
 /// Flattens `root` without touching a canvas or GL context.
 #[cfg(test)]
 pub fn build(root: &ResolvedNode, scale: f32, focus: Option<&FieldFocus>) -> DisplayList {
-    build_with_control(root, scale, focus, None, &[])
+    build_with_control(root, scale, focus.map(std::slice::from_ref).unwrap_or_default(), None)
 }
 
 pub fn build_with_control(
     root: &ResolvedNode,
     scale: f32,
-    focus: Option<&FieldFocus>,
+    focus: &[FieldFocus],
     control: Option<NodeId>,
-    drafts: &[(NodeId, &str)],
 ) -> DisplayList {
     let mut commands = Vec::new();
-    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, (focus, drafts), control, &mut commands);
+    build_node(root, 0.0, 0.0, scale, (UNCLIPPED, root.rect), 1.0, focus, control, &mut commands);
     DisplayList { commands }
 }
 
@@ -73,7 +72,7 @@ fn build_node(
     scale: f32,
     (clip, surface): (PhysicalRect, LogicalRect),
     inherited_opacity: f32,
-    (focus, drafts): (Option<&FieldFocus>, &[(NodeId, &str)]),
+    focus: &[FieldFocus],
     control: Option<NodeId>,
     out: &mut Vec<DrawCmd>,
 ) {
@@ -148,7 +147,7 @@ fn build_node(
     // avoids the passwordless black lock screen ADR-0052 decision 3 rejects. Opacity is baked into
     // the list because ADR-0063 skips unchanged lists; applying it in `execute` would be invisible.
     // A fully clipped node draws nothing, and its children cut to its box return on their own.
-    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus, drafts) };
+    let draw = if clip.is_empty() { None } else { draw_for(node, rect, scale, opacity, focus) };
 
     // A transformed node paints itself and its subtree as one group under its matrix
     // (ADR-0149), so the group is built into `out` and lifted out of it afterwards. Coordinates
@@ -194,13 +193,13 @@ fn build_node(
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, (focus, drafts), control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
             }
             inner.extend(border.map(|draw| cmd(clip, draw)));
             if !inner.is_empty() {
                 let draw = if let Some(mask_node) = node.mask_child() {
                     let mut commands = Vec::new();
-                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, (None, &[]), None, &mut commands);
+                    build_node(mask_node, x, y, scale, (clip, surface), 1.0, &[], None, &mut commands);
                     let split = commands.len();
                     commands.extend(inner);
                     Draw::NodeMask {
@@ -222,7 +221,7 @@ fn build_node(
                 out.push(cmd(clip, draw));
             }
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (child_clip, surface), opacity, (focus, drafts), control, out);
+                build_node(child, x, y, scale, (child_clip, surface), opacity, focus, control, out);
             }
         }
         // Rounded order: fill, masked subtree, border. A child reaching the arc would
@@ -234,7 +233,7 @@ fn build_node(
             }
             let mut inner = Vec::new();
             for child in node.painted_children() {
-                build_node(child, x, y, scale, (clip, surface), opacity, (focus, drafts), control, &mut inner);
+                build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
             }
             // A leaf has nothing to clip, so avoid the render target and composite.
             if !inner.is_empty() {
@@ -406,14 +405,7 @@ fn fade_border(colors: BorderColor, opacity: f32) -> BorderColor {
 /// Takes the node rather than its `paint`, because an `image` reads three things off it (the
 /// paint, the source it last had a texture for, and any dissolve crossing between them), and the
 /// pass supplies only the geometry.
-fn draw_for(
-    node: &ResolvedNode,
-    rect: LogicalRect,
-    scale: f32,
-    opacity: f32,
-    focus: Option<&FieldFocus>,
-    drafts: &[(NodeId, &str)],
-) -> Option<Draw> {
+fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, focus: &[FieldFocus]) -> Option<Draw> {
     let node_id = node.id;
     let retained = node.displayed_source.as_deref();
     let dissolve = node.dissolve.as_deref();
@@ -527,47 +519,49 @@ fn draw_for(
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
         PaintStyle::TextField { target, placeholder, placeholder_color, mask, font_size, color, align } => {
-            let (content, caret, caret_on, runs, color) = match focus {
-                // An empty masked field remains a prompt.
-                Some(FieldFocus::Masked { id, target: focused, filled }) if *filled > 0 => {
-                    if *id == node_id && target.as_ref().is_some_and(|declared| declared == *focused) {
-                        (mask.repeat(*filled), None, false, Vec::new(), color)
-                    } else {
-                        (placeholder.clone(), None, false, Vec::new(), placeholder_color)
+            // The first entry for this node wins: the focused field, then any parked draft. Another
+            // node's focus, masked or not, leaves this one to its parked draft or placeholder.
+            let (content, caret, caret_on, runs, color) = focus
+                .iter()
+                .find_map(|field| match field {
+                    // An empty masked field remains a prompt.
+                    FieldFocus::Masked { id, target: focused, filled }
+                        if *filled > 0
+                            && *id == node_id
+                            && target.as_ref().is_some_and(|declared| declared == *focused) =>
+                    {
+                        Some((mask.repeat(*filled), None, false, Vec::new(), color))
                     }
-                }
-                // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
-                // the caret-only rule hid the prompt of every `autofocus` field, which holds the
-                // keyboard from the first frame. Keep `target.is_none()` beside the id: the same
-                // node may gain `secure_submit`, and a masked field must never draw plain text.
-                Some(FieldFocus::Composing { id, text, selection, preedit, cursor, caret_on })
-                    if *id == node_id && target.is_none() =>
-                {
-                    let (content, preedit_range, caret) = super::compose_preedit(text, *selection, preedit, *cursor);
-                    let scroll_caret = Some(caret.unwrap_or((preedit_range.end, preedit_range.end)));
-                    let runs = vec![StyleRun {
-                        range: preedit_range,
-                        bold: false,
-                        italic: false,
-                        underline: true,
-                        color: None,
-                        href: None,
-                    }];
-                    (content, scroll_caret, *caret_on && caret.is_some(), runs, color)
-                }
-                Some(FieldFocus::Plain { id, text, caret, caret_on }) if *id == node_id && target.is_none() => {
-                    match text.is_empty() && !placeholder.is_empty() {
-                        true => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
-                        // The draft remains visible without a caret (ADR-0108).
-                        false => (text.to_string(), *caret, *caret_on, Vec::new(), color),
+                    // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
+                    // the caret-only rule hid the prompt of every `autofocus` field, which holds the
+                    // keyboard from the first frame. Keep `target.is_none()` beside the id: the same
+                    // node may gain `secure_submit`, and a masked field must never draw plain text.
+                    FieldFocus::Composing { id, text, selection, preedit, cursor, caret_on }
+                        if *id == node_id && target.is_none() =>
+                    {
+                        let (content, preedit_range, caret) =
+                            super::compose_preedit(text, *selection, preedit, *cursor);
+                        let scroll_caret = Some(caret.unwrap_or((preedit_range.end, preedit_range.end)));
+                        let runs = vec![StyleRun {
+                            range: preedit_range,
+                            bold: false,
+                            italic: false,
+                            underline: true,
+                            color: None,
+                            href: None,
+                        }];
+                        Some((content, scroll_caret, *caret_on && caret.is_some(), runs, color))
                     }
-                }
-                // A field the keyboard left shows its own draft, caretless.
-                _ => match drafts.iter().find(|(id, _)| *id == node_id && target.is_none()) {
-                    Some((_, text)) => (text.to_string(), None, false, Vec::new(), color),
-                    None => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
-                },
-            };
+                    FieldFocus::Plain { id, text, caret, caret_on } if *id == node_id && target.is_none() => {
+                        Some(match text.is_empty() && !placeholder.is_empty() {
+                            true => (placeholder.clone(), None, false, Vec::new(), placeholder_color),
+                            // The draft remains visible without a caret (ADR-0108).
+                            false => (text.to_string(), *caret, *caret_on, Vec::new(), color),
+                        })
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| (placeholder.clone(), None, false, Vec::new(), placeholder_color));
             // An empty field with no placeholder still draws, for the caret alone (ADR-0135
             // decision 2).
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
@@ -1146,14 +1140,14 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
-        let idle = build_with_control(&tree, 1.0, None, None, &[]);
-        let focused = build_with_control(&tree, 1.0, None, Some(id), &[]);
+        let idle = build_with_control(&tree, 1.0, &[], None);
+        let focused = build_with_control(&tree, 1.0, &[], Some(id));
         assert_eq!(focused.commands.len(), idle.commands.len() + 2);
         assert!(focused.commands.iter().rev().take(2).all(|cmd| matches!(cmd.draw, Draw::Box { .. })));
 
         let mut ringless = tree.clone();
         std::rc::Rc::make_mut(&mut ringless.children[0].properties).insert("focus_ring", mlua::Value::Boolean(false));
-        assert_eq!(build_with_control(&ringless, 1.0, None, Some(id), &[]).commands.len(), idle.commands.len());
+        assert_eq!(build_with_control(&ringless, 1.0, &[], Some(id)).commands.len(), idle.commands.len());
     }
 
     /// The plain half of `textfield` (ADR-0092). Unfocused it is a placeholder like any other
@@ -1194,8 +1188,13 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
-        let list = build_with_control(&tree, 1.0, None, None, &[(id, "half a sentence")]);
+        let draft = FieldFocus::Plain { id, text: "half a sentence", caret: None, caret_on: false };
+        let list = build_with_control(&tree, 1.0, std::slice::from_ref(&draft), None);
         assert_eq!(drawn_text(&list), vec!["half a sentence".to_string()]);
+        // A password being typed elsewhere in the form must not hide it.
+        let target = lock_target();
+        let typing = FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 4 };
+        assert_eq!(drawn_text(&build_with_control(&tree, 1.0, &[typing, draft], None)), vec!["half a sentence"]);
     }
 
     #[test]

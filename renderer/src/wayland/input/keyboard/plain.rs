@@ -128,19 +128,25 @@ fn plain_fields<'a>(
 
 type Parked = std::collections::HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>;
 
-fn park(parked: &mut Parked, field: &FocusedTextField) {
-    if !field.buffer.is_empty() {
-        parked.insert((field.surface_id.clone(), field.id), (field.buffer.clone(), field.selection));
+/// The one rule for a parked draft: non-empty text is kept with its selection, empty drops it.
+fn park(parked: &mut Parked, surface_id: &str, id: layout::scene::NodeId, text: &str, selection: (usize, usize)) {
+    let key = (surface_id.to_owned(), id);
+    if text.is_empty() {
+        parked.remove(&key);
+    } else {
+        parked.insert(key, (text.to_owned(), selection));
     }
 }
 
-/// Moves focus from `old` to `next`: a different field's non-empty text is parked, and `next`
-/// takes back what it parked. Only plain fields get here, so no secret is ever held.
+/// Moves focus from `old` to `next`: `old`'s text is parked unless `next` is that same field, and
+/// `next` takes back what it parked. Only plain fields get here, so no secret is ever held.
 fn swap_drafts(parked: &mut Parked, old: Option<&FocusedTextField>, next: Option<&mut FocusedTextField>) {
-    let Some(next) = next else { return };
-    if let Some(old) = old.filter(|old| (&old.surface_id, old.id) != (&next.surface_id, next.id)) {
-        park(parked, old);
+    if let Some(old) =
+        old.filter(|old| next.as_ref().is_none_or(|next| (&old.surface_id, old.id) != (&next.surface_id, next.id)))
+    {
+        park(parked, &old.surface_id, old.id, &old.buffer, old.selection);
     }
+    let Some(next) = next else { return };
     if let Some((buffer, selection)) = parked.remove(&(next.surface_id.clone(), next.id))
         && next.buffer.is_empty()
     {
@@ -163,12 +169,7 @@ fn store_draft(
         field.history.clear();
         return true;
     }
-    let key = (surface_id.to_owned(), id);
-    if text.is_empty() {
-        parked.remove(&key);
-    } else {
-        parked.insert(key, (text.to_owned(), end));
-    }
+    park(parked, surface_id, id, text, end);
     false
 }
 
@@ -628,7 +629,13 @@ impl App {
         if self.focused_text_field.is_none() && next.is_none() {
             return;
         }
-        swap_drafts(&mut self.parked_drafts, self.focused_text_field.as_ref(), next.as_mut());
+        // A field whose node is gone has nowhere to show its draft, so it is not parked.
+        let scene = self.client.scene();
+        let alive = self
+            .focused_text_field
+            .as_ref()
+            .filter(|old| scene.surface(&old.surface_id).is_some_and(|tree| layout::hit::contains_node(tree, old.id)));
+        swap_drafts(&mut self.parked_drafts, alive, next.as_mut());
         self.mark_focused_text_field_changed();
         if let Some(ref next_field) = next {
             self.mark_field_input_changed(&next_field.surface_id);
@@ -643,12 +650,6 @@ impl App {
         }
         if let Some(field) = self.focused_text_field.as_mut().filter(|field| !field.typing) {
             field.history.clear();
-        }
-    }
-
-    pub(in crate::wayland::input) fn park_focused_draft(&mut self) {
-        if let Some(field) = self.focused_text_field.as_ref() {
-            park(&mut self.parked_drafts, field);
         }
     }
 
@@ -1407,10 +1408,12 @@ mod tests {
     }
 
     #[test]
-    fn dropping_focus_parks_nothing() {
+    fn leaving_for_no_field_parks_the_text_but_a_cleared_field_parks_nothing() {
         let mut parked = Parked::new();
         swap_drafts(&mut parked, Some(&draft(1, "abc")), None);
-        assert!(parked.is_empty());
+        assert_eq!(parked.len(), 1, "focus dropped with text in the field keeps it");
+        swap_drafts(&mut parked, Some(&draft(1, "")), None);
+        assert!(parked.is_empty(), "Enter or Escape emptied it, so a leave must not bring the text back");
     }
 
     #[test]

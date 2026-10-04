@@ -294,6 +294,7 @@ the surface losing the keyboard stops typing but keeps the draft; focusing the f
 it, though a click that returns to a field puts the caret where it was left. Undo history does not
 survive leaving a field. Enter and Escape clear it. An `autofocus` arm
 starts it empty. It is dropped when the field's node leaves the tree or its surface closes.
+Restoring a draft is silent: `on_change` does not fire, so reset a field with `set_text`.
 
 To return typing to a field after a click changes the view, give the field the handle and call
 `:request()` from the `on_click`. `focus_target("")` and a `focus_target` property that is not a handle raise.

@@ -392,10 +392,6 @@ impl PointerHandler for App {
                         self.focused_secure_submit.clone(),
                         self.focused_text_field.clone(),
                     );
-                    // A form's plain field keeps its text when the password takes the keys.
-                    if masked.is_some() {
-                        self.park_focused_draft();
-                    }
                     // Reassign through the zeroizing transition seam.
                     self.focus_secure_submit(masked);
                     self.focus_text_field(plain);
