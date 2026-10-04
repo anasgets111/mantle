@@ -107,8 +107,9 @@ pub(super) async fn register_item(
 
     let properties_forwarder =
         spawn_item_signal_forwarder(item.clone(), unique_name.clone(), key.clone(), registry.clone(), events.clone());
-    let menu_forwarder =
-        menu.clone().map(|menu| spawn_menu_signal_forwarder(menu, key.clone(), registry.clone(), events.clone()));
+    let menu_forwarder = menu
+        .clone()
+        .map(|menu| spawn_menu_signal_forwarder(&item, menu, key.clone(), registry.clone(), events.clone()));
 
     let mut entry =
         ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
@@ -165,7 +166,7 @@ fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
 /// [`ItemEntry`] and is aborted on unregistration.
 ///
 /// The menu is carried across rather than refetched: `spawn_menu_signal_forwarder` refreshes it on
-/// `LayoutUpdated` and `controller::menu_will_show` refreshes it on open. Fetching it here too
+/// `NewMenu` and `LayoutUpdated`, and `controller::menu_will_show` refreshes it on open. Fetching it here too
 /// would put a full `GetLayout` round trip behind every frame of an animated icon.
 fn spawn_item_signal_forwarder(
     item: StatusNotifierItemProxy<'static>,
@@ -181,13 +182,10 @@ fn spawn_item_signal_forwarder(
         let Ok(mut new_overlay_icon) = item.receive_new_overlay_icon().await else { return };
         let Ok(mut new_tool_tip) = item.receive_new_tool_tip().await else { return };
         let Ok(mut new_status) = item.receive_new_status().await else { return };
-        let Ok(mut new_menu) = item.receive_new_menu().await else { return };
-        let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
 
         loop {
             enum ItemEvent {
                 Property,
-                Menu,
                 Closed,
             }
             let event = tokio::select! {
@@ -197,24 +195,10 @@ fn spawn_item_signal_forwarder(
                 Some(_) = new_overlay_icon.next() => ItemEvent::Property,
                 Some(_) = new_tool_tip.next() => ItemEvent::Property,
                 Some(_) = new_status.next() => ItemEvent::Property,
-                Some(_) = new_menu.next() => ItemEvent::Menu,
                 else => ItemEvent::Closed,
             };
             match event {
                 ItemEvent::Closed => break,
-                ItemEvent::Menu => {
-                    let maybe_menu = registry.lock().expect("mutex poisoned").get(&key).and_then(|e| e.menu.clone());
-                    if let Some(menu) = maybe_menu
-                        && let Ok(items) = fetch_menu_via(&menu, &item_stem).await
-                    {
-                        let mut guard = registry.lock().expect("mutex poisoned");
-                        let changed = guard.get_mut(&key).is_some_and(|entry| store_menu(entry, items));
-                        drop(guard);
-                        if changed && events.send(()).is_err() {
-                            break;
-                        }
-                    }
-                }
                 ItemEvent::Property => {
                     let Some(previous) =
                         registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
@@ -246,27 +230,30 @@ pub(super) fn store_menu(entry: &mut ItemEntry, items: Vec<MenuItem>) -> bool {
     changed
 }
 
-/// Refetches the full menu on each `LayoutUpdated` or `ItemsPropertiesUpdated` and updates `menu`
-/// in place (ADR-0031). One task per menu-bearing item, aborted with the item task on unregistration.
+/// Refetch 100 ms after the last menu signal: apps send one per changed submenu, and each refetch
+/// is a whole `GetLayout`.
+const MENU_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// Refetches the full menu after each settled burst of `NewMenu`, `LayoutUpdated` or
+/// `ItemsPropertiesUpdated` and updates `menu` in place (ADR-0031). One task per menu-bearing item,
+/// aborted with the item task on unregistration.
 fn spawn_menu_signal_forwarder(
+    item: &StatusNotifierItemProxy<'static>,
     menu: DBusMenuProxy<'static>,
     key: ItemKey,
     registry: ItemRegistry,
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
+    let item = item.clone();
     tokio::spawn(async move {
-        let Ok(mut layout_updated) = menu.receive_layout_updated().await else { return };
-        let Ok(mut props_updated) = menu.receive_items_properties_updated().await else { return };
+        let Ok(new_menu) = item.receive_new_menu().await else { return };
+        let Ok(layout_updated) = menu.receive_layout_updated().await else { return };
+        let Ok(props_updated) = menu.receive_items_properties_updated().await else { return };
         let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
-        loop {
-            let fired = tokio::select! {
-                Some(_) = layout_updated.next() => true,
-                Some(_) = props_updated.next() => true,
-                else => false,
-            };
-            if !fired {
-                break;
-            }
+        let menus = futures_util::stream::select(new_menu.map(drop), layout_updated.map(drop));
+        let mut changes = futures_util::stream::select(menus, props_updated.map(drop));
+        while changes.next().await.is_some() {
+            while let Ok(Some(())) = tokio::time::timeout(MENU_SETTLE, changes.next()).await {}
             match fetch_menu_via(&menu, &item_stem).await {
                 Ok(items) => {
                     let mut guard = registry.lock().expect("mutex poisoned");
@@ -351,6 +338,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
 mod tests {
     use super::*;
     use crate::capabilities::test_support::p2p_pair;
+    use zbus::object_server::SignalEmitter;
 
     /// Minimal entry for ordering tests. A p2p proxy bind makes no call, so no answering peer is
     /// needed.
@@ -438,6 +426,83 @@ mod tests {
         assert!(!keep_menu_across(&mut entry, pixmap.clone()), "the same pixels are no change");
         let repainted = TrayItem { pixmap_digests: [Some(2), None, None], ..pixmap };
         assert!(keep_menu_across(&mut entry, repainted), "the same PNG path can hold new pixels");
+    }
+
+    /// Counts `GetLayout` calls, each held until the test adds a permit to `gate`.
+    struct CountingMenu {
+        fetches: Arc<std::sync::atomic::AtomicUsize>,
+        gate: Arc<tokio::sync::Semaphore>,
+    }
+
+    #[zbus::interface(name = "com.canonical.dbusmenu")]
+    impl CountingMenu {
+        async fn get_layout(
+            &self,
+            _parent: i32,
+            _depth: i32,
+            _names: Vec<String>,
+        ) -> (u32, super::super::proxies::RawMenuLayout) {
+            self.fetches.fetch_add(1, Ordering::Relaxed);
+            self.gate.acquire().await.unwrap().forget();
+            (1, (0, HashMap::new(), Vec::new()))
+        }
+
+        #[zbus(signal)]
+        async fn layout_updated(emitter: &SignalEmitter<'_>, revision: u32, parent: i32) -> zbus::Result<()>;
+    }
+
+    struct FakeItem;
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl FakeItem {
+        #[zbus(signal)]
+        async fn new_menu(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    }
+
+    /// The burst queues while a fetch is held, so the debounce sees it whole however slow the run.
+    #[tokio::test]
+    async fn a_burst_of_menu_signals_is_one_fetch() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gate = Arc::new(tokio::sync::Semaphore::new(0));
+        let (item_path, menu_path) = ("/StatusNotifierItem", "/MenuBar");
+        let app = bus.builder().serve_at(menu_path, CountingMenu { fetches: fetches.clone(), gate: gate.clone() });
+        let app = app.unwrap().serve_at(item_path, FakeItem).unwrap().build().await.unwrap();
+        let connection = bus.connection().await;
+        // Starts dispatch, so the `Ping` below is answered.
+        connection.object_server();
+        let destination = BusName::from(app.unique_name().unwrap().clone()).into();
+        let item = bind_item(&connection, &destination, &OwnedObjectPath::try_from(item_path).unwrap()).await.unwrap();
+        let menu = bind_dbusmenu(&connection, &destination, &OwnedObjectPath::try_from(menu_path).unwrap()).await;
+        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let entry = entry(&connection, "item", 0).await;
+        registry.lock().unwrap().insert(key(":1.10"), entry);
+        let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
+        let _forwarder = spawn_menu_signal_forwarder(&item, menu.unwrap(), key(":1.10"), registry, events);
+        let menu_signals = SignalEmitter::new(&app, menu_path).unwrap();
+        let item_signals = SignalEmitter::new(&app, item_path).unwrap();
+        // Subscribing is the forwarder's first await; signals sent before it are lost.
+        while fetches.load(Ordering::Relaxed) == 0 {
+            CountingMenu::layout_updated(&menu_signals, 0, 0).await.unwrap();
+            tokio::time::sleep(MENU_SETTLE).await;
+        }
+
+        for revision in 1..=10 {
+            CountingMenu::layout_updated(&menu_signals, revision, 0).await.unwrap();
+            FakeItem::new_menu(&item_signals).await.unwrap();
+        }
+        // The bus keeps one sender's order, so this reply means the burst reached the forwarder.
+        let ping = zbus::fdo::PeerProxy::builder(&app).destination(connection.unique_name().unwrap().clone());
+        ping.unwrap().path("/").unwrap().build().await.unwrap().ping().await.unwrap();
+        gate.add_permits(100);
+        crate::capabilities::test_support::within(async {
+            while fetches.load(Ordering::Relaxed) < 2 {
+                tokio::time::sleep(MENU_SETTLE / 10).await;
+            }
+        })
+        .await;
+        tokio::time::sleep(MENU_SETTLE * 3).await;
+        assert_eq!(fetches.load(Ordering::Relaxed), 2, "the held fetch, then one for the whole burst");
     }
 
     #[tokio::test]
