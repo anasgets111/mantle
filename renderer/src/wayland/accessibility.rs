@@ -125,7 +125,7 @@ fn append(
         accessible.add_action(Action::Focus);
         accessible.add_action(Action::Click);
     } else if target == Role::TextInput || target == Role::PasswordInput {
-        if node.paint.as_ref().is_some_and(node::PaintStyle::is_disabled_field) {
+        if node.is_disabled_field() {
             accessible.set_disabled();
         } else {
             accessible.add_action(Action::Focus);

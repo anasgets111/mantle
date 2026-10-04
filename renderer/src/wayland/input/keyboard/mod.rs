@@ -12,7 +12,7 @@ mod focus;
 mod plain;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
-pub(in crate::wayland::input) use plain::{EditHistory, fit_to_limit};
+pub(in crate::wayland::input) use plain::EditHistory;
 
 keywords! {
     /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
@@ -55,11 +55,16 @@ pub(super) enum FieldTarget {
 /// than taking a keyboard they cannot use. Plain fields use `ResolvedNode`'s stable `NodeId`
 /// (ADR-0099); [`ArmedClick`] still uses a rect because press/release trees rarely move.
 pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarget> {
+    field_target(path, false)
+}
+
+/// [`focused_field`], optionally reading a disabled field too: `set_text` never takes focus.
+fn field_target(path: &[&layout::ResolvedNode], disabled_too: bool) -> Option<FieldTarget> {
     let field = path.iter().rev().find(|node| node.kind == "textfield")?;
-    let node::PaintStyle::TextField { target, disabled, .. } = field.paint.as_ref()? else {
+    let node::PaintStyle::TextField { target, .. } = field.paint.as_ref()? else {
         return None;
     };
-    if *disabled {
+    if field.is_disabled_field() && !disabled_too {
         return None;
     }
     if let Some(target) = target {

@@ -517,9 +517,9 @@ props! {
         foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
         /// Aligns the text inside the field's box.
         text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
-        /// Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal.
+        /// Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal.
         disabled: Bound<Flag> = absent(Bool(false));
-        /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it.
+        /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.
         max_length: Bound<MaxLines> = absent(Number(0.0));
         /// Plain fields only: take the keyboard, empty, when the surface gets it or the field appears, calling `on_change("")`. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
         autofocus: Bound<Flag> = absent(Bool(false));

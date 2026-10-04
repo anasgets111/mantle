@@ -41,9 +41,7 @@ pub(crate) fn secure_submit_targets(tree: &ResolvedNode) -> Vec<SecureSubmitTarg
 /// counted as the scope's sole destination and took the keyboard from the panel that was open. An
 /// invisible field cannot be typed into on purpose, so every key went somewhere nobody could see.
 pub(crate) fn typable_secure_submit_targets(tree: &ResolvedNode) -> Vec<SecureSubmitTarget> {
-    targets(tree, |node| {
-        node.visible && !node.leaving && !node.paint.as_ref().is_some_and(node::PaintStyle::is_disabled_field)
-    })
+    targets(tree, |node| node.visible && !node.leaving && !node.is_disabled_field())
 }
 
 /// Document-order walk behind both readings; `descend` decides which subtrees count.

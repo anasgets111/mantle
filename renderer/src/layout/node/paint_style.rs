@@ -134,13 +134,6 @@ pub enum PaintStyle {
     },
 }
 
-impl PaintStyle {
-    /// A disabled `textfield` takes no keyboard focus of either kind.
-    pub fn is_disabled_field(&self) -> bool {
-        matches!(self, Self::TextField { disabled: true, .. })
-    }
-}
-
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
 pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
     let style = match kind {

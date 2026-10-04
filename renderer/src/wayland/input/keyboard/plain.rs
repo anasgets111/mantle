@@ -102,7 +102,7 @@ fn first_plain_field(
     plain_fields(tree, false, matches).next()
 }
 
-/// Plain fields passing `matches`, in document order; hidden subtrees only when `hidden`.
+/// Plain fields passing `matches`, in document order; hidden subtrees and disabled fields only when `hidden`.
 fn plain_fields<'a>(
     tree: &'a layout::ResolvedNode,
     hidden: bool,
@@ -117,7 +117,7 @@ fn plain_fields<'a>(
             stack.extend(node.content_children().rev());
             if node.kind == "textfield"
                 && matches(node)
-                && let Some(target @ FieldTarget::Plain { .. }) = focused_field(&[node])
+                && let Some(target @ FieldTarget::Plain { .. }) = field_target(&[node], hidden)
             {
                 return Some(target);
             }
@@ -227,7 +227,7 @@ impl PlainEdit {
 
 /// `text` cut on a grapheme boundary to what `max_length` leaves after `kept` clusters stay.
 /// Counting clusters is how the caret and erase already see characters (ADR-0236).
-pub(in crate::wayland::input) fn fit_to_limit(text: &str, max: Option<usize>, kept: usize) -> &str {
+pub(super) fn fit_to_limit(text: &str, max: Option<usize>, kept: usize) -> &str {
     let Some(max) = max else { return text };
     text.grapheme_indices(true).nth(max.saturating_sub(kept)).map_or(text, |(at, _)| &text[..at])
 }
@@ -681,13 +681,26 @@ impl App {
         }
     }
 
+    /// A focused field that became disabled gives up focus; its draft is parked, not forgotten.
+    pub(in crate::wayland) fn drop_disabled_text_field_focus(&mut self) {
+        let disabled = self.focused_text_field.as_ref().is_some_and(|field| {
+            let tree = self.client.scene().surface(&field.surface_id);
+            tree.and_then(|tree| layout::hit::path_to_node(tree, field.id))
+                .and_then(|path| path.last().map(|node| node.is_disabled_field()))
+                .unwrap_or(false)
+        });
+        if disabled {
+            self.focus_text_field(None);
+        }
+    }
+
     /// [`App::prune_secure_focus`]'s counterpart. The same two clauses -- the surface is still
     /// alive, and it is still one the keyboard can reach -- because a plain field goes stale for
     /// exactly the reasons a masked one does. What it does not share is the urgency: dropping a
     /// half-typed reply loses a sentence, not a secret, so there is no once-a-turn sweep matching
     /// [`App::drop_secure_focus_if_its_surface_is_gone`]; the check before each keystroke is
     /// enough, and a `leave` clears it anyway.
-    pub(in crate::wayland) fn prune_text_field_focus(&mut self) {
+    pub(in crate::wayland::input) fn prune_text_field_focus(&mut self) {
         let scene = self.client.scene();
         let mut parked = std::mem::take(&mut self.parked_drafts);
         forget_gone_drafts(&mut parked, |surface_id, id| {
@@ -703,13 +716,11 @@ impl App {
         // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
         // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
         // card that no longer exists, so the next key is what finally lets it go.
-        // A disabled field is let go like a removed one, except that its draft stays parked.
-        let node_exists = self.client.scene().surface(&field.surface_id).is_some_and(|tree| {
-            layout::hit::contains_node(tree, field.id)
-                && layout::hit::path_to_node(tree, field.id)
-                    .and_then(|path| path.last().copied())
-                    .is_some_and(|node| !node.paint.as_ref().is_some_and(node::PaintStyle::is_disabled_field))
-        });
+        let node_exists = self
+            .client
+            .scene()
+            .surface(&field.surface_id)
+            .is_some_and(|tree| layout::hit::contains_node(tree, field.id));
         if self.surface_is_live(&field.surface_id) && node_exists {
             return;
         }
@@ -772,15 +783,24 @@ impl App {
         let Some(field) = self.focused_text_field.as_ref() else {
             return;
         };
+        let mut cut = false;
         let action = match action {
-            KeyAction::Append(text) => limited_append(
-                &field.buffer,
-                ime_range.unwrap_or(field.selection),
-                text,
-                self.field_max_length(&field.surface_id, field.id),
-            ),
+            KeyAction::Append(text) => {
+                let limited = limited_append(
+                    &field.buffer,
+                    ime_range.unwrap_or(field.selection),
+                    text,
+                    self.field_max_length(&field.surface_id, field.id),
+                );
+                cut = !matches!(limited, KeyAction::Append(t) if t == text);
+                limited
+            }
             action => action,
         };
+        // A cut commit leaves the input method believing all of it landed; resend the surrounding text.
+        if cut && ime_range.is_some() {
+            self.text_input.note_other_change();
+        }
         let Some(field) = self.focused_text_field.as_mut() else {
             return;
         };
@@ -1461,8 +1481,9 @@ mod tests {
         let mut hidden = named(plain_textfield(&lua));
         hidden.visible = false;
         let masked = named(textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate"))));
-        let (a_id, hidden_id, b_id) = (a.id, hidden.id, b.id);
-        let tree = tree_with(&lua, vec![a, hidden, masked, b]);
+        let off = named(super::super::tests::with_property(plain_textfield(&lua), "disabled", Value::Boolean(true)));
+        let (a_id, hidden_id, off_id, b_id) = (a.id, hidden.id, off.id, b.id);
+        let tree = tree_with(&lua, vec![a, hidden, masked, off, b]);
         let ids = |hidden| -> Vec<_> {
             plain_fields(&tree, hidden, |_| true)
                 .map(|target| match target {
@@ -1471,8 +1492,8 @@ mod tests {
                 })
                 .collect()
         };
-        assert_eq!(ids(false), vec![a_id, b_id]);
-        assert_eq!(ids(true), vec![a_id, hidden_id, b_id]);
+        assert_eq!(ids(false), vec![a_id, b_id], "focus skips hidden and disabled fields");
+        assert_eq!(ids(true), vec![a_id, hidden_id, off_id, b_id], "set_text reaches both");
     }
 
     #[test]

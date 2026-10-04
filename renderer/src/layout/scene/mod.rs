@@ -290,6 +290,11 @@ pub struct ResolvedNode {
 }
 
 impl ResolvedNode {
+    /// A disabled `textfield` takes no keyboard focus of either kind.
+    pub(crate) fn is_disabled_field(&self) -> bool {
+        matches!(self.paint, Some(node::PaintStyle::TextField { disabled: true, .. }))
+    }
+
     pub(crate) fn paint_matrix(&self, rect: LogicalRect) -> Option<node::Affine> {
         if self.transform.is_identity() && self.movement.is_none() {
             return None;

@@ -104,6 +104,11 @@ fn focus_on_enter(scope: &[(&str, &layout::ResolvedNode)], current: Option<&Focu
     Some(FocusedField { surface_id: surface_id.to_string(), id, target })
 }
 
+/// Appends `text` to `buffer` up to `max` grapheme clusters in all.
+fn push_limited(buffer: &mut shared::SecureBuffer, text: &str, max: Option<usize>) {
+    buffer.push_str(super::plain::fit_to_limit(text, max, buffer.grapheme_count()));
+}
+
 /// A field is armed only if its surface is in the current key scope and still has a live
 /// `wl_surface`. Both clauses are required: defect 2 left a field on a `keyboard_interactivity =
 /// none` panel armed, and defect 3 left a destroyed lock-screen field armed because no `leave` was
@@ -227,6 +232,12 @@ impl App {
         }
     }
 
+    /// Appends typed or pasted text, cut to the focused field's `max_length`.
+    pub(in crate::wayland::input) fn push_secure_text(&mut self, text: &str) {
+        let max = self.focused_secure_submit.as_ref().and_then(|f| self.field_max_length(&f.surface_id, f.id));
+        push_limited(&mut self.secure_buffer, text, max);
+    }
+
     /// Apply one secure key (ADR-0005). Focus is the destination gate; masked fields without one
     /// are never focused. Bytes go `KeyEvent` → native `SecureBuffer` → Supervisor, never Lua.
     pub(super) fn apply_secure_key(&mut self, event: &KeyEvent, repeat: bool) {
@@ -255,10 +266,7 @@ impl App {
         // Append/backspace/clear all change the drawn character count.
         self.mark_focused_secure_submit_changed();
         match action {
-            KeyAction::Append(text) => {
-                let max = self.focused_secure_submit.as_ref().and_then(|f| self.field_max_length(&f.surface_id, f.id));
-                self.secure_buffer.push_str(super::plain::fit_to_limit(text, max, self.secure_buffer.grapheme_count()));
-            }
+            KeyAction::Append(text) => self.push_secure_text(text),
             // `pop_grapheme` zeroizes dropped bytes, not just the length. Only the backwards one:
             // every other reach needs a caret, and a secret holds none (ADR-0064).
             KeyAction::Erase(Motion::Left) => {
@@ -325,6 +333,17 @@ mod tests {
     use super::super::super::tests::hit_node;
     use super::super::tests::{field, secure_submit_table, target, textfield, tree_with};
     use super::*;
+
+    #[test]
+    fn a_limited_secure_buffer_takes_three_clusters_from_typing_and_paste_alike() {
+        let mut buffer = shared::SecureBuffer::new();
+        for key in ["a", "b", "c", "d", "e"] {
+            push_limited(&mut buffer, key, Some(3));
+        }
+        push_limited(&mut buffer, "vwxyz", Some(3));
+        assert_eq!(buffer.grapheme_count(), 3);
+        assert_eq!(buffer.expose_secret(), b"abc");
+    }
 
     #[test]
     fn secure_submit_frame_carries_the_accumulated_secret_and_zeroizes_the_buffer_it_read() {

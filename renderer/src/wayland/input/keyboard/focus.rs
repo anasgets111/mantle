@@ -113,8 +113,9 @@ pub(in crate::wayland) fn secure_id(
     if !node.visible || node.leaving {
         return None;
     }
-    if let Some(node::PaintStyle::TextField { target: Some(current), disabled: false, .. }) = &node.paint
+    if let Some(node::PaintStyle::TextField { target: Some(current), .. }) = &node.paint
         && current == target
+        && !node.is_disabled_field()
     {
         return Some(node.id);
     }
@@ -127,7 +128,7 @@ pub(in crate::wayland) fn secure_target_at(
 ) -> Option<&node::SecureSubmitTarget> {
     let (node, _) = find(root, id)?;
     match node.paint.as_ref()? {
-        node::PaintStyle::TextField { target: Some(target), disabled: false, .. } => Some(target),
+        node::PaintStyle::TextField { target: Some(target), .. } if !node.is_disabled_field() => Some(target),
         _ => None,
     }
 }
