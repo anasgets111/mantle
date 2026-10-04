@@ -48,7 +48,7 @@ Click Next minute to update only the Live column. The screenshot captures that f
 | `sig` | Read again once it is written |
 | `sig:map(fn)` | Live: `fn` of `sig`'s current value |
 | `sig:get()` | A plain value, taken when the config was evaluated |
-| A table with a signal inside, e.g. `{ left = sig }` | Each signal is read again once it is written, as at the top level. Not inside `children`, a `list`'s `source`, a table with a metatable, or a table a signal returned |
+| A table with a signal inside, e.g. `{ left = sig }` | Each signal is read again once it is written, as at the top level; `nil` drops a key but is refused as an array entry. Not inside `children`, a `list`'s `source`, a table with a metatable, or a table a signal returned |
 
 A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
 until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.

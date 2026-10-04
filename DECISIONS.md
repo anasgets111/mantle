@@ -7744,6 +7744,11 @@ Amends ADR-0044 §1 and ADR-0145 §1, and the refusal in `layout/node/input.rs`.
    is on screen, and a bad nested value drops the whole property (ADR-0324).
 5. **Stubs spell each property-shape field `T|Bound`.** `Rect`, also handed to callbacks, stays
    plain.
+6. **No holes.** A signal inside an array that reads nil is refused by its path rather than
+   compacted, since a hole would shift every later entry.
+7. **Signal-free tables are found by a raw scan** that allocates nothing. Its per-value mlua
+   conversion, about 1.8 µs for a five-table node on a resolve miss, is the ceiling; keeping the
+   verdict on the resolve memo would remove it.
 
 Rejected: resolving in each parser, which would read signals during ticks, outside read tracking,
 and once per parse; and opting in row by row, a second rule for a cost paid only on resolve misses.

@@ -1567,21 +1567,24 @@ pub(super) mod tests {
 
     #[test]
     fn a_bad_secure_submit_fails_its_surface_instead_of_leaving_a_plain_field() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let tables: Vec<mlua::Table> = lua
-            .load(
-                r#"return { panel { id = "prompt", child = textfield { width = 10, secure_submit = { capability = "polkit" } } },
-                            panel { id = "bar" } }"#,
-            )
-            .eval()
-            .unwrap();
-        let surfaces: Vec<VirtualNode> = tables.iter().map(|table| deserialize_lua_table(table).unwrap()).collect();
-        let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
-        let report = scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, false).unwrap().unwrap();
-        assert!(report.to_string().contains("`secure_submit`"), "{report}");
-        assert!(scene.surface("prompt@TEST").is_none() && scene.surface("bar@TEST").is_some());
+        // The second reads `action` from a nested signal that answers nil.
+        for target in [r#"{ capability = "polkit" }"#, r#"{ capability = "polkit", action = state("act") }"#] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let lua = scene_lua();
+            let tables: Vec<mlua::Table> = lua
+                .load(format!(
+                    r#"return {{ panel {{ id = "prompt", child = textfield {{ width = 10, secure_submit = {target} }} }},
+                            panel {{ id = "bar" }} }}"#
+                ))
+                .eval()
+                .unwrap();
+            let surfaces: Vec<VirtualNode> = tables.iter().map(|table| deserialize_lua_table(table).unwrap()).collect();
+            let instances: Vec<_> = surfaces.iter().map(|surface| instance_at(surface, full())).collect();
+            let report = scene.apply_locked(&surfaces, &instances, &shaping, &lua, false, false).unwrap().unwrap();
+            assert!(report.to_string().contains("`secure_submit`"), "{report}");
+            assert!(scene.surface("prompt@TEST").is_none() && scene.surface("bar@TEST").is_some());
+        }
     }
 
     #[test]

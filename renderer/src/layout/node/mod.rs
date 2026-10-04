@@ -488,14 +488,10 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// the second read this function prevents.
 ///
 /// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
-/// properties remain untouched in the map. When no signals or tables are present, resolution
-/// completes in place with no allocations or sorting.
+/// properties remain untouched in the map. When no signal is present, at the top level or in a
+/// table, resolution completes in place with no allocations or sorting.
 pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Result<PropMap, LayoutError> {
-    if properties.iter().any(|(property, value)| match value {
-        Value::UserData(_) => true,
-        Value::Table(_) => walks_into(property),
-        _ => false,
-    }) {
+    if holds_signals(&properties) {
         // Sorted, and the sort is the point: unsorted, two failing properties on one node name
         // whichever bucket the hasher put first. `renderer/src/socket/client/resolve.rs` puts this message in the
         // `rescue` global's `error_log` for a human to read (ADR-0024), so which one a broken config
@@ -556,6 +552,9 @@ pub fn resolve_properties(mut properties: PropMap, kind: &str, lua: &Lua) -> Res
 
 /// Settle derived property outputs before a retained node checks whether its reads changed.
 pub(crate) fn settle_property_signals(properties: &PropMap, kind: &str, lua: &Lua) -> Result<(), LayoutError> {
+    if !holds_signals(properties) {
+        return Ok(());
+    }
     let mut keys: Vec<_> = properties.keys().copied().collect();
     keys.sort_unstable();
     for property in keys {
@@ -569,72 +568,120 @@ pub(crate) fn settle_property_signals(properties: &PropMap, kind: &str, lua: &Lu
 /// ponytail: 8 tables, past the deepest shape a parser reads (5); deeper, `input::plain` refuses. Upgrade: per-row depth.
 const NESTED_SIGNAL_DEPTH: usize = 8;
 
-/// Whether a table under `property` is walked for signals: `child`/`children` hold node tables,
+/// Tables a scan visits before leaving the rest to [`resolve_nested`], whose `seen` map bounds a
+/// table reached many ways.
+const SCAN_TABLES: usize = 256;
+
+/// The enclosing tables of a walk, so a back-reference keeps the original table.
+type TablePath = [*const std::ffi::c_void; NESTED_SIGNAL_DEPTH];
+
+/// Whether `table` under `property` is walked for signals: `child`/`children` hold node tables,
 /// each resolved as its own node, and the child-table cache keys them by address.
-fn walks_into(property: &str) -> bool {
-    !matches!(property, "child" | "children")
+fn walked_table<'a>(property: &str, value: &'a Value) -> Option<&'a mlua::Table> {
+    match value {
+        Value::Table(table) if !matches!(property, "child" | "children") => Some(table),
+        _ => None,
+    }
+}
+
+/// Whether any property holds a userdata, or a walked table may hold a signal.
+fn holds_signals(properties: &PropMap) -> bool {
+    properties.iter().any(|(property, value)| {
+        matches!(value, Value::UserData(_)) || walked_table(property, value).is_some_and(may_hold_signal)
+    })
+}
+
+/// Whether a walk of `table` may find a signal, scanned without allocating; a scan past
+/// [`SCAN_TABLES`] says yes and leaves the answer to the walk.
+/// ponytail: each scanned value goes through mlua (~70 ns), 1.8 µs for a five-table node. Upgrade: keep the verdict on the resolve memo.
+fn may_hold_signal(table: &mlua::Table) -> bool {
+    fn scan(table: &mlua::Table, path: &mut TablePath, depth: usize, budget: &mut usize) -> bool {
+        let at = table.to_pointer();
+        if depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() || path[..depth].contains(&at) {
+            return false;
+        }
+        let Some(left) = budget.checked_sub(1) else { return true };
+        *budget = left;
+        path[depth] = at;
+        table.pairs::<Value, Value>().any(|pair| match pair {
+            Ok((_, Value::UserData(ud))) => signal::is_signal(&ud),
+            Ok((_, Value::Table(inner))) => scan(&inner, path, depth + 1, budget),
+            Ok(_) => false,
+            Err(_) => true,
+        })
+    }
+    let mut budget = SCAN_TABLES;
+    scan(table, &mut [std::ptr::null(); NESTED_SIGNAL_DEPTH], 0, &mut budget)
 }
 
 /// `property`'s value with its signals read, top level or nested; `Some(Nil)` makes it absent and
 /// `None` means it holds no signal.
 fn resolved_value(properties: &PropMap, kind: &str, property: &str, lua: &Lua) -> Result<Option<Value>, LayoutError> {
-    match &properties[property] {
-        Value::Table(table) if walks_into(property) => {
-            let walked = resolve_nested(table, kind, 0, &mut Default::default(), lua);
-            Ok(walked.map_err(|e| e.under(property))?.map(Value::Table))
-        }
-        Value::UserData(ud) => match signal::from_userdata(ud) {
-            Some(signal) => Ok(Some(resolve_signal(&signal, kind, property, lua)?.unwrap_or(Value::Nil))),
-            None => Ok(None),
-        },
+    let value = &properties[property];
+    if let Some(table) = walked_table(property, value).filter(|table| may_hold_signal(table)) {
+        let mut path = [std::ptr::null(); NESTED_SIGNAL_DEPTH];
+        let walked = resolve_nested(table, kind, 0, &mut path, &mut Default::default(), lua);
+        return Ok(walked.map_err(|e| e.under(property))?.map(Value::Table));
+    }
+    match value {
+        Value::UserData(ud) => read_signal(ud, kind, property, lua),
         _ => Ok(None),
     }
+}
+
+/// `ud`'s value when it is a signal, `Nil` when that reads nil; `None` for other userdata.
+fn read_signal(ud: &mlua::AnyUserData, kind: &str, property: &str, lua: &Lua) -> Result<Option<Value>, LayoutError> {
+    let Some(signal) = signal::from_userdata(ud) else { return Ok(None) };
+    Ok(Some(resolve_signal(&signal, kind, property, lua)?.unwrap_or(Value::Nil)))
 }
 
 /// A copy of `table` with each signal inside it read, or `None` when it holds none, so a
 /// signal-free table is shared, not copied. A signal's result is never walked: resolution stays
 /// exactly once. Raw reads; a table with a metatable is left to its parser, which refuses a signal.
-/// `seen` walks a table reached twice once, so a cycle or a shared subtable costs no more.
+/// `seen` is keyed by depth too, since a walk cut at the depth limit depends on where it began.
 fn resolve_nested(
     table: &mlua::Table,
     kind: &str,
     depth: usize,
-    seen: &mut rustc_hash::FxHashMap<*const std::ffi::c_void, Option<mlua::Table>>,
+    path: &mut TablePath,
+    seen: &mut rustc_hash::FxHashMap<(*const std::ffi::c_void, usize), Option<mlua::Table>>,
     lua: &Lua,
 ) -> Result<Option<mlua::Table>, LayoutError> {
-    if depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() {
+    let at = table.to_pointer();
+    if depth == NESTED_SIGNAL_DEPTH || table.metatable().is_some() || path[..depth].contains(&at) {
         return Ok(None);
     }
-    if let Some(walked) = seen.get(&table.to_pointer()) {
+    if let Some(walked) = seen.get(&(at, depth)) {
         return Ok(walked.clone());
     }
-    seen.insert(table.to_pointer(), None);
-    let mut fresh = Vec::new();
+    path[depth] = at;
+    let lua_err = |e: mlua::Error| invalid("", e.to_string());
+    let len = table.raw_len();
+    let mut copy: Option<mlua::Table> = None;
     for pair in table.pairs::<Value, Value>() {
-        let (key, value) = pair.map_err(|e| invalid("", e.to_string()))?;
+        let (key, value) = pair.map_err(lua_err)?;
         let read = match &value {
-            Value::Table(inner) => resolve_nested(inner, kind, depth + 1, seen, lua).map(|t| t.map(Value::Table)),
-            Value::UserData(ud) => match signal::from_userdata(ud) {
-                Some(signal) => resolve_signal(&signal, kind, "", lua).map(|v| Some(v.unwrap_or(Value::Nil))),
-                None => Ok(None),
-            },
+            Value::Table(inner) => resolve_nested(inner, kind, depth + 1, path, seen, lua).map(|t| t.map(Value::Table)),
+            Value::UserData(ud) => read_signal(ud, kind, "", lua),
             _ => Ok(None),
         };
-        match read.map_err(|e| e.under(&key_path(&key)))? {
-            Some(value) => fresh.push((key, value)),
-            None => continue,
+        let Some(fresh) = read.map_err(|e| e.under(&key_path(&key)))? else { continue };
+        // Compacting would shift every later entry, a gradient stop's colour into its position.
+        if fresh.is_nil() && matches!(key, Value::Integer(i) if i >= 1 && i as usize <= len) {
+            return Err(invalid(&key_path(&key), "a signal in an array read nil, which would leave a hole"));
         }
+        let target = match &copy {
+            Some(target) => target.clone(),
+            None => {
+                let target = lua.create_table().map_err(lua_err)?;
+                table.for_each(|key: Value, value: Value| target.raw_set(key, value)).map_err(lua_err)?;
+                copy.insert(target).clone()
+            }
+        };
+        target.raw_set(key, fresh).map_err(lua_err)?;
     }
-    if fresh.is_empty() {
-        return Ok(None);
-    }
-    let copy = lua.create_table().map_err(|e| invalid("", e.to_string()))?;
-    for pair in table.pairs::<Value, Value>().chain(fresh.into_iter().map(Ok)) {
-        let (key, value) = pair.map_err(|e| invalid("", e.to_string()))?;
-        copy.raw_set(key, value).map_err(|e| invalid("", e.to_string()))?;
-    }
-    seen.insert(table.to_pointer(), Some(copy.clone()));
-    Ok(Some(copy))
+    seen.insert((at, depth), copy.clone());
+    Ok(copy)
 }
 
 /// `key` as the path segment the parsers name it by: `[2]` or `.top`.
@@ -842,6 +889,10 @@ mod tests {
             rect_props(&lua, "local m = { top = state('top', 4) } for i = 1, 20 do m[i] = m end return { margin = m }");
         let Value::Table(margin) = &resolve_properties(props, "rect", &lua).unwrap()["margin"] else { panic!() };
         assert_eq!(margin.raw_get::<i64>("top").unwrap(), 4);
+        // A back-reference keeps the original table, signal and all, for the parser to refuse.
+        assert!(
+            matches!(margin.raw_get::<Value>(1).unwrap(), Value::Table(m) if m.raw_get::<Value>("top").unwrap().is_userdata())
+        );
         let shader: mlua::Table = lua
             .load(r#"local t = { x = state("x", 1) } for _ = 1, 9 do t = { t } end return { kind = "shader", params = t }"#)
             .eval()
@@ -855,6 +906,43 @@ mod tests {
             }
         }
         assert!(matches!(table, Value::UserData(_)), "a signal past the depth limit is left for the parser to refuse");
+    }
+
+    /// A table cut at the depth limit is walked whole where it is reached shallower.
+    #[test]
+    fn a_table_reached_deep_and_shallow_resolves_where_it_is_shallow() {
+        let lua = signal_lua();
+        let shader: mlua::Table = lua
+            .load(
+                r#"local t = { { x = state("x", 1) } }
+                local deep = t for _ = 1, 6 do deep = { deep } end
+                return { kind = "shader", params = { deep, t } }"#,
+            )
+            .eval()
+            .unwrap();
+        let resolved = resolve_properties(props_from_table(&shader), "shader", &lua).unwrap();
+        let x: Value = lua
+            .load("return function(p) return p[2][1].x end")
+            .eval::<mlua::Function>()
+            .unwrap()
+            .call(resolved["params"].clone())
+            .unwrap();
+        assert_eq!(x, Value::Integer(1));
+    }
+
+    /// Compacting would shift later entries, so a hole is refused by its path.
+    #[test]
+    fn a_signal_reading_nil_inside_an_array_is_refused() {
+        let lua = signal_lua();
+        let props = rect_props(
+            &lua,
+            r##"return { background = { gradient = "linear", stops = { { 0, "#ffffff" }, { 1, state("hole") } } } }"##,
+        );
+        let err = resolve_properties(props, "rect", &lua).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background.stops[2][2]"),
+            "{err:?}"
+        );
     }
 
     /// The pairing rule (ADR-0095). `on_hover` fires on the crossing its node's `hover` signal
