@@ -238,7 +238,7 @@ where it is.
 
 A `textfield` is a single-line text input. The engine holds what the user types (the *draft*); Lua
 sees it only through callbacks and cannot set it. The field with *focus* is the one keys go to. It
-has no size of its own, so give it `width` and `height` ([nodes](../nodes/textfield.md)).
+has no intrinsic width, so give it `width`; `height` defaults to one line ([nodes](../nodes/textfield.md)).
 
 A field takes the keyboard only when both hold:
 
@@ -543,7 +543,7 @@ return panel {
 
 | Trap | Fix |
 | :--- | :--- |
-| A `textfield` is invisible or cannot be clicked | It has no intrinsic size. Give it `width` and `height` |
+| A `textfield` is invisible or cannot be clicked | It has no intrinsic width. Give it `width` |
 | A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"on_demand"` (or `"exclusive"` for a modal) |
 | A field with only `on_navigate`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
 | Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"none"` |

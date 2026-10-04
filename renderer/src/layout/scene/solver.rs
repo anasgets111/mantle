@@ -59,6 +59,8 @@ pub(super) enum Measure {
     },
     /// `icon`'s `size`, the same number on both axes.
     Square(f32),
+    /// A `textfield`'s one text line: height only, since its width is the config's to give.
+    Line(f32),
 }
 
 /// `Content` and `Fill` map to taffy's `auto`; `Fill` gets its meaning from parent flow and
@@ -392,7 +394,7 @@ pub(super) fn text_measure_tweening(kind: &str, tweens: &[Tween]) -> bool {
     kind == "text" && tweens.iter().any(|t| !t.resting && TEXT_MEASURE_KEYS.contains(&t.property))
 }
 
-/// What the solver asks a leaf for its size with, for the two kinds whose size is their content.
+/// What the solver asks a leaf for its size with, for the kinds whose size is their content.
 pub(super) fn measure_for(
     kind: &str,
     paint: Option<&PaintStyle>,
@@ -437,6 +439,12 @@ pub(super) fn measure_for(
             })
         }
         "icon" => Some(Measure::Square(node::fields::icon::size.read(properties)?)),
+        "textfield" => {
+            let Some(PaintStyle::TextField { font_size, .. }) = paint else {
+                unreachable!("paint_style produces PaintStyle::TextField for textfield nodes");
+            };
+            Some(Measure::Line(shaping::line_height(*font_size)))
+        }
         // `image` has no intrinsic size, unlike `icon`: knowing a file's own dimensions means
         // decoding it, and this pass has no canvas to decode against and runs on every
         // `Scene::apply`. So an `image` takes the box `width`/`height` give it, measuring
@@ -514,6 +522,7 @@ pub(super) fn solve(
                 };
                 match measure {
                     Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
+                    Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
                     Measure::Text {
                         content,
                         runs,
@@ -658,6 +667,19 @@ pub(super) mod tests {
         let child = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(child.rect.width, 0.0);
         assert_eq!(child.rect.height, 0.0);
+    }
+
+    #[test]
+    fn a_textfield_without_a_height_is_one_line_tall() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = row { children = { textfield { font_size = 20, width = 80, on_change = function() end }, textfield { height = 7, on_change = function() end } } } }"#,
+        );
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let fields = &scene.surface("bar@TEST").unwrap().children[0].children;
+        assert_eq!((fields[0].rect.width, fields[0].rect.height), (80.0, shaping::line_height(20.0)));
+        assert_eq!(fields[1].rect.height, 7.0, "an explicit height still wins");
     }
 
     #[test]

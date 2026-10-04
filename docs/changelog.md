@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- A `textfield` without `height` is one line of `font_size` tall instead of 0 px, so its placeholder shows. `width` is still required.
 - `text` takes `font_variations`, a table of OpenType axis tags to values such as `{ FILL = 1, GRAD = 0, opsz = 24 }`, for variable fonts like Material Symbols. An explicit `wght` overrides `font_weight`.
 - A property value that fails a live update or the startup apply now freezes only its own surface, which keeps its last applied tree; the other surfaces, an error banner drawn from `mantle.rescue` included, keep updating. The failure is logged as an error, once until its message changes. A reload that fails anywhere is still refused whole.
 - `on_click` and `on_drag` `pointer` is now measured in the node's own untransformed box, so a translated, scaled or rotated node no longer reports coordinates outside its size.

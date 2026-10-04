@@ -83,7 +83,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
 
-The field has no intrinsic size: give it `width` and `height`. It draws one line of text and a
+The field has no intrinsic width, so give it `width`; without `height` it is one line of `font_size` tall (1.2 times the size). It draws one line of text and a
 caret, vertically centred, in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font`
 property. Plain fields use `zwp_text_input_v3` for composition when the compositor offers it and
 text-input enters the field's own surface. Raw keys stay active between compositions and are
@@ -113,7 +113,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 
 | Trap | Fix |
 | :--- | :--- |
-| The field does not appear | It has no intrinsic size. Give `width` and `height` |
+| The field does not appear | It has no intrinsic width. Give it `width` |
 | Typing does nothing | The surface needs keyboard focus (`keyboard_interactivity` on a panel), and the field needs `on_change`, `on_submit` or `secure_submit` |
 | `on_cancel` or `on_navigate` alone never fires | Neither makes the field focusable. Add `on_change` or `on_submit` |
 | You cannot set or clear the draft from Lua | The draft is the engine's. Enter and Escape clear it; removing the node drops it |

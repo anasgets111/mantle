@@ -486,7 +486,7 @@ props! {
         /// Book: A `scroll(name)` signal; makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll))
         scroll: Handle;
     }
-    /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). No intrinsic size: set `width`/`height`.
+    /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line of `font_size`; `width` has none, so set it.
     mod textfield(TEXTFIELD) {
         /// A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
         focus_target: Focus;
