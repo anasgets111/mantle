@@ -2259,6 +2259,9 @@ Amended by ADR-0270: decision 2's function runs again only when its root resolve
 No fail-directory cache, shared repository, byte budget or crossfade; no transient inline spools as
 user thumbnails or redundant switch.
 
+Amended by ADR-0317: rasters downscale through `fast_image_resize`'s bilinear filter, not `image`'s
+`thumbnail`.
+
 ## 0123. Idle textures have a byte budget, and the allocator's mmap threshold is pinned
 
 1. Evict least-recently-used unshown textures above a 16 MB idle budget. Pin displayed images;
@@ -4345,6 +4348,8 @@ The thumbnail must cover `stored_size` in both axes. `stored_size` fills the box
 fits inside it: a 16:9 wallpaper in a 128 box becomes 128x72 and stores at 228x128, so reuse would
 upscale it. Square-ish sources take the shortcut; wide ones keep full-source scaling.
 
+Amended by ADR-0317: both scales are now bilinear; the 27 ms second pass measured `thumbnail`.
+
 ## 0195. `blur` is opt-in per node and the region is derived from where that node is painted, because "what can be clicked" has one right answer and "what should be blurred" does not
 
 `ext-background-effect-v1` has three requests -- `get_background_effect(wl_surface)`,
@@ -5506,6 +5511,9 @@ frame -- most of a GIF's cost is redrawing pixels that did not change.
 
 `frame_cap` and the truncate-to-1 fallback are gone: a byte-metered delta is never worse than a
 full frame, so nothing needs the "eating the budget or failing" tradeoff they existed for.
+
+Amended by ADR-0317: `thumbnail` was box sampling, so decision 3's triangle filter only became
+true with bilinear, whose reach of one stored pixel past a change grows every scaled delta by one.
 
 ## 0236. A plain `textfield` gets a caret and a selection; the masked one gets neither
 
@@ -7518,3 +7526,22 @@ UPower devices outside the system supply keyed by object path; an enumerated dev
 cannot be read stays with its readings cleared. `percent` is published only when UPower's
 `BatteryLevel` says the percentage is authoritative; otherwise `level` carries the coarse reading.
 Peak metering needs a PipeWire stream per device and is left out.
+
+## 0317. Images downscale through `fast_image_resize`, bilinear with alpha premultiplied
+
+Every downscale (texture, freedesktop thumbnail, GIF frame, palette sample) went through `image`'s
+`thumbnail`, single-threaded box sampling. `decode::downscale` runs `fast_image_resize`'s SIMD
+bilinear filter in the decoded pixel type instead: a 3840x2160 JPEG scales to 2133x1200 in 8.5 ms
+instead of 75.4 ms, and its max/mean error against an exact area average falls from 33/2.55 to
+9.9/0.82 levels. A 4K RGBA PNG peaks 51 MB higher (156 against 105 MB) because alpha is
+premultiplied into a source-size copy, still inside the 99.5 MB (`2 * need + 4wh`) the decode pool
+charges it. With one wallpaper settled, Private_Dirty is unchanged, PSS is 1.6-1.9 MB
+higher from clean binary pages, and the 6-13 MB peak goes back to the kernel; no thread or buffer
+outlives a call. The release renderer grows by 2.78 MB because the crate builds every pixel type.
+
+`only_u8x4` was rejected: it saves 2.4 MB of binary but scales only RGBA8, so a JPEG widened to
+RGBA at source size first and peaks reached 177 MB at 4K and 313 MB at 6K, uncharged by the pool.
+
+Thumbnail and palette sizes keep `thumbnail`'s fit-inside rounding (`fit_inside`), so cached
+thumbnails keep their sizes; a texture now scales to exactly `stored_size`, where `thumbnail` could
+come out a pixel narrower.

@@ -178,38 +178,36 @@ fn decode_gif(
     let _permit = charge.take(budget as u64 + 4 * u64::from(source_width) * u64::from(source_height));
 
     let mut canvas = vec![0u8; source_width as usize * source_height as usize * 4];
-    // Where a source rect lands in the stored frame: floor the origin and ceil the far edge, so a
-    // shrunk change keeps the edge pixels it bleeds into, then take off what the centred crop cut.
+    // Where a source rect lands in the stored frame: floor the origin and ceil the far edge, then
+    // one more stored pixel each side, because `downscale`'s bilinear kernel reaches one target
+    // pixel past the change (ADR-0317); then take off what the centred crop cut.
     let map_rect = |(left, top, w, h): (u32, u32, u32, u32)| {
         let start = |v: u32, from: u32, to: u32| (u64::from(v) * u64::from(to) / u64::from(from).max(1)) as u32;
         let end = |v: u32, from: u32, to: u32| (u64::from(v) * u64::from(to)).div_ceil(u64::from(from).max(1)) as u32;
         let (crop_x, crop_y) = ((stored_width - width) / 2, (stored_height - height) / 2);
-        let x0 = start(left, source_width, stored_width).saturating_sub(crop_x).min(width);
-        let y0 = start(top, source_height, stored_height).saturating_sub(crop_y).min(height);
-        let x1 = end(left + w, source_width, stored_width).saturating_sub(crop_x).min(width);
-        let y1 = end(top + h, source_height, stored_height).saturating_sub(crop_y).min(height);
+        let x0 = start(left, source_width, stored_width).saturating_sub(1 + crop_x).min(width);
+        let y0 = start(top, source_height, stored_height).saturating_sub(1 + crop_y).min(height);
+        let x1 = (end(left + w, source_width, stored_width) + 1).saturating_sub(crop_x).min(width);
+        let y1 = (end(top + h, source_height, stored_height) + 1).saturating_sub(crop_y).min(height);
         (x0, y0, x1 - x0, y1 - y0)
     };
     // The pixels for `rect` and where they land, both in the stored frame's coordinates. Scaling
     // the whole canvas and cutting the rect out of the result keeps resampling seam-free while what
     // is kept stays the size of the change; extracting from a scaled sub-rect would seam.
-    let extract = |canvas: &[u8], rect: (u32, u32, u32, u32)| -> (Vec<u8>, (u32, u32, u32, u32)) {
+    let extract = |canvas: &[u8], rect: (u32, u32, u32, u32)| {
         if native {
-            return (read_rect(canvas, source_width, rect), rect);
+            return Ok::<_, String>((read_rect(canvas, source_width, rect), rect));
         }
         let scaled = if (stored_width, stored_height) == (source_width, source_height) {
             canvas.to_vec()
         } else {
             let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
                 .expect("canvas is exactly source_width * source_height * 4 bytes");
-            ::image::DynamicImage::ImageRgba8(image)
-                .thumbnail_exact(stored_width, stored_height)
-                .into_rgba8()
-                .into_raw()
+            downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?.into_raw()
         };
         let frame = if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled };
         let mapped = map_rect(rect);
-        if mapped == (0, 0, width, height) { (frame, mapped) } else { (read_rect(&frame, width, mapped), mapped) }
+        Ok(if mapped == (0, 0, width, height) { (frame, mapped) } else { (read_rect(&frame, width, mapped), mapped) })
     };
     let whole = (0, 0, source_width, source_height);
 
@@ -237,14 +235,14 @@ fn decode_gif(
         blend_rect(&mut canvas, source_width, rect, &frame.buffer);
 
         if base.is_none() {
-            base = Some(extract(&canvas, whole).0);
+            base = Some(extract(&canvas, whole)?.0);
             delays.push(delay);
         } else {
             let changed = disposed.map_or(rect, |(x, y, w, h)| {
                 let (x0, y0) = (left.min(x), top.min(y));
                 (x0, y0, (left + rect.2).max(x + w) - x0, (top + rect.3).max(y + h) - y0)
             });
-            let (pixels, rect) = extract(&canvas, changed);
+            let (pixels, rect) = extract(&canvas, changed)?;
             if delta_bytes + pixels.len() > budget {
                 break;
             }
@@ -382,6 +380,24 @@ fn blur_rgba(pixels: Vec<u8>, width: u32, height: u32, blur_px: u32, premultipli
     Ok(::image::imageops::fast_blur(&image, blur_px as f32).into_raw())
 }
 
+/// `image` scaled to exactly `size` as straight-alpha RGBA8 (ADR-0317), in its decoded pixel type
+/// so a JPEG widens to RGBA at the target size, never the source's.
+pub(super) fn downscale(image: &::image::DynamicImage, size: (u32, u32)) -> Result<::image::RgbaImage, String> {
+    use fast_image_resize::{FilterType, ResizeAlg, ResizeOptions, Resizer};
+    let mut scaled = ::image::DynamicImage::new(size.0, size.1, image.color());
+    let options = ResizeOptions::new().resize_alg(ResizeAlg::Convolution(FilterType::Bilinear));
+    Resizer::new().resize(image, &mut scaled, &options).map_err(|err| err.to_string())?;
+    Ok(scaled.into_rgba8())
+}
+
+/// The largest size with `width`x`height`'s aspect that fits an `edge`-sided square, rounded and
+/// never zero: `DynamicImage::thumbnail`'s rule, so thumbnails it cached keep their size.
+pub(super) fn fit_inside(width: u32, height: u32, edge: u32) -> (u32, u32) {
+    let ratio = (f64::from(edge) / f64::from(width)).min(f64::from(edge) / f64::from(height));
+    let scaled = |side: u32| ((f64::from(side) * ratio).round() as u32).max(1);
+    (scaled(width), scaled(height))
+}
+
 /// Stored raster size for a `box_px` box (ADR-0122): scale by the larger ratio to cover as
 /// `Fit::Cover` crops, never upscale a small file. Use the same rule for every `Fit`; `Contain`
 /// could be smaller, but one rule keeps one slot per box.
@@ -400,8 +416,7 @@ fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, u32) {
 /// femtovg's `Canvas::load_image_file` declares it `default-features = false` with no format:
 /// every PNG returned `Unsupported(Exact(Png))`, breaking tray and notification pixmaps (ADR-0031).
 /// `into_rgba8` also handles grayscale+alpha and 16-bit variants femtovg refuses, while theme
-/// icons already decode to RGBA8. `thumbnail`'s triangle filter avoids a second Lanczos pass when
-/// shrinking a 4K file to a tile.
+/// icons already decode to RGBA8. Every shrink goes through [`downscale`].
 ///
 /// If `thumbnails` has a covering size, decode a current thumbnail instead of the file. A full
 /// decode larger than that size leaves one behind; a 32px tray icon is never thumbnailed. Write
@@ -422,9 +437,8 @@ fn decode_raster(
             return Ok((pixels, width, height));
         }
         let image = ::image::RgbaImage::from_raw(width, height, pixels).ok_or("thumbnail pixel count is off")?;
-        let scaled = ::image::DynamicImage::ImageRgba8(image).thumbnail(stored_width, stored_height).into_rgba8();
-        let (width, height) = scaled.dimensions();
-        return Ok((scaled.into_raw(), width, height));
+        let scaled = downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?;
+        return Ok((scaled.into_raw(), stored_width, stored_height));
     }
     // Past the thumbnail branch, so the budget is charged for the source actually decoded and a
     // covering thumbnail is never made to wait for room it does not need (ADR-0187).
@@ -440,12 +454,12 @@ fn decode_raster(
     if let Some(slot) = &slot
         && width.max(height) > slot.px
     {
-        let thumb = decoded.thumbnail(slot.px, slot.px).into_rgba8();
+        let thumb = downscale(&decoded, fit_inside(width, height, slot.px))?;
         let (thumb_width, thumb_height) = thumb.dimensions();
         if let Err(err) = slot.write(thumb.as_raw(), thumb_width, thumb_height) {
             debug!("{}: thumbnail not written: {err}", path.display());
         }
-        // Both axes, because `stored_size` fills the box while `thumbnail` fits inside it: a wide
+        // Both axes, because `stored_size` fills the box while `fit_inside` fits inside it: a wide
         // source thumbnails to 128x72 and stores at 228x128, and rescaling from that would be an
         // upscale of a thumbnail rather than a downscale of a photograph.
         if thumb_width >= stored_width && thumb_height >= stored_height {
@@ -453,14 +467,12 @@ fn decode_raster(
         }
     }
     let decoded = covering_thumbnail.unwrap_or(decoded);
-    let scaled = if (stored_width, stored_height) == (decoded.width(), decoded.height()) {
-        decoded
+    let rgba = if (stored_width, stored_height) == (decoded.width(), decoded.height()) {
+        decoded.into_rgba8()
     } else {
-        decoded.thumbnail(stored_width, stored_height)
+        downscale(&decoded, (stored_width, stored_height))?
     };
-    let rgba = scaled.into_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok((rgba.into_raw(), width, height))
+    Ok((rgba.into_raw(), stored_width, stored_height))
 }
 
 /// Reads at most `cap` bytes of `path`, or `None` if the file has more than that.
@@ -615,6 +627,34 @@ mod tests {
         // Larger on one edge only: the larger ratio is still under one.
         assert_eq!(stored_size(300, 10, (100, 100)), (300, 10));
         assert_eq!(stored_size(0, 0, (100, 100)), (0, 0));
+        // Thumbnails fit inside their square instead, and a sliver keeps one pixel.
+        assert_eq!(fit_inside(3840, 2160, 128), (128, 72));
+        assert_eq!(fit_inside(10_000, 10, 128), (128, 1));
+    }
+
+    /// ADR-0317. A one-pixel checker of opaque white and transparent black averages to white at
+    /// half alpha. Straight-alpha averaging would give grey: the transparent pixels' black would
+    /// bleed into every edge a scaled icon has.
+    #[test]
+    fn a_downscale_averages_its_area_with_alpha_premultiplied() {
+        let checker = ::image::RgbaImage::from_fn(16, 16, |x, y| {
+            ::image::Rgba(if (x + y) % 2 == 0 { [255, 255, 255, 255] } else { [0, 0, 0, 0] })
+        });
+        let scaled = downscale(&::image::DynamicImage::ImageRgba8(checker), (4, 4)).unwrap();
+        assert_eq!(scaled.dimensions(), (4, 4));
+        for pixel in scaled.pixels() {
+            assert!(pixel.0[..3].iter().all(|&c| c >= 253), "colour stays white: {pixel:?}");
+            assert!(pixel.0[3].abs_diff(128) <= 2, "alpha is the area's mean: {pixel:?}");
+        }
+    }
+
+    /// A JPEG decodes to RGB8 and scales in it; the RGBA it comes back as is opaque.
+    #[test]
+    fn an_rgb_downscale_comes_back_opaque_rgba() {
+        let rgb = ::image::RgbImage::from_pixel(8, 4, ::image::Rgb([10, 20, 30]));
+        let rgba = downscale(&::image::DynamicImage::ImageRgb8(rgb), (4, 2)).unwrap();
+        assert_eq!(rgba.dimensions(), (4, 2));
+        assert!(rgba.pixels().all(|pixel| pixel.0 == [10, 20, 30, 255]));
     }
 
     /// One byte per pixel, so a crop reads back as the pixels it kept.
@@ -812,12 +852,17 @@ mod tests {
         assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
         assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
 
-        assert_replays_like_a_full_recomposite(&path, &decoded, 4);
+        assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
     }
 
     /// Replays `decoded`'s deltas over its base and compares every frame against `image`'s own
-    /// `AnimationDecoder`, an independent full recomposite.
-    fn assert_replays_like_a_full_recomposite(path: &std::path::Path, decoded: &Decoded, width: u32) {
+    /// `AnimationDecoder`, an independent full recomposite, put through `stored` for a scaled box.
+    fn assert_replays_like_a_full_recomposite(
+        path: &std::path::Path,
+        decoded: &Decoded,
+        stored: impl Fn(&::image::RgbaImage) -> Vec<u8>,
+    ) {
+        let width = decoded.width;
         let gif_decoder =
             ::image::codecs::gif::GifDecoder::new(std::io::BufReader::new(std::fs::File::open(path).unwrap())).unwrap();
         let ground_truth = ::image::AnimationDecoder::into_frames(gif_decoder).collect_frames().unwrap();
@@ -827,11 +872,7 @@ mod tests {
             for delta in &decoded.deltas[..index] {
                 write_rect(&mut replayed, width, delta.rect, &delta.pixels);
             }
-            assert_eq!(
-                replayed,
-                frame.buffer().as_raw().as_slice(),
-                "frame {index} diverged from the full recomposite"
-            );
+            assert_eq!(replayed, stored(frame.buffer()), "frame {index} diverged from the full recomposite");
         }
     }
 
@@ -849,7 +890,7 @@ mod tests {
             write_frame(&mut encoder, (0, 2, 1, 1), [255, 255, 0, 255], gif::DisposalMethod::Keep, 5);
         }
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
-        assert_replays_like_a_full_recomposite(&path, &decoded, 4);
+        assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
     }
 
     /// ADR-0235. The frame that would push the kept deltas past their byte budget is dropped
@@ -888,12 +929,37 @@ mod tests {
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (4, 4), "8x8 halved into a 4x4 box");
         assert_eq!(decoded.base.len(), 4 * 4 * 4, "the base is still the whole stored frame");
-        assert_eq!(decoded.deltas[0].rect, (2, 2, 2, 2), "the source rect halved with it");
-        assert_eq!(decoded.deltas[0].pixels.len(), 2 * 2 * 4, "against 64 bytes for a whole stored frame");
+        assert_eq!(decoded.deltas[0].rect, (1, 1, 3, 3), "the source rect halved, plus the kernel's reach");
+        assert_eq!(decoded.deltas[0].pixels.len(), 3 * 3 * 4, "against 64 bytes for a whole stored frame");
+    }
+
+    /// ADR-0317. Bilinear reaches a stored pixel past a scaled change, so a delta cut to the
+    /// change alone left a stale ring around it. Scaled and cropped, every replayed frame must be
+    /// the full composite put through the same scale and crop.
+    #[test]
+    fn a_scaled_and_cropped_gif_replays_like_scaling_each_whole_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("moving.gif");
+        {
+            let mut file = std::fs::File::create(&path).unwrap();
+            let mut encoder = gif::Encoder::new(&mut file, 24, 16, &[]).unwrap();
+            write_frame(&mut encoder, (0, 0, 24, 16), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (9, 5, 3, 3), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+            write_frame(&mut encoder, (0, 13, 5, 3), [0, 0, 255, 255], gif::DisposalMethod::Background, 5);
+            write_frame(&mut encoder, (17, 0, 1, 1), [255, 255, 0, 255], gif::DisposalMethod::Keep, 5);
+        }
+        // 24x16 covers a 10x10 box at 15x10, then crops to 10x10.
+        let decoded = decode_gif(&path, (10, 10), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_eq!((decoded.width, decoded.height), (10, 10));
+        assert_eq!(decoded.deltas[0].rect, (2, 2, 5, 4), "the 3x3 change at (9, 5), scaled, grown and cropped");
+        assert_replays_like_a_full_recomposite(&path, &decoded, |frame| {
+            let scaled = downscale(&::image::DynamicImage::ImageRgba8(frame.clone()), (15, 10)).unwrap();
+            crop_to_box(scaled.into_raw(), 15, 10, (10, 10)).0
+        });
     }
 
     /// A 10x7 source covering a 3x3 box stores at 5x3 (`stored_size` ceils both edges), which an
-    /// aspect-keeping `thumbnail` would round down to 4x3 and the crop would then read past.
+    /// aspect-keeping `fit_inside` would round down to 4x3 and the crop would then read past.
     #[test]
     fn a_gif_whose_cover_size_rounds_up_scales_to_exactly_that_size() {
         let dir = tempfile::tempdir().unwrap();

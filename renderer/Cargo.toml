@@ -49,6 +49,9 @@ image = { version = "0.25.10", default-features = false, features = ["gif", "jpe
 # The decoder `image`'s own `gif` feature already compiles; used directly for per-frame rects and
 # disposal that `AnimationDecoder` composites away (ADR-0235). Adds no crate.
 gif = "0.14.2"
+# SIMD bilinear downscaling (ADR-0317): 4K to 2133x1200 in 8.5 ms against `thumbnail`'s 75 ms.
+# Not `only_u8x4`: a JPEG would widen to RGBA at source size first, 313 MB peak at 6K.
+fast_image_resize = { version = "6.1.0", default-features = false, features = ["image"] }
 cursor-icon = "1.2.0"
 khronos-egl = { version = "6.0.0", features = ["static"] }
 # One `mallopt` call at startup (`main.rs`, ADR-0123). Already in the tree through `nix`.

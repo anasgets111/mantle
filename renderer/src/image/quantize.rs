@@ -4,7 +4,7 @@ use std::path::Path;
 
 use super::MAX_DECODE_EDGE;
 use super::budget::Charge;
-use super::decode::decode_within_limits;
+use super::decode::{decode_within_limits, downscale, fit_inside};
 use super::thumbnails;
 
 type Rgb = [u8; 3];
@@ -100,11 +100,9 @@ fn load_rgba(path: &Path, rescale_size: u32, cache_root: Option<&Path>) -> Resul
         return Ok(image);
     }
     let (decoded, _permit) = decode_within_limits(path, MAX_DECODE_EDGE, Charge::Free, &|| true)?;
-    let decoded = if rescale_size > 0 && decoded.width().max(decoded.height()) > rescale_size {
-        decoded.thumbnail(rescale_size, rescale_size)
-    } else {
-        decoded
-    };
+    if rescale_size > 0 && decoded.width().max(decoded.height()) > rescale_size {
+        return downscale(&decoded, fit_inside(decoded.width(), decoded.height(), rescale_size));
+    }
     Ok(decoded.into_rgba8())
 }
 
