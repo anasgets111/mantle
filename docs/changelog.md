@@ -15,7 +15,7 @@ version is 0.x, a minor release can break the Lua API.
 - `image.radius` rounds the picture's corners, a number or a table per corner like `rect.radius`, with no clipping wrapper. It rounds what shows, so `fit = "contain"` rounds the fitted picture.
 - `path` takes `stroke_cap` (`"butt"`, `"round"`, `"square"`), `stroke_join` (`"miter"`, `"round"`, `"bevel"`), and `trim_start`/`trim_end`, which stroke only that fraction of the path's length and animate like any number.
 - A `map` of a `scroll` signal lays out again in the same frame when layout clamps the offset it read (a wheel past either end) or a `:reveal` moves it; it kept the stale value until the next wheel event, so offset-sized children jumped at the ends.
-- `focus_target(name):set_text(text)` prefills or clears the draft of the plain textfields, hidden ones too, with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
+- `focus_target(name):set_text(text)` prefills or clears the draft of the plain textfields, hidden and disabled ones too, with that `focus_target`. It calls no `on_change` and never touches a `secure_submit` field.
 - Each `textfield` keeps its own draft: moving focus to another field, with Tab or a click, no longer discards the text of the one you left. A draft goes when its node leaves the tree.
 - `textfield.placeholder_color` colours the placeholder; it defaults to `foreground`, as before.
 - A `textfield` without `height` is one line of `font_size` tall instead of 0 px, so its placeholder shows. `width` is still required.

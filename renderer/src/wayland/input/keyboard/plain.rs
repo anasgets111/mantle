@@ -102,28 +102,34 @@ fn first_plain_field(
     plain_fields(tree, false, matches).next()
 }
 
-/// Plain fields passing `matches`, in document order; hidden subtrees and disabled fields only when `hidden`.
+/// Plain fields passing `matches`, in document order; hidden subtrees and disabled fields only when `all`.
 fn plain_fields<'a>(
     tree: &'a layout::ResolvedNode,
-    hidden: bool,
+    all: bool,
     matches: impl Fn(&layout::ResolvedNode) -> bool + 'a,
 ) -> impl Iterator<Item = FieldTarget> + 'a {
     let mut stack = vec![tree];
     std::iter::from_fn(move || {
         while let Some(node) = stack.pop() {
-            if (!node.visible && !hidden) || node.leaving {
+            if (!node.visible && !all) || node.leaving {
                 continue;
             }
             stack.extend(node.content_children().rev());
             if node.kind == "textfield"
                 && matches(node)
-                && let Some(target @ FieldTarget::Plain { .. }) = field_target(&[node], hidden)
+                && let Some(target @ FieldTarget::Plain { .. }) = field_target(&[node], all)
             {
                 return Some(target);
             }
         }
         None
     })
+}
+
+/// Whether a field on a live surface can no longer hold focus: its node is gone or disabled.
+fn field_unusable(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId) -> bool {
+    let Some(tree) = tree.filter(|tree| layout::hit::contains_node(tree, id)) else { return true };
+    layout::hit::path_to_node(tree, id).is_some_and(|path| path.last().is_some_and(|node| node.is_disabled_field()))
 }
 
 type Parked = std::collections::HashMap<(String, layout::scene::NodeId), (String, (usize, usize))>;
@@ -681,15 +687,13 @@ impl App {
         }
     }
 
-    /// A focused field that became disabled gives up focus; its draft is parked, not forgotten.
-    pub(in crate::wayland) fn drop_disabled_text_field_focus(&mut self) {
-        let disabled = self.focused_text_field.as_ref().is_some_and(|field| {
-            let tree = self.client.scene().surface(&field.surface_id);
-            tree.and_then(|tree| layout::hit::path_to_node(tree, field.id))
-                .and_then(|path| path.last().map(|node| node.is_disabled_field()))
-                .unwrap_or(false)
-        });
-        if disabled {
+    /// After a pass, a focused field that became disabled or whose node left a live surface gives
+    /// up focus; a surface merely not live keeps its draft (see [`App::prune_text_field_focus`]).
+    pub(in crate::wayland) fn drop_unusable_text_field_focus(&mut self) {
+        let Some(field) = self.focused_text_field.as_ref() else { return };
+        if self.surface_is_live(&field.surface_id)
+            && field_unusable(self.client.scene().surface(&field.surface_id), field.id)
+        {
             self.focus_text_field(None);
         }
     }
@@ -1494,6 +1498,23 @@ mod tests {
         };
         assert_eq!(ids(false), vec![a_id, b_id], "focus skips hidden and disabled fields");
         assert_eq!(ids(true), vec![a_id, hidden_id, off_id, b_id], "set_text reaches both");
+    }
+
+    #[test]
+    fn a_field_is_unusable_once_its_node_is_gone_or_disabled() {
+        let lua = Lua::new();
+        crate::lua::focus::register(&lua).unwrap();
+        let (live, gone) = (plain_textfield(&lua), plain_textfield(&lua));
+        let mut hidden = plain_textfield(&lua);
+        hidden.visible = false;
+        let off = super::super::tests::with_property(plain_textfield(&lua), "disabled", Value::Boolean(true));
+        let (live_id, gone_id, hidden_id, off_id) = (live.id, gone.id, hidden.id, off.id);
+        let tree = tree_with(&lua, vec![live, hidden, off]);
+        assert!(!field_unusable(Some(&tree), live_id));
+        assert!(!field_unusable(Some(&tree), hidden_id), "a hidden field keeps its parked draft");
+        assert!(field_unusable(Some(&tree), off_id));
+        assert!(field_unusable(Some(&tree), gone_id), "a removed row");
+        assert!(field_unusable(None, live_id));
     }
 
     #[test]

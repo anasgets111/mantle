@@ -296,7 +296,7 @@ pub fn run(
         app.apply_focus_request();
         if re_resolved {
             app.prune_secure_focus_after_resolve();
-            app.drop_disabled_text_field_focus();
+            app.drop_unusable_text_field_focus();
             app.prune_control_focus();
             // A newly bound `focused` slot starts right.
             app.sync_focused();
