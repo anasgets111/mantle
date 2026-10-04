@@ -269,10 +269,10 @@ pub(super) fn shape(
 /// session cut the Renderer's private-dirty memory from 49.7MB to 22.7MB. `make_shared_face_data`
 /// rewrites every face sharing the path to `Source::SharedFile`. Parley receives that same mapping.
 ///
-/// SAFETY: `make_shared_face_data` is `unsafe` because a font file rewritten on disk changes
-/// under the mapping, which can fault or produce nonsense glyphs. That is the same bargain
-/// A private copy per font would defend against someone editing a system font in place at a
-/// substantial memory cost.
+/// SAFETY: `make_shared_face_data` is `unsafe` because the font file is mmapped, and a file
+/// rewritten or truncated in place changes under the mapping: that can fault (SIGBUS) or yield bad
+/// glyphs. A private copy per font would defend against that, at the memory cost measured above.
+/// Accepted.
 ///
 /// A face whose mapping cannot be established is skipped rather than fatal, matching
 /// `resolve_chain`'s own treatment of an entry it can't honor: losing the emoji font is a missing

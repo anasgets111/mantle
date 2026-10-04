@@ -417,8 +417,9 @@ mod tests {
 
     fn init_test_spool() {
         let temp = tempfile::tempdir().unwrap();
-        let _ = crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf());
-        std::mem::forget(temp);
+        if crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf()).is_ok() {
+            std::mem::forget(temp);
+        }
     }
 
     #[test]

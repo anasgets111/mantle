@@ -168,7 +168,7 @@ fn gaussian(
         passes.push(BlurPass { source: down, target, extent, axis: [0.0; 2], sigma: 0.0 });
     }
     let Some(Shaders { gl, stage }) = walk.shaders.as_mut() else { return false };
-    // SAFETY: `paint_surface` made this context current, and the canvas shares it.
+    // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
     unsafe { stage.blur(gl, painter.canvas_mut(), &passes) }
 }
 

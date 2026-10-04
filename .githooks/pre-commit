@@ -62,7 +62,7 @@ if $rust || $docs; then
 fi
 if $rust; then
     just fmt-check || fail "cargo fmt --check"
-    just test lint rustdoc || fail "the Rust checks"
+    MANTLE_REQUIRE_GL=1 just test lint rustdoc || fail "the Rust checks"
 elif $docs; then
     cargo test --quiet -p renderer every_lua_block_in_the_docs || fail "the docs examples"
 fi

@@ -14,16 +14,7 @@ use protocol::{
 };
 
 // The extension is not in wayland-protocols. Its XML retains the upstream license.
-#[allow(
-    dead_code,
-    non_camel_case_types,
-    unused_unsafe,
-    unused_variables,
-    non_upper_case_globals,
-    non_snake_case,
-    unused_imports,
-    clippy::all
-)]
+#[allow(unused_imports, clippy::all)]
 mod protocol {
     use wayland_client;
     use wayland_client::protocol::*;

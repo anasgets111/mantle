@@ -115,7 +115,7 @@ struct Stubs(Vec<(String, Stub)>);
 /// `stub`, the LuaCATS `just stubs` writes above its declaration in `lua-meta`: `path = {}` for a
 /// table, else `function path(<its parameters>) end`. The one way to add a global, so the stubs
 /// cannot miss one; [`luacats::lua_fn!`] and [`luacats::lua_table!`] call it.
-#[cfg_attr(not(test), allow(unused_variables))]
+#[cfg_attr(not(test), expect(unused_variables))]
 pub(crate) fn define(lua: &Lua, path: &str, stub: Stub, value: impl mlua::IntoLua) -> mlua::Result<()> {
     let value = value.into_lua(lua)?;
     #[cfg(test)]

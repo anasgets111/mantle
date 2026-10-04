@@ -64,6 +64,9 @@ pub struct DrawnImage {
 /// The GL context and the compiled config shaders, for the runs that need them (ADR-0184). Absent
 /// wherever there is no context to draw with -- a test harness, a paint before a surface has bound
 /// one -- and every cross then falls back to the built-in dissolve.
+///
+/// Built only while `gl` is current on this thread and shared with the canvas being painted: the
+/// draws through `stage` are `unsafe` on that, and their SAFETY comments rest on it.
 pub struct Shaders<'a> {
     pub gl: &'a glow::Context,
     pub stage: &'a mut image_shader::ShaderStage,
@@ -309,8 +312,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     params,
                                 };
                                 let effect = shader.as_ref().map(|(path, _)| path.as_path());
-                                // SAFETY: `paint_surface` made this context current before calling
-                                // `execute`, and it is the one every GL object here belongs to.
+                                // SAFETY: `Shaders` is built only with `gl` current on this thread and shared
+                                // with the canvas, which is what `draw` requires.
                                 unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), effect, &run) }
                             }
                             _ => false,
@@ -676,6 +679,12 @@ pub(crate) mod tests {
 
     const PLATFORM_SURFACELESS_MESA: egl::Enum = 0x31DD;
 
+    /// Every GL-test skip goes here: a GPU box sets `MANTLE_REQUIRE_GL` so a skip fails the test.
+    fn skip(why: std::fmt::Arguments) {
+        assert!(std::env::var_os("MANTLE_REQUIRE_GL").is_none_or(|v| v.is_empty()), "{why}");
+        eprintln!("{why}");
+    }
+
     /// `None` on any failure, with an `eprintln!` naming which step -- "EGL init failed, skip" is
     /// the gate a driverless CI box takes; this machine has a working Mesa/Iris (and llvmpipe
     /// under `LIBGL_ALWAYS_SOFTWARE=1`) and is expected to actually run every test below.
@@ -712,7 +721,7 @@ pub(crate) mod tests {
             height,
             shaping.clone(),
         )
-        .map_err(|e| eprintln!("EGL init failed, skip: FemtoVG init: {e}"))
+        .map_err(|e| skip(format_args!("EGL init failed, skip: FemtoVG init: {e}")))
         .ok()
     }
 
@@ -727,7 +736,6 @@ pub(crate) mod tests {
 
     /// The EGL harness returning the pieces [`init_headless_egl`] hides, so one context can be made
     /// current against two different draw surfaces.
-    #[allow(clippy::type_complexity)]
     fn init_headless_egl_two_surfaces(
         width: i32,
         height: i32,
@@ -742,16 +750,16 @@ pub(crate) mod tests {
         } {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("EGL init failed, skip: eglGetPlatformDisplay(SURFACELESS_MESA): {e}");
+                skip(format_args!("EGL init failed, skip: eglGetPlatformDisplay(SURFACELESS_MESA): {e}"));
                 return None;
             }
         };
         if let Err(e) = instance.initialize(display) {
-            eprintln!("EGL init failed, skip: eglInitialize: {e}");
+            skip(format_args!("EGL init failed, skip: eglInitialize: {e}"));
             return None;
         }
         if let Err(e) = instance.bind_api(egl::OPENGL_ES_API) {
-            eprintln!("EGL init failed, skip: eglBindAPI(OPENGL_ES_API): {e}");
+            skip(format_args!("EGL init failed, skip: eglBindAPI(OPENGL_ES_API): {e}"));
             return None;
         }
         let attribs = [
@@ -774,11 +782,11 @@ pub(crate) mod tests {
         let config = match instance.choose_first_config(display, &attribs) {
             Ok(Some(c)) => c,
             Ok(None) => {
-                eprintln!("EGL init failed, skip: no EGL config satisfies PBUFFER+GLES3+8-bit-RGBA");
+                skip(format_args!("EGL init failed, skip: no EGL config satisfies PBUFFER+GLES3+8-bit-RGBA"));
                 return None;
             }
             Err(e) => {
-                eprintln!("EGL init failed, skip: eglChooseConfig: {e}");
+                skip(format_args!("EGL init failed, skip: eglChooseConfig: {e}"));
                 return None;
             }
         };
@@ -788,7 +796,7 @@ pub(crate) mod tests {
             match instance.create_pbuffer_surface(display, config, &pbuffer_attribs) {
                 Ok(s) => surfaces.push(s),
                 Err(e) => {
-                    eprintln!("EGL init failed, skip: eglCreatePbufferSurface: {e}");
+                    skip(format_args!("EGL init failed, skip: eglCreatePbufferSurface: {e}"));
                     return None;
                 }
             }
@@ -797,12 +805,12 @@ pub(crate) mod tests {
         let context = match instance.create_context(display, config, None, &context_attribs) {
             Ok(c) => c,
             Err(e) => {
-                eprintln!("EGL init failed, skip: eglCreateContext: {e}");
+                skip(format_args!("EGL init failed, skip: eglCreateContext: {e}"));
                 return None;
             }
         };
         if let Err(e) = instance.make_current(display, Some(surfaces[0]), Some(surfaces[0]), Some(context)) {
-            eprintln!("EGL init failed, skip: eglMakeCurrent: {e}");
+            skip(format_args!("EGL init failed, skip: eglMakeCurrent: {e}"));
             return None;
         }
         Some((instance, display, context, surfaces[0], surfaces[1]))
