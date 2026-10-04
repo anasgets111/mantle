@@ -2866,7 +2866,7 @@ therefore visibly stops and restarts. A spring carries velocity instead of posit
 4. **A spring has no `duration`; only it may omit one.** `duration`, `easing`, `loops` and
    `keyframes` beside a spring are refused, as ADR-0152 refuses `from` beside a sequence. A
    `loops` without `keyframes` is refused too. Two timing descriptions are a config bug, not a
-   precedence rule.
+   precedence rule. Amended by ADR-0329: a spring beside `keyframes` springs each segment.
 5. **Live fields are a type.** `AnimationSpec` becomes a `Motion` enum: `Eased { duration,
    easing }`, `Sequence`, `Spring`. The old doc comments said when `duration`, `easing` and
    `sequence` were dead; this third motion made that a three-way puzzle, resolving ADR-0152's
