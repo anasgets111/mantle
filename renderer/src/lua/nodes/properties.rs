@@ -287,7 +287,7 @@ props! {
         /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
         on_hover(hovered: bool);
     }
-    /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with none is transparent to it.
+    /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with no handler for the event is skipped by that scan.
     mod pointer(ALL) {
         /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. A press on a `textfield` that takes the keyboard goes to the field instead.
         on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
@@ -299,9 +299,9 @@ props! {
         ///
         /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it
         submit: Bound<Flag> = absent(Bool(false));
-        /// `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again.
+        /// `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again, and this node's own handlers, cursor and hover then still apply to it.
         ///
-        /// Book: `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back ([pass-through](../guide/input.md#hit-testing))
+        /// Book: `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back, and this node's handlers still apply to it ([pass-through](../guide/input.md#hit-testing))
         hittable: Bound<Flag> = absent(Prose("inherited; `true` at the root"));
     }
     mod paint(BOX) {

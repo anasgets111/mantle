@@ -32,12 +32,13 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     let mut regions = Vec::new();
     // A root's paint claims nothing, but its handler asks for the whole surface.
     if surface_root.takes_pointer() {
-        collect_input_regions(surface_root, 0.0, 0.0, scale, node::IDENTITY_AFFINE, true, paint_claims, &mut regions);
+        collect_input_regions(surface_root, 0.0, 0.0, (scale, paint_claims), node::IDENTITY_AFFINE, true, &mut regions);
         return regions;
     }
     let root_matrix = surface_root.paint_matrix(surface_root.at(0.0, 0.0)).unwrap_or(node::IDENTITY_AFFINE);
+    let hittable = surface_root.hittable(true);
     for child in surface_root.content_children() {
-        collect_input_regions(child, 0.0, 0.0, scale, root_matrix, true, paint_claims, &mut regions);
+        collect_input_regions(child, 0.0, 0.0, (scale, paint_claims), root_matrix, hittable, &mut regions);
     }
     regions
 }
@@ -197,20 +198,20 @@ fn inset_at(r: i32, row: i32) -> i32 {
     (r - (r * r - dy * dy).max(0.0).sqrt()).round() as i32
 }
 
-#[allow(clippy::too_many_arguments)]
+/// `scan` is the per-surface `(scale, paint_claims)`, unchanged down the recursion.
 fn collect_input_regions(
     node: &ResolvedNode,
     origin_x: f32,
     origin_y: f32,
-    scale: f32,
+    scan: (f32, bool),
     matrix: node::Affine,
     inherited: bool,
-    paint_claims: bool,
     out: &mut Vec<PhysicalRect>,
 ) {
     if !node.in_flow() {
         return;
     }
+    let (scale, paint_claims) = scan;
     let rect = node.at(origin_x, origin_y);
     let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
     let hittable = node.hittable(inherited);
@@ -224,7 +225,7 @@ fn collect_input_regions(
         }
     }
     for child in node.content_children() {
-        collect_input_regions(child, rect.x, rect.y, scale, matrix, hittable, paint_claims, out);
+        collect_input_regions(child, rect.x, rect.y, scan, matrix, hittable, out);
     }
 }
 
@@ -629,6 +630,10 @@ mod tests {
         layer.children.push(front);
         let root = region_node(4, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![layer]);
         assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 30, y0: 0, x1: 50, y1: 20 }]);
+        let card = region_node(5, "rect", (0.0, 0.0, 20.0, 20.0), solid_paint(), Vec::new());
+        let mut root = region_node(6, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![card]);
+        set(&mut root, false);
+        assert!(overlay_input_regions(&root, 1.0).is_empty());
     }
 
     #[test]

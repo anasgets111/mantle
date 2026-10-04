@@ -204,7 +204,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `on_drag` | `fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"\|"move"\|"end")` | None | Left-button drag. `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface |
 | `on_wheel` | `fun(rect: Rect, steps: number)` | None | Vertical wheel in notches, positive away from the user, fractional on touchpads. The innermost handler or scroll container wins; on one node, the `scroll` |
 | `submit` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
-| `hittable` | `boolean\|Bound` | Inherited; `true` at the root | `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back ([pass-through](../guide/input.md#hit-testing)) |
+| `hittable` | `boolean\|Bound` | Inherited; `true` at the root | `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back, and this node's handlers still apply to it ([pass-through](../guide/input.md#hit-testing)) |
 <!-- End of the generated table. -->
 
 `scale`, `rotate` and `translate` act like CSS `transform`: the subtree draws moved, while layout,

@@ -280,8 +280,9 @@ fn descend<'a>(
     };
     let hittable = node.hittable(inherited);
     // A `hittable = false` node claims nothing itself but stays on the path above a re-enabled descendant.
-    let inside = hittable && rect.contains(point);
-    if !rect.contains(point) && node.clips_children() {
+    let contains = rect.contains(point);
+    let inside = hittable && contains;
+    if !contains && node.clips_children() {
         return false;
     }
     path.push(node);

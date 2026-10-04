@@ -78,7 +78,7 @@
 ---@field on_drag? fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"|"move"|"end") Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
 ---@field on_wheel? fun(rect: Rect, steps: number) Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
 ---@field submit? boolean|Bound Default `false`. A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
----@field hittable? boolean|Bound Default: inherited; `true` at the root. `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again.
+---@field hittable? boolean|Bound Default: inherited; `true` at the root. `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again, and this node's own handlers, cursor and hover then still apply to it.
 ---@field [string] "no such property"
 
 ---Placement in a parent, which a surface root lacks.
