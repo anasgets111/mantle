@@ -688,6 +688,10 @@ mod tests {
         let to = Animatable::Number(0.0);
         assert_eq!(from.lerp(&to, Easing::OutBack.apply(0.7), "width"), Animatable::Number(0.0));
         assert!(matches!(from.lerp(&to, Easing::OutBack.apply(0.7), "margin"), Animatable::Number(n) if n < 0.0));
+        // A path's trim lands on exactly 1, so a closed ring strokes untrimmed rather than open.
+        let (empty, whole) = (Animatable::Number(0.0), Animatable::Number(1.0));
+        assert_eq!(empty.lerp(&whole, Easing::OutBack.apply(0.7), "trim_end"), whole);
+        assert_eq!(whole.lerp(&empty, Easing::OutBack.apply(0.7), "trim_start"), empty);
     }
 
     /// The overshooting families leave `[0, 1]` on purpose; the property's own range is what pulls
