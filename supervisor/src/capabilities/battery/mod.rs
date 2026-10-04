@@ -19,6 +19,25 @@ pub(super) mod fixtures {
     use super::controller::DISPLAY_DEVICE;
 
     pub(super) const MOUSE: &str = "/org/freedesktop/UPower/devices/mouse_test";
+    pub(super) const SUPPLY: &str = "/org/freedesktop/UPower/devices/battery_BAT0";
+
+    /// A system battery at 38.4 of its 42 Wh design: 91% health.
+    struct FakeSupply;
+
+    #[rustfmt::skip]
+    #[zbus::interface(name = "org.freedesktop.UPower.Device")]
+    impl FakeSupply {
+        #[zbus(property, name = "Type")]
+        fn kind(&self) -> u32 { 2 }
+        #[zbus(property)]
+        fn power_supply(&self) -> bool { true }
+        #[zbus(property)]
+        fn is_present(&self) -> bool { true }
+        #[zbus(property)]
+        fn energy_full(&self) -> f64 { 38.4 }
+        #[zbus(property)]
+        fn energy_full_design(&self) -> f64 { 42.0 }
+    }
 
     #[derive(Default)]
     pub(super) struct FakeDevice {
@@ -75,6 +94,8 @@ pub(super) mod fixtures {
             .serve_at(DISPLAY_DEVICE, display)
             .unwrap()
             .serve_at(MOUSE, FakeDevice { kind: 5, percentage: mouse_percent, ..Default::default() })
+            .unwrap()
+            .serve_at(SUPPLY, FakeSupply)
             .unwrap()
             .name("org.freedesktop.UPower")
             .unwrap()

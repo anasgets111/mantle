@@ -16,7 +16,7 @@ text {
 
 | Contract | Behavior |
 | :--- | :--- |
-| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` |
+| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` and `capacity`, which sums each system battery's `EnergyFull` over its `EnergyFullDesign` because `DisplayDevice` reports no capacity |
 | Updates | Re-reads the display device on `PropertiesChanged`; follows peripheral add, remove and property changes; retries failed enumeration after one second |
 | No system battery | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates; peripherals may remain |
 | No UPower | The same display defaults, with `peripherals = {}` |

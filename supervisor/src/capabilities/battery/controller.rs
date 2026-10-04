@@ -1,7 +1,6 @@
 //! [`BatteryController`] owns read-only `mantle.battery` telemetry. Module-level behavior is
 //! documented in `battery/mod.rs`.
 
-use shared::state::battery::PeripheralBattery;
 pub use shared::state::battery::{BatteryState, BatteryStatus};
 
 use std::collections::HashMap;
@@ -118,7 +117,7 @@ async fn run_battery_task(
     system_bus: zbus::Connection,
     state: Arc<Mutex<BatteryState>>,
     events: UnboundedSender<()>,
-    mut peripheral_updates: UnboundedReceiver<Vec<PeripheralBattery>>,
+    mut peripheral_updates: UnboundedReceiver<super::peripherals::Readings>,
 ) {
     // A live `GetAll`, never zbus's property cache: its refresh task listens to the same signal, so
     // our stream can win the race, read the pre-change cache, and leave a newly plugged charger
@@ -161,8 +160,8 @@ async fn run_battery_task(
     loop {
         tokio::select! {
             _ = events.closed() => return,
-            Some(peripherals) = peripheral_updates.recv() => {
-                previous.peripherals = peripherals;
+            Some((peripherals, capacity)) = peripheral_updates.recv() => {
+                (previous.peripherals, previous.capacity) = (peripherals, capacity);
                 if !publish(&state, &events, previous.clone()) { return; }
                 continue;
             }
@@ -170,7 +169,11 @@ async fn run_battery_task(
             Some(_) = owner.next() => {},
             else => return,
         }
-        let current = BatteryState { peripherals: previous.peripherals.clone(), ..read_state(&properties).await };
+        let current = BatteryState {
+            peripherals: previous.peripherals.clone(),
+            capacity: previous.capacity,
+            ..read_state(&properties).await
+        };
         let current = hold_through_glitch(&previous, current);
         previous = current.clone();
         if !publish(&state, &events, current) {
@@ -186,7 +189,7 @@ mod tests {
     use tokio::sync::mpsc;
     use zbus::zvariant::OwnedObjectPath;
 
-    use super::super::fixtures::{FakeDevice, MOUSE, serve};
+    use super::super::fixtures::{FakeDevice, MOUSE, SUPPLY, serve};
     use crate::capabilities::test_support::{private_bus, properties, within};
 
     #[tokio::test]
@@ -194,7 +197,7 @@ mod tests {
         let bus = private_bus().await;
         let first = serve(
             &bus,
-            vec![OwnedObjectPath::try_from(MOUSE).unwrap()],
+            [MOUSE, SUPPLY].map(|path| OwnedObjectPath::try_from(path).unwrap()).to_vec(),
             FakeDevice { kind: UPOWER_TYPE_BATTERY, percentage: 70.0, time_to_empty: 3600, time_to_full: 1200 },
             25.0,
         )
@@ -208,6 +211,11 @@ mod tests {
         assert_eq!(
             (snapshot.percent, snapshot.time_to_empty, snapshot.time_to_full, snapshot.peripherals[0].percent),
             (70, Some(3600), Some(1200), Some(25))
+        );
+        assert_eq!(
+            (snapshot.peripherals.len(), snapshot.capacity),
+            (1, Some(91)),
+            "the supply is health, not a peripheral"
         );
         {
             let display = first.object_server().interface::<_, FakeDevice>(DISPLAY_DEVICE).await.unwrap();
@@ -229,7 +237,10 @@ mod tests {
         while battery.snapshot().percent != 40 {
             within(changed.recv()).await.unwrap();
         }
-        assert_eq!((battery.snapshot().present, battery.snapshot().percent), (true, 40));
+        assert_eq!(
+            (battery.snapshot().present, battery.snapshot().percent, battery.snapshot().capacity),
+            (true, 40, None)
+        );
 
         let (events, mut changed) = mpsc::unbounded_channel();
         let (peripherals, updates) = mpsc::unbounded_channel();

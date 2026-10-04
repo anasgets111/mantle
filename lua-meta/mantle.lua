@@ -480,6 +480,7 @@
 
 ---@class BatteryState
 ---`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
+---@field capacity? integer Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity.
 ---@field percent integer UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
 ---@field peripherals PeripheralBattery[] UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`.
 ---@field present boolean UPower's display device is a present battery. Check it before drawing system charge, state or time estimates.

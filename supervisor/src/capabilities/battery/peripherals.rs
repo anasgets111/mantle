@@ -1,4 +1,5 @@
-//! Individual UPower batteries outside the system supply.
+//! Individual UPower batteries outside the system supply, and the system batteries' health from the
+//! same reads.
 
 use std::collections::HashMap;
 
@@ -89,6 +90,26 @@ fn from_properties(id: &str, all: &HashMap<String, OwnedValue>) -> Option<Periph
     })
 }
 
+/// A present system battery's `EnergyFull` and `EnergyFullDesign`, both reported. The display
+/// device leaves `Capacity` at `0`, so health comes from the real batteries.
+fn system_energy(id: &str, all: &HashMap<String, OwnedValue>) -> Option<(f64, f64)> {
+    let system = id != DISPLAY_DEVICE
+        && get::<u32>(all, "Type") == Some(2)
+        && get::<bool>(all, "PowerSupply") == Some(true)
+        && get::<bool>(all, "IsPresent") == Some(true);
+    let energy = (get::<f64>(all, "EnergyFull")?, get::<f64>(all, "EnergyFullDesign")?);
+    (system && energy.0 > 0.0 && energy.1 > 0.0).then_some(energy)
+}
+
+/// Combined health of every system battery, weighted by design energy, as UPower rounds `Capacity`.
+fn capacity((full, design): (f64, f64)) -> Option<u8> {
+    let percent = full / design * 100.0;
+    percent.is_finite().then(|| percent.clamp(0.0, 100.0).round() as u8)
+}
+
+/// What [`run`] sends: the peripherals and the system batteries' [`capacity`].
+pub(super) type Readings = (Vec<PeripheralBattery>, Option<u8>);
+
 async fn watch(
     connection: &zbus::Connection,
     path: &OwnedObjectPath,
@@ -110,7 +131,7 @@ async fn refresh(
     connection: &zbus::Connection,
     watches: &mut HashMap<OwnedObjectPath, Watch>,
     changed: &UnboundedSender<()>,
-    updates: &UnboundedSender<Vec<PeripheralBattery>>,
+    updates: &UnboundedSender<Readings>,
 ) -> bool {
     let paths = match upower.enumerate_devices().await {
         Ok(paths) => paths,
@@ -121,6 +142,7 @@ async fn refresh(
     };
     watches.retain(|path, _| paths.contains(path));
     let mut peripherals = Vec::new();
+    let mut energy = (0.0, 0.0);
     for path in paths {
         if !watches.contains_key(&path) {
             match watch(connection, &path, changed.clone()).await {
@@ -139,16 +161,19 @@ async fn refresh(
         let watch = &watches[&path];
         let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.UPower.Device");
         let all = watch.properties.get_all(interface).await.unwrap_or_default();
+        if let Some((full, design)) = system_energy(path.as_str(), &all) {
+            energy = (energy.0 + full, energy.1 + design);
+        }
         if let Some(device) = from_properties(path.as_str(), &all) {
             peripherals.push(device);
         }
     }
     peripherals.sort_by(|a, b| a.id.cmp(&b.id));
-    let _ = updates.send(peripherals);
+    let _ = updates.send((peripherals, capacity(energy)));
     true
 }
 
-pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<Vec<PeripheralBattery>>) {
+pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<Readings>) {
     let upower = match UPowerProxy::builder(&connection).build().await {
         Ok(proxy) => proxy,
         Err(err) => {
@@ -183,7 +208,7 @@ pub(super) async fn run(connection: zbus::Connection, updates: UnboundedSender<V
             Some(_) = device_changes.recv() => {},
             Some(_) = owners.next() => {
                 watches.clear();
-                if updates.send(Vec::new()).is_err() { return; }
+                if updates.send((Vec::new(), None)).is_err() { return; }
             },
         }
     }
@@ -199,8 +224,19 @@ mod tests {
 
     #[test]
     fn skips_system_supplies_and_keeps_unknown_percentage_absent() {
-        let supply = properties(&[("Type", 2u32.into()), ("PowerSupply", true.into()), ("Percentage", 70.0f64.into())]);
+        let supply = properties(&[
+            ("Type", 2u32.into()),
+            ("PowerSupply", true.into()),
+            ("IsPresent", true.into()),
+            ("Percentage", 70.0f64.into()),
+            ("EnergyFull", 38.4f64.into()),
+            ("EnergyFullDesign", 42.0f64.into()),
+        ]);
         assert_eq!(from_properties("/battery_BAT0", &supply), None);
+        assert_eq!(system_energy("/battery_BAT0", &supply).and_then(capacity), Some(91));
+        assert_eq!(system_energy(DISPLAY_DEVICE, &supply), None, "the display device sums the real ones");
+        assert_eq!(capacity((44.0, 42.0)), Some(100), "a new battery can beat its design");
+        assert_eq!(capacity((0.0, 0.0)), None, "no system battery");
         let mouse = properties(&[
             ("Type", 5u32.into()),
             ("Model", "Mouse".into()),
@@ -236,11 +272,11 @@ mod tests {
     }
 
     async fn next_matching(
-        updates: &mut mpsc::UnboundedReceiver<Vec<PeripheralBattery>>,
+        updates: &mut mpsc::UnboundedReceiver<Readings>,
         matches: impl Fn(&[PeripheralBattery]) -> bool,
     ) -> Vec<PeripheralBattery> {
         loop {
-            let next = within(updates.recv()).await.unwrap();
+            let (next, _) = within(updates.recv()).await.unwrap();
             if matches(&next) {
                 return next;
             }
@@ -303,7 +339,7 @@ mod tests {
             .fail_enumeration = true;
         let (tx, mut updates) = mpsc::unbounded_channel();
         let follower = tokio::spawn(run(bus.connection().await, tx));
-        let list = within(updates.recv()).await.unwrap();
+        let (list, _) = within(updates.recv()).await.unwrap();
         assert_eq!(list[0].percent, Some(55));
         follower.abort();
     }

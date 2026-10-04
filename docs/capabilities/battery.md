@@ -24,6 +24,7 @@ text {
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `capacity?` | `integer` | Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity. |
 | `percent` | `integer` | UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value. |
 | `peripherals` | `PeripheralBattery[]` | UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`. |
 | `present` | `boolean` | UPower's display device is a present battery. Check it before drawing system charge, state or time estimates. |
@@ -67,7 +68,7 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 
 | Contract | Behavior |
 | :--- | :--- |
-| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` |
+| Source | UPower's `DisplayDevice` for the system battery; `EnumerateDevices` for `peripherals` and `capacity`, which sums each system battery's `EnergyFull` over its `EnergyFullDesign` because `DisplayDevice` reports no capacity |
 | Updates | Re-reads the display device on `PropertiesChanged`; follows peripheral add, remove and property changes; retries failed enumeration after one second |
 | No system battery | `present = false`, `percent = 0`, `state = "unknown"`, no time estimates; peripherals may remain |
 | No UPower | The same display defaults, with `peripherals = {}` |
