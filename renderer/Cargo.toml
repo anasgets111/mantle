@@ -81,8 +81,8 @@ rustc-hash = "2"
 # `drm-support` only adds KMS scanout traits neither `Device` nor `BufferObject` need here.
 # `Format`/`Modifier` are `drm_fourcc` re-exports gbm always carries, so no separate dependency.
 gbm = { version = "0.18.0", default-features = false }
-accesskit = "0.21.1"
-accesskit_unix = "0.17.2"
+accesskit = "0.25.1"
+accesskit_unix = "0.24.0"
 
 [dev-dependencies]
 tempfile.workspace = true

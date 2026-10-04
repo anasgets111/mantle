@@ -8,8 +8,8 @@ use std::sync::{
 };
 
 use accesskit::{
-    Action, ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Node, NodeId, Rect, Role, Tree,
-    TreeUpdate,
+    Action, ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, Node, NodeId, Rect, Role, TreeId,
+    TreeInfo, TreeUpdate,
 };
 use accesskit_unix::Adapter;
 
@@ -148,13 +148,13 @@ fn tree_update(
     let mut nodes = Vec::new();
     append(root, (0.0, 0.0), &mut nodes, true, plain);
     let root_id = NodeId(root.id.raw());
-    let mut tree = Tree::new(root_id);
+    let mut tree = TreeInfo::new(root_id);
     tree.toolkit_name = Some("Mantle".into());
     // AccessKit panics on a focus outside the node list; a reload can drop the focused node
     // before the next prune.
     let focus =
         focus.map(|id| NodeId(id.raw())).filter(|id| nodes.iter().any(|(node, _)| node == id)).unwrap_or(root_id);
-    TreeUpdate { nodes, tree: Some(tree), focus }
+    TreeUpdate { nodes, tree: Some(tree), tree_id: TreeId::ROOT, focus }
 }
 
 impl App {
@@ -164,8 +164,8 @@ impl App {
                 continue;
             }
             match request.action {
-                Action::Focus => self.accessibility_action(&surface_id, request.target.0, false),
-                Action::Click => self.accessibility_action(&surface_id, request.target.0, true),
+                Action::Focus => self.accessibility_action(&surface_id, request.target_node.0, false),
+                Action::Click => self.accessibility_action(&surface_id, request.target_node.0, true),
                 _ => {}
             }
         }
