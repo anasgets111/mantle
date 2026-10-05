@@ -58,13 +58,25 @@ local function stop_others(demo_dir, done)
                 end
             end
             each(running, function(shell, next_shell)
-                run("readlink", { "/proc/" .. shell.pid .. "/exe" }, function(_, exe)
+                -- The exe, then its argv one per line: the flags it ran with, `--profile` or `-v`, come back too.
+                local proc = "/proc/" .. shell.pid
+                run("sh", { "-c", 'readlink "$1/exe"; tr "\\0" "\\n" < "$1/cmdline"', "sh", proc }, function(_, out)
                     local known = false
                     for _, saved in ipairs(restore) do
                         known = known or saved.config == shell.config
                     end
-                    if exe[1] and shell.config ~= demo_dir and not known then
-                        restore[#restore + 1] = { exe = (exe[1]:gsub(" %(deleted%)$", "")), config = shell.config }
+                    if out[1] and shell.config ~= demo_dir and not known then
+                        local flags, k = {}, 3
+                        while out[k] do
+                            if out[k] == "-c" then
+                                k = k + 1
+                            elseif out[k] ~= "-d" and out[k] ~= "--detached" then
+                                flags[#flags + 1] = out[k]
+                            end
+                            k = k + 1
+                        end
+                        local exe = out[1]:gsub(" %(deleted%)$", "")
+                        restore[#restore + 1] = { exe = exe, config = shell.config, flags = flags }
                         store:set("shells", restore)
                     end
                     run("mantle", { "stop", "--pid", shell.pid }, next_shell)
@@ -79,7 +91,10 @@ end
 local function restore_shells(shells)
     if #shells == 0 then return end
     for _, shell in ipairs(shells) do
-        process.detach(shell.exe, { "-d", "-c", shell.config })
+        local args = { "-d", table.unpack(shell.flags or {}) }
+        args[#args + 1] = "-c"
+        args[#args + 1] = shell.config
+        process.detach(shell.exe, args)
     end
     store:set("shells", {})
 end
