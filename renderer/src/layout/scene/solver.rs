@@ -232,10 +232,14 @@ pub(super) fn taffy_style(
         // Not `1fr`: taffy 0.14 leaves item margins out of its max-content size (DioxusLabs/taffy#1177).
         None => {
             out.display = taffy::Display::Grid;
-            // ponytail: min-content is 0 here (flex auto min, nested grids); upgrade: a min-content floor.
-            let cell = || vec![taffy::style_helpers::minmax(zero(), taffy::MaxTrackSizingFunction::auto())];
-            out.grid_template_columns = cell();
-            out.grid_template_rows = cell();
+            // An auto-size, uncapped axis floors the track at the children's min-content (CSS
+            // fit-content); a fixed or capped one keeps `0` so the cell stays the box.
+            let cell = |floor: bool| {
+                let min = if floor { taffy::MinTrackSizingFunction::min_content() } else { zero() };
+                vec![taffy::style_helpers::minmax(min, taffy::MaxTrackSizingFunction::auto())]
+            };
+            out.grid_template_columns = cell(style.width_mode == SizeMode::Content && style.max_width.is_none());
+            out.grid_template_rows = cell(style.height_mode == SizeMode::Content && style.max_height.is_none());
         }
     }
 
@@ -530,14 +534,16 @@ fn measure_leaf(
                 Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
                 Measure::Slots { .. } => taffy::Size::ZERO,
                 Measure::Text { content, runs, face, wrap, max_lines, memo } => {
-                    // The wrap width: the known width, else the one on offer; `None` when unwrapped or taffy asks for min/max-content.
+                    // The wrap width: the known width, else the one on offer; `None` when unwrapped or taffy asks
+                    // for max-content, and 0 for min-content, which breaks at every chance: the longest word.
                     let max_width = match wrap {
                         node::Wrap::None => None,
                         node::Wrap::Word => known
                             .width
                             .or(match offered.width {
                                 taffy::AvailableSpace::Definite(width) => Some(width),
-                                taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+                                taffy::AvailableSpace::MinContent => Some(0.0),
+                                taffy::AvailableSpace::MaxContent => None,
                             })
                             .map(|width| ceiling.width.map_or(width, |max| width.min(max)))
                             .or(ceiling.width),
@@ -1036,6 +1042,49 @@ pub(super) mod tests {
             let stack = &scene.surface("bar@TEST").unwrap().children[0];
             assert_eq!(stack.children[0].rect.x, 15.0, "{parent}: centred in 50, not in the 80 child");
         }
+    }
+
+    /// CSS fit-content: an auto-size stack is at least its children's min-content, so a fixed child
+    /// wider than a narrow parent centres by overflowing both sides, wrapper or not.
+    #[test]
+    fn an_auto_stack_is_no_narrower_than_its_fixed_child_in_a_narrow_parent() {
+        for wrapped in [true, false] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let leaf = "rect { width = 230, height = 20 }";
+            let inner = if wrapped { format!("rect {{ children = {{ {leaf} }} }}") } else { leaf.to_string() };
+            let (lua, surface) = surface_from(&format!(
+                "panel {{ id = 'bar', child = rect {{ width = 40, height = 40, margin = {{ left = 300 }}, children = {{
+                    column {{ align_h = 'center', children = {{ {inner} }} }},
+                }} }} }}"
+            ));
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let outer = &scene.surface("bar@TEST").unwrap().children[0];
+            let column = &outer.children[0];
+            assert_eq!(column.children[0].rect.width, 230.0, "wrapped = {wrapped}");
+            assert_eq!(outer.rect.x + column.rect.x, 205.0, "wrapped = {wrapped}: centred on the 40 box at 300..340");
+        }
+    }
+
+    /// A wrapping text's min-content is its longest word: in a narrow parent an auto wrapper is that
+    /// wide, no narrower, and the text still wraps at the wrapper's width.
+    #[test]
+    fn wrapping_text_in_an_auto_stack_keeps_its_longest_word_whole() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let word = "supercalifragilisticexpialidocious";
+        let (lua, surface) = surface_from(&format!(
+            "panel {{ id = 'bar', child = rect {{ width = 40, height = 100, children = {{
+                rect {{ children = {{ text {{ content = 'a {word} b', font_size = 12, wrap = 'word' }} }} }},
+                text {{ content = '{word}', font_size = 12 }},
+            }} }} }}"
+        ));
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let outer = &scene.surface("bar@TEST").unwrap().children[0];
+        let (wrapper, lone) = (&outer.children[0], &outer.children[1]);
+        assert!(lone.rect.width > 40.0);
+        assert_eq!(wrapper.rect.width, lone.rect.width, "as wide as the word, not squeezed to the 40 parent");
+        assert!(wrapper.children[0].rect.height > 2.0 * 12.0, "the phrase wraps around the word");
     }
 
     #[test]
