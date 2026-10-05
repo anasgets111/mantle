@@ -88,6 +88,17 @@ pub struct WindowSpec {
     /// Advisory: parsed and carried, never enforced against the resolved tree.
     pub min_size: Option<SizeHint>,
     pub max_size: Option<SizeHint>,
+    pub decorations: Decorations,
+}
+
+keywords! {
+    /// Who draws a window's frame: the compositor (`zxdg_decoration_manager_v1`) or the app.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Decorations {
+        #[default]
+        Server,
+        Client,
+    }
 }
 
 pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
@@ -96,7 +107,8 @@ pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
     let min_size = window::min_size.read(properties)?;
     let max_size = window::max_size.read(properties)?;
     check_max_size_above_min(min_size, max_size)?;
-    Ok(WindowSpec { id, title: window::title.read(properties)?, app_id, min_size, max_size })
+    let decorations = window::decorations.read(properties)?;
+    Ok(WindowSpec { id, title: window::title.read(properties)?, app_id, min_size, max_size, decorations })
 }
 
 keywords! {
@@ -395,8 +407,25 @@ mod tests {
                 app_id: "mantle.{id}".to_string(),
                 min_size: Some(SizeHint { width: 320.0, height: 240.0 }),
                 max_size: Some(SizeHint { width: 1280.0, height: 960.0 }),
+                decorations: Decorations::Server,
             }
         );
+    }
+
+    #[test]
+    fn decorations_default_to_server_and_take_client_or_refuse_other_words() {
+        let lua = mlua::Lua::new();
+        let read = |extra: &str| {
+            let table: mlua::Table =
+                lua.load(format!(r#"return {{ kind = "window", id = "w" {extra} }}"#)).eval().unwrap();
+            window_spec(&props_from_table(&table))
+        };
+        assert_eq!(read("").unwrap().decorations, Decorations::Server);
+        assert_eq!(read(r#", decorations = "client""#).unwrap().decorations, Decorations::Client);
+        assert!(matches!(
+            read(r#", decorations = "none""#).unwrap_err(),
+            LayoutError::InvalidProperty { property, .. } if property == "decorations"
+        ));
     }
 
     #[test]

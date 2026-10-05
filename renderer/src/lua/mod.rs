@@ -207,7 +207,7 @@ impl Loader {
         fonts::register(&lua)?;
         fuzzy::register(&lua)?;
         focus::register(&lua)?;
-        toplevel::register(&lua)?;
+        toplevel::register(&lua, dirty.clone())?;
         signal::register(&lua, dirty)?;
         store::register(&lua)?;
         session_process::register(&lua)?;

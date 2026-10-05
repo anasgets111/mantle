@@ -106,8 +106,38 @@ function FocusHandle:set_text(text) end
 ---@return FocusHandle
 function focus_target(name) end
 
+---The edges a tiling compositor has tiled the window against.
+---@class ToplevelTiled
+---@field left boolean
+---@field right boolean
+---@field top boolean
+---@field bottom boolean
+
+---The most room the compositor suggests for the window, in logical pixels.
+---@class ToplevelBounds
+---@field width integer
+---@field height integer
+
+---What the compositor can do for the window; a compositor that never says supports everything.
+---@class ToplevelCapabilities
+---@field window_menu boolean
+---@field maximize boolean
+---@field fullscreen boolean
+---@field minimize boolean
+
+---What the compositor last configured a `window` to be. Before the first configure and after the window closes it is the default: nothing set, `decoration = "client"`.
+---@class ToplevelState
+---@field activated boolean The window has keyboard focus as the compositor sees it.
+---@field maximized boolean
+---@field fullscreen boolean
+---@field resizing boolean An interactive resize is under way.
+---@field tiled ToplevelTiled
+---@field bounds? ToplevelBounds `nil` until the compositor suggests bounds.
+---@field capabilities ToplevelCapabilities
+---@field decoration "server"|"client" Who draws the frame: the mode the compositor chose, which is `"client"` without `zxdg_decoration_manager_v1`.
+
 ---@class ToplevelHandle
----A named `window` the app draws its own frame for. Each method asks the compositor to take over the pointer, and only works inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, it logs a warning and does nothing.
+---A named `window` the app draws its own frame for. `move`, `resize` and `show_menu` ask the compositor to take over the pointer, and only work inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, they log a warning and do nothing.
 local ToplevelHandle = {}
 
 ---Start an interactive move of the window, as dragging a title bar does.
@@ -120,7 +150,11 @@ function ToplevelHandle:resize(edge) end
 ---Open the compositor's window menu at the pointer's press position.
 function ToplevelHandle:show_menu() end
 
----Names a `window` whose frame the app draws; call `:move()`, `:resize(edge)` or `:show_menu()` on it from an `on_press`.
+---The window's configure state as a read-only signal, rewritten when the compositor changes it, so a frame can follow `activated`, `maximized`, `tiled` and the like. Reading it never requests a change.
+---@return Signal<ToplevelState>
+function ToplevelHandle:state() end
+
+---Names a `window` whose frame the app draws; call `:move()`, `:resize(edge)` or `:show_menu()` on it from an `on_press`, or `:state()` for its configure state.
 ---[docs](https://anasgets111.github.io/mantle/surfaces/window.html#custom-title-bar)
 ---@param id string The `id` of a `window`.
 ---@return ToplevelHandle

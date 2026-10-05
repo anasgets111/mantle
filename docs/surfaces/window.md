@@ -115,6 +115,7 @@ opens.
 | `app_id` | `string\|Bound` | `"mantle-{id}"` | What compositor window rules match |
 | `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size)) |
 | `max_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size |
+| `decorations` | `"server"\|"client"\|Bound` | `"server"` | Who draws the window's frame: `"server"` asks the compositor for its decorations, `"client"` leaves the frame to the app. A compositor without `zxdg_decoration_manager_v1` always leaves it to the app; `toplevel(id):state().decoration` says which was chosen |
 | `on_close` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
 | `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
@@ -124,8 +125,10 @@ opens.
 | `child` | `Node\|Bound` | None | The one root node; a function `child` is refused |
 <!-- End of the generated table. -->
 
-The engine requests server-side decorations and draws none itself. A compositor that insists on
-client-side decorations gets an undecorated window, with a log line.
+By default the engine requests server-side decorations and draws none itself. `decorations = "client"`
+asks for none, and a compositor without `zxdg_decoration_manager_v1` (or one that insists on its
+choice) decides regardless: the mode it chose is `toplevel(id):state().decoration`. Changing the
+property on a reload asks again.
 
 ## Size
 
@@ -157,8 +160,8 @@ the opening size.
 ### Custom title bar
 
 An app that draws its own frame asks the compositor to run the pointer: `toplevel(id)` takes a
-`window`'s `id` and has three methods, called from an [`on_press`](../guide/input.md) (or an
-`on_drag` `"start"`).
+`window`'s `id` and has three request methods, called from an [`on_press`](../guide/input.md) (or an
+`on_drag` `"start"`), and `:state()` ([window state](#window-state)).
 
 | Method | Does |
 | :--- | :--- |
@@ -201,6 +204,38 @@ return {
                 },
                 grip("bottom_right", { width = GRIP, height = GRIP, align_h = "end", cursor = "se-resize" }),
             },
+        },
+    },
+}
+```
+
+### Window state
+
+`toplevel(id):state()` is a read-only signal of what the compositor last configured the window to
+be, so the app's own frame can follow it. It is rewritten only when a configure changes a value.
+Before the first configure and after the window closes it holds the default: every flag `false`,
+no `bounds`, every capability `true`, `decoration = "client"`. The engine sends no request to change
+these; maximizing and fullscreen stay with the compositor's bindings.
+
+| Key | Type | Meaning |
+| :--- | :--- | :--- |
+| `activated`, `maximized`, `fullscreen`, `resizing` | `boolean` | The `xdg_toplevel` state flags |
+| `tiled` | `{ left, right, top, bottom }` | The edges a tiling compositor tiled the window against |
+| `bounds` | `{ width, height }` or `nil` | The most room the compositor suggests, in logical pixels |
+| `capabilities` | `{ window_menu, maximize, fullscreen, minimize }` | What the compositor supports; all `true` when it never says |
+| `decoration` | `"server"` or `"client"` | The mode the compositor chose |
+
+```lua
+local focused = toplevel("main"):state():map(function(s) return s.activated end)
+
+return {
+    window {
+        id = "main",
+        title = "Notes",
+        decorations = "client",
+        child = rect {
+            width = "fill", height = "fill",
+            background = focused:map(function(on) return on and "#1e1e2e" or "#313244" end),
         },
     },
 }
@@ -253,6 +288,7 @@ return { editor }
 | `width = 600` on the window doesn't resize it | That sizes the root inside the window; the compositor owns the window's size |
 | A click on the window's empty background reaches the window behind it | Put the background on a `"fill"` child, not the window ([input region](index.md#input-region)) |
 | No title bar under a compositor without server-side decorations | The engine draws none; draw your own row ([custom title bar](#custom-title-bar)), or use compositor rules |
+| `decorations = "server"` still leaves a bare window | The compositor has no `zxdg_decoration_manager_v1` or chose client-side; check `toplevel(id):state().decoration` |
 | `toplevel("main"):move()` warns and does nothing | Call it from `on_press`, not `on_click`; the press serial is gone by release |
 
 See also: [surfaces](index.md), [popup](popup.md), [nodes](../nodes/index.md),

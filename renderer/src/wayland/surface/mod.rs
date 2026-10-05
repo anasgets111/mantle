@@ -548,6 +548,9 @@ impl App {
         self.drop_child_popups(index);
         self.release_bound(index);
         self.surfaces[index].forget_role_object();
+        if matches!(self.surfaces[index].role, TrackedRole::Window { .. }) {
+            crate::lua::toplevel::publish(self.client.lua(), &self.surfaces[index].surface_id, Default::default());
+        }
         // No `leave` follows a client-side destroy; stale focus would scrub and re-arm every frame.
         if self.keyboard_focus.as_deref() == Some(self.surfaces[index].surface_id.as_str()) {
             self.keyboard_focus = None;
@@ -716,6 +719,7 @@ mod tests {
             app_id: format!("mantle-{id}"),
             min_size: None,
             max_size: None,
+            decorations: Default::default(),
         }
     }
 

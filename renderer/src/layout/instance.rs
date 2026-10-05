@@ -264,6 +264,7 @@ mod tests {
             app_id: format!("mantle-{id}"),
             min_size: None,
             max_size: None,
+            decorations: Default::default(),
         })
     }
 

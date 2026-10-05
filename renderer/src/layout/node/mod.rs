@@ -64,7 +64,8 @@ pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec
 pub(crate) use toplevel::Adjustment;
 pub(crate) use toplevel::{AnchorRect, PopupExtent};
 pub use toplevel::{
-    ConstraintAdjustment, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec, window_spec,
+    ConstraintAdjustment, Decorations, PopupAnchor, PopupOffset, PopupSpec, SizeHint, WindowSpec, popup_spec,
+    window_spec,
 };
 
 /// A node's property map, keyed by the `&'static str` the config's spelling was matched against

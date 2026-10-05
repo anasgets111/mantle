@@ -19,7 +19,7 @@ use crate::layout::node::prop::{
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
-    ConstraintAdjustment, Content, CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font,
+    ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners,
     NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
     SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec,
@@ -620,6 +620,8 @@ props! {
         min_size: Bound<SizeHint> = range(0.0, 8192.0);
         /// Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size.
         max_size: Bound<SizeHint> = range(0.0, 8192.0);
+        /// Who draws the window's frame: `"server"` asks the compositor for its decorations, `"client"` leaves the frame to the app. A compositor without `zxdg_decoration_manager_v1` always leaves it to the app; `toplevel(id):state().decoration` says which was chosen.
+        decorations: Bound<OneOf<Decorations>> = absent(Choice("server"));
         /// The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing.
         on_close();
         /// Opens and closes the window; state and `id` survive (ADR-0049).

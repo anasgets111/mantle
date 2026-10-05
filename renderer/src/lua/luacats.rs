@@ -443,11 +443,11 @@ pub(crate) const fn unraw(ident: &str) -> &str {
 /// ```
 macro_rules! lua_class {
     ($(#[doc = $doc:literal])* impl $class:ident {
-        $($(#[doc = $method_doc:literal])* fn $method:ident($l:ident, $this:ident $(, $(#[doc = $param_doc:literal])* $param:ident: $param_ty:ty)* $(,)?) $body:block)*
+        $($(#[doc = $method_doc:literal])* fn $method:ident($l:ident, $this:ident $(, $(#[doc = $param_doc:literal])* $param:ident: $param_ty:ty)* $(,)?) $(-> $ret:ty)? $body:block)*
     }) => {
         impl mlua::UserData for $class {
             fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
-                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<()> { $body });)*
+                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<$crate::lua::luacats::lua_class!(@ret $($ret)?)> { $body });)*
             }
         }
 
@@ -460,12 +460,14 @@ macro_rules! lua_class {
                 const METHODS: &[(&str, $crate::lua::luacats::Signature)] = &[$(($crate::lua::luacats::unraw(stringify!($method)), $crate::lua::luacats::Signature {
                     doc: concat!($($method_doc, "\n",)* ""),
                     params: &[$($crate::lua::luacats::param!(stringify!($param), [$($param_doc)*], $param_ty, <$param_ty as $crate::lua::luacats::LuaType>::lua)),*],
-                    returns: &[],
+                    returns: &[$($crate::lua::luacats::param!("", [], $ret, <$ret as $crate::lua::luacats::LuaType>::lua))?],
                 })),*];
                 $crate::lua::luacats::class(out, stringify!($class), concat!($($doc, "\n",)* ""), "", METHODS);
             }
         }
     };
+    (@ret) => { () };
+    (@ret $ret:ty) => { $ret };
 }
 pub(crate) use lua_class;
 
@@ -522,6 +524,7 @@ macro_rules! lua_shape {
             }
             #[cfg(test)]
             fn classes(out: &mut Vec<String>) {
+                $crate::lua::luacats::lua_shape!(@nested $form out $(($field_ty $(, $lua)?))+);
                 let keys = Self::lua_fields();
                 let stub = $crate::lua::luacats::shape_stub(stringify!($form), $name, concat!($($doc, "\n",)* ""), &keys);
                 if !out.contains(&stub) {
@@ -581,6 +584,11 @@ macro_rules! lua_shape {
             }
         }
     };
+    // A record's nested records are declared before it; an alias spells its fields inline.
+    (@nested record $out:ident $(($ty:ty $(, $lua:ty)?))+) => {
+        $(<$crate::lua::luacats::lua_shape!(@lua $ty $(, $lua)?) as $crate::lua::luacats::LuaType>::classes($out);)+
+    };
+    (@nested $other:ident $out:ident $($rest:tt)*) => {};
     (@lua $ty:ty) => { $ty };
     (@lua $ty:ty, $lua:ty) => { $lua };
 }
@@ -640,6 +648,9 @@ pub(crate) fn class(out: &mut Vec<String>, name: &str, doc: &str, fields: &str, 
     let mut class = format!("---@class {name}\n{}{fields}", comment(doc));
     if !methods.is_empty() {
         class += &format!("local {name} = {{}}\n");
+    }
+    for (_, signature) in methods {
+        signature.classes(out);
     }
     for (method, signature) in methods {
         class += &format!("\n{}function {name}:{method}({}) end\n", signature.stub(), signature.names());

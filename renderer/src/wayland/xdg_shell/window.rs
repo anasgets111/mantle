@@ -2,11 +2,13 @@
 
 use shared::{debug, error, warn};
 
+use smithay_client_toolkit::reexports::csd_frame::WindowManagerCapabilities;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
 use super::*;
+use crate::layout::node::Decorations;
 use crate::lua::call_logged;
-use crate::lua::toplevel::{Action, Edge, Request};
+use crate::lua::toplevel::{Action, Bounds, Capabilities, Edge, Request, Tiled, ToplevelState};
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::TrackedRole;
 
@@ -50,6 +52,7 @@ struct WindowUpdate {
     app_id: Option<String>,
     min_size: Option<Option<SizeHint>>,
     max_size: Option<Option<SizeHint>>,
+    decorations: Option<Decorations>,
 }
 fn window_update(applied: &WindowSpec, fresh: &WindowSpec) -> WindowUpdate {
     WindowUpdate {
@@ -57,6 +60,43 @@ fn window_update(applied: &WindowSpec, fresh: &WindowSpec) -> WindowUpdate {
         app_id: (fresh.app_id != applied.app_id).then(|| fresh.app_id.clone()),
         min_size: (fresh.min_size != applied.min_size).then_some(fresh.min_size),
         max_size: (fresh.max_size != applied.max_size).then_some(fresh.max_size),
+        decorations: (fresh.decorations != applied.decorations).then_some(fresh.decorations),
+    }
+}
+
+fn decoration_mode(decorations: Decorations) -> DecorationMode {
+    match decorations {
+        Decorations::Server => DecorationMode::Server,
+        Decorations::Client => DecorationMode::Client,
+    }
+}
+
+/// The `toplevel(id):state()` value for one configure: the compositor's state flags, bounds,
+/// capabilities and the decoration mode it chose.
+fn toplevel_state(configure: &WindowConfigure) -> ToplevelState {
+    let caps = configure.capabilities;
+    ToplevelState {
+        activated: configure.is_activated(),
+        maximized: configure.is_maximized(),
+        fullscreen: configure.is_fullscreen(),
+        resizing: configure.is_resizing(),
+        tiled: Tiled {
+            left: configure.is_tiled_left(),
+            right: configure.is_tiled_right(),
+            top: configure.is_tiled_top(),
+            bottom: configure.is_tiled_bottom(),
+        },
+        bounds: configure.suggested_bounds.map(|(width, height)| Bounds { width, height }),
+        capabilities: Capabilities {
+            window_menu: caps.contains(WindowManagerCapabilities::WINDOW_MENU),
+            maximize: caps.contains(WindowManagerCapabilities::MAXIMIZE),
+            fullscreen: caps.contains(WindowManagerCapabilities::FULLSCREEN),
+            minimize: caps.contains(WindowManagerCapabilities::MINIMIZE),
+        },
+        decoration: match configure.decoration_mode {
+            DecorationMode::Server => Decorations::Server,
+            _ => Decorations::Client,
+        },
     }
 }
 /// A [`SizeHint`] in protocol units; `None` remains unset, sent as protocol zero.
@@ -160,6 +200,9 @@ impl App {
         if let Some(max_size) = update.max_size {
             window.set_max_size(size_hint_pair(max_size));
         }
+        if let Some(decorations) = update.decorations {
+            window.request_decoration_mode(Some(decoration_mode(decorations)));
+        }
     }
 
     /// Creates the toplevel and its required initial unbuffered commit (ADR-0040 decisions
@@ -187,8 +230,8 @@ impl App {
         let scale = self.surface_scale(&surface, qh);
         let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, qh);
         // The constructor decides whether the decoration object exists; this sets its mode.
-        // Accept the compositor's answer; configure logs client-side decoration and remains bare.
-        window.request_decoration_mode(Some(DecorationMode::Server));
+        // The compositor's answer is accepted and published through `toplevel(id):state()`.
+        window.request_decoration_mode(Some(decoration_mode(spec.decorations)));
         window.set_title(spec.title.clone());
         window.set_app_id(spec.app_id.clone());
         // Hints do not clamp layout, but bound the size chosen for `None` configure axes.
@@ -231,9 +274,9 @@ impl WindowHandler for App {
         call_logged(&on_close, (), format_args!("{surface_id}: on_close"));
     }
 
-    /// SCTK has acked this configure. `new_size` may leave axes to the client; client-side
-    /// decoration is logged but not drawn (ADR-0040 decision 4); `state`/`capabilities` have no
-    /// config binding, while fullscreen/maximized sizes arrive as `Some` axes.
+    /// SCTK has acked this configure. `new_size` may leave axes to the client; no frame is drawn
+    /// for client-side decoration (ADR-0040 decision 4). The rest of the configure is published to
+    /// `toplevel(id):state()`; the main loop's pass re-resolves its readers the same turn.
     fn configure(
         &mut self,
         _conn: &Connection,
@@ -246,13 +289,7 @@ impl WindowHandler for App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        if configure.decoration_mode == DecorationMode::Client
-            && self.surfaces[index].map_state == MapState::AwaitingConfigure
-        {
-            debug!(
-                2; "{surface_id}: the compositor granted client-side decorations; carrying on undecorated, since this shell draws no titlebar of its own"
-            );
-        }
+        crate::lua::toplevel::publish(self.client.lua(), &surface_id, toplevel_state(&configure));
         let TrackedRole::Window { spec, .. } = &self.surfaces[index].role else {
             return;
         };
@@ -272,6 +309,7 @@ mod tests {
             app_id: "mantle.settings".to_string(),
             min_size: None,
             max_size: None,
+            decorations: Default::default(),
         }
     }
 
@@ -369,6 +407,48 @@ mod tests {
         assert_eq!(window_update(&applied, &fresh), WindowUpdate { max_size: Some(None), ..WindowUpdate::default() });
         assert_eq!(size_hint_pair(None), None, "which `Window::set_max_size` sends as the protocol's zero");
         assert_eq!(size_hint_pair(Some(SizeHint { width: 320.0, height: 240.0 })), Some((320, 240)));
+    }
+
+    #[test]
+    fn a_decorations_change_is_the_one_field_that_reaches_the_wire() {
+        let applied = settings_window();
+        let mut fresh = applied.clone();
+        fresh.decorations = Decorations::Client;
+        assert_eq!(
+            window_update(&applied, &fresh),
+            WindowUpdate { decorations: Some(Decorations::Client), ..WindowUpdate::default() }
+        );
+        assert_eq!(decoration_mode(Decorations::Client), DecorationMode::Client);
+        assert_eq!(decoration_mode(Decorations::Server), DecorationMode::Server);
+    }
+
+    #[test]
+    fn a_configure_maps_to_the_state_a_config_reads() {
+        use smithay_client_toolkit::reexports::csd_frame::WindowState;
+        let mut configure = WindowConfigure::default();
+        configure.state =
+            WindowState::ACTIVATED | WindowState::MAXIMIZED | WindowState::TILED_LEFT | WindowState::TILED_TOP;
+        configure.suggested_bounds = Some((1920, 1080));
+        configure.capabilities = WindowManagerCapabilities::MAXIMIZE | WindowManagerCapabilities::MINIMIZE;
+        configure.decoration_mode = DecorationMode::Server;
+        assert_eq!(
+            toplevel_state(&configure),
+            ToplevelState {
+                activated: true,
+                maximized: true,
+                fullscreen: false,
+                resizing: false,
+                tiled: Tiled { left: true, right: false, top: true, bottom: false },
+                bounds: Some(Bounds { width: 1920, height: 1080 }),
+                capabilities: Capabilities { window_menu: false, maximize: true, fullscreen: false, minimize: true },
+                decoration: Decorations::Server,
+            }
+        );
+        assert_eq!(
+            toplevel_state(&WindowConfigure::default()),
+            ToplevelState::default(),
+            "no flags, all capabilities, client-drawn"
+        );
     }
 
     fn armed(on: &str) -> ArmedSerial {
