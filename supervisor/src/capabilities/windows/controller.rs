@@ -29,7 +29,10 @@ impl StatePublisher {
 
     /// `false` once no one listens, so a reader loop that owns no other publisher can stop.
     pub fn publish(&mut self, mut windows: Vec<WindowEntry>) -> bool {
-        windows.sort_by_key(|window| window.workspace_id.unwrap_or(u64::MAX));
+        // Numeric, so "10" follows "2"; the cast puts Hyprland's negative named ids after every number.
+        windows.sort_by_key(|window| {
+            window.workspace_id.as_deref().and_then(|id| id.parse::<i64>().ok()).map_or(u64::MAX, |id| id as u64)
+        });
         let current = WindowsState { source: self.source.to_string(), windows };
         publish(&self.state, &self.events, current)
     }
@@ -148,7 +151,7 @@ impl WindowsController {
         }
     }
 
-    pub fn move_to_workspace(&self, id: &str, workspace_id: u64) {
+    pub fn move_to_workspace(&self, id: &str, workspace_id: &str) {
         match &self.backend {
             Backend::Ipc(CompositorKind::Niri) => niri::move_window_to_workspace(id, workspace_id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::move_window_to_workspace(id, workspace_id),
@@ -168,12 +171,12 @@ impl WindowsController {
 mod tests {
     use super::*;
 
-    fn entry(id: &str, workspace_id: Option<u64>) -> WindowEntry {
+    fn entry(id: &str, workspace_id: Option<i64>) -> WindowEntry {
         WindowEntry {
             id: id.to_string(),
             title: String::new(),
             app_id: String::new(),
-            workspace_id,
+            workspace_id: workspace_id.map(|id| id.to_string()),
             output: None,
             focused: false,
             floating: None,
@@ -192,15 +195,22 @@ mod tests {
     #[test]
     fn publish_orders_by_workspace_and_keeps_each_backends_own_order_within_one() {
         let (mut publisher, _rx) = publisher();
-        let entries = [entry("3", Some(2)), entry("1", Some(1)), entry("2", Some(1)), entry("4", None)];
+        let entries = [
+            entry("6", Some(-1337)),
+            entry("5", Some(10)),
+            entry("3", Some(2)),
+            entry("1", Some(1)),
+            entry("2", Some(1)),
+            entry("4", None),
+        ];
 
         publisher.publish(entries.to_vec());
 
         let state = publisher.state.lock().unwrap().clone();
         assert_eq!(
             state.windows.iter().map(|window| window.id.as_str()).collect::<Vec<_>>(),
-            ["1", "2", "3", "4"],
-            "workspace 1's rows keep their input order, workspace 2 follows, no-workspace sorts last"
+            ["1", "2", "3", "5", "6", "4"],
+            "input order within workspace 1, 10 after 2, a named workspace after the numbers, none last"
         );
     }
 

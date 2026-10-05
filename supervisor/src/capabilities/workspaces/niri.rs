@@ -29,8 +29,8 @@ fn workspace_rows(
                 .filter(|window| window.workspace_id == Some(workspace.id))
                 .min_by_key(|window| (!window.is_focused, window.id));
             WorkspaceRow {
-                id: workspace.id,
-                idx: workspace.idx,
+                id: workspace.id.to_string(),
+                number: Some(u32::from(workspace.idx)),
                 name: workspace.name.clone(),
                 output: workspace.output.clone(),
                 is_active: workspace.is_active,
@@ -59,7 +59,7 @@ fn window_rows(
             id: window.id.to_string(),
             title: window.title.clone().unwrap_or_default(),
             app_id: window.app_id.clone().unwrap_or_default(),
-            workspace_id: window.workspace_id,
+            workspace_id: window.workspace_id.map(|id| id.to_string()),
             output: window.workspace_id.and_then(|id| workspaces.get(&id)).and_then(|ws| ws.output.clone()),
             focused: window.is_focused,
             floating: Some(window.is_floating),
@@ -159,11 +159,19 @@ fn undecodable(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::InvalidData
 }
 
-/// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `idx` shifts on reorder and
+/// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `number` shifts on reorder and
 /// could focus the wrong workspace.
-pub fn focus(id: u64) {
-    let reference = niri_ipc::WorkspaceReferenceArg::Id(id);
+pub fn focus(id: &str) {
+    let Some(reference) = workspace_reference(id) else { return };
     crate::compositor::niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
+}
+
+fn workspace_reference(id: &str) -> Option<niri_ipc::WorkspaceReferenceArg> {
+    let parsed = id.parse::<u64>().ok().map(niri_ipc::WorkspaceReferenceArg::Id);
+    if parsed.is_none() {
+        warn!("{id:?} is not a niri workspace id; ignored");
+    }
+    parsed
 }
 
 pub fn focus_window(id: &str) {
@@ -182,17 +190,14 @@ pub fn close_window(id: &str) {
     crate::compositor::niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
 }
 
-pub fn move_window_to_workspace(id: &str, workspace_id: u64) {
+pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
+    let Some(reference) = workspace_reference(workspace_id) else { return };
     let Ok(id) = id.parse::<u64>() else {
         debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
         return;
     };
     crate::compositor::niri_action(
-        niri_ipc::Action::MoveWindowToWorkspace {
-            window_id: Some(id),
-            reference: niri_ipc::WorkspaceReferenceArg::Id(workspace_id),
-            focus: false,
-        },
+        niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false },
         "windows",
     );
 }
@@ -239,8 +244,8 @@ mod tests {
         assert_eq!(
             rows,
             vec![WorkspaceRow {
-                id: 5,
-                idx: 2,
+                id: "5".to_string(),
+                number: Some(2),
                 name: None,
                 output: Some("eDP-1".to_string()),
                 is_active: true,
@@ -266,8 +271,8 @@ mod tests {
         ]);
 
         let rows = workspace_rows(&workspaces, &windows);
-        let app_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap().app_id.clone();
-        let window_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap().window_id.clone();
+        let app_of = |id: u64| rows.iter().find(|row| row.id == id.to_string()).unwrap().app_id.clone();
+        let window_of = |id: u64| rows.iter().find(|row| row.id == id.to_string()).unwrap().window_id.clone();
 
         assert_eq!(app_of(5).as_deref(), Some("kitty"), "focus wins over a lower id");
         assert_eq!(window_of(5).as_deref(), Some("2"));
@@ -277,8 +282,8 @@ mod tests {
         let mut unfocused = windows.clone();
         unfocused.get_mut(&2).unwrap().is_focused = false;
         let rows = workspace_rows(&workspaces, &unfocused);
-        assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().app_id.as_deref(), Some("kitty"), "lowest id");
-        assert_eq!(rows.iter().find(|row| row.id == 5).unwrap().window_id.as_deref(), Some("2"));
+        assert_eq!(rows.iter().find(|row| row.id == "5").unwrap().app_id.as_deref(), Some("kitty"), "lowest id");
+        assert_eq!(rows.iter().find(|row| row.id == "5").unwrap().window_id.as_deref(), Some("2"));
     }
 
     #[test]
@@ -301,7 +306,7 @@ mod tests {
             &map(vec![(5, workspace(5, 1, "eDP-1", true, true)), (6, workspace(6, 2, "eDP-1", false, false))]),
             &map(vec![(2, nameless)]),
         );
-        let row_of = |id: u64| rows.iter().find(|row| row.id == id).unwrap();
+        let row_of = |id: u64| rows.iter().find(|row| row.id == id.to_string()).unwrap();
 
         assert_eq!(
             (row_of(5).populated, row_of(5).app_id.as_deref(), row_of(5).window_id.as_deref()),
@@ -338,7 +343,7 @@ mod tests {
         let kitty = &rows[0];
         assert_eq!(kitty.title, "src/main.rs - Neovim");
         assert_eq!(kitty.app_id, "kitty");
-        assert_eq!(kitty.workspace_id, Some(5));
+        assert_eq!(kitty.workspace_id, Some("5".to_string()));
         assert_eq!(kitty.output.as_deref(), Some("eDP-1"));
         assert!(kitty.focused);
         assert_eq!(kitty.floating, Some(true));
@@ -352,7 +357,7 @@ mod tests {
 
         let rows = window_rows(&map(vec![(9, orphan)]), &HashMap::new());
 
-        assert_eq!(rows[0].workspace_id, Some(99));
+        assert_eq!(rows[0].workspace_id, Some("99".to_string()));
         assert_eq!(rows[0].output, None, "workspace 99 is unknown, so no output can be joined");
     }
 

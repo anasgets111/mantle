@@ -8,7 +8,8 @@ use serde::Serialize;
 pub struct WindowsState {
     /// `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`.
     pub source: String,
-    /// Sorted by `workspace_id`, then backend order; windows without one last.
+    /// Sorted by numbered `workspace_id`, then Hyprland named ones, then backend order; windows
+    /// without one last.
     pub windows: Vec<WindowEntry>,
 }
 
@@ -24,7 +25,7 @@ pub struct WindowEntry {
     pub app_id: String,
     /// `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub workspace_id: Option<u64>,
+    pub workspace_id: Option<String>,
     /// Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,

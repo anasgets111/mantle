@@ -23,8 +23,8 @@ use super::{hyprland, niri};
 /// One compositor workspace reduced to [`derive_state`]'s input fields; owned by neither adaptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRow {
-    pub id: u64,
-    pub idx: u8,
+    pub id: String,
+    pub number: Option<u32>,
     pub name: Option<String>,
     /// Connector, or `None` when no output exists (niri reports this with no monitor); dropped.
     pub output: Option<String>,
@@ -55,8 +55,8 @@ pub struct FocusedWindow {
 }
 
 /// Folds rows into the payload. Pure and unit-tested without a compositor. Sorts outputs by
-/// connector and workspaces by `idx`; omits an output with no active workspace rather than
-/// fabricating an id (should be unreachable).
+/// connector and workspaces by `number`, unnumbered last by name; omits an output with no active
+/// workspace rather than fabricating an id (should be unreachable).
 pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>) -> WorkspacesState {
     let mut by_output: HashMap<&str, Vec<&WorkspaceRow>> = HashMap::new();
     for workspace in workspaces {
@@ -67,14 +67,15 @@ pub fn derive_state(workspaces: &[WorkspaceRow], focused: Option<&FocusedWindow>
     let mut outputs: Vec<OutputWorkspaces> = by_output
         .into_iter()
         .filter_map(|(name, mut group)| {
-            group.sort_by_key(|workspace| workspace.idx);
-            let active_workspace = group.iter().find(|workspace| workspace.is_active)?.id;
-            let focused_workspace = group.iter().find(|workspace| workspace.is_focused).map(|workspace| workspace.id);
+            group.sort_by_key(|workspace| (workspace.number.is_none(), workspace.number, workspace.name.clone()));
+            let active_workspace = group.iter().find(|workspace| workspace.is_active)?.id.clone();
+            let focused_workspace =
+                group.iter().find(|workspace| workspace.is_focused).map(|workspace| workspace.id.clone());
             let workspaces = group
                 .into_iter()
                 .map(|workspace| WorkspaceEntry {
-                    id: workspace.id,
-                    idx: workspace.idx,
+                    id: workspace.id.clone(),
+                    number: workspace.number,
                     name: workspace.name.clone(),
                     populated: workspace.populated,
                     app_id: workspace.app_id.clone(),
@@ -169,11 +170,11 @@ impl WorkspacesController {
     }
 
     /// `workspaces:focus(id)`, routed to the live adaptor; exhaustive like [`Self::new`].
-    pub fn focus(&self, id: u64) {
+    pub fn focus(&self, id: &str) {
         match self.compositor {
             Some(CompositorKind::Niri) => niri::focus(id),
             Some(CompositorKind::Hyprland) => hyprland::focus(id),
-            None => debug!("focus({id}) called but this session has no workspace implementor; ignored"),
+            None => debug!("focus({id:?}) called but this session has no workspace implementor; ignored"),
         }
     }
 
@@ -195,10 +196,10 @@ impl WorkspacesController {
 mod tests {
     use super::*;
 
-    fn workspace(id: u64, idx: u8, output: &str, is_active: bool, is_focused: bool) -> WorkspaceRow {
+    fn workspace(id: u64, number: u32, output: &str, is_active: bool, is_focused: bool) -> WorkspaceRow {
         WorkspaceRow {
-            id,
-            idx,
+            id: id.to_string(),
+            number: Some(number),
             name: None,
             output: Some(output.to_string()),
             is_active,
@@ -230,8 +231,32 @@ mod tests {
 
         assert_eq!(state.outputs.iter().map(|out| out.name.as_str()).collect::<Vec<_>>(), ["DP-2", "eDP-1"]);
         let edp = &state.outputs[1];
-        assert_eq!(edp.workspaces.iter().map(|entry| entry.idx).collect::<Vec<_>>(), [1, 2, 3]);
-        assert_eq!(edp.workspaces.iter().map(|entry| entry.id).collect::<Vec<_>>(), [5, 7, 9]);
+        assert_eq!(edp.workspaces.iter().map(|entry| entry.number).collect::<Vec<_>>(), [Some(1), Some(2), Some(3)]);
+        assert_eq!(edp.workspaces.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), ["5", "7", "9"]);
+    }
+
+    #[test]
+    fn derive_state_lists_numbered_workspaces_before_named_ones_and_names_in_order() {
+        let named = |id: &str, name: &str| WorkspaceRow {
+            id: id.to_string(),
+            number: None,
+            name: Some(name.to_string()),
+            ..workspace(1, 1, "eDP-1", false, false)
+        };
+        let workspaces = [
+            named("-1338", "web"),
+            workspace(10, 10, "eDP-1", false, false),
+            named("-1337", "chat"),
+            workspace(2, 2, "eDP-1", true, true),
+        ];
+
+        let ids = derive_state(&workspaces, None).outputs[0]
+            .workspaces
+            .iter()
+            .map(|entry| entry.id.clone())
+            .collect::<Vec<_>>();
+
+        assert_eq!(ids, ["2", "10", "-1337", "-1338"]);
     }
 
     #[test]
@@ -257,11 +282,11 @@ mod tests {
 
     #[test]
     fn derive_state_reports_the_active_workspace_by_id_not_by_index() {
-        // `id` and `idx` disagree: reorder moves `idx` but not `id`, catching swapped fields.
+        // `id` and `number` disagree: reorder moves `number` but not `id`, catching swapped fields.
         let state = derive_state(&[workspace(42, 1, "eDP-1", true, true)], None);
 
-        assert_eq!(state.outputs[0].active_workspace, 42);
-        assert_eq!(state.outputs[0].workspaces[0].idx, 1);
+        assert_eq!(state.outputs[0].active_workspace, "42");
+        assert_eq!(state.outputs[0].workspaces[0].number, Some(1));
     }
 
     #[test]
@@ -292,7 +317,7 @@ mod tests {
 
         let dp = state.outputs.iter().find(|out| out.name == "DP-2").unwrap();
         let edp = state.outputs.iter().find(|out| out.name == "eDP-1").unwrap();
-        assert_eq!(dp.focused_workspace, Some(2), "the focused output reports the id it is focused on");
+        assert_eq!(dp.focused_workspace.as_deref(), Some("2"), "the focused output reports the id it is focused on");
         assert_eq!(edp.focused_workspace, None, "an output that does not hold focus must not claim it does");
     }
 
@@ -305,7 +330,7 @@ mod tests {
             output.get("focused_workspace").is_none(),
             "an absent key reads as nil in Lua; a `null` would too, but only an absent key matches every other optional field here"
         );
-        assert_eq!(output["active_workspace"], 1);
+        assert_eq!(output["active_workspace"], "1");
     }
 
     // ---- derive_state: active_client (ADR-0056 decision 5) ----

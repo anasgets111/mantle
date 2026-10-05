@@ -12,6 +12,8 @@ version is 0.x, a minor release can break the Lua API.
 - `effect.backdrop.mask` takes a node `mask`'s `gradient` or `source` (and `invert`) and scales the glass's coverage: where it is clear the ground shows through untouched, and between it crossfades from the ground to the blur, for a scroll edge or a feathered panel. A `node` mask is refused.
 - `on_click`, `on_press`, `on_drag` and `on_wheel` take a trailing `modifiers` argument, the `{ ctrl, shift, alt, super }` table `on_key` reports, so Ctrl-click, Shift-click and Shift-drag work in lists and tables. It reads all false while none of the shell's surfaces has keyboard focus.
 - Fixed: `on_drag`'s `rect` is the node's current box on every call, not its box at the press, so `rect.x + pointer.x` stays the surface position when the node moves under its own drag (a splitter).
+- Breaking: workspace ids are strings, and `WorkspaceEntry.idx` is replaced by `number`. `id`, `active_workspace`, `focused_workspace`, `windows[].workspace_id` and the `focus` and `move_to_workspace` arguments are opaque strings to pass back, never to compute; on Hyprland a numbered workspace's id is its number (`"3"`), so `focus(tostring(n))` still creates one. `number` is what a keybind targets (niri's position on the output, Hyprland's number) and `nil` for a Hyprland named workspace.
+- Fixed: Hyprland named workspaces (`workspace = "name:chat"`) are listed in `mantle.workspaces` and `mantle.windows` after the numbered ones instead of dropped, and `focus` reaches them (issue #1).
 
 ## 0.4.0 - 2026-10-05
 

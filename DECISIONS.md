@@ -8188,3 +8188,23 @@ limit are unchanged.
 
 Ceiling: the ground is cut by the masked glass's own alpha, so over a translucent ground some
 sharp ground shows through where the frost is itself translucent.
+
+## 0350. Workspace ids are opaque strings; `idx` becomes `number`
+
+Hyprland gives named workspaces (`name:chat`) negative ids like `-1337`, and its dispatchers read
+a negative number as a relative move. A `u64` id could neither list nor focus them, so they were
+dropped (issue #1).
+
+1. **Strings.** `WorkspaceEntry.id`, `active_workspace`, `focused_workspace`,
+   `windows[].workspace_id` and the focus and move actions take strings a config only passes
+   back. Each backend parses its own type; an unparsable id warns and does nothing. Window ids were
+   already strings, and protocols such as `ext-workspace-v1` identify workspaces by handle.
+2. **`number`, not `idx`.** `idx` mixed niri's position with Hyprland's number and saturated at
+   255. `number` is what a keybind targets and is `nil` for a named workspace; list order is the
+   position. Hyprland lists numbered workspaces first, then named ones by name.
+3. **`name:` at action time.** For a negative id, Hyprland reads `j/workspaces` when the action
+   runs and dispatches `name:<name>`, so a rename never leaves a stale selector. Cost: one socket
+   read per such action.
+
+Specials keep their own list (ADR-0119). On Hyprland a numbered workspace's id is its number, so
+focusing an unlisted number still creates it.

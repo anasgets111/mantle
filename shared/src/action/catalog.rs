@@ -488,7 +488,7 @@ pub struct UpdateCandidate {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspacesAction {
     /// Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it.
-    Focus { id: u64 },
+    Focus { id: String },
     /// Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
     ToggleSpecial {
         #[serde(deserialize_with = "super::non_empty")]
@@ -533,7 +533,7 @@ pub enum WindowsAction {
     MoveToWorkspace {
         #[serde(deserialize_with = "super::non_empty")]
         id: String,
-        workspace_id: u64,
+        workspace_id: String,
     },
 }
 

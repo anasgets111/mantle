@@ -17,7 +17,7 @@ panel {
                     if entry.name == output then
                         for _, workspace in ipairs(entry.workspaces) do
                             if workspace.id == entry.active_workspace then
-                                return "workspace " .. workspace.idx
+                                return "workspace " .. (workspace.number or workspace.name)
                             end
                         end
                     end
@@ -60,10 +60,10 @@ One output's workspaces.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `active_workspace` | `integer` | `WorkspaceEntry.id` shown on this output. |
-| `focused_workspace?` | `integer` | `WorkspaceEntry.id` with focus, present only on the focused output. |
+| `active_workspace` | `string` | `WorkspaceEntry.id` shown on this output. |
+| `focused_workspace?` | `string` | `WorkspaceEntry.id` with focus, present only on the focused output. |
 | `name` | `string` | Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`. |
-| `workspaces` | `WorkspaceEntry[]` | Workspaces on this output, sorted by `WorkspaceEntry.idx`. |
+| `workspaces` | `WorkspaceEntry[]` | Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name. |
 
 ### `SpecialWorkspace`
 
@@ -79,14 +79,14 @@ One Hyprland special workspace.
 
 ### `WorkspaceEntry`
 
-One workspace. Draw `idx`, send `id`.
+One workspace. Draw `number` or `name`, send `id`.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `app_id?` | `string` | `app_id` of a window here: Hyprland's most recently focused one with an `app_id`; on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty. |
-| `id` | `integer` | Stable id, the argument of `"focus"`. Hyprland's workspace number; opaque on niri. |
-| `idx` | `integer` | Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates. |
+| `id` | `string` | Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in decimal, so a numbered workspace's id is its number and focusing an unlisted number creates it; named workspaces have negative ids. niri's id in decimal. |
 | `name?` | `string` | Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number. |
+| `number?` | `integer` | The number a keybind targets: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number. `nil` for a Hyprland named workspace. |
 | `populated` | `boolean` | Whether a window sits here. |
 | `urgent` | `boolean` | Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`. |
 | `window_id?` | `string` | `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty. |
@@ -97,7 +97,7 @@ Call each as `mantle.workspaces:<action>(arguments...)`; `?` marks an argument y
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `focus` | `id: integer` | Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it. |
+| `focus` | `id: string` | Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it. |
 | `toggle_special` | `name: string` | Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri. |
 
 ## Backend
@@ -117,7 +117,7 @@ Hyprland's refusal of a write logs at debug level only (`MANTLE_LOG=debug`); nir
 
 ### Draw workspace buttons
 
-Draw `idx`, send `id` ([`list`](../nodes/list.md) builds one button per entry):
+Draw `number` or `name`, send `id` ([`list`](../nodes/list.md) builds one button per entry):
 
 ```lua
 list {
@@ -138,7 +138,7 @@ list {
             radius = 6,
             background = active:map(function(is_active) return is_active and "#89B4FA" or "#313244" end),
             on_click = function() mantle.workspaces:focus(workspace.id) end,
-            children = { text { content = tostring(workspace.idx) } },
+            children = { text { content = tostring(workspace.number or workspace.name) } },
         }
     end,
 }
@@ -148,8 +148,8 @@ list {
 
 | Trap | Fix |
 | :--- | :--- |
-| Labels show large or odd numbers on niri | Draw `idx`, send `id`. niri's `id` is opaque |
-| The strip differs between compositors | Hyprland lists no empty workspace but the active one, and `focus` on a missing number creates it; niri keeps its own empty workspace and ignores an unknown `id`. Branch on `compositor` |
+| Labels show large or odd numbers | Draw `number` or `name`, send `id`. `id` is an opaque string: on Hyprland the workspace id in decimal (`"3"`, or negative like `"-1337"` for a named workspace), on niri its own id. Don't do arithmetic on it |
+| The strip differs between compositors | Hyprland lists no empty workspace but the active one, and `focus` on an unlisted number creates it (a numbered workspace's `id` is its number as a string, so `focus("7")` works); niri keeps its own empty workspace and ignores an unknown `id`. Branch on `compositor` |
 | Actions do nothing on Hyprland older than 0.56 | Writes use 0.56's Lua dispatch syntax; older versions refuse them while reads still work. Update Hyprland; `MANTLE_LOG=debug` shows the refusal |
 
 See also: [Workspaces](../cookbook/workspaces.md) recipe.

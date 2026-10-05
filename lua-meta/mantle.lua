@@ -227,10 +227,10 @@
 
 ---@class OutputWorkspaces
 ---One output's workspaces.
----@field active_workspace integer `WorkspaceEntry.id` shown on this output.
----@field focused_workspace? integer `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
+---@field active_workspace string `WorkspaceEntry.id` shown on this output.
+---@field focused_workspace? string `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
 ---@field name string Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`.
----@field workspaces WorkspaceEntry[] Workspaces on this output, sorted by `WorkspaceEntry.idx`.
+---@field workspaces WorkspaceEntry[] Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name.
 
 ---@class PairedDevice
 ---@field blocked boolean BlueZ refuses every connection to or from the device until it is unblocked.
@@ -460,14 +460,14 @@
 ---@field output? string Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on.
 ---@field title string Window title; empty when unset.
 ---@field urgent boolean Whether the window is asking for attention; always `false` on wlr, which has no such state.
----@field workspace_id? integer `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
+---@field workspace_id? string `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces.
 
 ---@class WorkspaceEntry
----One workspace. Draw `idx`, send `id`.
+---One workspace. Draw `number` or `name`, send `id`.
 ---@field app_id? string `app_id` of a window here (ADR-0117): Hyprland's most recently focused one with an `app_id`; on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty.
----@field id integer Stable id, the argument of `"focus"`. Hyprland's workspace number; opaque on niri.
----@field idx integer Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number, equal to `id` up to `255`, where it saturates.
+---@field id string Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in decimal, so a numbered workspace's id is its number and focusing an unlisted number creates it; named workspaces have negative ids. niri's id in decimal.
 ---@field name? string Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
+---@field number? integer The number a keybind targets: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number. `nil` for a Hyprland named workspace.
 ---@field populated boolean Whether a window sits here (ADR-0117).
 ---@field urgent boolean Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`.
 ---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
@@ -670,7 +670,7 @@
 ---@class WindowsState
 ---`mantle.windows` payload; `nil` with no niri, Hyprland or wlr-foreign-toplevel backend.
 ---@field source string `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`.
----@field windows WindowEntry[] Sorted by `workspace_id`, then backend order; windows without one last.
+---@field windows WindowEntry[] Sorted by numbered `workspace_id`, then Hyprland named ones, then backend order; windows without one last.
 
 --- Capabilities -------------------------------------------------------------------------------
 
@@ -850,7 +850,7 @@ local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>, userdata
----@field focus fun(self: WorkspacesCapability, id: integer) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it.
+---@field focus fun(self: WorkspacesCapability, id: string) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number; niri ignores it.
 ---@field toggle_special fun(self: WorkspacesCapability, name: string) Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/windows.html)
@@ -860,7 +860,7 @@ local PrivacyCapability = {}
 ---@field set_fullscreen fun(self: WindowsCapability, id: string, fullscreen: boolean) Sets fullscreen on or off; no-op on niri.
 ---@field set_minimized fun(self: WindowsCapability, id: string, minimized: boolean) Sets minimized on or off; wlr only.
 ---@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri.
----@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: integer) Moves a window to a workspace.
+---@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: string) Moves a window to a workspace.
 
 --- Off-roster members ---------------------------------------------------------------------------
 -- Written by hand in `stubs.rs`: `Screen` and `RescueState` come from the Renderer, not a capability.

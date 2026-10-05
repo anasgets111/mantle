@@ -11,7 +11,7 @@ panel {
                     if entry.name == output then
                         for _, workspace in ipairs(entry.workspaces) do
                             if workspace.id == entry.active_workspace then
-                                return "workspace " .. workspace.idx
+                                return "workspace " .. (workspace.number or workspace.name)
                             end
                         end
                     end
@@ -42,7 +42,7 @@ Hyprland's refusal of a write logs at debug level only (`MANTLE_LOG=debug`); nir
 
 ### Draw workspace buttons
 
-Draw `idx`, send `id` ([`list`](../nodes/list.md) builds one button per entry):
+Draw `number` or `name`, send `id` ([`list`](../nodes/list.md) builds one button per entry):
 
 ```lua
 list {
@@ -63,7 +63,7 @@ list {
             radius = 6,
             background = active:map(function(is_active) return is_active and "#89B4FA" or "#313244" end),
             on_click = function() mantle.workspaces:focus(workspace.id) end,
-            children = { text { content = tostring(workspace.idx) } },
+            children = { text { content = tostring(workspace.number or workspace.name) } },
         }
     end,
 }
@@ -73,8 +73,8 @@ list {
 
 | Trap | Fix |
 | :--- | :--- |
-| Labels show large or odd numbers on niri | Draw `idx`, send `id`. niri's `id` is opaque |
-| The strip differs between compositors | Hyprland lists no empty workspace but the active one, and `focus` on a missing number creates it; niri keeps its own empty workspace and ignores an unknown `id`. Branch on `compositor` |
+| Labels show large or odd numbers | Draw `number` or `name`, send `id`. `id` is an opaque string: on Hyprland the workspace id in decimal (`"3"`, or negative like `"-1337"` for a named workspace), on niri its own id. Don't do arithmetic on it |
+| The strip differs between compositors | Hyprland lists no empty workspace but the active one, and `focus` on an unlisted number creates it (a numbered workspace's `id` is its number as a string, so `focus("7")` works); niri keeps its own empty workspace and ignores an unknown `id`. Branch on `compositor` |
 | Actions do nothing on Hyprland older than 0.56 | Writes use 0.56's Lua dispatch syntax; older versions refuse them while reads still work. Update Hyprland; `MANTLE_LOG=debug` shows the refusal |
 
 See also: [Workspaces](../cookbook/workspaces.md) recipe.

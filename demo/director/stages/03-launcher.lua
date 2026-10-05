@@ -13,8 +13,9 @@ local workspaces = list {
     source = mantle.workspaces:map(function(ws)
         local output = ws and ws.outputs[1]
         local items = {}
+        local active = output and output.active_workspace
         for _, w in ipairs(output and output.workspaces or {}) do
-            items[#items + 1] = { id = w.id, idx = w.idx, active = w.id == output.active_workspace }
+            items[#items + 1] = { id = w.id, label = tostring(w.number or w.name), active = w.id == active }
         end
         return items
     end),
@@ -29,7 +30,7 @@ local workspaces = list {
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {
-                    content = tostring(w.idx),
+                    content = w.label,
                     align_h = "center",
                     align_v = "center",
                     font_size = 20,

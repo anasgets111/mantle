@@ -54,7 +54,7 @@ local function strip(name)
                     for index, workspace in ipairs(output and output.workspaces or {}) do
                         items[index] = {
                             id = workspace.id,
-                            label = tostring(workspace.idx), -- draw idx, send id
+                            label = tostring(workspace.number or workspace.name), -- draw number, send id
                             active = workspace.id == output.active_workspace,
                             populated = workspace.populated,
                         }
@@ -140,7 +140,7 @@ return {
 - `child = function(output)` builds one bar per monitor and passes its connector name ([per-output child](../surfaces/index.md#per-output-child)).
 - `outputs[].name` matches that connector; `active_workspace` is the `id` shown there ([workspaces](../capabilities/workspaces.md)).
 - The `list` rebuilds its buttons from the mapped array, and `key` keeps each button's tweens when workspaces come and go ([list](../nodes/list.md)).
-- Labels draw `idx` and clicks send `id`: niri's ids are opaque ([workspaces gotchas](../capabilities/workspaces.md#gotchas)).
+- Labels draw `number` (or `name`) and clicks send `id`: ids are opaque strings ([workspaces gotchas](../capabilities/workspaces.md#gotchas)).
 - `on_wheel` on the outer `rect` reads the live state with `:get()` inside the handler ([pointer](../guide/input.md#pointer)).
 - The `width` tween makes the active pill grow in place ([animation](../guide/animation.md)).
 
@@ -148,9 +148,9 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Always show workspaces 1 to 5 on Hyprland | Pad `items` with `{ id = n, label = tostring(n), active = false, populated = false }` for missing numbers; `focus` creates them |
+| Always show workspaces 1 to 5 on Hyprland | Pad `items` with `{ id = tostring(n), label = tostring(n), active = false, populated = false }` for missing numbers; `focus` creates them |
 | App icons instead of numbers | Carry `app_id = workspace.app_id` into `items` and draw `icon { name = item.app_id or "", size = 14 }`. Where the icon name differs from the `app_id`, read `entries[by_app_id[app_id]].icon` from `mantle.applications` |
-| Named workspaces | `label = workspace.name or tostring(workspace.idx)`, with `min_width` and side `padding` instead of a fixed `width` |
+| Named workspaces | `label = workspace.name or tostring(workspace.number)`, with `min_width` and side `padding` instead of a fixed `width` |
 | Dots only | Drop the `text` and set `width = item.active and 20 or 8, height = 8` |
 | Show the focused window's title | Add `text { content = mantle.workspaces:map(function(workspaces) return workspaces and workspaces.active_client and workspaces.active_client.title or "" end), elide = "end", max_width = 400 }` |
 | Vertical bar | Anchor `left`, set `width = 40`, `height = "fill"`, use a `column` and `direction = "vertical"` |

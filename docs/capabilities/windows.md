@@ -30,7 +30,7 @@ list {
 | Field | Type | Description |
 | --- | --- | --- |
 | `source` | `string` | `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`. |
-| `windows` | `WindowEntry[]` | Sorted by `workspace_id`, then backend order; windows without one last. |
+| `windows` | `WindowEntry[]` | Sorted by numbered `workspace_id`, then Hyprland named ones, then backend order; windows without one last. |
 
 ### `WindowEntry`
 
@@ -48,7 +48,7 @@ One toplevel window. `nil` optional fields are ones the backend does not report.
 | `output?` | `string` | Connector name; `nil` when unknown. On wlr, the earliest-entered output the window is still on. |
 | `title` | `string` | Window title; empty when unset. |
 | `urgent` | `boolean` | Whether the window is asking for attention; always `false` on wlr, which has no such state. |
-| `workspace_id?` | `integer` | `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces. |
+| `workspace_id?` | `string` | `WorkspaceEntry.id`; `nil` on wlr and on Hyprland special workspaces. |
 
 ## Actions
 
@@ -61,7 +61,7 @@ Call each as `mantle.windows:<action>(arguments...)`; `?` marks an argument you 
 | `set_fullscreen` | `id: string, fullscreen: boolean` | Sets fullscreen on or off; no-op on niri. |
 | `set_minimized` | `id: string, minimized: boolean` | Sets minimized on or off; wlr only. |
 | `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri. |
-| `move_to_workspace` | `id: string, workspace_id: integer` | Moves a window to a workspace. |
+| `move_to_workspace` | `id: string, workspace_id: string` | Moves a window to a workspace. |
 
 ## Backend
 

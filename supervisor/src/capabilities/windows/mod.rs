@@ -18,6 +18,6 @@ pub fn dispatch(controller: &WindowsController, envelope: &shared::CommandEnvelo
         WindowsAction::SetFullscreen { id, fullscreen } => controller.set_fullscreen(&id, fullscreen),
         WindowsAction::SetMinimized { id, minimized } => controller.set_minimized(&id, minimized),
         WindowsAction::SetMaximized { id, maximized } => controller.set_maximized(&id, maximized),
-        WindowsAction::MoveToWorkspace { id, workspace_id } => controller.move_to_workspace(&id, workspace_id),
+        WindowsAction::MoveToWorkspace { id, workspace_id } => controller.move_to_workspace(&id, &workspace_id),
     }
 }

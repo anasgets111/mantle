@@ -44,7 +44,7 @@ local function workspaces(name)
             for index, workspace in ipairs(output and output.workspaces or {}) do
                 items[index] = {
                     id = workspace.id,
-                    label = tostring(workspace.idx),
+                    label = tostring(workspace.number or workspace.name),
                     active = workspace.id == output.active_workspace,
                 }
             end

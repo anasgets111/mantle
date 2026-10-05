@@ -48,23 +48,26 @@ pub struct OutputWorkspaces {
     /// Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`.
     pub name: String,
     /// `WorkspaceEntry.id` shown on this output.
-    pub active_workspace: u64,
+    pub active_workspace: String,
     /// `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub focused_workspace: Option<u64>,
-    /// Workspaces on this output, sorted by `WorkspaceEntry.idx`.
+    pub focused_workspace: Option<String>,
+    /// Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name.
     pub workspaces: Vec<WorkspaceEntry>,
 }
 
-/// One workspace. Draw `idx`, send `id`.
+/// One workspace. Draw `number` or `name`, send `id`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkspaceEntry {
-    /// Stable id, the argument of `"focus"`. Hyprland's workspace number; opaque on niri.
-    pub id: u64,
-    /// Label number: niri's 1-based position on the output, renumbered on reorder; Hyprland's
-    /// workspace number, equal to `id` up to `255`, where it saturates.
-    pub idx: u8,
+    /// Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in
+    /// decimal, so a numbered workspace's id is its number and focusing an unlisted number
+    /// creates it; named workspaces have negative ids. niri's id in decimal.
+    pub id: String,
+    /// The number a keybind targets: niri's 1-based position on the output, renumbered on
+    /// reorder; Hyprland's workspace number. `nil` for a Hyprland named workspace.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub number: Option<u32>,
     /// Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,

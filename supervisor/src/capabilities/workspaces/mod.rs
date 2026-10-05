@@ -24,7 +24,7 @@ use shared::action::WorkspacesAction;
 pub fn dispatch(controller: &WorkspacesController, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<WorkspacesAction>(&envelope.params) else { return };
     match action {
-        WorkspacesAction::Focus { id } => controller.focus(id),
+        WorkspacesAction::Focus { id } => controller.focus(&id),
         WorkspacesAction::ToggleSpecial { name } => controller.toggle_special(&name),
     }
 }

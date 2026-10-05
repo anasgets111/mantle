@@ -1015,7 +1015,7 @@ end
 -- The tour's first stop: the workspace this app's window is on, so the switch shows a real window.
 local TOUR_APP = "org.gnome.Nautilus"
 
--- The take runs on `stage_ws[1]`, an id no workspace has yet, so nothing else of yours is in the
+-- The take runs on `stage_ws[1]`, a number no workspace has yet, so nothing else of yours is in the
 -- shot. Hyprland creates a missing number; niri ignores it and the take stays put.
 local stage_ws, tour_ws, origin_ws = {}, nil, nil
 
@@ -1031,8 +1031,8 @@ local function pick_workspaces()
         end
     end
     origin_ws = ws.outputs[1] and ws.outputs[1].active_workspace
-    for id = 6, 99 do
-        if not exists[id] and #stage_ws < 2 then stage_ws[#stage_ws + 1] = id end
+    for number = 6, 99 do
+        if not exists[tostring(number)] and #stage_ws < 2 then stage_ws[#stage_ws + 1] = tostring(number) end
     end
 end
 
