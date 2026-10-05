@@ -14,6 +14,7 @@ pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
             schema_for!(crate::state::applications::ApplicationsState),
             Some(schema_for!(crate::action::ApplicationsAction)),
         ),
+        ("appearance", schema_for!(crate::state::appearance::AppearanceState), None),
         ("audio", schema_for!(crate::state::audio::AudioState), Some(schema_for!(crate::action::AudioAction))),
         ("battery", schema_for!(crate::state::battery::BatteryState), None),
         ("idle", schema_for!(crate::state::idle::IdleState), None),

@@ -59,6 +59,7 @@
 # Capabilities
 
 - [Capabilities](capabilities/index.md)
+  - [appearance](capabilities/appearance.md)
   - [applications](capabilities/applications.md)
   - [audio](capabilities/audio.md)
   - [battery](capabilities/battery.md)

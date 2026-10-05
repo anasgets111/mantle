@@ -34,6 +34,7 @@ pub enum Signal {
     Processes,
     System,
     Privacy,
+    Appearance,
     Updates,
     /// Carries inhibitor state directly; no controller reads it back (ADR-0141).
     Idle(IdleState),
@@ -128,6 +129,7 @@ capability_channels! {
         Sysinfo => sysinfo: (), Some(()) => Signal::Sysinfo;
         Keyboard => keyboard: KeyboardState, Some(state) => Signal::Keyboard(state);
         Privacy => privacy: (), Some(()) => Signal::Privacy;
+        Appearance => appearance: (), Some(()) => Signal::Appearance;
         Updates => updates: (), Some(()) => Signal::Updates;
         Battery => battery: (), Some(()) => Signal::Battery;
         System => system: (), Some(()) => Signal::System;

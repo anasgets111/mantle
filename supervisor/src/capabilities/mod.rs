@@ -33,6 +33,7 @@ async fn session_bus(what: &str) -> Option<zbus::Connection> {
         .ok()
 }
 
+pub mod appearance;
 pub mod applications;
 pub mod audio;
 pub mod battery;

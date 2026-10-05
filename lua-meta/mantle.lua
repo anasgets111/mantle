@@ -104,12 +104,23 @@
 ---@field description string PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
 ---@field index integer Profile index, the second argument of `set_bluetooth_profile`.
 
+---@alias ColorScheme
+---| "default" # No preference, or a value the portal does not define.
+---| "dark" # The user prefers a dark appearance.
+---| "light" # The user prefers a light appearance.
+---The user's preferred colour scheme, from the portal's `color-scheme`.
+
 ---@class ConnectedDevice
 ---@field battery? integer Battery percentage, or `nil` when the device reports none.
 ---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
 ---@field category string From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`.
 ---@field mac string MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it.
 ---@field name string The device's advertised name, or empty.
+
+---@alias Contrast
+---| "normal" # No preference, or a value the portal does not define.
+---| "high" # The user prefers higher contrast.
+---The user's preferred contrast level, from the portal's `contrast`.
 
 ---@alias DeviceAction "pairing"|"connecting"|"disconnecting"
 ---What the shell is doing to a device, as its `busy`.
@@ -466,6 +477,15 @@
 ---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
 ---@field entries AppSummary[] Installed entries, sorted by `name` (byte order), including `NoDisplay` entries for window lookup. Launchers omit entries with `no_display = true`. `Hidden` entries are excluded. A change under an applications directory rescans 250 ms after the last event.
 
+---@class AppearanceState
+---`mantle.appearance`'s payload: the `org.freedesktop.appearance` settings of xdg-desktop-portal.
+---Without a portal, or for a key it does not provide, a field holds its default; the capability
+---is never `nil` after it starts.
+---@field accent? string System accent colour as `"#rrggbb"` (sRGB), or `nil` when none is set.
+---@field color_scheme ColorScheme Preferred colour scheme; `"default"` means no preference.
+---@field contrast Contrast Preferred contrast level.
+---@field reduced_motion boolean `true` when the user asks for reduced motion; `false` for no preference or an older portal.
+
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
 ---@field apps AppStream[] Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
@@ -659,6 +679,10 @@
 ---@field refresh fun(self: ApplicationsCapability) Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
 ---@field launch fun(self: ApplicationsCapability, id: string) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
 ---@field open_url fun(self: ApplicationsCapability, url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/appearance.html)
+---@class AppearanceCapability: ReadOnlyCapability<AppearanceState>, userdata
+local AppearanceCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>, userdata
@@ -898,6 +922,7 @@ local PrivacyCapability = {}
 ---@field storage StorageCapability Each `persistent_table` JSON file, keyed by absolute path.
 ---@field idle IdleCapability Idle inhibitors, plus threshold and inhibit methods.
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.
+---@field appearance AppearanceCapability Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.
 ---@field windows WindowsCapability Open toplevel windows with title, app ID, workspace, output and state flags.
 ---@field screens WatchedSignal<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field rescue WatchedSignal<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)

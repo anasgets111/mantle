@@ -44,7 +44,7 @@ There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set
 | Before the first push | Every read is `nil`. A missing backend may keep it `nil` for good |
 | Running | A started backend runs for the Supervisor's lifetime. Its state survives reloads and Renderer replacement: a new generation gets every last snapshot replayed ([hydration](../glossary.md#capabilities)) |
 | Shared readers | `audio` and `privacy` share one PipeWire thread; `workspaces` and `windows` share one niri/Hyprland reader. Whichever is read first starts it |
-| Buses | One system-bus connection for all. `tray`, `notifications`, `mpris` and `idle` each open their own session bus. Every D-Bus method call times out after 25 s |
+| Buses | One system-bus connection for all. `tray`, `notifications`, `mpris`, `idle` and `appearance` each open their own session bus. Every D-Bus method call times out after 25 s |
 | Pushes | On backend events. `system`, `sysinfo`, `updates`, notification expiry, mpris's position recheck and the `brightness` fallback also run timers |
 | Renderer replaced | The departed generation's Bluetooth discovery stops, its pending Wi-Fi prompt is cancelled, its `files` watches, idle thresholds and inhibits are dropped, and its `process.run` children are reaped ([processes](../guide/processes.md#processrun)). An in-place reload keeps the generation |
 | Missing backend | Logged; the capability goes inert or stays `nil`. Each page's Backend section says which. Only `network` retries: a failed NetworkManager connection is rebuilt on the next start, which each new generation sends |
@@ -63,7 +63,7 @@ still exists.
 | A state field read off the capability (`mantle.audio.volume`) | Raises at the read: `did you mean mantle.audio:get().volume?` |
 | A misspelled action (`mantle.audio:set_volum(1)`) | Raises at the read: `did you mean mantle.audio:set_volume(...)?` |
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
-| Any other method but `get`, `map` and `on_change` on `battery`, `privacy` or `system` | Raises: they have no actions |
+| Any other method but `get`, `map` and `on_change` on `appearance`, `battery`, `privacy` or `system` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
 | Wrong type or argument count | Raises at the call: `mantle.audio:set_volume: invalid type: string "loud", expected f32` |
 | A value the type rules out | Raises at the call: an empty name, a relative `files:watch` path, a negative `hold_expiry` |
@@ -87,6 +87,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 
 | Name | What it gives you | Note |
 | :--- | :--- | :--- |
+| [`appearance`](appearance.md) | Dark mode, accent colour, contrast and reduced motion from the desktop portal | Defaults without a portal |
 | [`applications`](applications.md) | Desktop entries, window `app_id` index, launching | |
 | [`audio`](audio.md) | Output and input volume and mute, devices, per-app streams, Bluetooth codecs | |
 | [`battery`](battery.md) | Charge, state, time estimates | Check `present` first |

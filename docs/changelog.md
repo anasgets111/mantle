@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - `textfield` takes `selection = { background, foreground }`: the highlight as given (tint it with alpha) and the selected glyphs' colour. Unset, the highlight stays `foreground` at 30% alpha and the glyphs keep the text colour.
+- `mantle.appearance` is a read-only capability of the desktop portal's appearance settings, pushed live: `color_scheme` (`"default"`, `"dark"` or `"light"`), `accent` (`"#rrggbb"` or `nil`), `contrast` (`"normal"` or `"high"`) and `reduced_motion` (boolean). Without a portal every field holds its default.
 
 ## 0.4.0 - 2026-10-05
 

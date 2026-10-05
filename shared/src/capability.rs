@@ -65,6 +65,7 @@ roster! {
     Storage => "storage", "Each `persistent_table` JSON file, keyed by absolute path.",
     Idle => "idle", "Idle inhibitors, plus threshold and inhibit methods.",
     Processes => "processes", "Programs declared with `session_process`: running state, start time and last exit.",
+    Appearance => "appearance", "Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.",
     Windows => "windows", "Open toplevel windows with title, app ID, workspace, output and state flags.",
 }
 
@@ -172,7 +173,11 @@ impl Capability {
                 &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized", "move_to_workspace"]
             }
             Capability::System => &["configure"],
-            Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => &[],
+            Capability::Appearance
+            | Capability::Battery
+            | Capability::Idle
+            | Capability::Privacy
+            | Capability::Secrets => &[],
         }
     }
 }
@@ -191,7 +196,7 @@ mod capability_tests {
     fn every_entry_round_trips_through_its_name() {
         // One `roster!` list makes omission from `ALL` or `as_str` unrepresentable; this pins
         // `from_name` agreeing with the two wire-facing matches.
-        assert_eq!(Capability::ALL.len(), 25, "a variant was added or removed; check every iterator over ALL");
+        assert_eq!(Capability::ALL.len(), 26, "a variant was added or removed; check every iterator over ALL");
         for capability in Capability::ALL {
             assert_eq!(Capability::from_name(capability.as_str()), Some(*capability));
         }

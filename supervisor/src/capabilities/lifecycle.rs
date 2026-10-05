@@ -6,6 +6,7 @@ use shared::{Capability, CommandEnvelope, debug};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
+use super::appearance::AppearanceController;
 use super::applications::{self, ApplicationsController};
 use super::audio::{self, mixer::PrivacySources};
 use super::battery::BatteryController;
@@ -48,6 +49,7 @@ pub struct Capabilities {
     sysinfo: Option<SysinfoController>,
     keyboard: Option<Worker<KeyboardController>>,
     privacy: Option<PrivacyController>,
+    appearance: Option<AppearanceController>,
     updates: Option<UpdatesController>,
     battery: Option<BatteryController>,
     brightness: Option<BrightnessController>,
@@ -112,6 +114,7 @@ impl Capabilities {
             sysinfo: None,
             keyboard: None,
             privacy: None,
+            appearance: None,
             updates: None,
             battery: None,
             brightness: None,
@@ -369,6 +372,13 @@ impl Capabilities {
                     ));
                 }
             }
+            // Own session bus; without one, or a portal, it reports defaults.
+            Capability::Appearance => {
+                if self.appearance.is_none() {
+                    let bus = session_bus("appearance reports defaults").await;
+                    self.appearance = Some(AppearanceController::new(bus, self.senders.appearance.clone()));
+                }
+            }
             // Separate from sysinfo's scheduler, dormant until Lua sets an interval; construction
             // detects the package manager and pushes its name immediately (ADR-0034, ADR-0134).
             Capability::Updates => {
@@ -564,6 +574,7 @@ impl Capabilities {
             // Once per clock tick (ADR-0053 decision 2).
             Signal::System => push_held!(System, self.system),
             Signal::Privacy => push_held!(Privacy, self.privacy),
+            Signal::Appearance => push_held!(Appearance, self.appearance),
             // Periodic checks and install progress updates.
             Signal::Updates => push_held!(Updates, self.updates),
             // Inhibitor watch sends state directly, like `Audio`.
@@ -611,7 +622,7 @@ impl Capabilities {
             // beside the state push that cancel handling needs.
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
-            Capability::Battery | Capability::Privacy | Capability::Secrets => {
+            Capability::Appearance | Capability::Battery | Capability::Privacy | Capability::Secrets => {
                 debug!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id

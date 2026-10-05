@@ -87,7 +87,7 @@ pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Resul
         Capability::Workspaces => fits::<WorkspacesAction>(action, arguments),
         Capability::Windows => fits::<WindowsAction>(action, arguments),
         Capability::System => fits::<SystemAction>(action, arguments),
-        Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => {
+        Capability::Appearance | Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => {
             Err(serde::de::Error::custom("it has no actions"))
         }
     }

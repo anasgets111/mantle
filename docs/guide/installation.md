@@ -81,6 +81,7 @@ capabilities your config uses. Each capability page says what happens when its b
 | :--- | :--- |
 | [`notifications`](../capabilities/notifications.md#backend), [`tray`](../capabilities/tray.md#backend) | Session bus; no other notification daemon or tray host holding the name |
 | [`mpris`](../capabilities/mpris.md#backend) | Session bus |
+| [`appearance`](../capabilities/appearance.md#backend) | xdg-desktop-portal on the session bus; defaults without it |
 | [`network`](../capabilities/network.md#backend) | NetworkManager |
 | [`bluetooth`](../capabilities/bluetooth.md#backend) | `bluetoothd`, running before Mantle starts |
 | [`audio`](../capabilities/audio.md#backend), [`privacy`](../capabilities/privacy.md#backend) | PipeWire, running when the capability starts; it does not reconnect |

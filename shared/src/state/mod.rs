@@ -1,5 +1,6 @@
 //! Capability snapshot payloads shared by controllers, stubs and config checks.
 
+pub mod appearance;
 pub mod applications;
 pub mod audio;
 pub mod battery;
