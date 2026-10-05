@@ -5,7 +5,8 @@
 
 use crate::layout::node::Typeface;
 use crate::layout::node::{
-    Affine, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs, invert_affine,
+    Affine, ClipShape, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs,
+    invert_affine,
 };
 use crate::layout::scene::ResolvedNode;
 use crate::text::shaping::{self, ShapeResult, ShapedLine, ShapingHandle};
@@ -252,11 +253,15 @@ fn descend<'a>(
         _ => rect.contains(point),
     };
     let inside = hittable && contains;
-    if !contains && node.clips_children() {
+    // Children are cut where paint cuts them: to the box under `clip = "box"`, else to the shape.
+    let cuts_to_box = matches!(&node.paint, Some(PaintStyle::Box { clip: ClipShape::Box, .. }));
+    let reach = !node.clips_children() || if cuts_to_box { rect.contains(point) } else { contains };
+    if !contains && !reach {
         return false;
     }
     path.push(node);
-    let child_hit = node.painted_children().rev().any(|child| descend(child, point, rect.x, rect.y, hittable, path));
+    let child_hit =
+        reach && node.painted_children().rev().any(|child| descend(child, point, rect.x, rect.y, hittable, path));
     if !inside && !child_hit {
         path.pop();
     }
@@ -316,25 +321,50 @@ mod tests {
         assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
     }
 
-    /// An outline takes the pointer inside its contour: in a tail past its box, not in a cut corner
-    /// or beside the tail, even where its children are cut to the box.
+    /// An outline takes the pointer inside its contour, by the fill rule paint uses: in a tail past
+    /// its box, not in a cut corner or beside the tail, and where a contour wound twice overlaps itself.
     #[test]
     fn an_outline_is_hit_inside_its_contour_and_its_tail() {
-        let lua = mlua::Lua::new();
-        let value: Value = lua.load(crate::layout::node::outline::TAIL).eval().unwrap();
-        let outline = <crate::layout::node::Outline as crate::layout::node::prop::Prop>::read(
-            &fields::paint::outline.row,
-            Some(&value),
-        )
-        .unwrap();
-        let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(ClipShape::Box);
-        if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
-            radius.2 = outline;
-        }
-        let root = ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble]);
+        let bubble = |clip, outline| {
+            let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(clip);
+            if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
+                radius.2 = Some(outline);
+            }
+            ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble])
+        };
+        let root = bubble(ClipShape::Box, crate::layout::node::outline::tail());
         let depth = |x: f32, y: f32| hit_path(&root, LogicalPoint { x, y }).len();
         assert_eq!((depth(32.0, 52.0), depth(32.0, 32.0)), (2, 2), "the tail and the body");
         assert_eq!((depth(16.5, 16.5), depth(37.5, 54.5)), (1, 1), "a cut corner and beside the tail");
+        // The same square twice round: even-odd calls its middle outside, non-zero (paint) inside.
+        let square = "{ op = 'L', points = { '100%', 0 } }, { op = 'L', points = { '100%', '100%' } }, \
+                      { op = 'L', points = { 0, '100%' } }, { op = 'L', points = { 0, 0 } }";
+        let twice = crate::layout::node::outline::parse(&format!(
+            "{{ commands = {{ {{ op = 'M', points = {{ 0, 0 }} }}, {square}, {square}, {{ op = 'Z', points = {{}} }} }} }}"
+        ))
+        .unwrap()
+        .unwrap();
+        let root = bubble(ClipShape::Box, twice);
+        assert_eq!(hit_path(&root, LogicalPoint { x: 32.0, y: 32.0 }).len(), 2, "a twice-wound middle is inside");
+    }
+
+    /// Children are hit where paint cuts them: to the box under `clip = "box"`, to the contour under
+    /// `"rounded"`, so a child hanging into the tail is hit only in the second.
+    #[test]
+    fn a_child_in_an_outlines_tail_is_hit_only_where_paint_draws_it() {
+        let bubble = |clip| {
+            let child = ResolvedNode::test("rect", (0.0, 0.0, 32.0, 40.0), vec![]);
+            let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![child]).with_clip(clip);
+            if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
+                radius.2 = Some(crate::layout::node::outline::tail());
+            }
+            ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble])
+        };
+        let depth = |root: &ResolvedNode, x: f32, y: f32| hit_path(root, LogicalPoint { x, y }).len();
+        let (boxed, rounded) = (bubble(ClipShape::Box), bubble(ClipShape::Rounded));
+        assert_eq!((depth(&boxed, 32.0, 32.0), depth(&rounded, 32.0, 32.0)), (3, 3), "inside the box");
+        assert_eq!((depth(&boxed, 32.0, 52.0), depth(&rounded, 32.0, 52.0)), (2, 3), "in the tail");
+        assert_eq!((depth(&boxed, 37.5, 54.5), depth(&rounded, 37.5, 54.5)), (1, 1), "beside the tail");
     }
 
     #[test]

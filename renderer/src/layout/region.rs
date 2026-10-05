@@ -112,27 +112,7 @@ fn collect_blur_regions(
         return;
     }
     if node.behind_blur {
-        // The radius travels with the box, so scale it the way the box was scaled. An axis-aligned
-        // matrix scales x and y alike here; a rotation would not, and a rounded rotated box is
-        // approximated by the larger of the two.
-        let grow = ((matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
-            .max((matrix[2] * matrix[2] + matrix[3] * matrix[3]).sqrt());
-        // Round the node's own box and *then* cut it to the clip, never the other way round: a
-        // card scrolled halfway out of a list is cut by a straight edge, and rounding the cut
-        // rectangle would round that edge too, pulling blur off the straight sides still on screen.
-        let mut rounded = Vec::new();
-        push_rounded_rect(
-            snap_to_physical(node::transformed_bounds(matrix, rect), scale),
-            radius * scale * grow,
-            &mut rounded,
-        );
-        let visible = snap_to_physical(node::transformed_bounds(matrix, clip), scale);
-        for strip in rounded {
-            let cut = strip.intersect(visible);
-            if !cut.is_empty() {
-                out.push(cut);
-            }
-        }
+        push_shape(rect, radius, (matrix, scale, clip), out);
     }
     for child in node.content_children() {
         collect_blur_regions(child, rect.x, rect.y, scale, matrix, child_clip, opacity * node.opacity, out);
@@ -199,6 +179,30 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
         }
         row = last;
     }
+}
+
+/// `rect` shaped as `radii` say, then cut to `clip`; both map through `matrix` to physical px.
+/// The shape first and the cut after: a card scrolled halfway out of a list is cut by a straight
+/// edge, and rounding the cut rectangle would round that edge too.
+fn push_shape(
+    rect: LogicalRect,
+    radii: node::Radii,
+    (matrix, scale, clip): (node::Affine, f32, LogicalRect),
+    out: &mut Vec<PhysicalRect>,
+) {
+    // The radius travels with the box, so scale it the way the box was scaled. An axis-aligned
+    // matrix scales x and y alike here; a rotation would not, and a rounded rotated box is
+    // approximated by the larger of the two.
+    let grow = ((matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
+        .max((matrix[2] * matrix[2] + matrix[3] * matrix[3]).sqrt());
+    let mut strips = Vec::new();
+    push_rounded_rect(
+        snap_to_physical(node::transformed_bounds(matrix, rect), scale),
+        radii * scale * grow,
+        &mut strips,
+    );
+    let visible = snap_to_physical(node::transformed_bounds(matrix, clip), scale);
+    out.extend(strips.into_iter().map(|strip| strip.intersect(visible)).filter(|cut| !cut.is_empty()));
 }
 
 /// An outline's polygon as strips: each row's spans between crossings of its centre line, rows
@@ -281,9 +285,16 @@ fn collect_input_regions(
     // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
     if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
         let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), scale);
-        if !bounds.is_empty() {
-            claimed = Some(bounds);
-            out.push(bounds);
+        match &node.paint {
+            // The contour's own strips: the ground beside a tail takes no input.
+            Some(PaintStyle::Box { radius, .. }) if radius.2.is_some() => {
+                push_shape(rect, radius.clone(), (matrix, scale, own_clip), out);
+            }
+            _ if !bounds.is_empty() => {
+                claimed = Some(bounds);
+                out.push(bounds);
+            }
+            _ => {}
         }
         if node.clips_children() {
             return;
@@ -316,7 +327,14 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
             Some(PaintStyle::Path(path)) => {
                 (path.fill.is_some() || path.stroke.is_some() && path.stroke_width > 0.0)
                     && path.commands.segments.iter().any(|segment| {
-                        matches!(segment.op, node::PathOp::L | node::PathOp::Q | node::PathOp::C | node::PathOp::A)
+                        matches!(
+                            segment.op,
+                            node::PathOp::L
+                                | node::PathOp::Q
+                                | node::PathOp::C
+                                | node::PathOp::A
+                                | node::PathOp::Corner
+                        )
                     })
             }
             // Its alpha is the GPU's to know; a config gives it a pointer handler for a hit area (ADR-0253).
@@ -634,16 +652,40 @@ mod tests {
     /// the ground beside the tail are out.
     #[test]
     fn an_outline_region_follows_its_contour() {
-        let lua = mlua::Lua::new();
-        let value: Value = lua.load(crate::layout::node::outline::TAIL).eval().unwrap();
-        let outline = <node::Outline as node::prop::Prop>::read(&node::fields::paint::outline.row, Some(&value));
         let mut strips = Vec::new();
-        let radii = node::Radii([0.0; 4], 0.0, outline.unwrap());
+        let radii = node::Radii([0.0; 4], 0.0, Some(crate::layout::node::outline::tail()));
         push_rounded_rect(PhysicalRect { x0: 16, y0: 16, x1: 48, y1: 48 }, radii, &mut strips);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         assert!(covers(32, 52) && covers(32, 32) && covers(47, 32), "the tail, the body and its edge");
         assert!(!covers(16, 16) && !covers(37, 54) && !covers(32, 58), "a corner, beside and past the tail");
         assert!(strips.iter().all(|s| !s.is_empty()));
+    }
+
+    /// A solid outline claims its contour's strips, not its bounding box: the tail takes input and
+    /// the ground beside it does not. A path of corners alone is a shape that claims input too.
+    #[test]
+    fn a_solid_outline_and_a_corner_path_claim_input_by_shape() {
+        let mut bubble = region_node(1, "rect", (16.0, 16.0, 32.0, 32.0), solid_paint(), Vec::new());
+        if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
+            radius.2 = Some(crate::layout::node::outline::tail());
+        }
+        let root = region_node(2, "panel", (0.0, 0.0, 64.0, 96.0), None, vec![bubble]);
+        let strips = overlay_input_regions(&root, 1.0);
+        let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        assert!(covers(32, 52) && covers(32, 32), "the tail and the body");
+        assert!(!covers(37, 54) && !covers(16, 16), "beside the tail and a cut corner");
+
+        let lua = mlua::Lua::new();
+        let table: mlua::Table = lua
+            .load(
+                "return { kind = 'path', fill = '#112233', commands = { { op = 'M', points = { 0, 0 } },
+                 { op = 'corner', points = { 20, 0 }, radius = 4 }, { op = 'corner', points = { 0, 20 }, radius = 4 },
+                 { op = 'Z', points = {} } } }",
+            )
+            .eval()
+            .unwrap();
+        let paint = node::paint_style("path", &node::props_from_table(&table)).unwrap();
+        assert!(takes_input_as_a_box(&region_node(3, "path", (0.0, 0.0, 20.0, 20.0), paint, Vec::new()), true));
     }
 
     /// Hit testing cuts a child at a clipping ancestor, so a card scrolled out of a transparent

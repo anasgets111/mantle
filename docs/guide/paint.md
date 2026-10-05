@@ -64,7 +64,7 @@ or, with none close, listing them all.
 | Properties | Taken by |
 | :--- | :--- |
 | `shadows`, `effect`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
+| `background`, `radius`, `corner_shape`, `outline`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
 | `effect.backdrop` | Box kinds only; the key is refused elsewhere, naming it |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
@@ -152,7 +152,8 @@ return row {
 ### Outline
 
 `outline = { commands = { .. } }` replaces the rounded rectangle with any shape: one closed
-contour of [`path`](../nodes/path.md) commands, `M` first and `Z` last. A popover and its arrow,
+contour of [`path`](../nodes/path.md) commands: an `M`, at least two more commands, then `Z`, with
+no other `M` or `Z`, no `hole` and at most 256 commands. A popover and its arrow,
 a speech bubble's tail, a tab joined to its panel or a notched card is one outline, so the fill,
 the border, shadows (inset too), `clip = "rounded"`, `mask`, `effect.backdrop`, `effect.shader`'s
 `mantle_sdf`, hit testing and the `behind_blur` region run round it without a seam. It refuses
@@ -164,15 +165,21 @@ Each coordinate follows the box's size, so a shape fits content and `"fill"` wid
 | Form | Means |
 | :--- | :--- |
 | `12` | px from the box's left or top edge |
-| `"50%"` | that share of the box's width or height |
+| `"50%"` | that share of the box's width or height, up to `"1600%"` |
 | `{ from = "right", px = -12 }` | px from `"left"`, `"right"`, `"top"`, `"bottom"`, `"center"` or a `"NN%"` |
 
-`{ op = "corner", points = { x, y }, radius = r, corner_smoothing = s }` rounds the turn at a point
+`"left"` and `"right"` are x and `"top"` and `"bottom"` are y, so each is refused in the other's slot.
+A placed coordinate is held to [-8192, 8192] px.
+
+`{ op = "corner", points = { x, y }, radius = r, corner_smoothing = s }` (`radius` is required) rounds the turn at a point
 between the line in and the line out, with the [continuous corners](#continuous-corners) above.
 Two corners sharing a side split it, and a radius too big for its sides shrinks. A corner where
 the contour turns the other way is a concave fillet, so a tail can flare into its body. Points may
 reach past the box; the tail paints, takes clicks and casts a shadow there, and the box keeps its
-layout size.
+layout size. Children stay cut to the box rectangle under `clip = "box"`, so a child hanging into
+the tail is neither drawn nor hit; under `clip = "rounded"` they follow the contour. A contour
+that crosses itself or winds twice is unsupported: paint fills by the non-zero rule, hit testing
+agrees, and `mantle_sdf` measures even-odd.
 
 <!-- shot-alt: A dark popover with rounded corners and a blue border, its arrow pointing up from the top centre, the border running round the arrow with no line across its base. -->
 ```lua,shot
@@ -212,7 +219,9 @@ crosses as their resolved positions would. A corner's radius holds at `0` and it
 `[0, 1]` through an overshoot. The tween runs without a layout or Lua.
 
 `mantle_sdf` measures an outline as a polygon of at most 256 points, each curve cut every 3° of
-turn (coarser if that is more), so its gradient bends by at most that much at a point. A shadow
+turn; past 256 points the cut widens to 6°, 12° and so on, so the gradient bends by at most 3° at a
+point up to about 8 corners, more beyond (and straight segments past 256 are thinned). Hit testing
+reads the exact curves, so it and `mantle_sdf` can differ by a fraction of a pixel. A shadow
 on an outline is the silhouette's, blurred offscreen like `shadow_mode = "content"`, and an inset
 shadow takes one offscreen blur per paint where a rounded box takes one gradient quad.
 
@@ -312,7 +321,7 @@ box's bounds in its own space).
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
 | `"box"` | The box's rectangle | Free (a scissor) |
-| `"rounded"` | The box's `radius`, `corner_shape` and `corner_smoothing`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
+| `"rounded"` | The box's `radius`, `corner_shape` and `corner_smoothing`, or its `outline`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
 | `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box. The default but on a scroll viewport or a surface | Free |
 
 A rounded clip draws in the order fill, children, border, so the border stays on top of children
@@ -330,7 +339,7 @@ that reach the arc.
 | Any form, plus `invert = true` | The complement: kept and cut swap |
 
 Name exactly one of `source`, `node`, or a gradient. A masked box draws its subtree offscreen every repaint
-and always cuts children to its box (to `radius` too under `clip = "rounded"`), even with
+and always cuts children to its box (to `radius` or the `outline` too under `clip = "rounded"`), even with
 `clip = "none"`.
 
 <!-- shot-alt: A scrolling list of Wi-Fi networks in a card; the rows at its top and bottom edges fade out under a gradient mask. -->
@@ -502,7 +511,7 @@ Four blurs read four different things. Sigmas are in logical px, `[0, 8192]`, 0 
 | `source_blur = sigma` (`image`) | The image file's pixels | Once, on the CPU, when the source decodes | Nothing per frame | A static blurred picture on a surface that repaints often |
 
 **`behind_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
-of every `behind_blur = true` box on the surface: rounded to `radius` (or scooped), cut by ancestor
+of every `behind_blur = true` box on the surface: rounded to `radius`, scooped or shaped as its `outline`, cut by ancestor
 clips, moved by transforms, and dropped while the node is invisible or at `opacity` 0. It ignores
 `mask`. The compositor decides strength, noise, xray and whether to blur at all; a compositor
 without the protocol or its blur capability gives nothing, and no error. It is never inferred from
@@ -626,7 +635,7 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | `mantle_input(uv)` | `vec4` | The input at a box coordinate, premultiplied; transparent outside the padded area |
 | `mantle_input_blurred(uv)` | `vec4` | The same, through `effect.backdrop`'s blur and colour filters; the plain input when it has none or `input = "content"` |
 | `u_input`, `u_input_blurred`, `u_input_rect` | `sampler2D`, `sampler2D`, `vec4` | The textures and where they sit as `(x, y, w, h)` in box fractions. Use the functions above, which handle the textures' orientation |
-| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii and `corner_smoothing`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
+| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii, `corner_smoothing` and `outline`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
 | `u_progress` | `float` | `progress` |
 | `mantle_opacity` | | Not set |
 
@@ -946,9 +955,9 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 
 | Trap | Fix |
 | :--- | :--- |
-| `clip = "rounded"` changes nothing | It needs a non-zero `radius`, and only clips children |
+| `clip = "rounded"` changes nothing | It needs a non-zero `radius` or an `outline`, and only clips children |
 | A gradient or a per-edge `border_color` jumps instead of easing under `animate` | Only single colours ease; see [Animation](animation.md) |
-| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle. Shrink the clickable node or accept it |
+| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle, except for an `outline`, which is hit by its contour. Shrink the clickable node or accept it |
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).
 

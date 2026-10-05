@@ -11,9 +11,11 @@ use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
-use super::shape::{box_path, polygon_into};
+use super::shape::box_path;
+use super::vector_path::femtovg_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
 use crate::layout::node::outline::inset;
+use kurbo::Shape as _;
 
 /// A shadow's gradient: its feather and its colour solid and at zero alpha. A ramp across 3 sigma
 /// is within 14/255 of the layer path's Gaussian; matching its slope instead, 22. The feather is
@@ -89,10 +91,9 @@ pub(super) fn paint_inset_shadow(
     canvas.fill_path(&box_path(pad, &inner), &paint);
 }
 
-/// An `inset` shadow inside an `outline`, which no box gradient can draw: everything outside the
-/// contour moved by `offset` and in by `spread`, cast like a layer's shadow and cut to the contour
-/// moved in by the border. ponytail: one offscreen and blur per shadow per paint, uncached;
-/// upgrade: keep the cast as `draw_layer` keeps a layer.
+/// An `inset` shadow in an `outline`: all outside the contour moved by `offset` and in by `spread`,
+/// cast like a layer's and cut to the contour inset by the border.
+/// ponytail: an uncached offscreen and blur per shadow per paint; keep the cast as `draw_layer` does.
 pub(super) fn paint_outline_inset(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -104,8 +105,8 @@ pub(super) fn paint_outline_inset(
     let (rect, clip) = (command.rect, command.clip);
     let polygon = outline.polygon(rect, 0.25);
     let (dx, dy) = (f64::from(shadow.offset.0), f64::from(shadow.offset.1));
-    let hole: Vec<_> =
-        inset(&polygon, f64::from(widths.top + shadow.spread)).into_iter().map(|p| p + (dx, dy)).collect();
+    let mut hole = inset(&polygon, f64::from(widths.top + shadow.spread));
+    hole.apply_affine(kurbo::Affine::translate((dx, dy)));
     // Room for the blur to read solid shadow from past the clip's edges.
     let room = (1.5 * shadow.blur + shadow.offset.0.abs().max(shadow.offset.1.abs())).ceil() as i32 + 2;
     let (x0, y0) = (clip.x0 - room, clip.y0 - room);
@@ -118,15 +119,15 @@ pub(super) fn paint_outline_inset(
     canvas.set_render_target(RenderTarget::Image(content));
     canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
     canvas.translate(-x0 as f32, -y0 as f32);
-    let mut outside = Path::new();
-    outside.rect(x0 as f32, y0 as f32, size.0 as f32, size.1 as f32);
-    polygon_into(&mut outside, &hole, Solidity::Hole);
-    canvas.fill_path(&outside, &Paint::color(Color::black()));
+    let mut outside =
+        kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x0) + size.0 as f64, f64::from(y0) + size.1 as f64)
+            .to_path(0.1);
+    outside.extend(hole);
+    canvas.fill_path(&femtovg_path(&outside, [false, true].into_iter()), &Paint::color(Color::black()));
     canvas.restore();
     canvas.set_render_target(target);
     let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target) else { return };
-    let mut pad = Path::new();
-    polygon_into(&mut pad, &inset(&polygon, f64::from(widths.top)), Solidity::Solid);
+    let pad = femtovg_path(&inset(&polygon, f64::from(widths.top)), std::iter::empty());
     let (w, h) = (size.0 as f32, size.1 as f32);
     painter.canvas_mut().fill_path(&pad, &Paint::image(cast, x0 as f32, y0 as f32, w, h, 0.0, 1.0));
 }

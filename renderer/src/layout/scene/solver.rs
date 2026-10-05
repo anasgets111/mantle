@@ -46,6 +46,7 @@ pub(super) enum Measure {
         /// The face the box is measured against, so the reserved width is the one it paints into.
         face: node::Typeface,
         wrap: node::Wrap,
+        elide: node::Elide,
         max_lines: Option<usize>,
         /// The last `(max_width, size)` this node measured; see [`solve`].
         memo: Option<(Option<f32>, taffy::Size<f32>)>,
@@ -455,7 +456,7 @@ pub(super) fn measure_for(
         // another kind here, so the arm is total, the same shape as `pass::children_of`'s
         // `unreachable!` arm.
         "text" => {
-            let Some(PaintStyle::Text { content, runs, face, wrap, max_lines, .. }) = paint else {
+            let Some(PaintStyle::Text { content, runs, face, wrap, elide, max_lines, .. }) = paint else {
                 unreachable!("paint_style produces PaintStyle::Text for text nodes");
             };
             Some(Measure::Text {
@@ -463,6 +464,7 @@ pub(super) fn measure_for(
                 runs: node::font_runs(runs),
                 face: face.clone(),
                 wrap: *wrap,
+                elide: *elide,
                 max_lines: *max_lines,
                 memo: None,
             })
@@ -533,7 +535,14 @@ fn measure_leaf(
                 Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
                 Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
                 Measure::Slots { .. } => taffy::Size::ZERO,
-                Measure::Text { content, runs, face, wrap, max_lines, memo } => {
+                Measure::Text { content, runs, face, wrap, elide, max_lines, memo } => {
+                    // Elided text shrinks to whatever it is given, so its min-content is nothing.
+                    if *wrap == node::Wrap::None
+                        && *elide == node::Elide::End
+                        && offered.width == taffy::AvailableSpace::MinContent
+                    {
+                        return clamp(taffy::Size { width: 0.0, height: face.line_height });
+                    }
                     // The wrap width: the known width, else the one on offer; `None` when unwrapped or taffy asks
                     // for max-content, and 0 for min-content, which breaks at every chance: the longest word.
                     let max_width = match wrap {
@@ -1085,6 +1094,28 @@ pub(super) mod tests {
         assert!(lone.rect.width > 40.0);
         assert_eq!(wrapper.rect.width, lone.rect.width, "as wide as the word, not squeezed to the 40 parent");
         assert!(wrapper.children[0].rect.height > 2.0 * 12.0, "the phrase wraps around the word");
+    }
+
+    /// Text that elides can shrink, so an auto wrapper in a narrow parent stays within it and the
+    /// text elides; a capped stack keeps no floor, so it holds its cap over a wider child.
+    #[test]
+    fn elided_text_and_a_capped_stack_keep_no_min_content_floor() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            "panel { id = 'bar', child = column { width = 400, children = {
+                rect { width = 40, height = 20, children = { rect { children = {
+                    text { content = 'a long label that needs more than forty pixels', font_size = 12, width = 'fill', elide = 'end' } } } } },
+                rect { max_width = 100, children = { rect { width = 230, height = 20 } } },
+            } } }",
+        );
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let column = &scene.surface("bar@TEST").unwrap().children[0];
+        let (narrow, capped) = (&column.children[0], &column.children[1]);
+        assert_eq!(narrow.children[0].rect.width, 40.0, "the wrapper stays in its 40 px parent");
+        let label = &narrow.children[0].children[0];
+        assert!(label.rect.width <= 40.0 && matches!(&label.paint, Some(PaintStyle::Text { elided: true, .. })));
+        assert_eq!(capped.rect.width, 100.0, "the cap holds over the 230 px child");
     }
 
     #[test]

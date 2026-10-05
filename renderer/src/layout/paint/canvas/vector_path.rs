@@ -54,12 +54,22 @@ pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>)
     for element in bez.elements() {
         match *element {
             PathEl::MoveTo(to) => {
-                path.move_to(p(to).0, p(to).1);
+                let (x, y) = p(to);
+                path.move_to(x, y);
                 path.solidity(if holes.next() == Some(true) { Solidity::Hole } else { Solidity::Solid });
             }
-            PathEl::LineTo(to) => path.line_to(p(to).0, p(to).1),
-            PathEl::QuadTo(c, to) => path.quad_to(p(c).0, p(c).1, p(to).0, p(to).1),
-            PathEl::CurveTo(c1, c2, to) => path.bezier_to(p(c1).0, p(c1).1, p(c2).0, p(c2).1, p(to).0, p(to).1),
+            PathEl::LineTo(to) => {
+                let (x, y) = p(to);
+                path.line_to(x, y);
+            }
+            PathEl::QuadTo(c, to) => {
+                let ((cx, cy), (x, y)) = (p(c), p(to));
+                path.quad_to(cx, cy, x, y);
+            }
+            PathEl::CurveTo(c1, c2, to) => {
+                let ((ax, ay), (bx, by), (x, y)) = (p(c1), p(c2), p(to));
+                path.bezier_to(ax, ay, bx, by, x, y);
+            }
             PathEl::ClosePath => path.close(),
         }
     }

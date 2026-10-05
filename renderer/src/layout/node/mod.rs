@@ -164,9 +164,9 @@ impl Radii {
     /// Whether the shape of a box at `rect` holds `(x, y)`.
     pub fn contains(&self, rect: LogicalRect, point: crate::layout::hit::LogicalPoint) -> bool {
         match &self.2 {
+            // Non-zero, the fill rule paint uses.
             Some(outline) => {
-                let p = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
-                outline::distance(&outline.polygon(rect, 0.25), p) < 0.0
+                kurbo::Shape::contains(&outline.bez(rect), kurbo::Point::new(f64::from(point.x), f64::from(point.y)))
             }
             None => rect.contains(point),
         }
@@ -174,12 +174,12 @@ impl Radii {
 
     /// CSS's rule for radii too big for a `w` by `h` box: all shrink by one factor until the two
     /// on each side fit, so corners keep their proportions.
-    pub fn fit(self, w: f32, h: f32) -> Self {
+    pub fn fit(&self, w: f32, h: f32) -> Self {
         let [tl, tr, br, bl] = self.0.map(f32::abs);
         let sides = [(w, tl + tr), (h, tr + br), (w, br + bl), (h, bl + tl)];
         let k = sides.iter().filter(|(_, sum)| *sum > 0.0).fold(1.0, |k, (side, sum)| f32::min(k, side / sum));
         // A side under zero (the scoop's `w - 2 * HAIR`) would flip every arc.
-        self * k.max(0.0)
+        self.clone() * k.max(0.0)
     }
 
     /// The smoothed outline of each corner of a `w` by `h` box, `None` where it is square or the

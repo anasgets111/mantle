@@ -8,8 +8,8 @@ use kurbo::{BezPath, ParamCurve, ParamCurveDeriv, PathEl, Point, Shape};
 use mlua::Value;
 
 use super::prop::Prop;
-use super::vector_path::{PathCommand, PathData, PathOp, Segment, Tweened, push};
-use super::{LayoutError, Property, invalid, preview_for_error, style::parse_percent};
+use super::vector_path::{COORD_MAX, PathCommand, PathData, PathOp, Segment, Tweened, push};
+use super::{LayoutError, Property, input, invalid, preview_for_error, style::parse_percent};
 use crate::lua::luacats::{LuaType, lua_shape, spelled};
 use crate::text::snap::LogicalRect;
 
@@ -53,10 +53,16 @@ pub(crate) struct Coord {
 
 spelled!(Coord => "OutlinePoint");
 
+const MAX_SHARE: f32 = 16.0;
+
 impl super::input::Input for Coord {
     fn from_value(property: &str, key: &str, value: &Value) -> Result<Option<Self>, LayoutError> {
-        let percent =
-            |s: &str| parse_percent(s).ok_or_else(|| invalid(property, format!("`{key}`: {s} is not \"NN%\"")));
+        // A share past 1600% could only land outside the coordinate bound, where femtovg hangs.
+        let percent = |s: &str| {
+            parse_percent(s)
+                .filter(|share| *share <= MAX_SHARE)
+                .ok_or_else(|| invalid(property, format!("`{key}`: {s} is not \"NN%\" up to 1600%")))
+        };
         Ok(Some(match value {
             Value::String(s) => Coord { px: 0.0, share: percent(&s.to_string_lossy())?, axis: None },
             Value::Table(table) => {
@@ -91,11 +97,13 @@ pub struct Outline {
 pub const SDF_POINTS: usize = 256;
 
 impl Outline {
-    /// The contour of a box at `rect`.
+    /// The contour of a box at `rect`, each placed coordinate held to [`COORD_MAX`].
     pub fn bez(&self, rect: LogicalRect) -> BezPath {
         let mut path = self.path.clone();
-        for (n, [w, h]) in path.points.iter_mut().zip(&self.shares) {
-            *n += w * rect.width + h * rect.height;
+        for (n, share) in path.points.iter_mut().zip(&self.shares) {
+            if *share != [0.0; 2] {
+                *n = (*n + share[0] * rect.width + share[1] * rect.height).clamp(-COORD_MAX, COORD_MAX);
+            }
         }
         path.bez((rect.x, rect.y))
     }
@@ -111,10 +119,7 @@ impl Outline {
         apart(out)
     }
 
-    /// The contour as at most [`SDF_POINTS`] vertices, each curve cut where it has turned 3°, or 6°
-    /// and so on while that is too many. A distance to it bends its gradient by at most that
-    /// angle at a vertex, where a tolerance would leave a small corner's chords tens of degrees
-    /// apart; a join the commands meet at smoothly stays smooth.
+    /// At most [`SDF_POINTS`] vertices, cut every 3° of turn, or every 6°, 12° and so on until they fit.
     pub fn sdf_polygon(&self, rect: LogicalRect) -> Vec<Point> {
         let segments: Vec<_> = self.bez(rect).segments().map(|s| s.to_cubic()).collect();
         let turns: Vec<f64> = segments
@@ -136,7 +141,7 @@ impl Outline {
                 return out;
             }
             if step > PI {
-                // More straight commands than the cap: every nth vertex.
+                // ponytail: over 256 segments even one chord each; every nth vertex, upgrade by merging segments.
                 return out.iter().copied().step_by(out.len().div_ceil(SDF_POINTS)).collect();
             }
             step *= 2.0;
@@ -168,8 +173,7 @@ impl Outline {
     }
 }
 
-/// `points` with each one under 0.001 px from the last kept dropped, the closing one included: f32
-/// rounding leaves such stubs where commands meet, and femtovg draws a stub's edge as a spike.
+/// `points` without repeats under 0.001 px, the closing one included: a zero-length edge has no normal.
 fn apart(points: impl IntoIterator<Item = Point>) -> Vec<Point> {
     let mut out: Vec<Point> = Vec::new();
     for p in points {
@@ -183,8 +187,8 @@ fn apart(points: impl IntoIterator<Item = Point>) -> Vec<Point> {
     out
 }
 
-/// Signed distance from `p` to the closed `polygon`, negative inside by the even-odd rule. The
-/// shader's `mantle_sdf` for an outline is the same function, so this is its CPU mirror.
+/// Signed distance to the closed `polygon`, negative inside by even-odd: `mantle_sdf` on the CPU.
+#[cfg(test)]
 pub fn distance(polygon: &[Point], p: Point) -> f64 {
     let Some(&last) = polygon.last() else { return f64::INFINITY };
     let (mut nearest, mut inside, mut a) = (f64::INFINITY, false, last);
@@ -201,22 +205,29 @@ pub fn distance(polygon: &[Point], p: Point) -> f64 {
     if inside { -nearest.sqrt() } else { nearest.sqrt() }
 }
 
-/// `polygon` moved `by` px inward, outward when negative: each edge along its normal, each vertex
-/// where its two moved edges meet, a mitre held to four times `by`.
-pub fn inset(polygon: &[Point], by: f64) -> Vec<Point> {
+/// `points` as a closed path.
+fn closed(points: impl IntoIterator<Item = Point>) -> BezPath {
+    let mut path = BezPath::new();
+    for (i, p) in points.into_iter().enumerate() {
+        if i == 0 { path.move_to(p) } else { path.line_to(p) }
+    }
+    path.close_path();
+    path
+}
+
+/// `polygon` moved `by` px inward (outward if negative), mitres held to four times `by`.
+pub fn inset(polygon: &[Point], by: f64) -> BezPath {
     let n = polygon.len();
-    // The shoelace area's sign says which side of each edge is inside.
-    let area: f64 = (0..n).map(|i| polygon[i].to_vec2().cross(polygon[(i + 1) % n].to_vec2())).sum();
+    // The area's sign says which side of each edge is inside.
+    let area = closed(polygon.iter().copied()).area();
     let normal = |i: usize| {
         let e = polygon[(i + 1) % n] - polygon[i];
         kurbo::Vec2::new(-e.y, e.x).normalize() * area.signum()
     };
-    (0..n)
-        .map(|i| {
-            let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
-            polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
-        })
-        .collect()
+    closed((0..n).map(|i| {
+        let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
+        polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
+    }))
 }
 
 /// `outline = { commands = { .. } }`.
@@ -230,7 +241,7 @@ impl LuaType for Outline {
     }
 }
 
-// ponytail: 256 commands; a longer contour needs a measured flattening and `mantle_sdf` budget.
+// ponytail: 256 commands; more needs a measured `mantle_sdf` budget.
 const MAX_COMMANDS: usize = 256;
 
 impl Prop for Outline {
@@ -245,10 +256,11 @@ impl Prop for Outline {
             }
             Some(value) => return Err(invalid(name, format!("expected a table, got {}", preview_for_error(value)))),
         };
-        let commands = OutlineInput::read(name, table)?.commands;
-        if commands.len() > MAX_COMMANDS {
-            return Err(invalid(name, format!("at most {MAX_COMMANDS} commands")));
+        // Counted before any command is read, as `PathCommands` does.
+        if let Ok(Value::Table(commands)) = table.get::<Value>("commands") {
+            input::array_len(&format!("{name}.commands"), &commands, MAX_COMMANDS)?;
         }
+        let commands = OutlineInput::read(name, table)?.commands;
         let (mut segments, mut points, mut shares) = (Vec::new(), Vec::new(), Vec::new());
         for (i, OutlineCommand { op, points: coords, radius, corner_smoothing }) in commands.into_iter().enumerate() {
             let name = format!("{name}.commands[{}]", i + 1);
@@ -301,15 +313,21 @@ pub(crate) const TAIL: &str = r#"{ commands = {
 } }"#;
 
 #[cfg(test)]
+pub(crate) fn parse(src: &str) -> Result<Option<Rc<Outline>>, LayoutError> {
+    let lua = mlua::Lua::new();
+    let value: Value = lua.load(src).eval().unwrap();
+    Outline::read(&super::fields::paint::outline.row, Some(&value))
+}
+
+/// [`TAIL`], parsed.
+#[cfg(test)]
+pub(crate) fn tail() -> Rc<Outline> {
+    parse(TAIL).unwrap().unwrap()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::node::fields;
-
-    fn parse(src: &str) -> Result<Option<Rc<Outline>>, LayoutError> {
-        let lua = mlua::Lua::new();
-        let value: Value = lua.load(src).eval().unwrap();
-        Outline::read(&fields::paint::outline.row, Some(&value))
-    }
 
     fn at(w: f32, h: f32) -> LogicalRect {
         LogicalRect { x: 0.0, y: 0.0, width: w, height: h }
@@ -319,7 +337,7 @@ mod tests {
     /// 8 px deep at any size, and reaches past the box.
     #[test]
     fn points_follow_the_box_size() {
-        let tail = parse(TAIL).unwrap().unwrap();
+        let tail = tail();
         for (w, h) in [(32.0, 32.0), (100.0, 50.0)] {
             let b = tail.bounds(at(w, h));
             assert_eq!((b.x, b.y, b.width), (0.0, 0.0, w));
@@ -343,10 +361,55 @@ mod tests {
         );
     }
 
+    /// A share past 1600% is refused where it is read, and a coordinate placed on a huge box is held
+    /// to the bound: either would otherwise hand femtovg a coordinate that hangs it.
+    #[test]
+    fn a_share_of_the_box_cannot_place_a_point_past_the_coordinate_bound() {
+        let contour = |x: &str| {
+            format!(
+                "{{ commands = {{ {{ op = 'M', points = {{ {x}, 0 }} }}, {{ op = 'L', points = {{ 9, 0 }} }}, {{ op = 'L', points = {{ 0, 9 }} }}, {{ op = 'Z', points = {{}} }} }} }}"
+            )
+        };
+        assert!(parse(&contour("'1600%'")).is_ok());
+        for bad in ["'1601%'", "'100000000%'", "{ from = '100000000%' }"] {
+            assert!(parse(&contour(bad)).is_err(), "accepted {bad}");
+        }
+        let far = parse(&contour("'1600%'")).unwrap().unwrap();
+        let huge = LogicalRect { x: 0.0, y: 0.0, width: 1e9, height: 1e9 };
+        assert_eq!(far.bez(huge).elements()[0], PathEl::MoveTo(Point::new(8192.0, 0.0)));
+        // A tween's share overshoots the parsed bound the same way.
+        let shot = far.lerp(&far, 1.0).unwrap();
+        assert_eq!(shot.bez(huge).bounding_box().x1, 8192.0);
+    }
+
+    /// The command count is checked before any command is read, so a long list of junk reports the
+    /// cap, not the first bad entry.
+    #[test]
+    fn an_outline_counts_its_commands_before_reading_them() {
+        let err = parse(&format!("{{ commands = {{ {} }} }}", "1,".repeat(257))).unwrap_err();
+        assert!(err.to_string().contains("at most 256"), "{err}");
+    }
+
+    /// `inset` moves either winding inward and returns a path, so a hole built from it needs no
+    /// point list.
+    #[test]
+    fn inset_moves_each_winding_of_a_contour_inward() {
+        let square = [Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)];
+        let reversed: Vec<_> = square.iter().rev().copied().collect();
+        for polygon in [square.to_vec(), reversed] {
+            let b = inset(&polygon, 2.0).bounding_box();
+            assert_eq!((b.x0, b.y0, b.x1, b.y1), (2.0, 2.0, 8.0, 8.0));
+        }
+    }
+
     #[test]
     fn an_outline_refuses_what_is_not_one_closed_contour() {
         let contour = |body: &str| format!("{{ commands = {{ {{ op = 'M', points = {{ 0, 0 }} }}, {body} }} }}");
-        let ok = contour("{ op = 'L', points = { 9, 0 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }");
+        // `first`, then the rest of a triangle.
+        let tailed = |first: &str| {
+            contour(&format!("{first}, {{ op = 'L', points = {{ 0, 9 }} }}, {{ op = 'Z', points = {{}} }}"))
+        };
+        let ok = tailed("{ op = 'L', points = { 9, 0 } }");
         assert!(parse(&ok).is_ok());
         for bad in [
             "{}".to_string(),
@@ -359,26 +422,14 @@ mod tests {
             contour(
                 "{ op = 'L', points = { 9, 0 } }, { op = 'Z', points = {} }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
             ),
-            contour(
-                "{ op = 'L', points = { 9, 0 }, hole = true }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
-            contour("{ op = 'corner', points = { 9, 0 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }"),
-            contour(
-                "{ op = 'corner', points = { 9, 0 }, radius = 2, corner_smoothing = 2 }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
-            contour(
-                "{ op = 'L', points = { 9, 0 }, radius = 2 }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
-            contour(
-                "{ op = 'L', points = { { from = 'top' }, 0 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
-            contour(
-                "{ op = 'L', points = { { from = 'middle' }, 0 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
-            contour("{ op = 'L', points = { '5px', 0 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }"),
-            contour(
-                "{ op = 'A', points = { 9, 9, '50%', 0, 90 } }, { op = 'L', points = { 0, 9 } }, { op = 'Z', points = {} }",
-            ),
+            tailed("{ op = 'L', points = { 9, 0 }, hole = true }"),
+            tailed("{ op = 'corner', points = { 9, 0 } }"),
+            tailed("{ op = 'corner', points = { 9, 0 }, radius = 2, corner_smoothing = 2 }"),
+            tailed("{ op = 'L', points = { 9, 0 }, radius = 2 }"),
+            tailed("{ op = 'L', points = { { from = 'top' }, 0 } }"),
+            tailed("{ op = 'L', points = { { from = 'middle' }, 0 } }"),
+            tailed("{ op = 'L', points = { '5px', 0 } }"),
+            tailed("{ op = 'A', points = { 9, 9, '50%', 0, 90 } }"),
         ] {
             assert!(parse(&bad).is_err(), "accepted {bad}");
         }
@@ -395,7 +446,7 @@ mod tests {
     /// its gradient must not jump where the side meets the filleted tail or round a corner.
     #[test]
     fn the_sdf_and_its_gradient_are_continuous_across_the_joins() {
-        let polygon = parse(TAIL).unwrap().unwrap().sdf_polygon(at(32.0, 32.0));
+        let polygon = tail().sdf_polygon(at(32.0, 32.0));
         assert!(polygon.len() <= SDF_POINTS);
         let d = |x: f64, y: f64| distance(&polygon, Point::new(x, y));
         let gradient =

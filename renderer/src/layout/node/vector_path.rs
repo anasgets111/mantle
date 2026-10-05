@@ -139,10 +139,11 @@ impl PathData {
     pub fn bez(&self, origin: (f32, f32)) -> BezPath {
         let at = |x: f32, y: f32| Point::new(f64::from(origin.0 + x), f64::from(origin.1 + y));
         let arc_at = |p: &[f32], a: f32| at(p[0] + p[2] * a.cos(), p[1] + p[2] * a.sin());
+        let arc_start = |p: &[f32]| p[3].rem_euclid(360.0).to_radians();
         let commands: Vec<_> = self.iter().collect();
         let mut path = BezPath::new();
-        // Where the pen is and where its subpath began, so an arc's joining line is drawn only when it
-        // moves: femtovg keeps a repeated point, and anti-aliasing draws the zero-length edge as a spike.
+        // Where the pen is and where its subpath began. A joining line under 0.001 px is dropped: femtovg
+        // keeps the repeated point, and anti-aliasing draws the stub's edge as a spike.
         let (mut pen, mut first) = (Point::ZERO, Point::ZERO);
         for (i, &(segment, p)) in commands.iter().enumerate() {
             match segment.op {
@@ -163,15 +164,15 @@ impl PathData {
                     path.curve_to(at(p[0], p[1]), at(p[2], p[3]), pen);
                 }
                 PathOp::A => {
-                    let start = p[3].rem_euclid(360.0).to_radians();
+                    let start = arc_start(p);
                     let sweep = p[4].clamp(-360.0, 360.0).to_radians();
                     let from = arc_at(p, start);
                     if segment.begins {
                         (pen, first) = (from, from);
                         path.move_to(pen);
-                    } else if from != pen {
+                    } else {
+                        line_to(&mut path, pen, from);
                         pen = from;
-                        path.line_to(pen);
                     }
                     // One cubic per quarter turn or less, handles 4/3·tan(step/4) radii long; none for no sweep.
                     let segments = (sweep.abs() / FRAC_PI_2).ceil();
@@ -186,16 +187,24 @@ impl PathData {
                     }
                 }
                 PathOp::Corner => {
-                    let next = match commands.get(i + 1) {
-                        Some((next, q)) if !next.begins && next.op != PathOp::Z => match next.op {
-                            PathOp::A => arc_at(q, q[3].rem_euclid(360.0).to_radians()),
-                            _ => at(q[0], q[1]),
-                        },
-                        _ => first,
-                    };
-                    // A side shared with the next corner is half each's.
-                    let shared = commands.get(i + 1).is_some_and(|(next, _)| next.op == PathOp::Corner);
-                    pen = corner(&mut path, (pen, at(p[0], p[1]), next), p[2], p[3], shared);
+                    let vertex = at(p[0], p[1]);
+                    // What follows in this subpath; a `Z` closes toward its start, an open end has no turn.
+                    let next = commands.get(i + 1).filter(|(next, _)| !next.begins).map(|(next, q)| match next.op {
+                        PathOp::Z => first,
+                        PathOp::A => arc_at(q, arc_start(q)),
+                        _ => at(q[0], q[1]),
+                    });
+                    match next {
+                        Some(next) => {
+                            // A side shared with the next corner is half each's.
+                            let shared = commands.get(i + 1).is_some_and(|(next, _)| next.op == PathOp::Corner);
+                            pen = corner(&mut path, (pen, vertex, next), p[2], p[3], shared);
+                        }
+                        None => {
+                            line_to(&mut path, pen, vertex);
+                            pen = vertex;
+                        }
+                    }
                 }
                 PathOp::Z => {
                     pen = first;
@@ -204,6 +213,13 @@ impl PathData {
             }
         }
         path
+    }
+}
+
+/// A line from `pen` to `to`, unless it is a stub under 0.001 px, which anti-aliasing draws as a spike.
+fn line_to(path: &mut BezPath, pen: Point, to: Point) {
+    if pen.distance(to) >= 1e-3 {
+        path.line_to(to);
     }
 }
 
@@ -222,17 +238,14 @@ fn corner(
     let radius = radius.min(budget);
     // A straight reversal has no corner to round.
     if radius <= 0.0 || into.normalize().dot(out.normalize()) < -0.999 {
-        path.line_to(vertex);
+        line_to(path, pen, vertex);
         return vertex;
     }
     let (a, b) = (into.normalize(), out.normalize());
     let squircle = Squircle::new(radius, smoothing, budget);
     let place = |(x, y): (f32, f32)| vertex + b * f64::from(x) - a * f64::from(y);
     let start = place(squircle.points[0]);
-    // Rounding leaves a stub of a line, whose edge femtovg draws as a spike.
-    if start.distance(pen) > 1e-3 {
-        path.line_to(start);
-    }
+    line_to(path, pen, start);
     for i in 0..3 {
         let [from, c1, c2, end] = squircle.cubic(i);
         // Smoothing 0 leaves the outer two as points, whose zero-length edges femtovg draws as spikes.
@@ -419,6 +432,21 @@ mod tests {
             parse("(function() local a={} for i=1,4096 do a[i]={op='M',points={-8192,8192}} end return a end)()")
                 .is_ok()
         );
+    }
+
+    /// A `corner` with nothing after it and no `Z` has no outgoing side to round toward: the open
+    /// subpath ends in a plain line to its point, not a curve toward its start.
+    #[test]
+    fn an_open_subpath_ending_in_a_corner_draws_a_line_to_it() {
+        let lua = mlua::Lua::new();
+        let value: Value = lua
+            .load("{{op='M',points={0,0}}, {op='L',points={10,0}}, {op='corner',points={10,10},radius=4}}")
+            .eval()
+            .unwrap();
+        let path = PathCommands::read(&fields::path::commands.row, Some(&value)).unwrap();
+        let bez = path.bez((0.0, 0.0));
+        assert_eq!(bez.elements().last(), Some(&kurbo::PathEl::LineTo(Point::new(10.0, 10.0))));
+        assert!(bez.elements().iter().all(|el| !matches!(el, kurbo::PathEl::CurveTo(..))), "{bez:?}");
     }
 
     #[test]

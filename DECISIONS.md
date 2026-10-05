@@ -8161,3 +8161,10 @@ rounded-rect fast paths.
 
 Ceiling: inset shadows on an outline are not cached; the upgrade is the layer cache's key.
 `Radii` carries the outline, so every `box_path` consumer follows it without a second argument.
+
+Amendment: paint fills an outline by the non-zero rule and hit testing uses the same (kurbo
+`Shape::contains`); `mantle_sdf` stays even-odd, so a contour that crosses itself is unsupported.
+Children are hit where paint cuts them: the box rect under `clip = "box"`, the contour under
+`"rounded"`. Input regions claim the contour's strips, not its bounds. Shares cap at ±1600% and
+placed coordinates clamp to ±8192, since femtovg, `kurbo::flatten` and the region scanline hang
+on huge coordinates. The 3° SDF bound holds to about 8 corners, widening beyond to fit 256 points.

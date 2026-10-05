@@ -64,7 +64,7 @@ pub(super) fn box_path(rect: LogicalRect, radii: &Radii) -> Path {
         // straight edges. Short of half the shorter side, so neighbouring arcs never meet and fold.
         // Wound left, bottom, right, top like the shapes below: the other way, femtovg's
         // antialiasing inset pushes the edge up to 3px into the scoop.
-        let [tl, tr, br, bl] = radii.clone().fit(w - 2.0 * HAIR, h - 2.0 * HAIR).0.map(|r| -r);
+        let [tl, tr, br, bl] = radii.fit(w - 2.0 * HAIR, h - 2.0 * HAIR).0.map(|r| -r);
         path.arc(x, y + h, bl, -FRAC_PI_2, 0.0, Solidity::Hole);
         path.arc(x + w, y + h, br, PI, 3.0 * FRAC_PI_2, Solidity::Hole);
         path.arc(x + w, y, tr, FRAC_PI_2, PI, Solidity::Hole);
@@ -102,7 +102,7 @@ pub(super) fn box_path(rect: LogicalRect, radii: &Radii) -> Path {
 /// is its [`Squircle`] chain, so this is the one outline the border bands, clips and masks share.
 fn smoothed_path(rect: LogicalRect, radii: &Radii) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
-    let squircles = radii.clone().fit(w, h).squircles(w, h);
+    let squircles = radii.fit(w, h).squircles(w, h);
     let mut outline = Outline { path: Path::new(), pen: None };
     // Bottom left, bottom right, top right, top left: each corner's frame and the way it is walked.
     for (i, origin, toward, reversed) in [
@@ -119,15 +119,6 @@ fn smoothed_path(rect: LogicalRect, radii: &Radii) -> Path {
     }
     outline.close(Solidity::Solid);
     outline.path
-}
-
-/// `polygon` as one more closed subpath of `path`.
-pub(super) fn polygon_into(path: &mut Path, polygon: &[kurbo::Point], solidity: Solidity) {
-    for (i, p) in polygon.iter().enumerate() {
-        if i == 0 { path.move_to(p.x as f32, p.y as f32) } else { path.line_to(p.x as f32, p.y as f32) }
-    }
-    path.close();
-    path.solidity(solidity);
 }
 
 /// The background fill, rounded when the node asked for it. See [`box_path`] for why a radius at
@@ -203,9 +194,9 @@ pub(super) fn paint_border(
         if let Some(paint) = uniform_paint
             && widths.top > 0.0
         {
-            let mut path = box_path(rect, radius);
-            polygon_into(&mut path, &inset(&outline.polygon(rect, 0.1), f64::from(widths.top)), Solidity::Hole);
-            canvas.fill_path(&path, &paint);
+            let mut bez = outline.bez(rect);
+            bez.extend(inset(&outline.polygon(rect, 0.1), f64::from(widths.top)));
+            canvas.fill_path(&femtovg_path(&bez, [false, true].into_iter()), &paint);
         }
         return;
     }
@@ -447,8 +438,8 @@ fn shaped_border(
         return;
     }
     let radius = match radius.scoop() {
-        false => radius.clone().fit(w, h),
-        true => radius.clone().fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
+        false => radius.fit(w, h),
+        true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
     };
     let [tl, tr, br, bl] = radius.0;
     let [q_tl, q_tr, q_br, q_bl] = radius.squircles(w, h);
