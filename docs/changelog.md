@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- A right or middle press on a plain `textfield` calls the field's own `on_press` and, on release, its own `on_click`, never an ancestor's, for right-click menus. It focuses the field and keeps a selection it lands in. Left presses and `secure_submit` fields are unchanged; a card press released over a field inside it no longer clicks the card.
 - Ctrl+X cuts a field's selection, `focus_target(name)` gains `:cut()`, `:copy()`, `:paste()` and `:select_all()`, and `has_selection(name)` is a read-only signal for a field with text selected.
 - `textfield` takes `multiline = true`: the draft wraps and takes newlines, and the field grows from `min_lines` to `max_lines` rows, then scrolls them to keep the caret in view. `submit_key` (`"ctrl+return"` or `"return"`) picks the chord that submits; Return or Shift+Return inserts the newline. Up, Down, Home and End move by visual row. `initial_text` and `focus_target(name):set_text` may hold `\n` for a multiline field; a single-line one refuses a `set_text` newline with a warning. `multiline` with `secure_submit` is refused.
 - `focus_target` and `autofocus` work on any focusable control, not only a plain `textfield`, and `focus_target(name):request()` also works from `on_key` and a field's `on_change` and `on_submit`: a request from a key callback shows the focus outline, one from `on_click` does not. `:set_text` stays textfield-only.

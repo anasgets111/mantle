@@ -55,8 +55,9 @@ pub(in crate::wayland) struct ArmedSerial {
 /// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
 /// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
 /// is transparent. `layout::node::resolve_declared` refuses an `on_click` that is not a function.
-fn click_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint) -> Option<Clickable> {
-    path.iter().enumerate().rev().find_map(|(depth, node)| {
+fn click_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint, floor: usize) -> Option<Clickable> {
+    (floor..path.len()).rev().find_map(|depth| {
+        let node = path[depth];
         let on_click = pointer::on_click.read(&node.properties).ok().flatten();
         let submit = pointer::submit.read(&node.properties).is_ok_and(|on| on);
         if on_click.is_none() && !submit {
@@ -92,12 +93,31 @@ fn drag_local(
 }
 
 /// Innermost node with callable `on_press`; unhandled nodes are transparent, like `on_click`'s scan.
-fn press_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint) -> Option<PressTarget> {
-    path.iter().enumerate().rev().find_map(|(depth, node)| {
-        let handler = pointer::on_press.read(&node.properties).ok().flatten()?;
+fn press_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint, floor: usize) -> Option<PressTarget> {
+    (floor..path.len()).rev().find_map(|depth| {
+        let handler = pointer::on_press.read(&path[depth].properties).ok().flatten()?;
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         Some(PressTarget { rect, handler, at: local_pointer(&path[..=depth], rect, point) })
     })
+}
+
+/// Click and press targets for a hit. A `textfield` is a leaf that answers only to its own
+/// handlers, never an ancestor's (ADR-0092 decision 7); a masked one answers to none.
+fn handlers_under(
+    path: &[&layout::ResolvedNode],
+    field: Option<&FieldTarget>,
+    point: layout::hit::LogicalPoint,
+    shaping: &ShapingHandle,
+) -> (Option<Clickable>, Option<PressTarget>) {
+    match field {
+        None => (clickable(path, point, shaping), press_target(path, point, 0)),
+        Some(FieldTarget::Plain { .. }) => {
+            // ponytail: a textfield is always the deepest hit node, so the leaf is the field.
+            let leaf = path.len().saturating_sub(1);
+            (click_target(path, point, leaf), press_target(path, point, leaf))
+        }
+        Some(FieldTarget::Masked { .. }) => (None, None),
+    }
 }
 
 /// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
@@ -155,7 +175,7 @@ struct Clickable {
 
 /// Links precede `on_click` (ADR-0106): a text `on_link` with an `href` under `point` wins over any
 /// `on_click`, the text's own included, while plain words pass through. A `textfield` similarly
-/// arms no click (ADR-0092 decision 7).
+/// arms a click only for right and middle (ADR-0092 decision 7).
 fn clickable(
     path: &[&layout::ResolvedNode],
     point: layout::hit::LogicalPoint,
@@ -171,7 +191,7 @@ fn clickable(
         let href = layout::hit::link_under(node, local, shaping)?;
         Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false, at: local })
     });
-    link.or_else(|| click_target(path, point))
+    link.or_else(|| click_target(path, point, 0))
 }
 
 /// Both targets from decision 1's single [`layout::hit::hit_path`] traversal. Two walks could
@@ -262,12 +282,15 @@ fn release_completes_click(
 /// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
 /// reply and password fields must displace each other. `caret` is the byte offset under the press
 /// point ([`layout::hit::caret_at`]), absent when nothing measured it; `extend` is Shift, which
-/// selects from where the caret already was instead of collapsing to the press (ADR-0236).
+/// selects from where the caret already was instead of collapsing to the press (ADR-0236). A
+/// non-`primary` (right or middle) press focuses but leaves a selection it lands in, so a menu can
+/// act on it, and starts no drag.
 fn press_chooses_focus(
     hit_field: Option<FieldTarget>,
     instance_id: &str,
     caret: Option<usize>,
     extend: bool,
+    primary: bool,
     focused_secure_submit: Option<FocusedField>,
     focused_text_field: Option<FocusedTextField>,
 ) -> (Option<FocusedField>, Option<FocusedTextField>) {
@@ -278,21 +301,26 @@ fn press_chooses_focus(
         // Re-pressing the same field resumes its draft (ADR-0108).
         Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape }) => {
             let resumed = focused_text_field.filter(|field| field.id == id);
-            let anchor = resumed.as_ref().map(|field| field.selection.0);
+            let resumed_selection = resumed.as_ref().map(|field| field.selection);
+            let anchor = resumed_selection.map(|selection| selection.0);
             let (buffer, mut history) = resumed.map(|field| (field.buffer, field.history)).unwrap_or_default();
             history.break_typing();
             // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
             let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
+            let selection = match resumed_selection {
+                Some((a, b)) if !primary && (a.min(b)..=a.max(b)).contains(&caret) => (a, b),
+                _ => (anchor.filter(|_| extend).unwrap_or(caret), caret),
+            };
             (
                 None,
                 Some(FocusedTextField {
                     surface_id: instance_id.to_string(),
                     id,
-                    selection: (anchor.filter(|_| extend).unwrap_or(caret), caret),
+                    selection,
                     buffer,
                     history,
                     typing: true,
-                    selecting: true,
+                    selecting: primary,
                     goal_x: None,
                     on_change,
                     on_submit,
@@ -483,6 +511,7 @@ impl App {
                     &instance_id,
                     hit.caret,
                     self.shift_held,
+                    button == BTN_LEFT,
                     self.focused_secure_submit.clone(),
                     self.focused_text_field.clone(),
                 );
@@ -498,10 +527,10 @@ impl App {
                 }
                 // A press on the control Tab already focused still hides the outline.
                 self.set_focus_visible(false);
-                // A textfield press arms no click, so an ancestor `on_click` cannot fire
-                // (ADR-0092); `textfield` is a leaf. This keeps notification reply boxes
-                // from also activating the card.
-                self.armed = hit.click.filter(|_| !pressed_a_field).map(|clickable| ArmedClick {
+                // `hit` holds a field's own handlers only, so a reply box never activates its card;
+                // a field's left press is caret and selection, so only right and middle run them (ADR-0092).
+                let runs = !pressed_a_field || button != BTN_LEFT;
+                self.armed = hit.click.filter(|_| runs).map(|clickable| ArmedClick {
                     instance_id: instance_id.clone(),
                     rect: clickable.rect,
                     link: clickable.link,
@@ -510,7 +539,7 @@ impl App {
                 // Both press-time handlers run inside one window so `toplevel(id)` requests
                 // queued by either are sent with this press's serial.
                 crate::lua::toplevel::begin_press(self.client.lua(), position);
-                if !pressed_a_field
+                if runs
                     && let (Some(target), Some(name)) = (hit.press, pointer_button_name(button))
                     && let Err((what, e)) =
                         call_on_press(self.client.lua(), &target.handler, &target, name, self.modifiers_held())
@@ -551,7 +580,10 @@ impl App {
                 if button == BTN_LEFT {
                     self.fire_on_drag(&instance_id, position, DragPhase::End);
                 }
-                let hit = self.hit_under(index, position).click;
+                let hit = self.hit_under(index, position);
+                // A field's own `submit` never sends: a right or middle click is no Enter.
+                let submits = hit.field.is_none();
+                let hit = hit.click;
                 let fires = release_completes_click(
                     self.armed.as_ref(),
                     &instance_id,
@@ -569,7 +601,7 @@ impl App {
                             call_logged(&handler, href, format_args!("{instance_id}: on_link"));
                         }
                         (_, handler) => {
-                            if clickable.submit {
+                            if clickable.submit && submits {
                                 self.prune_secure_focus();
                                 self.finish_secure_submit();
                             }
@@ -645,12 +677,13 @@ impl App {
         // `None`, not `""`, for a field this does not hold: an empty draft measures to offset 0,
         // and handing that to `drag_selection` moves the held field's head into another field's
         // text. Only the draft `press_chooses_focus` would resume has a caret (ADR-0108).
+        let (click, press) = handlers_under(&path, field.as_ref(), point, &self.shaping);
         let held = self
             .focused_text_field
             .as_ref()
             .filter(|held| matches!(&field, Some(FieldTarget::Plain { id, .. }) if *id == held.id));
         PointerHit {
-            click: clickable(&path, point, &self.shaping),
+            click,
             control: focusable_hit(&path),
             // Its own caret too, not just its draft: a draft too wide to fit is drawn slid to
             // follow the caret, and a press reads the byte under where it actually landed.
@@ -658,7 +691,7 @@ impl App {
                 .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
             drag: drag_target(&path),
-            press: press_target(&path, point),
+            press,
         }
     }
 
@@ -852,10 +885,10 @@ mod tests {
         let plain = plain_textfield(&lua);
         assert!(!hits_a_secret(focused_field(&[&plain]).as_ref(), None));
         let submit = with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "submit", Value::Boolean(true));
-        let click = click_target(&[&submit], point).expect("a submit node is clickable");
+        let click = click_target(&[&submit], point, 0).expect("a submit node is clickable");
         assert!(hits_a_secret(None, Some(&click)));
         let inert = hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), true);
-        assert!(!hits_a_secret(None, click_target(&[&inert], point).as_ref()));
+        assert!(!hits_a_secret(None, click_target(&[&inert], point, 0).as_ref()));
     }
 
     #[test]
@@ -937,11 +970,11 @@ mod tests {
 
         let at = layout::hit::LogicalPoint { x: 20.0, y: 12.0 };
         let path = layout::hit::hit_path(&root, at);
-        let target = press_target(&path, at).expect("the bar carries on_press; its icon child is transparent");
+        let target = press_target(&path, at, 0).expect("the bar carries on_press; its icon child is transparent");
         call_on_press(&lua, &target.handler, &target, "right", [false; 4]).unwrap();
         assert_eq!(*seen.borrow(), vec![(40.0, "right".to_string(), 10.0)]);
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(press_target(&[&bare], at).is_none());
+        assert!(press_target(&[&bare], at, 0).is_none());
     }
 
     #[test]
@@ -980,16 +1013,16 @@ mod tests {
         root.children.push(column.clone());
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let Clickable { rect, .. } =
-            click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }).expect("the row carries an on_click");
+        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }, 0)
+            .expect("the row carries an on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
 
         // The same `text` leaf with its own `on_click` is now the innermost handler.
         column.children[0].children[0] = hit_node(&lua, "text", (6.0, 5.0, 28.0, 14.0), true);
         root.children[0] = column;
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let Clickable { rect, .. } =
-            click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }).expect("the text carries an on_click");
+        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }, 0)
+            .expect("the text carries an on_click");
         assert_eq!(rect, LogicalRect { x: 16.0, y: 9.0, width: 28.0, height: 14.0 });
     }
 
@@ -1006,7 +1039,7 @@ mod tests {
 
         let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
         assert_eq!(path.len(), 3, "the inner rect is still on the path");
-        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 })
+        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }, 0)
             .expect("the outer rect carries the on_click");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
     }
@@ -1031,7 +1064,7 @@ mod tests {
             let drawn = apply_affine(layout::hit::path_transform(&[&root, &root.children[0]]), 25.0, 8.0);
             let point = layout::hit::LogicalPoint { x: drawn.0, y: drawn.1 };
             let path = layout::hit::hit_path(&root, point);
-            let Clickable { at, .. } = click_target(&path, point).expect(name);
+            let Clickable { at, .. } = click_target(&path, point, 0).expect(name);
             assert!((at.x - 15.0).abs() < 1e-3 && (at.y - 4.0).abs() < 1e-3, "{name}: {}, {}", at.x, at.y);
         }
     }
@@ -1080,7 +1113,7 @@ mod tests {
         let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
         std::rc::Rc::make_mut(&mut row.properties).insert("submit", Value::Boolean(true));
         let clickable =
-            click_target(&[&row], layout::hit::LogicalPoint { x: 1.0, y: 1.0 }).expect("submit arms a click");
+            click_target(&[&row], layout::hit::LogicalPoint { x: 1.0, y: 1.0 }, 0).expect("submit arms a click");
         assert!(clickable.handler.is_none() && clickable.submit);
     }
 
@@ -1291,6 +1324,7 @@ mod tests {
             "notification_area@eDP-1",
             Some(7),
             false,
+            true,
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1315,6 +1349,7 @@ mod tests {
             "notification_area@eDP-1",
             None,
             false,
+            true,
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1330,8 +1365,15 @@ mod tests {
         let lua = Lua::new();
         let held = draft(7, "half a sentence");
         let anchor = held.selection.0;
-        let (_, plain) =
-            press_chooses_focus(Some(plain_field(&lua, 7)), "notification_area@eDP-1", Some(4), true, None, Some(held));
+        let (_, plain) = press_chooses_focus(
+            Some(plain_field(&lua, 7)),
+            "notification_area@eDP-1",
+            Some(4),
+            true,
+            true,
+            None,
+            Some(held),
+        );
         let plain = plain.expect("the press focused the field it hit");
         assert_eq!(plain.selection, (anchor, 4), "the anchor stays put and the press moves the head");
 
@@ -1342,6 +1384,7 @@ mod tests {
             "notification_area@eDP-1",
             Some(4),
             false,
+            true,
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1356,7 +1399,7 @@ mod tests {
             target: secure_target(),
         };
         let (masked, plain) =
-            press_chooses_focus(None, "bar@eDP-1", None, false, Some(held.clone()), Some(draft(7, "kept")));
+            press_chooses_focus(None, "bar@eDP-1", None, false, true, Some(held.clone()), Some(draft(7, "kept")));
         let plain = plain.expect("the draft survives a press elsewhere");
         assert_eq!(plain.buffer, "kept");
         assert!(!plain.typing, "no caret without focus");
@@ -1371,6 +1414,7 @@ mod tests {
             "lock@eDP-1",
             None,
             false,
+            true,
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1383,5 +1427,77 @@ mod tests {
             })
         );
         assert!(plain.is_none(), "one field holds the keys, and it is the password one");
+    }
+
+    fn handler(lua: &Lua) -> Value {
+        Value::Function(lua.create_function(|_, ()| Ok(())).unwrap())
+    }
+
+    /// A card with both handlers around `field`, which gets its own pair when `own`.
+    fn card_around(lua: &Lua, field: layout::ResolvedNode, own: bool) -> (layout::ResolvedNode, layout::ResolvedNode) {
+        let card = with_property(
+            with_property(hit_node(lua, "column", (0.0, 0.0, 99.0, 99.0), false), "on_click", handler(lua)),
+            "on_press",
+            handler(lua),
+        );
+        let field = if own {
+            with_property(with_property(field, "on_click", handler(lua)), "on_press", handler(lua))
+        } else {
+            field
+        };
+        (card, field)
+    }
+
+    #[test]
+    fn a_plain_field_answers_to_its_own_handlers_and_never_a_cards_and_a_masked_one_to_none() {
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let at = pt(5.0, 5.0);
+        let (card, own) = card_around(&lua, plain_textfield(&lua), true);
+        let field = focused_field(&[&own]);
+        let (click, press) = handlers_under(&[&card, &own], field.as_ref(), at, &shaping);
+        assert_eq!(
+            click.expect("the field's on_click").rect,
+            LogicalRect { x: 0.0, y: 0.0, width: 40.0, height: 24.0 }
+        );
+        assert!(press.is_some_and(|press| press.rect.width == 40.0), "the field's on_press, not the card's");
+
+        let (card, bare) = card_around(&lua, plain_textfield(&lua), false);
+        let field = focused_field(&[&bare]);
+        let (click, press) = handlers_under(&[&card, &bare], field.as_ref(), at, &shaping);
+        assert!(click.is_none() && press.is_none(), "no own handler: the card's never fires");
+        // Outside a field the card still wins, as before.
+        let (click, press) = handlers_under(&[&card], None, at, &shaping);
+        assert!(click.is_some() && press.is_some());
+
+        let masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let (card, masked) = card_around(&lua, masked, true);
+        let field = focused_field(&[&masked]);
+        let (click, press) = handlers_under(&[&card, &masked], field.as_ref(), at, &shaping);
+        assert!(click.is_none() && press.is_none());
+    }
+
+    #[test]
+    fn a_right_press_keeps_a_selection_it_lands_in_and_starts_no_drag() {
+        let lua = Lua::new();
+        let held = || FocusedTextField { selection: (2, 9), ..draft(7, "half a sentence") };
+        let press = |caret, primary| {
+            let (_, plain) = press_chooses_focus(
+                Some(plain_field(&lua, 7)),
+                "bar@eDP-1",
+                Some(caret),
+                false,
+                primary,
+                None,
+                Some(held()),
+            );
+            plain.expect("focused")
+        };
+        let inside = press(5, false);
+        assert_eq!((inside.selection, inside.selecting), ((2, 9), false));
+        let outside = press(12, false);
+        assert_eq!((outside.selection, outside.selecting), ((12, 12), false), "outside it places the caret");
+        let left = press(5, true);
+        assert_eq!((left.selection, left.selecting), ((5, 5), true), "a left press still collapses and drags");
     }
 }

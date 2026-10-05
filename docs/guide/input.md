@@ -49,8 +49,8 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
-| `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. Not called for a press on a `textfield`. See below |
+| `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored. On a `textfield` only right and middle fire, and only the field's own `on_click`, never an ancestor's; a left press edits the field and a `secure_submit` field fires none. The press focuses the field and keeps a selection it lands in, so `:cut()` and `:copy()` act on it |
+| `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. A `textfield` calls only its own, for right and middle. See below |
 | `on_drag(rect, pointer, phase, modifiers)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
@@ -58,8 +58,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 **Click.** A press arms the click and the release fires it. Leaving the node and coming back
 before release still clicks; the pointer leaving the surface cancels. The click also cancels if the
 node's laid-out box moved between press and release, so give press feedback with `scale` or
-`translate` rather than `width` or `margin`. A press on a `textfield` that takes the keyboard never
-clicks, not even an `on_click` on the field or around it, and a link in a `text` (`on_link`) takes
+`translate` rather than `width` or `margin`. A `textfield` clicks only as the `on_click` row says. A link in a `text` (`on_link`) takes
 the click before any `on_click`, the text's own included.
 
 **Modifiers.** Each pointer handler ends with `modifiers`, the `{ ctrl, shift, alt, super }` booleans
@@ -540,6 +539,39 @@ return panel {
                 note:cut()
             end,
             children = { text { content = selected:map(function(on) return on and "Cut" or "Nothing selected" end) } },
+        },
+    } },
+}
+```
+
+A right-click menu on a field. The press focuses the field without clearing a selection it lands in, so
+`:cut()` acts on it:
+
+```lua
+local note = focus_target("note")
+local menu = state("note_menu", false)
+return panel {
+    id = "note",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = column { children = {
+        textfield {
+            focus_target = note,
+            width = 180,
+            height = 32,
+            on_change = function() end,
+            on_click = function(_, button)
+                if button == "right" then menu:set(true) end
+            end,
+        },
+        row {
+            visible = menu,
+            children = {
+                rect {
+                    on_click = function() note:request(); note:cut(); menu:set(false) end,
+                    children = { text { content = "Cut" } },
+                },
+            },
         },
     } },
 }

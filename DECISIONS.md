@@ -1841,6 +1841,11 @@ Supersedes ADR-0027 decision 3.
 
 Plain draft state stays outside the retained tree; input repaints without forcing scene resolution.
 
+Amendment (2026-10-06, decision 7): a right or middle press on a plain field calls the field's own
+`on_press` and `on_click`, never an ancestor's and never `submit`, so a field can carry a context
+menu. It focuses the field and keeps a selection it lands in, for `:cut()` and `:copy()`. Left
+presses and masked fields still reach no Lua.
+
 ## 0093. A notification carries when it arrived, because nothing else can work it out
 
 1. Record arrival in epoch seconds, using system.time's helper and units.
