@@ -10,6 +10,7 @@ use crate::layout::node::prop::{Keyword, keywords};
 use crate::lua::call_logged;
 use crate::lua::marshal::rect_table;
 
+mod position;
 mod wheel;
 
 enum HoverUpdate {
@@ -398,13 +399,26 @@ impl PointerHandler for App {
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
-        for event in events {
+        for (at, event) in events.iter().enumerate() {
             // `wl_pointer` is per seat; an event may name a surface destroyed by `visible` or
             // output change.
             let Some(index) = self.index_of_surface(&event.surface) else {
                 continue;
             };
             self.pointer_event(index, event.position, &event.kind, false);
+            let moves = |kind: &PointerEventKind| {
+                !matches!(
+                    kind,
+                    PointerEventKind::Press { .. } | PointerEventKind::Release { .. } | PointerEventKind::Axis { .. }
+                )
+            };
+            // A later move on the same surface in this batch supersedes this one's position.
+            let superseded = events
+                .get(at + 1..)
+                .is_some_and(|rest| rest.iter().any(|next| next.surface == event.surface && moves(&next.kind)));
+            if moves(&event.kind) && !superseded {
+                self.sync_pointer(index);
+            }
         }
     }
 }
@@ -706,6 +720,7 @@ impl App {
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
         let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
         self.sync_hover(index, tree, &path, HoverUpdate::Layout);
+        self.sync_pointer(index);
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never
@@ -731,6 +746,7 @@ impl App {
         self.pointer_at = None;
         let tree = self.client.scene().surface(&surface_id);
         self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
+        self.sync_pointer(index);
     }
 
     /// Write all `hover` signals from the pointer's hit `path`, empty off the surface (ADR-0062). Collect writes before

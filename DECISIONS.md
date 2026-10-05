@@ -8053,3 +8053,20 @@ Amends ADR-0331.
 
 Rejected: a separate `inset_shadows` list. Ceiling: the hole has one mean radius, so unequal
 corners shade as a round hole; upgrade with a per-corner SDF shader.
+
+## 0345. Input-written signals are written only while read
+
+`pointer(name)` is written from the same hit path as `hover`, but it builds a Lua table per move.
+The writer therefore asks the read tracker first (`is_read`: either an instance reads the cell
+directly, or an instance reads a computed downstream of it). An unread cell stays nil and costs
+no table, dirty mark, re-resolve or Lua call, and a stale value is reset to nil.
+
+The cell does not store the position; it is derived from `pointer_at` and the current tree. After
+any re-resolve, `refresh_hover_after_layout` writes the position, so a reader that appears under
+a still pointer gets it one pass later. Equal coordinates are deduplicated, so this cannot loop.
+Writes coalesce to one per surface per `pointer_frame` batch.
+
+Signal-bound properties have no paint-only path, so a read cell re-resolves its reader instances
+once per distinct position. Per-output instances share one cell per name, as with `hover`. Ceiling:
+a node moved by a tween under a still pointer keeps its old value until the next motion. Upgrade
+by refreshing after layout ticks too.

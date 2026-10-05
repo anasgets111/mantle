@@ -110,6 +110,14 @@ impl Drop for Output {
     }
 }
 
+/// Whether an instance reads `cell`, directly or through a computed it reads. A writer that builds
+/// its value per write checks first, so an unread signal costs nothing at device rate.
+pub(crate) fn is_read(lua: &Lua, cell: CellId) -> bool {
+    let tracker = lua.app_data_ref::<ReadTracker>();
+    tracker.as_ref().is_some_and(|t| t.cell_readers.contains_key(&cell))
+        || !downstream(lua, &std::iter::once(cell).collect()).is_empty()
+}
+
 /// Computeds reading any of `cells`, directly or through another, that an instance reads, directly
 /// or through another. The rest, such as one the last resolve dropped, wait unread for collection.
 pub(super) fn downstream(lua: &Lua, cells: &FxHashSet<CellId>) -> Vec<CellId> {

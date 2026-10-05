@@ -82,6 +82,14 @@ function hover(name) end
 ---@return Signal<boolean>
 function focused(name) end
 
+---Where the pointer is on the node whose `pointer` is bound to this signal: `{ x, y }` in logical pixels
+---from its top-left corner while the pointer is over the node or its children, `nil` otherwise. The
+---engine writes it on pointer motion, and only while something reads it. One name, one signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#pointer-position)
+---@param name string
+---@return Signal<{ x: number, y: number }?>
+function pointer(name) end
+
 ---The absolute rect of `hover(name)`'s node, in its surface's logical coordinates, for a `popup`'s
 ---`anchor_rect`. `1x1` at the origin before the first hover; keeps the last rect after the pointer
 ---leaves.

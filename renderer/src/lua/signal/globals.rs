@@ -130,6 +130,11 @@ pub fn any_focused_registered(lua: &Lua) -> bool {
     lua.app_data_ref::<FocusedRegistry>().is_some_and(|registry| !registry.0.is_empty())
 }
 
+/// Whether config called `pointer(name)`, so configs without one skip the pointer walk.
+pub fn any_pointer_registered(lua: &Lua) -> bool {
+    lua.app_data_ref::<PointerRegistry>().is_some_and(|registry| !registry.0.is_empty())
+}
+
 /// ADR-0044 decision 5 state registry: name preserves last-click values across in-place reloads;
 /// the stored literal detects an edited initial, which wins over live state (the wallpaper case).
 /// In `Lua::set_app_data`, so ADR-0044 decision 4's persistent VM preserves it and a replaced
@@ -158,6 +163,10 @@ struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 /// Name-keyed `focused(name)` registry, kept across reloads like [`HoverRegistry`].
 #[derive(Default)]
 struct FocusedRegistry(HashMap<String, Signal>);
+
+/// Name-keyed `pointer(name)` registry, kept across reloads like [`HoverRegistry`].
+#[derive(Default)]
+struct PointerRegistry(HashMap<String, Signal>);
 
 /// Name-keyed `scroll(name)` registry; reload preserves the user's offset and avoids jumping an
 /// open panel to top (ADR-0069 decision 2).
@@ -214,6 +223,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let focused_dirty = dirty.clone();
+    let pointer_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
     lua_fn!(
         lua,
@@ -357,6 +367,18 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         fn focused(lua, name: String) -> SignalOf<bool> {
             let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
             let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focused_dirty.clone()));
+            Ok(SignalOf::new(signal.clone()))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Where the pointer is on the node whose `pointer` is bound to this signal: `{ x, y }` in logical pixels
+        /// from its top-left corner while the pointer is over the node or its children, `nil` otherwise. The
+        /// engine writes it on pointer motion, and only while something reads it. One name, one signal, across reloads. Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#pointer-position)
+        fn pointer(lua, name: String) -> SignalOf<Option<crate::layout::hit::LogicalPoint>> {
+            let mut registry = crate::lua::app_data_or_default::<PointerRegistry>(lua);
+            let signal = registry.0.entry(name).or_insert_with(|| Signal::new_pointer(pointer_dirty.clone()));
             Ok(SignalOf::new(signal.clone()))
         }
     )?;
@@ -520,6 +542,22 @@ mod tests {
 
         assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
         assert!(!lua.load("return other:get()").eval::<bool>().unwrap(), "a different name is a different slot");
+    }
+
+    #[test]
+    fn pointer_hands_one_name_one_signal_that_starts_nil_and_only_the_pointer_writes() {
+        let (lua, _dirty) = lua_with_state();
+        assert!(!any_pointer_registered(&lua));
+        lua.load(r#"first = pointer("tip") second = pointer("tip") other = pointer("x")"#).exec().unwrap();
+        assert!(any_pointer_registered(&lua));
+        let first: mlua::AnyUserData = lua.globals().get("first").unwrap();
+        let first = from_userdata(&first).unwrap();
+        assert!(first.hover_handle().is_none() && first.focused_handle().is_none());
+        assert!(lua.load("return second:get()").eval::<Value>().unwrap().is_nil());
+        first.pointer_handle().unwrap().set(Value::Boolean(true));
+        assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
+        assert!(lua.load("return other:get()").eval::<Value>().unwrap().is_nil());
+        assert!(lua.load(r#"pointer("tip"):set(1)"#).exec().is_err(), "config cannot write it");
     }
 
     #[test]

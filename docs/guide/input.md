@@ -148,6 +148,42 @@ return panel {
 }
 ```
 
+## Pointer position
+
+`pointer(name)` returns a read-only signal of the pointer's `{ x, y }` in logical pixels from the
+top-left corner of one node, or `nil` while the pointer is outside it. Bind it to a node's `pointer`;
+the name is the identity, as for `hover`.
+
+| API | Contract |
+| :--- | :--- |
+| `pointer = pointer(name)` | Any node kind. A table while the pointer is over the node or any of its children (the same rule as `hover`), `nil` otherwise, including after it leaves the surface. Coordinates are in the node's own untransformed space and unclamped, like `on_click`'s `pointer`. Updated once per motion batch and when layout moves the node under a still pointer |
+| Cost | Motion writes it only while something reads it. A signal nothing reads costs the hit walk the pointer already does; a read one re-resolves only the instances that read it. One output's instance holds the position while the pointer is on it, as the name is one signal across outputs |
+
+```lua
+local at = pointer("canvas")
+
+return panel {
+    id = "bar",
+    layer = "top",
+    anchor = { top = true },
+    child = rect {
+        width = 200,
+        height = 60,
+        pointer = at,
+        children = {
+            rect {
+                width = 8,
+                height = 8,
+                radius = 4,
+                background = "#f5c2e7",
+                visible = at:map(function(p) return p ~= nil end),
+                translate = at:map(function(p) return { x = p and p.x - 4 or 0, y = p and p.y - 4 or 0 } end),
+            },
+        },
+    },
+}
+```
+
 ## Scroll
 
 `scroll(name)` returns a read-only signal holding a scroll offset in px, `0` at first. Bind it to

@@ -113,6 +113,7 @@ impl App {
         let here = self.pointer_at.as_ref().is_some_and(|(id, _)| *id == self.surfaces[index].surface_id);
         let kind = if here { PointerEventKind::Motion { time: 0 } } else { PointerEventKind::Enter { serial: 0 } };
         self.pointer_event(index, position, &kind, true);
+        self.sync_pointer(index);
     }
 
     fn inject_button(&mut self, index: usize, button: InputButton, pressed: bool) -> Result<(), String> {

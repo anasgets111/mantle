@@ -279,6 +279,10 @@ props! {
         ///
         /// Book: A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover))
         hover: Handle;
+        /// A `pointer(name)` signal; the engine sets it to the pointer's `{ x, y }` from this node's top-left corner while the pointer is over this node or its children, `nil` otherwise.
+        ///
+        /// Book: A `pointer(name)` signal the engine sets to the pointer's node-local `{ x, y }` while it is over this node or its children ([pointer position](../guide/input.md#pointer-position))
+        pointer: Handle;
         /// A `geometry(name)` signal; layout writes this node's surface-local rect into it (ADR-0147).
         ///
         /// Book: A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect))

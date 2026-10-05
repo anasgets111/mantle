@@ -102,6 +102,34 @@ pub fn focused_writes(tree: &ResolvedNode, focus: Option<NodeId>) -> Vec<(Signal
     writes
 }
 
+/// Every `pointer` signal in `tree`, paired with where `point` is on its node (the node's
+/// untransformed top-left corner as origin) while the node is on `path`, else `None`. Walks the whole
+/// tree like [`hover_writes`], so a node the pointer left is turned off.
+pub fn pointer_writes(
+    tree: &ResolvedNode,
+    path: &[&ResolvedNode],
+    point: Option<hit::LogicalPoint>,
+) -> Vec<(Signal, Option<hit::LogicalPoint>)> {
+    fn collect(
+        node: &ResolvedNode,
+        path: &[&ResolvedNode],
+        point: Option<hit::LogicalPoint>,
+        writes: &mut Vec<(Signal, Option<hit::LogicalPoint>)>,
+    ) {
+        if let Some(signal) = common::pointer.read(&node.properties).ok().flatten() {
+            let depth = path.iter().position(|on_path| std::ptr::eq(*on_path, node));
+            let local = depth.zip(point).and_then(|(depth, point)| hit::node_local(&path[..=depth], point));
+            writes.push((signal, local));
+        }
+        for child in &node.children {
+            collect(child, path, point, writes);
+        }
+    }
+    let mut writes = Vec::new();
+    collect(tree, path, point, &mut writes);
+    writes
+}
+
 #[cfg(test)]
 mod tests {
     use super::hit::LogicalPoint;
@@ -278,6 +306,30 @@ mod tests {
         let answers = |focus| focused_writes(&wrapper, focus).into_iter().map(|(_, on)| on).collect::<Vec<_>>();
         assert_eq!(answers(Some(id)), vec![true, true, false], "wrapper, field, sibling");
         assert_eq!(answers(None), vec![false, false, false]);
+    }
+
+    #[test]
+    fn pointer_is_the_point_from_the_nodes_own_corner_while_it_is_on_the_path_and_none_off_it() {
+        let lua = Lua::new();
+        let slot = |node: &mut ResolvedNode| {
+            let ud = lua.create_userdata(Signal::new_pointer(DirtyFlag::new())).unwrap();
+            std::rc::Rc::make_mut(&mut node.properties).insert("pointer", Value::UserData(ud));
+        };
+        let mut inner = node((10.0, 5.0, 30.0, 10.0), None, vec![]);
+        slot(&mut inner);
+        let mut sibling = node((60.0, 0.0, 30.0, 20.0), None, vec![]);
+        slot(&mut sibling);
+        let mut outer = node((20.0, 0.0, 100.0, 20.0), None, vec![inner, sibling]);
+        slot(&mut outer);
+        let tree = node((0.0, 0.0, 200.0, 20.0), None, vec![outer]);
+        let local = |point: Option<LogicalPoint>| {
+            let path = point.map(|point| hit::hit_path(&tree, point)).unwrap_or_default();
+            pointer_writes(&tree, &path, point).into_iter().map(|(_, at)| at.map(|at| (at.x, at.y))).collect::<Vec<_>>()
+        };
+        // Declaration order: outer, inner, sibling. Outer sits at x=20, inner at x=30.
+        assert_eq!(local(at(35.0, 10.0)), vec![Some((15.0, 10.0)), Some((5.0, 5.0)), None]);
+        assert_eq!(local(at(90.0, 10.0)), vec![Some((70.0, 10.0)), None, Some((10.0, 10.0))]);
+        assert_eq!(local(None), vec![None, None, None], "a leave turns every one off");
     }
 
     #[test]

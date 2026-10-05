@@ -26,8 +26,8 @@ use crate::lua::marshal;
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
 pub use globals::{
-    any_focused_registered, any_hover_registered, begin_evaluation, declared_states, promote_states, register,
-    take_layout_changed, write_state,
+    any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
+    promote_states, register, take_layout_changed, write_state,
 };
 pub(crate) use globals::{note_layout_changed, reset, reset_target};
 pub use held::{next_wake_deadline, take_due_wake};
@@ -35,7 +35,7 @@ pub use state_handlers::{clear as clear_state_handlers, run as run_state_handler
 #[cfg(test)]
 pub(crate) use tracking::MemoTable;
 pub(crate) use tracking::{
-    ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, forget_instance,
+    ComputedFrame, EvaluationMemo, begin_instance_resolve, end_instance_resolve, forget_instance, is_read,
     note_everything_written, note_read, note_reads, note_write, reset_read_tracker, untracked, with_derived,
     write_clock, written_since,
 };
@@ -70,6 +70,9 @@ enum SignalKind {
     /// Engine-written boolean from `focused(name)`; its own kind so the pointer and keyboard
     /// writers never write each other's signals.
     Focused { id: CellId, cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
+    /// Engine-written `{ x, y }` from `pointer(name)`, `nil` while the pointer is off the node; its
+    /// own kind so `hover_handle` cannot write it.
+    Pointer { id: CellId, cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
     /// Scroll offset in logical pixels (ADR-0069), written by the wheel handler and layout clamp.
     /// Separate from `Hover` so only `scroll_handle` writes it; `scroll = mantle.network` cannot
     /// overwrite a capability snapshot.
@@ -140,6 +143,7 @@ impl SignalKind {
             SignalKind::Live { .. } => "a capability",
             SignalKind::Hover { .. } => "a hover",
             SignalKind::Focused { .. } => "a focused",
+            SignalKind::Pointer { .. } => "a pointer",
             SignalKind::Scroll { .. } => "a scroll",
             SignalKind::State { .. } => "a state",
             SignalKind::Delayed { .. } => "a delayed",
@@ -297,6 +301,11 @@ impl Signal {
         Signal(SignalKind::Focused { id: next_cell_id(), cell: Rc::new(RefCell::new(Value::Boolean(false))), dirty })
     }
 
+    /// Starts `nil`: the pointer is not over the node until a motion says so.
+    pub fn new_pointer(dirty: DirtyFlag) -> Self {
+        Signal(SignalKind::Pointer { id: next_cell_id(), cell: Rc::new(RefCell::new(Value::Nil)), dirty })
+    }
+
     /// Scroll offset starting at top (ADR-0069 decision 2). Plain number, not a hover-like pair: no
     /// scrollbar uses content extent yet, so the first such config can define its shape.
     pub fn new_scroll(dirty: DirtyFlag) -> Self {
@@ -384,6 +393,12 @@ impl Signal {
         Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
     }
 
+    /// Pointer write end for `crate::wayland`; `None` for other kinds.
+    pub(crate) fn pointer_handle(&self) -> Option<LiveSignalHandle> {
+        let SignalKind::Pointer { id, cell, dirty } = &self.0 else { return None };
+        Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
+    }
+
     /// Rect write end for the boolean hover half: last node position in surface logical
     /// coordinates, consumed by tooltip `popup.anchor_rect`. `None` for other kinds and the rect
     /// half itself.
@@ -398,6 +413,7 @@ impl Signal {
             SignalKind::Live { id, cell }
             | SignalKind::Hover { id, cell, .. }
             | SignalKind::Focused { id, cell, .. }
+            | SignalKind::Pointer { id, cell, .. }
             | SignalKind::Scroll { id, cell, .. }
             | SignalKind::State { id, cell, .. }
             | SignalKind::Geometry(id, cell)

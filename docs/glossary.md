@@ -55,7 +55,7 @@ scope, capability roster) lives in [`CONTEXT.md`](../CONTEXT.md).
 | **Signal** | A reactive value. Pass it to a property to keep that property live; `:get()` is a snapshot. See [signals](guide/signals.md). |
 | **Derived signal** | A signal computed from others: `:map`, `computed`, `delay`, `pulse`. See [derived signals](guide/signals.md#derived-signals). |
 | **Named state** | A [`state(name, initial)`](guide/signals.md#named-state) signal, keyed by name. Survives reloads until a scalar `initial` changes; lost with the generation. `mantle set` and `toggle` write it. |
-| **Input signal** | An engine-written, name-keyed signal: `hover`, `hover_rect`, `scroll`, `geometry`. Survives reloads like named state. |
+| **Input signal** | An engine-written, name-keyed signal: `hover`, `hover_rect`, `pointer`, `scroll`, `geometry`. Survives reloads like named state. |
 | **Change handler** | An [`on_change(fn)`](capabilities/index.md#reading-and-acting) callback, run with the current and previous payload on each capability, `rescue` or `screens` push, or [on a `state`](guide/signals.md#on_change-react-to-a-write) after a write changes it. |
 | **Persistent table** | [`persistent_table`](guide/scripting.md#persistent_table): a JSON file read as signals and written one key at a time. |
 | **Idle threshold** | An inactivity duration with idle and resume callbacks, registered on [`mantle.idle`](capabilities/idle.md#methods) and cancellable by its handle. |

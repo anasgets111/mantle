@@ -77,7 +77,7 @@ and box properties but `margin`, `align_h` and `align_v`, and stack their one `c
 | Rule | Detail |
 | :--- | :--- |
 | Types | A property table's Type column is the editor stubs' LuaCATS type. `Bound` means it also takes a signal; `Length` is a [size](#sizes); `Edges` is `{ top, right, bottom, left }` with missing edges 0; `Axes` is `{ x, y }` with a missing axis at the property's default; `Color` is a colour; `Animations` is per-property [tweens](../guide/animation.md), keyed by the node's own properties (`RectAnimations` on a `rect`). A range after the type is checked |
-| Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `scroll` and `geometry` take the signal handle itself. A table property takes a signal for any value inside it |
+| Signals | A property whose Type includes `Bound` takes a [signal](../guide/signals.md); `id` and callbacks do not. `hover`, `pointer`, `scroll` and `geometry` take the signal handle itself. A table property takes a signal for any value inside it |
 | `nil` | A signal reading `nil` leaves its property absent, at its default. Capabilities read `nil` until their first push, so binding one never fails layout |
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
@@ -197,6 +197,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `focus_ring` | `boolean\|Bound` | `true` | `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node |
 | `focused` | `Bound` | None | A `focused(name)` signal the engine sets while this node or its children hold [control focus](../guide/input.md#keyboard-controls-and-accessibility) |
 | `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
+| `pointer` | `Bound` | None | A `pointer(name)` signal the engine sets to the pointer's node-local `{ x, y }` while it is over this node or its children ([pointer position](../guide/input.md#pointer-position)) |
 | `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |
 | `cursor` | `Cursor\|Bound` | `"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
 | `on_hover` | `fun(hovered: boolean)` | None | Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node |
