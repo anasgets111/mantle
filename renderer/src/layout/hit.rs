@@ -3,6 +3,7 @@
 //! Pure: unlike the rest of the pointer path, this only decides what a click means. Other
 //! pointer-path work owns live `wl_pointer` and `wl_surface` objects.
 
+use crate::layout::field_rows;
 use crate::layout::node::Typeface;
 use crate::layout::node::{
     Affine, ClipShape, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs,
@@ -64,7 +65,8 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
         return None;
     }
     let mut row = (point.y / face.line_height) as usize;
-    for (line_start, shaped) in shaping.shape_lines(content, &font_runs(runs), face.shaping_style(), face.font.as_ref())
+    for (line_start, shaped) in
+        shaping.shape_lines(content, &font_runs(runs), face.shaping_style(), face.font.as_ref(), None)
     {
         let Some(laid) = shaped.shaped.get(row) else {
             row -= shaped.shaped.len();
@@ -85,6 +87,7 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
 ///
 /// Measured where paint puts the same string (ADR-0211): one shaped line under the field's own
 /// alignment, and the first cluster whose midpoint the press has not passed.
+/// A `multiline` field answers from its row under the press.
 pub fn caret_at(
     path: &[&ResolvedNode],
     point: LogicalPoint,
@@ -95,21 +98,31 @@ pub fn caret_at(
     let depth = path.iter().rposition(|node| node.kind == "textfield")?;
     // A masked field has none: a position inside a secret is one nothing outside `SecureBuffer`
     // may hold (ADR-0064).
-    let Some(PaintStyle::TextField { target: None, face, align, caret: bar, .. }) = path[depth].paint.as_ref() else {
+    let Some(PaintStyle::TextField { target: None, face, align, caret: bar, multiline, .. }) =
+        path[depth].paint.as_ref()
+    else {
         return None;
     };
     let rect = absolute_rect(&path[..=depth])?;
+    let (x, y) = apply_affine(invert_affine(path_transform(&path[..=depth]))?, point.x, point.y);
+    if multiline.is_some() {
+        let width = field_rows::wrap_width(rect.width, bar.width);
+        return field_rows::with_rows(text, face, width, shaping, |rows| {
+            let scroll = field_rows::clamp_scroll(path[depth].scrolled, rows.len(), face.line_height, rect.height);
+            let row = rows.get(((y - rect.y + scroll) / face.line_height).max(0.0) as usize).or(rows.last())?;
+            Some(row.caret_at(x - row.left(*align, rect.x, width)))
+        });
+    }
     let shaped = field_line(text, face, shaping)?;
     let laid = shaped.shaped.first()?;
     // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
     let left = field_line_left(Some(laid), *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
-    let (x, _) = apply_affine(invert_affine(path_transform(&path[..=depth]))?, point.x, point.y);
     Some(shaping::caret_at(laid, x - left, text.len()))
 }
 
 pub(crate) fn field_line(text: &str, face: &Typeface, shaping: &ShapingHandle) -> Option<ShapeResult> {
     shaping
-        .shape_lines(text, &[], face.shaping_style(), face.font.as_ref())
+        .shape_lines(text, &[], face.shaping_style(), face.font.as_ref(), None)
         .into_iter()
         .next()
         .map(|(_, shaped)| shaped)
@@ -269,7 +282,7 @@ fn descend<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::layout::node::{ClipShape, Mask, MaskSource, MoveTween, StyleRun, TextAlign};
     use crate::text::shaping::ShapeRequest;
@@ -544,7 +557,7 @@ mod tests {
 
     // ---- caret_at (ADR-0236) ----
 
-    fn face(font_size: f32, letter_spacing: f32) -> Typeface {
+    pub(crate) fn face(font_size: f32, letter_spacing: f32) -> Typeface {
         Typeface {
             font_size,
             line_height: font_size * 1.2,
@@ -570,6 +583,7 @@ mod tests {
             disabled: false,
             max_length: None,
             escape: crate::wayland::Escape::Clear,
+            multiline: None,
         }
     }
 
@@ -655,6 +669,25 @@ mod tests {
         let press = |x: f32| caret_at(&[&field], LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
         assert_eq!(press(boundary + 1.0), Some(4), "just past the fourth boundary");
         assert_eq!(press(boundary - 1.0), Some(4), "and just short of it");
+    }
+
+    #[test]
+    fn a_press_in_a_multiline_field_lands_on_the_row_under_it_through_its_scroll() {
+        let shaping = ShapingHandle::spawn();
+        let text = "hello\nhello";
+        let mut paint = field_paint("", face(14.0, 0.0));
+        let PaintStyle::TextField { multiline, .. } = &mut paint else { unreachable!() };
+        let submit = crate::wayland::SubmitKey::CtrlReturn;
+        *multiline = Some(crate::layout::node::Multiline { min_lines: 1, max_lines: None, submit });
+        let line = 14.0 * 1.2;
+        let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, line), Vec::new());
+        field.paint = Some(paint);
+        let x = 10.0 + width_of(&shaping, "he") + 1.0;
+        let press = |field: &ResolvedNode, y: f32| caret_at(&[field], LogicalPoint { x, y }, text, 0, &shaping);
+        assert_eq!(press(&field, 5.0), Some(2), "\"he|llo\" on the first row");
+        assert_eq!(press(&field, line + 5.0), Some(8), "and on the second");
+        field.scrolled = line;
+        assert_eq!(press(&field, 5.0), Some(8), "scrolled one row, the top of the box is the second row");
     }
 
     /// An empty draft measures to 0 like any other press, which is why `hit_under` hands this

@@ -83,7 +83,7 @@ impl Scene {
                 &mut solver,
                 root,
                 instance.available,
-                shaping,
+                (shaping, &self.field_drafts),
                 lua,
                 now,
                 &mut at,
@@ -144,7 +144,7 @@ fn relayout_retained(
     tree: &mut taffy::TaffyTree<Measure>,
     root: ResolvedNode,
     available: LogicalSize,
-    shaping: &ShapingHandle,
+    (shaping, drafts): (&ShapingHandle, &super::field::FieldDrafts),
     lua: &Lua,
     now: Instant,
     at: &mut Option<Instant>,
@@ -152,7 +152,7 @@ fn relayout_retained(
 ) -> Result<ResolvedNode, LayoutError> {
     let prepared = prepare_retained(tree, root, (None, 0.0), lua, now, false, false)?;
     close(at, &mut split.prepare);
-    let solved = solve_instance(tree, prepared, available, shaping, now);
+    let solved = solve_instance(tree, prepared, available, (shaping, drafts), now);
     close(at, &mut split.solve);
     solved
 }
@@ -210,15 +210,15 @@ pub(super) fn prepare_retained(
     } = node;
     let paint = if changed || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
-        Some(id) => {
+        Some(taffy_id) => {
             if changed {
-                let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
-                update_solver_node(tree, id, kind, &properties, &style, parent_axis, measure)?;
+                let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
+                update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
             }
-            id
+            taffy_id
         }
         None => {
-            let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
+            let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
             new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
         }
     };
@@ -243,6 +243,7 @@ pub(super) fn prepare_retained(
         list_memo,
         child_table,
         resolve_memo,
+        scrolled: old_scroll,
     };
     if !node.style.visible {
         return Ok(node);

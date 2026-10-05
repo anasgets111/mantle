@@ -230,7 +230,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.boxes += t0.elapsed();
                 }
             }
-            Draw::Text { content, runs, face, color, align, centered, caret, caret_on, caret_style } => {
+            Draw::Text { content, runs, face, color, align, centered, caret, caret_on, caret_style, wrap } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {
@@ -246,6 +246,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         caret: *caret,
                         caret_on: *caret_on,
                         caret_style: *caret_style,
+                        wrap: *wrap,
                     },
                     rect,
                     scale,
@@ -1480,6 +1481,15 @@ pub(crate) mod tests {
         let near = |p: &(u8, u8, u8, u8), c: [u8; 3]| [p.0, p.1, p.2].iter().zip(c).all(|(a, b)| a.abs_diff(b) <= 3);
         assert!(near(&px[2 * 120 + 2], [255, 0, 0]), "highlight above the glyphs: {:?}", px[2 * 120 + 2]);
         assert!(px.iter().any(|p| near(p, [0, 0, 255])), "no selected glyph pixel took the foreground");
+    }
+
+    #[test]
+    fn a_multiline_selection_paints_on_every_row_it_spans() {
+        let src = r##"return panel { id = "bar", width = 120, height = 96, child = textfield { width = 120, height = 96,
+            font_size = 40, multiline = true, on_change = function(text) end, selection = { background = "#FF0000" } } }"##;
+        let Some(px) = paint_with_selection(src, (120, 96), &[(2, 2), (2, 50)], Some("M\nM")) else { return };
+        let red = |p: &(u8, u8, u8, u8)| p.0 > 200 && p.1 < 50 && p.2 < 50;
+        assert!(red(&px[0]) && red(&px[1]), "highlight behind both rows: {px:?}");
     }
 
     /// `line_height` sets layout only: a descender below a tight line box is painted (CSS overflow

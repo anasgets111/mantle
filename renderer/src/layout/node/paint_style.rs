@@ -129,6 +129,21 @@ impl CaretStyle {
     }
 }
 
+/// A `multiline` `textfield`'s row bounds and submit chord.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Multiline {
+    pub min_lines: usize,
+    pub max_lines: Option<usize>,
+    pub submit: crate::wayland::SubmitKey,
+}
+
+impl Multiline {
+    /// How many rows tall a draft of `rows` wrapped rows makes the field.
+    pub fn rows(&self, rows: usize) -> usize {
+        rows.max(self.min_lines).min(self.max_lines.unwrap_or(usize::MAX))
+    }
+}
+
 /// Parsed paint properties with no `mlua::Value`. A kind admitted by
 /// `layout::scene::ensure_supported_kind` but absent here draws nothing. Lua tables compare by
 /// identity, so keeping one here would make a signal-resolved table repaint forever (ADR-0063).
@@ -223,6 +238,8 @@ pub enum PaintStyle {
         max_length: Option<usize>,
         /// What Escape does in a plain field; read here so a bad name fails the pass.
         escape: crate::wayland::Escape,
+        /// `None` is one line.
+        multiline: Option<Multiline>,
     },
 }
 
@@ -345,6 +362,21 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                     detail: "a `secure_submit` field never holds text a config gave it".into(),
                 });
             }
+            let (min_lines, max_lines) =
+                (textfield::min_lines.read(properties)?, textfield::max_lines.read(properties)?);
+            let submit = textfield::submit_key.read(properties)?;
+            let refuse = |property: &str, detail: &str| {
+                Err(LayoutError::InvalidProperty { property: format!("textfield.{property}"), detail: detail.into() })
+            };
+            let multiline = match textfield::multiline.read(properties)? {
+                true if target.is_some() => return refuse("multiline", "a `secure_submit` field is one line"),
+                true if min_lines.zip(max_lines).is_some_and(|(min, max)| min > max) => {
+                    return refuse("max_lines", "is below `min_lines`");
+                }
+                true => Some(Multiline { min_lines: min_lines.unwrap_or(1), max_lines, submit }),
+                // As `text`'s `max_lines` without `wrap`: ignored, so a config can set them unconditionally.
+                false => None,
+            };
             PaintStyle::TextField {
                 target,
                 placeholder: textfield::placeholder.read(properties)?,
@@ -358,6 +390,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 disabled: textfield::disabled.read(properties)?,
                 max_length: textfield::max_length.read(properties)?,
                 escape: textfield::escape.read(properties)?,
+                multiline,
             }
         }
         _ => return Ok(None),
@@ -556,6 +589,29 @@ mod tests {
         }
         let table: mlua::Table = lua.load("return { kind = 'textfield', caret_color = '#fff' }").eval().unwrap();
         assert!(deserialize_lua_table(&table).is_err(), "`caret_color` is gone");
+    }
+
+    #[test]
+    fn multiline_reads_its_rows_refuses_a_secret_and_one_line_ignores_its_keys() {
+        let lua = Lua::new();
+        let read = |props: &str| match style(&lua, &format!("return {{ kind = 'textfield', {props} }}")) {
+            Ok(Some(PaintStyle::TextField { multiline, .. })) => Ok(multiline),
+            Ok(_) => unreachable!(),
+            Err(err) => Err(err.to_string()),
+        };
+        use crate::wayland::SubmitKey::{CtrlReturn, Return};
+        assert_eq!(read("multiline = false"), Ok(None));
+        assert_eq!(read("multiline = true"), Ok(Some(Multiline { min_lines: 1, max_lines: None, submit: CtrlReturn })));
+        let set = read("multiline = true, min_lines = 2, max_lines = 4, submit_key = 'return'");
+        let set = set.unwrap().unwrap();
+        assert_eq!(set, Multiline { min_lines: 2, max_lines: Some(4), submit: Return });
+        assert_eq!((set.rows(1), set.rows(3), set.rows(9)), (2, 3, 4));
+        let secret = "multiline = true, secure_submit = { capability = 'lock', action = 'authenticate' }";
+        for bad in [secret, "multiline = true, min_lines = 3, max_lines = 2", "multiline = true, submit_key = 'enter'"]
+        {
+            assert!(read(bad).is_err(), "{bad}");
+        }
+        assert_eq!(read("min_lines = 2, max_lines = 3, submit_key = 'return'"), Ok(None), "ignored on one line");
     }
 
     #[test]

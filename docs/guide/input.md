@@ -422,10 +422,10 @@ where it is.
 
 ## Text fields
 
-A `textfield` is a single-line text input. The engine holds what the user types (the *draft*); Lua
-sees it through callbacks, and sets it only with `:set_text`. The field with *focus* is the one keys
-go to. It has no intrinsic width, so give it `width`; `height` defaults to one line
-([nodes](../nodes/textfield.md)).
+A `textfield` is a text input, one line unless [`multiline`](../nodes/textfield.md#multiline). The
+engine holds what the user types (the *draft*); Lua sees it through callbacks, and sets it only with
+`:set_text`. The field with *focus* is the one keys go to. It has no intrinsic width, so give it
+`width`; `height` defaults to one line ([nodes](../nodes/textfield.md)).
 
 A field takes the keyboard only when both hold:
 
@@ -446,7 +446,7 @@ a press.
 | `escape` | What Escape does: `"clear"` (the default) as under `on_cancel`; `"blur"` keeps the draft and drops focus, then calls `on_cancel(false)`; `"pass"` keeps the draft and focus and does not take the key, which goes up through `on_key` and then to the surface's `on_escape`. A `secure_submit` field ignores it |
 | `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field or [focusable control](#keyboard-controls-and-accessibility) in document order wins. A field never takes over from one already typing, nor re-takes one the user just clicked away from. A control arms only while no control holds focus, once per appearance or keyboard enter |
 | `focus_target` | A `focus_target(name)` handle. `:request()` from an `on_click`, `on_key`, or an edit typed or committed into the field (`on_change`, `on_submit`, `on_cancel`) focuses the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the callback's state changes appear. It keeps that field's draft and caret and does not call `on_change`. A key callback's request shows the focus outline |
-| `focus_target(name):set_text(text)` | Replaces the draft of every plain field with that `focus_target` and an `on_change` or `on_submit`, hidden ones too, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters or over 64 KiB raise |
+| `focus_target(name):set_text(text)` | Replaces the draft of every plain field with that `focus_target` and an `on_change` or `on_submit`, hidden ones too, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters other than `\n`, or over 64 KiB, raise; a single-line field refuses a `\n` with a warning |
 | `initial_text` | Seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new, and a field that leaves and returns is seeded again from the value then). Plain fields only; `secure_submit` refuses it. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Later changes to the value are ignored and an emptied field stays empty: use `set_text` to push new text. Read without subscribing: writing the signal alone does not re-resolve the field |
 | `disabled` | `true`: the field draws as usual but takes no focus. Tab skips it, a press and `autofocus` pass over it, `:request()` finds nothing, and no caret shows. A focused field that becomes disabled loses focus and keeps its draft. A disabled `secure_submit` field is not a destination. `set_text` still reaches it. Dim it by binding colours to the same signal |
 | `max_length` | Most grapheme clusters the field holds; `0` is unlimited. Typing, paste, IME commits and `set_text` cut the insert at the limit, secure fields included. Lowering it below the current text keeps that text: only the insert is limited, so edits can then only shorten it. The cut is silent: a limit below a password's length truncates it, on a lock field too |
@@ -466,11 +466,13 @@ a press.
 | Ctrl+C | Copies selected text | Nothing |
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
 | Up, Down, Page Up, Page Down | Pass up to `on_key` | Nothing |
+| Multiline: Return, Up, Down, Home, End | Return inserts a newline and `submit_key` submits; Up and Down move by visual row (from the first or last row they pass up to `on_key`); Home and End go to the row's ends, Ctrl+Home and Ctrl+End to the text's | Never multiline |
 | Tab, Shift+Tab | Moves between controls when at least two are available; otherwise passes up to `on_key` (`"ISO_Left_Tab"` for Shift+Tab) | Moves between controls when at least two are available |
 | Any other Ctrl chord | Left to the compositor | Same |
 
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
-up to 64 KiB of valid UTF-8 without control characters. A paste is dropped if the selection, field,
+up to 64 KiB of valid UTF-8 without control characters (a multiline field also takes newlines;
+`\r\n` and `\r` become `\n`). A paste is dropped if the selection, field,
 or keyboard focus changes before the read ends. Copy works only with a plain-field selection.
 Editing keys repeat while held; Escape, undo and redo do not.
 The undo stack retains at most 100 snapshots and 1 MiB of saved text. Submit, leaving the

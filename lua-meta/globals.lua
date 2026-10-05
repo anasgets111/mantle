@@ -101,7 +101,8 @@ function FocusHandle:request() end
 
 ---Sets the text of every plain textfield with this name and an `on_change` or `on_submit`, hidden ones
 ---too: caret at the end, undo and composition cleared, no `on_change`. Does nothing on a control. Raises
----on control characters or over 64 KiB. Applies when the callback returns.
+---on control characters other than `\n` or over 64 KiB; a single-line field refuses a `\n` with a
+---warning and keeps its text. Applies when the callback returns.
 ---@param text string
 function FocusHandle:set_text(text) end
 

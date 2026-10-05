@@ -315,6 +315,7 @@ pub fn run(
         if re_resolved {
             app.prune_secure_focus_after_resolve();
             app.drop_unusable_text_field_focus();
+            app.fit_focused_field_if_rewrapped();
             app.prune_control_focus();
             // A newly bound `focused` slot starts right.
             app.sync_focused();

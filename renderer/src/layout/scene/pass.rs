@@ -4,6 +4,7 @@ use std::time::Instant;
 
 use mlua::{Lua, Value};
 
+use super::field::FieldDrafts;
 use super::fit::fit_text_to_box;
 use super::resolve::{DroppedValues, Resolved, resolve};
 use super::scroll::{ease_request, scroll_children};
@@ -140,7 +141,7 @@ pub(super) fn solve_instance(
     tree: &mut taffy::TaffyTree<Measure>,
     mut prepared: PreparedNode,
     available: LogicalSize,
-    shaping: &ShapingHandle,
+    (shaping, drafts): (&ShapingHandle, &FieldDrafts),
     now: Instant,
 ) -> Result<ResolvedNode, LayoutError> {
     let style = &prepared.style;
@@ -159,9 +160,9 @@ pub(super) fn solve_instance(
     if tree.style(prepared.taffy).map_err(taffy_failed)?.size != root_style.size {
         tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
     }
-    solve(tree, prepared.taffy, available, shaping)?;
+    solve(tree, prepared.taffy, available, (shaping, drafts))?;
     if measure_content_sizes(tree, &mut prepared, now)? {
-        solve(tree, prepared.taffy, available, shaping)?;
+        solve(tree, prepared.taffy, available, (shaping, drafts))?;
     }
     finish(tree, prepared, shaping, now)
 }
@@ -361,7 +362,7 @@ pub(super) fn prepare(
 
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
     // `resolve` parsed rather than parsing them a second time.
-    let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
+    let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).
@@ -400,6 +401,7 @@ pub(super) fn prepare(
         list_memo,
         child_table,
         resolve_memo: Some(resolve_memo),
+        scrolled: old_scroll,
     };
     if !node.style.visible {
         node.frozen.extend(leaving);
@@ -654,6 +656,7 @@ fn finish(
         list_memo,
         child_table,
         resolve_memo,
+        scrolled: kept_scroll,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
     let size = LogicalSize { width: layout.size.width, height: layout.size.height };
@@ -674,6 +677,7 @@ fn finish(
                 ease_request(kind, &properties, &style, size, axis, &children, &mut tweens, now)?;
                 scroll_children(&properties, &style, size, axis, &mut children, 0.0)
             }
+            None if kind == "textfield" => kept_scroll,
             None => 0.0,
         };
 

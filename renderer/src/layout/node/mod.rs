@@ -44,7 +44,7 @@ pub(crate) use content::{CaretKeys, SelectionKeys};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 #[cfg(test)]
 pub(crate) use content::{SpanKind, TextRun};
-pub use paint_style::{CaptureTarget, CaretStyle, PaintStyle, Typeface, paint_style};
+pub use paint_style::{CaptureTarget, CaretStyle, Multiline, PaintStyle, Typeface, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]

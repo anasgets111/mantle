@@ -5,6 +5,7 @@ use wayland_client::{Dispatch, delegate_noop};
 use wayland_protocols::wp::text_input::zv3::client::{zwp_text_input_manager_v3, zwp_text_input_v3};
 
 use super::*;
+use crate::layout::field_rows;
 use crate::text::shaping;
 
 type TextInputProxy = zwp_text_input_v3::ZwpTextInputV3;
@@ -159,23 +160,34 @@ fn cursor_rect(
     let path = layout::hit::path_to_node(root, id)?;
     let node = *path.last()?;
     let rect = layout::hit::absolute_rect(&path)?;
-    let node::PaintStyle::TextField { target: None, face, align, caret: bar, .. } = node.paint.as_ref()? else {
+    let node::PaintStyle::TextField { target: None, face, align, caret: bar, multiline, .. } = node.paint.as_ref()?
+    else {
         return None;
     };
-    let shaped = layout::hit::field_line(text, face, shaping);
-    let line = shaped.as_ref().and_then(|shaped| shaped.shaped.first());
-    let left = layout::hit::field_line_left(line, *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
+    // Where the caret's line starts and its top, on a multiline field's row under its scroll.
+    let (x, top) = if multiline.is_some() {
+        let width = field_rows::wrap_width(rect.width, bar.width);
+        field_rows::with_rows(text, face, width, shaping, |rows| {
+            let index = field_rows::row_of(rows, caret);
+            let row = rows.get(index)?;
+            let scroll = field_rows::clamp_scroll(node.scrolled, rows.len(), face.line_height, rect.height);
+            Some((
+                row.left(*align, rect.x, width) + row.caret_x(caret),
+                rect.y - scroll + index as f32 * face.line_height,
+            ))
+        })?
+    } else {
+        let shaped = layout::hit::field_line(text, face, shaping);
+        let line = shaped.as_ref().and_then(|shaped| shaped.shaped.first());
+        let left = layout::hit::field_line_left(line, *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
+        let cx = line.map_or(0.0, |line| shaping::caret_x(line, caret));
+        (left + cx, rect.y + ((rect.height - face.line_height) / 2.0).max(0.0))
+    };
     let bar_height = bar.bar_height(face.line_height);
-    let cx = line.map_or(0.0, |line| shaping::caret_x(line, caret));
     let matrix = layout::hit::path_transform(&path);
     let bounds = node::transformed_bounds(
         matrix,
-        LogicalRect {
-            x: left + cx,
-            y: rect.y + ((rect.height - face.line_height) / 2.0).max(0.0) + (face.line_height - bar_height) / 2.0,
-            width: bar.width,
-            height: bar_height,
-        },
+        LogicalRect { x, y: top + (face.line_height - bar_height) / 2.0, width: bar.width, height: bar_height },
     );
     Some((
         bounds.x.round() as i32,

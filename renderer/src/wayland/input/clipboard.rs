@@ -42,7 +42,8 @@ pub(in crate::wayland) struct PendingPaste {
     result: std::sync::mpsc::Receiver<Option<Zeroizing<Vec<u8>>>>,
 }
 
-fn read_offer(mut pipe: ReadPipe) -> Option<Zeroizing<Vec<u8>>> {
+/// The offered text, refused whole for a control character; a `multiline` field takes newlines, as `\n`.
+fn read_offer(mut pipe: ReadPipe, multiline: bool) -> Option<Zeroizing<Vec<u8>>> {
     use std::os::fd::AsFd;
     let deadline = Instant::now() + IO_TIMEOUT;
     let mut bytes = shared::SecureBuffer::new();
@@ -58,12 +59,13 @@ fn read_offer(mut pipe: ReadPipe) -> Option<Zeroizing<Vec<u8>>> {
         }
         let n = pipe.read(&mut chunk[..]).ok()?;
         if n == 0 {
-            if std::str::from_utf8(bytes.expose_secret()).is_ok_and(|s| !s.chars().any(char::is_control)) {
-                let result = Zeroizing::new(bytes.expose_secret().to_vec());
-                bytes.zeroize();
-                return Some(result);
-            }
-            return None;
+            let text = std::str::from_utf8(bytes.expose_secret()).ok()?;
+            let text = if multiline { crate::lua::focus::normalize_newlines(text) } else { text.into() };
+            let result =
+                (!crate::lua::focus::refuses(&text, multiline)).then(|| Zeroizing::new(text.as_bytes().to_vec()));
+            drop(text);
+            bytes.zeroize();
+            return result;
         }
         if bytes.len() + n > MAX_TEXT_BYTES {
             return None;
@@ -152,6 +154,10 @@ impl App {
                 .map(str::to_owned)
         });
         let Some(mime) = mime else { return };
+        let multiline = match &target {
+            PasteTarget::Plain { surface_id, id } => self.field_multiline(surface_id, *id).is_some(),
+            PasteTarget::Masked(_) => false,
+        };
         let Ok(pipe) = offer.receive(mime) else { return };
         if self.conn.flush().is_err() {
             return;
@@ -161,7 +167,7 @@ impl App {
         if std::thread::Builder::new()
             .name("mantle-paste".into())
             .spawn(move || {
-                let _ = tx.send(read_offer(pipe));
+                let _ = tx.send(read_offer(pipe, multiline));
                 waker.wake();
             })
             .is_err()
@@ -274,24 +280,31 @@ impl DataSourceHandler for App {
 mod tests {
     use super::*;
 
-    fn offered(bytes: &[u8]) -> Option<Zeroizing<Vec<u8>>> {
+    fn offered(bytes: &[u8], multiline: bool) -> Option<Zeroizing<Vec<u8>>> {
         let (read, write) = nix::unistd::pipe().unwrap();
         let data = bytes.to_vec();
         let writer = std::thread::spawn(move || {
             let mut file = std::fs::File::from(write);
             let _ = file.write_all(&data);
         });
-        let result = read_offer(ReadPipe::from(read));
+        let result = read_offer(ReadPipe::from(read), multiline);
         writer.join().unwrap();
         result
     }
 
     #[test]
     fn paste_accepts_bounded_utf8_and_rejects_invalid_or_multiline_data() {
-        assert_eq!(offered("héllo".as_bytes()).as_ref().map(|bytes| bytes.as_slice()), Some("héllo".as_bytes()));
-        assert!(offered(&[0xff]).is_none());
-        assert!(offered(b"line\nnext").is_none());
-        assert!(offered(&vec![b'a'; MAX_TEXT_BYTES + 1]).is_none());
+        assert_eq!(offered("héllo".as_bytes(), false).as_ref().map(|bytes| bytes.as_slice()), Some("héllo".as_bytes()));
+        assert!(offered(&[0xff], false).is_none());
+        assert!(offered(b"line\nnext", false).is_none());
+        assert!(offered(&vec![b'a'; MAX_TEXT_BYTES + 1], false).is_none());
+    }
+
+    #[test]
+    fn a_multiline_paste_keeps_its_newlines_as_lf_and_still_refuses_other_controls() {
+        assert_eq!(offered(b"one\r\ntwo\rthree\n", true).unwrap().as_slice(), b"one\ntwo\nthree\n");
+        assert!(offered(b"tab\there", true).is_none());
+        assert!(offered(b"line\r\nnext", false).is_none());
     }
 
     #[test]
@@ -304,6 +317,7 @@ mod tests {
             selection: (5, 0),
             typing: true,
             selecting: false,
+            goal_x: None,
             on_change: None,
             on_submit: None,
             on_cancel: None,

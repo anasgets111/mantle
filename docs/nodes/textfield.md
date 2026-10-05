@@ -1,9 +1,9 @@
 # textfield
 
-A single-line text input: a search box, a launcher query, a password. The engine holds what the user
-types (the *draft*); Lua sees it through callbacks and sets it only with
-[`focus_target(name):set_text`](../guide/input.md#text-fields). Focus, editing keys, the draft's
-lifetime and password fields are on [input](../guide/input.md#text-fields).
+A text input: a search box, a launcher query, a password, or with [`multiline`](#multiline) a
+message box. The engine holds what the user types (the *draft*); Lua sees it through callbacks and
+sets it only with [`focus_target(name):set_text`](../guide/input.md#text-fields). Focus, editing
+keys, the draft's lifetime and password fields are on [input](../guide/input.md#text-fields).
 
 A launcher: the field filters a list as the user types, the arrow keys move a selection, Enter
 launches.
@@ -85,28 +85,62 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `selection` | `Selection\|Bound` | None | The selection's ink: `{ background, foreground }`. `background` is the highlight, used as given (add alpha to tint); default the field's `foreground` at 30% alpha. `foreground` colours the selected glyphs; default the text colour. Each key takes a signal. Paint only: `animate` snaps it |
 | `disabled` | `boolean\|Bound` | `false` | Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal |
 | `max_length` | `number\|Bound` | `0` | Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it |
-| `initial_text` | `string\|Bound` | `""` | Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB |
+| `multiline` | `boolean\|Bound` | `false` | Plain fields only: wrap the draft at the field's width and take newlines. Return inserts one and `submit_key` submits; Up and Down move by visual row, Home and End to its ends, Ctrl+Home and Ctrl+End to the text's. Paste and IME commits keep newlines, `\r\n` and `\r` as `\n`. The field grows from `min_lines` to `max_lines` rows; past that, or at a fixed `height`, its rows scroll to keep the caret in view, and the wheel scrolls them. Refused with `secure_submit` |
+| `min_lines` | `number\|Bound` | `1` | Ignored without `multiline`: the fewest rows the field is tall; `0` is `1`, a negative value is refused |
+| `max_lines` | `number\|Bound` | `0` | Ignored without `multiline`: the most rows the field grows to before its rows scroll; `0` is unlimited, a negative value or one below `min_lines` is refused |
+| `submit_key` | `"ctrl+return"\|"return"\|Bound` | `"ctrl+return"` | Ignored without `multiline`: the chord that submits. `"ctrl+return"` leaves Return to insert a newline; `"return"` submits on Return and Shift+Return inserts the newline |
+| `initial_text` | `string\|Bound` | `""` | Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters (but `\n` in a `multiline` field) and over 64 KiB |
 | `on_change` | `fun(text: string)` | None | Full text after every edit |
-| `on_submit` | `fun(text: string)` | None | Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |
+| `on_submit` | `fun(text: string)` | None | Enter (in a `multiline` field, `submit_key`) with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |
 | `escape` | `"clear"\|"blur"\|"pass"\|Bound` | `"clear"` | What Escape does in a plain field. `"clear"` empties the draft (`on_change("")` if it had text), then gives up focus if `on_cancel` is set. `"blur"` keeps the draft and gives up focus. `"pass"` keeps both and does not take the key: it goes up through `on_key`, then to the surface's `on_escape`. A `secure_submit` field ignores it and always scrubs and stays armed. Read when the field takes focus |
 | `on_cancel` | `fun(cleared: boolean)` | None | Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus |
 | `secure_submit` | `{ capability: string, action: string, name?: string }\|Bound` | None | Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `network`/`vpn_secret` with a request id and key in `name`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields)) |
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
 
-The field has no intrinsic width, so give it `width`; without `height` it is one line
-tall (`font_size` times `line_height`). It draws one line of text and a caret, vertically centred,
-with the same typography properties as [`text`](text.md), the draft, placeholder and mask alike, in the
+The field has no intrinsic width, so give it `width`; without `height` it is one line tall
+(`font_size` times `line_height`), or a [multiline](#multiline) field's rows. It draws one line of
+text and a caret, vertically centred (a multiline field: rows from the top), with the same
+typography properties as [`text`](text.md), the draft, placeholder and mask alike, in the
 [`fonts`](../guide/scripting.md#fonts) chain unless `font` names a family. Plain fields use
 `zwp_text_input_v3` for composition when the compositor offers it and text-input enters the field's
 own surface. Raw keys stay active between compositions and are suppressed during pending or active
 composition. Preedit text is underlined; commits and surrounding deletions call `on_change`. Secure
-fields read `wl_keyboard` and never send their
-draft to an input method.
+fields read `wl_keyboard` and never send their draft to an input method.
 
 A field with none of `on_change`, `on_submit` and `secure_submit` never takes focus. The draft
 follows the node, so give the field a stable `id` when siblings before it come and go
 ([identity](index.md#identity-and-reconciliation)).
+
+## Multiline
+
+`multiline = true` wraps the draft at the field's width. Return inserts a newline and Ctrl+Return
+submits; `submit_key = "return"` swaps them, with Shift+Return inserting the newline. The field
+grows from `min_lines` to `max_lines` rows; past that, or at a fixed `height`, its rows scroll to
+keep the caret in view, and the wheel scrolls them. Up and Down move by visual row, Home and End
+to its ends, Ctrl+Home and Ctrl+End to the text's. Up on the first row and Down on the last reach
+`on_key`. Paste, input-method commits and `set_text` keep newlines; a `secure_submit` field cannot
+be multiline.
+
+<!-- shot-alt: An empty three-row message box whose placeholder wraps onto a second row. -->
+```lua,shot
+local reply = column { width = 280, padding = 10, background = "#1E1E2E", radius = 12, children = {
+    textfield {
+        width = "fill",
+        font_size = 14,
+        foreground = "#CDD6F4",
+        placeholder = "Write a reply. Return sends it, Shift+Return starts a new line.",
+        multiline = true,
+        min_lines = 3,
+        max_lines = 8,
+        submit_key = "return",
+        on_submit = function(text) print("send", text) end,
+    },
+} }
+
+return { panel { id = "reply", layer = "top", anchor = { bottom = true },
+    keyboard_interactivity = "on_demand", child = reply } }
+```
 
 ## How do I…
 

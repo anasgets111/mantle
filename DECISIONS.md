@@ -8208,3 +8208,24 @@ dropped (issue #1).
 
 Specials keep their own list (ADR-0119). On Hyprland a numbered workspace's id is its number, so
 focusing an unlisted number still creates it.
+
+## 0351. Multiline is a `textfield` mode, and `submit_key` picks the submit chord
+
+Notes, comment boxes and chat input need a field that wraps and takes newlines.
+
+1. **A mode, not a node.** `multiline = true` on `textfield`, not a `textarea` kind. Draft
+   lifetime, `focus_target`, `autofocus`, `set_text`, `max_length`, `disabled`, undo, selection,
+   IME and `escape` already live on `textfield`; a second kind would duplicate or drift from them.
+   `secure_submit` refuses `multiline`: a masked field would show the secret's line structure.
+2. **The engine sizes it.** The draft lives in the Renderer (ADR-0108), so only the engine can
+   measure it. The scene holds each multiline draft by node id, so a rebuilt or re-shown solver
+   node measures it too. The field grows from `min_lines` to `max_lines` wrapped rows, then
+   scrolls to keep the caret in view; the scroll lives on the node, so an unfocused field keeps
+   it and the wheel reaches it. A draft change owes a pass only when the clamped row count changes.
+3. **`submit_key = "ctrl+return" | "return"`.** A note wants Return for newlines; a chat box
+   wants it to submit. `"ctrl+return"` (default) keeps Return for newlines; `"return"` submits on
+   Return and leaves Shift+Return for the newline. `min_lines`, `max_lines` and `submit_key` are
+   ignored on one line, like `text.max_lines` without `wrap`, so a config can set them always.
+
+Ceilings: the whole draft re-wraps per key; a height change lands one pass after the edit; End at
+a mid-word soft wrap lands on the next row until the caret carries an affinity.

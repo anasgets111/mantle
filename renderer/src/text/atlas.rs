@@ -15,6 +15,7 @@ use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
 use shared::debug;
 
+use crate::layout::field_rows;
 use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
 use crate::layout::paint::DrawCmd;
 use crate::text::shaping::{FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_x};
@@ -43,12 +44,18 @@ struct TextLineKey {
     text: String,
     runs: Vec<FontRun>,
     face: Typeface,
+    wrap: Option<u32>,
 }
 
 impl TextLineKey {
     fn matches(&self, text: &str, runs: &[FontRun], style: &TextDraw<'_>) -> bool {
-        self.face == *style.face && self.text == text && self.runs == runs
+        self.face == *style.face && self.text == text && self.runs == runs && self.wrap == wrap_bits(style)
     }
+}
+
+/// A multiline field's wrap width as a key.
+fn wrap_bits(style: &TextDraw<'_>) -> Option<u32> {
+    style.wrap.map(|(width, _)| width.to_bits())
 }
 
 type CachedLineEntry = (TextLineKey, Arc<Vec<(usize, ShapeResult)>>);
@@ -129,6 +136,8 @@ pub struct TextDraw<'a> {
     /// The blink's phase: off drops the bar and keeps the selection and scroll.
     pub caret_on: bool,
     pub caret_style: CaretStyle,
+    /// A `multiline` field's wrap width and row scroll, logical px.
+    pub wrap: Option<(f32, f32)>,
 }
 
 /// Registers every face of `font_chain` femtovg does not hold yet, and maps each face's shaping id
@@ -367,7 +376,7 @@ impl TextPainter {
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
-        let TextDraw { text, runs, face, color, align, caret, caret_on, caret_style } = line;
+        let TextDraw { text, runs, face, color, align, caret, caret_on, caret_style, wrap } = line;
         let Typeface { font_size, line_height, letter_spacing, font_weight, italic, ref variations, ref font } = *face;
         let physical = snap_to_physical(rect, 1.0);
         let step = line_height * scale;
@@ -387,6 +396,7 @@ impl TextPainter {
             variations.hash(&mut hasher);
             font.hash(&mut hasher);
             runs_key.hash(&mut hasher);
+            wrap_bits(&line).hash(&mut hasher);
             hasher.finish()
         };
 
@@ -395,33 +405,52 @@ impl TextPainter {
         {
             Arc::clone(lines)
         } else {
-            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, face.shaping_style(), font.as_ref()));
+            let width = wrap.map(|(width, _)| width);
+            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, face.shaping_style(), font.as_ref(), width));
             // ponytail: 1024 entries bounds lines cache memory. Clears wholesale at cap like shaping cache. Upgrade path: per-frame generational epoch.
             if self.lines_cache_len >= 1024 {
                 self.lines_cache.clear();
                 self.lines_cache_len = 0;
             }
-            self.lines_cache
-                .entry(hash)
-                .or_default()
-                .push((TextLineKey { text: text.to_string(), runs: runs_key, face: face.clone() }, Arc::clone(&lines)));
+            self.lines_cache.entry(hash).or_default().push((
+                TextLineKey { text: text.to_string(), runs: runs_key, face: face.clone(), wrap: wrap_bits(&line) },
+                Arc::clone(&lines),
+            ));
             self.lines_cache_len += 1;
             lines
         };
 
+        // A multiline field's rows: which one the caret is on, and how far they scroll up.
+        let (caret_row, top) = match wrap {
+            Some((_, scroll)) => {
+                let rows = field_rows::rows(text, &shaped_lines);
+                let scrolled =
+                    field_rows::clamp_scroll(scroll * scale, rows.len(), step, (physical.y1 - physical.y0) as f32);
+                (caret.map(|(_, at)| field_rows::row_of(&rows, at)), physical.y0 as f32 - scrolled)
+            }
+            None => (None, physical.y0 as f32),
+        };
+        let x1 = wrap.map_or(physical.x1 as f32, |(width, _)| physical.x0 as f32 + width * scale);
         let mut row = 0;
         for (line_start, shaped) in shaped_lines.iter() {
             let line_start = *line_start;
             for laid in shaped.shaped.iter() {
-                let baseline = physical.y0 as f32 + row as f32 * step + laid.baseline * scale;
+                let baseline = top + row as f32 * step + laid.baseline * scale;
                 row += 1;
                 // A `textfield`'s selection and caret, in the ink the field already declared for
                 // its text (ADR-0236). A draft holds no newline, so only the first row has either.
+                // A multiline selection spans rows, its offsets counted from each paragraph's start.
                 let top = baseline - laid.baseline * scale;
-                let selection = caret.filter(|_| row == 1);
+                let selection = match wrap {
+                    Some(_) => {
+                        caret.map(|(anchor, at)| (anchor.saturating_sub(line_start), at.saturating_sub(line_start)))
+                    }
+                    None => caret.filter(|_| row == 1),
+                };
+                let bar_here = wrap.is_none() || caret_row == Some(row - 1);
                 // Past the width that fits, the line follows the caret rather than its alignment,
                 // or the end of a long draft is drawn outside the field it belongs to (ADR-0236).
-                let left = match selection {
+                let left = match selection.filter(|_| wrap.is_none()) {
                     Some((_, at)) => crate::layout::hit::field_line_left(
                         Some(laid),
                         align,
@@ -431,7 +460,7 @@ impl TextPainter {
                         caret_style.width,
                         scale,
                     ),
-                    None => align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width * scale),
+                    None => align.line_left(laid.rtl, physical.x0 as f32, x1, laid.width * scale),
                 };
                 // Behind the glyphs, so the words inside it stay readable. One rect per visually
                 // contiguous stretch: a selection crossing a direction change is not one box.
@@ -466,7 +495,7 @@ impl TextPainter {
                     self.fill_run(face, &shaped.coords[coords as usize], tint, glyphs, font_size * scale);
                 }
                 // Over them, so a glyph's side bearing cannot swallow it.
-                if let Some((.., at)) = selection.filter(|_| caret_on) {
+                if let Some((.., at)) = selection.filter(|_| caret_on && bar_here) {
                     let height = caret_style.bar_height(line_height) * scale;
                     self.fill(
                         left + caret_x(laid, at) * scale,

@@ -66,6 +66,18 @@ impl App {
             Some((depth, signal, axis))
         });
         let wheel = wheel_target(&path);
+        // A multiline field deeper than both scrolls its own rows while it has rows to scroll.
+        let field = path.iter().rposition(|node| node.kind == "textfield").filter(|depth| {
+            scrollable.as_ref().is_none_or(|(scroll_depth, ..)| depth > scroll_depth)
+                && wheel.as_ref().is_none_or(|(wheel_depth, ..)| depth > wheel_depth)
+        });
+        let field = field.map(|depth| path[depth].id);
+        drop(path);
+        if let Some(id) = field
+            && self.wheel_field(&surface_id, id, wheel_delta(vertical_px, vertical_steps))
+        {
+            return;
+        }
         if let Some((depth, rect, on_wheel)) = wheel
             && scrollable.as_ref().is_none_or(|(scroll_depth, ..)| depth > *scroll_depth)
         {
@@ -74,7 +86,6 @@ impl App {
                 return;
             }
             let on_wheel = on_wheel.clone();
-            drop(path);
             let lua = self.client.lua();
             match (rect_table(lua, rect), modifiers_table(lua, self.modifiers_held())) {
                 (Ok(rect), Ok(held)) => {

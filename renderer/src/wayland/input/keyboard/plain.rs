@@ -1,7 +1,7 @@
 //! Plain `textfield`s: which one `autofocus` arms, the draft and selection a key edits, the
 //! caret's blink, and the edits delivered to Lua (ADR-0092).
 
-use shared::debug;
+use shared::{debug, warn};
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
@@ -153,7 +153,7 @@ fn store_draft(
 ) -> bool {
     let end = (text.len(), text.len());
     if let Some(field) = focused.filter(|field| field.surface_id == surface_id && field.id == id) {
-        (field.buffer, field.selection) = (text.to_owned(), end);
+        (field.buffer, field.selection, field.goal_x) = (text.to_owned(), end, None);
         field.history.clear();
         return true;
     }
@@ -184,6 +184,7 @@ pub(super) fn requested_focus(
         history: EditHistory::default(),
         typing: true,
         selecting: false,
+        goal_x: None,
         on_change,
         on_submit,
         on_cancel,
@@ -262,6 +263,12 @@ fn ime_range(text: &str, selection: (usize, usize), before: u32, after: u32) -> 
     (end <= text.len() && text.is_char_boundary(start) && text.is_char_boundary(end)).then_some((start, end))
 }
 
+/// An input-method commit as a field takes it, a multiline one's newlines as `\n`; `None` refuses it.
+fn ime_commit(text: &str, multiline: bool) -> Option<std::borrow::Cow<'_, str>> {
+    let text = if multiline { crate::lua::focus::normalize_newlines(text) } else { text.into() };
+    (!crate::lua::focus::refuses(&text, multiline)).then_some(text)
+}
+
 fn ime_change<'a>(
     text: &str,
     selection: (usize, usize),
@@ -269,9 +276,6 @@ fn ime_change<'a>(
     commit: Option<&'a str>,
 ) -> Option<((usize, usize), Option<&'a str>)> {
     if delete == (0, 0) && commit.is_none_or(str::is_empty) {
-        return None;
-    }
-    if commit.is_some_and(|text| text.chars().any(char::is_control)) {
         return None;
     }
     let range = ime_range(text, selection, delete.0, delete.1)?;
@@ -311,6 +315,8 @@ fn edit_plain_buffer(
                     Motion::WordRight => (caret, next_word(buffer, caret)),
                     Motion::Start => (0, caret),
                     Motion::End => (caret, buffer.len()),
+                    Motion::To(to) => (caret.min(to), caret.max(to)),
+                    Motion::Up | Motion::Down | Motion::RowStart | Motion::RowEnd => (caret, caret),
                 },
             };
             buffer.replace_range(from..to, "");
@@ -339,6 +345,9 @@ fn edit_plain_buffer(
                 Motion::WordRight => next_word(buffer, caret),
                 Motion::Start => 0,
                 Motion::End => buffer.len(),
+                Motion::To(to) => to,
+                // Resolved by [`App::resolve_row_motion`]; one that could not be stays put.
+                Motion::Up | Motion::Down | Motion::RowStart | Motion::RowEnd => caret,
             };
             let next = (if shift { anchor } else { moved_to }, moved_to);
             let moved = next != *selection;
@@ -542,6 +551,10 @@ impl App {
                 })
                 .collect();
             for (surface_id, id) in hits {
+                if crate::lua::focus::refuses(&text, self.field_multiline(&surface_id, id).is_some()) {
+                    warn!("{surface_id}: a single-line field refuses focus_target(\"{name}\"):set_text's newline");
+                    continue;
+                }
                 self.set_draft(surface_id, id, &text);
             }
         }
@@ -582,6 +595,7 @@ impl App {
             self.text_input.note_other_change();
         }
         self.mark_field_input_changed(&surface_id);
+        self.fit_field(&surface_id, id);
     }
 
     /// Give the keyboard to `autofocus` (ADR-0112).
@@ -699,6 +713,7 @@ impl App {
         if let Some(field) = self.focused_text_field.as_mut().filter(|field| !field.typing) {
             field.history.clear();
         }
+        self.fit_focused_field();
     }
 
     /// After a pass, a focused field that became disabled or whose node left a live surface gives
@@ -765,7 +780,7 @@ impl App {
     /// focus.
     /// Whether the field took the key; one it does not use bubbles to `on_key`.
     pub(super) fn apply_plain_key(&mut self, event: &KeyEvent, repeat: bool) -> bool {
-        let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
+        let action = self.field_key_action(event, repeat);
         if matches!(action, KeyAction::Append(_)) && self.text_input.owns_text() {
             return true;
         }
@@ -783,7 +798,12 @@ impl App {
         let Some(field) = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)) else {
             return;
         };
-        let Some((range, text)) = ime_change(&field.buffer, field.selection, delete, commit) else { return };
+        let multiline = self.field_multiline(&field.surface_id, field.id).is_some();
+        let commit = match commit.map(|text| ime_commit(text, multiline)) {
+            Some(None) => return,
+            commit => commit.flatten(),
+        };
+        let Some((range, text)) = ime_change(&field.buffer, field.selection, delete, commit.as_deref()) else { return };
         if let Some(text) = text {
             self.apply_plain_action_inner(KeyAction::Append(text), Some(range), false);
         } else if let Some(field) = self.focused_text_field.as_mut() {
@@ -803,6 +823,7 @@ impl App {
         }
         // Read before the borrow below: shift turns a caret motion into a selection.
         let shift = self.shift_held;
+        let action = self.resolve_row_motion(action);
         let Some(field) = self.focused_text_field.as_ref() else {
             return false;
         };
@@ -843,10 +864,11 @@ impl App {
         // A caret move repaints and tells the config nothing: no text changed.
         if edit.moved {
             self.mark_focused_text_field_changed();
+            self.fit_focused_field();
             return;
         }
         // Clone before callbacks can write a signal and re-resolve the scene.
-        let (text, on_change, on_submit, on_cancel, surface_id) = {
+        let (text, on_change, on_submit, on_cancel, surface_id, field_id) = {
             let field = self.focused_text_field.as_ref().expect("the focus was Some a moment ago");
             (
                 field.buffer.clone(),
@@ -854,6 +876,7 @@ impl App {
                 field.on_submit.clone(),
                 field.on_cancel.clone(),
                 field.surface_id.clone(),
+                field.id,
             )
         };
         // A passed-up key changes neither text nor caret, so it needs no repaint.
@@ -871,6 +894,9 @@ impl App {
             self.focus_text_field(None);
         }
         self.mark_field_input_changed(&surface_id);
+        if edit.changed {
+            self.fit_field(&surface_id, field_id);
+        }
         deliver_plain_edit(
             self.client.lua(),
             &surface_id,
@@ -949,6 +975,14 @@ mod tests {
         assert!(history.restore(&mut text, &mut selection, true));
         assert!(history.undo.is_empty(), "redo transfer also enforces the aggregate ceiling");
         assert_eq!(history.redo.len(), 1);
+    }
+
+    #[test]
+    fn an_ime_commit_keeps_newlines_as_lf_only_in_a_multiline_field() {
+        assert_eq!(ime_commit("a\r\nb", true).as_deref(), Some("a\nb"));
+        assert_eq!(ime_commit("a\tb", true), None);
+        assert_eq!(ime_commit("a\nb", false), None);
+        assert_eq!(ime_commit("語", false).as_deref(), Some("語"));
     }
 
     #[test]
@@ -1461,6 +1495,7 @@ mod tests {
             history: EditHistory::default(),
             typing: false,
             selecting: false,
+            goal_x: None,
             on_change: None,
             on_submit: None,
             on_cancel: None,
@@ -1529,9 +1564,10 @@ mod tests {
         let mut parked = Parked::new();
         let mut field = draft(1, "old");
         field.history.record(("o".into(), (0, 0)), None);
+        field.goal_x = Some(12.0);
         let id = field.id;
         assert!(store_draft(&mut parked, Some(&mut field), "calendar@eDP-1", id, "héllo"));
-        assert_eq!((field.buffer.as_str(), field.selection), ("héllo", (6, 6)));
+        assert_eq!((field.buffer.as_str(), field.selection, field.goal_x), ("héllo", (6, 6), None));
         assert!(field.history.undo.is_empty() && parked.is_empty());
 
         let other = layout::scene::NodeId::test(2);

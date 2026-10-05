@@ -7,6 +7,7 @@
 //! and a bounding-union container (ADR-0023). Removed nodes drop through ordinary ownership
 //! (ADR-0143).
 
+pub(crate) mod field_rows;
 pub mod hit;
 pub mod hover;
 pub mod image_shader;

@@ -351,8 +351,8 @@ impl ShapingHandle {
     }
 
     /// Each line of `text` shaped alone with its glyphs and `runs` re-based onto it, paired with the
-    /// byte it starts at (ADR-0211). Lines end where Parley ends them, so paint draws the rows
-    /// measurement counted.
+    /// byte it starts at (ADR-0211), and wrapped at `max_width` when given. Lines end where Parley
+    /// ends them, so paint draws the rows measurement counted.
     ///
     /// ponytail: hit-testing asks per pointer event -- a memo hit that still allocates each line's
     /// key. Paint reads `TextPainter`'s own lines cache. Upgrade path: carry the glyphs in the display list.
@@ -362,6 +362,7 @@ impl ShapingHandle {
         runs: &[FontRun],
         style: ShapingStyle<'_>,
         font: Option<&Arc<str>>,
+        max_width: Option<f32>,
     ) -> Vec<(usize, ShapeResult)> {
         paragraph_ranges(text)
             .into_iter()
@@ -385,7 +386,7 @@ impl ShapingHandle {
                     font_weight: style.font_weight,
                     italic: style.italic,
                     variations: Arc::clone(style.variations),
-                    max_width: None,
+                    max_width,
                     runs,
                     font: font.cloned(),
                 });

@@ -294,7 +294,8 @@ fn build_node(
             if let Some(draw) = draw {
                 // ponytail: ink can pass a tight line box, so text clips to one em of vertical room; upgrade: the shaped ink extents.
                 let clip = match &draw {
-                    Draw::Text { face, .. } if !clip.is_empty() => {
+                    // A multiline field's scrolled rows stop at its box.
+                    Draw::Text { face, wrap: None, .. } if !clip.is_empty() => {
                         parent_clip.intersect(snap_to_physical(grow_y(rect, face.font_size), scale))
                     }
                     _ => clip,
@@ -560,6 +561,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 caret: None,
                 caret_on: false,
                 caret_style: CaretStyle::plain(face.font_size, fade(*color, opacity)),
+                wrap: None,
             })
         }
 
@@ -624,7 +626,16 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
         PaintStyle::TextField {
-            target, placeholder, placeholder_color, caret: bar, mask, face, color, align, ..
+            target,
+            placeholder,
+            placeholder_color,
+            caret: bar,
+            mask,
+            face,
+            color,
+            align,
+            multiline,
+            ..
         } => {
             // The first entry for this node wins: the focused field, then any parked draft. Another
             // node's focus, masked or not, leaves this one to its parked draft or placeholder.
@@ -678,7 +689,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 face: face.clone(),
                 color: fade(*color, opacity),
                 align: *align,
-                centered: true,
+                centered: multiline.is_none(),
                 caret,
                 caret_on,
                 caret_style: CaretStyle {
@@ -687,6 +698,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                     selected_text: bar.selected_text.map(|c| fade(c, opacity)),
                     ..*bar
                 },
+                wrap: multiline.map(|_| (crate::layout::field_rows::wrap_width(rect.width, bar.width), node.scrolled)),
             })
         }
 

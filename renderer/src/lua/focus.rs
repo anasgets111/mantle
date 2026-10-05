@@ -22,9 +22,22 @@ pub(crate) struct Request {
 
 pub(crate) struct FocusHandle(String);
 
+/// Whether a field refuses `text` for a control character; a `multiline` one takes `\n`.
+pub(crate) fn refuses(text: &str, multiline: bool) -> bool {
+    text.chars().any(|c| c.is_control() && !(multiline && c == '\n'))
+}
+
+/// `\r\n` and `\r` as `\n`, for text a multiline field takes from a paste or an input method.
+pub(crate) fn normalize_newlines(text: &str) -> std::borrow::Cow<'_, str> {
+    match text.contains('\r') {
+        true => text.replace("\r\n", "\n").replace('\r', "\n").into(),
+        false => text.into(),
+    }
+}
+
 /// The paste path's limits, so a set or seeded text is one a paste could have typed.
-pub(crate) fn is_settable(text: &str) -> bool {
-    super::marshal::check_string(text).is_ok() && !text.chars().any(char::is_control)
+pub(crate) fn is_settable(text: &str, multiline: bool) -> bool {
+    super::marshal::check_string(text).is_ok() && !refuses(text, multiline)
 }
 
 lua_class! {
@@ -44,10 +57,12 @@ lua_class! {
 
         /// Sets the text of every plain textfield with this name and an `on_change` or `on_submit`, hidden ones
         /// too: caret at the end, undo and composition cleared, no `on_change`. Does nothing on a control. Raises
-        /// on control characters or over 64 KiB. Applies when the callback returns.
+        /// on control characters other than `\n` or over 64 KiB; a single-line field refuses a `\n` with a
+        /// warning and keeps its text. Applies when the callback returns.
         fn set_text(lua, this, text: String) {
-            if !is_settable(&text) {
-                return Err(mlua::Error::runtime("set_text() takes at most 64 KiB without control characters"));
+            if !is_settable(&text, true) {
+                let detail = "set_text() takes at most 64 KiB without control characters, except `\\n` in a multiline field";
+                return Err(mlua::Error::runtime(detail));
             }
             super::app_data_or_default::<Requests>(lua).texts.push((this.0.clone(), text));
             Ok(())
@@ -129,9 +144,19 @@ mod tests {
         let handle: AnyUserData = lua.load("return focus_target('search')").eval().unwrap();
         lua.globals().set("target", handle).unwrap();
         lua.load("target:set_text('héllo')").exec().unwrap();
-        assert!(lua.load("target:set_text('a\\nb')").exec().is_err());
+        assert!(lua.load("target:set_text('a\\tb')").exec().is_err());
+        lua.load("target:set_text('a\\nb')").exec().unwrap();
         assert!(lua.load("target:set_text(('x'):rep(65537))").exec().is_err());
-        assert_eq!(take_texts(&lua), vec![("search".to_string(), "héllo".to_string())]);
+        assert_eq!(take_texts(&lua), [("search".to_string(), "héllo".to_string()), ("search".into(), "a\nb".into())]);
+        // Each field then takes the newline only if it is multiline.
+        assert!(refuses("a\nb", false) && !refuses("a\nb", true) && refuses("a\rb", true));
         assert!(take_texts(&lua).is_empty());
+    }
+
+    #[test]
+    fn normalize_newlines_turns_each_cr_and_crlf_into_one_lf() {
+        assert_eq!(normalize_newlines("a\rb"), "a\nb");
+        assert_eq!(normalize_newlines("a\r\n\rb"), "a\n\nb");
+        assert!(matches!(normalize_newlines("a\nb"), std::borrow::Cow::Borrowed(_)));
     }
 }

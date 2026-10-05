@@ -28,7 +28,7 @@ use crate::layout::node::{
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Modifiers, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
-use crate::wayland::{DragPhase, Escape, KeyPress, MouseButton};
+use crate::wayland::{DragPhase, Escape, KeyPress, MouseButton, SubmitKey};
 use mlua::Value;
 
 /// What an absent key means.
@@ -556,7 +556,7 @@ props! {
         /// Book: A `scroll(name)` signal; makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll))
         scroll: Handle;
     }
-    /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line, `font_size` times `line_height`; `width` has none, so set it.
+    /// Text input, one line unless `multiline`. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line, `font_size` times `line_height`, or a `multiline` field's wrapped rows; `width` has none, so set it.
     mod textfield(TEXTFIELD) {
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));
@@ -570,11 +570,19 @@ props! {
         disabled: Bound<Flag> = absent(Bool(false));
         /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.
         max_length: Bound<MaxLines> = absent(Number(0.0));
-        /// Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB.
+        /// Plain fields only: wrap the draft at the field's width and take newlines. Return inserts one and `submit_key` submits; Up and Down move by visual row, Home and End to its ends, Ctrl+Home and Ctrl+End to the text's. Paste and IME commits keep newlines, `\r\n` and `\r` as `\n`. The field grows from `min_lines` to `max_lines` rows; past that, or at a fixed `height`, its rows scroll to keep the caret in view, and the wheel scrolls them. Refused with `secure_submit`.
+        multiline: Bound<Flag> = absent(Bool(false));
+        /// Ignored without `multiline`: the fewest rows the field is tall; `0` is `1`, a negative value is refused.
+        min_lines: Bound<MaxLines> = absent(Number(1.0));
+        /// Ignored without `multiline`: the most rows the field grows to before its rows scroll; `0` is unlimited, a negative value or one below `min_lines` is refused.
+        max_lines: Bound<MaxLines> = absent(Number(0.0));
+        /// Ignored without `multiline`: the chord that submits. `"ctrl+return"` leaves Return to insert a newline; `"return"` submits on Return and Shift+Return inserts the newline.
+        submit_key: Bound<OneOf<SubmitKey>> = absent(Choice("ctrl+return"));
+        /// Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters (but `\n` in a `multiline` field) and over 64 KiB.
         initial_text: Bound<Text> = absent(Lua(r#""""#));
         /// Full text after every edit.
         on_change(text: String);
-        /// Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.
+        /// Enter (in a `multiline` field, `submit_key`) with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.
         on_submit(text: String);
         /// What Escape does in a plain field. `"clear"` empties the draft (`on_change("")` if it had text), then gives up focus if `on_cancel` is set. `"blur"` keeps the draft and gives up focus. `"pass"` keeps both and does not take the key: it goes up through `on_key`, then to the surface's `on_escape`. A `secure_submit` field ignores it and always scrubs and stays armed. Read when the field takes focus.
         escape: Bound<OneOf<Escape>> = absent(Choice("clear"));

@@ -293,6 +293,7 @@ fn press_chooses_focus(
                     history,
                     typing: true,
                     selecting: true,
+                    goal_x: None,
                     on_change,
                     on_submit,
                     on_cancel,
@@ -678,10 +679,11 @@ impl App {
             return;
         };
         if let Some(field) = self.focused_text_field.as_mut().filter(|field| field.selection.1 != caret) {
-            field.selection.1 = caret;
+            (field.selection.1, field.goal_x) = (caret, None);
             field.history.break_typing();
             self.text_input.note_other_change();
             self.mark_field_input_changed(instance_id);
+            self.fit_focused_field();
         }
     }
 

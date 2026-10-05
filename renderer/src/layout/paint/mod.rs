@@ -62,6 +62,8 @@ pub enum Draw {
         caret_on: bool,
         /// The caret bar, drawn only with `caret`.
         caret_style: CaretStyle,
+        /// A `multiline` field's wrap width and how far its rows scroll up, logical px.
+        wrap: Option<(f32, f32)>,
     },
     /// Theme name, resolved in [`execute`]. Icons carry alpha separately because `Paint::image`
     /// takes it as an argument.

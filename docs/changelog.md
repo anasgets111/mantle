@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `textfield` takes `multiline = true`: the draft wraps and takes newlines, and the field grows from `min_lines` to `max_lines` rows, then scrolls them to keep the caret in view. `submit_key` (`"ctrl+return"` or `"return"`) picks the chord that submits; Return or Shift+Return inserts the newline. Up, Down, Home and End move by visual row. `initial_text` and `focus_target(name):set_text` may hold `\n` for a multiline field; a single-line one refuses a `set_text` newline with a warning. `multiline` with `secure_submit` is refused.
 - `focus_target` and `autofocus` work on any focusable control, not only a plain `textfield`, and `focus_target(name):request()` also works from `on_key` and a field's `on_change` and `on_submit`: a request from a key callback shows the focus outline, one from `on_click` does not. `:set_text` stays textfield-only.
 - `textfield` takes `selection = { background, foreground }`: the highlight as given (tint it with alpha) and the selected glyphs' colour. Unset, the highlight stays `foreground` at 30% alpha and the glyphs keep the text colour.
 - `mantle.appearance` is a read-only capability of the desktop portal's appearance settings, pushed live: `color_scheme` (`"default"`, `"dark"` or `"light"`), `accent` (`"#rrggbb"` or `nil`), `contrast` (`"normal"` or `"high"`) and `reduced_motion` (boolean). Without a portal every field holds its default.

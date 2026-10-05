@@ -65,7 +65,7 @@ mod idle_profile;
 mod input;
 #[cfg(test)]
 pub(crate) use input::apply_hover_write;
-pub(crate) use input::{DragPhase, Escape, KeyPress, MouseButton};
+pub(crate) use input::{DragPhase, Escape, KeyPress, MouseButton, SubmitKey};
 mod layer;
 mod lock;
 mod main_loop;

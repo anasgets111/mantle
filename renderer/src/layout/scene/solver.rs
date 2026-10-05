@@ -1,4 +1,6 @@
+use super::field::FieldDrafts;
 use super::{LayoutStyle, LogicalSize, ResolvedNode};
+use crate::layout::field_rows;
 use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode};
 use crate::text::shaping::{self, ShapingHandle};
 use taffy::TraversePartialTree;
@@ -55,6 +57,8 @@ pub(super) enum Measure {
     Square(f32),
     /// A `textfield`'s one text line: height only, since its width is the config's to give.
     Line(f32),
+    /// A `multiline` `textfield`'s rows of the draft the scene holds for `id`, wrapped less the caret `bar`.
+    Field { id: super::NodeId, face: node::Typeface, lines: node::Multiline, bar: f32 },
     /// Marks a `homogeneous` container: [`fit_slots`] sizes its slot track before each solve.
     /// `content` is whether its main size is the content's; only then, or under `wrap`, does the slot decide.
     Slots { axis: MainAxis, content: bool, wrap: bool },
@@ -440,6 +444,7 @@ pub(super) fn hold_leavers(
 
 /// What the solver asks a leaf for its size with, for the kinds whose size is their content.
 pub(super) fn measure_for(
+    id: super::NodeId,
     kind: &str,
     paint: Option<&PaintStyle>,
     properties: &PropMap,
@@ -471,10 +476,13 @@ pub(super) fn measure_for(
         }
         "icon" => Some(Measure::Square(node::fields::icon::size.read(properties)?)),
         "textfield" => {
-            let Some(PaintStyle::TextField { face, .. }) = paint else {
+            let Some(PaintStyle::TextField { face, multiline, caret, .. }) = paint else {
                 unreachable!("paint_style produces PaintStyle::TextField for textfield nodes");
             };
-            Some(Measure::Line(face.line_height))
+            Some(match multiline {
+                Some(lines) => Measure::Field { id, face: face.clone(), lines: *lines, bar: caret.width },
+                None => Measure::Line(face.line_height),
+            })
         }
         // `image` has no intrinsic size, unlike `icon`: knowing a file's own dimensions means
         // decoding it, and this pass has no canvas to decode against and runs on every
@@ -494,7 +502,7 @@ pub(super) fn taffy_failed(err: taffy::TaffyError) -> LayoutError {
 
 /// The measure callback of [`solve`] and [`fit_slots`].
 fn measure_leaf(
-    shaping: &ShapingHandle,
+    (shaping, drafts): (&ShapingHandle, &FieldDrafts),
     input: taffy::LayoutInput,
     context: Option<&mut Measure>,
     style: &taffy::Style,
@@ -534,6 +542,17 @@ fn measure_leaf(
             match measure {
                 Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
                 Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
+                Measure::Field { id, face, lines, bar } => {
+                    let draft = drafts.get(id).map_or("", |draft| draft.text.as_str());
+                    let width = known.width.or(match offered.width {
+                        taffy::AvailableSpace::Definite(width) => Some(width),
+                        _ => None,
+                    });
+                    let rows = width.map_or(1, |width| {
+                        field_rows::count(draft, face, field_rows::wrap_width(width, *bar), shaping)
+                    });
+                    clamp(taffy::Size { width: 0.0, height: lines.rows(rows) as f32 * face.line_height })
+                }
                 Measure::Slots { .. } => taffy::Size::ZERO,
                 Measure::Text { content, runs, face, wrap, elide, max_lines, memo } => {
                     // Elided text shrinks to whatever it is given, so its min-content is nothing.
@@ -578,10 +597,10 @@ fn measure_leaf(
 fn fit_slots(
     tree: &mut taffy::TaffyTree<Measure>,
     node: taffy::NodeId,
-    shaping: &ShapingHandle,
+    (shaping, drafts): (&ShapingHandle, &FieldDrafts),
 ) -> Result<(), LayoutError> {
     for child in tree.children(node).map_err(taffy_failed)? {
-        fit_slots(tree, child, shaping)?;
+        fit_slots(tree, child, (shaping, drafts))?;
     }
     let Some(&Measure::Slots { axis, content, wrap }) = tree.get_node_context(node) else {
         return Ok(());
@@ -596,7 +615,7 @@ fn fit_slots(
         }
         let space = taffy::Size { width: taffy::AvailableSpace::MaxContent, height: taffy::AvailableSpace::MaxContent };
         tree.compute_layout_with_measure(child, space, |input, _node, context, style| {
-            measure_leaf(shaping, input, context, style)
+            measure_leaf((shaping, drafts), input, context, style)
         })
         .map_err(taffy_failed)?;
         let size = tree.layout(child).map_err(taffy_failed)?.size;
@@ -643,7 +662,7 @@ pub(super) fn solve(
     tree: &mut taffy::TaffyTree<Measure>,
     root: taffy::NodeId,
     available: LogicalSize,
-    shaping: &ShapingHandle,
+    (shaping, drafts): (&ShapingHandle, &FieldDrafts),
 ) -> Result<(), LayoutError> {
     #[cfg(test)]
     if tree.dirty(root).map_err(taffy_failed)? {
@@ -654,10 +673,10 @@ pub(super) fn solve(
         height: taffy::AvailableSpace::Definite(available.height),
     };
     if tree.dirty(root).map_err(taffy_failed)? {
-        fit_slots(tree, root, shaping)?;
+        fit_slots(tree, root, (shaping, drafts))?;
     }
     tree.compute_layout_with_measure(root, space, |input, _node, context, style| {
-        measure_leaf(shaping, input, context, style)
+        measure_leaf((shaping, drafts), input, context, style)
     })
     .map_err(taffy_failed)
 }

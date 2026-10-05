@@ -11,6 +11,7 @@ use crate::lua::call_logged;
 mod focus;
 mod on_key;
 mod plain;
+mod rows;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
 pub(crate) use on_key::KeyPress;
@@ -26,6 +27,17 @@ keywords! {
         Blur,
         /// Keep the draft and the focus; the key goes up through `on_key` and `on_escape`.
         Pass,
+    }
+}
+
+keywords! {
+    /// The chord that submits a `multiline` field; the other Return inserts a newline.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) enum SubmitKey {
+        /// Ctrl+Return submits; Return inserts a newline.
+        CtrlReturn = "ctrl+return",
+        /// Return submits; Shift+Return inserts a newline.
+        Return,
     }
 }
 
@@ -103,6 +115,8 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) typing: bool,
     /// The pointer is down inside it, so motion extends the selection (ADR-0236).
     pub(super) selecting: bool,
+    /// The x a run of Up and Down in a `multiline` field keeps to, field-local.
+    pub(super) goal_x: Option<f32>,
     pub(super) on_change: Option<Function>,
     pub(super) on_submit: Option<Function>,
     pub(super) on_cancel: Option<Function>,
@@ -149,6 +163,12 @@ pub(super) enum Motion {
     WordRight,
     Start,
     End,
+    /// A `multiline` field's visual rows, resolved against its layout into [`Motion::To`].
+    Up,
+    Down,
+    RowStart,
+    RowEnd,
+    To(usize),
 }
 
 /// Convert one `wl_keyboard` key for `secure_submit`. Use xkb, not `zwp_text_input_v3`: without an
@@ -474,7 +494,7 @@ impl App {
     /// Holds `event` for repeat when repeating it would do anything: a modifier or an Enter would
     /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
     fn arm_repeat(&mut self, event: KeyEvent) {
-        let repeats = !matches!(key_action(&event, true, self.ctrl_held, self.shift_held), KeyAction::Ignore)
+        let repeats = !matches!(self.field_key_action(&event, true), KeyAction::Ignore)
             || !self.key_handlers_now(&event).1.is_empty();
         self.repeating =
             self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
@@ -719,6 +739,7 @@ pub(in crate::wayland) mod tests {
             history: EditHistory::default(),
             typing: false,
             selecting: false,
+            goal_x: None,
             on_change: None,
             on_submit: None,
             on_cancel: None,

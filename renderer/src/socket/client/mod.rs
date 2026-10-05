@@ -420,6 +420,20 @@ impl RendererClient {
         &self.scene
     }
 
+    /// [`Scene::set_field_draft`], marking `instance_id` for the pass that resizes the field.
+    pub fn set_field_draft(&mut self, instance_id: &str, id: layout::NodeId, text: &str) -> bool {
+        let resized = self.scene.set_field_draft(instance_id, id, text, &self.shaping);
+        if resized {
+            self.dirty.mark_instance(instance_id);
+        }
+        resized
+    }
+
+    /// [`Scene::set_field_scroll`].
+    pub fn set_field_scroll(&mut self, instance_id: &str, id: layout::NodeId, scroll: f32) -> bool {
+        self.scene.set_field_scroll(instance_id, id, scroll)
+    }
+
     /// A wheel's `delta` for `signal` ([`Scene::wheel`]): the instances to repaint now.
     pub fn wheel(
         &mut self,

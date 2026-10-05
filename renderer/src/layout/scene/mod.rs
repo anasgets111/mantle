@@ -7,6 +7,7 @@
 //! [`solve`]: solver::solve
 
 mod elision;
+mod field;
 mod fit;
 mod pass;
 mod resolve;
@@ -325,7 +326,8 @@ impl ResolvedNode {
             },
             None => node::fields::textfield::initial_text.read(&self.properties).unwrap_or_default(),
         };
-        if crate::lua::focus::is_settable(&text) {
+        let multiline = matches!(self.paint, Some(node::PaintStyle::TextField { multiline: Some(_), .. }));
+        if crate::lua::focus::is_settable(&text, multiline) {
             return text;
         }
         shared::warn!("`initial_text` takes at most 64 KiB without control characters; autofocus starts empty");
@@ -468,6 +470,8 @@ pub struct Scene {
     next_id: u64,
     /// `initial_text` of fields created since the app last drained them, for the app to seed.
     seeds: Vec<(NodeId, String)>,
+    /// The drafts multiline fields measure, which the app holds (ADR-0108) and sets here.
+    field_drafts: field::FieldDrafts,
     resolve_split: ResolveSplit,
     tick_split: TickSplit,
 }
@@ -575,8 +579,11 @@ impl Scene {
         if text.is_empty() {
             return Ok(());
         }
-        if !crate::lua::focus::is_settable(&text) {
-            return Err(node::invalid("initial_text", "takes at most 64 KiB without control characters"));
+        if !crate::lua::focus::is_settable(&text, node::fields::textfield::multiline.read(properties)?) {
+            return Err(node::invalid(
+                "initial_text",
+                "takes at most 64 KiB without control characters, except `\\n` in a multiline field",
+            ));
         }
         self.seeds.push((id, text));
         Ok(())
@@ -666,6 +673,7 @@ impl Scene {
             self.seeds.truncate(seeds_snapshot);
         } else {
             self.publish_elision(lua);
+            self.forget_gone_fields();
         }
         outcome
     }
@@ -789,7 +797,7 @@ impl Scene {
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
         let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), false, lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
-        let solved = solve_instance(&mut tree, prepared, available, shaping, now)?;
+        let solved = solve_instance(&mut tree, prepared, available, (shaping, &self.field_drafts), now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
         self.solver_trees.insert(key.clone(), tree);
         self.surfaces.insert(key, solved);
@@ -941,6 +949,8 @@ struct PreparedNode {
     /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
     child_table: Option<pass::ChildTable>,
     resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
+    /// The retained [`ResolvedNode::scrolled`]: a `multiline` field keeps it across passes.
+    scrolled: f32,
 }
 
 #[cfg(test)]
