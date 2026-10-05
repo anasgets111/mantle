@@ -152,9 +152,9 @@ pub fn depart(
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
 /// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. `Layers` is a `background`
 /// list: colour layers mix, any other layer snaps to the target's, and a layer one side lacks fades. `Effect` is an `effect`'s
-/// `[blur, saturate, brightness, contrast]` and the same four of its `backdrop`, a missing key
-/// reading as off: `0` for a blur, `1` for a colour filter; its `shader` table is carried as the
-/// target has it and never tweened (ADR-0336). Two different shapes
+/// `[blur, saturate, brightness, contrast]`, the same four of its `backdrop` and its `shader.progress`,
+/// a missing key reading as off: `0` for a blur, `1` for a colour filter; the rest of its `shader`
+/// table is carried as the target has it and never tweened (ADR-0336). Two different shapes
 /// snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches between a
 /// number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,7 +166,7 @@ pub enum Animatable {
     Path(Rc<PathData>),
     Shadows(Vec<Shadow>),
     Layers(Vec<Layer>),
-    Effect([f32; 8], Option<Value>),
+    Effect([f32; 9], Option<Value>),
 }
 
 /// One `background` layer in a tween: a colour and its blend (which snaps), or a gradient carried
@@ -177,8 +177,8 @@ pub enum Layer {
     Snap(Value),
 }
 
-/// An `effect` with every filter off: blurs `0`, colour filters `1`.
-const EFFECT_OFF: [f32; 8] = [0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0];
+/// An `effect` with every filter off: blurs `0`, colour filters `1`, `shader.progress` `0`.
+const EFFECT_OFF: [f32; 9] = [0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0];
 
 spelled!(Animatable => format!(
     "{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -237,6 +237,7 @@ impl Animatable {
                 b.saturate,
                 b.brightness,
                 b.contrast,
+                keys.shader.as_ref().and_then(|shader| shader.progress),
             ];
             let shader = value.as_table().and_then(|table| table.get::<Value>("shader").ok()).filter(|v| !v.is_nil());
             return Ok(Some(Self::Effect(std::array::from_fn(|i| given[i].unwrap_or(EFFECT_OFF[i])), shader)));
@@ -356,7 +357,11 @@ impl Animatable {
             }
             (Self::Effect(a, _), Self::Effect(b, shader)) => Self::Effect(
                 std::array::from_fn(|i| {
-                    let (lo, hi) = if i % 4 == 0 { SHADOW_BLUR } else { TONE };
+                    let (lo, hi) = match i {
+                        8 => range_of("progress"),
+                        _ if i % 4 == 0 => SHADOW_BLUR,
+                        _ => TONE,
+                    };
                     (a[i] + (b[i] - a[i]) * t).clamp(lo, hi)
                 }),
                 shader.clone(),
@@ -428,9 +433,13 @@ impl Animatable {
                     )
                 };
                 let table = level(&values[..4])?;
-                table.set("backdrop", level(&values[4..])?)?;
-                if let Some(shader) = shader {
-                    table.set("shader", shader.clone())?;
+                table.set("backdrop", level(&values[4..8])?)?;
+                if let Some(Value::Table(shader)) = shader {
+                    // A copy: the config's own table is not ours to write.
+                    let tweened =
+                        lua.create_table_from(shader.pairs::<Value, Value>().collect::<mlua::Result<Vec<_>>>()?)?;
+                    tweened.set("progress", values[8])?;
+                    table.set("shader", tweened)?;
                 }
                 Value::Table(table)
             }

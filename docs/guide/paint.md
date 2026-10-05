@@ -545,6 +545,7 @@ rect {
 | `input` | `"content"` or `"backdrop"` | `"content"` | What `u_input` holds: the node's painted subtree, or what the surface painted under the box (see [Backdrop input](#backdrop-input)) |
 | `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
 | `images` | `table<string, string>` | `{}` | Raster files to sample, by sampler name, with the rules, `<name>_size` and sampling of a [`shader` node's `images`](../nodes/shader.md#images). Clamped to the edge (`fract(uv)` tiles), premultiplied, sRGB as stored; `.png`, `.jpg`, `.jpeg` or `.webp` only, a side over 2048 px downscaled. They take the units after `u_input` and `u_input_blurred`, so a refraction can read a displacement map |
+| `progress` | `number`, `[-8192, 8192]` | `0` | Becomes `u_progress`, as on a [`shader` node](../nodes/shader.md#the-frag-file). [animate](animation.md) `effect` to move it |
 | `padding` | `number`, `[0, 512]` | `0` | Logical px around the box the program can read and draw. The layer, its damage and its clip grow by it |
 
 The `.frag` contract is the [`shader` node's](../nodes/shader.md#the-frag-file) with these changes.
@@ -558,7 +559,8 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | `mantle_input_blurred(uv)` | `vec4` | The same, through `effect.backdrop`'s blur and colour filters; the plain input when it has none or `input = "content"` |
 | `u_input`, `u_input_blurred`, `u_input_rect` | `sampler2D`, `sampler2D`, `vec4` | The textures and where they sit as `(x, y, w, h)` in box fractions. Use the functions above, which handle the textures' orientation |
 | `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii and `corner_smoothing`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
-| `u_progress`, `mantle_opacity` | | Not set |
+| `u_progress` | `float` | `progress` |
+| `mantle_opacity` | | Not set |
 
 Unlike a `shader` node, no step follows your `main`: the output is not rounded to `radius` and not
 multiplied by `opacity`, since the subtree already carries its opacity. Cut to the outline yourself
@@ -583,7 +585,8 @@ void main() {
 | The shader fails to compile or link | Logged once per revision of the file; the node draws as if it had no `shader` |
 | The `.frag` is saved | The config reloads, which recompiles it and repaints the node |
 | `params`, `images` or a file change | The layer is redrawn; an unchanged layer is reused |
-| `animate` on `effect` | Tweens `blur` and the colour filters; the `shader` table, `params`, `images` and `padding` take the target's value at once |
+| `animate` on `effect` | Tweens `blur`, the colour filters and `shader.progress`; the rest of the `shader` table (`source`, `params`, `images`, `padding`) takes the target's value at once. A progress-only step repaints the layer without resolving Lua |
+| Loop an animation | `animate = { effect = { keyframes = { at(0), at(1) }, duration = 2000, loops = "infinite" } }`, with `at(p)` returning `{ shader = { source = ..., progress = p } }` ([keyframes](animation.md#keyframes)) |
 | Hit testing and input regions | Ignore it: a shader draws pixels, not shape |
 
 Order: the shader reads the node after its fill, children and border, and its output goes through

@@ -245,6 +245,7 @@ fn shaded(
         ],
         logical_size: (rect.width / scale, rect.height / scale),
         radii: (shader.radius * (1.0 / scale)).fit(rect.width / scale, rect.height / scale),
+        progress: shader.progress,
         params: &shader.params,
         images: &images,
     };
@@ -1267,6 +1268,16 @@ mod tests {
             rect { width = 32, height = 16, background = "#0000FFFF" } } } }"##;
         let Some(px) = paint_shader(same, "", halves, &[(32, 20), (32, 44)]) else { return };
         assert!(near(px[0], (255, 0, 0)) && near(px[1], (0, 0, 255)), "top red, bottom blue: {px:?}");
+    }
+
+    /// `u_progress` reaches an `effect.shader` program, and a different value is a different pixel.
+    #[test]
+    fn an_effect_shader_reads_u_progress() {
+        let frag = "void main() { fragColor = vec4(u_progress, 0.0, 0.0, 1.0); }";
+        for (progress, red) in [(0.25, 64), (1.0, 255)] {
+            let Some(px) = paint_shader(frag, &format!("progress = {progress}"), "", &[(32, 32)]) else { return };
+            assert!(near(px[0], (red, 0, 0)), "progress {progress}: {px:?}");
+        }
     }
 
     /// ADR-0336. `padding` is room past the box the program draws into, and nothing without it.

@@ -171,6 +171,7 @@ pub struct LayerShader {
     pub version: crate::image::FileVersion,
     pub params: Vec<node::ShaderParam>,
     pub images: Vec<SamplerFile>,
+    pub progress: f32,
     pub radius: Radii,
 }
 

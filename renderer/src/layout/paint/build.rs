@@ -723,6 +723,7 @@ fn layer_shader(shader: node::EffectShader, radius: Radii) -> LayerShader {
         source: shader.source,
         params: shader.params,
         images: sampler_files(&shader.images),
+        progress: shader.progress,
         radius,
     }
 }

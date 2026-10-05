@@ -413,6 +413,8 @@ pub struct EffectShader {
     pub params: Vec<ShaderParam>,
     pub images: Vec<ShaderImage>,
     pub padding: f32,
+    /// `u_progress`, as on a `shader` node.
+    pub progress: f32,
 }
 
 keywords! {
@@ -543,6 +545,7 @@ lua_shape! {
         pub(crate) params: Value as Option<Params>,
         pub(crate) images: Value as Option<Images>,
         pub(crate) padding: Option<f32>,
+        pub(crate) progress: Option<f32>,
     }
 }
 
@@ -597,7 +600,11 @@ impl Prop for Effects {
                         format!("expected an absolute path, got `{}`", shader.source.display()),
                     ));
                 }
-                Some(ShaderKeys { padding: within("shader.padding", SHADER_PADDING, shader.padding)?, ..shader })
+                Some(ShaderKeys {
+                    padding: within("shader.padding", SHADER_PADDING, shader.padding)?,
+                    progress: within("shader.progress", range_of("progress"), shader.progress)?,
+                    ..shader
+                })
             }
             None => None,
         };
@@ -673,6 +680,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
             params: super::animate::parse_shader_params("effect.shader.params", &keys.params)?,
             images: super::animate::parse_shader_images("effect.shader.images", &keys.images)?,
             padding: keys.padding.unwrap_or(0.0),
+            progress: keys.progress.unwrap_or(0.0),
         };
         match keys.input.unwrap_or_default() {
             ShaderInput::Content => shader = Some(program),
@@ -1425,13 +1433,14 @@ mod tests {
             params: vec![("a".into(), vec![2.0]), ("b".into(), vec![1.0, 2.0])],
             images: vec![("map".into(), "/m.png".into())],
             padding,
+            progress: -0.5,
         };
-        let full = r#"return { effect = { shader = { source = "/s.frag", input = "content", padding = 12,
+        let full = r#"return { effect = { shader = { source = "/s.frag", input = "content", padding = 12, progress = -0.5,
             params = { a = 2, b = { 1, 2 } }, images = { map = "/m.png" } } } }"#;
         assert_eq!(parse(full).unwrap(), Effect { shader: Some(shader(12.0)), ..Effect::default() });
         let bare = parse(r#"return { effect = { shader = { source = "/s.frag" } } }"#).unwrap();
         let shader = bare.shader.as_ref().unwrap();
-        assert_eq!((shader.padding, shader.params.len()), (0.0, 0));
+        assert_eq!((shader.padding, shader.params.len(), shader.progress), (0.0, 0, 0.0));
         assert!(bare.layers(), "a shader alone needs the offscreen");
         // A backdrop shader draws before the node, from a copy, and needs no offscreen of its own.
         let under =
@@ -1451,6 +1460,8 @@ mod tests {
             (r#"return { effect = { shader = { source = "/s.frag", glow = 1 } } }"#, "effect.shader"),
             (r#"return { effect = { shader = { source = "/s.frag", padding = -1 } } }"#, "effect.shader.padding"),
             (r#"return { effect = { shader = { source = "/s.frag", padding = 513 } } }"#, "effect.shader.padding"),
+            (r#"return { effect = { shader = { source = "/s.frag", progress = 8193 } } }"#, "effect.shader.progress"),
+            (r#"return { effect = { shader = { source = "/s.frag", progress = -8193 } } }"#, "effect.shader.progress"),
             (
                 r#"return { effect = { shader = { source = "/s.frag", params = { a = "x" } } } }"#,
                 "effect.shader.params.a",

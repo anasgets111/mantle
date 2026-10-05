@@ -281,6 +281,7 @@ pub struct ContentRun<'a> {
     /// The node's box in logical px, rounded by `radii` for `mantle_sdf`.
     pub logical_size: (f32, f32),
     pub radii: node::Radii,
+    pub progress: f32,
     pub params: &'a [node::ShaderParam],
     /// As [`Run::images`], on the units after `u_input` and `u_input_blurred`.
     pub images: &'a [(&'a str, Option<ImageId>)],
@@ -773,6 +774,7 @@ impl ShaderStage {
                 gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
                 let (logical_width, logical_height) = run.logical_size;
                 let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
+                gl.uniform_1_f32(program.progress.as_ref(), run.progress);
                 Self::set_shape(gl, program, run.radii, outline, run.logical_size);
                 Self::set_params(gl, program, run.params);
                 gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);

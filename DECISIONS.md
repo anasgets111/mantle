@@ -7929,7 +7929,9 @@ a shader over a subtree. The roadmap's won't-do row now covers only the desktop 
 5. **`padding`** grows the layer's clip, damage and cull, cut by clipping ancestors like a shadow.
 6. **Reload and failure.** The layer carries the file version and `params`, so a save or a uniform
    change repaints. A failed build logs once per revision and leaves the node as painted.
-7. **Not tweened.** The shader table snaps; blur and colour filters still tween.
+7. **Not tweened, except `progress`.** The shader table snaps; blur and colour filters still tween.
+   Amended: `effect.shader.progress` is `u_progress`, tweens and keyframes like `blur`, clamped to
+   the shader node's [-8192, 8192]; `source`, `params`, `images` and `padding` still snap.
 
 Rejected: a `shader` node with a child input, which cannot read a sibling's pixels and repeats the
 layer's offscreen; reading the desktop, which the compositor owns.

@@ -1660,6 +1660,34 @@ mod tests {
         );
     }
 
+    /// ADR-0336. An endless `effect.shader.progress` loop advances on tick with no relayout, the
+    /// shader's file and the rest of its table carried, and every step repaints the layer.
+    #[test]
+    fn an_effect_shader_progress_loop_advances_without_a_resolve() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local at = function(p) return { shader = { source = "/s.frag", padding = 3, progress = p } } end
+            return panel { id = "bar", child = rect { width = 40, height = 30, background = "#ffffff", effect = at(0),
+                animate = { effect = { keyframes = { at(0), at(1) }, duration = 100, easing = "linear", loops = "infinite" } } } }"##,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let root = scene.surface("bar@TEST").unwrap();
+        assert!(root.tick_is_paint_only(), "`effect` asks the solver nothing");
+        let before = crate::layout::paint::build(root, 1.0, None);
+        let started = root.children[0].tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(25));
+        let root = scene.surface("bar@TEST").unwrap();
+        let shader = root.children[0].effect.shader.as_ref().expect("the shader is carried");
+        assert!((shader.progress - 0.25).abs() < 0.01, "a quarter along, got {}", shader.progress);
+        assert_eq!((shader.padding, shader.source.to_str()), (3.0, Some("/s.frag")));
+        assert_ne!(crate::layout::paint::build(root, 1.0, None), before, "the layer repaints");
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(125));
+        let shader = scene.surface("bar@TEST").unwrap().children[0].effect.shader.clone().unwrap();
+        assert!((shader.progress - 0.25).abs() < 0.01, "and wraps, got {}", shader.progress);
+    }
+
     /// ADR-0261. A `translate` and `scale` loop ticks without a relayout, and the input region
     /// follows it.
     #[test]
