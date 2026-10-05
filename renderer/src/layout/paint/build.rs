@@ -7,7 +7,7 @@
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
 use crate::layout::node::{
-    self, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
+    self, Blend, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
 };
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
@@ -123,13 +123,21 @@ fn build_node(
     let clip = parent_clip.intersect(snap_to_physical(rect, scale));
     let child_clip = if node.clips_children() { clip } else { parent_clip };
     let effect = &node.effect;
-    let read = snap_to_physical(grow(rect, reach(effect.backdrop)), scale);
+    let read = snap_to_physical(grow(rect, reach(effect.backdrop).max(shader_padding(&effect.backdrop_shader))), scale);
     let opacity = inherited_opacity * node.opacity;
+    let layers = match &node.paint {
+        Some(PaintStyle::Box { background, .. }) => background.as_slice(),
+        _ => &[],
+    };
     // ADR-0254 decision 2, ADR-0260. An opaque box draws as it did in either mode.
     let (radius, opaque, boxed) = match &node.paint {
-        Some(PaintStyle::Box { background, radius, mask, .. }) => {
-            // Normal blend: one opaque layer anywhere leaves the box opaque.
-            let opaque = background.iter().any(|fill| matches!(fill, Fill::Color(c) if c.a >= 1.0))
+        Some(PaintStyle::Box { radius, mask, .. }) => {
+            // One opaque normal layer anywhere leaves the box opaque: a blended pixel over an
+            // opaque one stays opaque. A blended node shows what is under it.
+            let opaque = layers
+                .iter()
+                .any(|(fill, blend)| *blend == Blend::Normal && matches!(fill, Fill::Color(c) if c.a >= 1.0))
+                && effect.blend == Blend::Normal
                 && mask.is_none()
                 && effect.blur == 0.0
                 && effect.shader.is_none()
@@ -175,20 +183,25 @@ fn build_node(
     };
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
     if let Some(PaintStyle::Box { radius, .. }) = node.paint
-        && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity())
+        && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity() || effect.backdrop_shader.is_some())
         && opacity > 0.0
         && !clip.is_empty()
     {
-        let draw = Draw::Backdrop { sigma: effect.backdrop, tone: effect.backdrop_tone, radius, alpha: opacity };
+        let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius));
+        let draw =
+            Draw::Backdrop { sigma: effect.backdrop, tone: effect.backdrop_tone, radius, alpha: opacity, shader };
         out.push(cmd(parent_clip.intersect(read), draw));
     }
+    // CSS `mix-blend-mode` blends the element's own shadows with it, never its backdrop filter.
+    let group = out.len();
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
     if casts {
         let faded = effect.shadows.iter().map(|shadow| node::Shadow { color: fade(shadow.color, opacity), ..*shadow });
         if !radius.scoop() {
             // CSS paints the first layer on top, so the last draws first.
             for shadow in faded.rev() {
-                out.push(cmd(parent_clip.intersect(reach), Draw::Shadow { shadow, radius, knockout: boxed }));
+                let draw = Draw::Shadow { shadow, radius, knockout: boxed };
+                out.push(blended(shadow.blend, cmd(parent_clip.intersect(reach), draw)));
             }
         } else {
             let effect = node::Effect { shadows: faded.collect(), ..node::Effect::default() };
@@ -199,7 +212,7 @@ fn build_node(
             out.push(cmd(parent_clip.intersect(reach), draw));
         }
     }
-    let body = out.len();
+    let body = if effect.blend == Blend::Normal { out.len() } else { group };
     // Above every background layer, under the children and the border (ADR-0331); the first layer is on top.
     let insets: Vec<DrawCmd> = match &node.paint {
         Some(PaintStyle::Box { radius, widths, .. }) if !clip.is_empty() => effect
@@ -208,16 +221,20 @@ fn build_node(
             .rev()
             .map(|shadow| {
                 let shadow = node::Shadow { color: fade(shadow.color, opacity), ..*shadow };
-                cmd(clip, Draw::InsetShadow { shadow, radius: *radius, widths: *widths })
+                blended(shadow.blend, cmd(clip, Draw::InsetShadow { shadow, radius: *radius, widths: *widths }))
             })
             .collect(),
         _ => Vec::new(),
     };
+    let blends_layers = layers.iter().any(|(_, blend)| *blend != Blend::Normal);
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
             let (fill, border) = split_fill_and_border(draw);
-            let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
+            let mut inner = Vec::new();
+            if let Some(fill) = fill {
+                push_fill(&mut inner, cmd(clip, fill), layers);
+            }
             inner.extend(insets);
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
@@ -244,8 +261,9 @@ fn build_node(
             }
         }
         None => {
-            // The border draws over an inset shadow, so a box with one paints fill, inset, border.
-            let (draw, border) = if insets.is_empty() { (draw, None) } else { split_fill_and_border(draw) };
+            // The border draws over an inset shadow and a blended layer, so such a box paints fill, inset, border.
+            let (draw, border) =
+                if insets.is_empty() && !blends_layers { (draw, None) } else { split_fill_and_border(draw) };
             if let Some(draw) = draw {
                 // ponytail: ink can pass a tight line box, so text clips to one em of vertical room; upgrade: the shaped ink extents.
                 let clip = match &draw {
@@ -254,7 +272,7 @@ fn build_node(
                     }
                     _ => clip,
                 };
-                out.push(cmd(clip, draw));
+                push_fill(out, cmd(clip, draw), layers);
             }
             out.extend(insets);
             out.extend(border.map(|draw| cmd(clip, draw)));
@@ -267,7 +285,7 @@ fn build_node(
         Some(radius) => {
             let (fill, border) = split_fill_and_border(draw);
             if let Some(fill) = fill {
-                out.push(cmd(clip, fill));
+                push_fill(out, cmd(clip, fill), layers);
             }
             out.extend(insets);
             let mut inner = Vec::new();
@@ -328,14 +346,11 @@ fn build_node(
         let pad = layered.shadows.iter().fold(0.0_f32, |pad, shadow| {
             pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
         });
-        let target =
-            snap_to_physical(grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(&layered))), scale);
-        let shader = layered.shader.take().map(|shader| LayerShader {
-            version: crate::image::FileVersion::read(&shader.source),
-            source: shader.source,
-            params: shader.params,
-            radius,
-        });
+        let target = snap_to_physical(
+            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(&layered.shader))),
+            scale,
+        );
+        let shader = layered.shader.take().map(|shader| layer_shader(shader, radius));
         let draw = Draw::Layer { effect: layered, shader, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
@@ -409,9 +424,13 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             silhouette,
             commands,
         },
-        Draw::Backdrop { sigma, tone, radius, alpha } => {
-            Draw::Backdrop { sigma: sigma * scale, tone, radius: radius * scale, alpha }
-        }
+        Draw::Backdrop { sigma, tone, radius, alpha, shader } => Draw::Backdrop {
+            sigma: sigma * scale,
+            tone,
+            radius: radius * scale,
+            alpha,
+            shader: shader.map(|shader| LayerShader { radius: shader.radius * scale, ..shader }),
+        },
         draw @ (Draw::Text { .. }
         | Draw::Icon { .. }
         | Draw::Image { .. }
@@ -504,7 +523,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
         PaintStyle::Box { background, radius, border, widths, clip: _, mask: _ } => Some(Draw::Box {
-            background: background.iter().map(|fill| fade_fill(fill, opacity)).collect(),
+            background: background.iter().map(|(fill, _)| fade_fill(fill, opacity)).collect(),
             radius: *radius,
             border: fade_border(border, opacity),
             widths: *widths,
@@ -696,14 +715,64 @@ fn reach(sigma: f32) -> f32 {
 }
 
 /// How far past the box `effect.shader` reads and draws, logical px.
-fn shader_padding(effect: &node::Effect) -> f32 {
-    effect.shader.as_ref().map_or(0.0, |shader| shader.padding)
+fn shader_padding(shader: &Option<node::EffectShader>) -> f32 {
+    shader.as_ref().map_or(0.0, |shader| shader.padding)
+}
+
+/// `shader` as a draw carries it: the file's version, so an edit repaints, and the outline.
+fn layer_shader(shader: node::EffectShader, radius: Radii) -> LayerShader {
+    LayerShader {
+        version: crate::image::FileVersion::read(&shader.source),
+        source: shader.source,
+        params: shader.params,
+        radius,
+    }
+}
+
+/// `command` composited by `blend`: a normal one as it is, any other one as a layer of its own,
+/// whose offscreen blends onto what is under it.
+fn blended(blend: Blend, command: DrawCmd) -> DrawCmd {
+    if blend == Blend::Normal {
+        return command;
+    }
+    let (rect, clip) = (command.rect, command.clip);
+    let effect = node::Effect { blend, ..node::Effect::default() };
+    DrawCmd { rect, clip, draw: Draw::Layer { effect, shader: None, silhouette: false, commands: vec![command] } }
+}
+
+/// Pushes a box's `fill`, its blended `layers` split out bottom-up: a run of normal layers stays
+/// one box, and each blended layer blends onto everything drawn under it.
+// ponytail: one offscreen, backdrop copy and blend pass per blended layer. Upgrade path: one pass
+// evaluating the whole stack's fills against one copy.
+fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, Blend)]) {
+    let DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } } = fill else {
+        return out.push(fill);
+    };
+    if layers.iter().all(|(_, blend)| *blend == Blend::Normal) {
+        return out.push(DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } });
+    }
+    let boxed =
+        |background| DrawCmd { rect, clip, draw: Draw::Box { background, radius, border: border.clone(), widths } };
+    let mut run = Vec::new();
+    for (fill, (_, blend)) in background.into_iter().zip(layers).rev() {
+        if *blend == Blend::Normal {
+            run.insert(0, fill);
+            continue;
+        }
+        if !run.is_empty() {
+            out.push(boxed(std::mem::take(&mut run)));
+        }
+        out.push(blended(*blend, boxed(vec![fill])));
+    }
+    if !run.is_empty() {
+        out.push(boxed(run));
+    }
 }
 
 /// A layer's offscreen: the box padded for the furthest blur or shader, united with where it lands as the shadow.
 fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> PhysicalRect {
     let shadow_reach = effect.shadows.iter().fold(0.0_f32, |most, shadow| most.max(reach(shadow.blur / 2.0)));
-    let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(effect)));
+    let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(&effect.shader)));
     let own = snap_to_physical(padded, scale);
     effect
         .shadows
@@ -1998,6 +2067,42 @@ mod tests {
         assert!(knockout(
             r##"{ "#ffffff80", { gradient = "radial", stops = { { 0, "#000000" }, { 1, "#ffffff" } } } }"##
         ));
+        // Only a normal layer counts: a blended one shows what is under it.
+        assert!(knockout(r##"{ { fill = "#ffffffff", blend = "multiply" } }"##), "a blended opaque layer");
+        assert!(!knockout(r##"{ { fill = "#ffffff80", blend = "screen" }, "#000000ff" }"##), "over an opaque one");
+    }
+
+    /// A blended node is not opaque, and blends its own shadow with it; a blended layer is a layer
+    /// of its own between the normal runs, bottom-up; `"normal"` builds what no `blend` does.
+    #[test]
+    fn blend_splits_layers_and_groups_a_blended_nodes_shadow() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, background = "#ffffffff", blend = "multiply", shadows = { { blur = 4 } } }"##,
+        );
+        let [.., DrawCmd { draw: Draw::Layer { effect, commands, .. }, .. }] = list.commands.as_slice() else {
+            panic!("{list:?}")
+        };
+        assert_eq!(effect.blend, Blend::Multiply);
+        assert!(matches!(commands[0].draw, Draw::Shadow { knockout: true, .. }), "{commands:?}");
+        let stack = |background: &str| {
+            let list = effect_surface(&format!(r##"rect {{ width = 40, height = 20, background = {background} }}"##));
+            list.commands.into_iter().skip(1).map(|cmd| cmd.draw).collect::<Vec<_>>()
+        };
+        let boxed = |fills: &[(f32, f32, f32)]| {
+            let background = fills.iter().map(|&(r, g, b)| Fill::Color(Rgba { r, g, b, a: 1.0 })).collect();
+            Draw::Box {
+                background,
+                radius: Radii::default(),
+                border: BorderPaint::default(),
+                widths: EdgeInsets::default(),
+            }
+        };
+        let split = stack(r##"{ "#ff0000", "#00ff00", { fill = "#ffffff", blend = "screen" }, "#0000ff" }"##);
+        let [bottom, Draw::Layer { effect, commands, .. }, top] = split.as_slice() else { panic!("{split:?}") };
+        let (red, green, blue) = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0));
+        assert_eq!((bottom, effect.blend, top), (&boxed(&[blue]), Blend::Screen, &boxed(&[red, green])));
+        assert_eq!(commands[0].draw, boxed(&[(1.0, 1.0, 1.0)]));
+        assert_eq!(stack(r##"{ { fill = "#808080", blend = "normal" } }"##), stack(r##""#808080""##));
     }
 
     /// `shadows` paints its layers bottom first, so the first is on top: one gradient each under a
@@ -2293,7 +2398,13 @@ mod tests {
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Backdrop { .. })).expect("a backdrop");
         assert_eq!(
             list.commands[at].draw,
-            Draw::Backdrop { sigma: 4.0, tone: node::Tone::default(), radius: Radii::from(6.0), alpha: 0.5 }
+            Draw::Backdrop {
+                sigma: 4.0,
+                tone: node::Tone::default(),
+                radius: Radii::from(6.0),
+                alpha: 0.5,
+                shader: None
+            }
         );
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });
         // CSS: the backdrop is what precedes the element, and its own box shadow is part of it.

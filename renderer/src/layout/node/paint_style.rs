@@ -129,8 +129,8 @@ pub enum PaintStyle {
     /// A negative `radius` is a scoop (`node::parse_radius`). `mask` covers the node's own paint
     /// and its subtree (ADR-0255).
     Box {
-        /// First layer on top; empty draws nothing.
-        background: Vec<Fill>,
+        /// First layer on top, each with its blend; empty draws nothing.
+        background: Vec<(Fill, Blend)>,
         radius: Radii,
         border: BorderPaint,
         widths: EdgeInsets,

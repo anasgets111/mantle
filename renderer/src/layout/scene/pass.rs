@@ -2395,8 +2395,8 @@ mod tests {
         let child = &scene.surface("bar@TEST").unwrap().children[0];
         let Some(PaintStyle::Box { background, .. }) = &child.paint else { panic!("{:?}", child.paint) };
         let blue = |fill: &node::Fill| matches!(fill, node::Fill::Color(c) if (c.r, c.b) == (0.0, 1.0));
-        assert!(matches!(&background[0], node::Fill::Color(c) if (c.r, c.b) == (1.0, 0.0)), "{background:?}");
-        assert!(blue(&background[1]), "{background:?}");
+        assert!(matches!(&background[0].0, node::Fill::Color(c) if (c.r, c.b) == (1.0, 0.0)), "{background:?}");
+        assert!(blue(&background[1].0), "{background:?}");
     }
 
     #[test]

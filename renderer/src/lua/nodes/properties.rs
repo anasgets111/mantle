@@ -18,7 +18,7 @@ use crate::layout::node::prop::{
     Structural, Text,
 };
 use crate::layout::node::{
-    Align, Anchor, AnchorRect, Animations, Axes, Background, Caret, Children, ClipShape, ColorOrEdges,
+    Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
     ConstraintAdjustment, Content, CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners,
     NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
@@ -249,14 +249,18 @@ props! {
         translate: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
         /// Pivot for `scale` and `rotate` as box fractions; a missing axis is `0.5`.
         origin: Bound<Axes> = range(0.0, 1.0).absent(Lua("{ x = 0.5, y = 0.5 }"));
-        /// Drop shadows, CSS `box-shadow`'s list: the first draws on top; at most 8. Each layer is `{ color, blur, offset = { x, y }, spread }`: `color` defaults to `"#000000"`, `blur` (CSS blur radius in px) to `0` within `[0, 8192]`, `offset` (px per axis, following the node's transform) to `{ x = 0, y = 0 }` and `spread` (px the shadow grows per side; negative shrinks it, and on non-box content scales it about the box centre) to `0`, each in `[-8192, 8192]`. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
+        /// Drop shadows, CSS `box-shadow`'s list: the first draws on top; at most 16. Each layer is `{ color, blur, offset = { x, y }, spread, inset, blend }`: `blend` (a `Blend` mode, default `"normal"`) composites the layer onto what is under it; `color` defaults to `"#000000"`, `blur` (CSS blur radius in px) to `0` within `[0, 8192]`, `offset` (px per axis, following the node's transform) to `{ x = 0, y = 0 }` and `spread` (px the shadow grows per side; negative shrinks it, and on non-box content scales it about the box centre) to `0`, each in `[-8192, 8192]`. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set. Cut by a clipping ancestor (`clip`, a scroll viewport, the surface): pad it (ADR-0254).
         ///
-        /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread }`; at most 8. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
+        /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread, inset, blend }`; at most 16. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
         shadows: Bound<Shadows>;
-        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only. `shader = { source, input, params, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is an absolute `.frag` path, `input` is `"content"` (the default), `params` are uniforms by name as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop first, then the node over it, the shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334). A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
+        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only. `shader = { source, input, params, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is an absolute `.frag` path, `input` is `"content"` (the default) or `"backdrop"` (what this surface painted under the box, drawn over it before the node, a box kind's only), `params` are uniforms by name as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop filters and a backdrop shader first, then the node over them, a content shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334), then `blend`. A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
         ///
-        /// Book: Pixel filters: `blur` (sigma in px, `[0, 8192]`) and the colour filters `saturate`, `brightness`, `contrast` (`[0, 8]`, `1` is off), at the top level and in `backdrop`, and a `shader` over the node's subtree; see [Blurs](../guide/paint.md#blurs) and [Shader effects](../guide/paint.md#shader-effects). `backdrop` is for box kinds only
+        /// Book: Pixel filters: `blur` (sigma in px, `[0, 8192]`) and the colour filters `saturate`, `brightness`, `contrast` (`[0, 8]`, `1` is off), at the top level and in `backdrop`, and a `shader` over the node's subtree or its backdrop; see [Blurs](../guide/paint.md#blurs) and [Shader effects](../guide/paint.md#shader-effects). `backdrop` and `input = "backdrop"` are for box kinds only
         effect: Bound<Effects>;
+        /// How this node's finished subtree composites onto what the surface painted under it: CSS `mix-blend-mode`, plus Apple's `"plus_lighter"` and `"plus_darker"`. Anything but `"normal"` draws the subtree offscreen, copies the pixels under it and runs one blend pass; it never sees the desktop behind the surface. Snaps under `animate`.
+        ///
+        /// Book: CSS `mix-blend-mode` onto what this surface painted under the node; see [Blend modes](../guide/paint.md#blend-modes)
+        blend: Bound<OneOf<Blend>> = absent(Choice("normal"));
         /// Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
         ///
         /// Book: Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from`
@@ -318,7 +322,7 @@ props! {
         hittable: Bound<Flag> = absent(Prose("inherited; `true` at the root"));
     }
     mod paint(BOX) {
-        /// A colour, a gradient, or up to 16 layers, first on top. Absent or `{}` draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
+        /// A colour, a gradient, or up to 16 layers, first on top; a layer's table form `{ fill = .., blend = .. }` composites it onto everything under it by a `Blend` mode. Absent or `{}` draws nothing, unlike an explicit transparent `"#00000000"`. A gradient and a `blend` snap under `animate`.
         ///
         /// Book: A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps
         background: Bound<Background>;

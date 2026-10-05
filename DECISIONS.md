@@ -8070,3 +8070,31 @@ Signal-bound properties have no paint-only path, so a read cell re-resolves its 
 once per distinct position. Per-output instances share one cell per name, as with `hover`. Ceiling:
 a node moved by a tween under a still pointer keeps its old value until the next motion. Upgrade
 by refreshing after layout ticks too.
+
+## 0346. A backdrop shader and `blend` read the surface through one copy
+
+Amends ADR-0336 item 1 and ADR-0343 item 4.
+
+1. **Read.** Two features read pixels: a backdrop shader (`effect.shader.input = "backdrop"`) and
+   any non-normal `blend`. Both copy the surface's own pixels with ADR-0256's `read_target`, never
+   the desktop. Both join `expand_backdrops`, seed a rounded clip and block layer caching.
+2. **Backdrop shader.** It runs inside `Draw::Backdrop` from that one copy. `u_input` is the sharp
+   copy, and `u_input_blurred` is the `effect.backdrop` frost, or the copy again when there is no
+   frost. The output draws source-over at the node's opacity, before the node itself. `padding`
+   grows the read area. Box kinds only.
+3. **Blend.** All 18 modes use the W3C formulas on premultiplied sRGB, plus Apple's plus-lighter
+   and plus-darker as clamped sums, in one engine pass whose result replaces the copy. `"normal"`
+   keeps the plain fill path and costs nothing.
+4. **Where each blend applies.**
+   - A node's blend comes after every filter and includes its shadows.
+   - A background layer blends with the layers below it and the backdrop. This follows Figma, not
+     CSS `background-blend-mode` isolation, so a glass layer can tint what is behind the box.
+   - A shadow layer blends with what is under it.
+5. **Opacity.** One opaque normal colour layer makes a box opaque, because a pixel blended over an
+   opaque one stays opaque. A blended node is never opaque. `blend` snaps under `animate`.
+6. **Cost.** Measured on a 400x300 box on Intel/Mesa: +0.13 ms per frame for a node blend and
+   +0.20 ms for a blended layer.
+
+Rejected: GL blend factors, which cover about 4 modes and are wrong over translucency; a second
+copy for the blurred input. Ceilings: one pass per blended layer, not one fused pass per node; a
+blended node's content-mode shadows blend apart from its content.

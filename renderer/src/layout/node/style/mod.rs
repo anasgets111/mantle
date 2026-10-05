@@ -359,6 +359,8 @@ pub struct Shadow {
     pub spread: f32,
     /// CSS `box-shadow: inset`: cast inside the padding box instead of around the box (ADR-0331).
     pub inset: bool,
+    /// How the layer composites onto what is under it.
+    pub blend: Blend,
 }
 
 impl Shadow {
@@ -381,17 +383,25 @@ pub struct Effect {
     pub inset: Vec<Shadow>,
     /// A program run over the painted subtree, before `blur` and `tone` (ADR-0336).
     pub shader: Option<EffectShader>,
+    /// A program run over what the surface painted under the node, drawn before the node.
+    pub backdrop_shader: Option<EffectShader>,
     pub blur: f32,
     pub tone: Tone,
     pub backdrop: f32,
     pub backdrop_tone: Tone,
     pub content_shadow: bool,
+    /// `blend`: how the finished subtree composites onto the backdrop, after every filter.
+    pub blend: Blend,
 }
 
 impl Effect {
-    /// Whether the node's own output needs an offscreen: a shadow, a shader, a blur or a colour filter.
+    /// Whether the node's own output needs an offscreen: a shadow, a shader, a blur, a colour filter or a blend.
     pub fn layers(&self) -> bool {
-        !self.shadows.is_empty() || self.shader.is_some() || self.blur > 0.0 || !self.tone.is_identity()
+        !self.shadows.is_empty()
+            || self.shader.is_some()
+            || self.blur > 0.0
+            || !self.tone.is_identity()
+            || self.blend != Blend::Normal
     }
 }
 
@@ -411,6 +421,35 @@ keywords! {
         /// The node's painted subtree.
         #[default]
         Content,
+        /// What the surface painted under the node.
+        Backdrop,
+    }
+}
+
+keywords! {
+    /// CSS `mix-blend-mode`, and Apple's `plus-lighter` and `plus-darker`, for a node, a
+    /// `background` layer or a `shadows` layer. The order is the blend program's `u_mode`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum Blend {
+        #[default]
+        Normal,
+        Multiply,
+        Screen,
+        Overlay,
+        Darken,
+        Lighten,
+        ColorDodge,
+        ColorBurn,
+        HardLight,
+        SoftLight,
+        Difference,
+        Exclusion,
+        Hue,
+        Saturation,
+        Color,
+        Luminosity,
+        PlusLighter,
+        PlusDarker,
     }
 }
 
@@ -472,8 +511,15 @@ lua_shape! {
         offset: Option<Axes>,
         spread: Option<f32>,
         inset: Option<bool>,
+        blend: Option<Blend> as Option<BlendAlias>,
     }
 }
+
+/// `Blend` by its stub alias.
+#[cfg(test)]
+struct BlendAlias;
+#[cfg(test)]
+spelled!(BlendAlias => "Blend");
 
 lua_shape! {
     /// `effect.backdrop`: CSS `backdrop-filter`, a box kind's only.
@@ -488,7 +534,7 @@ lua_shape! {
 }
 
 lua_shape! {
-    /// `effect.shader`: a config fragment shader over the node's painted subtree.
+    /// `effect.shader`: a config fragment shader over the node's painted subtree or its backdrop.
     #[alias = "EffectShader"]
     pub(crate) struct ShaderKeys {
         pub(crate) source: std::path::PathBuf,
@@ -585,7 +631,7 @@ impl Prop for Shadows {
         for i in 1..=len {
             let name = format!("{}[{i}]", row.name);
             let layer: mlua::Table = table.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
-            let ShadowLayer { color, blur, offset, spread, inset } = ShadowLayer::read(&name, &layer)?;
+            let ShadowLayer { color, blur, offset, spread, inset, blend } = ShadowLayer::read(&name, &layer)?;
             let Axes { x, y } = offset.unwrap_or(Axes { x: None, y: None });
             shadows.push(Shadow {
                 color: color.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
@@ -593,6 +639,7 @@ impl Prop for Shadows {
                 offset: (within(x.unwrap_or(0.0), SHADOW_REACH)?, within(y.unwrap_or(0.0), SHADOW_REACH)?),
                 spread: within(spread.unwrap_or(0.0), SHADOW_REACH)?,
                 inset: inset.unwrap_or(false),
+                blend: blend.unwrap_or_default(),
             });
         }
         Ok(Some(shadows))
@@ -617,27 +664,29 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         contrast: contrast.unwrap_or(1.0),
     };
     let backdrop = filters.backdrop.unwrap_or_default();
-    let shader = filters
-        .shader
-        .map(|keys| {
-            // ponytail: "content" is the only input; "backdrop" adds a field here and a draw in `draw_layer`.
-            let ShaderInput::Content = keys.input.unwrap_or_default();
-            Ok::<_, LayoutError>(EffectShader {
-                source: keys.source,
-                params: super::animate::parse_shader_params("effect.shader.params", &keys.params)?,
-                padding: keys.padding.unwrap_or(0.0),
-            })
-        })
-        .transpose()?;
+    let (mut shader, mut backdrop_shader) = (None, None);
+    if let Some(keys) = filters.shader {
+        let program = EffectShader {
+            source: keys.source,
+            params: super::animate::parse_shader_params("effect.shader.params", &keys.params)?,
+            padding: keys.padding.unwrap_or(0.0),
+        };
+        match keys.input.unwrap_or_default() {
+            ShaderInput::Content => shader = Some(program),
+            ShaderInput::Backdrop => backdrop_shader = Some(program),
+        }
+    }
     Ok(Effect {
         shadows,
         inset,
         shader,
+        backdrop_shader,
         blur: filters.blur.unwrap_or(0.0),
         tone: tone(filters.saturate, filters.brightness, filters.contrast),
         backdrop: backdrop.blur.unwrap_or(0.0),
         backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
         content_shadow,
+        blend: common::blend.read(properties)?,
     })
 }
 
@@ -850,7 +899,10 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            vec![Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 })]
+            vec![(
+                Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 }),
+                Blend::Normal
+            )]
         );
     }
 
@@ -861,38 +913,54 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            vec![Fill::Color(Rgba {
-                r: 0x33 as f32 / 255.0,
-                g: 0x66 as f32 / 255.0,
-                b: 0x99 as f32 / 255.0,
-                a: 0x80 as f32 / 255.0,
-            })]
+            vec![(
+                Fill::Color(Rgba {
+                    r: 0x33 as f32 / 255.0,
+                    g: 0x66 as f32 / 255.0,
+                    b: 0x99 as f32 / 255.0,
+                    a: 0x80 as f32 / 255.0,
+                }),
+                Blend::Normal
+            )]
         );
     }
 
-    /// One value stays valid beside a list, first layer on top; `{ fill = .. }` is a layer, a layer
-    /// table takes no other key, and 16 is the ceiling.
+    /// One value stays valid beside a list, first layer on top; `{ fill = .., blend = .. }` is a
+    /// layer, a layer table takes no other key, and 16 is the ceiling.
     #[test]
     fn background_takes_a_list_of_layers() {
+        use crate::layout::node::prop::Keyword;
         let lua = mlua::Lua::new();
         let read = |src: &str| {
             let table: mlua::Table =
                 lua.load(format!("return {{ kind = 'rect', background = {src} }}")).eval().unwrap();
             fields::paint::background.read(&props_from_table(&table))
         };
-        let colour = |hex: &str| Fill::Color(parse_hex_color("background", hex).unwrap());
+        let colour = |hex: &str| (Fill::Color(parse_hex_color("background", hex).unwrap()), Blend::Normal);
         let grey = "{ gradient = 'radial', stops = { { 0, '#000000' }, { 1, '#ffffff' } } }";
         assert_eq!(read("'#112233'").unwrap(), [colour("#112233")]);
         assert_eq!(read(&format!("{{ '#112233', {{ fill = '#445566' }}, {grey} }}")).unwrap().len(), 3);
         assert_eq!(read("{ { fill = '#445566' } }").unwrap(), [colour("#445566")]);
         assert_eq!(read("{ '#112233', '#445566' }").unwrap(), [colour("#112233"), colour("#445566")]);
-        assert!(matches!(read(grey).unwrap().as_slice(), [Fill::Gradient(_)]), "a gradient table is not a list");
+        assert!(matches!(read(grey).unwrap().as_slice(), [(Fill::Gradient(_), _)]), "a gradient table is not a list");
         assert!(read("{}").unwrap().is_empty());
         assert!(read(&format!("{{ {} }}", vec!["'#112233'"; 16].join(","))).is_ok());
         let err = read(&format!("{{ {} }}", vec!["'#112233'"; 17].join(","))).unwrap_err();
         assert!(err.to_string().contains("at most 16"), "{err}");
-        let err = read("{ { fill = '#112233', blend = 'x' } }").unwrap_err();
-        assert!(err.to_string().contains("background[1]") && err.to_string().contains("blend"), "{err}");
+        let (multiply, _) = colour("#112233");
+        assert_eq!(read("{ { fill = '#112233', blend = 'multiply' } }").unwrap(), [(multiply, Blend::Multiply)]);
+        for (at, mode) in Blend::NAMES.iter().enumerate() {
+            let layer = read(&format!("{{ {{ fill = '#112233', blend = '{mode}' }} }}")).unwrap();
+            assert_eq!(layer[0].1, Blend::VALUES[at], "{mode}");
+        }
+        assert_eq!(Blend::NAMES.len(), 18);
+        assert!(Blend::NAMES.contains(&"plus_lighter") && Blend::NAMES.contains(&"color_dodge"));
+        for bad in ["'x'", "'plus-lighter'", "1"] {
+            let err = read(&format!("{{ {{ fill = '#112233', blend = {bad} }} }}")).unwrap_err();
+            assert!(err.to_string().contains("background[1]") && err.to_string().contains("blend"), "{err}");
+        }
+        let err = read("{ { fill = '#112233', mode = 'multiply' } }").unwrap_err();
+        assert!(err.to_string().contains("background[1]"), "{err}");
         assert!(read("{ '#112233', 5 }").unwrap_err().to_string().contains("background[2]"));
     }
 
@@ -963,7 +1031,7 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            vec![Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })]
+            vec![(Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }), Blend::Normal)]
         );
     }
 
@@ -1361,13 +1429,22 @@ mod tests {
         let shader = bare.shader.as_ref().unwrap();
         assert_eq!((shader.padding, shader.params.len()), (0.0, 0));
         assert!(bare.layers(), "a shader alone needs the offscreen");
+        // A backdrop shader draws before the node, from a copy, and needs no offscreen of its own.
+        let under =
+            parse(r#"return { effect = { shader = { source = "/s.frag", input = "backdrop", padding = 4 } } }"#);
+        let under = under.unwrap();
+        assert_eq!((under.shader.is_none(), under.backdrop_shader.as_ref().map(|s| s.padding)), (true, Some(4.0)));
+        assert!(!under.layers());
         for (src, property) in [
+            (r#"return { effect = { shader = { source = "/s.frag", input = "behind" } } }"#, "effect.shader"),
+            (r#"return { blend = "plus-lighter" }"#, "blend"),
+            (r#"return { blend = 1 }"#, "blend"),
+            (r#"return { shadows = { { blur = 1, blend = "x" } } }"#, "shadows[1]"),
             (r#"return { effect = { shader = { source = "s.frag" } } }"#, "effect.shader.source"),
             (r#"return { effect = { shader = { source = "" } } }"#, "effect.shader.source"),
             (r#"return { effect = { shader = {} } }"#, "effect.shader"),
             (r#"return { effect = { shader = "/s.frag" } }"#, "effect"),
             (r#"return { effect = { shader = { source = "/s.frag", glow = 1 } } }"#, "effect.shader"),
-            (r#"return { effect = { shader = { source = "/s.frag", input = "backdrop" } } }"#, "effect.shader"),
             (r#"return { effect = { shader = { source = "/s.frag", padding = -1 } } }"#, "effect.shader.padding"),
             (r#"return { effect = { shader = { source = "/s.frag", padding = 513 } } }"#, "effect.shader.padding"),
             (
@@ -1392,11 +1469,17 @@ mod tests {
         assert_eq!(parse("return {}").unwrap(), Effect::default());
         assert!(parse(r##"return { shadows = { { color = "#ff000080" } } }"##).unwrap().shadows.is_empty());
         let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-        let shadow = Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0, inset: false };
+        let shadow =
+            Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0, inset: false, blend: Blend::Normal };
         assert_eq!(
             parse("return { shadows = { { blur = 8, offset = { y = -2 }, spread = -1 } } }").unwrap().shadows,
             [shadow]
         );
+        let screen = parse(r#"return { shadows = { { blur = 8, blend = "screen" } } }"#).unwrap().shadows;
+        assert_eq!(screen[0].blend, Blend::Screen);
+        let node = parse(r#"return { blend = "plus_darker" }"#).unwrap();
+        assert_eq!(node, Effect { blend: Blend::PlusDarker, ..Effect::default() });
+        assert!(node.layers(), "a blended node draws offscreen");
         // Each layer takes the defaults, keeps its order, and drops when it would not show.
         let layers = r##"return { shadows = { { blur = 8, offset = { y = -2 }, spread = -1 }, { color = "#ff0000" },
             { color = "#ff000000", blur = 4 }, { offset = { x = 3 } } } }"##;

@@ -1,5 +1,5 @@
-//! Shadows, content blur and backdrop blur: the draws that read or filter pixels through pooled
-//! targets.
+//! Shadows, content blur, backdrop blur and blends: the draws that read or filter pixels through
+//! pooled targets.
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, CompositeOperation, ImageId, Paint, Path, RenderTarget, Solidity};
@@ -10,7 +10,7 @@ use crate::layout::node::{self, EdgeInsets, Radii, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
-use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, shadow_rect, transformed, volatile};
+use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
 use super::shape::box_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
 
@@ -134,8 +134,9 @@ pub(super) fn draw_layer(
             };
             // The shader's output is what the shadows, blur and colour filters see. A failed build
             // leaves the node as painted, and that frame uncached so only a revision retries.
-            let shaded =
-                shader.as_ref().and_then(|shader| shaded(painter, walk, content, size, command.rect, area, shader));
+            let shaded = shader
+                .as_ref()
+                .and_then(|shader| shaded(painter, walk, (content, content), size, command.rect, area, shader));
             let content = shaded.unwrap_or(content);
             let mut casts: Vec<ImageId> =
                 shadows.iter().map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target)).collect();
@@ -151,40 +152,77 @@ pub(super) fn draw_layer(
             }
             let content = blurred.unwrap_or(content);
             // A glass reads what is under the layer's box, which this command does not name.
-            if filtered && !any_draw_matches(commands, |draw| volatile(draw) || matches!(draw, Draw::Backdrop { .. })) {
+            if filtered && !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw)) {
                 walk.scratch.retain(|(id, _)| !casts.contains(id) && *id != content);
                 painter.keep_layer(walk.surface, command, (casts.clone(), content), size);
             }
             (casts, content)
         }
     };
-    let canvas = painter.canvas_mut();
     // CSS paints the first shadow on top, so the last draws first.
+    // ponytail: a blended node's content shadows blend apart from its content, not as one group.
+    // Upgrade path: composite both into one scratch, then blend that once.
     for (shadow, &cast) in shadows.iter().zip(&casts).rev() {
         let at = shadow_rect(rect, area, *shadow);
+        let blend = if shadow.blend == node::Blend::Normal { effect.blend } else { shadow.blend };
         match commands.as_slice() {
             // The hole's part outside `at` would take the cast's clamped edge.
             [DrawCmd { draw: Draw::Box { radius, .. }, .. }] if silhouette => {
-                canvas.save();
-                canvas.intersect_scissor(at.x, at.y, at.width, at.height);
-                let paint = Paint::image(cast, at.x, at.y, at.width, at.height, 0.0, 1.0);
-                canvas.fill_path(&knocked_out(rect, *radius, at), &paint);
-                canvas.restore();
+                painter.canvas_mut().save();
+                painter.canvas_mut().intersect_scissor(at.x, at.y, at.width, at.height);
+                composite(painter, walk, cast, at, &knocked_out(rect, *radius, at), clip, blend);
+                painter.canvas_mut().restore();
             }
-            _ => fill_image(canvas, cast, at, 1.0),
+            _ => composite(painter, walk, cast, at, &box_path(at, Radii::default()), clip, blend),
         }
     }
     if !silhouette {
-        fill_image(canvas, content, area, 1.0);
+        composite(painter, walk, content, area, &box_path(area, Radii::default()), clip, effect.blend);
     }
 }
 
-/// `content` through the layer's `effect.shader` into a scratch the size of `area`, the box
-/// `rect` seen through it; `None` when the program or a target is missing.
+/// `image` laid over `at` and cut to `path`, onto the target by `blend`. A normal one is drawn
+/// over; any other copies what the target holds under `area`, blends `image` with it in one pass
+/// and puts the result in place of the copy. Drawn over without a GL context or a target.
+fn composite(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    image: ImageId,
+    at: LogicalRect,
+    path: &Path,
+    area: PhysicalRect,
+    blend: node::Blend,
+) {
+    let blended = if blend == node::Blend::Normal {
+        None
+    } else {
+        read_target(painter, walk, area).and_then(|read| {
+            let target = scratch(painter, walk, read.size)?;
+            // A target texel `(s, t)` to the image's, both with rows bottom up as GL keeps them.
+            let to_image = |s: f32, t: f32| {
+                let (x, y) = read.point(s, 1.0 - t);
+                [(x - at.x) / at.width, 1.0 - (y - at.y) / at.height]
+            };
+            let ([x, y], [ux, uy], [vx, vy]) = (to_image(0.0, 0.0), to_image(1.0, 0.0), to_image(0.0, 1.0));
+            let map = [ux - x, uy - y, 0.0, vx - x, vy - y, 0.0, x, y, 1.0];
+            let pass = image_shader::BlendPass { backdrop: read.copy, source: image, target, map, mode: blend };
+            let Shaders { gl, stage } = walk.shaders.as_mut()?;
+            // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
+            unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then(|| read.paint(target, 1.0))
+        })
+    };
+    match blended {
+        Some(paint) => replace(painter.canvas_mut(), path, &paint, 1.0),
+        None => painter.canvas_mut().fill_path(path, &Paint::image(image, at.x, at.y, at.width, at.height, 0.0, 1.0)),
+    }
+}
+
+/// `content` and its `blurred` copy through `effect.shader` into a scratch the size of `area`, the
+/// box `rect` seen through it; `None` when the program or a target is missing.
 fn shaded(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
-    content: ImageId,
+    (content, blurred): (ImageId, ImageId),
     size: (usize, usize),
     rect: LogicalRect,
     area: LogicalRect,
@@ -199,6 +237,7 @@ fn shaded(
     let Shaders { gl, stage } = walk.shaders.as_mut()?;
     let run = image_shader::ContentRun {
         input: content,
+        blurred,
         target,
         rect: [
             (area.x - rect.x) / rect.width,
@@ -339,31 +378,56 @@ fn cast_shadow(
     Some(cast)
 }
 
-/// Blurs and recolours (`filter`, sigma and tone) what the current target holds under `clip`, the
-/// 3 sigma the blur reads, into the box (ADR-0256).
-pub(super) fn draw_backdrop(
-    painter: &mut TextPainter,
-    walk: &mut Walk<'_, '_>,
-    rect: LogicalRect,
-    clip: PhysicalRect,
-    filter: (f32, node::Tone),
-    radius: Radii,
-    alpha: f32,
-) {
-    let Some((copy, size, paint)) = read_target(painter, walk, clip) else { return };
-    let blurred = blurred(painter, walk, copy, size, filter).unwrap_or(copy);
-    replace(painter.canvas_mut(), &box_path(rect, radius), &paint(blurred, alpha), alpha);
+/// Blurs and recolours (sigma and tone) what the current target holds under the command's clip,
+/// the 3 sigma the blur reads, into the box (ADR-0256), then draws its `shader` over it, reading
+/// the copy and the filtered copy.
+pub(super) fn draw_backdrop(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, command: &DrawCmd) {
+    let Draw::Backdrop { sigma, tone, radius, alpha, shader } = &command.draw else { return };
+    let (rect, clip, alpha) = (command.rect, command.clip, *alpha);
+    let Some(read) = read_target(painter, walk, clip) else { return };
+    let frost = (*sigma > 0.0 || !tone.is_identity())
+        .then(|| blurred(painter, walk, read.copy, read.size, (*sigma, *tone)).unwrap_or(read.copy));
+    if let Some(frost) = frost {
+        replace(painter.canvas_mut(), &box_path(rect, *radius), &read.paint(frost, alpha), alpha);
+    }
+    let Some(shader) = shader else { return };
+    let inputs = (read.copy, frost.unwrap_or(read.copy));
+    let Some(out) = shaded(painter, walk, inputs, read.size, rect, read.at, shader) else { return };
+    let area = LogicalRect {
+        x: clip.x0 as f32,
+        y: clip.y0 as f32,
+        width: (clip.x1 - clip.x0) as f32,
+        height: (clip.y1 - clip.y0) as f32,
+    };
+    painter.canvas_mut().fill_path(&box_path(area, Radii::default()), &read.paint(out, alpha));
 }
 
-/// The current target's pixels under `area`, copied to a scratch of the returned size, and the
-/// paint that lays an image of that size back where they were read, under the transform in force
+/// A copy of the target's pixels under an area, and where it lies in the coordinates in force
+/// when it was read: `at` turned by `angle` about its corner.
+pub(super) struct Read {
+    pub(super) copy: ImageId,
+    pub(super) size: (usize, usize),
+    at: LogicalRect,
+    angle: f32,
+}
+
+impl Read {
+    /// The paint that lays an image of `size` back where the pixels were read.
+    pub(super) fn paint(&self, image: ImageId, alpha: f32) -> Paint {
+        Paint::image(image, self.at.x, self.at.y, self.at.width, self.at.height, self.angle, alpha)
+    }
+
+    /// The point `(u, v)` of the copy, in fractions from its top-left, where it was read.
+    fn point(&self, u: f32, v: f32) -> (f32, f32) {
+        let (sin, cos) = self.angle.sin_cos();
+        let (dx, dy) = (u * self.at.width, v * self.at.height);
+        (self.at.x + dx * cos - dy * sin, self.at.y + dx * sin + dy * cos)
+    }
+}
+
+/// The current target's pixels under `area`, copied to a scratch, under the transform in force
 /// now. `None` without a GL context: femtovg cannot read a target.
-#[allow(clippy::type_complexity)]
-pub(super) fn read_target(
-    painter: &mut TextPainter,
-    walk: &mut Walk<'_, '_>,
-    area: PhysicalRect,
-) -> Option<(ImageId, (usize, usize), impl Fn(ImageId, f32) -> Paint + use<>)> {
+pub(super) fn read_target(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, area: PhysicalRect) -> Option<Read> {
     let gl = walk.shaders.as_ref()?.gl;
     let canvas = painter.canvas_mut();
     let to_target = canvas.transform();
@@ -400,7 +464,7 @@ pub(super) fn read_target(
     let angle = b.atan2(a);
     let (sin, cos) = angle.sin_cos();
     let (width, height) = (size.0 as f32 * a.hypot(b), size.1 as f32 * (d * cos - c * sin));
-    Some((copy, size, move |image, alpha| Paint::image(image, x, y, width, height, angle, alpha)))
+    Some(Read { copy, size, at: LogicalRect { x, y, width, height }, angle })
 }
 
 /// Fills `path` with `paint` in place of what is there, a lerp by `alpha`: source-over would show
@@ -524,6 +588,67 @@ mod tests {
             assert!(near(px[0], (255, 78, 14)), "under the glass, `{blur}`: {px:?}");
             assert!(near(px[1], (192, 96, 64)), "beside it, `{blur}`: {px:?}");
         }
+    }
+
+    /// A blended background layer, node and shadow layer each blend with the ground under them, by
+    /// the W3C formulas: `#808080` multiplies `(192, 96, 64)` darker and screens it lighter.
+    #[test]
+    fn a_blend_mode_composites_onto_the_ground_under_it() {
+        let ground = |child: &str| {
+            format!(
+                r##"return panel {{ id = "bar", width = 64, height = 64, background = "#C06040FF", padding = 16,
+                    child = {child} }}"##
+            )
+        };
+        for (blend, want) in [
+            ("normal", (128, 128, 128)),
+            ("multiply", (96, 48, 32)),
+            ("screen", (224, 176, 160)),
+            ("luminosity", (199, 103, 71)),
+            ("plus_lighter", (255, 224, 192)),
+            ("plus_darker", (65, 0, 0)),
+        ] {
+            for child in [
+                format!(
+                    r##"rect {{ width = 32, height = 32, background = {{ {{ fill = "#808080", blend = "{blend}" }} }} }}"##
+                ),
+                format!(r##"rect {{ width = 32, height = 32, background = "#808080", blend = "{blend}" }}"##),
+            ] {
+                let Some(px) = paint_with_gl(&ground(&child), (64, 64), &[(32, 32), (8, 8)]) else { return };
+                assert!(near(px[0], want) && near(px[1], (192, 96, 64)), "{child}: {px:?}");
+            }
+        }
+        // A blended layer over a normal one blends with it alone; the shadow multiplies the ground.
+        let child = r##"rect { width = 32, height = 16, background = { { fill = "#808080", blend = "multiply" }, "#FF0000" },
+            shadows = { { color = "#808080", offset = { y = 16 }, blend = "multiply" } } }"##;
+        let Some(px) = paint_with_gl(&ground(child), (64, 64), &[(32, 24), (32, 40)]) else { return };
+        assert!(near(px[0], (128, 0, 0)) && near(px[1], (96, 48, 32)), "{px:?}");
+    }
+
+    /// `effect.shader` with `input = "backdrop"` reads what the surface painted under the node,
+    /// `padding` past its box, and the filtered copy as `u_input_blurred`; its output is drawn
+    /// over the ground before the node.
+    #[test]
+    fn a_backdrop_shader_reads_the_ground_under_the_node() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |name: &str, body: &str, keys: &str| {
+            let frag = dir.path().join(name);
+            std::fs::write(&frag, format!("void main() {{ fragColor = {body}; }}")).unwrap();
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 64, height = 32, background = {{ gradient = "linear", angle = 90,
+                    stops = {{ {{ 0, "#FF0000" }}, {{ 0.5, "#FF0000" }}, {{ 0.5, "#00FF00" }}, {{ 1, "#00FF00" }} }} }},
+                    child = rect {{ width = 32, height = 32, effect = {{ {keys} shader = {{ source = "{}", input = "backdrop",
+                    padding = 32 }} }} }} }}"##,
+                frag.display()
+            );
+            paint_with_gl(&src, (64, 32), &[(16, 16), (48, 16)])
+        };
+        let Some(px) = run("swap.frag", "vec4(mantle_input(v_uv).bgr, 1.0)", "") else { return };
+        assert!(near(px[0], (0, 0, 255)) && near(px[1], (0, 255, 0)), "the red under the box, swizzled: {px:?}");
+        let Some(px) = run("bend.frag", "mantle_input(v_uv + vec2(1.0, 0.0))", "") else { return };
+        assert!(near(px[0], (0, 255, 0)), "a box's width to the right, inside the padding: {px:?}");
+        let Some(px) = run("grey.frag", "mantle_input_blurred(v_uv)", "backdrop = { saturate = 0 },") else { return };
+        assert!(near(px[0], (54, 54, 54)), "the filtered copy: {px:?}");
     }
 
     /// ADR-0254's gradient path: an opaque box's shadow lands offset under it, sharp without a

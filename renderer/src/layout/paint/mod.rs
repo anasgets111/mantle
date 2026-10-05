@@ -140,13 +140,23 @@ pub enum Draw {
     /// before the children (ADR-0331). `shadow.color` carries the inherited opacity.
     InsetShadow { shadow: node::Shadow, radius: Radii, widths: EdgeInsets },
     /// A subtree drawn offscreen, then through its `shader`, then composited over its own shadow
-    /// and through `effect.blur` (ADR-0254, ADR-0336). `rect` is the node's box; `clip` covers
-    /// everything the effect reaches. A `silhouette` is a scoop's fill, and only its shadow draws,
-    /// cut out under the box (ADR-0260).
+    /// and through `effect.blur`, by `effect.blend` (ADR-0254, ADR-0336). `rect` is the node's box;
+    /// `clip` covers everything the effect reaches, and is what a blend reads under it. A
+    /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
     Layer { effect: node::Effect, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
-    /// and drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
-    Backdrop { sigma: f32, tone: node::Tone, radius: Radii, alpha: f32 },
+    /// and drawn through its `radius` at `alpha` (ADR-0256), then the `shader` reading it drawn over
+    /// it. `clip` covers the 3 sigma the blur reads and the shader's padding.
+    Backdrop { sigma: f32, tone: node::Tone, radius: Radii, alpha: f32, shader: Option<LayerShader> },
+}
+
+/// Whether `draw` reads what its target holds under it: a backdrop, or a layer blending onto it.
+fn reads_under(draw: &Draw) -> bool {
+    match draw {
+        Draw::Backdrop { .. } => true,
+        Draw::Layer { effect, .. } => effect.blend != node::Blend::Normal,
+        _ => false,
+    }
 }
 
 /// A layer's `effect.shader` (ADR-0336). `version` is the file's, so an edit changes the list and
@@ -379,15 +389,15 @@ impl DisplayList {
         if grown == damage { damage } else { self.repaint_region(grown) }
     }
 
-    /// Adds every backdrop's read area that `damage` reaches, until none is left, so a repainted
-    /// backdrop reads only pixels drawn this frame (ADR-0256).
+    /// Adds every backdrop's and blended layer's read area that `damage` reaches, until none is
+    /// left, so a repainted backdrop reads only pixels drawn this frame (ADR-0256).
     pub fn expand_backdrops(&self, damage: &mut Vec<PhysicalRect>) {
         fn reads(commands: &[DrawCmd], matrices: &mut Vec<node::Affine>, out: &mut Vec<PhysicalRect>) {
             for command in commands {
+                if reads_under(&command.draw) {
+                    out.push(matrices.iter().rev().fold(command_bounds(command), |read, m| transformed(*m, read)))
+                }
                 match &command.draw {
-                    Draw::Backdrop { .. } => {
-                        out.push(matrices.iter().rev().fold(command_bounds(command), |read, m| transformed(*m, read)))
-                    }
                     Draw::Transformed { matrix, commands } => {
                         matrices.push(*matrix);
                         reads(commands, matrices, out);
@@ -680,7 +690,13 @@ mod tests {
         DrawCmd {
             rect,
             clip,
-            draw: Draw::Backdrop { sigma: 1.0, tone: node::Tone::default(), radius: Radii::default(), alpha: 1.0 },
+            draw: Draw::Backdrop {
+                sigma: 1.0,
+                tone: node::Tone::default(),
+                radius: Radii::default(),
+                alpha: 1.0,
+                shader: None,
+            },
         }
     }
 
@@ -693,6 +709,16 @@ mod tests {
         list.expand_backdrops(&mut damage);
         let pad = |x0, x1| PhysicalRect { x0: x0 - 2, y0: -2, x1: x1 + 2, y1: 12 };
         assert_eq!(damage[1..], [pad(30, 100), pad(0, 40)]);
+    }
+
+    /// A blended layer reads under its whole clip, so damage touching it repaints all of it.
+    #[test]
+    fn a_blended_layer_damages_its_whole_read() {
+        let effect = node::Effect { blend: node::Blend::Multiply, ..node::Effect::default() };
+        let draw = Draw::Layer { effect, shader: None, silhouette: false, commands: Vec::new() };
+        let mut damage = vec![PhysicalRect { x0: 30, y0: 0, x1: 31, y1: 1 }];
+        DisplayList { commands: vec![DrawCmd { draw, ..glass(0, 40) }] }.expand_backdrops(&mut damage);
+        assert_eq!(damage[1..], [PhysicalRect { x0: -2, y0: -2, x1: 42, y1: 12 }]);
     }
 
     /// ADR-0256. A glass nested in groups damages its own read area mapped through the enclosing

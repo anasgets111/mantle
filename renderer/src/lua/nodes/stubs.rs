@@ -9,9 +9,9 @@
 use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
-    Align, Animatable, AnimationSpec, Animations, Axes, BackdropKeys, BorderColor, CaretKeys, CornersInput, Easing,
-    EdgesInput, EffectKeys, ExitBlock, Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand, PopupAnchor,
-    ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
+    Align, Animatable, AnimationSpec, Animations, Axes, BackdropKeys, Blend, BorderColor, CaretKeys, CornersInput,
+    Easing, EdgesInput, EffectKeys, ExitBlock, Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand,
+    PopupAnchor, ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
@@ -54,7 +54,8 @@ fn fill<T: LuaType>(header: String) -> String {
 }
 
 /// Choice sets the stubs name as an alias.
-const ALIASES: [(&str, &[&str]); 2] = [("Align", Align::NAMES), ("PopupAnchor", PopupAnchor::NAMES)];
+const ALIASES: [(&str, &[&str]); 3] =
+    [("Align", Align::NAMES), ("Blend", Blend::NAMES), ("PopupAnchor", PopupAnchor::NAMES)];
 
 /// The published book: `docs/x/y.md` is served at `x/y.html` under it.
 const DOCS: &str = "https://anasgets111.github.io/mantle/";
@@ -204,7 +205,7 @@ fn render_stub(header: &str, kinds: &[&str]) -> String {
 fn nodes_lua() -> String {
     let percent: Vec<String> = (0..=100).map(|n| format!("\"{n}%\"")).collect();
     let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS);
-    header = header.replace("{ALIGN}", &union(Align::NAMES));
+    header = header.replace("{ALIGN}", &union(Align::NAMES)).replace("{BLEND}", &union(Blend::NAMES));
     header = header.replace("{EASING}", &union(&crate::layout::node::easing_names().collect::<Vec<_>>()));
     header = header.replace("{ANIMATABLE}", &Animatable::lua());
     header = header.replace("{GradientStop}", &GradientStop::lua());
@@ -314,6 +315,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@class Node
 ---@field [string] any
 ---@alias Align {ALIGN}
+---@alias Blend {BLEND} CSS `mix-blend-mode`, plus Apple's `plus_lighter` and `plus_darker`.
 -- ponytail: copied from cursor-icon 1.2's `FromStr`, which exposes no list to derive it from; the
 -- stub probe catches a name it refuses, not one missing here. Upgrade: derive once the crate lists them.
 ---@alias Cursor "default"|"pointer"|"text"|"not-allowed"|"grab"|"grabbing"|"move"|"crosshair"|"wait"|"progress"|"help"|"context-menu"|"cell"|"vertical-text"|"alias"|"copy"|"no-drop"|"zoom-in"|"zoom-out"|"all-scroll"|"col-resize"|"row-resize"|"n-resize"|"e-resize"|"s-resize"|"w-resize"|"ne-resize"|"nw-resize"|"se-resize"|"sw-resize"|"ew-resize"|"ns-resize"|"nesw-resize"|"nwse-resize" CSS cursor name (same as `wp_cursor_shape_v1`).
@@ -333,7 +335,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
----@alias BackgroundLayer Color|Gradient|Bound|{ fill: Color|Gradient|Bound, [string]: "no such property" } First on top. `{ fill = .. }` is the table form of a colour or gradient.
+---@alias BackgroundLayer Color|Gradient|Bound|{ fill: Color|Gradient|Bound, blend?: Blend|Bound, [string]: "no such property" } First on top. `{ fill = .., blend = .. }` is the table form of a colour or gradient; `blend` defaults to `"normal"`.
 ---@alias Mask {Mask} Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.
 ---@alias EasingName {EASING} The `back` and `elastic` families overshoot, as does a Bezier `y` outside `[0, 1]`; the property's range clamps them.
 ---@alias Easing {Easing} A name, CSS `cubic-bezier` `{ x1, y1, x2, y2 }` with `x1`, `x2` in `[0, 1]`, or `{ steps = n }`, `n` in `[1, 1000]` (ADR-0151).

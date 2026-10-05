@@ -51,9 +51,9 @@ pub(crate) use style::{BackdropKeys, GradientStop, ShaderKeys, ShadowLayer};
 #[cfg(test)]
 pub use spec::LockSpec;
 pub use style::{
-    Affine, BorderColor, BorderPaint, ClipShape, Effect, Fill, Gradient, GradientShape, IDENTITY_AFFINE, Mask,
-    MaskSource, Shadow, Tone, Transform, apply_affine, compose_affine, invert_affine, parse_effect, parse_transform,
-    transformed_bounds,
+    Affine, Blend, BorderColor, BorderPaint, ClipShape, Effect, EffectShader, Fill, Gradient, GradientShape,
+    IDENTITY_AFFINE, Mask, MaskSource, Shadow, Tone, Transform, apply_affine, compose_affine, invert_affine,
+    parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{
     Axes, Background, ColorOrEdges, CornerShape, Cursor, Direction, EffectKeys, Effects, NumberOrCorners,
@@ -551,11 +551,18 @@ pub(crate) fn resolve_declared(
     }
     // `effect` is every kind's row but `backdrop` is a box's, and a key's kind is no row's.
     if let Some(Value::Table(effect)) = properties.get("effect")
-        && effect.contains_key("backdrop").unwrap_or(false)
         && crate::lua::nodes::properties::kind_bit(kind)
             .is_some_and(|bit| bit & crate::lua::nodes::properties::BOX == 0)
     {
-        return Err(invalid("effect.backdrop", format!("`{kind}` has no backdrop; it is for box kinds only")));
+        let input = effect.get::<mlua::Table>("shader").and_then(|shader| shader.get::<mlua::LuaString>("input"));
+        for (key, reads) in [
+            ("effect.backdrop", effect.contains_key("backdrop").unwrap_or(false)),
+            ("effect.shader.input", input.is_ok_and(|input| input.as_bytes() == b"backdrop".as_slice())),
+        ] {
+            if reads {
+                return Err(invalid(key, format!("`{kind}` has no backdrop; it is for box kinds only")));
+            }
+        }
     }
     // Callbacks and the two input flags have no parser: the input handlers read them where they
     // fire, where a wrong type could only be ignored. Sorted like the loop above.
@@ -965,6 +972,13 @@ mod tests {
         }
         let blur_only = rect_props(&lua, "return { effect = { blur = 2 } }");
         assert!(resolve_declared(blur_only, "text", false, &lua).is_ok(), "`blur` is every kind's");
+        let reads = |input: &str| {
+            let src = format!("return {{ effect = {{ shader = {{ source = '/s.frag', input = '{input}' }} }} }}");
+            resolve_declared(rect_props(&lua, &src), "text", false, &lua)
+        };
+        let err = reads("backdrop").unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.shader.input"));
+        assert!(reads("content").is_ok(), "a content shader is every kind's");
     }
 
     /// A cycle or a table reached many ways is walked once; past the depth limit a signal stays.

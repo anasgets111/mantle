@@ -1375,7 +1375,7 @@ mod tests {
         let Some(PaintStyle::Box { background, .. }) = &block.paint else {
             panic!("a rect paints a box, got {:?}", block.paint)
         };
-        let [node::Fill::Color(background)] = background.as_slice() else { panic!("one colour: {background:?}") };
+        let [(node::Fill::Color(background), _)] = background.as_slice() else { panic!("one colour: {background:?}") };
         assert!((background.r - 0.5).abs() < 0.02, "halfway from black to white, got {}", background.r);
         let Some(PaintStyle::Text { content, color, .. }) = &label.paint else {
             panic!("a text paints text, got {:?}", label.paint)
@@ -1615,7 +1615,7 @@ mod tests {
         let Some(PaintStyle::Box { background, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
             panic!("a rect paints a box")
         };
-        let [node::Fill::Color(grey)] = background.as_slice() else { panic!("one colour: {background:?}") };
+        let [(node::Fill::Color(grey), _)] = background.as_slice() else { panic!("one colour: {background:?}") };
         assert!((grey.r - 0.5).abs() < 0.01, "halfway from black to white is mid grey, got {grey:?}");
     }
 

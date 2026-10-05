@@ -210,9 +210,10 @@ return row {
 ## Background layers
 
 `background` also takes a list of layers, as CSS multiple backgrounds: the first is on top, like
-[`shadows`](#shadows). A layer is a colour, a gradient, or `{ fill = <colour or gradient> }`. Every
-layer shares the box's `radius`, `corner_shape` and `corner_smoothing`. At most 16; `{}` draws
-nothing. A single colour or gradient stays valid.
+[`shadows`](#shadows). A layer is a colour, a gradient, or `{ fill = <colour or gradient>, blend = <mode> }`,
+where `blend` is one of the [blend modes](#blend-modes). Every layer shares the box's `radius`,
+`corner_shape` and `corner_smoothing`. At most 16; `{}` draws nothing. A single colour or gradient
+stays valid.
 
 ```lua
 rect {
@@ -225,7 +226,7 @@ rect {
 ```
 
 Under `animate`, colour layers tween pairwise and a layer only one side has fades in or out. A
-gradient layer snaps.
+gradient layer and a layer's `blend` snap.
 
 ## Clip
 
@@ -541,7 +542,7 @@ rect {
 | Key | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string` | required | Absolute `.frag` path; relative is refused |
-| `input` | `"content"` | `"content"` | What `u_input` holds: the node's painted subtree |
+| `input` | `"content"` or `"backdrop"` | `"content"` | What `u_input` holds: the node's painted subtree, or what the surface painted under the box (see [Backdrop input](#backdrop-input)) |
 | `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
 | `padding` | `number`, `[0, 512]` | `0` | Logical px around the box the program can read and draw. The layer, its damage and its clip grow by it |
 
@@ -552,8 +553,9 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | :--- | :--- | :--- |
 | `v_uv` | `in vec2` | Box coordinate, top-left origin, y down. `0..1` over the box, and outside it over the padding |
 | `u_size` | `vec2` | The node's box in logical px, without the padding |
-| `mantle_input(uv)` | `vec4` | The subtree at a box coordinate, premultiplied; transparent outside the padded area |
-| `u_input`, `u_input_rect` | `sampler2D`, `vec4` | The texture and where it sits as `(x, y, w, h)` in box fractions. Use `mantle_input`, which handles the texture's orientation |
+| `mantle_input(uv)` | `vec4` | The input at a box coordinate, premultiplied; transparent outside the padded area |
+| `mantle_input_blurred(uv)` | `vec4` | The same, through `effect.backdrop`'s blur and colour filters; the plain input when it has none or `input = "content"` |
+| `u_input`, `u_input_blurred`, `u_input_rect` | `sampler2D`, `sampler2D`, `vec4` | The textures and where they sit as `(x, y, w, h)` in box fractions. Use the functions above, which handle the textures' orientation |
 | `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii and `corner_smoothing`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
 | `u_progress`, `mantle_opacity` | | Not set |
 
@@ -587,19 +589,86 @@ Order: the shader reads the node after its fill, children and border, and its ou
 `shadows` (content mode), then `effect.blur` and the colour filters. `padding` is cut at the same
 clips as a shadow, so a node at a surface's edge has no room to pad into.
 
+#### Backdrop input
+
+With `input = "backdrop"` the program reads what this surface already painted under the box and
+`padding` around it, never the desktop behind the surface. It runs before the node paints, beside
+`effect.backdrop`: one copy of those pixels feeds both, and `mantle_input_blurred` reads the frost
+the backdrop filters made from it. The output is drawn over the ground at the node's `opacity`, and
+the node's fill, children and border paint over it. Offsetting the coordinate by the outline's
+distance is a refraction. Box kinds only.
+
+```lua
+rect {
+    width = 200,
+    height = 64,
+    radius = 32,
+    background = "#FFFFFF14",
+    effect = {
+        backdrop = { blur = 6 },
+        shader = { source = mantle.config_dir .. "/shaders/lens.frag", input = "backdrop", padding = 8 },
+    },
+}
+```
+
+<!-- file: shaders/lens.frag -->
+```glsl
+void main() {
+    vec2 p = v_uv * u_size;
+    float d = mantle_sdf(p);
+    // Up to 8 px of pull toward the centre in the outer 12 px of the shape.
+    vec2 toward = normalize(u_size * 0.5 - p + 1e-4);
+    vec2 bent = v_uv + toward * smoothstep(-12.0, 0.0, d) * 8.0 / u_size;
+    fragColor = mantle_input_blurred(bent) * (1.0 - smoothstep(-0.5, 0.5, d));
+}
+```
+
+## Blend modes
+
+`blend` composites a node, a `background` layer (`{ fill = .., blend = .. }`) or a `shadows` layer
+onto what this surface painted under it, by CSS `mix-blend-mode`'s formulas: `"normal"` (the
+default), `"multiply"`, `"screen"`, `"overlay"`, `"darken"`, `"lighten"`, `"color_dodge"`,
+`"color_burn"`, `"hard_light"`, `"soft_light"`, `"difference"`, `"exclusion"`, `"hue"`,
+`"saturation"`, `"color"`, `"luminosity"`, and Apple's `"plus_lighter"` and `"plus_darker"`.
+
+```lua
+rect {
+    width = 120, height = 40, radius = 12,
+    blend = "plus_lighter",
+    background = { { fill = "#FFFFFF33", blend = "overlay" }, "#1E1E2E" },
+    shadows = { { color = "#00000066", blur = 12, blend = "multiply" } },
+}
+```
+
+| Where | Blends with |
+| :--- | :--- |
+| `blend` on a node | Its whole painted output, its `shadows` included and after every `effect` filter, against what is under it. The backdrop filters are not part of it |
+| A `background` layer | The layers below it and what is under the box, as a Figma fill does; CSS `background-blend-mode` would isolate the box |
+| A `shadows` layer | What is under the shadow |
+
+Inside a `mask`, `effect` layer or content-mode shadow the blend sees only what that ancestor drew so
+far, as a glass does; `clip = "rounded"` is no barrier. `"normal"` costs nothing. Any other mode
+draws the blended part offscreen, copies the pixels under it and runs one pass: about 0.1 ms to
+0.2 ms per blended part for a 400x300 box on integrated graphics. A box with one opaque `"normal"`
+colour layer is opaque whatever blends above it; a blended node is never opaque. `blend` snaps
+under `animate`.
+
 ## Combining effects
 
 One node paints in this order, each step over the last. The order is fixed: the keys of `effect` apply in it, whatever order the table lists them in.
 
 1. **Backdrop** (`effect.backdrop`): replaces the pixels under the box with their blur, then
-   `saturate`, `brightness` and `contrast`.
+   `saturate`, `brightness` and `contrast`; a backdrop shader then draws over them from the same
+   copy. It reads what precedes the node, so it comes first.
 2. **Shadow**, when it is a gradient quad or a silhouette.
 3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
-   goes through an offscreen pass.
-4. **Layer**: for `effect.shader`, `effect.blur`, a colour filter or a layered shadow, the body is
-   drawn offscreen, run through the shader, its shadow cast from that, then it is blurred and
-   recoloured.
-5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
+   goes through an offscreen pass. A blended `background` or `shadows` layer blends as it draws.
+4. **Layer**: for a content `effect.shader`, `effect.blur`, a colour filter, a layered shadow or a
+   node `blend`, the shadow and body are drawn offscreen, run through the shader, the content
+   shadow cast from that, then blurred and recoloured.
+5. **Blend**: the finished layer composites onto what is under it by the node's `blend`. It is last
+   because it is how the result meets the backdrop, as CSS applies `mix-blend-mode` after `filter`.
+6. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
 
 | Combination | What happens | Do this |
 | :--- | :--- | :--- |

@@ -11,13 +11,13 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
-use super::prop::Prop;
+use super::prop::{Keyword, Prop};
 use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
-    Axes, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData, PropMap,
-    Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill, parse_hex_color, tweened,
-    value_as_f32,
+    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData,
+    PropMap, Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill, parse_hex_color,
+    tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -79,7 +79,7 @@ fn clear(color: Rgba) -> Rgba {
 /// `layer` at zero alpha: an unset colour paints nothing, and a gradient has no fade to give.
 fn faded_layer(layer: &Layer) -> Layer {
     match layer {
-        Layer::Color(color) => Layer::Color(clear(*color)),
+        Layer::Color(color, blend) => Layer::Color(clear(*color), *blend),
         snap => snap.clone(),
     }
 }
@@ -169,10 +169,11 @@ pub enum Animatable {
     Effect([f32; 8], Option<Value>),
 }
 
-/// One `background` layer in a tween: a colour, or a gradient carried as written (it snaps).
+/// One `background` layer in a tween: a colour and its blend (which snaps), or a gradient carried
+/// as written (it snaps).
 #[derive(Debug, Clone, PartialEq)]
 pub enum Layer {
-    Color(Rgba),
+    Color(Rgba, Blend),
     Snap(Value),
 }
 
@@ -253,11 +254,14 @@ impl Animatable {
             let len = input::array_len(property, table, MAX_BACKGROUNDS)?;
             let layers = (1..=len).map(|i| {
                 let layer: Value = table.raw_get(i).map_err(|e| invalid(property, e.to_string()))?;
-                let layer = layer.as_table().and_then(layer_fill).unwrap_or(layer);
-                match &layer {
+                let name = format!("{property}[{i}]");
+                let (fill, blend) = match layer.as_table().and_then(|t| layer_fill(t).map(|fill| (t, fill))) {
+                    Some((t, fill)) => (fill, input::field::<Option<Blend>>(&name, t, "blend")?.unwrap_or_default()),
+                    None => (layer.clone(), Blend::Normal),
+                };
+                match &fill {
                     Value::String(s) if s.as_bytes().starts_with(b"#") => {
-                        let name = format!("{property}[{i}]");
-                        Ok(Layer::Color(parse_hex_color(&name, &checked_string(&name, s)?)?))
+                        Ok(Layer::Color(parse_hex_color(&name, &checked_string(&name, s)?)?, blend))
                     }
                     _ => Ok(Layer::Snap(layer)),
                 }
@@ -365,6 +369,7 @@ impl Animatable {
                     }
                     Shadow {
                         inset: y.inset,
+                        blend: y.blend,
                         color: mix(x.color, y.color, t),
                         blur: clamp(lerp(x.blur, y.blur), SHADOW_BLUR),
                         offset: (offset(x.offset.0, y.offset.0), offset(x.offset.1, y.offset.1)),
@@ -375,9 +380,10 @@ impl Animatable {
             }
             (Self::Layers(a), Self::Layers(b)) => {
                 let layers = (0..a.len().max(b.len())).filter_map(|i| match (a.get(i), b.get(i)) {
-                    (Some(Layer::Color(x)), Some(Layer::Color(y))) => Some(Layer::Color(mix(*x, *y, t))),
-                    (Some(Layer::Color(x)), None) => Some(Layer::Color(mix(*x, clear(*x), t))),
-                    (None, Some(Layer::Color(y))) => Some(Layer::Color(mix(clear(*y), *y, t))),
+                    // The blend snaps to the target's.
+                    (Some(Layer::Color(x, _)), Some(Layer::Color(y, b))) => Some(Layer::Color(mix(*x, *y, t), *b)),
+                    (Some(Layer::Color(x, b)), None) => Some(Layer::Color(mix(*x, clear(*x), t), *b)),
+                    (None, Some(Layer::Color(y, b))) => Some(Layer::Color(mix(clear(*y), *y, t), *b)),
                     // A snapping layer, or a colour that meets one, takes the target's at once; one the target lacks is gone.
                     (_, y) => y.cloned(),
                 });
@@ -423,7 +429,10 @@ impl Animatable {
                 let list = lua.create_table_with_capacity(layers.len(), 0)?;
                 for layer in layers {
                     list.push(match layer {
-                        Layer::Color(color) => Value::String(lua.create_string(hex_of(*color))?),
+                        Layer::Color(color, Blend::Normal) => Value::String(lua.create_string(hex_of(*color))?),
+                        Layer::Color(color, blend) => Value::Table(
+                            lua.create_table_from([("fill", hex_of(*color)), ("blend", blend.name().into())])?,
+                        ),
                         Layer::Snap(value) => value.clone(),
                     })?;
                 }
@@ -439,6 +448,7 @@ impl Animatable {
                     layer.set("offset", offset)?;
                     layer.set("spread", shadow.spread)?;
                     layer.set("inset", shadow.inset)?;
+                    layer.set("blend", shadow.blend.name())?;
                     list.push(layer)?;
                 }
                 Value::Table(list)
@@ -1274,11 +1284,11 @@ mod tests {
             Animatable::from_value("background", Some(&value)).unwrap().unwrap()
         };
         let from = layers(r##"return { "#000000ff" }"##);
-        let to = layers(r##"return { "#ffffffff", { fill = "#ff0000ff" } }"##);
+        let to = layers(r##"return { { fill = "#ffffffff", blend = "screen" }, { fill = "#ff0000ff" } }"##);
         let Animatable::Layers(mid) = from.lerp(&to, 0.5, "background") else { panic!("a layer list") };
-        let Layer::Color(first) = mid[0] else { panic!("a colour") };
-        assert_eq!((first.r, first.a), (0.5, 1.0));
-        let Layer::Color(second) = mid[1] else { panic!("a colour") };
+        let Layer::Color(first, blend) = mid[0] else { panic!("a colour") };
+        assert_eq!((first.r, first.a, blend), (0.5, 1.0, Blend::Screen), "the colour tweens, the blend snaps");
+        let Layer::Color(second, _) = mid[1] else { panic!("a colour") };
         assert_eq!((second.r, second.a), (1.0, 0.5), "the extra layer fades in");
         let Animatable::Layers(out) = to.lerp(&from, 0.5, "background") else { panic!("a layer list") };
         assert_eq!(out.len(), 2, "and fades out");

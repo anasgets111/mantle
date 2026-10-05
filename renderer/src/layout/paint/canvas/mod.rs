@@ -420,9 +420,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_layer(painter, walk, command, target, frame);
                 current_clip = None;
             }
-            Draw::Backdrop { sigma, tone, radius, alpha } => {
-                draw_backdrop(painter, walk, rect, clip, (*sigma, *tone), *radius, *alpha)
-            }
+            Draw::Backdrop { .. } => draw_backdrop(painter, walk, command),
         }
     }
     if pushed {
@@ -455,11 +453,11 @@ fn draw_clipped(
     target: RenderTarget,
     frame: Frame,
 ) {
-    // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass inside starts from what is
-    // under the group (ADR-0256).
-    let glass = mask.is_none() && super::any_draw_matches(commands, |draw| matches!(draw, Draw::Backdrop { .. }));
+    // Not a backdrop root, as CSS's `overflow: hidden` is not: a glass or a blend inside starts from
+    // what is under the group (ADR-0256).
+    let glass = mask.is_none() && super::any_draw_matches(commands, super::reads_under);
     let seed = if glass { read_target(painter, walk, clip) } else { None };
-    let under = seed.as_ref().map(|(copy, _, paint)| paint(*copy, 1.0));
+    let under = seed.as_ref().map(|read| read.paint(read.copy, 1.0));
     let Some(image) = offscreen(painter, walk, rect, clip, mask, under, commands, target, frame, frame.region, true)
     else {
         return;

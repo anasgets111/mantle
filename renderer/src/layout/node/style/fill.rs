@@ -2,6 +2,7 @@
 
 use mlua::Value;
 
+use super::Blend;
 use crate::layout::node::prop::{Prop, keywords};
 use crate::layout::node::{
     LayoutError, Property, Rgba, checked_string, input, invalid, only_keys, parse_hex_color, preview_for_error,
@@ -140,7 +141,7 @@ impl Prop for Fill {
 pub(crate) const MAX_BACKGROUNDS: usize = 16;
 
 /// `background`: one fill, or a list of layers, first on top like CSS and `shadows`. A layer is a
-/// colour, a gradient or `{ fill = <colour|gradient> }`. Empty or absent draws nothing.
+/// colour, a gradient or `{ fill = <colour|gradient>, blend = <mode> }`. Empty or absent draws nothing.
 pub(crate) struct Background;
 
 /// One layer of the list; the alias is hand-written in the stub header beside `Gradient`.
@@ -160,10 +161,10 @@ pub(crate) fn layer_fill(table: &mlua::Table) -> Option<Value> {
 }
 
 impl Prop for Background {
-    type Out = Vec<Fill>;
-    fn read(row: &Property, value: Option<&Value>) -> Result<Vec<Fill>, LayoutError> {
+    type Out = Vec<(Fill, Blend)>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
         let Some(Value::Table(list)) = value.filter(|v| matches!(v, Value::Table(t) if is_layer_list(t))) else {
-            return Ok(Fill::read(row, value)?.into_iter().collect());
+            return Ok(Fill::read(row, value)?.into_iter().map(|fill| (fill, Blend::Normal)).collect());
         };
         let len = input::array_len(row.name, list, MAX_BACKGROUNDS)?;
         (1..=len)
@@ -172,10 +173,11 @@ impl Prop for Background {
                 let layer: Value = list.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
                 match layer.as_table().and_then(|table| layer_fill(table).map(|inner| (table, inner))) {
                     Some((table, inner)) => {
-                        only_keys(&name, table, &["fill"])?;
-                        fill_of(&name, &inner)
+                        only_keys(&name, table, &["fill", "blend"])?;
+                        let blend = input::field::<Option<Blend>>(&name, table, "blend")?;
+                        Ok((fill_of(&name, &inner)?, blend.unwrap_or_default()))
                     }
-                    None => fill_of(&name, &layer),
+                    None => Ok((fill_of(&name, &layer)?, Blend::Normal)),
                 }
             })
             .collect()
@@ -270,7 +272,7 @@ mod tests {
         ] {
             let src = format!(r#"return {{ kind = "rect", background = {{ gradient = "{shape}", {stops} }} }}"#);
             let background = fields::paint::background.read(&eval_props(&lua, &src)).unwrap();
-            let [Fill::Gradient(gradient)] = background.as_slice() else { panic!("{shape}") };
+            let [(Fill::Gradient(gradient), _)] = background.as_slice() else { panic!("{shape}") };
             assert_eq!(*gradient, Gradient { shape: expected, stops: vec![(0.0, WHITE), (1.0, CLEAR)] }, "{shape}");
         }
     }

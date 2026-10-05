@@ -27,9 +27,11 @@
 //! this is the config's own code, at the same trust level as the `process.run` it can already call,
 //! with a worse failure mode and no containment claimed.
 
+mod blend;
 mod blur;
 mod state;
 
+pub use blend::BlendPass;
 pub use blur::BlurPass;
 
 use std::collections::HashMap;
@@ -106,21 +108,26 @@ vec4 mantle_to(vec2 uv) { return mantle_sample(u_to, u_to_rect, uv); }
 "#;
 
 /// The `effect.shader` half of the contract, in place of [`SAMPLERS`] (ADR-0336). `u_input` is the
-/// node's painted subtree in an offscreen that may reach past the box, so `mantle_input` takes box
-/// coordinates as `mantle_from` does, `u_input_rect` placing the texture in box fractions. An
-/// offscreen image keeps its top row last, which the sample undoes.
+/// node's painted subtree, or the backdrop under it, in an offscreen that may reach past the box, so
+/// `mantle_input` takes box coordinates as `mantle_from` does, `u_input_rect` placing the texture
+/// in box fractions. `u_input_blurred` is the same pixels through `effect.backdrop`'s filters, or
+/// `u_input` again without them. An offscreen image keeps its top row last, which the sample undoes.
 const INPUT: &str = r#"
 precision highp sampler2D;
 uniform sampler2D u_input;
+uniform sampler2D u_input_blurred;
 uniform vec4 u_input_rect;
 
-vec4 mantle_input(vec2 uv) {
+vec4 mantle_read(sampler2D tex, vec2 uv) {
     vec2 local = (uv - u_input_rect.xy) / u_input_rect.zw;
     if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
         return vec4(0.0);
     }
-    return texture(u_input, vec2(local.x, 1.0 - local.y));
+    return texture(tex, vec2(local.x, 1.0 - local.y));
 }
+
+vec4 mantle_input(vec2 uv) { return mantle_read(u_input, uv); }
+vec4 mantle_input_blurred(vec2 uv) { return mantle_read(u_input_blurred, uv); }
 "#;
 
 const RENAME: &str = r#"
@@ -193,6 +200,7 @@ struct Program {
     from: Option<glow::UniformLocation>,
     to: Option<glow::UniformLocation>,
     input: Option<glow::UniformLocation>,
+    input_blurred: Option<glow::UniformLocation>,
     input_rect: Option<glow::UniformLocation>,
     progress: Option<glow::UniformLocation>,
     size: Option<glow::UniformLocation>,
@@ -256,6 +264,8 @@ pub struct Run<'a> {
 /// size.
 pub struct ContentRun<'a> {
     pub input: ImageId,
+    /// `u_input_blurred`, the same size as `input`; `input` itself when nothing filtered it.
+    pub blurred: ImageId,
     pub target: ImageId,
     /// The textures' `(x, y, w, h)` in box fractions, as `u_input_rect` and the span of `v_uv`.
     pub rect: [f32; 4],
@@ -286,7 +296,9 @@ pub struct ShaderStage {
     vertex: Option<glow::Shader>,
     /// `blur::BLUR`, built on first use, in `fade`'s shape.
     blur: Option<Option<Blur>>,
-    /// What [`Self::content`] draws through, created on first use.
+    /// `blend::BLEND`, built on first use, in `fade`'s shape.
+    blending: Option<Option<blend::Blending>>,
+    /// What [`Self::content`] and [`Self::blend`] draw through, created on first use.
     framebuffer: Option<glow::Framebuffer>,
 }
 
@@ -454,6 +466,7 @@ impl ShaderStage {
                 from: named("u_from"),
                 to: named("u_to"),
                 input: named("u_input"),
+                input_blurred: named("u_input_blurred"),
                 input_rect: named("u_input_rect"),
                 progress: named("u_progress"),
                 size: named("u_size"),
@@ -666,8 +679,11 @@ impl ShaderStage {
         source: &Path,
         run: &ContentRun,
     ) -> bool {
-        let (Ok(input), Ok(target)) = (canvas.get_native_texture(run.input), canvas.get_native_texture(run.target))
-        else {
+        let (Ok(input), Ok(blurred), Ok(target)) = (
+            canvas.get_native_texture(run.input),
+            canvas.get_native_texture(run.blurred),
+            canvas.get_native_texture(run.target),
+        ) else {
             return false;
         };
         let Ok((width, height)) = canvas.image_size(run.target) else { return false };
@@ -710,9 +726,12 @@ impl ShaderStage {
             gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
             gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
             gl.viewport(0, 0, width as i32, height as i32);
+            gl.active_texture(glow::TEXTURE1);
+            gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(input));
             gl.uniform_1_i32(program.input.as_ref(), 0);
+            gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
             gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
             let (logical_width, logical_height) = run.logical_size;
             let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
@@ -748,6 +767,9 @@ impl ShaderStage {
             if let Some(Some(blur)) = self.blur.take() {
                 gl.delete_program(blur.program);
                 gl.delete_framebuffer(blur.framebuffer);
+            }
+            if let Some(Some(blending)) = self.blending.take() {
+                gl.delete_program(blending.program);
             }
             if let Some(framebuffer) = self.framebuffer.take() {
                 gl.delete_framebuffer(framebuffer);
