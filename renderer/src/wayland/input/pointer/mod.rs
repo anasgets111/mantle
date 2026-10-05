@@ -573,7 +573,7 @@ impl App {
                                 self.finish_secure_submit();
                             }
                             if let Some(handler) = handler {
-                                self.fire_on_click(&instance_id, clickable.rect, name, clickable.at, &handler);
+                                self.fire_on_click(&instance_id, clickable.rect, name, clickable.at, &handler, false);
                             }
                         }
                     }
@@ -802,13 +802,14 @@ impl App {
         button: &str,
         local: layout::hit::LogicalPoint,
         on_click: &Function,
+        keyboard: bool,
     ) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
-        crate::lua::focus::begin_click(self.client.lua(), instance_id);
+        crate::lua::focus::begin_callback(self.client.lua(), instance_id, keyboard);
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, local, self.modifiers_held()) {
             warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
-        crate::lua::focus::end_click(self.client.lua());
+        crate::lua::focus::end_callback(self.client.lua());
     }
 }
 

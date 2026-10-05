@@ -265,8 +265,9 @@ impl KeyboardHandler for App {
         // ADR-0112: absent masked focus or an already-typing plain field, scope `autofocus` takes
         // keys; focus-follows-mouse may enter repeatedly, so a typing field keeps its draft.
         let typing_restored = !secure_armed && self.restore_typing_control_on_enter(&scope);
+        self.armed_control = None;
         if focus::should_arm_autofocus(secure_armed, typing_restored, self.focused_control.as_ref()) {
-            self.arm_autofocus_field(&scope);
+            self.arm_autofocus(&scope);
         }
     }
 
@@ -659,6 +660,14 @@ pub(in crate::wayland) mod tests {
         std::rc::Rc::make_mut(&mut node.properties).insert(key, value);
         node.paint = node::paint_style(node.kind, &node.properties).unwrap();
         node
+    }
+
+    /// A named `on_click` control, so a keyboard-focusable one.
+    pub(in crate::wayland) fn button(lua: &Lua) -> layout::ResolvedNode {
+        let on_click = lua.create_function(|_, ()| Ok(())).unwrap();
+        let node =
+            with_property(hit_node(lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "on_click", Value::Function(on_click));
+        with_property(node, "accessible_name", Value::String(lua.create_string("Go").unwrap()))
     }
 
     #[test]

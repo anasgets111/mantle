@@ -346,18 +346,18 @@ return panel {
 
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or
-`focus_target(name):request()` draws none, and a press hides an outline Tab drew. `focus_ring = false`
+`focus_target(name):request()` from a click draws none, and a press hides an outline Tab drew. `focus_ring = false`
 keeps the outline off a node.
 
 `focused(name)` returns a read-only boolean signal, `false` until the bound node first holds focus.
 Bind it to a node's `focused` and the engine sets it `true` while that node or any node inside it
 holds control focus, however focus got there. Like `hover(name)`, the name is the identity and
-survives reloads. It is not `focus_target(name)`, the handle a click uses to focus a textfield.
+survives reloads. It is not `focus_target(name)`, the handle `:request()` uses to move focus.
 
 `focus_visible(name)` is the same signal under the rule the engine's outline follows (CSS
 `:focus-visible`): `true` only while the bound node or one inside it holds control focus that Tab,
-Shift+Tab or an assistive-technology action moved there, and `false` after a press, `autofocus` or
-`focus_target(name):request()`, while `focused(name)` stays `true`. It ignores `focus_ring`. Bind it to
+Shift+Tab, an assistive-technology action or a `:request()` from a key callback or an Enter or Space
+activation moved there, and `false` after a press, `autofocus` or a `:request()` from a click, while `focused(name)` stays `true`. It ignores `focus_ring`. Bind it to
 a node's `focus_visible`, and draw a ring that shows for keyboard users only:
 
 ```lua
@@ -444,8 +444,8 @@ a press.
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
 | `on_key(key)` | The keys the field does not edit with, from its own `on_key` up ([key handlers](#key-handlers)): Up, Down, paging, Left and Right when the caret cannot move that way and Shift is up, and Tab when fewer than two controls can take focus. The draft is untouched |
 | `escape` | What Escape does: `"clear"` (the default) as under `on_cancel`; `"blur"` keeps the draft and drops focus, then calls `on_cancel(false)`; `"pass"` keeps the draft and focus and does not take the key, which goes up through `on_key` and then to the surface's `on_escape`. A `secure_submit` field ignores it |
-| `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
-| `focus_target` | A `focus_target(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
+| `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field or [focusable control](#keyboard-controls-and-accessibility) in document order wins. A field never takes over from one already typing, nor re-takes one the user just clicked away from. A control arms only while no control holds focus, once per appearance or keyboard enter |
+| `focus_target` | A `focus_target(name)` handle. `:request()` from an `on_click`, `on_key`, or an edit typed or committed into the field (`on_change`, `on_submit`, `on_cancel`) focuses the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the callback's state changes appear. It keeps that field's draft and caret and does not call `on_change`. A key callback's request shows the focus outline |
 | `focus_target(name):set_text(text)` | Replaces the draft of every plain field with that `focus_target` and an `on_change` or `on_submit`, hidden ones too, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters or over 64 KiB raise |
 | `initial_text` | Seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new, and a field that leaves and returns is seeded again from the value then). Plain fields only; `secure_submit` refuses it. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Later changes to the value are ignored and an emptied field stays empty: use `set_text` to push new text. Read without subscribing: writing the signal alone does not re-resolve the field |
 | `disabled` | `true`: the field draws as usual but takes no focus. Tab skips it, a press and `autofocus` pass over it, `:request()` finds nothing, and no caret shows. A focused field that becomes disabled loses focus and keeps its draft. A disabled `secure_submit` field is not a destination. `set_text` still reaches it. Dim it by binding colours to the same signal |
@@ -489,8 +489,9 @@ Restoring a draft is silent: `on_change` does not fire, so reset a field with `s
 
 To return typing to a field after a click changes the view, give the field the handle and call
 `:request()` from the `on_click`. `focus_target("")` and a `focus_target` property that is not a handle raise.
-Requests outside an `on_click`, to a hidden or masked field, or to a surface other than the focused one and its
-popups do nothing.
+`on_key`, and edits typed or committed into a field (`on_change`, `on_submit`, `on_cancel`), can request too; the
+`on_change` an `autofocus` arm or `set_text` fires cannot. Requests from anywhere else, to a hidden or masked field, or
+to a surface other than the focused one and its popups do nothing.
 
 ```lua
 local search_focus = focus_target("search")
@@ -511,6 +512,32 @@ return panel {
             on_click = function() search_focus:request() end,
             children = { text { content = "Return to search" } },
         },
+    } },
+}
+```
+
+`focus_target` and `autofocus` also work on any [focusable control](#keyboard-controls-and-accessibility). A request
+from a key callback shows the outline, so Lua can rove focus with the arrow keys. On a node that takes no focus they
+do nothing, and `set_text` does nothing on a control.
+
+```lua
+local next_button = focus_target("next")
+
+return panel {
+    id = "toolbar",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = row { children = {
+        rect {
+            accessible_name = "First",
+            autofocus = true,
+            width = 40,
+            height = 32,
+            on_key = function(key)
+                if key.name == "Right" then next_button:request() return true end
+            end,
+        },
+        rect { accessible_name = "Next", focus_target = next_button, width = 40, height = 32, on_key = function() end },
     } },
 }
 ```

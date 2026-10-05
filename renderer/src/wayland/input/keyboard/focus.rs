@@ -49,6 +49,24 @@ fn controls(surface_id: &str, node: &layout::ResolvedNode, out: &mut Vec<Control
     }
 }
 
+/// The first control Tab reaches on `tree` that `matches`: never a masked or disabled field.
+pub(super) fn first_focusable(
+    surface_id: &str,
+    tree: &layout::ResolvedNode,
+    matches: impl Fn(&layout::ResolvedNode) -> bool,
+) -> Option<FocusedControl> {
+    let mut list = Vec::new();
+    controls(surface_id, tree, &mut list);
+    list.into_iter().map(|control| control.focus).find(|focus| {
+        find(tree, focus.id).is_some_and(|(node, _)| match focus.kind {
+            ControlKind::Plain => matches(node),
+            // A textfield that is not a plain field takes no focus, whatever name and key handler it has.
+            ControlKind::Button => node.kind != "textfield" && matches(node),
+            ControlKind::Masked => false,
+        })
+    })
+}
+
 fn next_index(len: usize, current: Option<usize>, backwards: bool) -> usize {
     match (current, backwards) {
         (Some(index), true) => (index + len - 1) % len,
@@ -196,7 +214,7 @@ fn retained_typing_control(
 }
 
 /// The node the engine outlines: control focus that Tab or an AT action moved, never focus from a
-/// press, `autofocus` or `focus_target(name)`.
+/// press, `autofocus` or a `focus_target(name)` request from a click.
 fn outline(
     focused: Option<&FocusedControl>,
     visible: bool,
@@ -204,6 +222,17 @@ fn outline(
     in_scope: bool,
 ) -> Option<layout::scene::NodeId> {
     focused.filter(|focused| visible && in_scope && focused.surface_id == surface_id).map(|focused| focused.id)
+}
+
+/// Whether an `autofocus` control takes focus now: only the first time it is seen since `armed` was
+/// cleared, and only with no control focused, so one the user left is never pulled back.
+pub(super) fn should_arm_control(
+    armed: &mut Option<(String, layout::scene::NodeId)>,
+    control: &FocusedControl,
+    nothing_focused: bool,
+) -> bool {
+    let key = (control.surface_id.clone(), control.id);
+    armed.replace(key.clone()) != Some(key) && nothing_focused
 }
 
 pub(super) fn should_arm_autofocus(
@@ -337,7 +366,10 @@ impl App {
     }
 
     pub(in crate::wayland) fn focus_control(&mut self, next: Option<FocusedControl>) {
-        if self.focused_control == next {
+        // A plain field that stopped typing (a press elsewhere) is still `focused_control`; re-focusing resumes it.
+        let resuming = next.as_ref().is_some_and(|next| next.kind == ControlKind::Plain)
+            && !self.focused_text_field.as_ref().is_some_and(|field| field.typing);
+        if self.focused_control == next && !resuming {
             return;
         }
         if let Some(field) = self.focused_text_field.as_mut() {
@@ -377,7 +409,7 @@ impl App {
         }
         if let Some(on_click) = on_click {
             // No pointer: report the node's centre, node-local like a click.
-            self.fire_on_click(&focus.surface_id, rect, "left", centre(rect), &on_click);
+            self.fire_on_click(&focus.surface_id, rect, "left", centre(rect), &on_click, true);
         }
     }
 
@@ -645,6 +677,21 @@ mod tests {
         assert_eq!(outline(Some(&focus), true, "panel@TEST", true), Some(focus.id), "after Tab or an AT action");
         assert_eq!(outline(Some(&focus), true, "popup@TEST", true), None);
         assert_eq!(outline(Some(&focus), true, "panel@TEST", false), None, "outside the keyboard scope");
+    }
+
+    #[test]
+    fn an_autofocus_control_arms_once_and_never_after_the_user_leaves_it() {
+        let control = FocusedControl {
+            surface_id: "dialog@TEST".into(),
+            id: layout::scene::NodeId::test(1),
+            kind: ControlKind::Button,
+        };
+        let mut armed = None;
+        assert!(should_arm_control(&mut armed, &control, true), "first sight, nothing focused");
+        assert!(!should_arm_control(&mut armed, &control, true), "focus was cleared since: not again");
+        armed = None;
+        assert!(!should_arm_control(&mut armed, &control, false), "another control holds focus");
+        assert!(!should_arm_control(&mut armed, &control, true), "and it is remembered either way");
     }
 
     #[test]

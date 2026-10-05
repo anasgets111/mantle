@@ -119,6 +119,7 @@ pub fn run(
         parked_drafts: HashMap::new(),
         pending_seeds: Vec::new(),
         focused_control: None,
+        armed_control: None,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),
         secure_buffer: shared::SecureBuffer::new(),
@@ -409,7 +410,7 @@ pub fn run(
             if searched {
                 let scope = app.keyboard_focus_scope();
                 app.arm_secure_focus_if_the_scope_now_declares_one(&scope);
-                app.arm_autofocus_if_nothing_is_typing(&scope);
+                app.arm_autofocus_if_unfocused(&scope);
             }
             app.sync_text_input();
             if let Some(started) = focus_started

@@ -234,6 +234,8 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
     {
         return Err(invalid("shadows", format!("`inset` is a box property, and `{kind}` is not a box")));
     }
+    // Only a request reads `focus_target`; read here too so a value that is not a handle fails the pass.
+    fields::common::focus_target.read(properties)?;
     let style = match kind {
         // All containers and surface roles paint as a box; a `list` carries one for its `clip` (ADR-0328).
         "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => {
@@ -324,8 +326,6 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             images: shader::images.read(properties)?,
         },
         "textfield" => {
-            // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
-            textfield::focus_target.read(properties)?;
             let color = typeface::foreground.read(properties)?.expect("`foreground` has a default");
             let face = Typeface::read(properties)?;
             let keys = textfield::caret.read(properties)?;
@@ -391,15 +391,17 @@ mod tests {
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "text_align"));
     }
 
-    /// `focus_target = "search"` would otherwise leave a field no click can ever focus.
+    /// `focus_target = "search"` would otherwise leave a node no request can ever focus.
     #[test]
-    fn a_textfield_focus_that_is_not_a_handle_fails_the_pass() {
+    fn a_focus_target_that_is_not_a_handle_fails_the_pass() {
         let lua = Lua::new();
-        let err = style(&lua, r#"return { kind = "textfield", focus_target = "search" }"#).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus_target"),
-            "got {err:?}"
-        );
+        for kind in ["textfield", "rect"] {
+            let err = style(&lua, &format!(r#"return {{ kind = "{kind}", focus_target = "search" }}"#)).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus_target"),
+                "got {err:?}"
+            );
+        }
     }
 
     /// A `text` that says nothing draws in the declared chain, which is most nodes.

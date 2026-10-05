@@ -67,14 +67,20 @@ pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: KeyPress, what: &st
         return false;
     }
     let Ok(key) = key.into_lua(lua) else { return false };
+    crate::lua::focus::begin_callback(lua, what, true);
+    let mut taken = false;
     for handler in handlers {
         match handler.call::<Option<bool>>(&key) {
-            Ok(Some(true)) => return true,
+            Ok(Some(true)) => {
+                taken = true;
+                break;
+            }
             Ok(_) => {}
             Err(err) => crate::lua::warn_raised(Err(err), format_args!("{what}: on_key")),
         }
     }
-    false
+    crate::lua::focus::end_callback(lua);
+    taken
 }
 
 impl App {
@@ -234,6 +240,19 @@ mod tests {
         assert!(!layout::scene::is_named_control(&keyed));
         let named = with_property(keyed, "accessible_name", Value::String(lua.create_string("Grid").unwrap()));
         assert!(layout::scene::is_named_control(&named));
+    }
+
+    #[test]
+    fn a_request_from_on_key_is_queued_with_the_ring_and_only_inside_the_callback() {
+        let lua = lua_with_log();
+        crate::lua::focus::register(&lua).unwrap();
+        lua.globals().set("target", lua.load("return focus_target('next')").eval::<mlua::Value>().unwrap()).unwrap();
+        let handler: Function = lua.load("return function() target:request() end").eval().unwrap();
+        deliver(&lua, &[handler], press(Keysym::Right, None, [false; 4], false), "bar@TEST");
+        let request = crate::lua::focus::take_request(&lua).expect("queued");
+        assert_eq!((request.surface.as_str(), request.name.as_str(), request.ring), ("bar@TEST", "next", true));
+        lua.load("target:request()").exec().unwrap();
+        assert!(crate::lua::focus::take_request(&lua).is_none(), "the window closed with the callback");
     }
 
     #[test]

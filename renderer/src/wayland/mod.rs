@@ -207,6 +207,8 @@ pub struct App {
     /// `initial_text` seeds of fields whose surface has no `wl_surface` yet; applied once it has one.
     pending_seeds: Vec<(layout::scene::NodeId, String)>,
     focused_control: Option<FocusedControl>,
+    /// The `autofocus` control last seen, so one the user left is not re-armed until the keyboard re-enters.
+    armed_control: Option<(String, layout::scene::NodeId)>,
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,
     accessibility: accessibility::Accessibility,

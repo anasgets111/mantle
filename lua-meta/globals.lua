@@ -90,19 +90,24 @@ function fonts(chain) end
 function fuzzy(haystack, needle) end
 
 ---@class FocusHandle
----A named plain textfield focus target.
+---A named focus target: a plain textfield or a focusable control.
 local FocusHandle = {}
 
----Give this field the keyboard after the current click updates its surface.
+---Give this field or control the keyboard after the current callback updates its surface. Works from
+---`on_click`, `on_key` and edits typed or committed into a field (`on_change`, `on_submit`,
+---`on_cancel`); elsewhere it does nothing, as in the `on_change` an `autofocus` or `set_text` fires.
+---A key callback's request shows the focus outline.
 function FocusHandle:request() end
 
----Sets the text of every plain textfield with this name and an `on_change` or `on_submit`, hidden ones too: caret at the end, undo and composition cleared, no `on_change`. Raises on control characters or over 64 KiB. Applies when the callback returns.
+---Sets the text of every plain textfield with this name and an `on_change` or `on_submit`, hidden ones
+---too: caret at the end, undo and composition cleared, no `on_change`. Does nothing on a control. Raises
+---on control characters or over 64 KiB. Applies when the callback returns.
 ---@param text string
 function FocusHandle:set_text(text) end
 
----Names a plain textfield that an `on_click` can focus with `:request()`.
+---Names a plain textfield or focusable control that `:request()` can focus from a click or key callback.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
----@param name string Shared with the textfield's `focus_target` property.
+---@param name string Shared with the node's `focus_target` property.
 ---@return FocusHandle
 function focus_target(name) end
 

@@ -271,6 +271,18 @@ props! {
         id: Structural<Id>;
         /// Spoken name for a control. A node with `on_click`, `submit` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
         accessible_name: Bound<Text> = absent(Lua(r#""""#));
+        /// A `focus_target(name)` handle. `:request()` from an `on_click`, an `on_key`, or an edit typed or
+        /// committed into a field (`on_change`, `on_submit`, `on_cancel`) moves keyboard focus here, if this node
+        /// is a visible focusable control on that callback's keyboard-focused surface or a popup under it. A
+        /// request from a key callback shows the focus outline, one from a click does not. Inert on a node that
+        /// takes no focus. Any other value fails the pass.
+        focus_target: Focus;
+        /// Takes keyboard focus when the surface gets the keyboard or this node appears; the first in document
+        /// order wins, field or control. A plain `textfield` arms under existing control focus unless a field is
+        /// typing or a press just left it; its draft resets to `initial_text` (`""` when unset) and `on_change`
+        /// is called with it (ADR-0112). Any other control arms only while no control holds focus, and once: it
+        /// never takes focus back after the user leaves it. Inert on a node that takes no focus.
+        autofocus: Bound<Flag> = absent(Bool(false));
         /// `false` keeps the engine's focus outline off this node; style it from `focused(name)` instead.
         ///
         /// Book: `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node
@@ -546,8 +558,6 @@ props! {
     }
     /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line, `font_size` times `line_height`; `width` has none, so set it.
     mod textfield(TEXTFIELD) {
-        /// A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
-        focus_target: Focus;
         /// Shown while the field is empty, focused or not (ADR-0135). Never submitted.
         placeholder: Bound<Text> = absent(Lua(r#""""#));
         /// Colour of the placeholder.
@@ -562,8 +572,6 @@ props! {
         max_length: Bound<MaxLines> = absent(Number(0.0));
         /// Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB.
         initial_text: Bound<Text> = absent(Lua(r#""""#));
-        /// Plain fields only: take the keyboard, with the draft reset to `initial_text` (`""` when unset) and `on_change` called with it, when the surface gets it or the field appears. The first in document order wins; never steals from a field already typing or one a press just left (ADR-0112).
-        autofocus: Bound<Flag> = absent(Bool(false));
         /// Full text after every edit.
         on_change(text: String);
         /// Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.

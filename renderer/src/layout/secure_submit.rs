@@ -35,7 +35,7 @@ pub(crate) fn secure_submit_targets(tree: &ResolvedNode) -> Vec<SecureSubmitTarg
 /// input reaches. A hidden subtree is skipped whole -- it is frozen (ADR-0124) and draws nothing --
 /// and so is a leaving one, which is out of reach by ADR-0150 while its exit tweens run.
 ///
-/// The keyboard walk owes the pointer walk this. `wayland::input`'s `autofocus_field_in_scope` has
+/// The keyboard walk owes the pointer walk this. `wayland::input`'s `autofocus_in_scope` has
 /// always skipped both, and the gap between the two was load-bearing: one surface holding every
 /// panel body keeps eight of them hidden beside the shown one, so the hidden network password field
 /// counted as the scope's sole destination and took the keyboard from the panel that was open. An
