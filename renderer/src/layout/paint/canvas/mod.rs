@@ -230,39 +230,17 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.boxes += t0.elapsed();
                 }
             }
-            Draw::Text {
-                content,
-                runs,
-                font_size,
-                line_height,
-                letter_spacing,
-                font_weight,
-                italic,
-                variations,
-                font,
-                color,
-                align,
-                centered,
-                caret,
-                caret_on,
-                caret_style,
-            } => {
+            Draw::Text { content, runs, face, color, align, centered, caret, caret_on, caret_style } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
                 if *centered {
-                    rect.y += ((rect.height - *line_height * scale) / 2.0).max(0.0);
+                    rect.y += ((rect.height - face.line_height * scale) / 2.0).max(0.0);
                 }
                 painter.draw_text(
                     TextDraw {
                         text: content,
                         runs,
-                        font_size: *font_size,
-                        line_height: *line_height,
-                        letter_spacing: *letter_spacing,
-                        font_weight: *font_weight,
-                        italic: *italic,
-                        variations,
-                        font: font.as_ref(),
+                        face,
                         color: *color,
                         align: *align,
                         caret: *caret,
@@ -1494,7 +1472,7 @@ pub(crate) mod tests {
                 variations: Default::default(),
                 text: "hello".into(),
                 font_size: 20.0,
-                line_height: crate::text::shaping::line_height(20.0),
+                line_height: 20.0 * 1.2,
                 max_width: None,
                 runs: Vec::new(),
                 font: family.map(std::sync::Arc::from),

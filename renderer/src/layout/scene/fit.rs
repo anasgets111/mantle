@@ -3,7 +3,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::layout::node::{self, PaintStyle, StyleRun};
-use crate::text::shaping::{ShapeRequest, ShapingHandle};
+use crate::text::shaping::ShapingHandle;
 
 /// Rewrites a `text`'s content to what its box can actually show, which is the one thing paint
 /// cannot work out for itself.
@@ -18,23 +18,7 @@ pub(super) fn fit_text_to_box(
     unconstrained_width: Option<f32>,
     shaping: &ShapingHandle,
 ) {
-    let Some(PaintStyle::Text {
-        content,
-        runs,
-        font_size,
-        line_height,
-        letter_spacing,
-        font_weight,
-        italic,
-        variations,
-        font,
-        elide,
-        wrap,
-        max_lines,
-        elided,
-        ..
-    }) = paint.as_mut()
-    else {
+    let Some(PaintStyle::Text { content, runs, face, elide, wrap, max_lines, elided, .. }) = paint.as_mut() else {
         return;
     };
     *elided = false;
@@ -43,7 +27,7 @@ pub(super) fn fit_text_to_box(
     // handed to the measure callback, and without `elide` or `wrap` it never reaches the shaping
     // below either. Nothing would then load its family, and it would paint in the declared chain
     // (ADR-0144).
-    if let Some(family) = font.as_ref() {
+    if let Some(family) = face.font.as_ref() {
         shaping.ensure_family(family);
     }
     if content.is_empty() {
@@ -57,25 +41,16 @@ pub(super) fn fit_text_to_box(
         }
         return;
     }
-    let face = Face {
-        size: *font_size,
-        line_height: *line_height,
-        letter_spacing: *letter_spacing,
-        font_weight: *font_weight,
-        italic: *italic,
-        variations: variations.clone(),
-        family: font.clone(),
-    };
     // The output is taken off the builder before the borrow of `content` ends, which is what lets
     // the same two fields be overwritten below.
     let fitted: Option<(String, Vec<StyleRun>)> = match wrap {
         // The measured-width check is the fast path, not politeness: most strings fit, and
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
-            let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, &face, shaping));
+            let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
             if *elide == node::Elide::End && width > content_width {
                 let mut fitted = Fitted::new(content, runs);
-                let cut = elide_cut(content, runs, 0..content.len(), &face, content_width, shaping);
+                let cut = elide_cut(content, runs, 0..content.len(), face, content_width, shaping);
                 fitted.push_source(0..cut);
                 fitted.push_ellipsis(cut, content.len());
                 *elided = true;
@@ -85,7 +60,7 @@ pub(super) fn fit_text_to_box(
             }
         }
         node::Wrap::Word => {
-            let fitted = wrapped_to_fit(content, runs, &face, *elide, *max_lines, content_width, shaping);
+            let fitted = wrapped_to_fit(content, runs, face, *elide, *max_lines, content_width, shaping);
             *elided = fitted.elided;
             Some((fitted.text, fitted.runs))
         }
@@ -152,24 +127,13 @@ impl<'s> Fitted<'s> {
 fn wrapped_to_fit<'s>(
     content: &'s str,
     runs: &'s [StyleRun],
-    face: &Face,
+    face: &node::Typeface,
     elide: node::Elide,
     max_lines: Option<usize>,
     content_width: f32,
     shaping: &ShapingHandle,
 ) -> Fitted<'s> {
-    let shaped = shaping.shape(ShapeRequest {
-        text: content.to_string(),
-        font_size: face.size,
-        line_height: face.line_height,
-        letter_spacing: face.letter_spacing,
-        font_weight: face.font_weight,
-        italic: face.italic,
-        variations: face.variations.clone(),
-        max_width: Some(content_width),
-        runs: node::font_runs(runs),
-        font: face.family.clone(),
-    });
+    let shaped = shaping.shape(face.request(content.to_string(), Some(content_width), node::font_runs(runs)));
     let mut fitted = Fitted::new(content, runs);
     let cap = max_lines.unwrap_or(shaped.line_ranges.len());
     fitted.elided = cap < shaped.line_ranges.len();
@@ -197,36 +161,9 @@ fn push_direction_mark(fitted: &mut Fitted<'_>, line: &str, rtl: bool) {
     }
 }
 
-/// What a string is measured in: how big, and in which family (ADR-0144). The two travel together
-/// through every fitting helper, and a measurement taken under one pair says nothing about the
-/// other.
-#[derive(Clone)]
-struct Face {
-    size: f32,
-    line_height: f32,
-    letter_spacing: f32,
-    font_weight: f32,
-    italic: bool,
-    variations: crate::text::shaping::Variations,
-    family: Option<std::sync::Arc<str>>,
-}
-
 /// One string's unconstrained width, the question `elide` is a search over.
-fn measured_width(text: &str, runs: &[StyleRun], face: &Face, shaping: &ShapingHandle) -> f32 {
-    shaping
-        .shape(ShapeRequest {
-            text: text.to_string(),
-            font_size: face.size,
-            line_height: face.line_height,
-            letter_spacing: face.letter_spacing,
-            font_weight: face.font_weight,
-            italic: face.italic,
-            variations: face.variations.clone(),
-            max_width: None,
-            runs: node::font_runs(runs),
-            font: face.family.clone(),
-        })
-        .width
+fn measured_width(text: &str, runs: &[StyleRun], face: &node::Typeface, shaping: &ShapingHandle) -> f32 {
+    shaping.shape(face.request(text.to_string(), None, node::font_runs(runs))).width
 }
 
 /// Where to cut `region` of `text` so that what precedes the cut, plus an ellipsis, still fits
@@ -241,7 +178,7 @@ fn elide_cut(
     text: &str,
     runs: &[StyleRun],
     region: Range<usize>,
-    face: &Face,
+    face: &node::Typeface,
     width: f32,
     shaping: &ShapingHandle,
 ) -> usize {
@@ -499,10 +436,10 @@ mod tests {
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let laid_out = scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height;
 
-        let line_height = crate::text::shaping::line_height(12.0);
+        let line_height = 12.0 * 1.2;
         let fresh = |max_width| {
             shaping
-                .shape(ShapeRequest {
+                .shape(crate::text::shaping::ShapeRequest {
                     letter_spacing: 0.0,
                     font_weight: 400.0,
                     italic: false,

@@ -269,7 +269,7 @@ pub struct ResolvedNode {
     /// compositor is given; nothing else reads it, and a compositor without the protocol ignores the
     /// lot.
     pub behind_blur: bool,
-    /// This node's own `shadow_*` and `content_blur` (ADR-0254), over its whole painted subtree.
+    /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
     pub effect: node::Effect,
     /// Shared with the rollback copy until a tween writes it.
     pub properties: std::rc::Rc<PropMap>,

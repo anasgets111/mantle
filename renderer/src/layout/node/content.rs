@@ -346,7 +346,7 @@ lua_shape! {
         pub(crate) color: Option<Rgba>,
         /// Px, within `[0, 8192]`. Default: a sixteenth of `font_size`, rounded, at least `1`.
         pub(crate) width: Option<f32>,
-        /// Px, or a fraction of the line height when `1` or less; within `[0, 8192]`. Default: the whole line. Centred on the line.
+        /// Px, or a fraction of the line height when `1` or less. Default: the whole line, centred.
         pub(crate) height: Option<f32>,
         /// Corner radius in px, within `[0, 8192]`. Default `0`.
         pub(crate) radius: Option<f32>,

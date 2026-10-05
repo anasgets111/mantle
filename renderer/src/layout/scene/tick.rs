@@ -298,40 +298,12 @@ fn prepare_retained_children(
 /// than freeze it at the colour it last laid out with.
 fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintStyle>) -> Option<PaintStyle> {
     match (old, fresh) {
-        (
-            Some(PaintStyle::Text { content, runs, elided, .. }),
-            Some(PaintStyle::Text {
-                font_size,
-                line_height,
-                letter_spacing,
-                font_weight,
-                italic,
-                variations,
-                font,
-                color,
-                align,
-                elide,
-                wrap,
-                max_lines,
-                ..
-            }),
-        ) => Some(PaintStyle::Text {
-            content,
-            runs,
-            font_size,
-            line_height,
-            letter_spacing,
-            font_weight,
-            italic,
-            variations,
-            font,
-            color,
-            align,
-            elide,
-            wrap,
-            max_lines,
-            elided,
-        }),
+        (Some(PaintStyle::Text { content, runs, elided, .. }), Some(mut fresh)) => {
+            if let PaintStyle::Text { content: c, runs: r, elided: e, .. } = &mut fresh {
+                (*c, *r, *e) = (content, runs, elided);
+            }
+            Some(fresh)
+        }
         (_, fresh) => fresh,
     }
 }

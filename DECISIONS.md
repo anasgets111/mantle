@@ -7949,7 +7949,7 @@ interactive move, resize and the window menu, and nothing more.
 3. **`on_press(rect, button, pointer)`** fires at press for any button, innermost handler first,
    skipped on textfields like `on_click`.
 4. **The compositor takes the pointer.** No release may follow a move or resize, so the engine
-   clears its drag and press state: `on_drag` gets no "end" and `on_click` does not fire.
+   ends a held drag (`on_drag` gets one "end") and clears its press state: `on_click` does not fire.
 5. **No minimize, maximize or fullscreen.** Those are compositor policy; its own bindings cover them.
 
 ## 0338. `homogeneous` is a grid of equal slots sized by a pre-pass
@@ -7962,7 +7962,8 @@ interactive move, resize and the window menu, and nothing more.
    a pixel-sized child keeps its size at the slot's start.
 3. **Why the pre-pass.** A content-sized grid of plain `1fr` tracks drops item margins
    (DioxusLabs/taffy#1177), and flex cannot keep slots equal once a child has min or max sizes.
-   The slot lives in the container's style, so an unchanged tree is not re-solved.
+   Each measured child is marked dirty afterwards so the real solve re-places it, and a clean tree
+   skips the pre-pass, so an unchanged tree is not re-solved.
 
 ## 0339. `wrap` is flex-wrap, and `wrap` with `homogeneous` is a fixed-slot grid
 

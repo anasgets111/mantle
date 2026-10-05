@@ -24,14 +24,14 @@ pub(super) fn paint_shadow(
     knockout: bool,
 ) {
     let LogicalRect { x, y, width, height } = shadow_rect(rect, rect, shadow);
-    let Rgba { r, g, b, a } = shadow.color;
+    let Rgba { r, g, b, .. } = shadow.color;
     // A ramp across 3 sigma is within 14/255 of the layer path's Gaussian; matching its slope
     // instead, 22. Floored at NanoVG's 1, since the gradient divides by it.
     let feather = (1.5 * shadow.blur).max(1.0);
     // A signed distance past half the box is positive everywhere, so the gradient would paint nothing.
     // The gradient has one radius, so unequal corners cast the shadow of their mean.
     let radius = spread_radius(own.0.iter().sum::<f32>() / 4.0, shadow.spread).min(width.min(height) / 2.0);
-    let color = Color::rgbaf(r, g, b, a);
+    let color = Color::from(shadow.color);
     let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, Color::rgbaf(r, g, b, 0.0));
     let reach = grow(LogicalRect { x, y, width, height }, feather / 2.0);
     let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, Radii::default()) };
@@ -277,9 +277,8 @@ fn cast_shadow(
         canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
         fill_image(canvas, content, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
     }
-    let Rgba { r, g, b, a } = shadow.color;
     canvas.global_composite_operation(CompositeOperation::SourceIn);
-    canvas.fill_path(&whole, &Paint::color(Color::rgbaf(r, g, b, a)));
+    canvas.fill_path(&whole, &Paint::color(shadow.color.into()));
     canvas.restore();
     canvas.set_render_target(target);
     Some(cast)
@@ -510,10 +509,10 @@ mod tests {
         assert!(px[7].0 >= 250, "and gone 3 sigma past it: {px:?}");
     }
 
-    /// ADR-0254: `content_blur` spreads the box past its edge, premultiplied: a red edge fades to
+    /// ADR-0254: `effect.blur` spreads the box past its edge, premultiplied: a red edge fades to
     /// pink over white, never through a dark fringe.
     #[test]
-    fn a_content_blur_spreads_the_box_past_its_edge_without_darkening_it() {
+    fn an_effect_blur_spreads_the_box_past_its_edge_without_darkening_it() {
         let Some(px) = paint_effect(r##"background = "#FF0000FF", effect = { blur = 4 }"##) else { return };
         assert!(near(px[2], (255, 0, 0)), "the middle stays red: {px:?}");
         assert!(px[4].1 > 30 && px[4].1 < 240, "2px past the edge is pink: {px:?}");
@@ -706,7 +705,7 @@ mod tests {
     /// pill's border and child draw sharp over it, and the corner outside its arc keeps the stripe.
     /// Translucent stripes are replaced by their blur, not shown through it.
     #[test]
-    fn a_backdrop_blur_frosts_the_stripes_under_a_pill_and_nothing_else() {
+    fn an_effect_backdrop_frosts_the_stripes_under_a_pill_and_nothing_else() {
         let src = &(STRIPES.to_owned()
             + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "fill", height = "fill",
                 background = { gradient = "linear", angle = 90, stops = stops }, padding = 8,

@@ -127,20 +127,16 @@ pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: 
     canvas.fill_path(&box_path(rect, radius), &paint);
 }
 
-fn color_paint(color: Rgba) -> Paint {
-    Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a))
-}
-
 pub(super) fn fill_paint(fill: &Fill, rect: LogicalRect) -> Paint {
     match fill {
-        Fill::Color(color) => color_paint(*color),
+        Fill::Color(color) => Paint::color((*color).into()),
         Fill::Gradient(gradient) => gradient_paint(gradient, rect),
     }
 }
 
 /// `gradient` laid over `rect` with CSS's geometry (ADR-0255).
 pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
-    let stops = gradient.stops.iter().map(|(at, c)| (*at, Color::rgbaf(c.r, c.g, c.b, c.a)));
+    let stops = gradient.stops.iter().map(|(at, c)| (*at, Color::from(*c)));
     let (cx, cy) = (rect.x + rect.width / 2.0, rect.y + rect.height / 2.0);
     match gradient.shape {
         GradientShape::Linear { angle } => {
@@ -182,7 +178,7 @@ pub(super) fn paint_border(
         BorderPaint::Edges(BorderColor { top: Some(t), right: Some(r), bottom: Some(b), left: Some(l) })
             if t == r && r == b && b == l =>
         {
-            Some(color_paint(*t))
+            Some(Paint::color((*t).into()))
         }
         BorderPaint::Edges(_) => None,
     };
@@ -227,7 +223,7 @@ pub(super) fn paint_border(
     let LogicalRect { x, y, width: w, height: h } = rect;
     let edge_paint = |color: Option<Rgba>| match border {
         BorderPaint::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
-        BorderPaint::Edges(_) => color.map(color_paint),
+        BorderPaint::Edges(_) => color.map(|color| Paint::color(color.into())),
     };
     let colors = match border {
         BorderPaint::Edges(colors) => *colors,
@@ -444,7 +440,7 @@ fn shaped_border(
     let fill = |canvas: &mut Canvas<OpenGl>, outline: Outline, color: Rgba| {
         let paint = match border {
             BorderPaint::Gradient(gradient) => gradient_paint(gradient, rect),
-            BorderPaint::Edges(_) => color_paint(color),
+            BorderPaint::Edges(_) => Paint::color(color.into()),
         };
         canvas.fill_path(&outline.path, &paint);
     };

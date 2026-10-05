@@ -468,4 +468,29 @@ mod tests {
         assert_eq!((moved.0 - base.0, moved.1 - base.1), (35, 47));
         assert_eq!(cursor_rect(&root, layout::scene::NodeId::test(2), "", 0, &shaping), None);
     }
+
+    /// The IME rectangle is the caret bar the field draws, in its own typeface and `caret` size, at a non-empty draft's caret.
+    #[test]
+    fn cursor_rectangle_is_the_caret_bar_of_the_fields_typeface() {
+        let id = layout::scene::NodeId::test(1);
+        let lua = mlua::Lua::new();
+        let table = |src: &str| mlua::Value::Table(lua.load(src).eval().unwrap());
+        let mut field = super::keyboard::tests::textfield(&lua, None);
+        for (key, value) in [
+            ("font_size", mlua::Value::Number(20.0)),
+            ("line_height", mlua::Value::Number(2.0)),
+            ("caret", table("return { width = 3, height = 0.5 }")),
+        ] {
+            field = super::keyboard::tests::with_property(field, key, value);
+        }
+        field.id = id;
+        field.rect = LogicalRect { x: 10.0, y: 10.0, width: 100.0, height: 60.0 };
+        let root = layout::ResolvedNode::test("panel", (0.0, 0.0, 200.0, 100.0), vec![field]);
+        let shaping = ShapingHandle::spawn();
+        let node::PaintStyle::TextField { face, .. } = root.children[0].paint.as_ref().unwrap() else { unreachable!() };
+        let line = layout::hit::field_line("ab", face, &shaping).unwrap();
+        let cx = shaping::caret_x(&line.shaped[0], 2);
+        // A 40px line in a 60px box starts 10 down, and the 20px bar centres in it: 10 + 10 + 10.
+        assert_eq!(cursor_rect(&root, id, "ab", 2, &shaping), Some(((10.0 + cx).round() as i32, 30, 3, 20)));
+    }
 }

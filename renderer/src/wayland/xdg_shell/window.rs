@@ -100,7 +100,7 @@ impl App {
                 _ => None,
             });
             let serial = frame_serial(window.is_some(), self.input_serial.as_ref(), &id);
-            let (Some(window), Ok(serial), Some(seat)) = (window, &serial, self.seat_state.seats().next()) else {
+            let (Some(window), Ok(serial), Some(seat)) = (window, &serial, self.pointer_seat()) else {
                 let why = serial.err().unwrap_or("has no seat");
                 warn!("toplevel({id:?}): {why}, so the frame request was not sent");
                 continue;

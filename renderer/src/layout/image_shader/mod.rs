@@ -62,8 +62,7 @@ uniform vec4 mantle_reach;
 uniform vec4 mantle_power;
 uniform vec4 mantle_round;
 
-// Signed distance in logical px from the node's corner to its outline, negative inside: a box SDF over `mantle_round` (x, y, w, h in logical px from the node corner), rounded by `mantle_radii` (tl, tr, br, bl).
-// A smoothed corner reaches `mantle_reach` along each side and is approximated by the superellipse of exponent `mantle_power` through its endpoints and diagonal midpoint, with d taken as (L - reach) over the gradient of L; exact (power 2) for a circular corner.
+// Signed distance in logical px to the outline, negative inside; smoothed corners are superellipses (`mantle_power`).
 float mantle_sdf(vec2 p) {
     vec2 half_size = mantle_round.zw * 0.5;
     p -= mantle_round.xy + half_size;
@@ -592,8 +591,7 @@ impl ShaderStage {
         true
     }
 
-    /// Binds the outline uniforms behind `mantle_sdf`: `radii` rounding `round`, the box in logical px
-    /// from the node's corner, inside a node of `logical_size`.
+    /// Binds the outline uniforms behind `mantle_sdf`: `radii` rounding `round`, in a node of `logical_size`.
     ///
     /// # Safety
     ///

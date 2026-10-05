@@ -42,7 +42,7 @@ pub(crate) use content::{Caret, Content, Font, FontVariations, Live, MaxLines, R
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 #[cfg(test)]
 pub(crate) use content::{SpanKind, TextRun};
-pub use paint_style::{CaptureTarget, CaretStyle, FieldFace, PaintStyle, paint_style};
+pub use paint_style::{CaptureTarget, CaretStyle, PaintStyle, Typeface, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]
@@ -211,6 +211,12 @@ pub struct Rgba {
     pub g: f32,
     pub b: f32,
     pub a: f32,
+}
+
+impl From<Rgba> for femtovg::Color {
+    fn from(Rgba { r, g, b, a }: Rgba) -> Self {
+        Self::rgbaf(r, g, b, a)
+    }
 }
 
 spelled!(Rgba => prop::Color::lua());

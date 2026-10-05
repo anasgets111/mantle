@@ -1,6 +1,6 @@
 use super::{LayoutStyle, LogicalSize, ResolvedNode};
 use crate::layout::node::{self, Align, LayoutError, PaintStyle, PropMap, SizeMode};
-use crate::text::shaping::{self, ShapeRequest, ShapingHandle};
+use crate::text::shaping::{self, ShapingHandle};
 use taffy::TraversePartialTree;
 use taffy::prelude::{length, line, span, zero};
 
@@ -43,15 +43,8 @@ pub(super) enum Measure {
     Text {
         content: std::sync::Arc<str>,
         runs: Vec<shaping::FontRun>,
-        font_size: f32,
-        line_height: f32,
-        letter_spacing: f32,
-        font_weight: f32,
-        italic: bool,
-        variations: shaping::Variations,
-        /// The family the box is measured against, so the reserved width is the one the same
-        /// family will paint into (ADR-0144).
-        font: Option<std::sync::Arc<str>>,
+        /// The face the box is measured against, so the reserved width is the one it paints into.
+        face: node::Typeface,
         wrap: node::Wrap,
         max_lines: Option<usize>,
         /// The last `(max_width, size)` this node measured; see [`solve`].
@@ -103,17 +96,12 @@ fn content_sized(style: &LayoutStyle, axis: MainAxis) -> bool {
     }
 }
 
-/// Whether a flow container wraps. Read here, not in `LayoutStyle`, because `wrap` is also a
-/// `text` property with another type.
+/// Whether a flow container wraps; read here because `wrap` is also a `text` property of another type.
 fn wraps(properties: &PropMap) -> Result<bool, LayoutError> {
     node::fields::flow_layout::wrap.read(properties)
 }
 
-/// A `homogeneous` container is a grid of equal tracks along its main axis, `slot` the largest
-/// child ([`fit_slots`]). Unwrapped, one `1fr` track per child: content-sized it is at least `slot`,
-/// otherwise it may shrink to zero, so the tracks share the axis like `"fill"` children. Wrapped,
-/// as many fixed `slot` tracks as fit, so a line packs by `align_*`. A `1fr` track alone would size
-/// a content-sized container without its children's margins (DioxusLabs/taffy#1177).
+/// A `homogeneous` container's tracks: `1fr` each (at least `slot` when content-sized), or fixed `slot` cells when wrapped.
 fn set_slot(out: &mut taffy::Style, axis: MainAxis, slot: f32, content: bool, wrap: bool) {
     use taffy::style_helpers::{fr, minmax, repeat};
     let track = || {
@@ -463,33 +451,13 @@ pub(super) fn measure_for(
         // another kind here, so the arm is total, the same shape as `pass::children_of`'s
         // `unreachable!` arm.
         "text" => {
-            let Some(PaintStyle::Text {
-                content,
-                runs,
-                font_size,
-                line_height,
-                letter_spacing,
-                font_weight,
-                italic,
-                variations,
-                font,
-                wrap,
-                max_lines,
-                ..
-            }) = paint
-            else {
+            let Some(PaintStyle::Text { content, runs, face, wrap, max_lines, .. }) = paint else {
                 unreachable!("paint_style produces PaintStyle::Text for text nodes");
             };
             Some(Measure::Text {
                 content: content.clone(),
                 runs: node::font_runs(runs),
-                font_size: *font_size,
-                line_height: *line_height,
-                letter_spacing: *letter_spacing,
-                font_weight: *font_weight,
-                italic: *italic,
-                variations: variations.clone(),
-                font: font.clone(),
+                face: face.clone(),
                 wrap: *wrap,
                 max_lines: *max_lines,
                 memo: None,
@@ -561,27 +529,8 @@ fn measure_leaf(
                 Measure::Square(size) => clamp(taffy::Size { width: *size, height: *size }),
                 Measure::Line(height) => clamp(taffy::Size { width: 0.0, height: *height }),
                 Measure::Slots { .. } => taffy::Size::ZERO,
-                Measure::Text {
-                    content,
-                    runs,
-                    font_size,
-                    line_height,
-                    letter_spacing,
-                    font_weight,
-                    italic,
-                    variations,
-                    font,
-                    wrap,
-                    max_lines,
-                    memo,
-                } => {
-                    // The wrap boundary: the width this box is already known to have, or the
-                    // width on offer when it is not. `MaxContent`/`MinContent` mean taffy is
-                    // asking what the string wants rather than offering it a box, and an
-                    // unconstrained measurement is the honest answer to that.
-                    //
-                    // `None` for a node that does not wrap, so it measures the one line it
-                    // will paint, not the wrapped height of a box it draws one clipped line in.
+                Measure::Text { content, runs, face, wrap, max_lines, memo } => {
+                    // The wrap width: the known width, else the one on offer; `None` when unwrapped or taffy asks for min/max-content.
                     let max_width = match wrap {
                         node::Wrap::None => None,
                         node::Wrap::Word => known
@@ -598,20 +547,9 @@ fn measure_leaf(
                     {
                         return clamp(*size);
                     }
-                    let shaped = shaping.shape(ShapeRequest {
-                        text: content.to_string(),
-                        font_size: *font_size,
-                        line_height: *line_height,
-                        letter_spacing: *letter_spacing,
-                        font_weight: *font_weight,
-                        italic: *italic,
-                        variations: variations.clone(),
-                        max_width,
-                        runs: runs.clone(),
-                        font: font.clone(),
-                    });
+                    let shaped = shaping.shape(face.request(content.to_string(), max_width, runs.clone()));
                     let lines = max_lines.map_or(shaped.lines.len(), |cap| shaped.lines.len().min(cap));
-                    let size = taffy::Size { width: shaped.width, height: lines as f32 * *line_height };
+                    let size = taffy::Size { width: shaped.width, height: lines as f32 * face.line_height };
                     *memo = Some((max_width, size));
                     clamp(size)
                 }
@@ -620,12 +558,8 @@ fn measure_leaf(
     )
 }
 
-/// Writes the slot of every content-sized or wrapping `homogeneous` container under `node`: the largest margin
-/// box its children want along its main axis, each measured as a root at max-content. Innermost
-/// first, as an inner container's slot decides its outer child's size. A write only on change, so a
-/// solve that changed nothing stays a cache hit.
-// ponytail: walks the whole tree each dirty solve, like [`update_solver_node`]; upgrade: collect
-// the `Measure::Slots` ids when [`new_solver_node`] and [`update_solver_node`] see them.
+/// Sets each content-sized or wrapping `homogeneous` slot to its widest child's margin box, innermost first.
+// ponytail: walks the whole tree each dirty solve; upgrade: collect the `Measure::Slots` ids in [`update_solver_node`].
 fn fit_slots(
     tree: &mut taffy::TaffyTree<Measure>,
     node: taffy::NodeId,
@@ -651,6 +585,8 @@ fn fit_slots(
         })
         .map_err(taffy_failed)?;
         let size = tree.layout(child).map_err(taffy_failed)?.size;
+        // Measuring as a root left it at the origin and cached; dirty so the real solve re-places it.
+        tree.mark_dirty(child).map_err(taffy_failed)?;
         let margin = tree.style(child).map_err(taffy_failed)?.margin;
         let (extent, margin) = match axis {
             MainAxis::Horizontal => (size.width, margin.left.into_raw().value() + margin.right.into_raw().value()),
@@ -702,7 +638,9 @@ pub(super) fn solve(
         width: taffy::AvailableSpace::Definite(available.width),
         height: taffy::AvailableSpace::Definite(available.height),
     };
-    fit_slots(tree, root, shaping)?;
+    if tree.dirty(root).map_err(taffy_failed)? {
+        fit_slots(tree, root, shaping)?;
+    }
     tree.compute_layout_with_measure(root, space, |input, _node, context, style| {
         measure_leaf(shaping, input, context, style)
     })
@@ -803,7 +741,7 @@ pub(super) mod tests {
         );
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let fields = &scene.surface("bar@TEST").unwrap().children[0].children;
-        assert_eq!((fields[0].rect.width, fields[0].rect.height), (80.0, shaping::line_height(20.0)));
+        assert_eq!((fields[0].rect.width, fields[0].rect.height), (80.0, 20.0 * 1.2));
         assert_eq!(fields[1].rect.height, 7.0, "an explicit height still wins");
     }
 
@@ -1241,6 +1179,22 @@ pub(super) mod tests {
         assert!(width(&scene) > before * 2.0, "both slots grew to the longer label");
     }
 
+    /// An unrelated change re-solving around a slot container must not leave its measured children at the origin.
+    #[test]
+    fn an_unrelated_change_keeps_homogeneous_children_in_their_slots() {
+        let (mut scene, lua, shaping, surface) = bar("label = state('label', 'a')
+            return panel { id = 'bar', child = column { children = {
+                text { content = label },
+                row { homogeneous = true, children = { text { content = 'a' }, text { content = 'mmmm' } } },
+            } } }");
+        let xs = |scene: &Scene| flow_of(scene).children[1].children.iter().map(|c| c.rect.x).collect::<Vec<_>>();
+        let before = xs(&scene);
+        assert!(before[1] > 0.0, "fixture: the second slot is not at the origin");
+        lua.load("label:set('mmmmmmmm')").exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(xs(&scene), before);
+    }
+
     fn corners(node: &ResolvedNode) -> Vec<(f32, f32)> {
         node.children.iter().map(|c| (c.rect.x, c.rect.y)).collect()
     }
@@ -1272,6 +1226,34 @@ pub(super) mod tests {
         let column = flow_of(&scene);
         assert_eq!(corners(column), [(0.0, 0.0), (0.0, 45.0), (17.0, 0.0)]);
         assert_eq!(column.rect.width, 27.0);
+    }
+
+    /// A child's margins count in its line: the margin box is what breaks, and the child sits inside it.
+    #[test]
+    fn a_wrapping_row_breaks_on_margin_boxes() {
+        let (scene, ..) = bar(&format!(
+            "panel {{ id = 'bar', child = row {{ wrap = true, width = 100, children = {{ {} }} }} }}",
+            rects(3, "margin = { left = 5, right = 5 }")
+        ));
+        assert_eq!(corners(flow_of(&scene)), [(5.0, 0.0), (55.0, 0.0), (5.0, 10.0)]);
+    }
+
+    /// `wrap`, `line_spacing` and `homogeneous` each reach the solver when a signal flips them.
+    #[test]
+    fn flipping_wrap_line_spacing_or_homogeneous_re_solves() {
+        let (mut scene, lua, shaping, surface) =
+            bar("wrap = state('wrap', false) gap = state('gap', 0) same = state('same', false)
+            return panel { id = 'bar', child = row { wrap = wrap, line_spacing = gap, homogeneous = same, width = 100,
+                children = { rect { width = 40, height = 10 }, rect { width = 40, height = 10 },
+                    rect { width = 20, height = 10 }, rect { width = 40, height = 10 } } } }");
+        let mut seen = vec![corners(flow_of(&scene))];
+        for flip in ["wrap:set(true)", "gap:set(7)", "same:set(true)"] {
+            lua.load(flip).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            let now = corners(flow_of(&scene));
+            assert!(!seen.contains(&now), "{flip} left the rects at {now:?}, as before: {seen:?}");
+            seen.push(now);
+        }
     }
 
     /// `align_h` packs each line on its own and `align_v` packs the lines in the container.

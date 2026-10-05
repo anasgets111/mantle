@@ -495,9 +495,9 @@ impl App {
                     self.fire_on_drag(&instance_id, position, DragPhase::Start);
                 }
                 // The compositor owns the pointer after a move or resize and may send no release,
-                // so nothing may stay armed for one.
+                // so a held drag ends here and nothing stays armed for one.
                 if self.send_toplevel_requests() {
-                    self.drag = None;
+                    self.fire_on_drag(&instance_id, position, DragPhase::End);
                     self.armed = None;
                 }
             }

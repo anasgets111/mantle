@@ -12,14 +12,12 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
+use femtovg::{Canvas, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
 use shared::debug;
 
-use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, font_runs};
+use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
 use crate::layout::paint::DrawCmd;
-use crate::text::shaping::{
-    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, ShapingStyle, Variations, caret_thickness, caret_x,
-};
+use crate::text::shaping::{FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_x};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -41,26 +39,12 @@ type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), (usize, usize), u64)
 struct TextLineKey {
     text: String,
     runs: Vec<FontRun>,
-    font_size_bits: u32,
-    line_height_bits: u32,
-    letter_spacing_bits: u32,
-    font_weight_bits: u32,
-    italic: bool,
-    variations: Variations,
-    font: Option<Arc<str>>,
+    face: Typeface,
 }
 
 impl TextLineKey {
     fn matches(&self, text: &str, runs: &[FontRun], style: &TextDraw<'_>) -> bool {
-        self.font_size_bits == style.font_size.to_bits()
-            && self.line_height_bits == style.line_height.to_bits()
-            && self.letter_spacing_bits == style.letter_spacing.to_bits()
-            && self.font_weight_bits == style.font_weight.to_bits()
-            && self.italic == style.italic
-            && self.variations == *style.variations
-            && self.text == text
-            && self.font.as_ref() == style.font
-            && self.runs == runs
+        self.face == *style.face && self.text == text && self.runs == runs
     }
 }
 
@@ -120,15 +104,7 @@ fn stalest(scratch: &HashMap<(usize, usize), (u64, Vec<ImageId>)>, now: u64) -> 
 pub struct TextDraw<'a> {
     pub text: &'a str,
     pub runs: &'a [StyleRun],
-    pub font_size: f32,
-    pub line_height: f32,
-    pub letter_spacing: f32,
-    pub font_weight: f32,
-    pub italic: bool,
-    pub variations: &'a Variations,
-    /// The family this node named (ADR-0144), the same one the box was measured under. `None` is
-    /// the declared chain.
-    pub font: Option<&'a Arc<str>>,
+    pub face: &'a Typeface,
     pub color: Rgba,
     pub align: TextAlign,
     /// A focused plain `textfield`'s `(anchor, caret)` byte offsets into `text` (ADR-0236).
@@ -348,34 +324,19 @@ impl TextPainter {
     /// Rows are the glyphs [`ShapingHandle::shape_lines`] laid out, so measurement and paint share
     /// one shaper (ADR-0211); `runs` (ADR-0104) colour and underline by the byte each glyph came from.
     pub fn draw_text(&mut self, line: TextDraw<'_>, rect: LogicalRect, scale: f32) {
-        let TextDraw {
-            text,
-            runs,
-            font_size,
-            line_height,
-            letter_spacing,
-            font_weight,
-            italic,
-            variations,
-            font,
-            color,
-            align,
-            caret,
-            caret_on,
-            caret_style,
-        } = line;
+        let TextDraw { text, runs, face, color, align, caret, caret_on, caret_style } = line;
+        let Typeface { font_size, line_height, letter_spacing, font_weight, italic, ref variations, ref font } = *face;
         let physical = snap_to_physical(rect, 1.0);
         let step = line_height * scale;
         let thickness = caret_thickness(font_size) * scale;
         let bar_width = caret_style.width * scale;
 
         let runs_key = font_runs(runs);
-        let font_size_bits = font_size.to_bits();
         let hash = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             text.hash(&mut hasher);
-            font_size_bits.hash(&mut hasher);
+            font_size.to_bits().hash(&mut hasher);
             line_height.to_bits().hash(&mut hasher);
             letter_spacing.to_bits().hash(&mut hasher);
             font_weight.to_bits().hash(&mut hasher);
@@ -391,31 +352,16 @@ impl TextPainter {
         {
             Arc::clone(lines)
         } else {
-            let lines = Arc::new(self.shaping.shape_lines(
-                text,
-                &runs_key,
-                ShapingStyle { font_size, line_height, letter_spacing, font_weight, italic, variations },
-                font,
-            ));
+            let lines = Arc::new(self.shaping.shape_lines(text, &runs_key, face.shaping_style(), font.as_ref()));
             // ponytail: 1024 entries bounds lines cache memory. Clears wholesale at cap like shaping cache. Upgrade path: per-frame generational epoch.
             if self.lines_cache_len >= 1024 {
                 self.lines_cache.clear();
                 self.lines_cache_len = 0;
             }
-            self.lines_cache.entry(hash).or_default().push((
-                TextLineKey {
-                    text: text.to_string(),
-                    runs: runs_key,
-                    font_size_bits,
-                    line_height_bits: line_height.to_bits(),
-                    letter_spacing_bits: letter_spacing.to_bits(),
-                    font_weight_bits: font_weight.to_bits(),
-                    italic,
-                    variations: Arc::clone(variations),
-                    font: font.cloned(),
-                },
-                Arc::clone(&lines),
-            ));
+            self.lines_cache
+                .entry(hash)
+                .or_default()
+                .push((TextLineKey { text: text.to_string(), runs: runs_key, face: face.clone() }, Arc::clone(&lines)));
             self.lines_cache_len += 1;
             lines
         };
@@ -448,7 +394,14 @@ impl TextPainter {
                 // contiguous stretch: a selection crossing a direction change is not one box.
                 if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {
                     for (x0, x1) in x_spans(&laid.glyphs, |glyph| glyph.start < hi && glyph.end > lo) {
-                        self.fill(left + x0 * scale, top, (x1 - x0) * scale, step, Rgba { a: color.a * 0.3, ..color });
+                        self.fill(
+                            left + x0 * scale,
+                            top,
+                            (x1 - x0) * scale,
+                            step,
+                            0.0,
+                            Rgba { a: color.a * 0.3, ..color },
+                        );
                     }
                 }
                 let style = |start: usize| runs.iter().find(|run| run.range.contains(&(line_start + start)));
@@ -467,7 +420,7 @@ impl TextPainter {
                 // Over them, so a glyph's side bearing cannot swallow it.
                 if let Some((.., at)) = selection.filter(|_| caret_on) {
                     let height = caret_style.bar_height(line_height) * scale;
-                    self.fill_rounded(
+                    self.fill(
                         left + caret_x(laid, at) * scale,
                         top + (step - height) / 2.0,
                         bar_width,
@@ -485,6 +438,7 @@ impl TextPainter {
                             (baseline + thickness).round(),
                             (x1 - x0) * scale,
                             thickness,
+                            0.0,
                             tint,
                         );
                     }
@@ -493,19 +447,11 @@ impl TextPainter {
         }
     }
 
-    /// One filled rectangle: an underline, a caret, or the highlight behind a selection.
-    fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
-        self.fill_rounded(x, y, width, height, 0.0, color);
-    }
-
-    fn fill_rounded(&mut self, x: f32, y: f32, width: f32, height: f32, radius: f32, color: Rgba) {
+    /// One filled rectangle, rounded by `radius` (femtovg squares off a zero one): an underline, a caret, or the highlight behind a selection.
+    fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, radius: f32, color: Rgba) {
         let mut path = Path::new();
-        if radius > 0.0 {
-            path.rounded_rect(x, y, width, height, radius);
-        } else {
-            path.rect(x, y, width, height);
-        }
-        self.canvas.fill_path(&path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
+        path.rounded_rect(x, y, width, height, radius);
+        self.canvas.fill_path(&path, &Paint::color(color.into()));
     }
 
     /// Draws `glyphs` in `face` at the axis `coords` Parley shaped them at; a face femtovg never
@@ -519,7 +465,7 @@ impl TextPainter {
         font_size: f32,
     ) {
         let Some(font) = self.faces.get(&face) else { return };
-        let mut paint = Paint::color(Color::rgbaf(tint.r, tint.g, tint.b, tint.a));
+        let mut paint = Paint::color(tint.into());
         paint.set_font_size(font_size);
         let _ = self.canvas.fill_glyph_run(*font, coords, glyphs, &paint);
     }

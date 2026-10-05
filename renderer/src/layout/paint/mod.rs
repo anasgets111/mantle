@@ -49,15 +49,7 @@ pub enum Draw {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
         runs: Vec<StyleRun>,
-        font_size: f32,
-        line_height: f32,
-        letter_spacing: f32,
-        font_weight: f32,
-        italic: bool,
-        variations: crate::text::shaping::Variations,
-        /// The family this was measured and drawn in, or `None` for the declared chain
-        /// (ADR-0144).
-        font: Option<std::sync::Arc<str>>,
+        face: node::Typeface,
         color: Rgba,
         align: TextAlign,
         /// Center a `textfield` line; ordinary text starts at the top of its content box.

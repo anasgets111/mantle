@@ -117,16 +117,6 @@ pub struct Glyph {
     pub rtl: bool,
 }
 
-/// The default `line_height` ratio, for tests that build a style by hand; nodes read the property.
-#[cfg(test)]
-pub const LINE_HEIGHT_RATIO: f32 = 1.2;
-
-/// [`LINE_HEIGHT_RATIO`] applied to `font_size`.
-#[cfg(test)]
-pub fn line_height(font_size: f32) -> f32 {
-    font_size * LINE_HEIGHT_RATIO
-}
-
 /// One font file's bytes, held once and shared by every reader. The inner `Arc` is `fontdb`'s:
 /// `Database::make_shared_face_data` maps the file and rewrites every face from it to point at
 /// the mapping, so Parley and FemtoVG read the same `Shared_Clean` pages. The newtype exists
@@ -614,7 +604,7 @@ mod tests {
         ShapeRequest {
             text: text.into(),
             font_size,
-            line_height: line_height(font_size),
+            line_height: font_size * 1.2,
             letter_spacing: 0.0,
             font_weight: 400.0,
             italic: false,

@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use crate::image::{Fit, Load};
-use crate::text::shaping::{ShapingStyle, Variations};
+use crate::text::shaping::{FontRun, ShapeRequest, ShapingStyle, Variations};
 use crate::text::snap::LogicalRect;
 
 use super::*;
@@ -36,10 +36,9 @@ impl CaptureTarget {
     }
 }
 
-/// A `textfield`'s typography: the draft, the placeholder and the mask share it, and so do their
-/// measure, paint, caret and press hit-test.
+/// A `text`'s or `textfield`'s typography: measure, paint, caret and press hit-test all read it.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FieldFace {
+pub struct Typeface {
     pub font_size: f32,
     /// Px, `font_size` times the `line_height` ratio.
     pub line_height: f32,
@@ -47,10 +46,39 @@ pub struct FieldFace {
     pub font_weight: f32,
     pub italic: bool,
     pub variations: Variations,
+    /// The family this node named, or `None` for the declared chain (ADR-0144).
     pub font: Option<Arc<str>>,
 }
 
-impl FieldFace {
+impl Typeface {
+    fn read(properties: &PropMap) -> Result<Self, LayoutError> {
+        let font_size = typeface::font_size.read(properties)?;
+        Ok(Self {
+            font_size,
+            line_height: font_size * typeface::line_height.read(properties)?,
+            letter_spacing: typeface::letter_spacing.read(properties)?,
+            font_weight: typeface::font_weight.read(properties)?,
+            italic: typeface::italic.read(properties)?,
+            variations: typeface::font_variations.read(properties)?,
+            font: typeface::font.read(properties)?,
+        })
+    }
+
+    pub fn request(&self, text: String, max_width: Option<f32>, runs: Vec<FontRun>) -> ShapeRequest {
+        ShapeRequest {
+            text,
+            font_size: self.font_size,
+            line_height: self.line_height,
+            letter_spacing: self.letter_spacing,
+            font_weight: self.font_weight,
+            italic: self.italic,
+            variations: self.variations.clone(),
+            max_width,
+            runs,
+            font: self.font.clone(),
+        }
+    }
+
     pub fn shaping_style(&self) -> ShapingStyle<'_> {
         ShapingStyle {
             font_size: self.font_size,
@@ -115,14 +143,7 @@ pub enum PaintStyle {
         content: Arc<str>,
         /// Styled stretches of `content`, remapped when the scene rewrites it (ADR-0104).
         runs: Vec<StyleRun>,
-        font_size: f32,
-        line_height: f32,
-        letter_spacing: f32,
-        font_weight: f32,
-        italic: bool,
-        variations: crate::text::shaping::Variations,
-        /// The family this node named, or `None` for the declared chain (ADR-0144).
-        font: Option<Arc<str>>,
+        face: Typeface,
         color: Rgba,
         align: TextAlign,
         elide: Elide,
@@ -178,7 +199,7 @@ pub enum PaintStyle {
         target: Option<SecureSubmitTarget>,
         placeholder: String,
         mask: String,
-        face: FieldFace,
+        face: Typeface,
         color: Rgba,
         /// `color` unless `placeholder_color` is set.
         placeholder_color: Rgba,
@@ -215,17 +236,10 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;
-            let font_size = typeface::font_size.read(properties)?;
             PaintStyle::Text {
                 content: content.into(),
                 runs,
-                font_size,
-                line_height: font_size * typeface::line_height.read(properties)?,
-                letter_spacing: typeface::letter_spacing.read(properties)?,
-                font_weight: typeface::font_weight.read(properties)?,
-                italic: typeface::italic.read(properties)?,
-                variations: typeface::font_variations.read(properties)?,
-                font: typeface::font.read(properties)?,
+                face: Typeface::read(properties)?,
                 color: typeface::foreground.read(properties)?.expect("`foreground` has a default"),
                 align: typeface::text_align.read(properties)?,
                 elide: text_flow::elide.read(properties)?,
@@ -276,11 +290,11 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
             textfield::focus_target.read(properties)?;
             let color = typeface::foreground.read(properties)?.expect("`foreground` has a default");
-            let font_size = typeface::font_size.read(properties)?;
+            let face = Typeface::read(properties)?;
             let keys = textfield::caret.read(properties)?;
             let caret = CaretStyle {
                 color: keys.color.unwrap_or(color),
-                width: keys.width.unwrap_or(crate::text::shaping::caret_thickness(font_size)),
+                width: keys.width.unwrap_or(crate::text::shaping::caret_thickness(face.font_size)),
                 height: keys.height,
                 radius: keys.radius.unwrap_or(0.0),
             };
@@ -296,15 +310,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 placeholder: textfield::placeholder.read(properties)?,
                 // Drawn once per typed character: `""` draws nothing, a longer string its first one.
                 mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
-                face: FieldFace {
-                    font_size,
-                    line_height: font_size * typeface::line_height.read(properties)?,
-                    letter_spacing: typeface::letter_spacing.read(properties)?,
-                    font_weight: typeface::font_weight.read(properties)?,
-                    italic: typeface::italic.read(properties)?,
-                    variations: typeface::font_variations.read(properties)?,
-                    font: typeface::font.read(properties)?,
-                },
+                face,
                 color,
                 placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),
                 caret,
@@ -360,7 +366,7 @@ mod tests {
     fn a_text_node_without_a_font_property_draws_in_the_declared_chain() {
         let lua = Lua::new();
         let parsed = style(&lua, r#"return { kind = "text", content = "hi" }"#).unwrap().unwrap();
-        assert!(matches!(parsed, PaintStyle::Text { font: None, .. }), "got {parsed:?}");
+        assert!(matches!(parsed, PaintStyle::Text { face: Typeface { font: None, .. }, .. }), "got {parsed:?}");
     }
 
     /// The family reaches paint as the config wrote it, not normalised: the painter keys its
@@ -371,7 +377,7 @@ mod tests {
         let parsed = style(&lua, r#"return { kind = "text", content = "hi", font = "JetBrainsMono Nerd Font Mono" }"#)
             .unwrap()
             .unwrap();
-        let PaintStyle::Text { font, .. } = parsed else { panic!("expected text") };
+        let PaintStyle::Text { face: Typeface { font, .. }, .. } = parsed else { panic!("expected text") };
         assert_eq!(font.as_deref(), Some("JetBrainsMono Nerd Font Mono"));
     }
 

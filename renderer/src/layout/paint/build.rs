@@ -142,8 +142,7 @@ fn build_node(
     let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
     let own = layer_bounds(rect, &layered, scale);
     let reach = if casts && !radius.scoop() {
-        let body = if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) };
-        effect.shadows.iter().fold(body, |reach, shadow| {
+        effect.shadows.iter().fold(own, |reach, shadow| {
             reach.union(snap_to_physical(grow(shadow_rect(rect, rect, *shadow), 1.5 * shadow.blur), scale))
         })
     } else if effect.layers() {
@@ -231,11 +230,10 @@ fn build_node(
         }
         None => {
             if let Some(draw) = draw {
-                // Glyph ink runs past a tight line box, so a text clips to its width and the ancestors' clip only.
-                // ponytail: one em of vertical room bounds any face's ascent and descent; upgrade path: the shaped ink extents.
+                // ponytail: ink can pass a tight line box, so text clips to one em of vertical room; upgrade: the shaped ink extents.
                 let clip = match &draw {
-                    Draw::Text { font_size, .. } if !clip.is_empty() => {
-                        parent_clip.intersect(snap_to_physical(grow_y(rect, *font_size), scale))
+                    Draw::Text { face, .. } if !clip.is_empty() => {
+                        parent_clip.intersect(snap_to_physical(grow_y(rect, face.font_size), scale))
                     }
                     _ => clip,
                 };
@@ -482,42 +480,22 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // `wrap` and `max_lines` are absent on purpose: `Scene::apply` already rewrote `content` to
         // the string that fits (ellipsized, or line-broken with `\n`) in the only place the box
         // width and the shaping worker are both in reach.
-        PaintStyle::Text {
-            content,
-            runs,
-            font_size,
-            line_height,
-            letter_spacing,
-            font_weight,
-            italic,
-            variations,
-            font,
-            color,
-            align,
-            elide: _,
-            wrap: _,
-            max_lines: _,
-            elided: _,
-        } => Some(Draw::Text {
-            content: content.clone(),
-            runs: runs
-                .iter()
-                .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
-                .collect(),
-            font_size: *font_size,
-            line_height: *line_height,
-            letter_spacing: *letter_spacing,
-            font_weight: *font_weight,
-            italic: *italic,
-            variations: variations.clone(),
-            font: font.clone(),
-            color: fade(*color, opacity),
-            align: *align,
-            centered: false,
-            caret: None,
-            caret_on: false,
-            caret_style: CaretStyle::plain(*font_size, fade(*color, opacity)),
-        }),
+        PaintStyle::Text { content, runs, face, color, align, elide: _, wrap: _, max_lines: _, elided: _ } => {
+            Some(Draw::Text {
+                content: content.clone(),
+                runs: runs
+                    .iter()
+                    .map(|run| StyleRun { color: run.color.map(|c| fade(c, opacity)), ..run.clone() })
+                    .collect(),
+                face: face.clone(),
+                color: fade(*color, opacity),
+                align: *align,
+                centered: false,
+                caret: None,
+                caret_on: false,
+                caret_style: CaretStyle::plain(face.font_size, fade(*color, opacity)),
+            })
+        }
 
         // Icons use `Contain` and the shorter edge: `size` is a bounding-box diameter.
         PaintStyle::Icon { name, color } => Some(Draw::Icon {
@@ -627,13 +605,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
                 content: content.into(),
                 runs,
-                font_size: face.font_size,
-                line_height: face.line_height,
-                letter_spacing: face.letter_spacing,
-                font_weight: face.font_weight,
-                italic: face.italic,
-                variations: face.variations.clone(),
-                font: face.font.clone(),
+                face: face.clone(),
                 color: fade(*color, opacity),
                 align: *align,
                 centered: true,
@@ -694,8 +666,7 @@ fn shader_padding(effect: &node::Effect) -> f32 {
     effect.shader.as_ref().map_or(0.0, |shader| shader.padding)
 }
 
-/// A layer's offscreen: the box padded for the furthest-reaching blur or shader, and where that
-/// padded box lands as the shadow.
+/// A layer's offscreen: the box padded for the furthest blur or shader, united with where it lands as the shadow.
 fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> PhysicalRect {
     let shadow_reach = effect.shadows.iter().fold(0.0_f32, |most, shadow| most.max(reach(shadow.blur / 2.0)));
     let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(effect)));
@@ -1148,9 +1119,7 @@ mod tests {
         );
     }
 
-    /// A tight `line_height` leaves glyph ink outside the line box: the text's clip reaches past
-    /// the box vertically, stays at its width, and never leaves an ancestor's clip, so the repaint
-    /// bounds cover the ink too.
+    /// A tight `line_height` leaves ink outside the line box: the clip reaches past it vertically only, within ancestors' clips.
     #[test]
     fn a_texts_clip_reaches_past_a_tight_line_box_but_only_vertically() {
         let src = |clip: &str| {
@@ -1384,7 +1353,8 @@ mod tests {
         let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
         for list in [build(&tree, 1.0, None), typed] {
             let Some(Draw::Text {
-                font, font_size, line_height, letter_spacing, font_weight, italic, variations, ..
+                face: node::Typeface { font, font_size, line_height, letter_spacing, font_weight, italic, variations },
+                ..
             }) = list.commands.iter().find_map(|cmd| matches!(cmd.draw, Draw::Text { .. }).then(|| cmd.draw.clone()))
             else {
                 panic!("the field draws text")
@@ -1693,6 +1663,27 @@ mod tests {
         assert_eq!(drawn_text(&list), vec!["\u{2022}\u{2022}\u{2022}".to_string()]);
     }
 
+    /// The dots are shaped in the field's own typeface, and no caret position is ever derived from them.
+    #[test]
+    fn a_masked_fields_dots_carry_its_typeface_and_no_caret() {
+        let lua = Lua::new();
+        let src = r##"return panel { id = "bar", width = 200, height = 40,
+            child = textfield { width = "fill", height = 28, font_size = 20, letter_spacing = 3,
+                secure_submit = { capability = "lock", action = "authenticate" } } }"##;
+        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let target = lock_target();
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
+        let Some(Draw::Text { face, caret, .. }) =
+            list.commands.iter().map(|cmd| &cmd.draw).find(|d| matches!(d, Draw::Text { .. }))
+        else {
+            panic!("the dots are drawn: {list:?}")
+        };
+        assert_eq!((face.font_size, face.letter_spacing, *caret), (20.0, 3.0, None));
+        let point = crate::layout::hit::LogicalPoint { x: 5.0, y: 5.0 };
+        let shaping = crate::text::shaping::ShapingHandle::spawn();
+        assert_eq!(crate::layout::hit::caret_at(&[&tree, &tree.children[0]], point, "", 0, &shaping), None);
+    }
+
     /// The property this feature needs from the display list: typing has to change it, or
     /// `paint_surface` skips the repaint and the dots never appear.
     #[test]
@@ -1791,6 +1782,30 @@ mod tests {
         assert_ne!(layer(0, 1), plain, "so is a saved file");
     }
 
+    /// ADR-0336 item 5: a node cut out by a clipping ancestor is still built when its shader padding reaches back in.
+    #[test]
+    fn shader_padding_decides_whether_a_clipped_out_node_is_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.frag");
+        std::fs::write(&path, "void main() {}").unwrap();
+        let layer = |padding: u32, shadow: &str| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = row {{ width = 30,
+                height = 20, clip = "box", children = {{ rect {{ width = 20, height = 20, margin = {{ left = 40 }}, {shadow}
+                effect = {{ shader = {{ source = "{}", padding = {padding} }} }}, children = {{
+                rect {{ width = 20, height = 20, margin = {{ left = -30 }}, background = "#ffffff" }} }} }} }} }} }}"##,
+                path.display()
+            );
+            let list = effect_surface_src(&src);
+            list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { silhouette: false, .. })).cloned()
+        };
+        for shadow in ["", "shadows = { { blur = 1, color = \"#000000ff\" } },"] {
+            assert!(layer(0, shadow).is_none(), "no padding: nothing reaches the clip ({shadow})");
+            let drawn = layer(30, shadow).unwrap_or_else(|| panic!("padding reaches the clip ({shadow})"));
+            assert!(drawn.clip.x1 <= 70, "inside the ancestor's clip: {:?}", drawn.clip);
+        }
+    }
+
     /// Qt's `OpacityMask` covers the item, not only its children, so the node's own fill and border
     /// are drawn inside the masked group, in the order an unmasked box draws them.
     #[test]
@@ -1820,6 +1835,26 @@ mod tests {
         );
         let Draw::Clipped { radius, mask: Some(_), commands } = &list.commands[1].draw else { panic!("{list:?}") };
         assert_eq!((*radius, commands.len()), (Radii::from(8.0), 1));
+    }
+
+    /// `corner_smoothing` rides the radii into every draw that cuts or reads through the outline.
+    #[test]
+    fn corner_smoothing_reaches_a_mask_and_a_backdrop() {
+        let smooth = Radii([8.0; 4], 0.6);
+        let list = masked(
+            r##"rect { width = 80, height = 32, radius = 8, corner_smoothing = 0.6, clip = "rounded",
+                background = "#0000FFFF", mask = { source = "/nonexistent/mask.svg" } }"##,
+        );
+        let Draw::Clipped { radius, mask: Some(_), .. } = &list.commands[1].draw else { panic!("{list:?}") };
+        assert_eq!(*radius, smooth);
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, radius = 8, corner_smoothing = 0.6, effect = { backdrop = { blur = 4 } } }"##,
+        );
+        let radius = list.commands.iter().find_map(|cmd| match cmd.draw {
+            Draw::Backdrop { radius, .. } => Some(radius),
+            _ => None,
+        });
+        assert_eq!(radius, Some(smooth));
     }
 
     /// Opacity is baked into the list (ADR-0063), so a gradient fades stop by stop like a colour.
@@ -1975,7 +2010,7 @@ mod tests {
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
     }
 
-    /// ADR-0260. `content_blur` still takes a layer, and the box shadow stays a gradient outside it.
+    /// ADR-0260. `effect.blur` still takes a layer, and the box shadow stays a gradient outside it.
     /// A scoop, which a gradient cannot draw, casts its fill's silhouette alone through a layer.
     #[test]
     fn a_box_shadow_never_rides_the_bodys_layer() {
@@ -2007,10 +2042,10 @@ mod tests {
         assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }
 
-    /// ADR-0254, ADR-0262. `content_blur` spreads the subtree's pixels 3 sigma past its box, at
+    /// ADR-0254, ADR-0262. `effect.blur` spreads the subtree's pixels 3 sigma past its box, at
     /// any sigma.
     #[test]
-    fn a_content_blur_groups_the_subtree_and_reaches_three_sigma() {
+    fn an_effect_blur_groups_the_subtree_and_reaches_three_sigma() {
         for (blur, reach) in [(2, 6), (12, 36)] {
             let list = effect_surface(&format!(
                 r##"rect {{ width = 40, height = 20, background = "#ffffff", effect = {{ blur = {blur} }} }}"##
@@ -2134,8 +2169,8 @@ mod tests {
             _ => None,
         });
         assert_eq!(border, Some((Radii::from(8.0), 2.0)));
-        let text = list.commands.iter().find_map(|cmd| match cmd.draw {
-            Draw::Text { font_size, .. } => Some(font_size),
+        let text = list.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Text { face, .. } => Some(face.font_size),
             _ => None,
         });
         assert_eq!(text, Some(12.0), "shaping reads the logical size");
@@ -2157,7 +2192,7 @@ mod tests {
     /// ADR-0256. The backdrop is read before the node paints anything and outside the offscreen a
     /// shadow draws the node into, faded with it, and its clip covers the 3 sigma the blur reads.
     #[test]
-    fn a_backdrop_blur_draws_first_outside_the_nodes_layer_and_reaches_three_sigma() {
+    fn an_effect_backdrop_draws_first_outside_the_nodes_layer_and_reaches_three_sigma() {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 6, background = "#ffffff40", opacity = 0.5,
                 effect = { backdrop = { blur = 4 } }, shadows = { { offset = { y = 4 } } }}"##,

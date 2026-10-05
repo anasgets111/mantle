@@ -3,12 +3,12 @@
 //! Pure: unlike the rest of the pointer path, this only decides what a click means. Other
 //! pointer-path work owns live `wl_pointer` and `wl_surface` objects.
 
-use crate::layout::node::FieldFace;
+use crate::layout::node::Typeface;
 use crate::layout::node::{
     Affine, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs, invert_affine,
 };
 use crate::layout::scene::ResolvedNode;
-use crate::text::shaping::{self, ShapeResult, ShapedLine, ShapingHandle, ShapingStyle};
+use crate::text::shaping::{self, ShapeResult, ShapedLine, ShapingHandle};
 use crate::text::snap::LogicalRect;
 use cursor_icon::CursorIcon;
 
@@ -56,39 +56,15 @@ pub fn hit_path(root: &ResolvedNode, point: LogicalPoint) -> Vec<&ResolvedNode> 
 /// apart, under the same alignment (ADR-0211); the run under the pointer holds the byte its glyph
 /// came from.
 pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHandle) -> Option<String> {
-    let Some(PaintStyle::Text {
-        content,
-        runs,
-        font_size,
-        line_height,
-        letter_spacing,
-        font_weight,
-        italic,
-        variations,
-        font,
-        align,
-        ..
-    }) = node.paint.as_ref()
-    else {
+    let Some(PaintStyle::Text { content, runs, face, align, .. }) = node.paint.as_ref() else {
         return None;
     };
     if runs.iter().all(|run| run.href.is_none()) || point.y < 0.0 {
         return None;
     }
-    let mut row = (point.y / *line_height) as usize;
-    for (line_start, shaped) in shaping.shape_lines(
-        content,
-        &font_runs(runs),
-        ShapingStyle {
-            font_size: *font_size,
-            line_height: *line_height,
-            letter_spacing: *letter_spacing,
-            font_weight: *font_weight,
-            italic: *italic,
-            variations,
-        },
-        font.as_ref(),
-    ) {
+    let mut row = (point.y / face.line_height) as usize;
+    for (line_start, shaped) in shaping.shape_lines(content, &font_runs(runs), face.shaping_style(), face.font.as_ref())
+    {
         let Some(laid) = shaped.shaped.get(row) else {
             row -= shaped.shaped.len();
             continue;
@@ -130,7 +106,7 @@ pub fn caret_at(
     Some(shaping::caret_at(laid, x - left, text.len()))
 }
 
-pub(crate) fn field_line(text: &str, face: &FieldFace, shaping: &ShapingHandle) -> Option<ShapeResult> {
+pub(crate) fn field_line(text: &str, face: &Typeface, shaping: &ShapingHandle) -> Option<ShapeResult> {
     shaping
         .shape_lines(text, &[], face.shaping_style(), face.font.as_ref())
         .into_iter()
@@ -138,6 +114,7 @@ pub(crate) fn field_line(text: &str, face: &FieldFace, shaping: &ShapingHandle) 
         .map(|(_, shaped)| shaped)
 }
 
+/// `x0`/`x1` are in the output's units, the line and `thickness` logical, `scale` taking them there.
 pub(crate) fn field_line_left(
     line: Option<&ShapedLine>,
     align: TextAlign,
@@ -148,7 +125,13 @@ pub(crate) fn field_line_left(
     scale: f32,
 ) -> f32 {
     let left = align.line_left(line.is_some_and(|line| line.rtl), x0, x1, line.map_or(0.0, |line| line.width * scale));
-    shaping::caret_visible_left(left, x0, x1, line.map_or(0.0, |line| shaping::caret_x(line, caret) * scale), thickness)
+    shaping::caret_visible_left(
+        left,
+        x0,
+        x1,
+        line.map_or(0.0, |line| shaping::caret_x(line, caret) * scale),
+        thickness * scale,
+    )
 }
 
 /// The shape the pointer should take over `path`'s deepest node (ADR-0107). Innermost wins, and
@@ -473,13 +456,7 @@ mod tests {
         node.paint = Some(PaintStyle::Text {
             content: content.into(),
             runs,
-            font_size: 14.0,
-            line_height: shaping::line_height(14.0),
-            letter_spacing: 0.0,
-            font_weight: 400.0,
-            italic: false,
-            variations: Default::default(),
-            font: None,
+            face: face(14.0, 0.0),
             color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
             align,
             elide: crate::layout::node::Elide::None,
@@ -503,7 +480,7 @@ mod tests {
                 variations: Default::default(),
                 text: text.to_string(),
                 font_size: 14.0,
-                line_height: shaping::line_height(14.0),
+                line_height: 14.0 * 1.2,
                 max_width: None,
                 runs: Vec::new(),
                 font: None,
@@ -513,10 +490,10 @@ mod tests {
 
     // ---- caret_at (ADR-0236) ----
 
-    fn face(font_size: f32, letter_spacing: f32) -> FieldFace {
-        FieldFace {
+    fn face(font_size: f32, letter_spacing: f32) -> Typeface {
+        Typeface {
             font_size,
-            line_height: shaping::line_height(font_size),
+            line_height: font_size * 1.2,
             letter_spacing,
             font_weight: 400.0,
             italic: false,
@@ -525,7 +502,7 @@ mod tests {
         }
     }
 
-    fn field_paint(placeholder: &str, face: FieldFace) -> PaintStyle {
+    fn field_paint(placeholder: &str, face: Typeface) -> PaintStyle {
         let white = crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
         PaintStyle::TextField {
             target: None,
@@ -578,13 +555,25 @@ mod tests {
         assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, 0, &shaping), None);
     }
 
+    /// A draft wider than its field slides to keep the caret bar inside it, scaling the bar's width with the line.
+    #[test]
+    fn a_long_draft_keeps_its_caret_bar_inside_the_field_at_scale_2() {
+        let shaping = ShapingHandle::spawn();
+        let text = "a draft much wider than the field";
+        let shaped = field_line(text, &face(14.0, 0.0), &shaping).unwrap();
+        let line = shaped.shaped.first();
+        let left = field_line_left(line, TextAlign::Start, 0.0, 40.0, text.len(), 3.0, 2.0);
+        let bar = left + shaping::caret_x(line.unwrap(), text.len()) * 2.0;
+        assert!((bar + 3.0 * 2.0 - 40.0).abs() < 0.01, "the bar's right edge meets the field's: {bar}");
+    }
+
     /// The field shapes its draft as a `text` of the same properties would, so its caret and a press
     /// follow letter spacing and weight rather than the default metrics.
     #[test]
     fn a_fields_typography_moves_its_glyph_boundaries_and_the_caret_press_follows() {
         let shaping = ShapingHandle::spawn();
         let text = "hello world";
-        let spaced = FieldFace { letter_spacing: 6.0, font_weight: 700.0, ..face(14.0, 0.0) };
+        let spaced = Typeface { letter_spacing: 6.0, font_weight: 700.0, ..face(14.0, 0.0) };
         let plain = field_line(text, &face(14.0, 0.0), &shaping).unwrap();
         let line = field_line(text, &spaced, &shaping).unwrap();
         let as_text = shaping.shape(ShapeRequest {
@@ -594,7 +583,7 @@ mod tests {
             variations: Default::default(),
             text: text.to_string(),
             font_size: 14.0,
-            line_height: shaping::line_height(14.0),
+            line_height: 14.0 * 1.2,
             max_width: None,
             runs: Vec::new(),
             font: None,
@@ -646,7 +635,7 @@ mod tests {
         let text = "first line\nsee this";
         let node = styled_text(text, vec![link(15..19, "https://b/")], TextAlign::Start, 300.0);
         let x = width_of(&shaping, "see ") + width_of(&shaping, "this") / 2.0;
-        let step = shaping::line_height(14.0);
+        let step = 14.0 * 1.2;
         assert_eq!(link_under(&node, LogicalPoint { x, y: step / 2.0 }, &shaping), None, "first line, plain");
         assert_eq!(link_under(&node, LogicalPoint { x, y: step * 1.5 }, &shaping), Some("https://b/".to_string()));
         assert_eq!(link_under(&node, LogicalPoint { x, y: step * 2.5 }, &shaping), None, "below the last line");
@@ -679,7 +668,7 @@ mod tests {
     #[test]
     fn a_link_after_a_carriage_return_is_found_on_the_row_below() {
         let shaping = ShapingHandle::spawn();
-        let step = shaping::line_height(14.0);
+        let step = 14.0 * 1.2;
         for (text, range) in [("first\rsee this", 6..14), ("first\n\rsee this", 7..15)] {
             let node = styled_text(text, vec![link(range, "https://e/")], TextAlign::Start, 300.0);
             assert_eq!(link_under(&node, LogicalPoint { x: 4.0, y: step / 2.0 }, &shaping), None, "{text:?}");

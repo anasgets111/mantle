@@ -4,33 +4,11 @@ use mlua::Lua;
 use shared::warn;
 
 use super::luacats::{lua_class, lua_fn};
+use crate::layout::node::prop::{Keyword, keywords};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Edge {
-    Top,
-    Bottom,
-    Left,
-    Right,
-    TopLeft,
-    TopRight,
-    BottomLeft,
-    BottomRight,
-}
-
-impl Edge {
-    fn parse(name: &str) -> Option<Self> {
-        Some(match name {
-            "top" => Self::Top,
-            "bottom" => Self::Bottom,
-            "left" => Self::Left,
-            "right" => Self::Right,
-            "top_left" => Self::TopLeft,
-            "top_right" => Self::TopRight,
-            "bottom_left" => Self::BottomLeft,
-            "bottom_right" => Self::BottomRight,
-            _ => return None,
-        })
-    }
+keywords! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(crate) enum Edge { Top, Bottom, Left, Right, TopLeft, TopRight, BottomLeft, BottomRight }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -85,10 +63,8 @@ lua_class! {
             /// `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`.
             edge: String,
         ) {
-            let Some(edge) = Edge::parse(&edge) else {
-                return Err(mlua::Error::runtime(format!(
-                    "resize() takes top, bottom, left, right, top_left, top_right, bottom_left or bottom_right, not {edge:?}"
-                )));
+            let Some(edge) = Edge::find(edge.as_bytes()) else {
+                return Err(mlua::Error::runtime(format!("resize() takes {}, not {edge:?}", Edge::NAMES.join(", "))));
             };
             this.queue(lua, |_| Action::Resize(edge));
             Ok(())

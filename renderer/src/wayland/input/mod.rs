@@ -152,7 +152,7 @@ pub(in crate::wayland) fn caret_blink() -> Option<(std::time::Duration, std::tim
 }
 
 impl App {
-    fn pointer_seat(&self) -> Option<wl_seat::WlSeat> {
+    pub(in crate::wayland) fn pointer_seat(&self) -> Option<wl_seat::WlSeat> {
         Some(self.pointer.as_ref()?.pointer().data::<PointerData<()>>()?.seat().clone())
     }
 

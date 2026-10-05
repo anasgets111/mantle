@@ -120,7 +120,7 @@
 ---@class Caret
 ---@field color? Color|Bound Default: the field's `foreground`.
 ---@field width? number|Bound Px, within `[0, 8192]`. Default: a sixteenth of `font_size`, rounded, at least `1`.
----@field height? number|Bound Px, or a fraction of the line height when `1` or less; within `[0, 8192]`. Default: the whole line. Centred on the line.
+---@field height? number|Bound Px, or a fraction of the line height when `1` or less. Default: the whole line, centred.
 ---@field radius? number|Bound Corner radius in px, within `[0, 8192]`. Default `0`.
 ---@field [string] "no such property"
 
@@ -307,7 +307,7 @@ function image(props) end
 ---@return Node
 function capture(props) end
 
----A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
+---A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadows` and `effect.blur` apply.
 ---[docs](https://anasgets111.github.io/mantle/nodes/shader.html)
 ---@param props ShaderProps
 ---@return Node

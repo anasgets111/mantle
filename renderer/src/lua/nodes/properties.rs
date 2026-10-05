@@ -465,7 +465,7 @@ props! {
         /// Include the pointer in the frame.
         paint_cursor: Bound<Flag> = absent(Bool(false));
     }
-    /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadow_*` and `content_blur` apply.
+    /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadows` and `effect.blur` apply.
     mod shader(SHADER) {
         /// Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
         ///
