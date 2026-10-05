@@ -44,6 +44,11 @@ pub struct Census {
     /// Live `mlua::Value`s across every retained node's `properties` map, the one place scene
     /// growth reaches the Lua heap.
     pub scene_properties: u64,
+    /// `TextPainter` offscreens: pooled scratch images and kept layers, with their bytes.
+    pub pool_images: u64,
+    pub pool_bytes: u64,
+    pub layers: u64,
+    pub layer_bytes: u64,
     pub malloc: Malloc,
 }
 
@@ -98,7 +103,8 @@ fn render(uptime: Duration, now: &Census, previous: Option<&Census>, first: Opti
         "memory t={:.0}s: malloc arena={:.1} in_use={:.1} free={:.1} mmap={:.1} MiB \
          | image {:.1} MiB ready={} pending={} failed={} evicted={} landed={} \
          | shape entries={} approx={:.1} MiB | lua {:.1} MiB \
-         | scene surfaces={} nodes={} props={}",
+         | scene surfaces={} nodes={} props={} \
+         | gl pool {:.1} MiB images={} layers {:.1} MiB kept={}",
         uptime.as_secs_f64(),
         mib(now.malloc.arena),
         mib(now.malloc.in_use),
@@ -116,6 +122,10 @@ fn render(uptime: Duration, now: &Census, previous: Option<&Census>, first: Opti
         now.scene_surfaces,
         now.scene_nodes,
         now.scene_properties,
+        mib(now.pool_bytes),
+        now.pool_images,
+        mib(now.layer_bytes),
+        now.layers,
     );
     if let Some(previous) = previous {
         line.push_str(&format!(" | step {}", deltas(now, previous)));
@@ -133,16 +143,18 @@ fn render_surfaces(uptime: Duration, surfaces: &Surfaces) -> String {
     format!("memory t={:.0}s: top surfaces {}", uptime.as_secs_f64(), listed.join(" "))
 }
 
-/// The four numbers worth watching over time, signed, in KiB because the interesting steps are
+/// The numbers worth watching over time, signed, in KiB because the interesting steps are
 /// hundreds of KiB long before they are megabytes.
 fn deltas(now: &Census, earlier: &Census) -> String {
     let kib = |now: u64, earlier: u64| (now as i64 - earlier as i64) as f64 / 1024.0;
     format!(
-        "in_use={:+.0} free={:+.0} image={:+.0} lua={:+.0} KiB shape={:+} nodes={:+}",
+        "in_use={:+.0} free={:+.0} image={:+.0} lua={:+.0} pool={:+.0} layers={:+.0} KiB shape={:+} nodes={:+}",
         kib(now.malloc.in_use, earlier.malloc.in_use),
         kib(now.malloc.free, earlier.malloc.free),
         kib(now.image_bytes, earlier.image_bytes),
         kib(now.lua_bytes, earlier.lua_bytes),
+        kib(now.pool_bytes, earlier.pool_bytes),
+        kib(now.layer_bytes, earlier.layer_bytes),
         now.shape_entries as i64 - earlier.shape_entries as i64,
         now.scene_nodes as i64 - earlier.scene_nodes as i64,
     )
@@ -186,6 +198,20 @@ mod tests {
         // Subtracting `u64`s directly would make a freed megabyte read as 16 exabytes.
         let line = deltas(&census(1024 * 1024, 0), &census(3 * 1024 * 1024, 0));
         assert!(line.contains("in_use=-2048"), "{line}");
+    }
+
+    #[test]
+    fn the_gl_pool_and_kept_layers_are_reported_beside_the_heap() {
+        let held = Census {
+            pool_images: 3,
+            pool_bytes: 18 * 1024 * 1024,
+            layers: 2,
+            layer_bytes: 4 * 1024 * 1024,
+            ..census(0, 0)
+        };
+        let line = render(Duration::from_secs(60), &held, Some(&census(0, 0)), None);
+        assert!(line.contains("gl pool 18.0 MiB images=3 layers 4.0 MiB kept=2"), "{line}");
+        assert!(line.contains("pool=+18432 layers=+4096"), "{line}");
     }
 
     #[test]

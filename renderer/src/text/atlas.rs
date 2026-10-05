@@ -296,6 +296,17 @@ impl TextPainter {
         }
     }
 
+    /// What the offscreen pool and the kept layers hold, as `(pool images, pool bytes, layers,
+    /// layer bytes)`, for `wayland::memory_profile`. Both are GPU images the driver may mirror in
+    /// host memory, which `malloc` counts and `image` does not.
+    pub fn census(&self) -> (usize, usize, usize, usize) {
+        let area = |(width, height): (usize, usize), images: usize| images * width * height * 4;
+        let pooled = self.scratch.iter().map(|((_, size), (_, free))| (free.len(), area(*size, free.len())));
+        let (images, pool_bytes) = pooled.fold((0, 0), |(n, bytes), (more, extra)| (n + more, bytes + extra));
+        let layer_bytes = self.layers.iter().map(|(_, _, (casts, _), size, _)| area(*size, 1 + casts.len())).sum();
+        (images, pool_bytes, self.layers.len(), layer_bytes)
+    }
+
     /// Deletes `surface`'s finished layers and pooled offscreens. A gone surface never paints again
     /// to sweep its own, and an idle shell paints too little for [`LAYER_PAINTS`] to age them: a
     /// full-screen lock with a blur held 50 MiB after unlock. The GL context must be current.

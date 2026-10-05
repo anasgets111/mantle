@@ -554,6 +554,8 @@ fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
     let image = app.image_cache.census();
     let (shape_entries, shape_bytes) = app.shaping.census();
     let (surfaces, nodes, properties) = app.client.scene().census();
+    let (pool_images, pool_bytes, layers, layer_bytes) =
+        app.text_painter.as_ref().map_or_else(Default::default, |painter| painter.census());
     let census = memory_profile::Census {
         image_bytes: image.resident_bytes as u64,
         image_ready: image.ready as u64,
@@ -567,6 +569,10 @@ fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
         scene_surfaces: surfaces as u64,
         scene_nodes: nodes as u64,
         scene_properties: properties as u64,
+        pool_images: pool_images as u64,
+        pool_bytes: pool_bytes as u64,
+        layers: layers as u64,
+        layer_bytes: layer_bytes as u64,
         malloc: shared::Malloc::default(),
     };
     (census, memory_profile::Surfaces(app.client.scene().census_by_surface()))
