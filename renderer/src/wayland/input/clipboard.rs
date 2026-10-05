@@ -307,7 +307,7 @@ mod tests {
             on_change: None,
             on_submit: None,
             on_cancel: None,
-            on_navigate: None,
+            escape: Escape::Clear,
         };
         assert_eq!(selected_text(&field).as_deref(), Some("hello"));
         let mut empty = field.clone();

@@ -5,7 +5,6 @@ use shared::debug;
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
-use crate::layout::node::prop::Keyword;
 use crate::lua::call_logged;
 
 #[derive(Debug, Clone, Default)]
@@ -195,7 +194,7 @@ pub(super) fn requested_focus(
     target: FieldTarget,
     previous: Option<&FocusedTextField>,
 ) -> FocusedTextField {
-    let FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate } = target else {
+    let FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape } = target else {
         unreachable!("requested_field only returns plain targets")
     };
     let retained = previous.filter(|field| field.surface_id == surface_id && field.id == id);
@@ -211,7 +210,7 @@ pub(super) fn requested_focus(
         on_change,
         on_submit,
         on_cancel,
-        on_navigate,
+        escape,
     }
 }
 
@@ -225,8 +224,8 @@ struct PlainEdit {
     submitted: bool,
     /// Escape with `on_cancel` drops focus and fires it.
     cancelled: bool,
-    /// Up, down, Tab, or paging key: buffer stays; `on_navigate` hears the name.
-    navigated: Option<NavigateKey>,
+    /// An arrow the caret cannot take: the key is not the field's and goes up to `on_key`.
+    passed: bool,
     /// Caret or selection moved with the text unchanged: repaint, tell the config nothing.
     moved: bool,
 }
@@ -234,7 +233,7 @@ struct PlainEdit {
 impl PlainEdit {
     /// No-op edit, allowing [`App::apply_plain_key`] to return early.
     const NONE: PlainEdit =
-        PlainEdit { changed: false, submitted: false, cancelled: false, navigated: None, moved: false };
+        PlainEdit { changed: false, submitted: false, cancelled: false, passed: false, moved: false };
 }
 
 /// `text` cut on a grapheme boundary to what `max_length` leaves after `kept` clusters stay.
@@ -304,13 +303,14 @@ fn ime_change<'a>(
 
 /// Apply `action` to `buffer` at `selection`. Insertion and deletion act on the selection, or at
 /// the caret when there is none; `shift` extends the selection instead of collapsing it.
-/// Escape always clears; with `on_cancel` it also leaves (ADR-0092 decision 6), otherwise the
-/// config cannot know the field stopped taking keys.
+/// Escape follows `escape`; `Clear` empties the draft and, with `on_cancel`, also leaves (ADR-0092
+/// decision 6), otherwise the config cannot know the field stopped taking keys.
 fn edit_plain_buffer(
     buffer: &mut String,
     selection: &mut (usize, usize),
     action: KeyAction<'_>,
     shift: bool,
+    escape: Escape,
     cancels: bool,
 ) -> PlainEdit {
     let (anchor, caret) = *selection;
@@ -340,12 +340,16 @@ fn edit_plain_buffer(
             *selection = (from, from);
             PlainEdit { changed: from < to, ..PlainEdit::NONE }
         }
-        KeyAction::Clear => {
-            let had = !buffer.is_empty();
-            buffer.clear();
-            *selection = (0, 0);
-            PlainEdit { changed: had, cancelled: cancels, ..PlainEdit::NONE }
-        }
+        KeyAction::Clear => match escape {
+            Escape::Clear => {
+                let had = !buffer.is_empty();
+                buffer.clear();
+                *selection = (0, 0);
+                PlainEdit { changed: had, cancelled: cancels, ..PlainEdit::NONE }
+            }
+            Escape::Blur => PlainEdit { cancelled: true, ..PlainEdit::NONE },
+            Escape::Pass => PlainEdit { passed: true, ..PlainEdit::NONE },
+        },
         KeyAction::Submit => PlainEdit { changed: true, submitted: true, ..PlainEdit::NONE },
         KeyAction::Move(motion) => {
             let moved_to = match motion {
@@ -363,12 +367,8 @@ fn edit_plain_buffer(
             let moved = next != *selection;
             *selection = next;
             // An arrow the caret cannot take goes to the config, so a grid under the field can use it.
-            let navigated = match motion {
-                Motion::Left if !moved && !shift => Some(NavigateKey::Left),
-                Motion::Right if !moved && !shift => Some(NavigateKey::Right),
-                _ => None,
-            };
-            PlainEdit { moved, navigated, ..PlainEdit::NONE }
+            let passed = !moved && !shift && matches!(motion, Motion::Left | Motion::Right);
+            PlainEdit { moved, passed, ..PlainEdit::NONE }
         }
         KeyAction::SelectAll => {
             let next = (0, buffer.len());
@@ -376,8 +376,17 @@ fn edit_plain_buffer(
             *selection = next;
             PlainEdit { moved, ..PlainEdit::NONE }
         }
-        KeyAction::Navigate(key) => PlainEdit { navigated: Some(key), ..PlainEdit::NONE },
         KeyAction::Undo | KeyAction::Redo | KeyAction::Ignore => PlainEdit::NONE,
+    }
+}
+
+/// Whether the field used `action`, else the key is the config's: an arrow the caret cannot take,
+/// an Escape with nothing to clear or cancel, and the keys no edit binds.
+fn field_took(action: KeyAction<'_>, edit: &PlainEdit) -> bool {
+    match action {
+        KeyAction::Ignore => false,
+        KeyAction::Clear => edit.changed || edit.cancelled,
+        _ => !edit.passed,
     }
 }
 
@@ -403,8 +412,14 @@ impl FocusedTextField {
                 if let Some(range) = ime_range {
                     self.selection = range;
                 }
-                let edit =
-                    edit_plain_buffer(&mut self.buffer, &mut self.selection, action, shift, self.on_cancel.is_some());
+                let edit = edit_plain_buffer(
+                    &mut self.buffer,
+                    &mut self.selection,
+                    action,
+                    shift,
+                    self.escape,
+                    self.on_cancel.is_some(),
+                );
                 if edit.changed
                     && !edit.cancelled
                     && let Some(snapshot) = before
@@ -598,7 +613,7 @@ impl App {
     /// reset selection/scroll and state clears.
     pub(super) fn arm_autofocus_field(&mut self, scope: &[String]) {
         let trees = self.scoped_trees(scope);
-        let Some((surface_id, FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate })) =
+        let Some((surface_id, FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape })) =
             autofocus_field_in_scope(&trees)
         else {
             return;
@@ -616,7 +631,7 @@ impl App {
         self.parked_drafts.remove(&(surface_id.clone(), id));
         self.focus_text_field(Some(requested_focus(
             surface_id.clone(),
-            FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate },
+            FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape },
             None,
         )));
         self.set_control_focus(Some(super::focus::FocusedControl {
@@ -778,15 +793,20 @@ impl App {
     /// config cannot observe focus and a silent key stop has no visible signal. With `on_cancel`,
     /// drop focus first, then call it (ADR-0102), so a callback changing the surface finds no stale
     /// focus.
-    pub(super) fn apply_plain_key(&mut self, event: &KeyEvent, repeat: bool) {
+    /// Whether the field took the key; one it does not use bubbles to `on_key`.
+    pub(super) fn apply_plain_key(&mut self, event: &KeyEvent, repeat: bool) -> bool {
         let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
         if matches!(action, KeyAction::Append(_)) && self.text_input.owns_text() {
-            return;
+            return true;
         }
+        let mut composing = false;
         if matches!(action, KeyAction::Clear) {
+            composing = self.focused_text_field.as_ref().is_some_and(|field| {
+                self.text_field_takes_keys(field) && self.text_input.composing(&field.surface_id, field.id).is_some()
+            });
             self.cancel_text_input_composition();
         }
-        self.apply_plain_action_inner(action, None, true);
+        self.apply_plain_action_inner(action, None, true) || composing
     }
 
     pub(in crate::wayland::input) fn apply_ime_edit(&mut self, delete: (u32, u32), commit: Option<&str>) {
@@ -807,14 +827,14 @@ impl App {
         action: KeyAction<'_>,
         ime_range: Option<(usize, usize)>,
         from_key: bool,
-    ) {
+    ) -> bool {
         if !self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field)) {
-            return;
+            return false;
         }
         // Read before the borrow below: shift turns a caret motion into a selection.
         let shift = self.shift_held;
         let Some(field) = self.focused_text_field.as_ref() else {
-            return;
+            return false;
         };
         let mut cut = false;
         let action = match action {
@@ -835,10 +855,12 @@ impl App {
             self.text_input.note_other_change();
         }
         let Some(field) = self.focused_text_field.as_mut() else {
-            return;
+            return false;
         };
         let edit = field.edit(action, shift, ime_range, from_key);
+        let taken = field_took(action, &edit);
         self.finish_plain_edit(edit, ime_range.is_none());
+        taken
     }
 
     fn finish_plain_edit(&mut self, edit: PlainEdit, local: bool) {
@@ -854,22 +876,18 @@ impl App {
             return;
         }
         // Clone before callbacks can write a signal and re-resolve the scene.
-        let (text, on_change, on_submit, on_cancel, on_navigate, surface_id) = {
+        let (text, on_change, on_submit, on_cancel, surface_id) = {
             let field = self.focused_text_field.as_ref().expect("the focus was Some a moment ago");
             (
                 field.buffer.clone(),
                 field.on_change.clone(),
                 field.on_submit.clone(),
                 field.on_cancel.clone(),
-                field.on_navigate.clone(),
                 field.surface_id.clone(),
             )
         };
-        // Navigation changes neither text nor caret, so it needs no repaint.
-        if let Some(key) = edit.navigated {
-            if let Some(on_navigate) = on_navigate {
-                call_logged(&on_navigate, key.name(), format_args!("{surface_id}: on_navigate"));
-            }
+        // A passed-up key changes neither text nor caret, so it needs no repaint.
+        if edit.passed {
             return;
         }
         if edit.submitted {
@@ -898,7 +916,7 @@ mod tests {
         let mut text = "ab".to_string();
         let mut selection = (1, 1);
         history.record((text.clone(), selection), None);
-        edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("X"), false, false);
+        edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("X"), false, Escape::Clear, false);
         assert_eq!((text.as_str(), selection), ("aXb", (2, 2)));
         assert!(history.restore(&mut text, &mut selection, false));
         assert_eq!((text.as_str(), selection), ("ab", (1, 1)));
@@ -988,7 +1006,7 @@ mod tests {
         let (start, end) = ime_range(&text, selection, 2, 1).unwrap();
         assert_eq!((start, end), (1, 7));
         selection = (start, end);
-        let edit = edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("語"), false, false);
+        let edit = edit_plain_buffer(&mut text, &mut selection, KeyAction::Append("語"), false, Escape::Clear, false);
         assert!(edit.changed);
         assert_eq!((text.as_str(), selection), ("a語", (4, 4)));
     }
@@ -1114,17 +1132,14 @@ mod tests {
     /// where an append-only field always had it.
     fn edit_at_end(buffer: &mut String, action: KeyAction<'_>, cancels: bool) -> PlainEdit {
         let mut selection = (buffer.len(), buffer.len());
-        edit_plain_buffer(buffer, &mut selection, action, false, cancels)
+        edit_plain_buffer(buffer, &mut selection, action, false, Escape::Clear, cancels)
     }
 
     #[test]
     fn escape_on_a_plain_field_without_on_cancel_clears_and_keeps_the_focus() {
         let mut buffer = "on my wa".to_string();
         let edit = edit_at_end(&mut buffer, KeyAction::Clear, false);
-        assert_eq!(
-            edit,
-            PlainEdit { changed: true, submitted: false, cancelled: false, navigated: None, moved: false }
-        );
+        assert_eq!(edit, PlainEdit { changed: true, submitted: false, cancelled: false, passed: false, moved: false });
         assert!(buffer.is_empty());
     }
 
@@ -1132,7 +1147,7 @@ mod tests {
     fn escape_on_a_plain_field_with_on_cancel_clears_and_gives_the_field_up() {
         let mut buffer = "on my wa".to_string();
         let edit = edit_at_end(&mut buffer, KeyAction::Clear, true);
-        assert_eq!(edit, PlainEdit { changed: true, submitted: false, cancelled: true, navigated: None, moved: false });
+        assert_eq!(edit, PlainEdit { changed: true, submitted: false, cancelled: true, passed: false, moved: false });
         assert!(buffer.is_empty());
     }
 
@@ -1142,14 +1157,11 @@ mod tests {
     fn escape_on_an_empty_field_cancels_without_reporting_a_change() {
         let mut buffer = String::new();
         let edit = edit_at_end(&mut buffer, KeyAction::Clear, true);
-        assert_eq!(
-            edit,
-            PlainEdit { changed: false, submitted: false, cancelled: true, navigated: None, moved: false }
-        );
+        assert_eq!(edit, PlainEdit { changed: false, submitted: false, cancelled: true, passed: false, moved: false });
         let edit = edit_at_end(&mut buffer, KeyAction::Clear, false);
         assert_eq!(
             edit,
-            PlainEdit { changed: false, submitted: false, cancelled: false, navigated: None, moved: false },
+            PlainEdit { changed: false, submitted: false, cancelled: false, passed: false, moved: false },
             "nothing at all to do"
         );
     }
@@ -1162,7 +1174,7 @@ mod tests {
         let mut buffer = "e\u{301}\u{1F469}\u{200D}\u{1F469}\u{200D}\u{1F467}".to_string();
         let mut selection = (buffer.len(), buffer.len());
         let edit = |buffer: &mut String, selection: &mut (usize, usize)| {
-            edit_plain_buffer(buffer, selection, KeyAction::Erase(Motion::Left), false, false)
+            edit_plain_buffer(buffer, selection, KeyAction::Erase(Motion::Left), false, Escape::Clear, false)
         };
 
         assert_eq!(edit(&mut buffer, &mut selection), PlainEdit { changed: true, ..PlainEdit::NONE });
@@ -1183,7 +1195,7 @@ mod tests {
 
         let (mut buffer, mut selection) = ("on my way".to_string(), (9, 9));
         let word = |buffer: &mut String, selection: &mut (usize, usize), reach| {
-            edit_plain_buffer(buffer, selection, KeyAction::Erase(reach), false, false);
+            edit_plain_buffer(buffer, selection, KeyAction::Erase(reach), false, Escape::Clear, false);
         };
         word(&mut buffer, &mut selection, Motion::WordLeft);
         assert_eq!(buffer, "on my ");
@@ -1216,12 +1228,12 @@ mod tests {
 
         let mut buffer = "on my way".to_string();
         let mut selection = (3, 3);
-        let edit = edit_plain_buffer(&mut buffer, &mut selection, KeyAction::SelectAll, false, false);
+        let edit = edit_plain_buffer(&mut buffer, &mut selection, KeyAction::SelectAll, false, Escape::Clear, false);
         assert_eq!(selection, (0, "on my way".len()), "anchor at the start, caret at the end");
         assert!(edit.moved, "and the field repaints");
 
         // Backspace then takes the whole thing, which is what select-all is for.
-        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, false);
+        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, Escape::Clear, false);
         assert_eq!(buffer, "");
     }
 
@@ -1230,7 +1242,7 @@ mod tests {
         let buffer = "ae\u{301}b".to_string();
         let mut selection = (1, 1);
         let move_to = |selection: &mut (usize, usize), motion, shift| {
-            edit_plain_buffer(&mut buffer.clone(), selection, KeyAction::Move(motion), shift, false)
+            edit_plain_buffer(&mut buffer.clone(), selection, KeyAction::Move(motion), shift, Escape::Clear, false)
         };
 
         assert_eq!(move_to(&mut selection, Motion::Right, false), PlainEdit { moved: true, ..PlainEdit::NONE });
@@ -1254,31 +1266,76 @@ mod tests {
         let mut buffer = "on my way".to_string();
         let mut selection = (3, 9);
         assert_eq!(
-            edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Append("foot"), false, false),
+            edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Append("foot"), false, Escape::Clear, false),
             PlainEdit { changed: true, ..PlainEdit::NONE }
         );
         assert_eq!((buffer.as_str(), selection), ("on foot", (7, 7)));
 
         let mut selection = (3, 7);
-        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, false);
+        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Erase(Motion::Left), false, Escape::Clear, false);
         assert_eq!((buffer.as_str(), selection), ("on ", (3, 3)), "Backspace takes the selection, not one cluster");
 
         buffer = "on my way".to_string();
         let mut selection = (3, 9);
-        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), false, false);
+        edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), false, Escape::Clear, false);
         assert_eq!((buffer.as_str(), selection), ("on my way", (3, 3)), "the arrow lands on the near edge");
     }
 
     #[test]
-    fn an_arrow_the_caret_cannot_take_navigates() {
+    fn an_arrow_the_caret_cannot_take_goes_up() {
         let mut buffer = "ab".to_string();
         let right = edit_at_end(&mut buffer, KeyAction::Move(Motion::Right), false);
-        assert_eq!(right, PlainEdit { navigated: Some(NavigateKey::Right), ..PlainEdit::NONE });
+        assert_eq!(right, PlainEdit { passed: true, ..PlainEdit::NONE });
         let left = edit_at_end(&mut buffer, KeyAction::Move(Motion::Left), false);
         assert_eq!(left, PlainEdit { moved: true, ..PlainEdit::NONE }, "the caret takes it");
         let mut selection = (0, 0);
-        let shifted = edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), true, false);
+        let shifted =
+            edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), true, Escape::Clear, false);
         assert_eq!(shifted, PlainEdit::NONE, "Shift at the start is a no-op, not navigation");
+    }
+
+    #[test]
+    fn a_field_passes_up_the_keys_it_does_not_use_and_takes_the_ones_it_edits_with() {
+        let took = |buffer: &str, action: KeyAction<'_>, shift: bool| {
+            let (mut text, mut selection) = (buffer.to_string(), (0, 0));
+            let edit = edit_plain_buffer(&mut text, &mut selection, action, shift, Escape::Clear, false);
+            field_took(action, &edit)
+        };
+        assert!(took("ab", KeyAction::Append("x"), false));
+        assert!(took("ab", KeyAction::Erase(Motion::Left), false), "an edit that does nothing is still the field's");
+        assert!(took("ab", KeyAction::Submit, false));
+        assert!(took("ab", KeyAction::Undo, false));
+        assert!(took("ab", KeyAction::Move(Motion::Right), false), "the caret takes it");
+        assert!(!took("ab", KeyAction::Move(Motion::Left), false), "an arrow at the edge is the config's");
+        assert!(!took("ab", KeyAction::Ignore, false), "F-keys and Ctrl chords");
+        assert!(took("ab", KeyAction::Clear, false), "Escape clears text");
+        assert!(!took("", KeyAction::Clear, false), "Escape in an empty field goes up");
+    }
+
+    #[test]
+    fn escape_follows_the_fields_mode() {
+        let run = |escape: Escape, cancels: bool| {
+            let (mut text, mut selection) = ("draft".to_string(), (5, 5));
+            let edit = edit_plain_buffer(&mut text, &mut selection, KeyAction::Clear, false, escape, cancels);
+            (text, edit)
+        };
+        let (text, edit) = run(Escape::Clear, true);
+        assert_eq!((text.as_str(), edit.changed, edit.cancelled), ("", true, true));
+        let (text, edit) = run(Escape::Blur, false);
+        assert_eq!((text.as_str(), edit.changed, edit.cancelled), ("draft", false, true), "leaves, keeps the text");
+        assert!(field_took(KeyAction::Clear, &edit));
+        let (text, edit) = run(Escape::Pass, true);
+        assert_eq!((text.as_str(), edit.changed, edit.cancelled, edit.passed), ("draft", false, false, true));
+        assert!(!field_took(KeyAction::Clear, &edit), "the key goes up to on_key");
+    }
+
+    #[test]
+    fn a_passed_escape_reaches_on_escape_with_the_draft_intact() {
+        use super::super::focus::{plain_escape, surface_gets_escape};
+        let reaches = |escape| surface_gets_escape(false, false, Some(plain_escape(escape, true, false, true)), None);
+        assert!(reaches(Escape::Pass), "a field that passes Escape leaves it to the surface");
+        assert!(!reaches(Escape::Clear), "a field with text keeps its Escape");
+        assert!(!reaches(Escape::Blur), "blurring is the field's Escape even with text kept");
     }
 
     #[test]
@@ -1286,43 +1343,24 @@ mod tests {
         let mut buffer = String::new();
         assert_eq!(
             edit_at_end(&mut buffer, KeyAction::Append("a"), true),
-            PlainEdit { changed: true, submitted: false, cancelled: false, navigated: None, moved: false }
+            PlainEdit { changed: true, submitted: false, cancelled: false, passed: false, moved: false }
         );
         assert_eq!(
             edit_at_end(&mut buffer, KeyAction::Submit, true),
-            PlainEdit { changed: true, submitted: true, cancelled: false, navigated: None, moved: false }
+            PlainEdit { changed: true, submitted: true, cancelled: false, passed: false, moved: false }
         );
         assert_eq!(buffer, "a", "the caller empties the buffer after the submit, not this");
     }
 
-    /// ADR-0112: the keys a single-line field cannot edit with reach the config by name. Tab is the
-    /// one that has to be checked, since xkbcommon hands it back as `"\t"` and the `utf8` arm
-    /// below it would drop that as a control character.
+    /// Arrows, paging and Tab are no edit, so a field passes them up. Tab arrives as `"\t"`, which
+    /// the control filter must not turn into text.
     #[test]
-    fn arrow_paging_and_tab_keys_navigate_instead_of_editing() {
-        assert_eq!(key_action(&key(Keysym::Up, None), false, false, false), KeyAction::Navigate(NavigateKey::Up));
-        assert_eq!(
-            key_action(&key(Keysym::Down, None), true, false, false),
-            KeyAction::Navigate(NavigateKey::Down),
-            "held Down keeps moving"
-        );
-        assert_eq!(
-            key_action(&key(Keysym::Page_Down, None), false, false, false),
-            KeyAction::Navigate(NavigateKey::PageDown)
-        );
-        assert_eq!(
-            key_action(&key(Keysym::Tab, Some("\t")), false, false, false),
-            KeyAction::Navigate(NavigateKey::Tab)
-        );
-        assert_eq!(
-            key_action(&key(Keysym::ISO_Left_Tab, None), false, false, false),
-            KeyAction::Navigate(NavigateKey::Backtab)
-        );
-
-        let mut buffer = "fire".to_string();
-        let edit = edit_at_end(&mut buffer, KeyAction::Navigate(NavigateKey::Down), true);
-        assert_eq!(edit, PlainEdit { navigated: Some(NavigateKey::Down), ..PlainEdit::NONE });
-        assert_eq!(buffer, "fire", "moving through the results is not an edit");
+    fn arrow_paging_and_tab_keys_are_not_edits() {
+        for (keysym, utf8) in
+            [(Keysym::Up, None), (Keysym::Down, None), (Keysym::Page_Down, None), (Keysym::Tab, Some("\t"))]
+        {
+            assert_eq!(key_action(&key(keysym, utf8), false, false, false), KeyAction::Ignore);
+        }
     }
 
     fn autofocus_textfield(lua: &Lua) -> layout::ResolvedNode {
@@ -1415,7 +1453,7 @@ mod tests {
             on_change: None,
             on_submit: None,
             on_cancel: None,
-            on_navigate: None,
+            escape: Escape::Clear,
         };
         previous.history.record((String::new(), (0, 0)), None);
         let target = requested_field(&tree, "search").unwrap();
@@ -1436,7 +1474,7 @@ mod tests {
                 on_change: None,
                 on_submit: None,
                 on_cancel: None,
-                on_navigate: None,
+                escape: Escape::Clear,
             },
             Some(&previous),
         );

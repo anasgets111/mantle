@@ -124,6 +124,8 @@ pub fn run(
         secure_buffer: shared::SecureBuffer::new(),
         shift_held: false,
         ctrl_held: false,
+        alt_held: false,
+        super_held: false,
         repeat_info: None,
         repeating: None,
         field_input_surfaces: Vec::new(),

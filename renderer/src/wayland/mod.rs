@@ -65,7 +65,7 @@ mod idle_profile;
 mod input;
 #[cfg(test)]
 pub(crate) use input::apply_hover_write;
-pub(crate) use input::{DragPhase, MouseButton, NavigateKey};
+pub(crate) use input::{DragPhase, Escape, KeyPress, MouseButton};
 mod layer;
 mod lock;
 mod main_loop;
@@ -215,6 +215,9 @@ pub struct App {
     shift_held: bool,
     /// Ctrl on the seat's keyboard, read for Ctrl+A alone (ADR-0236).
     ctrl_held: bool,
+    /// Alt and Super on the seat's keyboard, reported to `on_key` alone.
+    alt_held: bool,
+    super_held: bool,
     /// The seat's repeat delay and interval, absent when the compositor turned repeat off. SCTK
     /// drives its own repeat from a calloop timer, which this renderer does not link (ADR-0124),
     /// so `poll`'s deadline carries it instead.

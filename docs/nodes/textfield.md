@@ -32,9 +32,9 @@ local launcher = column { width = 320, padding = 12, spacing = 8, background = "
             placeholder = "Search…",
             autofocus = true,
             on_change = function(text) query:set(text); selected:set(1) end,
-            on_navigate = function(key)
-                if key == "down" then selected:set(math.min(#matches:get(), selected:get() + 1))
-                elseif key == "up" then selected:set(math.max(1, selected:get() - 1)) end
+            on_key = function(key)
+                if key.name == "Down" then selected:set(math.min(#matches:get(), selected:get() + 1))
+                elseif key.name == "Up" then selected:set(math.max(1, selected:get() - 1)) end
             end,
             on_submit = function() print("launch", matches:get()[selected:get()]) end,
         },
@@ -89,8 +89,8 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `autofocus` | `boolean\|Bound` | `false` | Plain fields only: take the keyboard, with the draft reset to `initial_text` (`""` when unset) and `on_change` called with it, when the surface gets it or the field appears. The first in document order wins; never steals from a field already typing or one a press just left |
 | `on_change` | `fun(text: string)` | None | Full text after every edit |
 | `on_submit` | `fun(text: string)` | None | Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field |
+| `escape` | `"clear"\|"blur"\|"pass"\|Bound` | `"clear"` | What Escape does in a plain field. `"clear"` empties the draft (`on_change("")` if it had text), then gives up focus if `on_cancel` is set. `"blur"` keeps the draft and gives up focus. `"pass"` keeps both and does not take the key: it goes up through `on_key`, then to the surface's `on_escape`. A `secure_submit` field ignores it and always scrubs and stays armed. Read when the field takes focus |
 | `on_cancel` | `fun(cleared: boolean)` | None | Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus |
-| `on_navigate` | `fun(key: "up"\|"down"\|"left"\|"right"\|"page_up"\|"page_down"\|"tab"\|"backtab")` | None | Keys a single-line field does not use, for moving a list selection; repeats while held. Tab and Shift+Tab reach this handler only when fewer than two controls can take focus. `"left"`/`"right"` only when the caret cannot move that way and Shift is up |
 | `secure_submit` | `{ capability: string, action: string, name?: string }\|Bound` | None | Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `network`/`vpn_secret` with a request id and key in `name`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields)) |
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
@@ -114,7 +114,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 | Task | Answer |
 | :--- | :--- |
 | Filter a list as the user types | The example above: `on_change` sets a state, the list's `source` maps it |
-| Move a selection with the arrow keys | `on_navigate`, as above; pair it with `scroll(name):reveal` to keep the row in view ([input](../guide/input.md#text-fields)) |
+| Move a selection with the arrow keys | `on_key` on the field, as above; pair it with `scroll(name):reveal` to keep the row in view ([input](../guide/input.md#text-fields)) |
 | Focus the field when a panel opens | `autofocus = true` and a panel with `keyboard_interactivity` |
 | Return keys to the field after a click | One `local h = focus_target("name")`: `focus_target = h` on the field, `h:request()` in the `on_click` ([input](../guide/input.md#text-fields)) |
 | Close on a second Escape | `on_cancel(cleared)`: close only when `cleared` is `false` |
@@ -129,7 +129,7 @@ follows the node, so give the field a stable `id` when siblings before it come a
 | :--- | :--- |
 | The field does not appear | It has no intrinsic width. Give it `width` |
 | Typing does nothing | The surface needs keyboard focus (`keyboard_interactivity` on a panel), and the field needs `on_change`, `on_submit` or `secure_submit` |
-| `on_cancel` or `on_navigate` alone never fires | Neither makes the field focusable. Add `on_change` or `on_submit` |
+| `on_cancel` alone never fires | It does not make the field focusable. Add `on_change` or `on_submit` |
 | You cannot read the draft from Lua | It arrives only through `on_change` and `on_submit`. `focus_target(name):set_text` writes it; Enter and Escape clear it; removing the node drops it |
 | `on_submit` never fires on a password field | A `secure_submit` field sends to its capability instead |
 | `font` on a `textfield` is refused | Fields use the `fonts` chain |

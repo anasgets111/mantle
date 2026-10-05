@@ -9,23 +9,23 @@ use crate::layout::node::prop::keywords;
 use crate::lua::call_logged;
 
 mod focus;
+mod on_key;
 mod plain;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
+pub(crate) use on_key::KeyPress;
 pub(in crate::wayland::input) use plain::EditHistory;
 
 keywords! {
-    /// A key a single-line field does not use, handed to `on_navigate` for moving a list selection.
+    /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum NavigateKey {
-        Up,
-        Down,
-        Left,
-        Right,
-        PageUp,
-        PageDown,
-        Tab,
-        Backtab,
+    pub(crate) enum Escape {
+        /// Empty the draft, then leave the field if `on_cancel` is set.
+        Clear,
+        /// Keep the draft and leave the field.
+        Blur,
+        /// Keep the draft and the focus; the key goes up through `on_key` and `on_escape`.
+        Pass,
     }
 }
 
@@ -43,7 +43,7 @@ pub(super) enum FieldTarget {
         on_change: Option<Function>,
         on_submit: Option<Function>,
         on_cancel: Option<Function>,
-        on_navigate: Option<Function>,
+        escape: Escape,
     },
 }
 
@@ -61,7 +61,7 @@ pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarge
 /// [`focused_field`], optionally reading a disabled field too: `set_text` never takes focus.
 fn field_target(path: &[&layout::ResolvedNode], disabled_too: bool) -> Option<FieldTarget> {
     let field = path.iter().rev().find(|node| node.kind == "textfield")?;
-    let node::PaintStyle::TextField { target, .. } = field.paint.as_ref()? else {
+    let node::PaintStyle::TextField { target, escape, .. } = field.paint.as_ref()? else {
         return None;
     };
     if field.is_disabled_field() && !disabled_too {
@@ -83,7 +83,7 @@ fn field_target(path: &[&layout::ResolvedNode], disabled_too: bool) -> Option<Fi
         on_change,
         on_submit,
         on_cancel: textfield::on_cancel.read(properties).ok().flatten(),
-        on_navigate: textfield::on_navigate.read(properties).ok().flatten(),
+        escape: *escape,
     })
 }
 
@@ -106,7 +106,7 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) on_change: Option<Function>,
     pub(super) on_submit: Option<Function>,
     pub(super) on_cancel: Option<Function>,
-    pub(super) on_navigate: Option<Function>,
+    pub(super) escape: Escape,
 }
 
 /// Focused `secure_submit` field and declaring surface. The node id distinguishes fields with the
@@ -122,7 +122,7 @@ pub(in crate::wayland) struct FocusedField {
 
 /// One key event's action for a focused `secure_submit`; borrow the SCTK `KeyEvent` text, avoiding
 /// another allocation.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum KeyAction<'a> {
     Append(&'a str),
     /// How far one erase reaches, from the caret. A selection outranks it: what is highlighted is
@@ -137,9 +137,6 @@ pub(super) enum KeyAction<'a> {
     SelectAll,
     Undo,
     Redo,
-    /// Navigation name for a plain field (ADR-0112); masked fields ignore it. Not Left or Right,
-    /// which a caret has an edit for.
-    Navigate(NavigateKey),
     Ignore,
 }
 
@@ -218,13 +215,6 @@ fn key_action<'a>(event: &'a KeyEvent, repeat: bool, ctrl: bool, shift: bool) ->
         Keysym::Right | Keysym::KP_Right => KeyAction::Move(Motion::Right),
         Keysym::Home | Keysym::KP_Home => KeyAction::Move(Motion::Start),
         Keysym::End | Keysym::KP_End => KeyAction::Move(Motion::End),
-        // Before `utf8`: xkbcommon returns Tab as `"\t"`, which the control filter would drop.
-        Keysym::Up | Keysym::KP_Up => KeyAction::Navigate(NavigateKey::Up),
-        Keysym::Down | Keysym::KP_Down => KeyAction::Navigate(NavigateKey::Down),
-        Keysym::Page_Up | Keysym::KP_Page_Up => KeyAction::Navigate(NavigateKey::PageUp),
-        Keysym::Page_Down | Keysym::KP_Page_Down => KeyAction::Navigate(NavigateKey::PageDown),
-        Keysym::Tab | Keysym::KP_Tab => KeyAction::Navigate(NavigateKey::Tab),
-        Keysym::ISO_Left_Tab => KeyAction::Navigate(NavigateKey::Backtab),
         _ => match event.utf8.as_deref() {
             Some(text) if !text.is_empty() && !text.chars().any(char::is_control) => KeyAction::Append(text),
             _ => KeyAction::Ignore,
@@ -306,12 +296,14 @@ impl KeyboardHandler for App {
         // release that would stop a repeat does not arrive either.
         self.shift_held = false;
         self.ctrl_held = false;
+        self.alt_held = false;
+        self.super_held = false;
         self.repeating = None;
         debug!(2; "keyboard focus left {left}");
     }
 
-    // The only key hook is the surface's `on_escape`; `secure_submit` (ADR-0005) sends
-    // `KeyEvent` bytes through native `SecureBuffer` to Supervisor, never Lua. See [`key_action`].
+    // Keys reach Lua through `on_key` and `on_escape`; `secure_submit` (ADR-0005) sends `KeyEvent`
+    // bytes through native `SecureBuffer` to Supervisor, never Lua. See [`key_action`].
     fn press_key(
         &mut self,
         _conn: &Connection,
@@ -384,8 +376,8 @@ impl KeyboardHandler for App {
         }
     }
 
-    /// Shift turns a caret motion into a selection and Ctrl reaches editing bindings (ADR-0236). Alt is
-    /// the config's business, and there is no key handler for it.
+    /// Shift turns a caret motion into a selection and Ctrl reaches editing bindings (ADR-0236); all
+    /// four reach `on_key`.
     fn update_modifiers(
         &mut self,
         _conn: &Connection,
@@ -398,6 +390,8 @@ impl KeyboardHandler for App {
     ) {
         self.shift_held = modifiers.shift;
         self.ctrl_held = modifiers.ctrl;
+        self.alt_held = modifiers.alt;
+        self.super_held = modifiers.logo;
     }
 }
 
@@ -475,7 +469,8 @@ impl App {
     /// Holds `event` for repeat when repeating it would do anything: a modifier or an Enter would
     /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
     fn arm_repeat(&mut self, event: KeyEvent) {
-        let repeats = !matches!(key_action(&event, true, self.ctrl_held, self.shift_held), KeyAction::Ignore);
+        let repeats = !matches!(key_action(&event, true, self.ctrl_held, self.shift_held), KeyAction::Ignore)
+            || !self.key_handlers_now(&event).1.is_empty();
         self.repeating =
             self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
     }
@@ -498,17 +493,26 @@ impl App {
         self.repeating = Some((event, now + interval));
     }
 
-    /// Apply one key to either field kind (ADR-0092), pruning both focuses once before dispatch.
+    /// Apply one key to either field kind (ADR-0092), pruning both focuses once before dispatch. A key
+    /// no plain field takes bubbles through `on_key`; an armed secure field never lets Lua hear one.
     fn apply_key(&mut self, event: &KeyEvent, repeat: bool, serial: Option<u32>) {
         self.prune_secure_focus();
         self.prune_text_field_focus();
         self.prune_control_focus();
-        if self.apply_control_key(event, repeat, serial) {
+        if self.apply_tab_key(event) {
             return;
         }
         let handler = (event.keysym == Keysym::Escape).then(|| self.surface_escape_handler(repeat)).flatten();
+        if self.focused_secure_submit.is_none() {
+            let taken = self.apply_plain_key(event, repeat);
+            if !taken && self.deliver_on_key(event, repeat) {
+                return;
+            }
+        }
+        if self.apply_activation(event, repeat, serial) {
+            return;
+        }
         self.apply_secure_key(event, repeat);
-        self.apply_plain_key(event, repeat);
         if let Some((id, on_escape)) = handler {
             call_logged(&on_escape, (), format_args!("{id}: on_escape"));
         }
@@ -567,7 +571,7 @@ impl App {
     fn surface_escape_handler(&self, repeat: bool) -> Option<(String, Function)> {
         let plain = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).map(|field| {
             let composing = self.text_input.composing(&field.surface_id, field.id).is_some();
-            (!field.buffer.is_empty(), composing, field.on_cancel.is_some())
+            focus::plain_escape(field.escape, !field.buffer.is_empty(), composing, field.on_cancel.is_some())
         });
         let secure = self.focused_secure_submit.as_ref().map(|field| {
             let cancels = self
@@ -684,7 +688,7 @@ pub(in crate::wayland) mod tests {
             on_change: None,
             on_submit: None,
             on_cancel: None,
-            on_navigate: None,
+            escape: Escape::Clear,
         }
     }
 
@@ -733,9 +737,9 @@ pub(in crate::wayland) mod tests {
         let field = plain_textfield(&lua);
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
         match focused_field(&[&root, &field]) {
-            Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
+            Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape }) => {
                 assert_eq!(id, field.id, "the field's own node, not the root it was reached through");
-                assert!(on_navigate.is_none());
+                assert_eq!(escape, Escape::Clear);
                 assert!(on_change.is_none());
                 assert!(on_submit.is_some());
                 assert!(on_cancel.is_none());
@@ -876,12 +880,8 @@ pub(in crate::wayland) mod tests {
     fn a_control_key_never_becomes_a_character_of_the_password() {
         // `utf8` is not empty for Escape, Tab or Return -- xkbcommon hands back the C0 control
         // character for each -- so an unfiltered append would silently put an ESC byte in the
-        // middle of a secret that PAM then rejects with no visible reason. Tab is a navigation
-        // key now (ADR-0112); what matters here is that it is still not an `Append`.
-        assert_eq!(
-            key_action(&key(Keysym::Tab, Some("\t")), false, false, false),
-            KeyAction::Navigate(NavigateKey::Tab)
-        );
+        // middle of a secret that PAM then rejects with no visible reason.
+        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false, false), KeyAction::Ignore);
         assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false, false), KeyAction::Ignore);
         assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false, false), KeyAction::Ignore);
     }

@@ -84,9 +84,9 @@ local search = rect {
                 selected:set(1)
                 results_scroll:reveal(1)
             end,
-            on_navigate = function(key)
-                if key == "down" or key == "tab" then move(1) end
-                if key == "up" or key == "backtab" then move(-1) end
+            on_key = function(key)
+                if key.name == "Down" or key.name == "Tab" then move(1) end
+                if key.name == "Up" or key.name == "ISO_Left_Tab" then move(-1) end
             end,
             on_submit = function() launch(matches:get()[selected:get()]) end,
             on_cancel = function(cleared)
@@ -193,7 +193,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - `fuzzy` scores one candidate; ranking, the tiebreak and the cap stay in Lua ([fuzzy](../guide/scripting.md#fuzzy)).
 - `computed` joins the capability with the query ([derived signals](../guide/signals.md#derived-signals)).
 - Each row derives its own highlight from `matches` and `selected`. An arrow key reruns those 50 small functions and builds no row; folding the selection into `source` would call `itemfn` for all 50 on every keypress ([when items rebuild](../nodes/list.md#when-items-rebuild)).
-- The `textfield` owns the typed text and reports it through `on_change`; `on_navigate` gets the arrow and Tab keys ([textfield](../nodes/textfield.md), [text fields](../guide/input.md#text-fields)).
+- The `textfield` owns the typed text and reports it through `on_change`; `on_key` gets the arrow and Tab keys the field does not use ([textfield](../nodes/textfield.md), [key handlers](../guide/input.md#key-handlers)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
 - `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).
 - `"exclusive"` hands the panel the keyboard when it maps, and `autofocus` gives it to the field ([keyboard focus](../surfaces/panel.md#keyboard-focus)).

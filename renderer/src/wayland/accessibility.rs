@@ -95,7 +95,7 @@ fn append(
         Role::Window
     } else if node.kind == "text" {
         Role::Label
-    } else if layout::scene::is_named_click_target(node) {
+    } else if layout::scene::is_named_control(node) {
         Role::Button
     } else {
         Role::GenericContainer

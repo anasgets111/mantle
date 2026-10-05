@@ -8006,3 +8006,19 @@ behaviour; compositor-level injection (virtual pointer, uinput) would reach othe
 
 Trade-offs: a request stops at its first refused step after running the earlier ones; only ctrl
 and shift modifiers. The App-level paths have no unit test until `App` has a compositor-free harness.
+
+## 0342. `on_key` bubbles from the focused node to the surface and replaces `on_navigate`
+
+1. **Bubbling.** `on_key(key)` on any node or surface hears `{ name, text, modifiers, repeat }`,
+   `name` being the xkb keysym name. A key goes to the focused node, each ancestor, then the
+   surface root; `true` stops it. Tab moves focus first.
+2. **Fields pass what they don't edit.** A plain textfield takes its editing keys and lets the rest
+   bubble; its own `on_key` hears the keys `on_navigate` did, so `on_navigate` is removed.
+3. **Focus needs a name.** A node with `on_key` is focusable only with an `accessible_name`, the
+   rule `on_click` and `submit` already follow, so no unlabeled control reaches a screen reader.
+4. **Secrets stay out of Lua.** Nothing is heard while a `secure_submit` field is armed.
+5. **`textfield.escape`:** `"clear"` (default) empties the draft, `"blur"` keeps it and leaves,
+   `"pass"` keeps text and focus and lets Escape bubble to `on_key` and `on_escape`. A secure field
+   always scrubs and stays armed.
+
+Breaking: `on_navigate` becomes `on_key`. Arrows repeat only when an `on_key` on the path hears them.

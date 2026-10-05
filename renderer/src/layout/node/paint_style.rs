@@ -208,6 +208,8 @@ pub enum PaintStyle {
         disabled: bool,
         /// Grapheme-cluster cap on the draft; `None` is unlimited.
         max_length: Option<usize>,
+        /// What Escape does in a plain field; read here so a bad name fails the pass.
+        escape: crate::wayland::Escape,
     },
 }
 
@@ -317,6 +319,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 align: typeface::text_align.read(properties)?,
                 disabled: textfield::disabled.read(properties)?,
                 max_length: textfield::max_length.read(properties)?,
+                escape: textfield::escape.read(properties)?,
             }
         }
         _ => return Ok(None),

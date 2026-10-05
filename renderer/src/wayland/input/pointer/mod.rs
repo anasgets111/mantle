@@ -189,7 +189,7 @@ struct PointerHit {
 fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
     path.iter()
         .rev()
-        .find(|node| layout::scene::is_named_click_target(node) || focused_field(&[node]).is_some())
+        .find(|node| layout::scene::is_named_control(node) || focused_field(&[node]).is_some())
         .map(|node| node.id)
 }
 
@@ -269,7 +269,7 @@ fn press_chooses_focus(
             (Some(FocusedField { surface_id: instance_id.to_string(), id, target }), None)
         }
         // Re-pressing the same field resumes its draft (ADR-0108).
-        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, on_navigate }) => {
+        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape }) => {
             let resumed = focused_text_field.filter(|field| field.id == id);
             let anchor = resumed.as_ref().map(|field| field.selection.0);
             let (buffer, mut history) = resumed.map(|field| (field.buffer, field.history)).unwrap_or_default();
@@ -289,7 +289,7 @@ fn press_chooses_focus(
                     on_change,
                     on_submit,
                     on_cancel,
-                    on_navigate,
+                    escape,
                 }),
             )
         }
@@ -1173,7 +1173,7 @@ mod tests {
             on_change: handler("change"),
             on_submit: handler("submit"),
             on_cancel: None,
-            on_navigate: None,
+            escape: Escape::Clear,
         }
     }
 

@@ -289,12 +289,7 @@ impl App {
             KeyAction::Submit => self.finish_secure_submit(),
             // Password prompts have no navigation, and a masked field has no caret to move: a
             // position in a secret is a position the tree must never hold (ADR-0064).
-            KeyAction::Navigate(_)
-            | KeyAction::Move(_)
-            | KeyAction::SelectAll
-            | KeyAction::Undo
-            | KeyAction::Redo
-            | KeyAction::Ignore => {}
+            KeyAction::Move(_) | KeyAction::SelectAll | KeyAction::Undo | KeyAction::Redo | KeyAction::Ignore => {}
         }
     }
 

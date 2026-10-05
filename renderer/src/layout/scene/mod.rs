@@ -58,12 +58,13 @@ const MAX_TREE_DEPTH: u32 = 64;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(u64);
 
-/// A click target whose author supplied a spoken name can take keyboard focus.
-pub(crate) fn is_named_click_target(node: &crate::layout::ResolvedNode) -> bool {
+/// A click or key target whose author supplied a spoken name can take keyboard focus.
+pub(crate) fn is_named_control(node: &crate::layout::ResolvedNode) -> bool {
     use crate::layout::node::fields::{common, pointer};
 
     common::accessible_name.read(&node.properties).is_ok_and(|name| !name.is_empty())
-        && (pointer::on_click.read(&node.properties).ok().flatten().is_some()
+        && (common::on_key.read(&node.properties).ok().flatten().is_some()
+            || pointer::on_click.read(&node.properties).ok().flatten().is_some()
             || pointer::submit.read(&node.properties).is_ok_and(|yes| yes))
 }
 

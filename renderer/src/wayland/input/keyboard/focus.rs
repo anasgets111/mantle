@@ -33,7 +33,7 @@ fn controls(surface_id: &str, node: &layout::ResolvedNode, out: &mut Vec<Control
         Some(FieldTarget::Masked { target, .. }) => Some(target),
         _ => None,
     };
-    let button = layout::scene::is_named_click_target(node);
+    let button = layout::scene::is_named_control(node);
     if node.rect.width > 0.0 && node.rect.height > 0.0 && (field || masked.is_some() || button) {
         let kind = if field {
             ControlKind::Plain
@@ -151,6 +151,16 @@ pub(super) fn surface_gets_escape(
         && !ctrl
         && !plain.is_some_and(|(text, composing, cancels)| text || composing || cancels)
         && !secure.is_some_and(|(filled, cancels)| filled || cancels)
+}
+
+/// [`surface_gets_escape`]'s `plain` tuple for a field whose Escape follows `escape`: `Blur` always
+/// acts, `Pass` never does, so the key reaches `on_key` and `on_escape` with the draft intact.
+pub(super) fn plain_escape(escape: Escape, text: bool, composing: bool, cancels: bool) -> (bool, bool, bool) {
+    match escape {
+        Escape::Clear => (text, composing, cancels),
+        Escape::Blur => (true, composing, cancels),
+        Escape::Pass => (false, composing, false),
+    }
 }
 
 /// `on_escape` of the first popup in `scope` (focused surface first, then popups deepest-first) that
@@ -362,12 +372,8 @@ impl App {
         }
     }
 
-    pub(in crate::wayland) fn apply_control_key(
-        &mut self,
-        event: &KeyEvent,
-        repeat: bool,
-        serial: Option<u32>,
-    ) -> bool {
+    /// Tab moves control focus; whether it did, else the key goes on to the field or `on_key`.
+    pub(in crate::wayland) fn apply_tab_key(&mut self, event: &KeyEvent) -> bool {
         if self.ctrl_held {
             return false;
         }
@@ -406,6 +412,14 @@ impl App {
                 self.set_focus_visible(true);
             }
             return moved;
+        }
+        false
+    }
+
+    /// Enter or Space on a focused button.
+    pub(in crate::wayland) fn apply_activation(&mut self, event: &KeyEvent, repeat: bool, serial: Option<u32>) -> bool {
+        if self.ctrl_held {
+            return false;
         }
         let Some(focused) = self.focused_control.clone() else { return false };
         let eligible = focused.kind == ControlKind::Button && self.keyboard_focus_scope().contains(&focused.surface_id);
@@ -561,7 +575,7 @@ mod tests {
         assert_eq!(focused, Some(list[1].focus.clone()), "Shift+Tab wraps backward");
 
         list.truncate(1);
-        assert!(!dispatch_tab(&list, None, false, |_| panic!("one plain field keeps on_navigate(tab)")));
+        assert!(!dispatch_tab(&list, None, false, |_| panic!("one plain field keeps Tab")));
     }
 
     #[test]

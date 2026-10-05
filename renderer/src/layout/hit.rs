@@ -515,6 +515,7 @@ mod tests {
             align: TextAlign::Start,
             disabled: false,
             max_length: None,
+            escape: crate::wayland::Escape::Clear,
         }
     }
 

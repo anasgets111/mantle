@@ -100,8 +100,8 @@ return {
                                     query:set(text)
                                     pick(1)
                                 end,
-                                on_navigate = function(key)
-                                    local step = ({ up = -1, down = 1 })[key]
+                                on_key = function(key)
+                                    local step = ({ Up = -1, Down = 1 })[key.name]
                                     if step then pick(math.max(1, math.min(#results:get(), selected:get() + step))) end
                                 end,
                             },

@@ -27,7 +27,7 @@ use crate::layout::node::{
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
-use crate::wayland::{DragPhase, MouseButton, NavigateKey};
+use crate::wayland::{DragPhase, Escape, KeyPress, MouseButton};
 use mlua::Value;
 
 /// What an absent key means.
@@ -264,7 +264,7 @@ props! {
         ///
         /// Book: Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal
         id: Structural<Id>;
-        /// Spoken name for a control. A node with `on_click` or `submit` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
+        /// Spoken name for a control. A node with `on_click`, `submit` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
         accessible_name: Bound<Text> = absent(Lua(r#""""#));
         /// `false` keeps the engine's focus outline off this node; style it from `focused(name)` instead.
         ///
@@ -288,6 +288,10 @@ props! {
         cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
         /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
         on_hover(hovered: bool);
+        /// A key pressed or repeating while the keyboard is on this node or one inside it, or, on a surface root, anywhere on that surface. It goes to the focused node first, then each ancestor, then the surface root; a handler that returns `true` stops it. A focused `textfield` takes the keys it edits with and passes on the rest (arrows at the caret's edge, Up, Down, paging, Tab, Ctrl chords); Tab moves control focus when it can. Never called while a `secure_submit` field is armed, or for a bare modifier. Without `accessible_name` the node is not focusable and hears only what its descendants pass up.
+        ///
+        /// Book: A key press or repeat, from the focused node up through its ancestors to the surface; `true` stops it ([key handlers](../guide/input.md#key-handlers)). Needs `accessible_name` to take focus
+        on_key(key: KeyPress) -> Option<bool>;
     }
     /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with no handler for the event is skipped by that scan.
     mod pointer(ALL) {
@@ -541,10 +545,10 @@ props! {
         on_change(text: String);
         /// Enter with the full text; the field stays focused and clears. Never fires on a `secure_submit` field.
         on_submit(text: String);
+        /// What Escape does in a plain field. `"clear"` empties the draft (`on_change("")` if it had text), then gives up focus if `on_cancel` is set. `"blur"` keeps the draft and gives up focus. `"pass"` keeps both and does not take the key: it goes up through `on_key`, then to the surface's `on_escape`. A `secure_submit` field ignores it and always scrubs and stays armed. Read when the field takes focus.
+        escape: Bound<OneOf<Escape>> = absent(Choice("clear"));
         /// Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus (ADR-0102).
         on_cancel(cleared: bool);
-        /// Keys a single-line field does not use, for moving a list selection; repeats while held. Tab and Shift+Tab reach this handler only when fewer than two controls can take focus. `"left"`/`"right"` only when the caret cannot move that way and Shift is up (ADR-0236).
-        on_navigate(key: NavigateKey);
         /// Native target for the secret: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `secrets`/`store` with a `name`, or `bluetooth`/`pair` with the request id and MAC in `name`. Makes the field masked.
         ///
         /// Book: Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `network`/`vpn_secret` with a request id and key in `name`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields))

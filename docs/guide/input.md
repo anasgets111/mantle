@@ -193,7 +193,7 @@ return panel {
 
 ## Keyboard controls and accessibility
 
-A node with `on_click` or `submit = true` becomes a keyboard control when it has a nonempty
+A node with `on_click`, `submit = true` or `on_key` becomes a keyboard control when it has a nonempty
 `accessible_name`. The name is announced through AT-SPI. Give every `textfield` an
 `accessible_name` too; fields take focus through their existing callbacks or `secure_submit`.
 Keys reach controls only on the surface with keyboard focus. Panels use
@@ -202,7 +202,7 @@ focus scope.
 
 Tab moves to the next control in document order across the focused surface and its shown popups.
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
-When fewer than two controls can take focus, Tab reaches a plain field's `on_navigate`.
+When fewer than two controls can take focus, Tab reaches `on_key`.
 Enter or Space activates a named control once per press, calling `on_click(rect, "left", pointer)`
 with `pointer` at the node's centre, and running `submit` when set. Pointer presses also focus
 named controls.
@@ -225,6 +225,60 @@ return panel {
     visible = open,
     on_escape = function() open:set(false) end,
     child = text { content = "Menu" },
+}
+```
+
+### Key handlers
+
+`on_key(key)` on any node or surface hears the keys of a custom control: a grid, a menu, a slider.
+`key` is `{ name, text, modifiers = { ctrl, shift, alt, super }, repeat }`.
+
+| Field | Meaning |
+| :--- | :--- |
+| `name` | The xkb keysym name for the key under the active layout: `"a"` (`"A"` with Shift), `"Return"`, `"Escape"`, `"space"`, `"Down"`, `"Page_Down"`, `"F5"`, `"KP_Enter"`. Case matters. These are the names `mantle input key` takes |
+| `text` | What the key types, `nil` when it types nothing: Return, arrows, F-keys and every Ctrl chord |
+| `modifiers` | Which of Ctrl, Shift, Alt and Super are held. `mantle input key` sets Ctrl and Shift only |
+| `repeat` | `true` for an auto-repeat while the key is held, `false` for the press |
+
+A key goes to the focused node first, then each ancestor up to the surface, which hears it last
+whether or not it holds a control. A handler that returns `true` stops it; returning nothing or
+`false` passes it up. A node without `on_key` is skipped. Without focus on a control, only the
+surface's own `on_key` hears keys, while the surface has the keyboard. A control's `on_key` runs
+before its Enter/Space activation, and a handled Escape never reaches `on_escape`.
+
+A node with `on_key` takes Tab focus, a press and the outline like any named control, but only with an
+`accessible_name`, so a screen reader can announce it. Without one it is not focusable, and hears just
+what its descendants pass up. That is how a container sees the keys of the field inside it.
+
+A focused plain `textfield` takes the keys it edits with (characters, Backspace, Delete, Enter, caret
+motion, Ctrl+A/Z/Y, and Escape, unless `escape = "pass"` or there is nothing to clear and no `on_cancel`) and passes the rest up:
+Up, Down, paging, Tab with fewer than two controls, an arrow at the caret's edge, F-keys and other
+Ctrl chords. Tab moves control focus when it can, so
+`on_key` hears Tab only where nothing moves. Repeats arrive with `repeat = true`.
+
+A key typed into a `secure_submit` field never reaches `on_key`, and while one is armed no `on_key` on
+that surface is called.
+
+```lua
+local picked = state("picked", 1)
+
+return panel {
+    id = "grid",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = row {
+        accessible_name = "Picker",
+        on_key = function(key)
+            if key.name == "Right" and not key.modifiers.ctrl then
+                picked:set(picked:get() + 1)
+                return true
+            elseif key.name == "Left" then
+                picked:set(math.max(1, picked:get() - 1))
+                return true
+            end
+        end,
+        children = { text { content = picked:map(tostring) } },
+    },
 }
 ```
 
@@ -283,7 +337,7 @@ A field takes the keyboard only when both hold:
 | Condition | Detail |
 | :--- | :--- |
 | The surface has keyboard focus | A `panel` needs `keyboard_interactivity = "on_demand"` or `"exclusive"` ([keyboard focus](../surfaces/panel.md#keyboard-focus)); a popup shown under the focused surface shares its keys |
-| The field can use keys | It has `secure_submit`, `on_change` or `on_submit`. A field with none of them (even with `on_cancel` or `on_navigate`) never takes focus, and a press on it acts like a press on empty space |
+| The field can use keys | It has `secure_submit`, `on_change` or `on_submit`. A field with none of them (even with `on_cancel`) never takes focus, and a press on it acts like a press on empty space |
 
 A press on the field focuses it and puts the caret under the pointer. `autofocus` focuses it without
 a press.
@@ -293,7 +347,8 @@ a press.
 | `on_change(text)` | Every edit that changes the text, with the whole draft. Caret moves call nothing |
 | `on_submit(text)` | Enter, with the whole draft (possibly `""`). The draft then clears and `on_change("")` follows; the field keeps focus. A held Enter does not repeat |
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
-| `on_navigate(key)` | `"up"`, `"down"`, `"page_up"`, `"page_down"`, and `"left"`/`"right"` when the caret cannot move that way and Shift is up. Tab and Backtab arrive when fewer than two controls can take focus. Repeats while held. The draft is untouched |
+| `on_key(key)` | The keys the field does not edit with, from its own `on_key` up ([key handlers](#key-handlers)): Up, Down, paging, Left and Right when the caret cannot move that way and Shift is up, and Tab when fewer than two controls can take focus. The draft is untouched |
+| `escape` | What Escape does: `"clear"` (the default) as under `on_cancel`; `"blur"` keeps the draft and drops focus, then calls `on_cancel(false)`; `"pass"` keeps the draft and focus and does not take the key, which goes up through `on_key` and then to the surface's `on_escape`. A `secure_submit` field ignores it |
 | `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field in document order wins. It never takes over from a field that is already typing, and never re-takes a field the user just clicked away from |
 | `focus_target` | A `focus_target(name)` handle. An `on_click` can call `:request()` to focus the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the click's state changes appear. It keeps that field's draft and caret and does not call `on_change` |
 | `focus_target(name):set_text(text)` | Replaces the draft of every plain field with that `focus_target` and an `on_change` or `on_submit`, hidden ones too, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters or over 64 KiB raise |
@@ -310,13 +365,13 @@ a press.
 | Escape | Clears; with `on_cancel`, also drops focus | Clears, stays armed, `on_cancel` |
 | Backspace, Delete | One character, or the selection | Backspace only |
 | Ctrl+Backspace, Ctrl+Delete | One word | Nothing |
-| Left, Right, Home, End | Move the caret; Ctrl+Left/Right by word; Shift selects. Left/Right with nowhere to go (and no Shift) call `on_navigate` | Nothing |
+| Left, Right, Home, End | Move the caret; Ctrl+Left/Right by word; Shift selects. Left/Right with nowhere to go (and no Shift) pass up to `on_key` | Nothing |
 | Ctrl+A | Selects all | Nothing |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y | Undo or redo the last plain edits; `on_change` | Nothing |
 | Ctrl+C | Copies selected text | Nothing |
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
-| Up, Down, Page Up, Page Down | `on_navigate` | Nothing |
-| Tab, Shift+Tab | Moves between controls when at least two are available; otherwise `on_navigate` (`"backtab"` for Shift+Tab) | Moves between controls when at least two are available |
+| Up, Down, Page Up, Page Down | Pass up to `on_key` | Nothing |
+| Tab, Shift+Tab | Moves between controls when at least two are available; otherwise passes up to `on_key` (`"ISO_Left_Tab"` for Shift+Tab) | Moves between controls when at least two are available |
 | Any other Ctrl chord | Left to the compositor | Same |
 
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
@@ -365,7 +420,7 @@ return panel {
 }
 ```
 
-A search field that picks from a list moves the selection with `on_navigate` and closes on a second
+A search field that picks from a list moves the selection with `on_key` and closes on a second
 Escape. The [app launcher](../cookbook/launcher.md) recipe is the full version.
 
 ```lua
@@ -382,8 +437,8 @@ return textfield {
         query:set(text)
         selected:set(1)
     end,
-    on_navigate = function(key)
-        local step = ({ up = -1, down = 1 })[key]
+    on_key = function(key)
+        local step = ({ Up = -1, Down = 1 })[key.name]
         if step then selected:set(math.max(1, selected:get() + step)) end
     end,
     -- First Escape clears the text; a second one, on an empty field, closes.
@@ -412,7 +467,7 @@ secret or its length.
 | Rule | Detail |
 | :--- | :--- |
 | Arming | When the surface gains keyboard focus, the sole visible secure field in it (and in popups shown under it) is armed with no click. With two or more, a press picks one. A field revealed later under existing focus arms if none is armed |
-| Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret, selection or `on_navigate`; `on_change` and `on_submit` never fire |
+| Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret or selection, and no `on_key`; `on_change` and `on_submit` never fire |
 | Sending | Enter, or a click on a `submit = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
 | Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Tab to a named button keeps the buffer too: typing stops, Enter on a `submit = true` button sends it, and Escape still clears it and calls `on_cancel`. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
@@ -456,8 +511,10 @@ return lock {
 | Task | Answer |
 | :--- | :--- |
 | Make a slider | The example under [pointer](#pointer) |
-| Move a selection through a list with the arrow keys | `on_navigate` under [text fields](#text-fields); the [app launcher](../cookbook/launcher.md) adds `scroll(name):reveal` |
+| Move a selection through a list with the arrow keys | `on_key` on the field ([key handlers](#key-handlers)); the [app launcher](../cookbook/launcher.md) adds `scroll(name):reveal` |
 | Close a search box on a second Escape | The same example: `on_cancel(cleared)` closes only when `cleared` is `false` |
+| Let Escape reach the surface from a field | `escape = "pass"` on the `textfield` |
+| Handle arrows or shortcuts on a custom control | `on_key` ([key handlers](#key-handlers)) |
 | Close a dialog or menu on Escape | `on_escape` on the surface ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
 | Reach a button by keyboard or screen reader | Give the node with `on_click` or `submit` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
@@ -591,10 +648,10 @@ return panel {
 | :--- | :--- |
 | A `textfield` is invisible or cannot be clicked | It has no intrinsic width. Give it `width` |
 | A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"on_demand"` (or `"exclusive"` for a modal) |
-| A field with only `on_navigate`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
+| A field with only `on_key`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
 | Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"none"` |
 | A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focused(name)` for a style that tracks any focus |
-| Tab stopped reaching `on_navigate` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_navigate` only when the field is the sole control |
+| Tab stopped reaching `on_key` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_key` only when the field is the sole control |
 | The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |
 | A `scroll` container never scrolls | Bound its size on the scroll axis; content-sized means nothing overflows |
 | `on_hover` is refused | Add `hover = hover("name")` on the same node |
