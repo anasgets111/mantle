@@ -21,7 +21,7 @@ tag-release version:
     [[ "{{version}}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version must be X.Y.Z" >&2; exit 1; }
     [ -z "$(git status --porcelain)" ] || { echo "commit or stash first" >&2; exit 1; }
     ! git rev-parse -q --verify "refs/tags/v{{version}}" >/dev/null || { echo "v{{version}} exists" >&2; exit 1; }
-    awk '/^## /{p = $0 == "## Unreleased"; next} p' docs/changelog.md | grep -q '[^[:space:]]' || { echo "docs/changelog.md has nothing under Unreleased; the release notes come from it" >&2; exit 1; }
+    awk '/^## /{p = $0 == "## Unreleased"; next} p' docs/changelog.md | grep '[^[:space:]]' >/dev/null || { echo "docs/changelog.md has nothing under Unreleased; the release notes come from it" >&2; exit 1; }
     sed -i '/^\[workspace.package\]/,/^\[/ s/^version = ".*"/version = "{{version}}"/' Cargo.toml
     sed -i "0,/^## Unreleased$/ s//## Unreleased\n\n## {{version}} - $(date +%F)/" docs/changelog.md
     cargo update -w
