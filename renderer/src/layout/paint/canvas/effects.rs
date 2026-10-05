@@ -99,11 +99,15 @@ fn spread_radius(radius: f32, spread: f32) -> f32 {
     (radius + spread * k).max(0.0)
 }
 
-/// `outside` with the box cut out, which is where a box shadow draws (ADR-0260).
+/// `outside` with the box cut out, which is where a box shadow draws (ADR-0260). femtovg fringes the
+/// outer rect's edge over the fill, so it sits 2px clear of both, where the ramp is already zero.
 fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
+    let (x0, y0) = (outside.x.min(rect.x) - 2.0, outside.y.min(rect.y) - 2.0);
+    let x1 = (outside.x + outside.width).max(rect.x + rect.width) + 2.0;
+    let y1 = (outside.y + outside.height).max(rect.y + rect.height) + 2.0;
     let mut path = box_path(rect, radius);
     path.solidity(Solidity::Hole);
-    path.rect(outside.x, outside.y, outside.width, outside.height);
+    path.rect(x0, y0, x1 - x0, y1 - y0);
     path.solidity(Solidity::Solid);
     path
 }
@@ -773,6 +777,36 @@ mod tests {
         };
         assert!(near(px[3], (255, 127, 127)), "the box alone over its shadow: {px:?}");
         assert!(near(px[5], (0, 0, 0)), "the shadow at full strength: {px:?}");
+    }
+
+    /// ADR-0260. A shadow inside a translucent box's edge, normal or blended, leaves every pixel
+    /// under the box as the box alone paints it: the cut-out is by the box, not by the shadow's reach.
+    #[test]
+    fn a_shadow_inside_the_box_leaves_no_ring_under_a_translucent_box() {
+        let inside: Vec<(usize, usize)> =
+            (16..48).map(|y| (32, y)).chain((16..48).map(|x| (x, 32))).chain((16..48).map(|x| (x, 17))).collect();
+        for (radius, shadow) in [
+            (16, r##"{ color = "#000000FF", spread = -2 }"##),
+            (0, r##"{ color = "#000000FF", offset = { x = 2 }, spread = -1 }"##),
+            (0, r##"{ color = "#A6A6A6FF", offset = { x = 1.25 }, spread = -0.75 }"##),
+            (0, r##"{ color = "#A6A6A6FF", offset = { x = 1.25 }, spread = -0.75, blend = "plus_darker" }"##),
+        ] {
+            let body = format!(r##"radius = {radius}, background = "#99999940""##);
+            let Some(bare) = paint_effect_at(&body, &inside) else { return };
+            let Some(cast) = paint_effect_at(&format!("{body}, shadows = {{ {shadow} }}"), &inside) else { return };
+            assert_eq!(cast, bare, "{shadow}");
+        }
+    }
+
+    /// A zero-blur shadow's outer rim covers the pixel by its spread's fraction, cut out or not.
+    #[test]
+    fn a_zero_blur_shadow_rim_covers_by_its_fraction_under_a_translucent_box() {
+        for (spread, ink) in [(0.25, 191), (0.5, 127), (0.75, 64)] {
+            let e =
+                format!(r##"background = "#FF000040", shadows = {{ {{ color = "#000000FF", spread = {spread} }} }}"##);
+            let Some(px) = paint_effect_at(&e, &[(15, 32), (32, 15)]) else { return };
+            assert!(px.iter().all(|p| p.0.abs_diff(ink) <= 2), "spread {spread}: {px:?}");
+        }
     }
 
     /// Twelve alternating white and black stops, `stops` for a linear gradient `background`.
