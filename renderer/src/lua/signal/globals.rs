@@ -129,7 +129,6 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
 /// focus-within walk.
 pub fn any_focused_registered(lua: &Lua) -> bool {
     lua.app_data_ref::<FocusedRegistry>().is_some_and(|registry| !registry.0.is_empty())
-        || lua.app_data_ref::<FocusVisibleRegistry>().is_some_and(|registry| !registry.0.is_empty())
 }
 
 /// Whether config called `pointer(name)`, so configs without one skip the pointer walk.
@@ -162,13 +161,15 @@ pub fn begin_evaluation(lua: &Lua) {
 #[derive(Default)]
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 
-/// Name-keyed `focused(name)` registry, kept across reloads like [`HoverRegistry`].
+/// `focused(name)` and `focus_visible(name)`, kept across reloads like [`HoverRegistry`]; the
+/// `bool` is `visible`, so `focused("x")` and `focus_visible("x")` are distinct slots.
 #[derive(Default)]
-struct FocusedRegistry(HashMap<String, Signal>);
+struct FocusedRegistry(HashMap<(bool, String), Signal>);
 
-/// Name-keyed `focus_visible(name)` registry; a separate map so `focused("x")` and `focus_visible("x")` differ.
-#[derive(Default)]
-struct FocusVisibleRegistry(HashMap<String, Signal>);
+fn focus_slot(lua: &Lua, visible: bool, name: String, dirty: &DirtyFlag) -> SignalOf<bool> {
+    let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
+    SignalOf::new(registry.0.entry((visible, name)).or_insert_with(|| Signal::new_focused(dirty.clone())).clone())
+}
 
 /// Name-keyed `pointer(name)` registry, kept across reloads like [`HoverRegistry`].
 #[derive(Default)]
@@ -372,9 +373,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// focus for a textfield. One name, one signal, across reloads. Read-only.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focused(lua, name: String) -> SignalOf<bool> {
-            let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
-            let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focused_dirty.clone()));
-            Ok(SignalOf::new(signal.clone()))
+            Ok(focus_slot(lua, false, name, &focused_dirty))
         }
     )?;
     lua_fn!(
@@ -385,9 +384,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// signal, across reloads. Read-only.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focus_visible(lua, name: String) -> SignalOf<bool> {
-            let mut registry = crate::lua::app_data_or_default::<FocusVisibleRegistry>(lua);
-            let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focus_visible_dirty.clone()));
-            Ok(SignalOf::new(signal.clone()))
+            Ok(focus_slot(lua, true, name, &focus_visible_dirty))
         }
     )?;
     lua_fn!(
