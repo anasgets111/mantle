@@ -75,7 +75,7 @@ local function reply_field(entry)
                         foreground = theme.text,
                         placeholder = entry.reply_placeholder or "Reply",
                         placeholder_color = theme.muted,
-                        caret_color = theme.cursor,
+                        caret = { color = theme.cursor },
                         autofocus = true,
                         -- A field without `on_change` or `on_submit` takes no keys and no `set_text`.
                         on_change = function(text) draft:set(text) end,
