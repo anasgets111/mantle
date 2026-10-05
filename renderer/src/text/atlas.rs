@@ -27,7 +27,8 @@ const SCRATCH_SIZES: usize = 16;
 
 /// Paints, by any surface, a finished layer outlives the last paint of its own surface's list that
 /// held it, and the bytes all of them may hold, least recently held first (ADR-0258). The age
-/// only frees a gone surface's layers: every paint of a live one sweeps its own.
+/// is a fallback for a surface whose layers [`TextPainter::release_surface`] did not free: every
+/// paint of a live one sweeps its own.
 pub(crate) const LAYER_PAINTS: u64 = 1000;
 const LAYER_BYTES: usize = 64 << 20;
 
@@ -276,6 +277,23 @@ impl TextPainter {
             for id in self.scratch.remove(&size).into_iter().flat_map(|(_, free)| free) {
                 self.canvas.delete_image(id);
             }
+        }
+    }
+
+    /// Deletes `surface`'s finished layers and the pooled offscreens too big for any surface left,
+    /// `largest` being their widest and tallest. A gone surface never paints again to sweep its own,
+    /// and an idle shell paints too little for [`LAYER_PAINTS`] to age them: a full-screen lock with
+    /// a blur held 50 MiB after unlock. Smaller sizes stay, so a tooltip closing costs the bar
+    /// nothing. The GL context must be current.
+    pub fn release_surface(&mut self, surface: &str, largest: (usize, usize)) {
+        let (gone, kept): (Vec<_>, Vec<_>) =
+            std::mem::take(&mut self.layers).into_iter().partition(|(on, ..)| on == surface);
+        self.layers = kept;
+        let layers = gone.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]));
+        let oversize: Vec<_> = self.scratch.keys().filter(|(w, h)| *w > largest.0 || *h > largest.1).copied().collect();
+        let pooled = oversize.into_iter().filter_map(|size| self.scratch.remove(&size)).flat_map(|(_, free)| free);
+        for id in layers.chain(pooled) {
+            self.canvas.delete_image(id);
         }
     }
 

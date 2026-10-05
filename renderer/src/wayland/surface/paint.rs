@@ -73,6 +73,22 @@ impl App {
             // `eglCreateWindowSurface` can get the same handle back, and `eglMakeCurrent` then keeps
             // the dead one bound: the next swap failed with EGL_BAD_SURFACE and quit the Renderer.
             // Every paint makes its own surface current again.
+            // The painter's images need a current context to delete; this surface is still alive.
+            let largest = self
+                .surfaces
+                .iter()
+                .enumerate()
+                .filter(|(other, tracked)| *other != index && tracked.bound.is_some())
+                .map(|(_, tracked)| tracked.scale.physical_size(tracked.configured_size))
+                .fold((0, 0), |(w, h), (sw, sh)| (w.max(sw as usize), h.max(sh as usize)));
+            if let Some(painter) = self.text_painter.as_mut()
+                && egl
+                    .instance
+                    .make_current(egl.display, Some(bound.egl_surface), Some(bound.egl_surface), Some(egl.context))
+                    .is_ok()
+            {
+                painter.release_surface(&self.surfaces[index].surface_id, largest);
+            }
             let _ = egl.instance.make_current(egl.display, None, None, None);
             self.current_egl_surface = None;
             if let Err(err) = egl.instance.destroy_surface(egl.display, bound.egl_surface) {

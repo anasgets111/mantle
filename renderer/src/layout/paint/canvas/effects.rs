@@ -1312,6 +1312,28 @@ mod tests {
         assert!(painter.layer("other", &small).is_some());
     }
 
+    /// A gone surface's layers and the pooled offscreens too big for any surface left are deleted
+    /// at release, not aged out by paints that never come; another surface's layers stay.
+    #[test]
+    fn releasing_a_surface_deletes_its_layers_and_the_pool() {
+        let Some(instance) = init_headless_egl(8, 8) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
+        let src = r##"return panel { id = "bar", width = 96, height = 64, background = "#FF0000FF" }"##;
+        let command = surface_96x64(src).commands[0].clone();
+        let mut image =
+            || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+        let (gone, other, big, small) = (image(), image(), image(), image());
+        painter.keep_layer("lock", &command, (Vec::new(), gone), (8, 8));
+        painter.keep_layer("bar", &command, (Vec::new(), other), (8, 8));
+        painter.recycle_scratch([(big, (80, 80)), (small, (8, 8))]);
+        painter.release_surface("lock", (8, 8));
+        assert!(painter.layer("lock", &command).is_none());
+        assert!(painter.layer("bar", &command).is_some());
+        assert!(painter.take_scratch((80, 80)).is_none());
+        assert!(painter.take_scratch((8, 8)).is_some(), "a size a live surface can still ask for stays");
+    }
+
     /// A 32px box at (16, 16) on a white 64x96 panel with `effect.shader` running `frag`, read at
     /// `points`. `shader` holds the keys after `source`, `body` the box's own.
     fn paint_shader(frag: &str, shader: &str, body: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
