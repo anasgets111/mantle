@@ -278,6 +278,9 @@ pub struct ImageCache {
     /// Textures released, textures uploaded and slots that failed to decode, over the cache's
     /// life, for `wayland::memory_profile`. Totals rather than live reads; `Census` says why.
     evicted_total: usize,
+    /// A texture's slot went since [`ImageCache::take_freed`] last asked: its host bytes, an
+    /// animation's deltas above all, are on glibc's free lists until something trims them.
+    freed: bool,
     landed_total: usize,
     failed_total: usize,
     /// Bytes across `Ready` slots -- texture, plus an animation's host deltas (ADR-0235) --
@@ -351,6 +354,7 @@ impl ImageCache {
             entries: HashMap::new(),
             evicted: Vec::new(),
             evicted_total: 0,
+            freed: false,
             paint_start: 0,
             landed_total: 0,
             failed_total: 0,
@@ -437,6 +441,12 @@ impl ImageCache {
         for id in self.evicted.drain(..) {
             canvas.delete_image(id);
         }
+    }
+
+    /// Whether a texture was evicted since the last call, which clears it: the cue for the loop to
+    /// hand the freed host bytes back (`wayland::trim`).
+    pub fn take_freed(&mut self) -> bool {
+        std::mem::take(&mut self.freed)
     }
 
     /// Marks what is asked for from here as this paint's, which the capacity bound never evicts.
@@ -757,6 +767,7 @@ impl ImageCache {
                 Slot::Ready { image, bytes, .. } => {
                     self.evicted.push(*image);
                     self.evicted_total += 1;
+                    self.freed = true;
                     self.resident_bytes -= *bytes;
                 }
                 // Its decode is still queued or running; stop it being spent on a slot that has
@@ -934,6 +945,28 @@ mod tests {
         0xdc, 0x40, 0x24, 0x43, 0xc1, 0x01, 0x3a, 0xdc, 0x05, 0x7c, 0xf2, 0x4a, 0x44, 0x5b, 0x00, 0x00, 0x00, 0x00,
         0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
+
+    #[test]
+    fn evicting_a_texture_asks_for_a_trim_once_and_evicting_a_failure_does_not() {
+        use crate::layout::paint::{init_headless_egl, text_painter};
+        use crate::text::shaping::ShapingHandle;
+
+        let Some(instance) = init_headless_egl(8, 8) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
+        let image =
+            painter.canvas_mut().create_image_empty(1, 1, femtovg::PixelFormat::Rgba8, femtovg::ImageFlags::empty());
+        let v = FileVersion::default();
+        let (ready, failed) = (key("/w/ready.png", 8, v), key("/w/failed.png", 8, v));
+        let mut cache = ImageCache::new();
+        cache.insert(ready.clone(), Slot::Ready { image: image.unwrap(), bytes: 4, start: Instant::now(), anim: None });
+        cache.insert(failed.clone(), Slot::Failed);
+        cache.evict(&failed);
+        assert!(!cache.take_freed(), "a failed slot held no memory");
+        cache.evict(&ready);
+        assert!(cache.take_freed());
+        assert!(!cache.take_freed(), "taking clears it");
+    }
 
     /// ADR-0183. The capacity bound never sees the pin list, so it evicts by what has been asked
     /// for least recently rather than by what was inserted first -- otherwise the entry most

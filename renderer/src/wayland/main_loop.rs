@@ -388,7 +388,8 @@ pub fn run(
         // Skip focus maintenance on a truly idle turn (ADR-0124): it walks the focused scope's trees
         // for fields.
         let active = dispatched || re_resolved || typed || !landed.is_empty();
-        if passed && shed_nodes(&mut node_high_water, app.client.scene().census().1) {
+        let freed = app.image_cache.take_freed();
+        if freed || (passed && shed_nodes(&mut node_high_water, app.client.scene().census().1)) {
             app.trim.request(std::time::Instant::now());
         }
         // Disarm after the turn, not only when active: `dispatch_pending` armed this serial and
