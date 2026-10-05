@@ -20,8 +20,8 @@ use crate::layout::node::prop::{
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
     ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
-    FontVariations, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners,
-    NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
+    FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
+    NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
     SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec,
     TrimAxis, Wrap,
 };
@@ -253,7 +253,7 @@ props! {
         ///
         /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread, inset, blend }`; at most 16. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
         shadows: Bound<Shadows>;
-        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only. `shader = { source, input, params, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is an absolute `.frag` path, `input` is `"content"` (the default) or `"backdrop"` (what this surface painted under the box; the output replaces it before the node paints, so return `mantle_input(uv)` to leave a pixel; a box kind's only), `params` are uniforms by name as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop filters and a backdrop shader first, then the node over them, a content shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334), then `blend`. A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
+        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only. `shader = { source, input, params, images, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is an absolute `.frag` path, `input` is `"content"` (the default) or `"backdrop"` (what this surface painted under the box; the output replaces it before the node paints, so return `mantle_input(uv)` to leave a pixel; a box kind's only), `params` are uniforms by name and `images` are samplers by name, both as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop filters and a backdrop shader first, then the node over them, a content shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334), then `blend`. A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
         ///
         /// Book: Pixel filters: `blur` (sigma in px, `[0, 8192]`) and the colour filters `saturate`, `brightness`, `contrast` (`[0, 8]`, `1` is off), at the top level and in `backdrop`, and a `shader` over the node's subtree or its backdrop; see [Blurs](../guide/paint.md#blurs) and [Shader effects](../guide/paint.md#shader-effects). `backdrop` and `input = "backdrop"` are for box kinds only
         effect: Bound<Effects>;
@@ -490,6 +490,10 @@ props! {
         progress: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Uniforms by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing ones are `0`. Not tweened.
         params: Bound<Params> = absent(Lua("{}"));
+        /// Raster images a shader samples, by name: up to 8 absolute PNG, JPEG or WebP paths, each a `uniform sampler2D <name>` plus `uniform vec2 <name>_size` in pixels. The name is a GLSL identifier, not `u_*`, `mantle_*`, `gl_*` or `*_size`, and has no `__`. A missing or undecodable file samples transparent black and is logged once. Saving the file reloads it. Not tweened.
+        ///
+        /// Book: Up to 8 absolute PNG, JPEG or WebP paths by sampler name: [images](#images). Missing ones sample transparent black. Not tweened
+        images: Bound<Images> = absent(Lua("{}"));
     }
     /// A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.
     mod path(PATH) {

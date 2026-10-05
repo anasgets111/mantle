@@ -153,6 +153,84 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
     Ok(out)
 }
 
+/// A sampler name and the absolute path of the image behind it.
+pub type ShaderImage = (String, String);
+
+/// The most `images` one `shader` takes: GL ES guarantees 16 fragment texture units.
+pub const MAX_SHADER_IMAGES: usize = 8;
+
+/// A `shader`'s `images`: [`parse_shader_images`].
+pub(crate) struct Images;
+
+spelled!(Images => format!("table<{}, {}>", String::lua(), String::lua()));
+
+impl Prop for Images {
+    type Out = Vec<ShaderImage>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Vec<ShaderImage>, LayoutError> {
+        parse_shader_images(row.name, value.unwrap_or(&Value::Nil))
+    }
+}
+
+/// `images = { normal = "/abs/normal.png" }`: sampler names to raster files. Each name becomes a
+/// GLSL identifier, so it is checked here against the prelude's own, which `params` never needed.
+/// Sorted, so the list is a value two runs can compare.
+pub(in crate::layout::node) fn parse_shader_images(what: &str, value: &Value) -> Result<Vec<ShaderImage>, LayoutError> {
+    let table = match value {
+        Value::Nil => return Ok(Vec::new()),
+        Value::Table(table) => table,
+        other => {
+            return Err(invalid(
+                what,
+                format!("expected a table of sampler names to absolute paths, got {}", preview_for_error(other)),
+            ));
+        }
+    };
+    let mut out = Vec::new();
+    for pair in table.pairs::<Value, Value>() {
+        let (key, value) = pair.map_err(|e| invalid(what, e.to_string()))?;
+        let (Value::String(key), Value::String(path)) = (&key, &value) else {
+            return Err(invalid(what, format!("expected `name = \"/abs/path\"`, got {}", preview_for_error(&value))));
+        };
+        let name = key.to_str().map_err(|e| invalid(what, e.to_string()))?.to_string();
+        let field = format!("{what}.{name}");
+        if let Some(why) = sampler_name_error(&name) {
+            return Err(invalid(&field, why));
+        }
+        let path = path.to_str().map_err(|e| invalid(&field, e.to_string()))?.to_string();
+        if !path.starts_with('/') {
+            return Err(invalid(&field, format!("expected an absolute path, got `{path}`")));
+        }
+        // Rasterizing a vector at the sampler's 8192px box would be a 256 MiB texture.
+        if crate::image::is_vector(std::path::Path::new(&path)) {
+            return Err(invalid(&field, "expected a raster file (PNG, JPEG, WebP), not an SVG"));
+        }
+        out.push((name, path));
+        if out.len() > MAX_SHADER_IMAGES {
+            return Err(invalid(what, format!("expected at most {MAX_SHADER_IMAGES} images")));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(out)
+}
+
+/// Why `name` cannot be declared as `uniform sampler2D name` and `name_size` beside the prelude's
+/// `u_*`, `mantle_*`, `v_uv` and `fragColor`, or `None`.
+fn sampler_name_error(name: &str) -> Option<&'static str> {
+    let mut chars = name.chars();
+    let identifier = chars.next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !identifier || name.len() > 64 {
+        return Some("expected a GLSL identifier of up to 64 letters, digits and `_`, not starting with a digit");
+    }
+    if name.starts_with("u_") || name.starts_with("mantle_") || name.starts_with("gl_") || name.contains("__") {
+        return Some("`u_*`, `mantle_*`, `gl_*` and names with `__` are reserved");
+    }
+    if name.ends_with("_size") || matches!(name, "v_uv" | "fragColor" | "main") {
+        return Some("`*_size` is another image's pixel size, and `v_uv`, `fragColor` and `main` are the prelude's");
+    }
+    None
+}
+
 /// One cross-dissolve in flight on an `image` (ADR-0181), started by the frame the incoming texture
 /// landed on and dropped the moment its duration is up.
 #[derive(Debug, Clone, PartialEq)]

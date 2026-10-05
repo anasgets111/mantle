@@ -4,6 +4,8 @@ use femtovg::Canvas;
 use femtovg::renderer::OpenGl;
 use glow::HasContext;
 
+use crate::layout::node::MAX_SHADER_IMAGES;
+
 /// A quad over a whole target, in GL's row order: clip x, y, then the texture's u, v per corner.
 pub(super) const WHOLE: [f32; 16] =
     [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0];
@@ -67,8 +69,7 @@ pub(super) struct State {
     vertex_array: Option<glow::VertexArray>,
     array_buffer: Option<glow::Buffer>,
     active_texture: u32,
-    texture_0: Option<glow::Texture>,
-    texture_1: Option<glow::Texture>,
+    textures: [Option<glow::Texture>; MAX_SHADER_IMAGES + 2],
     blend: bool,
     blend_src_rgb: i32,
     blend_dst_rgb: i32,
@@ -93,10 +94,10 @@ impl State {
             // so the check and the conversion are the same step.
             let name = |slot: u32| std::num::NonZeroU32::new(gl.get_parameter_i32(slot) as u32);
             let active_texture = gl.get_parameter_i32(glow::ACTIVE_TEXTURE) as u32;
-            gl.active_texture(glow::TEXTURE0);
-            let texture_0 = name(glow::TEXTURE_BINDING_2D).map(glow::NativeTexture);
-            gl.active_texture(glow::TEXTURE1);
-            let texture_1 = name(glow::TEXTURE_BINDING_2D).map(glow::NativeTexture);
+            let textures = std::array::from_fn(|unit| {
+                gl.active_texture(glow::TEXTURE0 + unit as u32);
+                name(glow::TEXTURE_BINDING_2D).map(glow::NativeTexture)
+            });
             gl.active_texture(active_texture);
             let mut scissor_box = [0; 4];
             gl.get_parameter_i32_slice(glow::SCISSOR_BOX, &mut scissor_box);
@@ -106,8 +107,7 @@ impl State {
                 vertex_array: name(glow::VERTEX_ARRAY_BINDING).map(glow::NativeVertexArray),
                 array_buffer: name(glow::ARRAY_BUFFER_BINDING).map(glow::NativeBuffer),
                 active_texture,
-                texture_0,
-                texture_1,
+                textures,
                 blend: gl.is_enabled(glow::BLEND),
                 blend_src_rgb: gl.get_parameter_i32(glow::BLEND_SRC_RGB),
                 blend_dst_rgb: gl.get_parameter_i32(glow::BLEND_DST_RGB),
@@ -132,10 +132,10 @@ impl State {
             gl.use_program(self.program);
             gl.bind_vertex_array(self.vertex_array);
             gl.bind_buffer(glow::ARRAY_BUFFER, self.array_buffer);
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, self.texture_1);
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, self.texture_0);
+            for (unit, texture) in self.textures.into_iter().enumerate().rev() {
+                gl.active_texture(glow::TEXTURE0 + unit as u32);
+                gl.bind_texture(glow::TEXTURE_2D, texture);
+            }
             gl.active_texture(self.active_texture);
             let toggle = |enabled: bool, slot: u32| {
                 if enabled {

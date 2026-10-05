@@ -193,6 +193,7 @@ pub enum PaintStyle {
         source: String,
         progress: f32,
         params: Vec<ShaderParam>,
+        images: Vec<ShaderImage>,
     },
     /// `target` is `None` when no `secure_submit` is declared. Malformed targets fail here, not at
     /// the press path.
@@ -294,6 +295,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             source: shader::source.read(properties)?,
             progress: shader::progress.read(properties)?,
             params: shader::params.read(properties)?,
+            images: shader::images.read(properties)?,
         },
         "textfield" => {
             // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
@@ -571,6 +573,7 @@ mod tests {
                     ("b".to_string(), vec![1.0, 2.0, 3.0]),
                     ("c".to_string(), vec![7.0]),
                 ],
+                images: Vec::new(),
             }
         );
         let bars = format!("{{ {} }}", vec!["0.5"; 256].join(", "));
@@ -588,6 +591,38 @@ mod tests {
         let err = style(&lua, r#"return { kind = "shader", source = "s.frag" }"#).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "source"), "{err:?}");
         assert!(style(&lua, r#"return { kind = "shader", source = "" }"#).is_ok());
+    }
+
+    /// `images` names become GLSL identifiers beside the prelude's own, so a bad name, a ninth
+    /// entry, a relative path, a vector file and a non-table are all refused at parse.
+    #[test]
+    fn shader_images_are_checked_as_sampler_names_and_absolute_raster_paths() {
+        let lua = Lua::new();
+        let parsed = style(&lua, r#"return { kind = "shader", images = { b = "/b.png", a = "/a.webp" } }"#);
+        let Ok(Some(PaintStyle::Shader { images, .. })) = parsed else { panic!("{parsed:?}") };
+        assert_eq!(images, [("a".to_string(), "/a.webp".to_string()), ("b".to_string(), "/b.png".to_string())]);
+        let nine = (0..9).map(|i| format!("i{i} = \"/x.png\"")).collect::<Vec<_>>().join(", ");
+        let refused = [
+            ("{ [\"1a\"] = \"/x.png\" }", "images.1a"),
+            ("{ [\"a-b\"] = \"/x.png\" }", "images.a-b"),
+            ("{ u_progress = \"/x.png\" }", "images.u_progress"),
+            ("{ mantle_opacity = \"/x.png\" }", "images.mantle_opacity"),
+            ("{ fragColor = \"/x.png\" }", "images.fragColor"),
+            ("{ a_size = \"/x.png\" }", "images.a_size"),
+            ("{ a = \"x.png\" }", "images.a"),
+            ("{ a = \"/x.svg\" }", "images.a"),
+            ("{ a = 1 }", "images"),
+            ("\"/x.png\"", "images"),
+            ("{ \"/x.png\" }", "images"),
+            (&format!("{{ {nine} }}"), "images"),
+        ];
+        for (bad, property) in refused {
+            let err = style(&lua, &format!(r#"return {{ kind = "shader", images = {bad} }}"#)).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property: p, .. } if p == property),
+                "{bad}: {err:?}"
+            );
+        }
     }
 
     #[test]

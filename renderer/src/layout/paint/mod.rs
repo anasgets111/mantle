@@ -119,6 +119,7 @@ pub enum Draw {
         version: crate::image::FileVersion,
         progress: f32,
         params: Vec<node::ShaderParam>,
+        images: Vec<SamplerFile>,
         alpha: f32,
     },
     /// A `path` node's commands, filled then stroked in node-local coordinates.
@@ -143,7 +144,7 @@ pub enum Draw {
     /// and through `effect.blur`, by `effect.blend` (ADR-0254, ADR-0336). `rect` is the node's box;
     /// `clip` covers everything the effect reaches, and is what a blend reads under it. A
     /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
-    Layer { effect: node::Effect, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
+    Layer { effect: Box<node::Effect>, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
     /// and drawn through its `radius` at `alpha` (ADR-0256), then the `shader` reading it drawn over
     /// it. `clip` covers the 3 sigma the blur reads and the shader's padding.
@@ -159,6 +160,9 @@ fn reads_under(draw: &Draw) -> bool {
     }
 }
 
+/// A shader's `images` entry: sampler name, path and the file's version, so an edit changes the list.
+pub type SamplerFile = (String, String, crate::image::FileVersion);
+
 /// A layer's `effect.shader` (ADR-0336). `version` is the file's, so an edit changes the list and
 /// the stage recompiles (ADR-0253); `radius` is the node's outline, which `mantle_sdf` measures.
 #[derive(Debug, Clone, PartialEq)]
@@ -166,6 +170,7 @@ pub struct LayerShader {
     pub source: std::path::PathBuf,
     pub version: crate::image::FileVersion,
     pub params: Vec<node::ShaderParam>,
+    pub images: Vec<SamplerFile>,
     pub radius: Radii,
 }
 
@@ -288,6 +293,14 @@ impl DisplayList {
     pub(crate) fn image_requests<'a>(&'a self, out: &mut Vec<image::ImageRequest<'a>>) {
         fn walk<'a>(commands: &'a [DrawCmd], out: &mut Vec<image::ImageRequest<'a>>) {
             for command in commands {
+                let files = match &command.draw {
+                    Draw::Shader { images, .. } => images.as_slice(),
+                    Draw::Layer { shader: Some(shader), .. } | Draw::Backdrop { shader: Some(shader), .. } => {
+                        shader.images.as_slice()
+                    }
+                    _ => &[],
+                };
+                out.extend(files.iter().map(|(_, path, _)| image::ImageRequest::sampler(std::path::Path::new(path))));
                 match &command.draw {
                     Draw::Image { source, box_px, fit, blur_px, retained, .. } => {
                         for path in std::iter::once(source).chain(retained.iter()) {
@@ -715,7 +728,7 @@ mod tests {
     #[test]
     fn a_blended_layer_damages_its_whole_read() {
         let effect = node::Effect { blend: node::Blend::Multiply, ..node::Effect::default() };
-        let draw = Draw::Layer { effect, shader: None, silhouette: false, commands: Vec::new() };
+        let draw = Draw::Layer { effect: Box::new(effect), shader: None, silhouette: false, commands: Vec::new() };
         let mut damage = vec![PhysicalRect { x0: 30, y0: 0, x1: 31, y1: 1 }];
         DisplayList { commands: vec![DrawCmd { draw, ..glass(0, 40) }] }.expand_backdrops(&mut damage);
         assert_eq!(damage[1..], [PhysicalRect { x0: -2, y0: -2, x1: 42, y1: 12 }]);

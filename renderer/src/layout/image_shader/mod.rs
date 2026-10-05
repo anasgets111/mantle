@@ -186,7 +186,7 @@ void main() {
 /// Which contract a program is assembled against; one file may serve more than one.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum Variant {
-    /// A `shader` node: no textures (ADR-0253).
+    /// A `shader` node: only the `images` it names (ADR-0253).
     Plain,
     /// A transition: [`SAMPLERS`] (ADR-0184).
     Cross,
@@ -218,7 +218,12 @@ struct Program {
     /// count (1 unless an array), and whether a `params` entry of another count has been logged for
     /// this revision.
     params: HashMap<String, (glow::UniformLocation, usize, usize, std::cell::Cell<bool>)>,
+    /// A `shader` node's `images`, in the order its prelude declares them: sampler and `_size`.
+    images: Vec<(Option<glow::UniformLocation>, Option<glow::UniformLocation>)>,
 }
+
+/// An `images` entry's texture and its size in pixels.
+type SamplerTexture = (glow::Texture, (usize, usize));
 
 /// A transition's two endpoint textures, and where each sits inside the node's box after its
 /// `fit`.
@@ -258,6 +263,9 @@ pub struct Run<'a> {
     pub round: LogicalRect,
     pub progress: f32,
     pub params: &'a [node::ShaderParam],
+    /// A `shader` node's `images` by sampler name, `None` for one with no texture, which samples
+    /// transparent black. Sorted as the parser leaves them; they name the program.
+    pub images: &'a [(&'a str, Option<ImageId>)],
 }
 
 /// One [`ShaderStage::content`] run: `input` through the program into `target`, which is the same
@@ -273,6 +281,8 @@ pub struct ContentRun<'a> {
     pub logical_size: (f32, f32),
     pub radii: node::Radii,
     pub params: &'a [node::ShaderParam],
+    /// As [`Run::images`], on the units after `u_input` and `u_input_blurred`.
+    pub images: &'a [(&'a str, Option<ImageId>)],
 }
 
 /// Compiled config shaders for this GL context, and the one quad they all draw.
@@ -285,7 +295,9 @@ pub struct ShaderStage {
     /// restarting the shell.
     /// The variant is how it was assembled: one file may be a transition, a `shader` node and an
     /// `effect.shader`, and the three assemble differently.
-    programs: HashMap<(PathBuf, Variant), (crate::image::FileVersion, Option<Program>)>,
+    /// The last key part is the `images` names, which are declared in the source: one file with two
+    /// name sets is two programs. ponytail: a set a node stopped using stays until teardown.
+    programs: HashMap<(PathBuf, Variant, String), (crate::image::FileVersion, Option<Program>)>,
     /// [`FADE`], compiled on first use. `None` until then; `Some(None)` if the engine's own shader
     /// would not build, which is not tried again -- the same shape `programs` uses, and the point
     /// where a node drops back to the two-draw approximation.
@@ -300,6 +312,8 @@ pub struct ShaderStage {
     blending: Option<Option<blend::Blending>>,
     /// What [`Self::content`] and [`Self::blend`] draw through, created on first use.
     framebuffer: Option<glow::Framebuffer>,
+    /// A 1x1 transparent texture standing in for an `images` entry with none.
+    blank: Option<glow::Texture>,
 }
 
 impl ShaderStage {
@@ -334,11 +348,17 @@ impl ShaderStage {
         // still be live.
         // SAFETY: caller's contract.
         let Some(quad) = (unsafe { self.ensure_quad(gl) }) else { return false };
-        let variant = if run.cross.is_some() { Variant::Cross } else { Variant::Plain };
         // SAFETY: caller's contract.
-        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, variant) });
+        let blank = if run.images.is_empty() { None } else { unsafe { self.ensure_blank(gl) } };
+        let variant = if run.cross.is_some() { Variant::Cross } else { Variant::Plain };
+        let names: Vec<&str> = run.images.iter().map(|(name, _)| *name).collect();
+        let joined = names.join(",");
+        // SAFETY: caller's contract.
+        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, variant, &names) });
         let program = match chosen {
-            Some(path) => self.programs.get(&(path.to_path_buf(), variant)).and_then(|(_, program)| program.as_ref()),
+            Some(path) => {
+                self.programs.get(&(path.to_path_buf(), variant, joined)).and_then(|(_, program)| program.as_ref())
+            }
             // A `shader` node has nothing to fall back to.
             None if run.cross.is_none() => return false,
             None => {
@@ -348,6 +368,7 @@ impl ShaderStage {
             }
         };
         let Some(program) = program else { return false };
+        let Some(textures) = sampler_textures(canvas, run.images, blank) else { return false };
 
         // Everything femtovg has recorded so far has to reach the framebuffer before this quad
         // does; `gl.flush()` would not, because the queue this drains is femtovg's own, on the CPU.
@@ -358,7 +379,7 @@ impl ShaderStage {
         // inside `render` has already changed state.
         unsafe {
             let saved = State::capture(gl);
-            let drew = Self::render(gl, program, quad, cross, run);
+            let drew = Self::render(gl, program, quad, cross, &textures, run);
             saved.restore(gl);
             drew
         }
@@ -375,7 +396,7 @@ impl ShaderStage {
             return;
         }
         // SAFETY: caller's contract.
-        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, Variant::Cross) };
+        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, Variant::Cross, &[]) };
         self.fade = Some(built);
     }
 
@@ -398,9 +419,9 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, variant: Variant) -> bool {
+    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, variant: Variant, images: &[&str]) -> bool {
         let version = crate::image::FileVersion::read(path);
-        let key = (path.to_path_buf(), variant);
+        let key = (path.to_path_buf(), variant, images.join(","));
         if let Some((known, program)) = self.programs.get(&key)
             && *known == version
         {
@@ -414,7 +435,7 @@ impl ShaderStage {
         }
         let built = match std::fs::read_to_string(path) {
             // SAFETY: caller's contract.
-            Ok(source) => unsafe { self.build(gl, path, &source, variant) },
+            Ok(source) => unsafe { self.build(gl, path, &source, variant, images) },
             Err(err) => {
                 error!("{}: {err}", path.display());
                 None
@@ -428,16 +449,27 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str, variant: Variant) -> Option<Program> {
+    unsafe fn build(
+        &mut self,
+        gl: &glow::Context,
+        path: &Path,
+        source: &str,
+        variant: Variant,
+        images: &[&str],
+    ) -> Option<Program> {
         // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
         // after creating it, and by `destroy` at teardown.
         unsafe {
-            let program = self.link(gl, path, &assemble(source, variant))?;
+            let program = self.link(gl, path, &assemble(source, variant, images))?;
             let named = |name: &str| gl.get_uniform_location(program, name);
             let mut params = HashMap::new();
             for index in 0..gl.get_active_uniforms(program) {
                 let Some(uniform) = gl.get_active_uniform(program, index) else { continue };
                 if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
+                    continue;
+                }
+                // An image's sampler and `_size` are the engine's to set, not `params`'.
+                if images.iter().any(|image| uniform.name == *image || uniform.name == format!("{image}_size")) {
                     continue;
                 }
                 let width = match uniform.utype {
@@ -479,6 +511,7 @@ impl ShaderStage {
                 power: named("mantle_power"),
                 round: named("mantle_round"),
                 params,
+                images: images.iter().map(|image| (named(image), named(&format!("{image}_size")))).collect(),
             })
         }
     }
@@ -532,6 +565,7 @@ impl ShaderStage {
         program: &Program,
         quad: (glow::VertexArray, glow::Buffer),
         cross: Option<(glow::Texture, glow::Texture, &Cross)>,
+        images: &[SamplerTexture],
         run: &Run,
     ) -> bool {
         let (vao, buffer) = quad;
@@ -568,6 +602,8 @@ impl ShaderStage {
                 gl.uniform_4_f32(program.fill.as_ref(), 0.0, 0.0, 0.0, 0.0);
             }
 
+            bind_samplers(gl, program, 0, images);
+
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
             Self::set_shape(gl, program, run.radii, run.round, run.logical_size);
@@ -602,6 +638,41 @@ impl ShaderStage {
             gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
         }
         true
+    }
+
+    /// [`ShaderStage::blank`], created on first use. The binding it disturbs is put back, since
+    /// this runs before the caller captures GL state.
+    ///
+    /// # Safety
+    ///
+    /// The context is current.
+    unsafe fn ensure_blank(&mut self, gl: &glow::Context) -> Option<glow::Texture> {
+        if self.blank.is_none() {
+            // SAFETY: caller's contract.
+            unsafe {
+                let previous = std::num::NonZeroU32::new(gl.get_parameter_i32(glow::TEXTURE_BINDING_2D) as u32)
+                    .map(glow::NativeTexture);
+                let texture = gl.create_texture().ok()?;
+                gl.bind_texture(glow::TEXTURE_2D, Some(texture));
+                let pixel = glow::PixelUnpackData::Slice(Some(&[0; 4]));
+                gl.tex_image_2d(
+                    glow::TEXTURE_2D,
+                    0,
+                    glow::RGBA8 as i32,
+                    1,
+                    1,
+                    0,
+                    glow::RGBA,
+                    glow::UNSIGNED_BYTE,
+                    pixel,
+                );
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+                gl.bind_texture(glow::TEXTURE_2D, previous);
+                self.blank = Some(texture);
+            }
+        }
+        self.blank
     }
 
     /// Binds the outline uniforms behind `mantle_sdf`: `radii` rounding `round`, in a node of `logical_size`.
@@ -679,6 +750,10 @@ impl ShaderStage {
         source: &Path,
         run: &ContentRun,
     ) -> bool {
+        // SAFETY: caller's contract.
+        let blank = if run.images.is_empty() { None } else { unsafe { self.ensure_blank(gl) } };
+        let Some(textures) = sampler_textures(canvas, run.images, blank) else { return false };
+        let names: Vec<&str> = run.images.iter().map(|(name, _)| *name).collect();
         let (Ok(input), Ok(blurred), Ok(target)) = (
             canvas.get_native_texture(run.input),
             canvas.get_native_texture(run.blurred),
@@ -690,7 +765,7 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         let Some((vao, buffer)) = (unsafe { self.ensure_quad(gl) }) else { return false };
         // SAFETY: caller's contract.
-        if !unsafe { self.ensure_program(gl, source, Variant::Input) } {
+        if !unsafe { self.ensure_program(gl, source, Variant::Input, &names) } {
             return false;
         }
         if self.framebuffer.is_none() {
@@ -698,7 +773,7 @@ impl ShaderStage {
             self.framebuffer = unsafe { gl.create_framebuffer() }.ok();
         }
         let (Some(framebuffer), Some((_, Some(program)))) =
-            (self.framebuffer, self.programs.get(&(source.to_path_buf(), Variant::Input)))
+            (self.framebuffer, self.programs.get(&(source.to_path_buf(), Variant::Input, names.join(","))))
         else {
             return false;
         };
@@ -722,6 +797,7 @@ impl ShaderStage {
                 gl.bind_texture(glow::TEXTURE_2D, Some(input));
                 gl.uniform_1_i32(program.input.as_ref(), 0);
                 gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
+                bind_samplers(gl, program, 2, &textures);
                 gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
                 let (logical_width, logical_height) = run.logical_size;
                 let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
@@ -760,6 +836,9 @@ impl ShaderStage {
             if let Some(framebuffer) = self.framebuffer.take() {
                 gl.delete_framebuffer(framebuffer);
             }
+            if let Some(blank) = self.blank.take() {
+                gl.delete_texture(blank);
+            }
             if let Some(vertex) = self.vertex.take() {
                 gl.delete_shader(vertex);
             }
@@ -776,11 +855,53 @@ impl ShaderStage {
 /// engine's own `main`. An `effect.shader` has no `main` of the engine's: it replaces the content,
 /// so there is no opacity to apply and no outline to cut. Split out so a test can read it without
 /// a GL context.
-fn assemble(source: &str, variant: Variant) -> String {
+fn assemble(source: &str, variant: Variant, images: &[&str]) -> String {
     match variant {
-        Variant::Plain => format!("{PRELUDE}{RENAME}{source}{EPILOGUE}"),
+        Variant::Plain => format!("{PRELUDE}{}{RENAME}{source}{EPILOGUE}", sampler_declarations(images)),
         Variant::Cross => format!("{PRELUDE}{SAMPLERS}{RENAME}{source}{EPILOGUE}"),
-        Variant::Input => format!("{PRELUDE}{INPUT}\n#line 1\n{source}"),
+        Variant::Input => format!("{PRELUDE}{INPUT}{}\n#line 1\n{source}", sampler_declarations(images)),
+    }
+}
+
+/// A sampler and its pixel size per `images` entry.
+fn sampler_declarations(images: &[&str]) -> String {
+    let declared: String =
+        images.iter().map(|name| format!("uniform sampler2D {name};\nuniform vec2 {name}_size;\n")).collect();
+    if declared.is_empty() { declared } else { format!("\nprecision highp sampler2D;\n{declared}") }
+}
+
+/// Each entry's native texture and size. One with none, or whose texture is gone, reads `blank`, a
+/// transparent pixel; `None` only when that is missing too.
+fn sampler_textures(
+    canvas: &Canvas<OpenGl>,
+    images: &[(&str, Option<ImageId>)],
+    blank: Option<glow::Texture>,
+) -> Option<Vec<SamplerTexture>> {
+    images
+        .iter()
+        .map(|(_, id)| {
+            let found = id.and_then(|id| Some((canvas.get_native_texture(id).ok()?, canvas.image_size(id).ok()?)));
+            found.or(blank.map(|blank| (blank, (1, 1))))
+        })
+        .collect()
+}
+
+/// Binds `textures` to the units from `first` and sets each sampler and `_size`. `State` restores
+/// the units; the parser caps the count at [`node::MAX_SHADER_IMAGES`].
+///
+/// # Safety
+///
+/// The context is current and `program` is in use.
+unsafe fn bind_samplers(gl: &glow::Context, program: &Program, first: u32, textures: &[SamplerTexture]) {
+    // SAFETY: caller's contract.
+    unsafe {
+        for (unit, ((sampler, size), (texture, (width, height)))) in (first..).zip(program.images.iter().zip(textures))
+        {
+            gl.active_texture(glow::TEXTURE0 + unit);
+            gl.bind_texture(glow::TEXTURE_2D, Some(*texture));
+            gl.uniform_1_i32(sampler.as_ref(), unit as i32);
+            gl.uniform_2_f32(size.as_ref(), *width as f32, *height as f32);
+        }
     }
 }
 
@@ -872,7 +993,7 @@ mod tests {
     /// line at line 1 so a compiler error names a line the config can find.
     #[test]
     fn a_config_shader_is_wrapped_so_the_engine_owns_the_last_operation() {
-        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n", Variant::Cross);
+        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n", Variant::Cross, &[]);
 
         let effect = assembled.find("#define main mantle_effect").expect("the rename");
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
@@ -892,7 +1013,7 @@ mod tests {
     /// `sampler2D` would read unit 0, whatever femtovg left there.
     #[test]
     fn a_shader_node_is_assembled_without_samplers() {
-        let assembled = assemble("void main() { fragColor = vec4(u_progress); }\n", Variant::Plain);
+        let assembled = assemble("void main() { fragColor = vec4(u_progress); }\n", Variant::Plain, &[]);
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
         let prelude = &assembled[..user];
         for absent in ["sampler2D", "mantle_from", "mantle_to", "u_fill"] {
@@ -905,13 +1026,28 @@ mod tests {
         assert!(assembled.ends_with(EPILOGUE));
     }
 
+    /// A `shader` node's `images` become a sampler and a `_size` each, declared before the config's
+    /// first line so its numbering holds.
+    #[test]
+    fn a_shader_nodes_images_are_declared_in_its_prelude() {
+        let assembled = assemble("void main() {}\n", Variant::Plain, &["lut", "noise"]);
+        let user = assembled.find("void main() {}").expect("the config's own source");
+        let prelude = &assembled[..user];
+        for present in
+            ["uniform sampler2D lut;", "uniform vec2 lut_size;", "uniform sampler2D noise;", "uniform vec2 noise_size;"]
+        {
+            assert!(prelude.contains(present), "`{present}` missing from {prelude}");
+        }
+        assert!(prelude.trim_end().ends_with("#line 1"));
+    }
+
     /// ADR-0336. An `effect.shader` has the input and the outline, no rename and no epilogue: it
     /// replaces the content, so there is no opacity to apply and no corner to cut. Every variant
     /// can measure the outline.
     #[test]
     fn an_effect_shader_is_assembled_with_the_input_and_no_epilogue() {
         let source = "void main() { fragColor = mantle_input(v_uv) * step(mantle_sdf(v_uv * u_size), 0.0); }\n";
-        let assembled = assemble(source, Variant::Input);
+        let assembled = assemble(source, Variant::Input, &[]);
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
         let prelude = &assembled[..user];
         for present in ["uniform sampler2D u_input;", "uniform vec4 u_input_rect;", "vec4 mantle_input(vec2 uv)"] {
@@ -923,7 +1059,7 @@ mod tests {
             assert!(!assembled.contains(absent), "`{absent}` in an effect shader");
         }
         for variant in [Variant::Plain, Variant::Cross] {
-            assert!(assemble(source, variant).contains("float mantle_sdf(vec2 p)"));
+            assert!(assemble(source, variant, &[]).contains("float mantle_sdf(vec2 p)"));
         }
     }
 

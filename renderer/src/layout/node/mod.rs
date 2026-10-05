@@ -31,10 +31,10 @@ pub(crate) use animate::MoveTween;
 pub(crate) use animate::TransitionInput;
 #[cfg(test)]
 pub(crate) use animate::{AnimationSpec, Easing, ExitBlock, SpringConstants, animatable_name, easing_names};
-pub(crate) use animate::{Animations, Params};
+pub(crate) use animate::{Animations, Images, Params};
 pub use animate::{
-    Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget,
-    retarget_measured, retarget_scroll, scroll_spec, scroll_target,
+    Dissolve, MAX_SHADER_IMAGES, MoveSpec, ShaderImage, ShaderParam, TransitionSpec, Tween, advance, depart,
+    is_paint_only, retarget, retarget_measured, retarget_scroll, scroll_spec, scroll_target,
 };
 #[cfg(test)]
 pub(crate) use content::CaretKeys;

@@ -117,7 +117,7 @@ pub(super) fn draw_layer(
     frame: Frame,
 ) {
     let Draw::Layer { effect, shader, silhouette, commands } = &command.draw else { return };
-    let (node::Effect { shadows, blur, tone, .. }, silhouette) = (effect, *silhouette);
+    let (node::Effect { shadows, blur, tone, .. }, silhouette) = (&**effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
     let area = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: size.0 as f32, height: size.1 as f32 };
@@ -232,6 +232,7 @@ fn shaded(
     let target = scratch(painter, walk, size)?;
     let scale = walk.scale;
     let Shaders { gl, stage } = walk.shaders.as_mut()?;
+    let images = super::sampler_images(painter.canvas_mut(), walk.images, &shader.images);
     let run = image_shader::ContentRun {
         input: content,
         blurred,
@@ -245,6 +246,7 @@ fn shaded(
         logical_size: (rect.width / scale, rect.height / scale),
         radii: (shader.radius * (1.0 / scale)).fit(rect.width / scale, rect.height / scale),
         params: &shader.params,
+        images: &images,
     };
     // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
     unsafe { stage.content(gl, painter.canvas_mut(), &shader.source, &run) }.then_some(target)

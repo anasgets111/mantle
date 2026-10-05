@@ -316,6 +316,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     round,
                                     progress: *progress,
                                     params,
+                                    images: &[],
                                 };
                                 let effect = shader.as_ref().map(|(path, _)| path.as_path());
                                 // SAFETY: `Shaders` is built only with `gl` current on this thread and shared
@@ -372,8 +373,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     painter.canvas_mut().fill_path(&path, &paint);
                 }
             }
-            Draw::Shader { source, progress, params, alpha, .. } => {
+            Draw::Shader { source, progress, params, images, alpha, .. } => {
                 if let Some(shaders) = walk.shaders.as_mut() {
+                    let images = sampler_images(painter.canvas_mut(), walk.images, images);
                     let run = image_shader::Run {
                         cross: None,
                         rect,
@@ -387,6 +389,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         round: rect,
                         progress: *progress,
                         params,
+                        images: &images,
                     };
                     // SAFETY: as for `Draw::Image` above.
                     unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), Some(source), &run) };
@@ -630,6 +633,17 @@ fn offscreen(
 /// File-draw parameters shared by icon and image commands. The request's `tint` is `None` for an
 /// `image`, which names a file the config chose rather than a themed icon, and its `blur_px` is
 /// `0` for an icon, which has no `source_blur` (ADR-0240).
+/// A shader's `images` entries and their textures, loaded inline like an icon: a sampler with no
+/// pixels is a frame of the wrong look.
+fn sampler_images<'a>(
+    canvas: &mut Canvas<OpenGl>,
+    cache: &mut ImageCache,
+    files: &'a [super::SamplerFile],
+) -> Vec<(&'a str, Option<ImageId>)> {
+    let mut load = |path: &str| cache.image(canvas, &ImageRequest::sampler(std::path::Path::new(path)), Load::Inline);
+    files.iter().map(|(name, path, _)| (name.as_str(), load(path))).collect()
+}
+
 #[derive(Debug, Clone, Copy)]
 struct FileDraw<'a> {
     request: ImageRequest<'a>,
@@ -2080,6 +2094,117 @@ pub(crate) mod tests {
         );
         let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 8), (24, 8), (40, 8), (56, 8)]) else { return };
         assert_eq!(px, [(255, 255, 0, 255), (51, 255, 0, 255), (153, 255, 0, 255), (0, 255, 0, 255)]);
+    }
+
+    /// A 2x2 PNG: red and green over blue and white, opaque.
+    fn four_texel_png(dir: &std::path::Path) -> std::path::PathBuf {
+        let path = dir.join("four.png");
+        let pixels = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        ::image::RgbaImage::from_raw(2, 2, pixels.to_vec()).unwrap().save(&path).unwrap();
+        path
+    }
+
+    /// A one-colour 1x1 PNG.
+    fn flat_png(dir: &std::path::Path, name: &str, rgba: [u8; 4]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        ::image::RgbaImage::from_raw(1, 1, rgba.to_vec()).unwrap().save(&path).unwrap();
+        path
+    }
+
+    /// An `effect.shader` samples an image on either input, on units after its own `u_input`s.
+    #[test]
+    fn an_effect_shader_samples_its_image_beside_its_input() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = flat_png(dir.path(), "blue.png", [0, 0, 255, 255]);
+        let frag = dir.path().join("fx.frag");
+        // Red from the input, blue from the image.
+        std::fs::write(
+            &frag,
+            "void main() { fragColor = vec4(mantle_input(v_uv).r, 0.0, texture(map, v_uv).b, 1.0); }",
+        )
+        .unwrap();
+        for input in ["content", "backdrop"] {
+            // The backdrop shader replaces what is under the node, so a backdrop node paints nothing over it.
+            let fill = if input == "content" { "background = \"#FF0000FF\"," } else { "" };
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 32, height = 16, background = "#FF0000FF", child = rect {{
+                    width = 32, height = 16, {fill}
+                    effect = {{ shader = {{ source = "{}", input = "{input}", images = {{ map = "{}" }} }} }} }} }}"##,
+                frag.display(),
+                png.display()
+            );
+            let Some(px) = paint_with_gl(&src, (32, 16), &[(16, 8)]) else { return };
+            assert_eq!(px, [(255, 0, 255, 255)], "{input}");
+        }
+    }
+
+    /// A `shader` samples its `images` entry at each texel centre, top row first, and reads the
+    /// pixel size from `<name>_size`.
+    #[test]
+    fn a_shader_samples_its_image_and_reads_its_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = four_texel_png(dir.path());
+        let frag = dir.path().join("tex.frag");
+        std::fs::write(
+            &frag,
+            "void main() {
+                vec2 centre = (floor(vec2(v_uv.x / 0.75, v_uv.y) * 2.0) + 0.5) / 2.0;
+                fragColor = v_uv.x < 0.75 ? texture(tex, centre) : vec4(tex_size / 2.0, 0.0, 1.0);
+            }",
+        )
+        .unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 16, child = shader {{ width = 64, height = 16,
+                source = "{}", images = {{ tex = "{}" }} }} }}"##,
+            frag.display(),
+            png.display()
+        );
+        let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 4), (36, 4), (8, 12), (36, 12), (56, 8)]) else { return };
+        assert_eq!(
+            px,
+            [(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255), (255, 255, 255, 255), (255, 255, 0, 255)]
+        );
+    }
+
+    /// Each entry has a unit of its own: the second image must not read the first's.
+    #[test]
+    fn a_shader_with_two_images_reads_each_from_its_own_unit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (red, blue) =
+            (flat_png(dir.path(), "r.png", [255, 0, 0, 255]), flat_png(dir.path(), "b.png", [0, 0, 255, 255]));
+        let frag = dir.path().join("two.frag");
+        std::fs::write(&frag, "void main() { fragColor = v_uv.x < 0.5 ? texture(a, v_uv) : texture(b, v_uv); }")
+            .unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 16, child = shader {{ width = 64, height = 16,
+                source = "{}", images = {{ a = "{}", b = "{}" }} }} }}"##,
+            frag.display(),
+            red.display(),
+            blue.display()
+        );
+        let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 8), (56, 8)]) else { return };
+        assert_eq!(px, [(255, 0, 0, 255), (0, 0, 255, 255)]);
+    }
+
+    /// A file that is not there samples transparent black, one pixel in size, and the node still
+    /// paints.
+    #[test]
+    fn a_shader_image_that_is_missing_samples_transparent_black() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("tex.frag");
+        std::fs::write(
+            &frag,
+            "void main() { fragColor = vec4(0.0, 1.0, 0.0, 1.0) * (1.0 - texture(tex, v_uv).a) * tex_size.x; }",
+        )
+        .unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 16, child = shader {{ width = 64, height = 16,
+                source = "{}", images = {{ tex = "{}/gone.png" }} }} }}"##,
+            frag.display(),
+            dir.path().display()
+        );
+        let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 8), (56, 8)]) else { return };
+        assert_eq!(px, [(0, 255, 0, 255); 2]);
     }
 
     /// ADR-0256. femtovg opens a flush on the program its last one ended on without setting that

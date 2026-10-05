@@ -1,7 +1,7 @@
 # shader
 
 Runs a fragment shader from the config over the node's box: a glow, an animated gradient, a
-procedural pattern. It reads no textures and takes no input. To run a shader between two pictures,
+procedural pattern. It reads only the [`images`](#images) it names and takes no input. To run a shader between two pictures,
 use an [image transition](image.md#transition); to run one over a node's painted subtree, use
 [`effect.shader`](../guide/paint.md#shader-effects), which shares this page's `.frag` contract.
 
@@ -48,6 +48,7 @@ void main() {
 | `source` | `string\|Bound` | `""` | Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
 | `progress` | `number\|Bound`, `[-8192, 8192]` | `0` | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
 | `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing ones are `0`. Not tweened |
+| `images` | `table<string, string>\|Bound` | `{}` | Up to 8 absolute PNG, JPEG or WebP paths by sampler name: [images](#images). Missing ones sample transparent black. Not tweened |
 <!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
@@ -78,6 +79,38 @@ other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 | A `.frag` under the config directory is saved | The config reloads, which recompiles it. A file elsewhere recompiles at the surface's next pass |
 | `mantle check` | Passes: it has no GPU and compiles no GLSL. The first compile is in the running shell |
 | The shader hangs the GPU | The session hangs. It is config code, as trusted as `process.run` |
+
+## Images
+
+`images` binds raster files for the shader to sample: a normal or displacement map, a noise texture, a gradient LUT.
+
+```lua
+local glass = shader {
+    width = 200,
+    height = 120,
+    source = mantle.config_dir .. "/shaders/lens.frag",
+    images = { lens = mantle.config_dir .. "/lens.png" },
+}
+```
+
+```glsl
+void main() {
+    vec2 offset = (texture(lens, v_uv).rg - 0.5) * 0.1;
+    fragColor = vec4(offset + 0.5, 0.0, 1.0);
+    // lens_size is the file's size in pixels, so a texel is 1.0 / lens_size.
+}
+```
+
+| Rule | Detail |
+| :--- | :--- |
+| Declared for you | `uniform sampler2D <name>;` and `uniform vec2 <name>_size;` (pixels). Do not declare them |
+| Names | A GLSL identifier of up to 64 characters, not `u_*`, `mantle_*`, `gl_*`, `v_uv`, `fragColor` or `main`, with no `__` and not ending in `_size`. Others are refused |
+| Files | Absolute PNG, JPEG or WebP, at most 8192 px a side; at most 8 entries. An SVG is refused |
+| Sampling | `texture(name, uv)` with `uv` in `0..1`, top-left origin like `v_uv`. Linear filter, clamped to the edge, no mipmaps. Colour is premultiplied, as `fragColor` is |
+| Missing or undecodable file | Samples `vec4(0.0)` with `name_size` of `vec2(1.0)`, logged once per path. The node still draws |
+| Changed file | A new modification time or length reloads it, as an `image` does |
+| Elsewhere | `effect.shader` takes the same key, on `input = "content"` and `"backdrop"` |
+| Sharing | Two nodes naming one path share one texture, held by the image cache and freed with it |
 
 ## How do I…
 

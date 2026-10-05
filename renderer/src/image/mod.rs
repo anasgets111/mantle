@@ -38,7 +38,8 @@ use fit::cache_box;
 pub use fit::fitted_rect;
 
 use budget::{Budget, Charge};
-use decode::{decode, is_animated, is_vector};
+pub(crate) use decode::is_vector;
+use decode::{decode, is_animated};
 use svg::packed_rgb;
 use texture::{Animation, upload_or_log};
 
@@ -142,6 +143,14 @@ pub(crate) struct ImageRequest<'a> {
     pub tint: Option<Rgba>,
     pub fit: Fit,
     pub blur_px: u32,
+}
+
+impl ImageRequest<'_> {
+    /// A shader's `images` entry: whole and uncropped, at the size the file has, since a sampler
+    /// reads texels and not a fitted picture.
+    pub(crate) fn sampler(path: &Path) -> ImageRequest<'_> {
+        ImageRequest { path, box_px: (MAX_DECODE_EDGE, MAX_DECODE_EDGE), tint: None, fit: Fit::Stretch, blur_px: 0 }
+    }
 }
 
 crate::layout::node::prop::keywords! {

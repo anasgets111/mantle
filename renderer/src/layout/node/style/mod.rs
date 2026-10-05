@@ -411,6 +411,7 @@ impl Effect {
 pub struct EffectShader {
     pub source: std::path::PathBuf,
     pub params: Vec<ShaderParam>,
+    pub images: Vec<ShaderImage>,
     pub padding: f32,
 }
 
@@ -540,6 +541,7 @@ lua_shape! {
         pub(crate) source: std::path::PathBuf,
         pub(crate) input: Option<ShaderInput>,
         pub(crate) params: Value as Option<Params>,
+        pub(crate) images: Value as Option<Images>,
         pub(crate) padding: Option<f32>,
     }
 }
@@ -669,6 +671,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         let program = EffectShader {
             source: keys.source,
             params: super::animate::parse_shader_params("effect.shader.params", &keys.params)?,
+            images: super::animate::parse_shader_images("effect.shader.images", &keys.images)?,
             padding: keys.padding.unwrap_or(0.0),
         };
         match keys.input.unwrap_or_default() {
@@ -1420,10 +1423,11 @@ mod tests {
         let shader = |padding| EffectShader {
             source: "/s.frag".into(),
             params: vec![("a".into(), vec![2.0]), ("b".into(), vec![1.0, 2.0])],
+            images: vec![("map".into(), "/m.png".into())],
             padding,
         };
         let full = r#"return { effect = { shader = { source = "/s.frag", input = "content", padding = 12,
-            params = { a = 2, b = { 1, 2 } } } } }"#;
+            params = { a = 2, b = { 1, 2 } }, images = { map = "/m.png" } } } }"#;
         assert_eq!(parse(full).unwrap(), Effect { shader: Some(shader(12.0)), ..Effect::default() });
         let bare = parse(r#"return { effect = { shader = { source = "/s.frag" } } }"#).unwrap();
         let shader = bare.shader.as_ref().unwrap();
@@ -1450,6 +1454,14 @@ mod tests {
             (
                 r#"return { effect = { shader = { source = "/s.frag", params = { a = "x" } } } }"#,
                 "effect.shader.params.a",
+            ),
+            (
+                r#"return { effect = { shader = { source = "/s.frag", images = { u_map = "/m.png" } } } }"#,
+                "effect.shader.images.u_map",
+            ),
+            (
+                r#"return { effect = { shader = { source = "/s.frag", images = { map = "m.png" } } } }"#,
+                "effect.shader.images.map",
             ),
         ] {
             let err = parse(src).unwrap_err();

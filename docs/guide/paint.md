@@ -544,6 +544,7 @@ rect {
 | `source` | `string` | required | Absolute `.frag` path; relative is refused |
 | `input` | `"content"` or `"backdrop"` | `"content"` | What `u_input` holds: the node's painted subtree, or what the surface painted under the box (see [Backdrop input](#backdrop-input)) |
 | `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
+| `images` | `table<string, string>` | `{}` | Raster files to sample, by sampler name, with the rules, `<name>_size` and sampling of a [`shader` node's `images`](../nodes/shader.md#images). They take the units after `u_input` and `u_input_blurred`, so a refraction can read a displacement map |
 | `padding` | `number`, `[0, 512]` | `0` | Logical px around the box the program can read and draw. The layer, its damage and its clip grow by it |
 
 The `.frag` contract is the [`shader` node's](../nodes/shader.md#the-frag-file) with these changes.
@@ -581,8 +582,8 @@ void main() {
 | :--- | :--- |
 | The shader fails to compile or link | Logged once per revision of the file; the node draws as if it had no `shader` |
 | The `.frag` is saved | The config reloads, which recompiles it and repaints the node |
-| `params` or the file change | The layer is redrawn; an unchanged layer is reused |
-| `animate` on `effect` | Tweens `blur` and the colour filters; the `shader` table, `params` and `padding` take the target's value at once |
+| `params`, `images` or a file change | The layer is redrawn; an unchanged layer is reused |
+| `animate` on `effect` | Tweens `blur` and the colour filters; the `shader` table, `params`, `images` and `padding` take the target's value at once |
 | Hit testing and input regions | Ignore it: a shader draws pixels, not shape |
 
 Order: the shader reads the node after its fill, children and border, and its output goes through

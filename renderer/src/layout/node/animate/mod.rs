@@ -49,11 +49,11 @@ use sequence::Sequence;
 use spring::Spring;
 #[cfg(test)]
 pub(crate) use spring::SpringConstants;
-pub(crate) use transition::Params;
 #[cfg(test)]
 pub(crate) use transition::TransitionInput;
-pub(super) use transition::parse_shader_params;
-pub use transition::{Dissolve, ShaderParam, TransitionSpec};
+pub use transition::{Dissolve, MAX_SHADER_IMAGES, ShaderImage, ShaderParam, TransitionSpec};
+pub(crate) use transition::{Images, Params};
+pub(super) use transition::{parse_shader_images, parse_shader_params};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
 fn hex_of(color: Rgba) -> String {

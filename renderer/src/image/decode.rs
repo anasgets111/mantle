@@ -79,7 +79,7 @@ impl Pool {
 
 /// By extension, not sniffing: `freedesktop-icons` returns `.svg`/`.png`, and `shm_icons.rs` writes
 /// `.png`. `rasterize_svg` inflates a gzipped `.svgz` itself (ADR-0234).
-pub(super) fn is_vector(path: &Path) -> bool {
+pub(crate) fn is_vector(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"))
 }
 

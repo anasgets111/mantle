@@ -210,7 +210,12 @@ fn build_node(
             let black = vec![Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })];
             let fill =
                 Draw::Box { background: black, radius, border: BorderPaint::default(), widths: EdgeInsets::default() };
-            let draw = Draw::Layer { effect, shader: None, silhouette: true, commands: vec![cmd(clip, fill)] };
+            let draw = Draw::Layer {
+                effect: Box::new(effect),
+                shader: None,
+                silhouette: true,
+                commands: vec![cmd(clip, fill)],
+            };
             out.push(cmd(parent_clip.intersect(reach), draw));
         }
     }
@@ -353,7 +358,7 @@ fn build_node(
             scale,
         );
         let shader = layered.shader.take().map(|shader| layer_shader(shader, radius));
-        let draw = Draw::Layer { effect: layered, shader, silhouette: false, commands };
+        let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
     if let Some(matrix) = node.paint_matrix(rect) {
@@ -402,11 +407,11 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             Draw::InsetShadow { shadow: shadow(cast), radius: radius * scale, widths: widths.scaled(scale) }
         }
         Draw::Layer { effect, shader, silhouette, commands } => Draw::Layer {
-            effect: node::Effect {
+            effect: Box::new(node::Effect {
                 shadows: effect.shadows.into_iter().map(shadow).collect(),
                 blur: effect.blur * scale,
-                ..effect
-            },
+                ..*effect
+            }),
             shader: shader.map(|shader| LayerShader { radius: shader.radius * scale, ..shader }),
             silhouette,
             commands,
@@ -668,11 +673,12 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             })
         }
 
-        PaintStyle::Shader { source, progress, params } => (!source.is_empty()).then(|| Draw::Shader {
+        PaintStyle::Shader { source, progress, params, images } => (!source.is_empty()).then(|| Draw::Shader {
             source: source.into(),
             version: crate::image::FileVersion::read(source.as_ref()),
             progress: *progress,
             params: params.clone(),
+            images: sampler_files(images),
             alpha: opacity,
         }),
     }
@@ -712,8 +718,14 @@ fn layer_shader(shader: node::EffectShader, radius: Radii) -> LayerShader {
         version: crate::image::FileVersion::read(&shader.source),
         source: shader.source,
         params: shader.params,
+        images: sampler_files(&shader.images),
         radius,
     }
+}
+
+fn sampler_files(images: &[node::ShaderImage]) -> Vec<super::SamplerFile> {
+    let version = |path: &String| crate::image::FileVersion::read(path.as_ref());
+    images.iter().map(|(name, path)| (name.clone(), path.clone(), version(path))).collect()
 }
 
 /// `command` composited by `blend`: a normal one as it is, any other one as a layer of its own,
@@ -724,7 +736,11 @@ fn blended(blend: Blend, command: DrawCmd) -> DrawCmd {
     }
     let (rect, clip) = (command.rect, command.clip);
     let effect = node::Effect { blend, ..node::Effect::default() };
-    DrawCmd { rect, clip, draw: Draw::Layer { effect, shader: None, silhouette: false, commands: vec![command] } }
+    DrawCmd {
+        rect,
+        clip,
+        draw: Draw::Layer { effect: Box::new(effect), shader: None, silhouette: false, commands: vec![command] },
+    }
 }
 
 /// Pushes a box's `fill`, its blended `layers` split out bottom-up: a run of normal layers stays
@@ -2148,9 +2164,10 @@ mod tests {
         ] {
             let list = effect_surface(child);
             let layer = list.commands.last().unwrap();
-            let Draw::Layer { effect: node::Effect { shadows, blur, .. }, commands, .. } = &layer.draw else {
+            let Draw::Layer { effect, commands, .. } = &layer.draw else {
                 panic!("{child}: expected a layer, got {:?}", layer.draw)
             };
+            let (shadows, blur) = (&effect.shadows, &effect.blur);
             let [shadow] = shadows.as_slice() else { panic!("{child}: one shadow, got {shadows:?}") };
             assert_eq!((shadow.color.a, *blur), (1.0, 0.0), "{child}");
             assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
