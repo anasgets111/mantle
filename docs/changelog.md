@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `homogeneous = true` on a `row` or `column` gives every visible child one equal slot along the main axis, as GTK's `homogeneous`: content-sized, the slot is the largest child's size with its margins; sized, the slots share the axis after `spacing` whatever the content. A child with a pixel size keeps it at the start of its slot, any other child fills it.
 - `toplevel(id)` returns a handle for a `window`'s own frame: `:move()`, `:resize(edge)` (`"top"`, `"bottom"`, `"left"`, `"right"` or a corner such as `"top_left"`) and `:show_menu()`, which opens the compositor's window menu at the press position. They work only from an `on_press` or an `on_drag` `"start"`; anywhere else, on a hidden window or on a press that landed on another surface, they warn and send nothing. After one the engine drops the drag and the armed click, as the compositor may send no release. There is no minimize, maximize or fullscreen request.
 - `on_press(rect, button, pointer)` fires on any node at press time for the left, right and middle buttons, before `on_click`. A press on a `textfield` does not call it.
 - `border_color` also takes a gradient table, `{ gradient = "linear" | "radial" | "conic", angle, stops }` as `background` does, painted along the whole outline over the node's box. `border_width`, `radius`, `corner_shape` and `corner_smoothing` shape the ring as before; a gradient per edge (`{ top = { gradient = ... } }`) is refused, and a gradient border snaps under `animate`.

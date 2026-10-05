@@ -165,6 +165,7 @@ pub(crate) struct LayoutStyle {
     align_h: Align,
     align_v: Align,
     spacing: f32,
+    homogeneous: bool,
     visible: bool,
     opacity: f32,
     z: f32,
@@ -179,7 +180,7 @@ impl LayoutStyle {
     fn parse(properties: &PropMap) -> Result<Self, LayoutError> {
         // Validated and not kept: the pointer path reads the name back off `properties` when it
         // needs it (`layout::hit::cursor_under`), and a pass is the place a misspelling fails.
-        use node::fields::{common, flow, paint};
+        use node::fields::{common, flow, flow_layout, paint};
         common::cursor.read(properties)?;
         common::accessible_name.read(properties)?;
         common::focus_ring.read(properties)?;
@@ -196,6 +197,7 @@ impl LayoutStyle {
             align_v: common::align_v.read(properties)?,
             // `row`/`column`'s row; a `list`'s agrees, and no other kind has one.
             spacing: flow::spacing.read(properties)?,
+            homogeneous: flow_layout::homogeneous.read(properties)?,
             visible: common::visible.read(properties)?,
             opacity: common::opacity.read(properties)?,
             // -0.0 would sort below its z = 0 siblings.

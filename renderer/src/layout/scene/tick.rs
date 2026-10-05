@@ -212,13 +212,13 @@ pub(super) fn prepare_retained(
     let taffy_id = match old_taffy {
         Some(id) => {
             if changed {
-                let measure = measure_for(kind, paint.as_ref(), &properties)?;
+                let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
                 update_solver_node(tree, id, kind, &properties, &style, parent_axis, measure)?;
             }
             id
         }
         None => {
-            let measure = measure_for(kind, paint.as_ref(), &properties)?;
+            let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
             new_solver_node(tree, kind, &properties, &style, parent_axis, measure)?
         }
     };

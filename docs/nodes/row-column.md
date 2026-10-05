@@ -45,6 +45,7 @@ return row {
 | `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
 | `spacing` | `number\|Bound` | `0` | Px between visible children; negative values overlap them. Not range-checked |
 | `scroll` | `Bound` | None | A `scroll(name)` signal; makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll)) |
+| `homogeneous` | `boolean\|Bound` | `false` | `true` gives every visible child one equal main-axis slot, as GTK's `homogeneous`; see [equal slots](row-column.md#equal-slots) |
 <!-- End of the generated table. -->
 
 How the container packs its children:
@@ -65,9 +66,37 @@ How the container packs its children:
 | Push items apart | [Below](#push-items-apart) |
 | Split a bar into three groups | The [bar](index.md#nodes): two `"fill"` rows around a content-sized middle |
 | Centre items in a row | `align_h = "center"` on the row itself |
-| Make children equal width | Give each `width = "fill"` |
+| Make children equal width | `homogeneous = true` on the row, or [equal slots](#equal-slots) |
 | Scroll overflowing content | Bound the axis (`height` or `max_height` on a column), then `scroll = scroll("name")` ([scroll](../guide/input.md#scroll)) |
 | Overlap items, like stacked avatars | Negative `spacing` |
+
+### Equal slots
+
+`homogeneous = true` gives every visible child a slot of the same size along the main axis.
+
+| Container | Slot |
+| :--- | :--- |
+| Content-sized on the main axis | The largest child's size plus its margins. A `max_*` cap below that overflows by whole slots |
+| `width`/`height`, a percent or `"fill"` | An equal share of the axis after `spacing`, whatever the content: a child can end up narrower than its text |
+
+A child fills its slot less its own margins, whatever its `width` (or `height` in a column), `"fill"` or content; a child with a pixel size on that axis keeps it at the slot's start. The container's main-axis `align_*` has no room left to pack, and the cross axis behaves as in any row.
+
+A segmented control: labels of different widths in equal segments.
+
+```lua
+return row {
+    homogeneous = true,
+    spacing = 2,
+    padding = 2,
+    radius = 8,
+    background = "#313244",
+    children = {
+        text { content = "Day", foreground = "#CDD6F4", text_align = "center", padding = 6 },
+        text { content = "Week", foreground = "#CDD6F4", text_align = "center", padding = 6 },
+        text { content = "Month", foreground = "#CDD6F4", text_align = "center", padding = 6 },
+    },
+}
+```
 
 ### Push items apart
 

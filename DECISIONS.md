@@ -7951,3 +7951,15 @@ interactive move, resize and the window menu, and nothing more.
 4. **The compositor takes the pointer.** No release may follow a move or resize, so the engine
    clears its drag and press state: `on_drag` gets no "end" and `on_click` does not fire.
 5. **No minimize, maximize or fullscreen.** Those are compositor policy; its own bindings cover them.
+
+## 0338. `homogeneous` is a grid of equal slots sized by a pre-pass
+
+1. **Equal slots.** `homogeneous = true` on a `row` or `column` lays its children out as one grid
+   track each along the main axis. Content-sized, every track's minimum is the largest child's
+   margin box, measured at max-content by a `fit_slots` pre-pass before the solve; sized, the
+   tracks are `minmax(0, 1fr)` equal shares.
+2. **Children keep their own sizes.** Content and `"fill"` children fill their slot minus margins;
+   a pixel-sized child keeps its size at the slot's start.
+3. **Why the pre-pass.** A content-sized grid of plain `1fr` tracks drops item margins
+   (DioxusLabs/taffy#1177), and flex cannot keep slots equal once a child has min or max sizes.
+   The slot lives in the container's style, so an unchanged tree is not re-solved.

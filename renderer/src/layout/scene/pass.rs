@@ -361,7 +361,7 @@ pub(super) fn prepare(
 
     // Before the children, because a `text`'s measurement reads the `content` and `font_size`
     // `resolve` parsed rather than parsing them a second time.
-    let measure = measure_for(kind, paint.as_ref(), &properties)?;
+    let measure = measure_for(kind, paint.as_ref(), &properties, &style)?;
 
     // Before the children, so their ids attach afterwards, and so the `taffy::Style` behind it is
     // gone from the stack by the time this frame recurses (see `new_solver_node`).

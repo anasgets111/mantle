@@ -358,6 +358,12 @@ props! {
         /// Book: A `scroll(name)` signal; makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll))
         scroll: Handle;
     }
+    mod flow_layout(ROW | COLUMN) {
+        /// `true` gives every visible child one equal main-axis slot, as GTK's `homogeneous`. Content-sized: the slot is the largest child's size with its margins. Sized, `"fill"` or a percent: the slots share the axis after `spacing`, whatever the content. A child with a pixel size keeps it, at the slot's start; any other child fills its slot.
+        ///
+        /// Book: `true` gives every visible child one equal main-axis slot, as GTK's `homogeneous`; see [equal slots](row-column.md#equal-slots)
+        homogeneous: Bound<Flag> = absent(Bool(false));
+    }
     mod text(TEXT) {
         /// A string, or up to 10000 runs, drawn as one paragraph.
         ///
