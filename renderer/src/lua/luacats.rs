@@ -47,6 +47,9 @@ spelled!(std::time::Duration => f32::lua());
 spelled!(std::path::PathBuf => String::lua());
 spelled!(crate::layout::hit::LogicalPoint => "{ x: number, y: number }");
 spelled!(super::VirtualNode => "Node");
+/// The `Modifiers` class the pointer handlers end with; the value is built by `marshal::modifiers_table`.
+pub(crate) struct Modifiers;
+spelled!(Modifiers => "Modifiers");
 
 impl<T: LuaType> LuaType for Option<T> {
     fn lua() -> String {

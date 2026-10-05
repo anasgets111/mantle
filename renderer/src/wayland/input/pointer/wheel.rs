@@ -75,9 +75,12 @@ impl App {
             }
             let on_wheel = on_wheel.clone();
             drop(path);
-            match rect_table(self.client.lua(), rect) {
-                Ok(rect) => call_logged(&on_wheel, (rect, steps), format_args!("{surface_id}: on_wheel")),
-                Err(e) => warn!("{surface_id}: could not build on_wheel's rect argument: {e}"),
+            let lua = self.client.lua();
+            match (rect_table(lua, rect), modifiers_table(lua, self.modifiers_held())) {
+                (Ok(rect), Ok(held)) => {
+                    call_logged(&on_wheel, (rect, steps, held), format_args!("{surface_id}: on_wheel"))
+                }
+                (Err(e), _) | (_, Err(e)) => warn!("{surface_id}: could not build on_wheel's arguments: {e}"),
             }
             return;
         }

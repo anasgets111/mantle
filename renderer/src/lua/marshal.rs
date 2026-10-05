@@ -23,6 +23,15 @@ pub(crate) fn rect_table(lua: &mlua::Lua, rect: LogicalRect) -> mlua::Result<mlu
     Ok(table)
 }
 
+/// Held `(ctrl, shift, alt, super)` as the `Modifiers` table `on_key` and the pointer handlers read.
+pub(crate) fn modifiers_table(lua: &mlua::Lua, held: [bool; 4]) -> mlua::Result<mlua::Table> {
+    let table = lua.create_table()?;
+    for (name, held) in ["ctrl", "shift", "alt", "super"].into_iter().zip(held) {
+        table.set(name, held)?;
+    }
+    Ok(table)
+}
+
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 pub enum MarshalError {
     #[error("number must be finite, got NaN or Inf")]

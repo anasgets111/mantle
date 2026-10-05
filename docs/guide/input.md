@@ -49,10 +49,10 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button, pointer)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
-| `on_press(rect, button, pointer)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. Not called for a press on a `textfield`. See below |
-| `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
-| `on_wheel(rect, steps)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
+| `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
+| `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. Not called for a press on a `textfield`. See below |
+| `on_drag(rect, pointer, phase, modifiers)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
+| `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
 
 **Click.** A press arms the click and the release fires it. Leaving the node and coming back
@@ -61,6 +61,28 @@ node's laid-out box moved between press and release, so give press feedback with
 `translate` rather than `width` or `margin`. A press on a `textfield` that takes the keyboard never
 clicks, not even an `on_click` on the field or around it, and a link in a `text` (`on_link`) takes
 the click before any `on_click`, the text's own included.
+
+**Modifiers.** Each pointer handler ends with `modifiers`, the `{ ctrl, shift, alt, super }` booleans
+`on_key` reports, so a list can toggle on Ctrl-click or extend on Shift-click. Enter and Space
+activation report the keyboard's modifiers too. Wayland tells a client the modifiers only while one
+of its surfaces has keyboard focus; otherwise all four read `false`.
+
+```lua
+local picked = state("picked", false)
+return panel {
+    id = "bar",
+    layer = "top",
+    anchor = { top = true },
+    child = rect {
+        padding = 8,
+        background = picked:map(function(on) return on and "#89b4fa" or "#313244" end),
+        on_click = function(_, _, _, modifiers)
+            picked:set(modifiers.ctrl and not picked:get() or not modifiers.ctrl)
+        end,
+        children = { text { content = "Ctrl-click toggles" } },
+    },
+}
+```
 
 **Press.** `on_press` is the one place a callback can start a window move, resize or menu with
 [`toplevel(id)`](../surfaces/window.md#custom-title-bar): the compositor checks those requests

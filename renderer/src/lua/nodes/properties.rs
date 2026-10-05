@@ -26,7 +26,7 @@ use crate::layout::node::{
     TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
-use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
+use crate::lua::luacats::{LuaType, Modifiers, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
 use crate::wayland::{DragPhase, Escape, KeyPress, MouseButton};
 use mlua::Value;
@@ -308,14 +308,14 @@ props! {
     }
     /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with no handler for the event is skipped by that scan.
     mod pointer(ALL) {
-        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. A press on a `textfield` that takes the keyboard goes to the field instead.
-        on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
+        /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. `modifiers` is the keyboard's `Modifiers` at that moment, also for Enter and Space; every handler below ends with it, and it reads all false while none of this shell's surfaces has keyboard focus. A press on a `textfield` that takes the keyboard goes to the field instead.
+        on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
         /// On press of any mouse button, before `on_click` and before the release. `rect` and `pointer` are as in `on_click`. The only place `toplevel(id)` can move, resize or open the window menu, since compositors honour those for the press serial; an `on_drag` `"start"` works too. Not called for a press on a `textfield`.
-        on_press(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
+        on_press(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
         /// Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
-        on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase);
+        on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase, modifiers: Modifiers);
         /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
-        on_wheel(rect: LogicalRect, steps: f64);
+        on_wheel(rect: LogicalRect, steps: f64, modifiers: Modifiers);
         /// A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
         ///
         /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it

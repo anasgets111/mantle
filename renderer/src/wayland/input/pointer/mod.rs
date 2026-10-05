@@ -8,7 +8,7 @@ use super::*;
 use crate::layout::node::fields::pointer;
 use crate::layout::node::prop::{Keyword, keywords};
 use crate::lua::call_logged;
-use crate::lua::marshal::rect_table;
+use crate::lua::marshal::{modifiers_table, rect_table};
 
 mod position;
 mod wheel;
@@ -327,10 +327,13 @@ pub(in crate::wayland::input) fn call_on_click(
     rect: LogicalRect,
     button: &str,
     local: layout::hit::LogicalPoint,
+    modifiers: [bool; 4],
 ) -> Result<(), (&'static str, mlua::Error)> {
     let argument = rect_table(lua, rect).map_err(|e| ("could not build on_click's rect argument", e))?;
     let pointer = local_pointer_table(lua, local).map_err(|e| ("could not build on_click's pointer argument", e))?;
-    on_click.call::<()>((argument, button, pointer)).map_err(|e| ("on_click raised, ignoring it", e))
+    let modifiers =
+        modifiers_table(lua, modifiers).map_err(|e| ("could not build on_click's modifiers argument", e))?;
+    on_click.call::<()>((argument, button, pointer, modifiers)).map_err(|e| ("on_click raised, ignoring it", e))
 }
 
 /// Call `on_press` like `on_click`: rect, button name and node-local pointer.
@@ -339,11 +342,14 @@ fn call_on_press(
     on_press: &Function,
     target: &PressTarget,
     button: &str,
+    modifiers: [bool; 4],
 ) -> Result<(), (&'static str, mlua::Error)> {
     let rect = rect_table(lua, target.rect).map_err(|e| ("could not build on_press's rect argument", e))?;
     let pointer =
         local_pointer_table(lua, target.at).map_err(|e| ("could not build on_press's pointer argument", e))?;
-    on_press.call::<()>((rect, button, pointer)).map_err(|e| ("on_press raised, ignoring it", e))
+    let modifiers =
+        modifiers_table(lua, modifiers).map_err(|e| ("could not build on_press's modifiers argument", e))?;
+    on_press.call::<()>((rect, button, pointer, modifiers)).map_err(|e| ("on_press raised, ignoring it", e))
 }
 
 /// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
@@ -355,10 +361,14 @@ fn call_on_drag(
     rect: LogicalRect,
     local: layout::hit::LogicalPoint,
     phase: DragPhase,
+    modifiers: [bool; 4],
 ) -> Result<(), (&'static str, mlua::Error)> {
     let rect_argument = rect_table(lua, rect).map_err(|e| ("could not build on_drag's rect argument", e))?;
     let pointer = local_pointer_table(lua, local).map_err(|e| ("could not build on_drag's pointer argument", e))?;
-    on_drag.call::<()>((rect_argument, pointer, phase.name())).map_err(|e| ("on_drag raised, ignoring it", e))
+    let modifiers = modifiers_table(lua, modifiers).map_err(|e| ("could not build on_drag's modifiers argument", e))?;
+    on_drag
+        .call::<()>((rect_argument, pointer, phase.name(), modifiers))
+        .map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
 /// Writes one node's hover answer: the boolean, the rect it was crossed at, then its `on_hover`.
@@ -500,7 +510,8 @@ impl App {
                 crate::lua::toplevel::begin_press(self.client.lua(), position);
                 if !pressed_a_field
                     && let (Some(target), Some(name)) = (hit.press, pointer_button_name(button))
-                    && let Err((what, e)) = call_on_press(self.client.lua(), &target.handler, &target, name)
+                    && let Err((what, e)) =
+                        call_on_press(self.client.lua(), &target.handler, &target, name, self.modifiers_held())
                 {
                     warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
                 }
@@ -685,7 +696,7 @@ impl App {
         if phase == DragPhase::End {
             self.drag = None;
         }
-        if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, local, phase) {
+        if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, local, phase, self.modifiers_held()) {
             warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
     }
@@ -793,7 +804,7 @@ impl App {
     ) {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         crate::lua::focus::begin_click(self.client.lua(), instance_id);
-        if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, local) {
+        if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, local, self.modifiers_held()) {
             warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
         }
         crate::lua::focus::end_click(self.client.lua());
@@ -923,7 +934,7 @@ mod tests {
         let at = layout::hit::LogicalPoint { x: 20.0, y: 12.0 };
         let path = layout::hit::hit_path(&root, at);
         let target = press_target(&path, at).expect("the bar carries on_press; its icon child is transparent");
-        call_on_press(&lua, &target.handler, &target, "right").unwrap();
+        call_on_press(&lua, &target.handler, &target, "right", [false; 4]).unwrap();
         assert_eq!(*seen.borrow(), vec![(40.0, "right".to_string(), 10.0)]);
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
         assert!(press_target(&[&bare], at).is_none());
@@ -946,9 +957,9 @@ mod tests {
             })
             .unwrap();
         let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        call_on_drag(&lua, &handler, rect, pt(20.0, 6.0), DragPhase::Start).unwrap();
+        call_on_drag(&lua, &handler, rect, pt(20.0, 6.0), DragPhase::Start, [false; 4]).unwrap();
         // Past the right edge: unclamped, so the config's own clamp is what pins the slider.
-        call_on_drag(&lua, &handler, rect, pt(50.0, 6.0), DragPhase::End).unwrap();
+        call_on_drag(&lua, &handler, rect, pt(50.0, 6.0), DragPhase::End, [false; 4]).unwrap();
         assert_eq!(*seen.borrow(), vec![(40.0, 20.0, 6.0, "start".to_string()), (40.0, 50.0, 6.0, "end".to_string())]);
     }
 
@@ -1178,8 +1189,15 @@ mod tests {
             .load(r#"seen = {} return function(rect, button, pointer) seen.x, seen.w, seen.button, seen.px, seen.py = rect.x, rect.width, button, pointer.x, pointer.y end"#)
             .eval()
             .unwrap();
-        call_on_click(&lua, &seen, LogicalRect { x: 12.0, y: 4.0, width: 40.0, height: 24.0 }, "right", pt(8.0, 6.0))
-            .unwrap();
+        call_on_click(
+            &lua,
+            &seen,
+            LogicalRect { x: 12.0, y: 4.0, width: 40.0, height: 24.0 },
+            "right",
+            pt(8.0, 6.0),
+            [false; 4],
+        )
+        .unwrap();
 
         let recorded: Table = lua.globals().get("seen").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 12.0);
@@ -1189,12 +1207,45 @@ mod tests {
     }
 
     #[test]
+    fn the_pointer_handlers_end_with_the_held_modifiers() {
+        let lua = Lua::new();
+        let note: Function = lua
+            .load("seen = {} return function(name, m) seen[name] = (m.ctrl and 'c' or '-') .. (m.shift and 's' or '-') end")
+            .eval()
+            .unwrap();
+        let handler = |name: &'static str| {
+            let note = note.clone();
+            lua.create_function(move |_, args: mlua::MultiValue| {
+                let held = args.into_iter().last().expect("a trailing modifiers table");
+                note.call::<()>((name, held))
+            })
+            .unwrap()
+        };
+        let rect = LogicalRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
+        let target = PressTarget { rect, at: pt(1.0, 1.0), handler: handler("press") };
+        call_on_press(&lua, &target.handler, &target, "left", [true, false, false, false]).unwrap();
+        call_on_click(&lua, &handler("click"), rect, "left", pt(1.0, 1.0), [true, true, false, false]).unwrap();
+        call_on_drag(&lua, &handler("drag"), rect, pt(1.0, 1.0), DragPhase::Move, [false, true, false, false]).unwrap();
+        call_on_drag(&lua, &handler("idle"), rect, pt(1.0, 1.0), DragPhase::End, [false; 4]).unwrap();
+        let seen: Table = lua.globals().get("seen").unwrap();
+        let read = |name: &str| seen.get::<String>(name).unwrap();
+        assert_eq!([read("press"), read("click"), read("drag"), read("idle")], ["c-", "cs", "-s", "--"]);
+    }
+
+    #[test]
     fn a_one_argument_on_click_still_runs_unchanged() {
         // ADR-0050 decision 3's exact worked example, which every config in the tree uses.
         let lua = Lua::new();
         let anchor: Function = lua.load(r#"anchor = nil return function(rect) anchor = rect end"#).eval().unwrap();
-        call_on_click(&lua, &anchor, LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 }, "left", pt(1.0, 1.0))
-            .unwrap();
+        call_on_click(
+            &lua,
+            &anchor,
+            LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 },
+            "left",
+            pt(1.0, 1.0),
+            [false; 4],
+        )
+        .unwrap();
 
         let recorded: Table = lua.globals().get("anchor").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 40.0);

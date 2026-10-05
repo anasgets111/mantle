@@ -40,11 +40,7 @@ impl IntoLua for KeyPress {
         let table = lua.create_table()?;
         table.set("name", self.name)?;
         table.set("text", self.text)?;
-        let modifiers = lua.create_table()?;
-        for (name, held) in ["ctrl", "shift", "alt", "super"].into_iter().zip(self.modifiers) {
-            modifiers.set(name, held)?;
-        }
-        table.set("modifiers", modifiers)?;
+        table.set("modifiers", crate::lua::marshal::modifiers_table(lua, self.modifiers)?)?;
         table.set("repeat", self.repeat)?;
         Ok(Value::Table(table))
     }
@@ -106,8 +102,14 @@ impl App {
     /// Bubbles `event` through `on_key`; whether a handler took it.
     pub(super) fn deliver_on_key(&mut self, event: &KeyEvent, repeat: bool) -> bool {
         let (surface_id, handlers) = self.key_handlers_now(event);
-        let modifiers = [self.ctrl_held, self.shift_held, self.alt_held, self.super_held];
+        let modifiers = self.modifiers_held();
         deliver(self.client.lua(), &handlers, KeyPress::new(event, modifiers, repeat), &surface_id)
+    }
+
+    /// `(ctrl, shift, alt, super)` on the seat's keyboard, for `on_key` and the pointer handlers.
+    // ponytail: unknown while none of our surfaces has keyboard focus (all false); core Wayland has no upgrade.
+    pub(in crate::wayland) fn modifiers_held(&self) -> [bool; 4] {
+        [self.ctrl_held, self.shift_held, self.alt_held, self.super_held]
     }
 }
 

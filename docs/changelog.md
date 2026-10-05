@@ -10,6 +10,7 @@ version is 0.x, a minor release can break the Lua API.
 - `textfield` takes `selection = { background, foreground }`: the highlight as given (tint it with alpha) and the selected glyphs' colour. Unset, the highlight stays `foreground` at 30% alpha and the glyphs keep the text colour.
 - `mantle.appearance` is a read-only capability of the desktop portal's appearance settings, pushed live: `color_scheme` (`"default"`, `"dark"` or `"light"`), `accent` (`"#rrggbb"` or `nil`), `contrast` (`"normal"` or `"high"`) and `reduced_motion` (boolean). Without a portal every field holds its default.
 - `effect.backdrop.mask` takes a node `mask`'s `gradient` or `source` (and `invert`) and scales the glass's coverage: where it is clear the ground shows through untouched, and between it crossfades from the ground to the blur, for a scroll edge or a feathered panel. A `node` mask is refused.
+- `on_click`, `on_press`, `on_drag` and `on_wheel` take a trailing `modifiers` argument, the `{ ctrl, shift, alt, super }` table `on_key` reports, so Ctrl-click, Shift-click and Shift-drag work in lists and tables. It reads all false while none of the shell's surfaces has keyboard focus.
 
 ## 0.4.0 - 2026-10-05
 

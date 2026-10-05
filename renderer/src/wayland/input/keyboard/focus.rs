@@ -706,6 +706,7 @@ mod tests {
                     rect,
                     "left",
                     layout::hit::LogicalPoint { x: 15.0, y: 10.0 },
+                    [false; 4],
                 )
                 .unwrap();
             }));
