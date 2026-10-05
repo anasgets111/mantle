@@ -404,9 +404,10 @@ mod doc_examples {
     const MARGIN: usize = 16;
     /// The largest surface a shot paints, and the pbuffer it paints into.
     const MAX_EDGE: u32 = 2048;
-    /// Per channel. NVIDIA and llvmpipe differ by at most 2; 1 px of padding, spacing or radius, or
-    /// any colour change, moves some pixel further.
-    const TOLERANCE: u8 = 2;
+    /// Per channel. NVIDIA and Mesa differ by at most 2, and by 3 on a glyph edge under two
+    /// crossfading opacity layers (nodes/index-2.png frame 8), each rounded to 8 bits. 1 px of
+    /// padding, spacing or radius, or any colour change, moves some pixel further.
+    const TOLERANCE: u8 = 3;
     /// Transparent pixels show as Catppuccin Mocha crust, darker than the book's base, so a surface
     /// painted in base keeps its edge.
     const BACKDROP: [u8; 3] = [0x11, 0x11, 0x1b];
