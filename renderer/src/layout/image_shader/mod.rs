@@ -64,9 +64,34 @@ uniform vec4 mantle_radii;
 uniform vec4 mantle_reach;
 uniform vec4 mantle_power;
 uniform vec4 mantle_round;
+// An `outline`'s contour as a polygon, two points to each element; `layout::node::outline::distance` mirrors it.
+uniform vec4 mantle_outline[128];
+uniform int mantle_outline_len;
+
+vec2 mantle_outline_point(int i) {
+    vec4 pair = mantle_outline[i / 2];
+    return i % 2 == 0 ? pair.xy : pair.zw;
+}
 
 // Signed distance in logical px to the outline, negative inside; smoothed corners are superellipses (`mantle_power`).
 float mantle_sdf(vec2 p) {
+    if (mantle_outline_len > 0) {
+        float nearest = 1e20;
+        bool inside = false;
+        vec2 a = mantle_outline_point(mantle_outline_len - 1);
+        for (int i = 0; i < mantle_outline_len; i++) {
+            vec2 b = mantle_outline_point(i);
+            vec2 e = b - a;
+            vec2 w = p - a;
+            float t = dot(e, e) > 0.0 ? clamp(dot(w, e) / dot(e, e), 0.0, 1.0) : 0.0;
+            nearest = min(nearest, dot(w - e * t, w - e * t));
+            if ((a.y <= p.y) != (b.y <= p.y) && w.x < e.x * w.y / e.y) {
+                inside = !inside;
+            }
+            a = b;
+        }
+        return inside ? -sqrt(nearest) : sqrt(nearest);
+    }
     vec2 half_size = mantle_round.zw * 0.5;
     p -= mantle_round.xy + half_size;
     float e = p.x < 0.0 ? (p.y < 0.0 ? mantle_reach.x : mantle_reach.w) : (p.y < 0.0 ? mantle_reach.y : mantle_reach.z);
@@ -148,7 +173,7 @@ const EPILOGUE: &str = r#"
 void main() {
     mantle_effect();
     // Rounded corners: antialiased by the outline's own slope.
-    if (mantle_radii != vec4(0.0)) {
+    if (mantle_radii != vec4(0.0) || mantle_outline_len > 0) {
         float d = mantle_sdf(v_uv * u_size);
         fragColor *= 1.0 - smoothstep(-0.5 * fwidth(d), 0.5 * fwidth(d), d);
     }
@@ -213,6 +238,8 @@ struct Program {
     reach: Option<glow::UniformLocation>,
     power: Option<glow::UniformLocation>,
     round: Option<glow::UniformLocation>,
+    outline: Option<glow::UniformLocation>,
+    outline_len: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
     /// supplying a value for it is not an error. Carries its components per element, its element
@@ -512,6 +539,8 @@ impl ShaderStage {
                 reach: named("mantle_reach"),
                 power: named("mantle_power"),
                 round: named("mantle_round"),
+                outline: named("mantle_outline"),
+                outline_len: named("mantle_outline_len"),
                 params,
                 images: images.iter().map(|(image, _)| (named(image), named(&format!("{image}_size")))).collect(),
             })
@@ -608,7 +637,7 @@ impl ShaderStage {
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
-            Self::set_shape(gl, program, run.radii, run.round, run.logical_size);
+            Self::set_shape(gl, program, &run.radii, run.round, run.logical_size);
             Self::set_params(gl, program, run.params);
 
             // Premultiplied source-over, and `FUNC_ADD` set rather than inherited: nothing in
@@ -659,15 +688,24 @@ impl ShaderStage {
     unsafe fn set_shape(
         gl: &glow::Context,
         program: &Program,
-        radii: node::Radii,
+        radii: &node::Radii,
         round: LogicalRect,
         logical_size: (f32, f32),
     ) {
         let squircles = radii.squircles(round.width, round.height);
         let reach: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(radii.0[i], |s| s.reach));
         let power: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(2.0, |s| s.power));
+        let polygon = radii.2.as_ref().map_or_else(Vec::new, |outline| outline.sdf_polygon(round));
+        let points: Vec<f32> = polygon.iter().flat_map(|p| [p.x as f32, p.y as f32]).collect();
         // SAFETY: caller's contract.
         unsafe {
+            if !points.is_empty() {
+                gl.uniform_4_f32_slice(
+                    program.outline.as_ref(),
+                    &[&points[..], &[0.0; 2][..points.len() % 4]].concat(),
+                );
+            }
+            gl.uniform_1_i32(program.outline_len.as_ref(), polygon.len() as i32);
             gl.uniform_4_f32_slice(program.radii.as_ref(), &radii.0);
             gl.uniform_4_f32_slice(program.reach.as_ref(), &reach);
             gl.uniform_4_f32_slice(program.power.as_ref(), &power);
@@ -775,7 +813,7 @@ impl ShaderStage {
                 let (logical_width, logical_height) = run.logical_size;
                 let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
                 gl.uniform_1_f32(program.progress.as_ref(), run.progress);
-                Self::set_shape(gl, program, run.radii, outline, run.logical_size);
+                Self::set_shape(gl, program, &run.radii, outline, run.logical_size);
                 Self::set_params(gl, program, run.params);
                 gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
             });

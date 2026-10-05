@@ -21,9 +21,9 @@ use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
     ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
-    NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
-    SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec,
-    TrimAxis, Wrap,
+    NumberOrCorners, NumberOrEdges, Outline, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root,
+    Scale, SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign,
+    TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -340,6 +340,10 @@ props! {
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
         /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
+        /// The box's shape as one closed contour of path commands, in place of `radius`, `corner_shape` and `corner_smoothing`, which it refuses. Points follow the box's size and may reach past it. Fill, border, shadows, clip, mask, glass, `effect.shader`'s `mantle_sdf`, hit testing and the `behind_blur` region follow; the border takes one width and one colour or gradient. Snaps under `animate`.
+        ///
+        /// Book: The box's shape as one closed contour, in place of `radius`; see [Outline](#outline)
+        outline: Bound<Outline>;
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate`.
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
@@ -501,7 +505,7 @@ props! {
     }
     /// A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.
     mod path(PATH) {
-        /// Up to 4096 commands. Each has op M/L/Q/C/A/Z and points containing 2/2/4/6/5/0 numbers. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite.
+        /// Up to 4096 commands. Each has op M/L/Q/C/A/corner/Z and points containing 2/2/4/6/5/2/0 numbers; a corner also takes `radius` and `corner_smoothing`. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite.
         commands: Bound<PathCommands> = absent(Lua("{}"));
         /// Fill colour or gradient across the node box. Open subpaths close for filling.
         fill: Bound<Fill>;

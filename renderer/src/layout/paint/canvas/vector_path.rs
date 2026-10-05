@@ -1,12 +1,11 @@
 //! Vector leaves use the same fills, canvas state and subtree effects as box paint.
 use super::shape::fill_paint;
-use crate::layout::node::{PathOp, StrokeCap, StrokeJoin, TrimAxis, VectorPath};
+use crate::layout::node::{StrokeCap, StrokeJoin, TrimAxis, VectorPath};
 use crate::text::snap::LogicalRect;
-use std::f32::consts::FRAC_PI_2;
 
 use femtovg::{Canvas, LineCap, LineJoin, Path, Solidity, Verb, renderer::OpenGl};
 use kurbo::common::solve_cubic;
-use kurbo::{CubicBez, Line, ParamCurve, ParamCurveArclen, PathSeg, Point};
+use kurbo::{BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point};
 
 pub(super) fn paint(
     canvas: &mut Canvas<OpenGl>,
@@ -16,71 +15,8 @@ pub(super) fn paint(
     if rect.is_empty() || commands.segments.is_empty() {
         return;
     }
-    let mut path = Path::new();
-    let (x, y) = (rect.x + shift.0, rect.y + shift.1);
-    // Where the pen is and where its subpath began, so an arc's joining line is drawn only when it
-    // moves: femtovg keeps a repeated point, and anti-aliasing draws the zero-length edge as a spike.
-    let (mut pen, mut first) = ((0.0, 0.0), (0.0, 0.0));
-    for (segment, p) in commands.iter() {
-        match segment.op {
-            PathOp::M => {
-                pen = (x + p[0], y + p[1]);
-                first = pen;
-                path.move_to(pen.0, pen.1);
-            }
-            PathOp::L => {
-                pen = (x + p[0], y + p[1]);
-                path.line_to(pen.0, pen.1);
-            }
-            PathOp::Q => {
-                pen = (x + p[2], y + p[3]);
-                path.quad_to(x + p[0], y + p[1], pen.0, pen.1);
-            }
-            PathOp::C => {
-                pen = (x + p[4], y + p[5]);
-                path.bezier_to(x + p[0], y + p[1], x + p[2], y + p[3], pen.0, pen.1);
-            }
-            PathOp::A => {
-                let (cx, cy, r) = (x + p[0], y + p[1], p[2]);
-                let at = |a: f32| (cx + r * a.cos(), cy + r * a.sin());
-                let start = p[3].rem_euclid(360.0).to_radians();
-                let sweep = p[4].clamp(-360.0, 360.0).to_radians();
-                let from = at(start);
-                if segment.begins {
-                    (pen, first) = (from, from);
-                    path.move_to(pen.0, pen.1);
-                } else if from != pen {
-                    pen = from;
-                    path.line_to(pen.0, pen.1);
-                }
-                // One cubic per quarter turn or less, handles 4/3·tan(step/4) radii long; none for no sweep.
-                let segments = (sweep.abs() / FRAC_PI_2).ceil();
-                let step = sweep / segments;
-                let handle = r * 4.0 / 3.0 * (step / 4.0).tan();
-                for i in 1..=segments as usize {
-                    let (a0, a1) = (start + step * (i - 1) as f32, start + step * i as f32);
-                    let end = at(a1);
-                    path.bezier_to(
-                        pen.0 - handle * a0.sin(),
-                        pen.1 + handle * a0.cos(),
-                        end.0 + handle * a1.sin(),
-                        end.1 - handle * a1.cos(),
-                        end.0,
-                        end.1,
-                    );
-                    pen = end;
-                }
-            }
-            PathOp::Z => {
-                pen = first;
-                path.close();
-            }
-        }
-        if segment.begins {
-            // Set on every subpath so winding never decides a hole.
-            path.solidity(if segment.hole { Solidity::Hole } else { Solidity::Solid });
-        }
-    }
+    let holes = commands.segments.iter().filter(|segment| segment.begins).map(|segment| segment.hole);
+    let path = femtovg_path(&commands.bez((rect.x + shift.0, rect.y + shift.1)), holes);
     if let Some(fill) = fill {
         canvas.fill_path(&path, &fill_paint(fill, rect));
     }
@@ -109,6 +45,25 @@ pub(super) fn paint(
             canvas.stroke_path(&trimmed(&path, *trim), &paint);
         }
     }
+}
+
+/// `bez` for femtovg, each subpath a hole as `holes` says in turn, so winding never decides one.
+pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>) -> Path {
+    let p = |p: Point| (p.x as f32, p.y as f32);
+    let mut path = Path::new();
+    for element in bez.elements() {
+        match *element {
+            PathEl::MoveTo(to) => {
+                path.move_to(p(to).0, p(to).1);
+                path.solidity(if holes.next() == Some(true) { Solidity::Hole } else { Solidity::Solid });
+            }
+            PathEl::LineTo(to) => path.line_to(p(to).0, p(to).1),
+            PathEl::QuadTo(c, to) => path.quad_to(p(c).0, p(c).1, p(to).0, p(to).1),
+            PathEl::CurveTo(c1, c2, to) => path.bezier_to(p(c1).0, p(c1).1, p(c2).0, p(c2).1, p(to).0, p(to).1),
+            PathEl::ClosePath => path.close(),
+        }
+    }
+    path
 }
 
 /// `path`'s segments as kurbo's, each with whether it begins its subpath.

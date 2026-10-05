@@ -225,14 +225,29 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
     }
     let style = match kind {
         // All containers and surface roles paint as a box; a `list` carries one for its `clip` (ADR-0328).
-        "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
-            background: paint::background.read(properties)?,
-            radius: parse_radius(properties)?,
-            border: paint::border_color.read(properties)?,
-            widths: paint::border_width.read(properties)?,
-            clip: ClipShape::of(kind, properties)?,
-            mask: paint::mask.read(properties)?,
-        },
+        "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => {
+            let (radius, border, widths) = (
+                parse_radius(properties)?,
+                paint::border_color.read(properties)?,
+                paint::border_width.read(properties)?,
+            );
+            let EdgeInsets { top, right, bottom, left } = widths;
+            let one_colour = match &border {
+                BorderPaint::Edges(c) => [c.right, c.bottom, c.left].iter().all(|edge| *edge == c.top),
+                BorderPaint::Gradient(_) => true,
+            };
+            if radius.2.is_some() && !([right, bottom, left].iter().all(|w| *w == top) && one_colour) {
+                return Err(invalid("outline", "takes one border_width and one border_color for its whole contour"));
+            }
+            PaintStyle::Box {
+                background: paint::background.read(properties)?,
+                radius,
+                border,
+                widths,
+                clip: ClipShape::of(kind, properties)?,
+                mask: paint::mask.read(properties)?,
+            }
+        }
         "path" => PaintStyle::Path(VectorPath {
             commands: path::commands.read(properties)?,
             fill: path::fill.read(properties)?,
@@ -270,7 +285,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 retain: image::retain.read(properties)? || transition.is_some(),
                 transition,
                 source_blur: image::source_blur.read(properties)?,
-                radius: Radii(image::radius.read(properties)?.0, image::corner_smoothing.read(properties)?),
+                radius: Radii(image::radius.read(properties)?.0, image::corner_smoothing.read(properties)?, None),
             }
         }
         "capture" => {

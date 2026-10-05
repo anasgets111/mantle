@@ -7,7 +7,7 @@ coordinates. Use the existing `scale` transform to scale a drawing.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `commands` | `PathCommand[]\|Bound` | `{}` | Up to 4096 commands. Each has op M/L/Q/C/A/Z and points containing 2/2/4/6/5/0 numbers. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite |
+| `commands` | `PathCommand[]\|Bound` | `{}` | Up to 4096 commands. Each has op M/L/Q/C/A/corner/Z and points containing 2/2/4/6/5/2/0 numbers; a corner also takes `radius` and `corner_smoothing`. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite |
 | `fill` | `Color\|Gradient\|Bound` | None | Fill colour or gradient across the node box. Open subpaths close for filling |
 | `stroke` | `Color\|Gradient\|Bound` | None | Stroke colour or gradient across the node box |
 | `stroke_width` | `number\|Bound`, `[0, 8192]` | `1` | Stroke width in logical pixels; centered on the path |
@@ -29,6 +29,11 @@ least 0, and angles in degrees from the +x axis, any finite value. A positive sw
 negative one anticlockwise, and a sweep of 360 or more draws the full circle. `A` can begin a
 subpath; inside one, a line joins the current point to the arc's start. This is not SVG's
 elliptical `A`.
+
+`corner` rounds one point, `{ op = "corner", points = { x, y }, radius = 8, corner_smoothing = 0.6 }`:
+the turn between the line in from the pen and the line out to the next command's first point
+becomes a [continuous corner](../guide/paint.md#continuous-corners), cut to fit its sides. It
+cannot begin a subpath. A box's [`outline`](../guide/paint.md#outline) takes the same commands.
 
 Subpaths are solid whatever their winding, so overlapping ones merge. Set `hole = true` on the
 command that begins a subpath to cut it out of the fill instead. Each solid subpath counts +1 and

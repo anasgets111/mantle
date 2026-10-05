@@ -9,8 +9,10 @@ mod animate;
 mod content;
 pub(crate) mod corner;
 pub(crate) mod input;
+pub(crate) mod outline;
 mod paint_style;
 mod vector_path;
+pub use outline::Outline;
 #[cfg(test)]
 pub(crate) use vector_path::PathCommand;
 pub(crate) use vector_path::{PathCommands, PathData, PathOp, StrokeCap, StrokeJoin, TrimAxis, VectorPath, tweened};
@@ -79,7 +81,9 @@ use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal;
 pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
 use crate::lua::signal;
+use crate::text::snap::LogicalRect;
 use prop::Prop;
+use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SizeMode {
@@ -132,19 +136,40 @@ crate::lua::luacats::lua_shape! {
     }
 }
 
-/// Corner radii clockwise from the top left, in px, and the `corner_smoothing` they share. Negative
-/// is a scoop (`corner_shape`), on every corner at once; zero is square. Smoothing is never
-/// combined with a scoop (`parse_radius`).
-#[derive(Debug, Clone, Copy, PartialEq, Default)]
-pub struct Radii(pub [f32; 4], pub f32);
+/// A box's shape: corner radii clockwise from the top left, in px, and the `corner_smoothing` they
+/// share, or an `outline` in their place. Negative is a scoop (`corner_shape`), on every corner at
+/// once; zero is square. Smoothing is never combined with a scoop (`parse_radius`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Radii(pub [f32; 4], pub f32, pub Option<Rc<Outline>>);
 
 impl Radii {
-    pub fn is_zero(self) -> bool {
-        self.0.iter().all(|r| *r == 0.0)
+    pub fn is_zero(&self) -> bool {
+        self.0.iter().all(|r| *r == 0.0) && self.2.is_none()
     }
 
-    pub fn scoop(self) -> bool {
+    pub fn scoop(&self) -> bool {
         self.0.iter().any(|r| *r < 0.0)
+    }
+
+    /// Whether a box gradient draws this shape's shadow: not a scoop or an outline (ADR-0260).
+    pub fn analytic(&self) -> bool {
+        !self.scoop() && self.2.is_none()
+    }
+
+    /// `rect` grown to hold an outline reaching past it.
+    pub fn bounds(&self, rect: LogicalRect) -> LogicalRect {
+        self.2.as_ref().map_or(rect, |outline| outline.bounds(rect))
+    }
+
+    /// Whether the shape of a box at `rect` holds `(x, y)`.
+    pub fn contains(&self, rect: LogicalRect, point: crate::layout::hit::LogicalPoint) -> bool {
+        match &self.2 {
+            Some(outline) => {
+                let p = kurbo::Point::new(f64::from(point.x), f64::from(point.y));
+                outline::distance(&outline.polygon(rect, 0.25), p) < 0.0
+            }
+            None => rect.contains(point),
+        }
     }
 
     /// CSS's rule for radii too big for a `w` by `h` box: all shrink by one factor until the two
@@ -161,7 +186,7 @@ impl Radii {
     /// smoothing is `0`, which the circular paths draw as they always have. Each
     /// corner's budget is its share of the shorter side it meets, as figma-squircle splits a side
     /// between two corners; call it on [`fit`](Self::fit)ted radii.
-    pub fn squircles(self, w: f32, h: f32) -> [Option<corner::Squircle>; 4] {
+    pub fn squircles(&self, w: f32, h: f32) -> [Option<corner::Squircle>; 4] {
         let [tl, tr, br, bl] = self.0;
         let share = |r: f32, next: f32, side: f32| if r + next > 0.0 { r / (r + next) * side } else { side };
         let budget = |r: f32, across: f32, down: f32| share(r, across, w).min(share(r, down, h));
@@ -173,13 +198,14 @@ impl Radii {
 impl std::ops::Mul<f32> for Radii {
     type Output = Self;
     fn mul(self, k: f32) -> Self {
-        Self(self.0.map(|r| r * k), self.1)
+        let outline = self.2.map(|outline| if k == 1.0 { outline } else { Rc::new(outline.scaled(k)) });
+        Self(self.0.map(|r| r * k), self.1, outline)
     }
 }
 
 impl From<f32> for Radii {
     fn from(r: f32) -> Self {
-        Self([r; 4], 0.0)
+        Self([r; 4], 0.0, None)
     }
 }
 

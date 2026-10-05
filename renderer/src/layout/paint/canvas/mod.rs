@@ -23,7 +23,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 #[cfg(test)]
 use super::build;
 use super::{DisplayList, Draw, DrawCmd, UNCLIPPED};
-use effects::{draw_backdrop, draw_layer, paint_inset_shadow, paint_shadow, read_target, replace};
+use effects::{draw_backdrop, draw_layer, paint_inset_shadow, paint_outline_inset, paint_shadow, read_target, replace};
 use shape::{box_path, fill_rect, gradient_paint, paint_border};
 
 /// Timing breakdown of what [`execute`] drew.
@@ -223,9 +223,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 let t0 = timing.then(Instant::now);
                 // No layers skips the fill; alpha 0 remains an explicit transparent rect. The first layer is on top.
                 for fill in background.iter().rev() {
-                    fill_rect(painter.canvas_mut(), rect, *radius, fill);
+                    fill_rect(painter.canvas_mut(), rect, radius, fill);
                 }
-                paint_border(painter.canvas_mut(), rect, *radius, border, *widths, 1.0);
+                paint_border(painter.canvas_mut(), rect, radius, border, *widths, 1.0);
                 if let Some(t0) = t0 {
                     walk.split.boxes += t0.elapsed();
                 }
@@ -260,7 +260,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     let request =
                         ImageRequest { path: &path, box_px: (*px, *px), tint: *color, fit: Fit::Contain, blur_px: 0 };
                     let draw =
-                        FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: node::Radii::default() };
+                        FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: &node::Radii::default() };
                     let _ = draw_file(painter.canvas_mut(), walk.images, draw);
                 }
                 if let Some(t0) = t0 {
@@ -275,7 +275,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     fit: *fit,
                     blur_px: *blur_px,
                 };
-                let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius: *radius };
+                let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius };
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
@@ -316,7 +316,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     target_size: frame.size,
                                     target_origin: frame.origin,
                                     opacity: *alpha,
-                                    radii: (*radius * (1.0 / scale)).fit(round.width, round.height),
+                                    radii: (radius.clone() * (1.0 / scale)).fit(round.width, round.height),
                                     round,
                                     progress: *progress,
                                     params,
@@ -340,10 +340,10 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // the test harness; the rest are real and are why this stays.
                         if !crossed {
                             if let Some((id, fitted, _)) = from {
-                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, *radius, *alpha);
+                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, *alpha);
                             }
                             if let Some((id, fitted, _)) = to {
-                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, *radius, *alpha * *progress);
+                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, *alpha * *progress);
                             }
                         }
                     }
@@ -400,11 +400,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 }
             }
             Draw::NodeMask { invert, radius, split, commands } => {
-                draw_node_mask(painter, walk, rect, clip, *invert, *radius, *split, commands, target, frame);
+                draw_node_mask(painter, walk, rect, clip, *invert, radius, *split, commands, target, frame);
                 current_clip = None;
             }
             Draw::Clipped { radius, mask, commands } => {
-                draw_clipped(painter, walk, rect, clip, *radius, mask.as_ref(), commands, target, frame);
+                draw_clipped(painter, walk, rect, clip, radius, mask.as_ref(), commands, target, frame);
                 current_clip = None;
             }
             Draw::Transformed { matrix, commands } => {
@@ -418,11 +418,12 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 current_clip = None;
             }
             Draw::Shadow { shadow, radius, knockout } => {
-                paint_shadow(painter.canvas_mut(), rect, *shadow, *radius, *knockout)
+                paint_shadow(painter.canvas_mut(), rect, *shadow, radius, *knockout)
             }
-            Draw::InsetShadow { shadow, radius, widths } => {
-                paint_inset_shadow(painter.canvas_mut(), rect, *shadow, *radius, *widths)
-            }
+            Draw::InsetShadow { shadow, radius, widths } => match &radius.2 {
+                Some(outline) => paint_outline_inset(painter, walk, command, outline, target),
+                None => paint_inset_shadow(painter.canvas_mut(), rect, *shadow, radius, *widths),
+            },
             Draw::Layer { .. } => {
                 draw_layer(painter, walk, command, target, frame);
                 current_clip = None;
@@ -454,7 +455,7 @@ fn draw_clipped(
     walk: &mut Walk<'_, '_>,
     rect: LogicalRect,
     clip: PhysicalRect,
-    radius: node::Radii,
+    radius: &node::Radii,
     mask: Option<&(node::Mask, (u32, u32))>,
     commands: &[DrawCmd],
     target: RenderTarget,
@@ -487,7 +488,7 @@ fn draw_node_mask(
     rect: LogicalRect,
     clip: PhysicalRect,
     invert: bool,
-    radius: node::Radii,
+    radius: &node::Radii,
     split: usize,
     commands: &[DrawCmd],
     target: RenderTarget,
@@ -654,7 +655,7 @@ struct FileDraw<'a> {
     rect: LogicalRect,
     alpha: f32,
     load: Load,
-    radius: node::Radii,
+    radius: &'a node::Radii,
 }
 
 impl<'a> FileDraw<'a> {
@@ -690,7 +691,7 @@ fn file_texture(
 }
 
 fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alpha: f32) {
-    fill_image_rounded(canvas, id, fitted, fitted, node::Radii::default(), alpha);
+    fill_image_rounded(canvas, id, fitted, fitted, &node::Radii::default(), alpha);
 }
 
 /// `radius` rounds what shows: `fitted` clipped to the box, so `Contain` rounds the picture and
@@ -700,7 +701,7 @@ fn fill_image_rounded(
     id: ImageId,
     fitted: LogicalRect,
     rect: LogicalRect,
-    radius: node::Radii,
+    radius: &node::Radii,
     alpha: f32,
 ) {
     let path = box_path(if radius.is_zero() { fitted } else { fitted.intersect(rect) }, radius);

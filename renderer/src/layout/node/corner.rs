@@ -172,9 +172,9 @@ mod tests {
         let flat = Squircle::new(20.0, 0.6, 20.0);
         assert_eq!((flat.reach, flat.power), (20.0, 2.0));
         // Corners share a side by radius: 10 and 30 on a 40 px side leave 10 its quarter.
-        let boxed = Radii([10.0, 30.0, 10.0, 30.0], 1.0).squircles(40.0, 100.0);
+        let boxed = Radii([10.0, 30.0, 10.0, 30.0], 1.0, None).squircles(40.0, 100.0);
         assert_eq!(boxed.map(|c| c.unwrap().reach), [10.0, 30.0, 10.0, 30.0]);
-        let one = Radii([10.0, 0.0, 10.0, 0.0], 0.6).squircles(100.0, 100.0);
+        let one = Radii([10.0, 0.0, 10.0, 0.0], 0.6, None).squircles(100.0, 100.0);
         assert_eq!((one[1], one[3], one[0].unwrap().reach), (None, None, 16.0), "a square corner has no outline");
         assert_eq!(Radii::from(10.0).squircles(100.0, 100.0), [None; 4], "smoothing 0 keeps the circular paths");
     }

@@ -5,7 +5,9 @@ use std::f32::consts::{FRAC_PI_2, PI};
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
+use super::vector_path::femtovg_path;
 use crate::layout::node::corner::Squircle;
+use crate::layout::node::outline::inset;
 use crate::layout::node::{BorderColor, BorderPaint, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 
@@ -47,7 +49,10 @@ const HAIR: f32 = 0.05;
 ///
 /// Unequal corners go to femtovg's `rounded_rect_varying`, which shrinks them by CSS's rule; a
 /// scoop and a smoothed corner take the same rule from [`Radii::fit`].
-pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
+pub(super) fn box_path(rect: LogicalRect, radii: &Radii) -> Path {
+    if let Some(outline) = &radii.2 {
+        return femtovg_path(&outline.bez(rect), std::iter::empty());
+    }
     let LogicalRect { x, y, width: w, height: h } = rect;
     let [tl, tr, br, bl] = radii.0;
     let mut path = Path::new();
@@ -59,7 +64,7 @@ pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
         // straight edges. Short of half the shorter side, so neighbouring arcs never meet and fold.
         // Wound left, bottom, right, top like the shapes below: the other way, femtovg's
         // antialiasing inset pushes the edge up to 3px into the scoop.
-        let [tl, tr, br, bl] = radii.fit(w - 2.0 * HAIR, h - 2.0 * HAIR).0.map(|r| -r);
+        let [tl, tr, br, bl] = radii.clone().fit(w - 2.0 * HAIR, h - 2.0 * HAIR).0.map(|r| -r);
         path.arc(x, y + h, bl, -FRAC_PI_2, 0.0, Solidity::Hole);
         path.arc(x + w, y + h, br, PI, 3.0 * FRAC_PI_2, Solidity::Hole);
         path.arc(x + w, y, tr, FRAC_PI_2, PI, Solidity::Hole);
@@ -95,9 +100,9 @@ pub(super) fn box_path(rect: LogicalRect, radii: Radii) -> Path {
 
 /// A box with continuous corners, wound left, bottom, right, top like `rounded_rect`. Each corner
 /// is its [`Squircle`] chain, so this is the one outline the border bands, clips and masks share.
-fn smoothed_path(rect: LogicalRect, radii: Radii) -> Path {
+fn smoothed_path(rect: LogicalRect, radii: &Radii) -> Path {
     let LogicalRect { x, y, width: w, height: h } = rect;
-    let squircles = radii.fit(w, h).squircles(w, h);
+    let squircles = radii.clone().fit(w, h).squircles(w, h);
     let mut outline = Outline { path: Path::new(), pen: None };
     // Bottom left, bottom right, top right, top left: each corner's frame and the way it is walked.
     for (i, origin, toward, reversed) in [
@@ -116,9 +121,18 @@ fn smoothed_path(rect: LogicalRect, radii: Radii) -> Path {
     outline.path
 }
 
+/// `polygon` as one more closed subpath of `path`.
+pub(super) fn polygon_into(path: &mut Path, polygon: &[kurbo::Point], solidity: Solidity) {
+    for (i, p) in polygon.iter().enumerate() {
+        if i == 0 { path.move_to(p.x as f32, p.y as f32) } else { path.line_to(p.x as f32, p.y as f32) }
+    }
+    path.close();
+    path.solidity(solidity);
+}
+
 /// The background fill, rounded when the node asked for it. See [`box_path`] for why a radius at
 /// half the box is its own shape rather than a `rounded_rect` argument.
-pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: Radii, fill: &Fill) {
+pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: &Radii, fill: &Fill) {
     // femtovg's antialias fringe paints an empty path as a 1px line.
     if rect.is_empty() {
         return;
@@ -167,7 +181,7 @@ pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
 pub(super) fn paint_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    radius: Radii,
+    radius: &Radii,
     border: &BorderPaint,
     widths: EdgeInsets,
     scale: f32,
@@ -182,6 +196,19 @@ pub(super) fn paint_border(
         }
         BorderPaint::Edges(_) => None,
     };
+
+    // The band between the contour and the contour moved in by the width, which the parser holds
+    // to one width and one paint.
+    if let Some(outline) = &radius.2 {
+        if let Some(paint) = uniform_paint
+            && widths.top > 0.0
+        {
+            let mut path = box_path(rect, radius);
+            polygon_into(&mut path, &inset(&outline.polygon(rect, 0.1), f64::from(widths.top)), Solidity::Hole);
+            canvas.fill_path(&path, &paint);
+        }
+        return;
+    }
 
     if let Some(mut paint) = uniform_paint
         && uniform_width
@@ -397,7 +424,7 @@ impl Outline {
 fn shaped_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
-    radius: Radii,
+    radius: &Radii,
     border: &BorderPaint,
     widths: EdgeInsets,
     scale: f32,
@@ -420,8 +447,8 @@ fn shaped_border(
         return;
     }
     let radius = match radius.scoop() {
-        false => radius.fit(w, h),
-        true => radius.fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
+        false => radius.clone().fit(w, h),
+        true => radius.clone().fit(w - 2.0 * HAIR, h - 2.0 * HAIR),
     };
     let [tl, tr, br, bl] = radius.0;
     let [q_tl, q_tr, q_br, q_bl] = radius.squircles(w, h);
@@ -1001,7 +1028,7 @@ mod tests {
         for (name, w) in [("a hair narrower", 31.999_998), ("a hair wider", 32.000_004), ("square", 32.0)] {
             let canvas = painter.canvas_mut();
             canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
-            fill_rect(canvas, LogicalRect { x: 8.0, y: 8.0, width: w, height: 32.0 }, Radii::from(17.0), white);
+            fill_rect(canvas, LogicalRect { x: 8.0, y: 8.0, width: w, height: 32.0 }, &Radii::from(17.0), white);
             canvas.flush();
             assert_eq!(pixel_at(canvas, 9, 9), (0, 0, 0, 255), "{name}: the corner outside the circle stays black");
             assert_eq!(pixel_at(canvas, 24, 24), (255, 255, 255, 255), "{name}: the centre is filled");
@@ -1080,7 +1107,7 @@ mod tests {
         let canvas = painter.canvas_mut();
         canvas.clear_rect(0, 0, 64, 48, Color::rgbaf(0.0, 0.0, 0.0, 1.0));
         let white = &Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 });
-        fill_rect(canvas, LogicalRect { x: 24.0, y: 8.0, width: 0.0, height: 32.0 }, Radii::from(6.0), white);
+        fill_rect(canvas, LogicalRect { x: 24.0, y: 8.0, width: 0.0, height: 32.0 }, &Radii::from(6.0), white);
         canvas.flush();
         for x in 22..27 {
             assert_eq!(pixel_at(canvas, x, 24), (0, 0, 0, 255), "column {x} stays black");

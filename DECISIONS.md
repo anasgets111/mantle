@@ -8131,3 +8131,33 @@ configure already does (ADR-0044 d2).
 
 Amendment: a popup's anchor rect is measured from the parent's window geometry, so
 `Placement::within_geometry_of` subtracts the parent window's rounded (left, top) inset.
+
+## 0348. A box `outline` is one contour of size-relative points
+
+`outline = { commands = {...} }` replaces a box's rounded rect with any shape: a popover with its
+arrow, a speech bubble, a tab joined to its panel, or a bar that grows into a panel through a
+neck. Fill, border, outer and inset shadows, the knockout, `effect.backdrop`, `effect.shader`'s
+`mantle_sdf`, own clip, `behind_blur` and hit testing all follow it. A box without one keeps the
+rounded-rect fast paths.
+
+1. **One contour, not a union.** A stroke, an inset shadow or an inset border traced over
+   overlapping sub-paths draws a seam across their join. A `corner` op instead places corner.rs's
+   smoothed corner between the lines on either side of it. Turning the other way gives a concave
+   fillet, and the `path` node gets the same op from the shared parser.
+2. **Size-relative points.** Each coordinate is px, `"NN%"` of the box, or
+   `{ from = edge|"NN%", px }`, resolved at paint and hit time. This was chosen over a Lua function
+   of the size, which would run Lua on every frame of a resize or tween. Px and share are both
+   linear, so a tween between a px point and a `%` point is exact at any size. `outline` tweens
+   and springs like `path`, on the paint-only tick, and a structure mismatch snaps.
+3. **Polygon SDF.** `mantle_sdf` is the distance to the contour cut every 3° of turn, up to 256
+   points (`uniform vec4 mantle_outline[128]`), with a CPU mirror that hit testing uses. It is
+   continuous, and its gradient bends at most 3° per vertex. Exact curve distance was rejected as
+   far costlier per fragment; tolerance flattening bent tens of degrees on small fillets.
+4. **Shadows.** The analytic box gradient fits only rounded rects. Outer shadows on an outline use
+   the cached silhouette layer, with the knockout's 2px-clear edge. Inset shadows cast from one
+   uncached offscreen per repaint.
+5. **Refused:** an outline combined with `radius`, a scoop or `corner_smoothing`; per-edge border
+   widths or colours; and anything that is not exactly one closed contour.
+
+Ceiling: inset shadows on an outline are not cached; the upgrade is the layer cache's key.
+`Radii` carries the outline, so every `box_path` consumer follows it without a second argument.

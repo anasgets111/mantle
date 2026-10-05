@@ -120,10 +120,17 @@ fn build_node(
     } else {
         (clip, surface)
     };
-    let clip = parent_clip.intersect(snap_to_physical(rect, scale));
-    let child_clip = if node.clips_children() { clip } else { parent_clip };
+    // An outline reaching past the box paints there too; children stay cut to the box.
+    let bounds = match &node.paint {
+        Some(PaintStyle::Box { radius, .. }) => radius.bounds(rect),
+        _ => rect,
+    };
+    let clip = parent_clip.intersect(snap_to_physical(bounds, scale));
+    let child_clip =
+        if node.clips_children() { parent_clip.intersect(snap_to_physical(rect, scale)) } else { parent_clip };
     let effect = &node.effect;
-    let read = snap_to_physical(grow(rect, reach(effect.backdrop).max(shader_padding(&effect.backdrop_shader))), scale);
+    let read =
+        snap_to_physical(grow(bounds, reach(effect.backdrop).max(shader_padding(&effect.backdrop_shader))), scale);
     let opacity = inherited_opacity * node.opacity;
     let layers = match &node.paint {
         Some(PaintStyle::Box { background, .. }) => background.as_slice(),
@@ -142,20 +149,20 @@ fn build_node(
                 && effect.blur == 0.0
                 && effect.shader.is_none()
                 && opacity >= 1.0;
-            (*radius, opaque, !opaque && !effect.content_shadow)
+            (radius.clone(), opaque, !opaque && !effect.content_shadow)
         }
         _ => (Radii::default(), false, false),
     };
-    // A gradient cannot draw a scoop, so a scoop's box shadow is its silhouette's.
-    let casts = !effect.shadows.is_empty() && (boxed || (opaque && !radius.scoop()));
+    // A gradient cannot draw a scoop or an outline, so their box shadow is their silhouette's.
+    let casts = !effect.shadows.is_empty() && (boxed || (opaque && radius.analytic()));
     let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
-    let own = layer_bounds(rect, &layered, scale);
-    let reach = if casts && !radius.scoop() {
+    let own = layer_bounds(bounds, &layered, scale);
+    let reach = if casts && radius.analytic() {
         effect.shadows.iter().fold(own, |reach, shadow| {
             reach.union(snap_to_physical(grow(shadow_rect(rect, rect, *shadow), 1.5 * shadow.blur), scale))
         })
     } else if effect.layers() {
-        layer_bounds(rect, effect, scale)
+        layer_bounds(bounds, effect, scale)
     } else {
         child_clip
     };
@@ -184,14 +191,19 @@ fn build_node(
     // A backdrop shader's padding can reach back into the clip from a box that is itself outside it.
     let padded_read = shader_padding(&effect.backdrop_shader) > 0.0 && !parent_clip.intersect(read).is_empty();
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
-    if let Some(PaintStyle::Box { radius, .. }) = node.paint
+    if let Some(PaintStyle::Box { radius, .. }) = &node.paint
         && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity() || effect.backdrop_shader.is_some())
         && opacity > 0.0
         && (!clip.is_empty() || padded_read)
     {
-        let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius));
-        let draw =
-            Draw::Backdrop { sigma: effect.backdrop, tone: effect.backdrop_tone, radius, alpha: opacity, shader };
+        let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius.clone()));
+        let draw = Draw::Backdrop {
+            sigma: effect.backdrop,
+            tone: effect.backdrop_tone,
+            radius: radius.clone(),
+            alpha: opacity,
+            shader,
+        };
         out.push(cmd(parent_clip.intersect(read), draw));
     }
     // CSS `mix-blend-mode` blends the element's own shadows with it, never its backdrop filter.
@@ -199,17 +211,21 @@ fn build_node(
     // After the backdrop: CSS's backdrop is what precedes the element, and its shadow is part of it.
     if casts {
         let faded = effect.shadows.iter().map(|shadow| node::Shadow { color: fade(shadow.color, opacity), ..*shadow });
-        if !radius.scoop() {
+        if radius.analytic() {
             // CSS paints the first layer on top, so the last draws first.
             for shadow in faded.rev() {
-                let draw = Draw::Shadow { shadow, radius, knockout: boxed };
+                let draw = Draw::Shadow { shadow, radius: radius.clone(), knockout: boxed };
                 out.push(blended(shadow.blend, cmd(parent_clip.intersect(reach), draw)));
             }
         } else {
             let effect = node::Effect { shadows: faded.collect(), ..node::Effect::default() };
             let black = vec![Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })];
-            let fill =
-                Draw::Box { background: black, radius, border: BorderPaint::default(), widths: EdgeInsets::default() };
+            let fill = Draw::Box {
+                background: black,
+                radius: radius.clone(),
+                border: BorderPaint::default(),
+                widths: EdgeInsets::default(),
+            };
             let draw = Draw::Layer {
                 effect: Box::new(effect),
                 shader: None,
@@ -228,7 +244,7 @@ fn build_node(
             .rev()
             .map(|shadow| {
                 let shadow = node::Shadow { color: fade(shadow.color, opacity), ..*shadow };
-                blended(shadow.blend, cmd(clip, Draw::InsetShadow { shadow, radius: *radius, widths: *widths }))
+                blended(shadow.blend, cmd(clip, Draw::InsetShadow { shadow, radius: radius.clone(), widths: *widths }))
             })
             .collect(),
         _ => Vec::new(),
@@ -433,8 +449,8 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
 
 /// The non-zero radii of a node whose children use a rounded clip.
 fn rounded_clip(node: &ResolvedNode) -> Option<Radii> {
-    match node.paint {
-        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if !radius.is_zero() => Some(radius),
+    match &node.paint {
+        Some(PaintStyle::Box { clip: ClipShape::Rounded, radius, .. }) if !radius.is_zero() => Some(radius.clone()),
         _ => None,
     }
 }
@@ -447,7 +463,7 @@ fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option<Draw>) {
     };
     let fill = (!background.is_empty()).then(|| Draw::Box {
         background,
-        radius,
+        radius: radius.clone(),
         border: BorderPaint::default(),
         widths: EdgeInsets::default(),
     });
@@ -516,7 +532,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // cut to, `build_node`'s question, not this one's.
         PaintStyle::Box { background, radius, border, widths, clip: _, mask: _ } => Some(Draw::Box {
             background: background.iter().map(|(fill, _)| fade_fill(fill, opacity)).collect(),
-            radius: *radius,
+            radius: radius.clone(),
             border: fade_border(border, opacity),
             widths: *widths,
         }),
@@ -593,7 +609,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                         None => (transition.is_some() && has_cover).then_some(0.0),
                     },
                     blur_px: physical_blur(*source_blur, scale),
-                    radius: *radius * scale,
+                    radius: radius.clone() * scale,
                 }
             })
         }
@@ -758,8 +774,11 @@ fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, Blend)]) {
     if layers.iter().all(|(_, blend)| *blend == Blend::Normal) {
         return out.push(DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } });
     }
-    let boxed =
-        |background| DrawCmd { rect, clip, draw: Draw::Box { background, radius, border: border.clone(), widths } };
+    let boxed = |background| DrawCmd {
+        rect,
+        clip,
+        draw: Draw::Box { background, radius: radius.clone(), border: border.clone(), widths },
+    };
     let mut run = Vec::new();
     for (fill, (_, blend)) in background.into_iter().zip(layers).rev() {
         if *blend == Blend::Normal {
@@ -1887,7 +1906,10 @@ mod tests {
         };
         let plain = layer(0, 1);
         let Draw::Layer { shader: Some(shader), effect, .. } = &plain.draw else { panic!("a shader layer: {plain:?}") };
-        assert_eq!((shader.params.clone(), shader.radius), (vec![("k".to_string(), vec![1.0])], Radii::from(5.0)));
+        assert_eq!(
+            (shader.params.clone(), shader.radius.clone()),
+            (vec![("k".to_string(), vec![1.0])], Radii::from(5.0))
+        );
         assert!(effect.shader.is_none(), "the program travels in the layer's `shader` alone");
         assert!(plain.clip.x0 >= 38 && plain.clip.x1 <= 62, "the box and its outline's edge: {:?}", plain.clip);
         assert_eq!(layer(12, 1).clip, PhysicalRect { x0: 28, y0: 28, x1: 72, y1: 72 }, "padding grows the clip");
@@ -1948,7 +1970,7 @@ mod tests {
         let Draw::Clipped { radius, mask: Some((mask, box_px)), commands } = &group.draw else {
             panic!("expected a masked group, got {:?}", group.draw)
         };
-        assert_eq!((*radius, *box_px, mask.invert), (Radii::default(), (80, 32), false));
+        assert_eq!((radius.clone(), *box_px, mask.invert), (Radii::default(), (80, 32), false));
         let order: Vec<_> = commands
             .iter()
             .map(|cmd| match &cmd.draw {
@@ -1969,13 +1991,13 @@ mod tests {
                 mask = { source = "/nonexistent/mask.svg" } }"##,
         );
         let Draw::Clipped { radius, mask: Some(_), commands } = &list.commands[1].draw else { panic!("{list:?}") };
-        assert_eq!((*radius, commands.len()), (Radii::from(8.0), 1));
+        assert_eq!((radius.clone(), commands.len()), (Radii::from(8.0), 1));
     }
 
     /// `corner_smoothing` rides the radii into every draw that cuts or reads through the outline.
     #[test]
     fn corner_smoothing_reaches_a_mask_and_a_backdrop() {
-        let smooth = Radii([8.0; 4], 0.6);
+        let smooth = Radii([8.0; 4], 0.6, None);
         let list = masked(
             r##"rect { width = 80, height = 32, radius = 8, corner_smoothing = 0.6, clip = "rounded",
                 background = "#0000FFFF", mask = { source = "/nonexistent/mask.svg" } }"##,
@@ -1985,8 +2007,8 @@ mod tests {
         let list = effect_surface(
             r##"rect { width = 40, height = 20, radius = 8, corner_smoothing = 0.6, effect = { backdrop = { blur = 4 } } }"##,
         );
-        let radius = list.commands.iter().find_map(|cmd| match cmd.draw {
-            Draw::Backdrop { radius, .. } => Some(radius),
+        let radius = list.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Backdrop { radius, .. } => Some(radius.clone()),
             _ => None,
         });
         assert_eq!(radius, Some(smooth));
@@ -2063,7 +2085,7 @@ mod tests {
         };
         let list = card("opacity = 0.5,");
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
-        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
+        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw.clone() else { unreachable!() };
         assert_eq!((radius, knockout), (Radii::from(6.0), true), "a fading card shows no shadow through its body");
         assert!((shadow.color.a - 0.5 * 128.0 / 255.0).abs() < 1e-6, "faded with the node: {shadow:?}");
         assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill covers the shadow");
@@ -2194,7 +2216,7 @@ mod tests {
                 shadows = { { blur = 4, offset = { y = 4 } } }, children = { text { content = "hi" } } }"##,
         );
         let at = list.commands.iter().position(|cmd| matches!(cmd.draw, Draw::Shadow { .. })).expect("a shadow");
-        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw else { unreachable!() };
+        let Draw::Shadow { shadow, radius, knockout } = list.commands[at].draw.clone() else { unreachable!() };
         assert_eq!((radius, knockout, shadow.color.a), (Radii::from(6.0), true, 0.5));
         assert!(matches!(list.commands[at + 1].draw, Draw::Box { .. }), "the fill over it");
         assert!(
@@ -2264,7 +2286,7 @@ mod tests {
             panic!("the silhouette alone: {commands:?}")
         };
         let [node::Fill::Color(fill)] = background.as_slice() else { panic!("a colour: {background:?}") };
-        assert_eq!((fill.a, *radius), (1.0, Radii::from(-6.0)));
+        assert_eq!((fill.a, radius.clone()), (1.0, Radii::from(-6.0)));
         assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }
 
@@ -2383,15 +2405,15 @@ mod tests {
             shadows = { { blur = 2, offset = { x = 3 }, spread = 1 } },
             children = { text { content = "a", font_size = 12 } } } }"##;
         let list = build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 2.0, None);
-        let shadow = list.commands.iter().find_map(|cmd| match cmd.draw {
-            Draw::Shadow { shadow, radius, .. } => Some((cmd.rect, shadow, radius)),
+        let shadow = list.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Shadow { shadow, radius, .. } => Some((cmd.rect, *shadow, radius.clone())),
             _ => None,
         });
         let (rect, shadow, radius) = shadow.expect("a box shadow");
         assert_eq!(rect, LogicalRect { x: 20.0, y: 20.0, width: 80.0, height: 40.0 });
         assert_eq!((shadow.blur, shadow.offset, shadow.spread, radius), (4.0, (6.0, 0.0), 2.0, Radii::from(8.0)));
-        let border = list.commands.iter().find_map(|cmd| match cmd.draw {
-            Draw::Box { radius, widths, .. } if widths.top > 0.0 => Some((radius, widths.top)),
+        let border = list.commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Box { radius, widths, .. } if widths.top > 0.0 => Some((radius.clone(), widths.top)),
             _ => None,
         });
         assert_eq!(border, Some((Radii::from(8.0), 2.0)));

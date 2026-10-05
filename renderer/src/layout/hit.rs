@@ -247,7 +247,10 @@ fn descend<'a>(
     };
     let hittable = node.hittable(inherited);
     // A `hittable = false` node claims nothing itself but stays on the path above a re-enabled descendant.
-    let contains = rect.contains(point);
+    let contains = match &node.paint {
+        Some(PaintStyle::Box { radius, .. }) => radius.contains(rect, point),
+        _ => rect.contains(point),
+    };
     let inside = hittable && contains;
     if !contains && node.clips_children() {
         return false;
@@ -311,6 +314,27 @@ mod tests {
         let root = ResolvedNode::test("panel", (0.0, 0.0, 300.0, 20.0), vec![parent]);
         assert_eq!(hit_path(&root, LogicalPoint { x: 80.0, y: 10.0 }).len(), 3);
         assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
+    }
+
+    /// An outline takes the pointer inside its contour: in a tail past its box, not in a cut corner
+    /// or beside the tail, even where its children are cut to the box.
+    #[test]
+    fn an_outline_is_hit_inside_its_contour_and_its_tail() {
+        let lua = mlua::Lua::new();
+        let value: Value = lua.load(crate::layout::node::outline::TAIL).eval().unwrap();
+        let outline = <crate::layout::node::Outline as crate::layout::node::prop::Prop>::read(
+            &fields::paint::outline.row,
+            Some(&value),
+        )
+        .unwrap();
+        let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(ClipShape::Box);
+        if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
+            radius.2 = outline;
+        }
+        let root = ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble]);
+        let depth = |x: f32, y: f32| hit_path(&root, LogicalPoint { x, y }).len();
+        assert_eq!((depth(32.0, 52.0), depth(32.0, 32.0)), (2, 2), "the tail and the body");
+        assert_eq!((depth(16.5, 16.5), depth(37.5, 54.5)), (1, 1), "a cut corner and beside the tail");
     }
 
     #[test]

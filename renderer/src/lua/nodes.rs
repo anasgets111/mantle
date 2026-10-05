@@ -709,6 +709,14 @@ mod meta_stub_tests {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }
             ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
+            ("outline", "Outline") => {
+                return Some(
+                    "{ commands = { { op = \"M\", points = { 0, 0 } }, { op = \"corner\", points = { \"100%\", 0 }, \
+                     radius = 4 }, { op = \"L\", points = { { from = \"center\", px = 2 }, { from = \"bottom\" } } }, \
+                     { op = \"Z\", points = {} } } }"
+                        .into(),
+                );
+            }
             ("fill" | "stroke" | "border_color", "Gradient") => return sample("background", "Gradient"),
             ("images", _) => return Some("{ a = \"/x.png\" }".to_string()),
             ("params", _) => return Some("{ a = 0.5, b = { 1, 2, 3, 4 } }".to_string()),

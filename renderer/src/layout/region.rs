@@ -101,16 +101,17 @@ fn collect_blur_regions(
         Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
         _ => clip,
     };
-    let clip = parent_clip.intersect(rect);
-    let child_clip = if node.clips_children() { clip } else { parent_clip };
-    if child_clip.is_empty() {
+    let radius = match &node.paint {
+        Some(PaintStyle::Box { radius, .. }) => radius.clone(),
+        _ => node::Radii::default(),
+    };
+    let child_clip = if node.clips_children() { parent_clip.intersect(rect) } else { parent_clip };
+    // An outline may reach past the box, and its region with it.
+    let clip = parent_clip.intersect(radius.bounds(rect));
+    if child_clip.is_empty() && clip.is_empty() {
         return;
     }
     if node.behind_blur {
-        let radius = match &node.paint {
-            Some(PaintStyle::Box { radius, .. }) => *radius,
-            _ => node::Radii::default(),
-        };
         // The radius travels with the box, so scale it the way the box was scaled. An axis-aligned
         // matrix scales x and y alike here; a rotation would not, and a rounded rotated box is
         // approximated by the larger of the two.
@@ -155,6 +156,11 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     }
     let height = rect.y1 - rect.y0;
     let width = rect.x1 - rect.x0;
+    if let Some(outline) = &radii.2 {
+        let (x, y) = (rect.x0 as f32, rect.y0 as f32);
+        let box_rect = LogicalRect { x, y, width: width as f32, height: height as f32 };
+        return push_outline(&outline.polygon(box_rect, 0.5), out);
+    }
     // Corners shrink together, the same rule the painter's arcs follow.
     let radii = radii.fit(width as f32, height as f32);
     let squircles = radii.squircles(width as f32, height as f32);
@@ -195,6 +201,36 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     }
 }
 
+/// An outline's polygon as strips: each row's spans between crossings of its centre line, rows
+/// with the same spans merged into one strip each.
+fn push_outline(polygon: &[kurbo::Point], out: &mut Vec<PhysicalRect>) {
+    let (mut top, mut bottom) = (f64::INFINITY, f64::NEG_INFINITY);
+    polygon.iter().for_each(|p| (top, bottom) = (top.min(p.y), bottom.max(p.y)));
+    if polygon.len() < 3 {
+        return;
+    }
+    let spans = |row: i32| {
+        let y = f64::from(row) + 0.5;
+        let mut xs: Vec<i32> = (0..polygon.len())
+            .filter_map(|i| {
+                let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+                ((a.y <= y) != (b.y <= y)).then(|| (a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x)).round() as i32)
+            })
+            .collect();
+        xs.sort_unstable();
+        xs.as_chunks::<2>().0.iter().map(|&[a, b]| (a, b)).filter(|(a, b)| a < b).collect::<Vec<_>>()
+    };
+    let (first, last) = (top.floor() as i32, bottom.ceil() as i32);
+    let (mut open, mut from) = (spans(first), first);
+    for row in first + 1..=last {
+        let next = if row < last { spans(row) } else { Vec::new() };
+        if next != open {
+            out.extend(open.iter().map(|&(x0, x1)| PhysicalRect { x0, y0: from, x1, y1: row }));
+            (open, from) = (next, row);
+        }
+    }
+}
+
 /// How far row `row` of a corner band is inset from the side, for a corner of radius `r`.
 ///
 /// Sampled at the row's centre rather than its outer edge. The edge is where the arc is furthest
@@ -232,9 +268,12 @@ fn collect_input_regions(
         Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
         _ => clip,
     };
-    let own_clip = parent_clip.intersect(rect);
-    let child_clip = if node.clips_children() { own_clip } else { parent_clip };
-    if child_clip.is_empty() {
+    let child_clip = if node.clips_children() { parent_clip.intersect(rect) } else { parent_clip };
+    let own_clip = match &node.paint {
+        Some(PaintStyle::Box { radius, .. }) => parent_clip.intersect(radius.bounds(rect)),
+        _ => parent_clip.intersect(rect),
+    };
+    if child_clip.is_empty() && own_clip.is_empty() {
         return;
     }
     let hittable = node.hittable(inherited);
@@ -547,7 +586,7 @@ mod tests {
     fn a_smoothed_corner_cuts_a_wider_band_into_the_region() {
         let first_row = |smoothing: f32| {
             let mut strips = Vec::new();
-            let radii = node::Radii([16.0; 4], smoothing);
+            let radii = node::Radii([16.0; 4], smoothing, None);
             push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 }, radii, &mut strips);
             (strips[0].x0, strips.iter().find(|s| s.x0 == 0).map(|s| s.y0))
         };
@@ -562,7 +601,7 @@ mod tests {
     #[test]
     fn each_corner_of_a_region_takes_its_own_radius() {
         let mut strips = Vec::new();
-        let radii = node::Radii([12.0, 0.0, 12.0, 0.0], 0.0);
+        let radii = node::Radii([12.0, 0.0, 12.0, 0.0], 0.0, None);
         push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 40 }, radii, &mut strips);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         assert!(!covers(0, 0) && !covers(39, 39), "rounded corners are cut");
@@ -570,7 +609,7 @@ mod tests {
         let mut small = Vec::new();
         push_rounded_rect(
             PhysicalRect { x0: 0, y0: 0, x1: 40, y1: 10 },
-            node::Radii([8.0, 8.0, 0.0, 0.0], 0.0),
+            node::Radii([8.0, 8.0, 0.0, 0.0], 0.0, None),
             &mut small,
         );
         assert!(!small.iter().any(|s| s.x0 == 0 && s.y0 == 0), "8 + 8 on 10 px of height shrinks to 5 + 5");
@@ -589,6 +628,22 @@ mod tests {
         for (x, y) in [(20, 0), (0, 20), (20, 20), (10, 10), (12, 0)] {
             assert!(covers(x, y), "({x}, {y}) is outside every scoop");
         }
+    }
+
+    /// An outline's region is its contour, row by row: the tail past the box is in, a cut corner and
+    /// the ground beside the tail are out.
+    #[test]
+    fn an_outline_region_follows_its_contour() {
+        let lua = mlua::Lua::new();
+        let value: Value = lua.load(crate::layout::node::outline::TAIL).eval().unwrap();
+        let outline = <node::Outline as node::prop::Prop>::read(&node::fields::paint::outline.row, Some(&value));
+        let mut strips = Vec::new();
+        let radii = node::Radii([0.0; 4], 0.0, outline.unwrap());
+        push_rounded_rect(PhysicalRect { x0: 16, y0: 16, x1: 48, y1: 48 }, radii, &mut strips);
+        let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        assert!(covers(32, 52) && covers(32, 32) && covers(47, 32), "the tail, the body and its edge");
+        assert!(!covers(16, 16) && !covers(37, 54) && !covers(32, 58), "a corner, beside and past the tail");
+        assert!(strips.iter().all(|s| !s.is_empty()));
     }
 
     /// Hit testing cuts a child at a clipping ancestor, so a card scrolled out of a transparent

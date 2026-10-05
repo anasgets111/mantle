@@ -15,9 +15,9 @@ use super::prop::{Keyword, Prop};
 use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
-    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData,
-    PropMap, Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill, parse_hex_color,
-    tweened, value_as_f32,
+    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, Outline, PathCommands,
+    PathData, PropMap, Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill,
+    parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -164,6 +164,7 @@ pub enum Animatable {
     Color(Rgba),
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
+    Outline(Rc<Outline>),
     Shadows(Vec<Shadow>),
     Layers(Vec<Layer>),
     Effect([f32; 9], Option<Value>),
@@ -181,7 +182,7 @@ pub enum Layer {
 const EFFECT_OFF: [f32; 9] = [0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0];
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
@@ -189,6 +190,7 @@ spelled!(Animatable => format!(
     Axes::lua(),
     EffectKeys::lua(),
     PathCommands::lua(),
+    Outline::lua(),
     Shadows::lua(),
     Vec::<BackgroundLayer>::lua()
 ));
@@ -200,7 +202,7 @@ impl Animatable {
     fn identity(&self, property: &str) -> Self {
         match *self {
             // No empty drawing has this one's ops to tween from.
-            Self::Path(_) => self.clone(),
+            Self::Path(_) | Self::Outline(_) => self.clone(),
             Self::Number(_) => {
                 Self::Number(if matches!(property, "opacity" | "trim_end") { 1.0 } else { axis_default(property) })
             }
@@ -224,6 +226,9 @@ impl Animatable {
         // By name: a command array has no shape of its own that a table of edges or axes lacks.
         if property == "commands" {
             return Ok(Some(Self::Path(PathCommands::read(&fields::path::commands.row, Some(value))?)));
+        }
+        if property == "outline" {
+            return Ok(Outline::read(&fields::paint::outline.row, Some(value))?.map(Self::Outline));
         }
         if property == "effect" {
             let keys = Effects::read(&fields::common::effect.row, Some(value))?;
@@ -404,6 +409,9 @@ impl Animatable {
                 Self::Layers(layers.collect())
             }
             (Self::Path(a), Self::Path(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |path| Self::Path(Rc::new(path))),
+            (Self::Outline(a), Self::Outline(b)) => {
+                a.lerp(b, t).map_or_else(|| to.clone(), |o| Self::Outline(Rc::new(o)))
+            }
             // The two shapes come from the same property, so this pair cannot be mixed; snap to
             // the target rather than guess if it ever is.
             _ => to.clone(),
@@ -426,6 +434,7 @@ impl Animatable {
                 Value::Table(table)
             }
             Self::Path(ref path) => tweened(lua, path)?,
+            Self::Outline(ref outline) => tweened(lua, outline)?,
             Self::Effect(values, ref shader) => {
                 let level = |values: &[f32]| {
                     lua.create_table_from(
@@ -754,6 +763,7 @@ const PAINT_ONLY: &[&str] = &[
     "shift",
     "radius",
     "corner_smoothing",
+    "outline",
     "shadows",
     "effect",
     "translate",

@@ -11,8 +11,9 @@ use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
-use super::shape::box_path;
+use super::shape::{box_path, polygon_into};
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
+use crate::layout::node::outline::inset;
 
 /// A shadow's gradient: its feather and its colour solid and at zero alpha. A ramp across 3 sigma
 /// is within 14/255 of the layer path's Gaussian; matching its slope instead, 22. The feather is
@@ -28,7 +29,7 @@ pub(super) fn paint_shadow(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     shadow: node::Shadow,
-    own: Radii,
+    own: &Radii,
     knockout: bool,
 ) {
     let LogicalRect { x, y, width, height } = shadow_rect(rect, rect, shadow);
@@ -38,7 +39,7 @@ pub(super) fn paint_shadow(
     let radius = spread_radius(own.0.iter().sum::<f32>() / 4.0, shadow.spread).min(width.min(height) / 2.0);
     let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, clear);
     let reach = grow(LogicalRect { x, y, width, height }, feather / 2.0);
-    let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, Radii::default()) };
+    let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, &Radii::default()) };
     canvas.fill_path(&path, &paint);
 }
 
@@ -50,7 +51,7 @@ pub(super) fn paint_inset_shadow(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     shadow: node::Shadow,
-    own: Radii,
+    own: &Radii,
     widths: EdgeInsets,
 ) {
     let pad = LogicalRect {
@@ -73,6 +74,7 @@ pub(super) fn paint_inset_shadow(
             shrink(bl, widths.bottom, widths.left),
         ],
         own.1,
+        None,
     );
     let hole = LogicalRect {
         x: pad.x + shadow.offset.0 + shadow.spread,
@@ -84,7 +86,49 @@ pub(super) fn paint_inset_shadow(
     let radius = spread_radius(mean, -shadow.spread).min(hole.width.min(hole.height) / 2.0);
     let (feather, color, clear) = shadow_gradient(shadow);
     let paint = Paint::box_gradient(hole.x, hole.y, hole.width, hole.height, radius, feather, clear, color);
-    canvas.fill_path(&box_path(pad, inner), &paint);
+    canvas.fill_path(&box_path(pad, &inner), &paint);
+}
+
+/// An `inset` shadow inside an `outline`, which no box gradient can draw: everything outside the
+/// contour moved by `offset` and in by `spread`, cast like a layer's shadow and cut to the contour
+/// moved in by the border. ponytail: one offscreen and blur per shadow per paint, uncached;
+/// upgrade: keep the cast as `draw_layer` keeps a layer.
+pub(super) fn paint_outline_inset(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    command: &DrawCmd,
+    outline: &node::Outline,
+    target: RenderTarget,
+) {
+    let Draw::InsetShadow { shadow, widths, .. } = &command.draw else { return };
+    let (rect, clip) = (command.rect, command.clip);
+    let polygon = outline.polygon(rect, 0.25);
+    let (dx, dy) = (f64::from(shadow.offset.0), f64::from(shadow.offset.1));
+    let hole: Vec<_> =
+        inset(&polygon, f64::from(widths.top + shadow.spread)).into_iter().map(|p| p + (dx, dy)).collect();
+    // Room for the blur to read solid shadow from past the clip's edges.
+    let room = (1.5 * shadow.blur + shadow.offset.0.abs().max(shadow.offset.1.abs())).ceil() as i32 + 2;
+    let (x0, y0) = (clip.x0 - room, clip.y0 - room);
+    let size = ((clip.x1 - clip.x0 + 2 * room) as usize, (clip.y1 - clip.y0 + 2 * room) as usize);
+    let Some(content) = scratch(painter, walk, size) else { return };
+    let canvas = painter.canvas_mut();
+    canvas.save();
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    canvas.set_render_target(RenderTarget::Image(content));
+    canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    canvas.translate(-x0 as f32, -y0 as f32);
+    let mut outside = Path::new();
+    outside.rect(x0 as f32, y0 as f32, size.0 as f32, size.1 as f32);
+    polygon_into(&mut outside, &hole, Solidity::Hole);
+    canvas.fill_path(&outside, &Paint::color(Color::black()));
+    canvas.restore();
+    canvas.set_render_target(target);
+    let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target) else { return };
+    let mut pad = Path::new();
+    polygon_into(&mut pad, &inset(&polygon, f64::from(widths.top)), Solidity::Solid);
+    let (w, h) = (size.0 as f32, size.1 as f32);
+    painter.canvas_mut().fill_path(&pad, &Paint::image(cast, x0 as f32, y0 as f32, w, h, 0.0, 1.0));
 }
 
 /// CSS's corner radius of a shadow spread from a box's: a square corner stays square.
@@ -95,7 +139,7 @@ fn spread_radius(radius: f32, spread: f32) -> f32 {
 
 /// `outside` with the box cut out, which is where a box shadow draws (ADR-0260). femtovg fringes the
 /// outer rect's edge over the fill, so it sits 2px clear of both, where the ramp is already zero.
-fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
+fn knocked_out(rect: LogicalRect, radius: &Radii, outside: LogicalRect) -> Path {
     let (x0, y0) = (outside.x.min(rect.x) - 2.0, outside.y.min(rect.y) - 2.0);
     let x1 = (outside.x + outside.width).max(rect.x + rect.width) + 2.0;
     let y1 = (outside.y + outside.height).max(rect.y + rect.height) + 2.0;
@@ -167,14 +211,14 @@ pub(super) fn draw_layer(
             [DrawCmd { draw: Draw::Box { radius, .. }, .. }] if silhouette => {
                 painter.canvas_mut().save();
                 painter.canvas_mut().intersect_scissor(at.x, at.y, at.width, at.height);
-                composite(painter, walk, cast, at, &knocked_out(rect, *radius, at), clip, blend);
+                composite(painter, walk, cast, at, &knocked_out(rect, radius, at), clip, blend);
                 painter.canvas_mut().restore();
             }
-            _ => composite(painter, walk, cast, at, &box_path(at, Radii::default()), clip, blend),
+            _ => composite(painter, walk, cast, at, &box_path(at, &Radii::default()), clip, blend),
         }
     }
     if !silhouette {
-        composite(painter, walk, content, area, &box_path(area, Radii::default()), clip, effect.blend);
+        composite(painter, walk, content, area, &box_path(area, &Radii::default()), clip, effect.blend);
     }
 }
 
@@ -244,7 +288,7 @@ fn shaded(
             area.height / rect.height,
         ],
         logical_size: (rect.width / scale, rect.height / scale),
-        radii: (shader.radius * (1.0 / scale)).fit(rect.width / scale, rect.height / scale),
+        radii: (shader.radius.clone() * (1.0 / scale)).fit(rect.width / scale, rect.height / scale),
         progress: shader.progress,
         params: &shader.params,
         images: &images,
@@ -398,11 +442,9 @@ pub(super) fn draw_backdrop(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, 
     let out = shader.as_ref().and_then(|shader| shaded(painter, walk, inputs, read.size, rect, read.at, shader));
     match (out, frost) {
         (Some(out), _) => {
-            replace(painter.canvas_mut(), &box_path(area, Radii::default()), &read.paint(out, alpha), alpha)
+            replace(painter.canvas_mut(), &box_path(area, &Radii::default()), &read.paint(out, alpha), alpha)
         }
-        (None, Some(frost)) => {
-            replace(painter.canvas_mut(), &box_path(rect, *radius), &read.paint(frost, alpha), alpha)
-        }
+        (None, Some(frost)) => replace(painter.canvas_mut(), &box_path(rect, radius), &read.paint(frost, alpha), alpha),
         (None, None) => {}
     }
 }
@@ -514,6 +556,38 @@ mod tests {
     fn near(actual: (u8, u8, u8, u8), expected: (u8, u8, u8)) -> bool {
         let close = |a: u8, e: u8| a.abs_diff(e) <= 3;
         close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
+    }
+
+    /// A box at (16, 16) whose outline hangs a tail to y = 56 below its centre: the fill, a border, an
+    /// inset shadow, a knocked-out shadow, a backdrop and a rounded clip all take the one contour, so
+    /// the tail is filled, its base carries no line, and its sides carry the band.
+    #[test]
+    fn an_outline_with_a_tail_is_one_shape_to_every_paint() {
+        use crate::layout::node::outline::TAIL;
+        let (red, white, black, pink) = ((255, 0, 0), (255, 255, 255), (0, 0, 0), (255, 127, 127));
+        let (tail, base, below_base, edge, side, beside, top) =
+            ((32, 51), (32, 47), (32, 48), (47, 32), (34, 52), (37, 54), (32, 20));
+        let at =
+            |effect: &str, points: &[(usize, usize)]| paint_effect_at(&format!("outline = {TAIL}, {effect}"), points);
+        let fill = r##"background = "#FF0000FF""##;
+        let border = format!(r##"{fill}, border_width = 2, border_color = "#000000FF""##);
+        let inset = format!(r##"{fill}, shadows = {{ {{ inset = true, spread = 2, color = "#000000FF" }} }}"##);
+        for (what, effect) in [("border", &border), ("inset", &inset)] {
+            let Some(px) = at(effect, &[tail, base, below_base, edge, side, beside]) else { return };
+            assert!(near(px[0], red) && near(px[1], red) && near(px[2], red), "{what}: a filled tail, no seam: {px:?}");
+            assert!(near(px[3], black) && near(px[4], black), "{what}: the band runs down the tail: {px:?}");
+            assert!(near(px[5], white), "{what}: nothing beside it: {px:?}");
+        }
+        let cast = r##"background = "#FF000080", shadows = { { offset = { y = 16 } } }"##;
+        let Some(px) = at(cast, &[tail, base, top, (32, 67), (40, 60)]) else { return };
+        assert!(px[..3].iter().all(|&p| near(p, pink)), "the body over no shadow: {px:?}");
+        assert!(near(px[3], black) && near(px[4], black), "the tail and box cast: {px:?}");
+        let Some(px) = at("effect = { backdrop = { brightness = 0 } }", &[tail, top, beside, (16, 16)]) else { return };
+        assert!(near(px[0], black) && near(px[1], black), "the backdrop fills the tail: {px:?}");
+        assert!(near(px[2], white) && near(px[3], white), "and stops at the contour: {px:?}");
+        let clip = r##"clip = "rounded", children = { rect { width = 32, height = 32, background = "#0000FFFF" } }"##;
+        let Some(px) = at(clip, &[top, (16, 16)]) else { return };
+        assert!(near(px[0], (0, 0, 255)) && near(px[1], white), "children cut to the contour: {px:?}");
     }
 
     /// ADR-0331. An inset shadow darkens a band just inside the edge and leaves the centre, the
@@ -1127,12 +1201,12 @@ mod tests {
         fill_rect(
             canvas,
             LogicalRect { x: 96.0, y: 96.0, width: 64.0, height: 64.0 },
-            Radii::default(),
+            &Radii::default(),
             &colour(1.0, 0.0),
         );
         for x in (96..160).step_by(8) {
             let stripe = LogicalRect { x: x as f32, y: 96.0, width: 4.0, height: 64.0 };
-            fill_rect(canvas, stripe, Radii::default(), &colour(0.0, 1.0));
+            fill_rect(canvas, stripe, &Radii::default(), &colour(0.0, 1.0));
         }
         canvas.set_render_target(RenderTarget::Screen);
         let read = |painter: &mut TextPainter, image: ImageId| {
@@ -1315,6 +1389,12 @@ mod tests {
             [false, true, false, true, false, true],
             "smoothed: {px:?}"
         );
+        // An outline's tail, past the box, is inside; beside it and a cut corner are not.
+        let tail = format!("outline = {}", crate::layout::node::outline::TAIL);
+        let Some(px) = paint_shader(frag, "padding = 8", &tail, &[(32, 51), (37, 54), (16, 16), (32, 32)]) else {
+            return;
+        };
+        assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, true], "outline: {px:?}");
     }
 
     /// ADR-0336. A shader that does not build leaves the node as painted.

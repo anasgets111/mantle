@@ -90,6 +90,7 @@ colours and no short `#RGB` form.
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
+| `outline` | `Outline\|Bound` | None | The box's shape as one closed contour, in place of `radius`; see [Outline](#outline) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
@@ -147,6 +148,73 @@ return row {
     },
 }
 ```
+
+### Outline
+
+`outline = { commands = { .. } }` replaces the rounded rectangle with any shape: one closed
+contour of [`path`](../nodes/path.md) commands, `M` first and `Z` last. A popover and its arrow,
+a speech bubble's tail, a tab joined to its panel or a notched card is one outline, so the fill,
+the border, shadows (inset too), `clip = "rounded"`, `mask`, `effect.backdrop`, `effect.shader`'s
+`mantle_sdf`, hit testing and the `behind_blur` region run round it without a seam. It refuses
+`radius`, `corner_shape` and `corner_smoothing`, and its border takes one width and one colour or
+gradient.
+
+Each coordinate follows the box's size, so a shape fits content and `"fill"` widths:
+
+| Form | Means |
+| :--- | :--- |
+| `12` | px from the box's left or top edge |
+| `"50%"` | that share of the box's width or height |
+| `{ from = "right", px = -12 }` | px from `"left"`, `"right"`, `"top"`, `"bottom"`, `"center"` or a `"NN%"` |
+
+`{ op = "corner", points = { x, y }, radius = r, corner_smoothing = s }` rounds the turn at a point
+between the line in and the line out, with the [continuous corners](#continuous-corners) above.
+Two corners sharing a side split it, and a radius too big for its sides shrinks. A corner where
+the contour turns the other way is a concave fillet, so a tail can flare into its body. Points may
+reach past the box; the tail paints, takes clicks and casts a shadow there, and the box keeps its
+layout size.
+
+<!-- shot-alt: A dark popover with rounded corners and a blue border, its arrow pointing up from the top centre, the border running round the arrow with no line across its base. -->
+```lua,shot
+return column {
+    padding = { top = 10 },
+    children = {
+        column {
+            padding = 14,
+            spacing = 4,
+            background = "#1E1E2E",
+            border_width = 2,
+            border_color = "#89B4FA",
+            shadows = { { blur = 12, offset = { y = 4 }, color = "#00000080" } },
+            outline = { commands = {
+                { op = "M", points = { 0, 20 } },
+                { op = "corner", points = { 0, 0 }, radius = 12, corner_smoothing = 0.6 },
+                { op = "corner", points = { { from = "center", px = -12 }, 0 }, radius = 4 },
+                { op = "corner", points = { "50%", -10 }, radius = 3 },
+                { op = "corner", points = { { from = "center", px = 12 }, 0 }, radius = 4 },
+                { op = "corner", points = { "100%", 0 }, radius = 12, corner_smoothing = 0.6 },
+                { op = "corner", points = { "100%", "100%" }, radius = 12, corner_smoothing = 0.6 },
+                { op = "corner", points = { 0, "100%" }, radius = 12, corner_smoothing = 0.6 },
+                { op = "Z", points = {} },
+            } },
+            children = {
+                text { content = "Wi-Fi", font_weight = 700, foreground = "#CDD6F4" },
+                text { content = "Connected to home", font_size = 12, foreground = "#A6ADC8" },
+            },
+        },
+    },
+}
+```
+
+`animate = { outline = .. }` tweens point by point, springs included, between two lists of the
+same commands; any other change snaps. A point written in px on one side and `"NN%"` on the other
+crosses as their resolved positions would. A corner's radius holds at `0` and its smoothing in
+`[0, 1]` through an overshoot. The tween runs without a layout or Lua.
+
+`mantle_sdf` measures an outline as a polygon of at most 256 points, each curve cut every 3° of
+turn (coarser if that is more), so its gradient bends by at most that much at a point. A shadow
+on an outline is the silhouette's, blurred offscreen like `shadow_mode = "content"`, and an inset
+shadow takes one offscreen blur per paint where a rounded box takes one gradient quad.
 
 ## Gradients
 

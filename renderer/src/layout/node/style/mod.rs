@@ -142,7 +142,7 @@ impl Prop for NumberOrCorners {
         for n in radii {
             row_within(row, n)?;
         }
-        Ok(Radii(radii, 0.0))
+        Ok(Radii(radii, 0.0, None))
     }
 }
 
@@ -150,7 +150,14 @@ impl Prop for NumberOrCorners {
 pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
     let radius = fields::paint::radius.read(properties)?;
     let smoothing = fields::paint::corner_smoothing.read(properties)?;
-    if fields::paint::corner_shape.read(properties)? == CornerShape::Scoop {
+    let scoop = fields::paint::corner_shape.read(properties)? == CornerShape::Scoop;
+    if let Some(outline) = fields::paint::outline.read(properties)? {
+        if !radius.is_zero() || smoothing > 0.0 || scoop {
+            return Err(invalid("outline", "replaces radius, corner_shape and corner_smoothing; round it with corner"));
+        }
+        return Ok(Radii([0.0; 4], 0.0, Some(outline)));
+    }
+    if scoop {
         if smoothing > 0.0 {
             return Err(invalid(
                 "corner_smoothing",
@@ -159,7 +166,7 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
         }
         return Ok(radius * -1.0);
     }
-    Ok(Radii(radius.0, smoothing))
+    Ok(Radii(radius.0, smoothing, None))
 }
 
 /// The range an overshooting easing is clamped into: the property table's `range`, else
@@ -1147,9 +1154,9 @@ mod tests {
             let table: mlua::Table = lua.load(&src).eval().unwrap();
             parse_radius(&deserialize_lua_table(&table).unwrap().properties).unwrap()
         };
-        assert_eq!(radii(""), Radii([4.0, 0.0, 8.0, 0.0], 0.0));
-        assert_eq!(radii("corner_shape = 'scoop'"), Radii([-4.0, 0.0, -8.0, 0.0], 0.0));
-        assert_eq!(Radii([20.0, 20.0, 0.0, 0.0], 0.0).fit(30.0, 100.0), Radii([15.0, 15.0, 0.0, 0.0], 0.0));
+        assert_eq!(radii(""), Radii([4.0, 0.0, 8.0, 0.0], 0.0, None));
+        assert_eq!(radii("corner_shape = 'scoop'"), Radii([-4.0, 0.0, -8.0, 0.0], 0.0, None));
+        assert_eq!(Radii([20.0, 20.0, 0.0, 0.0], 0.0, None).fit(30.0, 100.0), Radii([15.0, 15.0, 0.0, 0.0], 0.0, None));
         assert_eq!(Radii::from(4.0).fit(-1.0, 10.0), Radii::default(), "a negative side never flips an arc");
         for bad in ["{ top_left = -1 }", "{ top_left = 0/0 }", "{ nope = 1 }"] {
             let src = format!("return {{ kind = 'rect', radius = {bad} }}");
@@ -1167,7 +1174,7 @@ mod tests {
             let table: mlua::Table = lua.load(&src).eval().unwrap();
             parse_radius(&deserialize_lua_table(&table).unwrap().properties)
         };
-        assert_eq!(parse("corner_smoothing = 0.6").unwrap(), Radii([4.0, 0.0, 8.0, 0.0], 0.6));
+        assert_eq!(parse("corner_smoothing = 0.6").unwrap(), Radii([4.0, 0.0, 8.0, 0.0], 0.6, None));
         assert_eq!(parse("corner_smoothing = 0").unwrap(), parse("").unwrap());
         let err = parse("corner_shape = 'scoop', corner_smoothing = 0.5").unwrap_err().to_string();
         assert!(err.contains("corner_smoothing") && err.contains("scoop"), "{err}");
