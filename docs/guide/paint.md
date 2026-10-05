@@ -326,7 +326,7 @@ Mask alpha does not change the content's input or desktop blur region.
 ## Shadows
 
 `shadows` is a list of layers, CSS's `box-shadow: a, b`: the first layer is on top and a node takes
-at most 8. A layer is a table, and draws when its `color` has alpha above 0 and at least one of
+at most 16, inset and outer together. A layer is a table, and draws when its `color` has alpha above 0 and at least one of
 `blur`, `offset` or `spread` is set. A single shadow is `shadows = { { blur = 8 } }`.
 
 | Layer key | Values | Default |
@@ -334,7 +334,8 @@ at most 8. A layer is a table, and draws when its `color` has alpha above 0 and 
 | `color` | Colour | `"#000000"` |
 | `blur` | CSS blur radius in px `[0, 8192]`; the Gaussian's sigma is half of it | 0 |
 | `offset` | `{ x, y }` px, each `[-8192, 8192]`, missing axis 0 | `{ x = 0, y = 0 }` |
-| `spread` | px `[-8192, 8192]` the shape grows (negative shrinks) per side. On a non-box shadow it scales the shadow about the box centre instead | 0 |
+| `spread` | px `[-8192, 8192]` the shape grows (negative shrinks) per side. On a non-box shadow it scales the shadow about the box centre instead. On an `inset` layer it shrinks the unshaded area instead | 0 |
+| `inset` | `true`: CSS `box-shadow: inset`, see [Inset shadows](#inset-shadows) | `false` |
 
 | Property | Values | Default |
 | :--- | :--- | :--- |
@@ -394,6 +395,24 @@ rect {
         { color = "#0000004D", blur = 2, offset = { y = 1 } },
         { color = "#00000026", blur = 6, offset = { y = 2 }, spread = 2 },
     },
+}
+```
+
+### Inset shadows
+
+`inset = true` shades the inside of the box: the padding box is filled with `color` everywhere
+outside a hole, the box moved by `offset` and shrunk by `spread`, feathered by `blur`. The box's
+shape clips it, and it draws above every `background` layer and under the children and the
+border. It needs `shadow_mode = "box"` on a box kind; `text`, `icon`, `image` and the other
+non-box kinds refuse it. The hole takes the mean of the box's corner radii.
+
+```lua
+rect {
+    width = 160,
+    height = 64,
+    radius = 12,
+    background = "#1E1E2E",
+    shadows = { { color = "#00000080", blur = 8, offset = { y = 2 }, inset = true } },
 }
 ```
 

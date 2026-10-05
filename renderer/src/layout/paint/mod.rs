@@ -136,6 +136,9 @@ pub enum Draw {
     /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
     /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
     Shadow { shadow: node::Shadow, radius: Radii, knockout: bool },
+    /// An `inset` shadow inside the padding box `widths` in from the box, drawn after the fill and
+    /// before the children (ADR-0331). `shadow.color` carries the inherited opacity.
+    InsetShadow { shadow: node::Shadow, radius: Radii, widths: EdgeInsets },
     /// A subtree drawn offscreen, then through its `shader`, then composited over its own shadow
     /// and through `effect.blur` (ADR-0254, ADR-0336). `rect` is the node's box; `clip` covers
     /// everything the effect reaches. A `silhouette` is a scoop's fill, and only its shadow draws,

@@ -216,6 +216,12 @@ pub enum PaintStyle {
 
 /// Parses an already-resolved kind. `Ok(None)` means the kind draws nothing; an error fails apply.
 pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle>, LayoutError> {
+    // Only a box has a padding box to cast inward from.
+    let boxed = matches!(kind, "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock");
+    if !boxed && fields::common::shadows.read(properties)?.is_some_and(|layers| layers.iter().any(|layer| layer.inset))
+    {
+        return Err(invalid("shadows", format!("`inset` is a box property, and `{kind}` is not a box")));
+    }
     let style = match kind {
         // All containers and surface roles paint as a box; a `list` carries one for its `clip` (ADR-0328).
         "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
@@ -405,6 +411,16 @@ mod tests {
             panic!("a list paints an empty, unclipping box");
         };
         assert!(background.is_empty());
+    }
+
+    #[test]
+    fn an_inset_shadow_on_a_non_box_kind_is_refused_naming_the_key() {
+        let lua = Lua::new();
+        let err = style(&lua, "return { kind = 'text', content = 'hi', shadows = { { blur = 2, inset = true } } }")
+            .unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "shadows"), "{err:?}");
+        assert!(style(&lua, "return { kind = 'text', content = 'hi', shadows = { { blur = 2 } } }").is_ok());
+        assert!(style(&lua, "return { kind = 'rect', shadows = { { blur = 2, inset = true } } }").is_ok());
     }
 
     #[test]

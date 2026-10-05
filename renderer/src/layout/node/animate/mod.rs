@@ -359,7 +359,12 @@ impl Animatable {
                     let (x, y) = (at(a, b, i), at(b, a, i));
                     let lerp = |p: f32, q: f32| p + (q - p) * t;
                     let offset = |p: f32, q: f32| clamp(lerp(p, q), SHADOW_REACH);
+                    // ponytail: an outer and an inset layer do not blend; the target's shows at once.
+                    if x.inset != y.inset {
+                        return y;
+                    }
                     Shadow {
+                        inset: y.inset,
                         color: mix(x.color, y.color, t),
                         blur: clamp(lerp(x.blur, y.blur), SHADOW_BLUR),
                         offset: (offset(x.offset.0, y.offset.0), offset(x.offset.1, y.offset.1)),
@@ -428,11 +433,12 @@ impl Animatable {
                 let list = lua.create_table_with_capacity(layers.len(), 0)?;
                 for shadow in layers {
                     let offset = lua.create_table_from([("x", shadow.offset.0), ("y", shadow.offset.1)])?;
-                    let layer = lua.create_table_with_capacity(0, 4)?;
+                    let layer = lua.create_table_with_capacity(0, 5)?;
                     layer.set("color", hex_of(shadow.color))?;
                     layer.set("blur", shadow.blur)?;
                     layer.set("offset", offset)?;
                     layer.set("spread", shadow.spread)?;
+                    layer.set("inset", shadow.inset)?;
                     list.push(layer)?;
                 }
                 Value::Table(list)
@@ -1307,6 +1313,25 @@ mod tests {
         );
         let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
         assert_eq!(Animatable::from_value("shadows", Some(&Value::Table(written))).unwrap(), Some(back));
+    }
+
+    /// ADR-0331: an inset layer tweens against an inset layer, a pair that differs in `inset` shows
+    /// the target's layer at once, and `inset` survives the write back.
+    #[test]
+    fn inset_layers_tween_pairwise_and_a_flag_mismatch_snaps_to_the_target() {
+        let lua = Lua::new();
+        let layers = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("shadows", Some(&value)).unwrap().unwrap()
+        };
+        let inset = |blur: u8| layers(&format!("return {{ {{ blur = {blur}, inset = true }} }}"));
+        let Animatable::Shadows(mid) = inset(4).lerp(&inset(8), 0.5, "shadows") else { panic!("a shadow list") };
+        assert_eq!((mid[0].blur, mid[0].inset), (6.0, true));
+        let outer = layers("return { { blur = 4 } }");
+        let Animatable::Shadows(snap) = outer.lerp(&inset(8), 0.25, "shadows") else { panic!("a shadow list") };
+        assert_eq!((snap[0].blur, snap[0].inset), (8.0, true));
+        let Value::Table(written) = inset(8).to_value(&lua).unwrap() else { panic!("a table") };
+        assert_eq!(Animatable::from_value("shadows", Some(&Value::Table(written))).unwrap(), Some(inset(8)));
     }
 
     /// A key only one side sets tweens from or to its off value, `0` for a blur and `1` for a colour

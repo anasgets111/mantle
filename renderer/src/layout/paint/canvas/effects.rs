@@ -6,7 +6,7 @@ use femtovg::{Canvas, Color, CompositeOperation, ImageId, Paint, Path, RenderTar
 use glow::HasContext;
 
 use crate::layout::image_shader;
-use crate::layout::node::{self, Radii, Rgba};
+use crate::layout::node::{self, EdgeInsets, Radii, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
@@ -36,6 +36,61 @@ pub(super) fn paint_shadow(
     let reach = grow(LogicalRect { x, y, width, height }, feather / 2.0);
     let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, Radii::default()) };
     canvas.fill_path(&path, &paint);
+}
+
+/// An `inset` shadow (ADR-0331): the padding box, filled with `shadow.color` everywhere outside a
+/// hole that is the box moved by `offset` and shrunk by `spread`, feathered like [`paint_shadow`].
+/// The fill's path is the padding outline, so the shape clips it and smoothed corners follow.
+/// ponytail: the hole is one mean radius, so unequal corners and a scoop shade as a round hole.
+pub(super) fn paint_inset_shadow(
+    canvas: &mut Canvas<OpenGl>,
+    rect: LogicalRect,
+    shadow: node::Shadow,
+    own: Radii,
+    widths: EdgeInsets,
+) {
+    let pad = LogicalRect {
+        x: rect.x + widths.left,
+        y: rect.y + widths.top,
+        width: rect.width - widths.left - widths.right,
+        height: rect.height - widths.top - widths.bottom,
+    };
+    if pad.width <= 0.0 || pad.height <= 0.0 {
+        return;
+    }
+    // A corner's inner radius is its radius less the wider border it meets; sign keeps a scoop a scoop.
+    let [tl, tr, br, bl] = own.0;
+    let shrink = |r: f32, a: f32, b: f32| r.signum() * (r.abs() - a.max(b)).max(0.0);
+    let inner = Radii(
+        [
+            shrink(tl, widths.top, widths.left),
+            shrink(tr, widths.top, widths.right),
+            shrink(br, widths.bottom, widths.right),
+            shrink(bl, widths.bottom, widths.left),
+        ],
+        own.1,
+    );
+    let hole = LogicalRect {
+        x: pad.x + shadow.offset.0 + shadow.spread,
+        y: pad.y + shadow.offset.1 + shadow.spread,
+        width: (pad.width - 2.0 * shadow.spread).max(0.0),
+        height: (pad.height - 2.0 * shadow.spread).max(0.0),
+    };
+    let mean = inner.0.iter().map(|r| r.abs()).sum::<f32>() / 4.0;
+    let radius = spread_radius(mean, -shadow.spread).min(hole.width.min(hole.height) / 2.0);
+    let feather = (1.5 * shadow.blur).max(1.0);
+    let Rgba { r, g, b, .. } = shadow.color;
+    let paint = Paint::box_gradient(
+        hole.x,
+        hole.y,
+        hole.width,
+        hole.height,
+        radius,
+        feather,
+        Color::rgbaf(r, g, b, 0.0),
+        Color::from(shadow.color),
+    );
+    canvas.fill_path(&box_path(pad, inner), &paint);
 }
 
 /// CSS's corner radius of a shadow spread from a box's: a square corner stays square.
@@ -390,6 +445,52 @@ mod tests {
     fn near(actual: (u8, u8, u8, u8), expected: (u8, u8, u8)) -> bool {
         let close = |a: u8, e: u8| a.abs_diff(e) <= 3;
         close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
+    }
+
+    /// ADR-0331. An inset shadow darkens a band just inside the edge and leaves the centre, the
+    /// pixel outside a round corner, and the ground alone; `offset` moves the band, a fractional
+    /// `spread` shades by its fraction, and the border draws over it.
+    #[test]
+    fn an_inset_shadow_darkens_inside_the_edge_and_stays_in_the_shape() {
+        let white = r##"background = "#FFFFFFFF""##;
+        let ink = |px: (u8, u8, u8, u8)| px.0;
+        let Some(px) = paint_effect_at(
+            &format!("{white}, radius = 12, shadows = {{ {{ inset = true, spread = 4 }} }}"),
+            &[(18, 32), (32, 18), (32, 32), (14, 32), (17, 17), (21, 21)],
+        ) else {
+            return;
+        };
+        assert!(ink(px[0]) < 8 && ink(px[1]) < 8, "the band is dark: {px:?}");
+        assert!(near(px[2], (255, 255, 255)), "the centre is untouched: {px:?}");
+        assert!(near(px[3], (255, 255, 255)), "outside the box is untouched: {px:?}");
+        assert!(near(px[4], (255, 255, 255)), "outside the round corner is untouched: {px:?}");
+        assert!(ink(px[5]) < 8, "inside the arc is dark: {px:?}");
+
+        let Some(px) = paint_effect_at(
+            &format!("{white}, shadows = {{ {{ inset = true, offset = {{ y = 6 }} }} }}"),
+            &[(32, 19), (32, 24), (32, 45), (18, 32)],
+        ) else {
+            return;
+        };
+        assert!(ink(px[0]) < 8, "an offset down opens the top: {px:?}");
+        assert!(near(px[1], (255, 255, 255)) && near(px[2], (255, 255, 255)), "and clears the rest: {px:?}");
+        assert!(near(px[3], (255, 255, 255)), "{px:?}");
+
+        let at = |spread: &str| {
+            let shadows =
+                format!("{white}, shadows = {{ {{ inset = true, spread = {spread}, color = \"#000000\" }} }}");
+            paint_effect_at(&shadows, &[(32, 16), (32, 17)]).map(|px| (ink(px[0]), ink(px[1])))
+        };
+        let (Some(half), Some(shrunk)) = (at("0.5"), at("-0.75")) else { return };
+        assert!((90..170).contains(&half.0) && half.1 > 250, "half a pixel of band shades half: {half:?}");
+        assert!(shrunk.0 > 250, "a hole grown past the box shades nothing: {shrunk:?}");
+
+        let bordered = format!(
+            "{white}, border_width = 2, border_color = \"#FF0000FF\", shadows = {{ {{ inset = true, spread = 6 }} }}"
+        );
+        let Some(px) = paint_effect_at(&bordered, &[(17, 32), (20, 32), (32, 32)]) else { return };
+        assert!(near(px[0], (255, 0, 0)), "the border is over the shadow: {px:?}");
+        assert!(ink(px[1]) < 8 && near(px[2], (255, 255, 255)), "{px:?}");
     }
 
     /// ADR-0334. The colour filters recolour the straight sRGB colour, as CSS's do, in the order

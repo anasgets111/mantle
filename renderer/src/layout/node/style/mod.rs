@@ -357,6 +357,8 @@ pub struct Shadow {
     pub blur: f32,
     pub offset: (f32, f32),
     pub spread: f32,
+    /// CSS `box-shadow: inset`: cast inside the padding box instead of around the box (ADR-0331).
+    pub inset: bool,
 }
 
 impl Shadow {
@@ -375,6 +377,8 @@ impl Shadow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
     pub shadows: Vec<Shadow>,
+    /// The `inset` layers, first on top; they draw inside the box, so they never open a layer or grow its reach.
+    pub inset: Vec<Shadow>,
     /// A program run over the painted subtree, before `blur` and `tone` (ADR-0336).
     pub shader: Option<EffectShader>,
     pub blur: f32,
@@ -451,8 +455,8 @@ keywords! {
     }
 }
 
-// ponytail: 8 layers, each a gradient quad or, in content mode, a blur pass; raise it with a measured budget.
-const MAX_SHADOWS: usize = 8;
+// ponytail: 16 layers, each a gradient quad or, in content mode, a blur pass; raise it with a measured budget.
+const MAX_SHADOWS: usize = 16;
 /// A layer's `blur` and each `effect` blur, and a layer's `offset` and `spread`, in px; the tween clamps into the same ranges.
 pub(super) const SHADOW_BLUR: (f32, f32) = (0.0, 8192.0);
 /// Each `effect` colour filter's factor; past 8 `saturate` and `contrast` have clipped every channel.
@@ -467,6 +471,7 @@ lua_shape! {
         blur: Option<f32>,
         offset: Option<Axes>,
         spread: Option<f32>,
+        inset: Option<bool>,
     }
 }
 
@@ -580,13 +585,14 @@ impl Prop for Shadows {
         for i in 1..=len {
             let name = format!("{}[{i}]", row.name);
             let layer: mlua::Table = table.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
-            let ShadowLayer { color, blur, offset, spread } = ShadowLayer::read(&name, &layer)?;
+            let ShadowLayer { color, blur, offset, spread, inset } = ShadowLayer::read(&name, &layer)?;
             let Axes { x, y } = offset.unwrap_or(Axes { x: None, y: None });
             shadows.push(Shadow {
                 color: color.unwrap_or(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                 blur: within(blur.unwrap_or(0.0), SHADOW_BLUR)?,
                 offset: (within(x.unwrap_or(0.0), SHADOW_REACH)?, within(y.unwrap_or(0.0), SHADOW_REACH)?),
                 spread: within(spread.unwrap_or(0.0), SHADOW_REACH)?,
+                inset: inset.unwrap_or(false),
             });
         }
         Ok(Some(shadows))
@@ -599,6 +605,11 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     use fields::{common, paint};
     let mut shadows = common::shadows.read(properties)?.unwrap_or_default();
     shadows.retain(Shadow::shows);
+    let content_shadow = paint::shadow_mode.read(properties)? == ShadowMode::Content;
+    let (inset, shadows): (Vec<_>, Vec<_>) = shadows.into_iter().partition(|shadow| shadow.inset);
+    if content_shadow && !inset.is_empty() {
+        return Err(invalid("shadows", "an `inset` layer needs `shadow_mode = \"box\"`"));
+    }
     let filters = common::effect.read(properties)?;
     let tone = |saturate: Option<f32>, brightness: Option<f32>, contrast: Option<f32>| Tone {
         saturate: saturate.unwrap_or(1.0),
@@ -620,12 +631,13 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         .transpose()?;
     Ok(Effect {
         shadows,
+        inset,
         shader,
         blur: filters.blur.unwrap_or(0.0),
         tone: tone(filters.saturate, filters.brightness, filters.contrast),
         backdrop: backdrop.blur.unwrap_or(0.0),
         backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
-        content_shadow: paint::shadow_mode.read(properties)? == ShadowMode::Content,
+        content_shadow,
     })
 }
 
@@ -1380,7 +1392,7 @@ mod tests {
         assert_eq!(parse("return {}").unwrap(), Effect::default());
         assert!(parse(r##"return { shadows = { { color = "#ff000080" } } }"##).unwrap().shadows.is_empty());
         let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-        let shadow = Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0 };
+        let shadow = Shadow { color: black, blur: 8.0, offset: (0.0, -2.0), spread: -1.0, inset: false };
         assert_eq!(
             parse("return { shadows = { { blur = 8, offset = { y = -2 }, spread = -1 } } }").unwrap().shadows,
             [shadow]
@@ -1425,7 +1437,9 @@ mod tests {
             (r#"return { shadow_mode = "Drop" }"#, "shadow_mode"),
             ("return { shadows = { { blur = -1 } } }", "shadows"),
             ("return { shadows = { { blur = 1, glow = 2 } } }", "shadows[1]"),
-            ("return { shadows = { {}, {}, {}, {}, {}, {}, {}, {}, {} } }", "shadows"),
+            ("return { shadows = { {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} } }", "shadows"),
+            (r#"return { shadow_mode = "content", shadows = { { blur = 4, inset = true } } }"#, "shadows"),
+            ("return { shadows = { { blur = 4, inset = 1 } } }", "shadows[1]"),
         ] {
             let err = parse(src).unwrap_err();
             assert!(
@@ -1433,6 +1447,27 @@ mod tests {
                 "{src}: {err:?}"
             );
         }
+    }
+
+    /// ADR-0331: `inset` splits a layer off `shadows`, keeping its order and the same defaults, and a
+    /// node takes 16 layers, inset and outer together.
+    #[test]
+    fn an_inset_layer_is_split_from_the_outer_ones_and_the_cap_is_16() {
+        let lua = Lua::new();
+        let parse = |src: &str| parse_effect(&rect_props(&lua, src));
+        let effect =
+            parse("return { shadows = { { blur = 2 }, { blur = 4, inset = true }, { spread = 1, inset = true } } }")
+                .unwrap();
+        assert_eq!(effect.shadows.iter().map(|s| (s.blur, s.inset)).collect::<Vec<_>>(), [(2.0, false)]);
+        assert_eq!(
+            effect.inset.iter().map(|s| (s.blur, s.spread, s.inset)).collect::<Vec<_>>(),
+            [(4.0, 0.0, true), (0.0, 1.0, true)]
+        );
+        let only = parse("return { shadows = { { blur = 4, inset = true } } }").unwrap();
+        assert!(!only.layers(), "an inset layer opens no offscreen");
+        let layers = |n: usize| format!("return {{ shadows = {{ {} }} }}", "{ blur = 1, inset = true },".repeat(n));
+        assert_eq!(parse(&layers(16)).unwrap().inset.len(), 16);
+        assert!(parse(&layers(17)).is_err());
     }
 
     /// Filter Effects `saturate()`: the matrix on `(192, 96, 64)` gives the spec's own numbers, `0`

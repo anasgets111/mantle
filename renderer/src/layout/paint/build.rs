@@ -200,11 +200,25 @@ fn build_node(
         }
     }
     let body = out.len();
+    // Above every background layer, under the children and the border (ADR-0331); the first layer is on top.
+    let insets: Vec<DrawCmd> = match &node.paint {
+        Some(PaintStyle::Box { radius, widths, .. }) if !clip.is_empty() => effect
+            .inset
+            .iter()
+            .rev()
+            .map(|shadow| {
+                let shadow = node::Shadow { color: fade(shadow.color, opacity), ..*shadow };
+                cmd(clip, Draw::InsetShadow { shadow, radius: *radius, widths: *widths })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
     match rounded_clip(node) {
         // A mask covers the node's own paint too, as Qt's `OpacityMask` covers its item (ADR-0255).
         radius if mask.is_some() => {
             let (fill, border) = split_fill_and_border(draw);
             let mut inner: Vec<DrawCmd> = fill.map(|draw| cmd(clip, draw)).into_iter().collect();
+            inner.extend(insets);
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
             }
@@ -230,6 +244,8 @@ fn build_node(
             }
         }
         None => {
+            // The border draws over an inset shadow, so a box with one paints fill, inset, border.
+            let (draw, border) = if insets.is_empty() { (draw, None) } else { split_fill_and_border(draw) };
             if let Some(draw) = draw {
                 // ponytail: ink can pass a tight line box, so text clips to one em of vertical room; upgrade: the shaped ink extents.
                 let clip = match &draw {
@@ -240,6 +256,8 @@ fn build_node(
                 };
                 out.push(cmd(clip, draw));
             }
+            out.extend(insets);
+            out.extend(border.map(|draw| cmd(clip, draw)));
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (child_clip, surface), opacity, focus, control, out);
             }
@@ -251,6 +269,7 @@ fn build_node(
             if let Some(fill) = fill {
                 out.push(cmd(clip, fill));
             }
+            out.extend(insets);
             let mut inner = Vec::new();
             for child in node.painted_children() {
                 build_node(child, x, y, scale, (clip, surface), opacity, focus, control, &mut inner);
@@ -370,6 +389,16 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         Draw::Shadow { shadow: cast, radius, knockout } => {
             Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
         }
+        Draw::InsetShadow { shadow: cast, radius, widths } => Draw::InsetShadow {
+            shadow: shadow(cast),
+            radius: radius * scale,
+            widths: EdgeInsets {
+                top: widths.top * scale,
+                right: widths.right * scale,
+                bottom: widths.bottom * scale,
+                left: widths.left * scale,
+            },
+        },
         Draw::Layer { effect, shader, silhouette, commands } => Draw::Layer {
             effect: node::Effect {
                 shadows: effect.shadows.into_iter().map(shadow).collect(),
@@ -2040,6 +2069,39 @@ mod tests {
             "the label unshadowed"
         );
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. })), "no offscreen");
+    }
+
+    /// ADR-0331. An inset shadow draws above every background layer and under the children; the
+    /// border follows it, and the children only in the rounded clip's group. It opens no layer.
+    #[test]
+    fn an_inset_shadow_paints_between_the_fill_and_the_children_with_the_border_last() {
+        fn kinds(commands: &[DrawCmd]) -> Vec<&'static str> {
+            commands
+                .iter()
+                .flat_map(|cmd| match &cmd.draw {
+                    Draw::Box { background, .. } if !background.is_empty() => vec!["fill"],
+                    Draw::Box { .. } => vec!["border"],
+                    Draw::InsetShadow { .. } => vec!["inset"],
+                    Draw::Text { .. } => vec!["text"],
+                    draw => draw.nested().map_or_else(Vec::new, kinds),
+                })
+                .collect()
+        }
+        for (body, want) in [
+            ("", ["fill", "inset", "border", "text"]),
+            (", radius = 6", ["fill", "inset", "border", "text"]),
+            (r#", radius = 6, clip = "rounded""#, ["fill", "inset", "text", "border"]),
+        ] {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = {{ "#ff0000", "#00ff00" }}, border_width = 2,
+                    border_color = "#0000ff", shadows = {{ {{ blur = 4, inset = true, offset = {{ y = 2 }} }} }}{body},
+                    children = {{ text {{ content = "hi" }} }} }}"##
+            ));
+            let all = kinds(&list.commands);
+            let from = all.iter().position(|k| *k == "fill").unwrap();
+            assert_eq!(all[from..], want, "{body}");
+            assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Layer { .. } | Draw::Shadow { .. })));
+        }
     }
 
     /// ADR-0260. `effect.blur` still takes a layer, and the box shadow stays a gradient outside it.

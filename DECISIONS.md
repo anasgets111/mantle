@@ -8036,3 +8036,20 @@ Breaking: `on_navigate` becomes `on_key`. Arrows repeat only when an `on_key` on
    blend. Colour layers tween by index, a layer one side lacks fades, gradients snap.
 
 Rejected: a separate `backgrounds` key, a second spelling of one feature.
+
+## 0344. `inset = true` on a `shadows` layer is CSS `box-shadow: inset`
+
+Amends ADR-0331.
+
+1. **Same keys, split path.** An inset layer takes `color`, `blur`, `offset` and `spread` with the
+   outer defaults. `parse_effect` keeps outer layers on their path and moves inset ones to
+   `Effect.inset`, drawn as `Draw::InsetShadow` over the padding box: after every background layer,
+   before the children and the border, with no offscreen.
+2. **Shape.** The padding box path, smoothing included, clips the shade; the paint is an inverted
+   box gradient whose hole is the box moved by `offset` and shrunk by `spread`.
+3. **Limits.** `shadow_mode = "content"` or a non-box kind with an inset layer is an error. The cap
+   rises to 16 layers, inset and outer together. A tween pairing an inset layer with an outer one
+   snaps to the target's.
+
+Rejected: a separate `inset_shadows` list. Ceiling: the hole has one mean radius, so unequal
+corners shade as a round hole; upgrade with a per-corner SDF shader.
