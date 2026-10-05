@@ -171,6 +171,18 @@ pub(super) enum Motion {
     To(usize),
 }
 
+/// The clipboard action Ctrl plus the key at evdev `raw_code` (X, C, V) asks for; a masked field has
+/// no selection to cut or copy, so only paste reaches it.
+fn clipboard_chord(raw_code: u32, masked: bool) -> Option<crate::lua::focus::FieldAction> {
+    use crate::lua::focus::FieldAction;
+    match raw_code {
+        45 if !masked => Some(FieldAction::Cut),
+        46 if !masked => Some(FieldAction::Copy),
+        47 => Some(FieldAction::Paste),
+        _ => None,
+    }
+}
+
 /// Convert one `wl_keyboard` key for `secure_submit`. Use xkb, not `zwp_text_input_v3`: without an
 /// IME, text-input-v3 emits no `commit_string`; a dormant binding could also let the compositor
 /// route an IME into the buffer and create two writers (ADR-0027 amendment). No IDL is added: secure
@@ -340,18 +352,12 @@ impl KeyboardHandler for App {
             // Only a field that takes the chord keeps it; with none focused it bubbles to `on_key`.
             let field_takes = self.secure_field_takes_keys()
                 || self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field));
-            match event.raw_code {
-                46 if field_takes => {
-                    self.copy_selection(serial);
-                    return;
-                }
-                47 if field_takes => {
-                    self.start_paste();
-                    return;
-                }
-                _ => {}
+            if field_takes && let Some(action) = clipboard_chord(event.raw_code, self.secure_field_takes_keys()) {
+                self.run_field_action(action, Some(serial));
+                return;
             }
         }
+        self.key_serial = Some(serial);
         self.apply_key(&event, false, Some(serial));
         self.arm_repeat(event);
     }
@@ -574,8 +580,9 @@ impl App {
         event: &KeyEvent,
         modifiers: (bool, bool),
     ) -> Result<(), String> {
-        if modifiers.0 && matches!(event.keysym, Keysym::c | Keysym::C | Keysym::v | Keysym::V) {
-            return Err("copy and paste need the compositor's clipboard".to_string());
+        if modifiers.0 && matches!(event.keysym, Keysym::c | Keysym::C | Keysym::x | Keysym::X | Keysym::v | Keysym::V)
+        {
+            return Err("copy, cut and paste need the compositor's clipboard".to_string());
         }
         self.with_injected_keyboard(surface_id, modifiers, |app| app.apply_key(event, false, None))
     }
@@ -631,6 +638,14 @@ fn check_injected_text(text: &str) -> Result<(), String> {
 pub(in crate::wayland) mod tests {
     use super::super::tests::hit_node;
     use super::*;
+
+    #[test]
+    fn ctrl_x_c_v_map_to_cut_copy_paste_and_a_masked_field_only_pastes() {
+        use crate::lua::focus::FieldAction::{Copy, Cut, Paste};
+        assert_eq!([45, 46, 47].map(|code| clipboard_chord(code, false)), [Some(Cut), Some(Copy), Some(Paste)]);
+        assert_eq!([45, 46, 47].map(|code| clipboard_chord(code, true)), [None, None, Some(Paste)]);
+        assert_eq!(clipboard_chord(30, false), None);
+    }
 
     #[test]
     fn injected_text_the_input_method_path_would_drop_is_an_error() {

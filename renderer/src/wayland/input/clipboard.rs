@@ -119,18 +119,31 @@ impl Drop for WriterPermit {
 }
 
 impl App {
-    pub(super) fn copy_selection(&mut self, serial: u32) {
+    /// Whether the selection reached the clipboard.
+    pub(super) fn copy_selection(&mut self, serial: u32) -> bool {
         if self.focused_secure_submit.is_some() {
-            return;
+            return false;
         }
         let Some(field) = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)) else {
-            return;
+            return false;
         };
-        let Some(text) = selected_text(field) else { return };
-        let (Some(manager), Some(device)) = (&self.data_device_manager, &self.data_device) else { return };
+        let Some(text) = selected_text(field) else { return false };
+        let (Some(manager), Some(device)) = (&self.data_device_manager, &self.data_device) else { return false };
         let source = manager.create_copy_paste_source(&self.queue_handle, [MIME, FALLBACK_MIME]);
         source.set_selection(device, serial);
         self.clipboard_sources.push(ClipboardSource { source, text });
+        true
+    }
+
+    /// Ctrl+X: the copy, then one erase of the selection, so one undo step and one `on_change`.
+    pub(super) fn cut_selection(&mut self, serial: u32) {
+        if self.copy_selection(serial) {
+            self.apply_plain_action_inner(
+                super::keyboard::KeyAction::Erase(super::keyboard::Motion::Left),
+                None,
+                false,
+            );
+        }
     }
 
     pub(super) fn start_paste(&mut self) {

@@ -315,7 +315,7 @@ what its descendants pass up. That is how a container sees the keys of the field
 A focused plain `textfield` takes the keys it edits with (characters, Backspace, Delete, Enter, caret
 motion, Ctrl+A/Z/Y, and Escape, unless `escape = "pass"` or there is nothing to clear and no `on_cancel`) and passes the rest up:
 Up, Down, paging, Tab with fewer than two controls, an arrow at the caret's edge, F-keys and other
-Ctrl chords (Ctrl+C and Ctrl+V copy and paste while a field takes them, and reach `on_key` otherwise). Tab moves control focus when it can, so
+Ctrl chords (Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste while a field takes them, and reach `on_key` otherwise). Tab moves control focus when it can, so
 `on_key` hears Tab only where nothing moves. Repeats arrive with `repeat = true`.
 
 A key typed into a `secure_submit` field never reaches `on_key`, and while one is armed no `on_key` on
@@ -447,6 +447,7 @@ a press.
 | `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field or [focusable control](#keyboard-controls-and-accessibility) in document order wins. A field never takes over from one already typing, nor re-takes one the user just clicked away from. A control arms only while no control holds focus, once per appearance or keyboard enter |
 | `focus_target` | A `focus_target(name)` handle. `:request()` from an `on_click`, `on_key`, or an edit typed or committed into the field (`on_change`, `on_submit`, `on_cancel`) focuses the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the callback's state changes appear. It keeps that field's draft and caret and does not call `on_change`. A key callback's request shows the focus outline |
 | `focus_target(name):set_text(text)` | Replaces the draft of every plain field with that `focus_target` and an `on_change` or `on_submit`, hidden ones too, from any callback, once it returns: caret at the end, undo history cleared, `on_change` not called, composition discarded. A field without focus keeps the text for when it takes the keys. Never reaches a `secure_submit` field. Control characters other than `\n`, or over 64 KiB, raise; a single-line field refuses a `\n` with a warning |
+| `focus_target(name):cut()`, `:copy()`, `:paste()`, `:select_all()` | The chords' actions, on the plain field with that `focus_target` that holds the keyboard now; any other field, and any `secure_submit`, is left alone. They count only inside an `on_click`, `on_key` or edit callback caused by a real key press or pointer click, since the compositor wants that event's serial for the clipboard; key repeat and `mantle input key` cannot cut or copy. They apply when the callback returns. A click moves keyboard focus off the field, so call `:request()` first in the same callback |
 | `initial_text` | Seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new, and a field that leaves and returns is seeded again from the value then). Plain fields only; `secure_submit` refuses it. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Later changes to the value are ignored and an emptied field stays empty: use `set_text` to push new text. Read without subscribing: writing the signal alone does not re-resolve the field |
 | `disabled` | `true`: the field draws as usual but takes no focus. Tab skips it, a press and `autofocus` pass over it, `:request()` finds nothing, and no caret shows. A focused field that becomes disabled loses focus and keeps its draft. A disabled `secure_submit` field is not a destination. `set_text` still reaches it. Dim it by binding colours to the same signal |
 | `max_length` | Most grapheme clusters the field holds; `0` is unlimited. Typing, paste, IME commits and `set_text` cut the insert at the limit, secure fields included. Lowering it below the current text keeps that text: only the insert is limited, so edits can then only shorten it. The cut is silent: a limit below a password's length truncates it, on a lock field too |
@@ -464,6 +465,7 @@ a press.
 | Ctrl+A | Selects all | Nothing |
 | Ctrl+Z, Ctrl+Shift+Z, Ctrl+Y | Undo or redo the last plain edits; `on_change` | Nothing |
 | Ctrl+C | Copies selected text | Nothing |
+| Ctrl+X | Copies selected text and deletes it as one undo step; `on_change`. Nothing without a selection | Nothing |
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
 | Up, Down, Page Up, Page Down | Pass up to `on_key` | Nothing |
 | Multiline: Return, Up, Down, Home, End | Return inserts a newline and `submit_key` submits; Up and Down move by visual row (from the first or last row they pass up to `on_key`); Home and End go to the row's ends, Ctrl+Home and Ctrl+End to the text's | Never multiline |
@@ -473,7 +475,9 @@ a press.
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
 up to 64 KiB of valid UTF-8 without control characters (a multiline field also takes newlines;
 `\r\n` and `\r` become `\n`). A paste is dropped if the selection, field,
-or keyboard focus changes before the read ends. Copy works only with a plain-field selection.
+or keyboard focus changes before the read ends. Copy and cut work only with a plain-field selection.
+`has_selection(name)` is a read-only boolean signal, `false` until the plain field whose `focus_target`
+is `name` holds the keyboard and has text selected. It survives reloads.
 Editing keys repeat while held; Escape, undo and redo do not.
 The undo stack retains at most 100 snapshots and 1 MiB of saved text. Submit, leaving the
 field, and fresh autofocus clear that history. When text-input-v3 enters the field's own surface,
@@ -513,6 +517,29 @@ return panel {
         rect {
             on_click = function() search_focus:request() end,
             children = { text { content = "Return to search" } },
+        },
+    } },
+}
+```
+
+A Cut button that shows whether it can act:
+
+```lua
+local note = focus_target("note")
+local selected = has_selection("note")
+
+return panel {
+    id = "note",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = row { children = {
+        textfield { focus_target = note, width = 180, height = 32, on_change = function() end },
+        rect {
+            on_click = function()
+                note:request()
+                note:cut()
+            end,
+            children = { text { content = selected:map(function(on) return on and "Cut" or "Nothing selected" end) } },
         },
     } },
 }

@@ -161,14 +161,32 @@ pub fn begin_evaluation(lua: &Lua) {
 #[derive(Default)]
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 
-/// `focused(name)` and `focus_visible(name)`, kept across reloads like [`HoverRegistry`]; the
-/// `bool` is `visible`, so `focused("x")` and `focus_visible("x")` are distinct slots.
+/// `focused`, `focus_visible` and `has_selection` signals, kept across reloads like [`HoverRegistry`];
+/// the kind keeps `focused("x")`, `focus_visible("x")` and `has_selection("x")` distinct slots.
 #[derive(Default)]
-struct FocusedRegistry(HashMap<(bool, String), Signal>);
+struct FocusedRegistry(HashMap<(FocusKind, String), Signal>);
 
-fn focus_slot(lua: &Lua, visible: bool, name: String, dirty: &DirtyFlag) -> SignalOf<bool> {
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum FocusKind {
+    Focused,
+    Visible,
+    Selection,
+}
+
+fn focus_slot(lua: &Lua, kind: FocusKind, name: String, dirty: &DirtyFlag) -> SignalOf<bool> {
     let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
-    SignalOf::new(registry.0.entry((visible, name)).or_insert_with(|| Signal::new_focused(dirty.clone())).clone())
+    SignalOf::new(registry.0.entry((kind, name)).or_insert_with(|| Signal::new_focused(dirty.clone())).clone())
+}
+
+/// Writes every `has_selection` signal: true for `held`, the name of the focused field with a
+/// selection, false for the rest. Values that did not move dirty nothing.
+pub fn write_selection(lua: &Lua, held: Option<&str>) {
+    let Some(registry) = lua.app_data_ref::<FocusedRegistry>() else { return };
+    for ((_, name), signal) in registry.0.iter().filter(|((kind, _), _)| *kind == FocusKind::Selection) {
+        if let Some(handle) = signal.focused_handle() {
+            handle.set_changed(Value::Boolean(held == Some(name)));
+        }
+    }
 }
 
 /// Name-keyed `pointer(name)` registry, kept across reloads like [`HoverRegistry`].
@@ -232,6 +250,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let focused_dirty = dirty.clone();
     let focus_visible_dirty = dirty.clone();
     let pointer_dirty = dirty.clone();
+    let selection_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
     lua_fn!(
         lua,
@@ -373,7 +392,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// focus for a textfield. One name, one signal, across reloads. Read-only.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focused(lua, name: String) -> SignalOf<bool> {
-            Ok(focus_slot(lua, false, name, &focused_dirty))
+            Ok(focus_slot(lua, FocusKind::Focused, name, &focused_dirty))
         }
     )?;
     lua_fn!(
@@ -384,7 +403,16 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// signal, across reloads. Read-only.
         /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
         fn focus_visible(lua, name: String) -> SignalOf<bool> {
-            Ok(focus_slot(lua, true, name, &focus_visible_dirty))
+            Ok(focus_slot(lua, FocusKind::Visible, name, &focus_visible_dirty))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Whether the plain `textfield` whose `focus_target` is `name` holds the keyboard and has text selected;
+        /// `false` until it does. One name, one signal, across reloads. Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
+        fn has_selection(lua, name: String) -> SignalOf<bool> {
+            Ok(focus_slot(lua, FocusKind::Selection, name, &selection_dirty))
         }
     )?;
     lua_fn!(
@@ -594,13 +622,24 @@ mod tests {
     #[test]
     fn focus_visible_is_its_own_slot_per_name_that_starts_false() {
         let (lua, _dirty) = lua_with_state();
-        lua.load(r#"a = focus_visible("x") b = focus_visible("x") c = focused("x")"#).exec().unwrap();
+        lua.load(r#"a = focus_visible("x") b = focus_visible("x") c = focused("x") d = has_selection("x")"#)
+            .exec()
+            .unwrap();
         assert!(any_focused_registered(&lua));
         let a: mlua::AnyUserData = lua.globals().get("a").unwrap();
         from_userdata(&a).unwrap().focused_handle().unwrap().set(Value::Boolean(true));
         assert!(lua.load("return b:get()").eval::<bool>().unwrap(), "one name is one slot");
         assert!(!lua.load("return c:get()").eval::<bool>().unwrap(), "not shared with focused");
         assert!(lua.load(r#"focus_visible("x"):set(true)"#).exec().is_err(), "config cannot write it");
+        assert!(!lua.load("return d:get()").eval::<bool>().unwrap(), "not shared with has_selection");
+        write_selection(&lua, Some("x"));
+        assert!(lua.load("return d:get()").eval::<bool>().unwrap());
+        assert!(
+            lua.load("return b:get()").eval::<bool>().unwrap() && !lua.load("return c:get()").eval::<bool>().unwrap()
+        );
+        write_selection(&lua, None);
+        assert!(!lua.load("return d:get()").eval::<bool>().unwrap());
+        assert!(lua.load(r#"has_selection("x"):set(true)"#).exec().is_err(), "config cannot write it");
     }
 
     #[test]

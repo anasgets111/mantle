@@ -27,7 +27,7 @@ pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_c
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
 pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
-    promote_states, register, take_layout_changed, write_state,
+    promote_states, register, take_layout_changed, write_selection, write_state,
 };
 pub(crate) use globals::{note_layout_changed, reset, reset_target};
 pub use held::{next_wake_deadline, take_due_wake};

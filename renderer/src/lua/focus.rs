@@ -1,6 +1,7 @@
 //! Named requests to move keyboard focus to a field or control from a click or a key callback.
 
 use mlua::{Lua, Value};
+use shared::debug;
 
 use super::luacats::{lua_class, lua_fn};
 
@@ -10,6 +11,26 @@ struct Requests {
     callback: Option<(String, bool)>,
     pending: Option<Request>,
     texts: Vec<(String, String)>,
+    actions: Vec<(String, FieldAction)>,
+}
+
+/// A clipboard or selection action `focus_target(name)` queues for the focused field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum FieldAction {
+    Cut,
+    Copy,
+    Paste,
+    SelectAll,
+}
+
+/// Queues `action` for the field bound to `name`; dropped outside a callback.
+fn queue(lua: &Lua, name: &str, action: FieldAction) {
+    let mut requests = super::app_data_or_default::<Requests>(lua);
+    if requests.callback.is_none() {
+        debug!("focus_target(\"{name}\"):{action:?} dropped: outside an input callback");
+        return;
+    }
+    requests.actions.push((name.to_owned(), action));
 }
 
 /// A `:request()` made inside a callback; `ring` when a key callback made it.
@@ -67,6 +88,30 @@ lua_class! {
             super::app_data_or_default::<Requests>(lua).texts.push((this.0.clone(), text));
             Ok(())
         }
+
+        /// Cut the selection to the clipboard, if this field holds the keyboard. See the input guide for when it applies.
+        fn cut(lua, this) {
+            queue(lua, &this.0, FieldAction::Cut);
+            Ok(())
+        }
+
+        /// Copy the selection to the clipboard, under the conditions of `:cut()`.
+        fn copy(lua, this) {
+            queue(lua, &this.0, FieldAction::Copy);
+            Ok(())
+        }
+
+        /// Paste the clipboard as Ctrl+V does, under the conditions of `:cut()`.
+        fn paste(lua, this) {
+            queue(lua, &this.0, FieldAction::Paste);
+            Ok(())
+        }
+
+        /// Select all the text, under the conditions of `:cut()`.
+        fn select_all(lua, this) {
+            queue(lua, &this.0, FieldAction::SelectAll);
+            Ok(())
+        }
     }
 }
 
@@ -102,9 +147,15 @@ pub(crate) fn end_callback(lua: &Lua) {
     super::app_data_or_default::<Requests>(lua).callback = None;
 }
 
-/// Drops texts queued for the tree this evaluation replaces.
+pub(crate) fn take_actions(lua: &Lua) -> Vec<(String, FieldAction)> {
+    std::mem::take(&mut super::app_data_or_default::<Requests>(lua).actions)
+}
+
+/// Drops texts and actions queued for the tree this evaluation replaces.
 pub(crate) fn begin_evaluation(lua: &Lua) {
-    super::app_data_or_default::<Requests>(lua).texts.clear();
+    let mut requests = super::app_data_or_default::<Requests>(lua);
+    requests.texts.clear();
+    requests.actions.clear();
 }
 
 pub(crate) fn take_texts(lua: &Lua) -> Vec<(String, String)> {
@@ -158,5 +209,28 @@ mod tests {
         assert_eq!(normalize_newlines("a\rb"), "a\nb");
         assert_eq!(normalize_newlines("a\r\n\rb"), "a\n\nb");
         assert!(matches!(normalize_newlines("a\nb"), std::borrow::Cow::Borrowed(_)));
+    }
+
+    #[test]
+    fn actions_queue_only_inside_a_callback_and_a_reload_drops_them() {
+        let lua = Lua::new();
+        register(&lua).unwrap();
+        let handle: AnyUserData = lua.load("return focus_target('q')").eval().unwrap();
+        lua.globals().set("t", handle).unwrap();
+        lua.load("t:cut()").exec().unwrap();
+        assert!(take_actions(&lua).is_empty(), "no callback window");
+        begin_callback(&lua, "panel@TEST", false);
+        lua.load("t:copy() t:paste() t:cut() t:select_all()").exec().unwrap();
+        end_callback(&lua);
+        let q = |action| ("q".to_string(), action);
+        assert_eq!(
+            take_actions(&lua),
+            [q(FieldAction::Copy), q(FieldAction::Paste), q(FieldAction::Cut), q(FieldAction::SelectAll)]
+        );
+        begin_callback(&lua, "panel@TEST", false);
+        lua.load("t:cut()").exec().unwrap();
+        end_callback(&lua);
+        begin_evaluation(&lua);
+        assert!(take_actions(&lua).is_empty());
     }
 }

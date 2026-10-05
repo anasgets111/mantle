@@ -112,6 +112,7 @@ pub fn run(
         armed: None,
         drag: None,
         input_serial: None,
+        key_serial: None,
         pointer_input_count: 0,
         reposition_token: 0,
         focused_secure_submit: None,
@@ -313,6 +314,8 @@ pub fn run(
         app.apply_text_requests();
         app.apply_focus_request();
         app.send_toplevel_state_requests();
+        app.apply_field_actions();
+        app.sync_selection();
         if re_resolved {
             app.prune_secure_focus_after_resolve();
             app.drop_unusable_text_field_focus();
@@ -399,6 +402,7 @@ pub fn run(
         // `apply_resolved_surface_state` is its only reader. This enforces ADR-0049's one-turn
         // real-input window.
         app.input_serial = None;
+        app.key_serial = None;
         // Once per active turn, scrub a secure field whose surface was torn down before a later
         // keystroke notices. `App::apply_secure_key` remains the load-bearing check.
         if active {

@@ -6,6 +6,7 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
 use crate::lua::call_logged;
+use crate::lua::focus::FieldAction;
 
 #[derive(Debug, Clone, Default)]
 pub(in crate::wayland::input) struct EditHistory {
@@ -82,6 +83,17 @@ fn autofocus_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<super::
 fn initial_text_of(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId, lua: &mlua::Lua) -> String {
     let path = tree.and_then(|tree| layout::hit::path_to_node(tree, id));
     path.and_then(|path| path.last().map(|node| node.current_initial_text(lua))).unwrap_or_default()
+}
+
+/// The `focus_target` name of `field` when it is focused, takes keys and (if `need_selection`) has
+/// text selected: the one field `has_selection` and the handle's actions mean.
+fn focus_holder(
+    field: Option<&FocusedTextField>,
+    takes_keys: bool,
+    need_selection: bool,
+    name_of: impl Fn(&FocusedTextField) -> Option<String>,
+) -> Option<String> {
+    field.filter(|field| takes_keys && (!need_selection || field.selection.0 != field.selection.1)).and_then(name_of)
 }
 
 /// Plain fields passing `matches`, in document order; hidden subtrees and disabled fields only when `all`.
@@ -558,6 +570,53 @@ impl App {
                 self.set_draft(surface_id, id, &text);
             }
         }
+    }
+
+    /// The `focus_target` name of the textfield `field` is.
+    fn field_focus_name(&self, field: &FocusedTextField) -> Option<String> {
+        let path = layout::hit::path_to_node(self.client.scene().surface(&field.surface_id)?, field.id)?;
+        node::fields::common::focus_target.read(&path.last()?.properties).ok().flatten()
+    }
+
+    fn holder(&self, need_selection: bool) -> Option<String> {
+        let field = self.focused_text_field.as_ref();
+        let takes_keys = field.is_some_and(|field| self.text_field_takes_keys(field));
+        focus_holder(field, takes_keys, need_selection, |field| self.field_focus_name(field))
+    }
+
+    /// The action a chord or a `focus_target` method asks for, on the focused plain field; a cut or
+    /// copy needs the serial of the key or pointer event that caused it.
+    pub(in crate::wayland) fn run_field_action(&mut self, action: FieldAction, serial: Option<u32>) {
+        match (action, serial) {
+            (FieldAction::Cut, Some(serial)) => self.cut_selection(serial),
+            (FieldAction::Copy, Some(serial)) => {
+                self.copy_selection(serial);
+            }
+            (FieldAction::Cut | FieldAction::Copy, None) => {
+                debug!("{action:?} dropped: no key press or pointer click this turn to copy with");
+            }
+            (FieldAction::Paste, _) => self.start_paste(),
+            (FieldAction::SelectAll, _) => {
+                self.apply_plain_action_inner(KeyAction::SelectAll, None, false);
+            }
+        }
+    }
+
+    /// Applies `focus_target(name):cut/copy/paste/select_all` to the field that holds the keyboard
+    /// now and is bound to `name`; any other is left alone.
+    pub(in crate::wayland) fn apply_field_actions(&mut self) {
+        let serial = self.input_serial.as_ref().map(|armed| armed.serial).or(self.key_serial);
+        for (name, action) in crate::lua::focus::take_actions(self.client.lua()) {
+            self.prune_text_field_focus();
+            if self.holder(false).as_deref() == Some(&*name) {
+                self.run_field_action(action, serial);
+            }
+        }
+    }
+
+    /// Writes the `has_selection` signals from the field that holds the keyboard.
+    pub(in crate::wayland) fn sync_selection(&self) {
+        crate::lua::signal::write_selection(self.client.lua(), self.holder(true).as_deref());
     }
 
     /// Seeds the draft of each field created since the last turn with its `initial_text`, through
@@ -1303,6 +1362,19 @@ mod tests {
         let mut selection = (3, 9);
         edit_plain_buffer(&mut buffer, &mut selection, KeyAction::Move(Motion::Left), false, Escape::Clear, false);
         assert_eq!((buffer.as_str(), selection), ("on my way", (3, 3)), "the arrow lands on the near edge");
+    }
+
+    #[test]
+    fn the_holder_is_a_focused_key_taking_field_and_has_text_selected_when_asked() {
+        let named = |field: &FocusedTextField| Some(format!("f{}", field.buffer.len()));
+        let selected = FocusedTextField { selection: (1, 3), ..draft(1, "abcd") };
+        let collapsed = draft(1, "abcd");
+        assert_eq!(focus_holder(None, true, false, named), None, "no field");
+        assert_eq!(focus_holder(Some(&selected), false, false, named), None, "not taking keys");
+        assert_eq!(focus_holder(Some(&collapsed), true, true, named), None, "a collapsed selection");
+        assert_eq!(focus_holder(Some(&collapsed), true, false, named).as_deref(), Some("f4"), "paste needs none");
+        assert_eq!(focus_holder(Some(&selected), true, true, named).as_deref(), Some("f4"));
+        assert_eq!(focus_holder(Some(&selected), true, true, |_| None), None, "a field without a focus_target");
     }
 
     #[test]

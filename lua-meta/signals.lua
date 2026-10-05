@@ -91,6 +91,13 @@ function focused(name) end
 ---@return Signal<boolean>
 function focus_visible(name) end
 
+---Whether the plain `textfield` whose `focus_target` is `name` holds the keyboard and has text selected;
+---`false` until it does. One name, one signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
+---@param name string
+---@return Signal<boolean>
+function has_selection(name) end
+
 ---Where the pointer is on the node whose `pointer` is bound to this signal: `{ x, y }` in logical pixels
 ---from its top-left corner while the pointer is over the node or its children, `nil` otherwise. The
 ---engine writes it on pointer motion, and only while something reads it. One name, one signal, across reloads. Read-only.

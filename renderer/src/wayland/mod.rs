@@ -183,6 +183,8 @@ pub struct App {
     drag: Option<input::ActiveDrag>,
     /// The serial for `xdg_popup.grab`, valid for one poll turn (ADR-0049 amendment).
     input_serial: Option<ArmedSerial>,
+    /// The serial of this turn's key press, which a cut or copy from a callback needs.
+    key_serial: Option<u32>,
     /// Never-reset count of every `BTN_LEFT` press and release (ADR-0051 amendment). Count both
     /// edges so a later turn has something to compare, whatever order the compositor batches
     /// dismissal relative to `popup_done`. It survives `input_serial`'s per-turn lifetime and

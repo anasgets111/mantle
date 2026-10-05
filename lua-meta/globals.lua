@@ -106,6 +106,18 @@ function FocusHandle:request() end
 ---@param text string
 function FocusHandle:set_text(text) end
 
+---Cut the selection to the clipboard, if this field holds the keyboard. See the input guide for when it applies.
+function FocusHandle:cut() end
+
+---Copy the selection to the clipboard, under the conditions of `:cut()`.
+function FocusHandle:copy() end
+
+---Paste the clipboard as Ctrl+V does, under the conditions of `:cut()`.
+function FocusHandle:paste() end
+
+---Select all the text, under the conditions of `:cut()`.
+function FocusHandle:select_all() end
+
 ---Names a plain textfield or focusable control that `:request()` can focus from a click or key callback.
 ---[docs](https://anasgets111.github.io/mantle/guide/input.html#text-fields)
 ---@param name string Shared with the node's `focus_target` property.
