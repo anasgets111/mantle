@@ -83,6 +83,7 @@ In a terminal, `mantle call volume.up 10` prints the handler's return value, suc
 | `mantle toggle <name> <value>` | Sets the state to `value`. If it already holds `value`, restores the `initial` its `state(name, initial)` declares |
 | `mantle call <name> [args...]` | Runs the config's `action(name, fn)` with `args`, waits for it and prints what it returned |
 | `mantle call` | Prints each `action` name the running config declares, one per line, sorted. After a failed reload, the actions [it left](runtime.md#evaluation-reload-and-generations) |
+| `mantle input <surface> <verb> ...` | Sends synthetic pointer or keyboard input to one surface of the running config, for testing. See [Injecting input](#injecting-input) |
 | `mantle set`, `mantle toggle` | Prints each `state` the running config declares, sorted, as `name<TAB>value`. The value is JSON with strings quoted, so passed back as one argument, `mantle set <name> <value>` restores it: `"true"` stays a string. A value JSON cannot hold (a function, a number-keyed table that is not a list) prints the name alone. After a failed reload, the states of the scene still on screen |
 | `mantle -V`, `--version` | Prints `mantle <version>` |
 | `mantle -h`, `--help` | Prints the built-in help |
@@ -99,7 +100,7 @@ Flags and the command may come in any order. `-V` and `-h` win over anything aft
 | `--profile[=SECS]` | Run only | Logs idle-loop, heap and PSS/GPU memory reports every `SECS` seconds, default 60, with each capability's last snapshot as `name=<bytes>B/<sent>/<deduped>`: pushes sent to the renderer and pushes dropped as equal to the last, since start. Implies `-v` |
 | `--force` | `init` only | Overwrites `.luarc.json` and `shell.lua` |
 | `-f`, `--follow` | `log` only | Follows the log until its shell exits |
-| `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `log`, `stop` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
+| `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `input`, `log`, `stop` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
 
 A flag given to a command it does not apply to is an error, not ignored. `--detached` is the flag
 `-d` passes to the copy it starts; typed by hand, it is ignored and the shell runs in the
@@ -168,7 +169,7 @@ Client commands pick one:
 
 | Command | `--pid` | `-c` | Neither |
 | :--- | :--- | :--- | :--- |
-| `set`, `toggle`, `call` | That running shell | The newest running shell on that config, else an error | The newest running shell on the default config, else the newest running shell of any config |
+| `set`, `toggle`, `call`, `input` | That running shell | The newest running shell on that config, else an error | The newest running shell on the default config, else the newest running shell of any config |
 | `log` | That shell, running or stopped | The newest running shell on that config, else its last stopped run | The newest running shell, with a note when several are running, else the last stopped run this login |
 
 A stopped run's log stays until logout clears `$XDG_RUNTIME_DIR`. `mantle log` says so when it
@@ -257,12 +258,47 @@ you to run `mantle init` again.
 It starts no programs and writes no state. On failure it prints only the error, not the config's
 `print` output.
 
+## Injecting input
+
+`mantle input <surface> <verb> ...` feeds events to one surface through the code real input runs:
+hit testing, hover, `on_press`, `on_click`, `on_drag`, `on_wheel`, focus and `textfield` editing. It
+never reaches another client, moves the real pointer or cursor, or takes the compositor's keyboard
+focus.
+
+| Verb | Sends |
+| :--- | :--- |
+| `move X Y` | Pointer motion to `X`, `Y`: logical pixels in the surface |
+| `press [button]`, `release [button]` | A button edge at the last position; `button` is `left` (default), `right` or `middle`. Needs a `move`, `click`, `drag` or `wheel` on that surface first |
+| `click X Y [button]` | `move`, `press`, `release` |
+| `drag X1 Y1 X2 Y2 [button]` | `move` to the start, `press`, `move` to the end, `release`: an `on_drag` runs `"start"`, `"move"` and `"end"` |
+| `wheel X Y DY` | `DY` notches at `X`, `Y`, positive scrolling down. `on_wheel` gets the negated count, as for a real wheel |
+| `key <combo>` | One key press: `Return`, `Down`, `a`, or with modifiers, `ctrl+a`, `shift+Tab`. Only `ctrl` and `shift` are modifiers; names are xkb keysyms, case-insensitive |
+| `type <text>` | The text as one commit, as an input method or a paste delivers it, so `max_length` and `on_change` apply. Fails when no `textfield` in that surface is focused |
+
+`<surface>` is the id the config declares. A surface with an instance per output is named
+`id@output`; the bare `id` works only while one instance is shown. A hidden surface is not found.
+Click a `textfield` to focus it, then `type` or `key`; each command is one request, and the scene
+re-resolves between requests, not between the steps of one.
+
+Refused, with an error on stderr and exit 1:
+
+- a `lock` surface;
+- a press or release over a `secure_submit` field or a `submit = true` node, and any `key` or `type`
+  while a `secure_submit` field holds focus, including the real keyboard's;
+- `ctrl+c` and `ctrl+v`, which need the compositor's clipboard;
+- an unknown, ambiguous or hidden surface, a pointer button with no position, a bad combo or a
+  modifier other than `ctrl` and `shift`.
+
+Injected presses carry no compositor serial. A `popup` with `grab = true`, or `toplevel(id):move()`,
+`:resize()` and `:show_menu()` called from the press, warn in `mantle log` and do nothing; the rest
+of the press runs.
+
 ## Exit codes
 
 | Code | When |
 | :--- | :--- |
 | 0 | Success. For `set` and `toggle`: the shell applied the write |
-| 1 | The command failed. It prints the reason on stderr: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
+| 1 | The command failed. It prints the reason on stderr: no shell running, no shell with that `--pid`, `XDG_RUNTIME_DIR` unset, the socket unreachable, no log this login, `check` found an error, `call` failed or timed out, `set` or `toggle` was refused or timed out, `input` was refused or timed out, `-d` could not start the shell (not running within 5 s, or it exited), `init` could not write a file |
 | 2 | Bad arguments: unknown flag, missing name or value, a non-numeric `--pid`, `--profile=0`, a flag the command does not take, `--pid` with `-c`, `-c` with `list`. It prints `mantle: <reason>` and the help text. Also `mantle-renderer` run by hand |
 
 ## How do I…
@@ -338,6 +374,6 @@ See also: [runtime](runtime.md) · [named state](signals.md#named-state) ·
 Supervisor, Renderer and generation.
 
 Source: [argument parsing](../../supervisor/src/cli.rs), [commands](../../supervisor/src/main.rs),
-[shell selection](../../supervisor/src/instance.rs), [set/toggle/call client](../../supervisor/src/control_client.rs),
-[state writes](../../renderer/src/lua/signal/globals.rs), [check](../../renderer/src/check.rs),
+[shell selection](../../supervisor/src/instance.rs), [set/toggle/call/input client](../../supervisor/src/control_client.rs),
+[state writes](../../renderer/src/lua/signal/globals.rs), [input injection](../../renderer/src/wayland/input/inject.rs), [check](../../renderer/src/check.rs),
 [init](../../supervisor/src/setup.rs), [log](../../supervisor/src/log.rs), [levels](../../shared/src/log.rs).

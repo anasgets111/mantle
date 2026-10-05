@@ -72,6 +72,8 @@ taffy = { version = "0.14.0", default-features = false, features = ["std", "flex
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
 wayland-client.workspace = true
+# Key names for `mantle input key`. Already compiled through smithay-client-toolkit's `xkbcommon` feature.
+xkbcommon = "0.8.0"
 # Generate the Hyprland address mapping extension; already used by wayland-client.
 wayland-scanner = "0.31.10"
 wayland-egl = "0.32.11"

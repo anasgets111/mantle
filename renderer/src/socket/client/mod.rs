@@ -38,13 +38,16 @@ struct ReloadState {
 
 /// What an inbound frame still owes Wayland after [`RendererClient::handle_frame`]: `ApplyPending`
 /// needs `crate::wayland::App`'s surfaces, `SetSessionLock` its SCTK lock state (ADR-0042).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FrameOutcome {
     /// Fully serviced by [`RendererClient::handle_frame`].
     Handled,
     /// ADR-0042/ADR-0052's `SetSessionLock`: match the session lock to this flag
     /// (`crate::wayland::App::set_session_lock`).
     SetSessionLock(bool),
+    /// A control client's `mantle input`: only `crate::wayland::App` has the surfaces to deliver it
+    /// to, and it answers the call.
+    Inject { id: u64, inject: shared::Inject },
     /// A successful `Reevaluate`, which may change the surface set (`crate::wayland::App::apply_pending`).
     ApplyPending,
 }
@@ -579,6 +582,7 @@ impl RendererClient {
                     error!("failed to answer a `mantle` listing: {err}");
                 }
             }
+            SupervisorFrame::Inject { id, inject } => return FrameOutcome::Inject { id, inject },
             // The Supervisor routes these to control clients; one arriving here is a wire fault.
             SupervisorFrame::CallResult(result) => {
                 error!("ignoring a CallResult for id {}; nothing here calls", result.id);
@@ -2659,6 +2663,19 @@ mod tests {
         assert_eq!(
             client.handle_frame(SupervisorFrame::SetSessionLock(SetSessionLock { locked: false })),
             FrameOutcome::SetSessionLock(false)
+        );
+    }
+
+    #[test]
+    fn an_input_frame_is_left_for_the_surfaces_that_can_deliver_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
+        let (mut client, _outbound_rx) = test_client(&path);
+        let inject = shared::Inject { surface: "bar".into(), steps: vec![shared::InputStep::Text("a".into())] };
+
+        assert_eq!(
+            client.handle_frame(SupervisorFrame::Inject { id: 7, inject: inject.clone() }),
+            FrameOutcome::Inject { id: 7, inject }
         );
     }
 

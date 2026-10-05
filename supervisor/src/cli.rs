@@ -26,6 +26,9 @@ pub enum Command {
         name: String,
         arguments: Vec<serde_json::Value>,
     },
+    /// `input <surface> <verb> ...` synthesises input into one surface of the running config,
+    /// through the handlers real input reaches.
+    Input(shared::Inject),
     /// A bare `call`, `set` or `toggle` prints what that verb can reach in the running config.
     ListDeclared(shared::Declared),
     /// `log [-f]` prints what a run wrote to stdout and stderr, which a shell with no terminal
@@ -73,6 +76,11 @@ USAGE:
     mantle call                 list the config's actions, one per line
     mantle set, mantle toggle   list the config's states, one per line, as
                                 NAME<TAB>VALUE with VALUE in JSON
+    mantle input <SURFACE> <VERB> ...
+                                synthesise input into one surface:
+                                move X Y | press [BUTTON] | release [BUTTON]
+                                click X Y [BUTTON] | drag X1 Y1 X2 Y2 [BUTTON]
+                                wheel X Y DY | key COMBO | type TEXT
     mantle log [-f]             print the shell's stdout and stderr
     mantle list                 show running shells: PID UPTIME DIR CONFIG
     mantle stop                 stop a running shell and wait for it to exit
@@ -84,8 +92,8 @@ OPTIONS:
                          return, sending its output to `mantle log`
         --force          init only: overwrite files that already exist
     -f, --follow         log only: keep printing until the shell exits
-        --pid <PID>      set, toggle, call, log and stop: the shell `list` shows,
-                         not with -c
+        --pid <PID>      set, toggle, call, input, log and stop: the shell
+                         `list` shows, not with -c
         --profile[=SECS] run only: log idle, heap and PSS/GPU reports every
                          SECS seconds, 60 by default. Implies -v, which is
                          the level the reports print at
@@ -106,6 +114,13 @@ false)` flips; bind `mantle toggle modal launcher` and `state(\"modal\", \"\")`
 becomes \"launcher\", or \"\" again when it already was. VALUE is read as JSON
 (true, 3, \"text\", [1,2]); anything that is not JSON is taken as a string, so
 quoting `notifications` is optional.
+
+`input` is for testing a running config. SURFACE is a declared surface id; a
+surface with one instance per output needs `id@output`. Coordinates are logical
+pixels in the surface, BUTTON is left (default), right or middle, DY is notches
+(positive scrolls down), COMBO is like `ctrl+a`, `Return` or `shift+Tab`, and
+TEXT is committed as an IME would. Lock surfaces and `secure_submit` fields
+refuse it, and a popup grab or window move needs a real press.
 
 `log` prints a shell's log from its runtime directory, and `-f` keeps reading
 until that shell exits. Every run writes it; a terminal, a redirect or a pipe
@@ -185,7 +200,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             continue;
         }
         match arg.as_str() {
-            "init" | "check" | "set" | "toggle" | "call" | "log" | "list" | "stop" if command.is_none() => {
+            "init" | "check" | "set" | "toggle" | "call" | "input" | "log" | "list" | "stop" if command.is_none() => {
                 command = Some(arg);
             }
             // Take the state name and `set` value before flags; a value may begin with a dash
@@ -197,7 +212,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             }
             // `call` takes a name and however many arguments the action declares, so no two-slot
             // cap. A JSON argument beginning with a dash is still a value, as above.
-            _ if matches!(command.as_deref(), Some("call")) && !is_option(&arg) => {
+            _ if matches!(command.as_deref(), Some("call" | "input")) && !is_option(&arg) => {
                 positional.push(arg);
             }
             "-c" | "--config" => {
@@ -265,6 +280,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 Some(name) => Command::Call { name, arguments: positional.map(json_or_string).collect() },
             }
         }
+        Some("input") => Command::Input(inject_from(positional)?),
         Some("log") => Command::Log { follow },
         Some("list") => Command::List,
         Some("stop") => Command::Stop,
@@ -290,12 +306,13 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
             command,
             Command::SetState(_)
                 | Command::Call { .. }
+                | Command::Input(_)
                 | Command::ListDeclared(_)
                 | Command::Log { .. }
                 | Command::Stop
         )
     {
-        return Err("--pid is only meaningful with `set`, `toggle`, `call`, `log` and `stop`".to_string());
+        return Err("--pid is only meaningful with `set`, `toggle`, `call`, `input`, `log` and `stop`".to_string());
     }
     if config_dir.is_some() && command == Command::List {
         return Err("`list` shows every config's shells".to_string());
@@ -309,6 +326,46 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
         verbose = verbose.max(1);
     }
     Ok(Args { command, config_dir, detach, profile, pid, verbose })
+}
+
+/// `input`'s words after the verb: `<surface> <verb> args...`. `click` and `drag` are the move,
+/// press and release a real pointer would send.
+fn inject_from(words: Vec<String>) -> Result<shared::Inject, String> {
+    use shared::{InputButton, InputStep};
+    const USAGE: &str = "input takes a surface and a verb: move X Y | press [BUTTON] | release [BUTTON] | click X Y [BUTTON] | drag X1 Y1 X2 Y2 [BUTTON] | wheel X Y DY | key COMBO | type TEXT";
+    let [surface, verb, args @ ..] = words.as_slice() else { return Err(USAGE.into()) };
+    let number = |raw: &String| {
+        raw.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{raw:?} is not a number"))
+    };
+    let button = |raw: Option<&String>| match raw.map(String::as_str) {
+        None | Some("left") => Ok(InputButton::Left),
+        Some("right") => Ok(InputButton::Right),
+        Some("middle") => Ok(InputButton::Middle),
+        Some(other) => Err(format!("button is left, right or middle, not {other:?}")),
+    };
+    let steps = match (verb.as_str(), args) {
+        ("move", [x, y]) => vec![InputStep::Move { x: number(x)?, y: number(y)? }],
+        ("press", [] | [_]) => vec![InputStep::Press(button(args.first())?)],
+        ("release", [] | [_]) => vec![InputStep::Release(button(args.first())?)],
+        ("click", [x, y, rest @ ..]) if rest.len() <= 1 => {
+            let button = button(rest.first())?;
+            vec![InputStep::Move { x: number(x)?, y: number(y)? }, InputStep::Press(button), InputStep::Release(button)]
+        }
+        ("drag", [x1, y1, x2, y2, rest @ ..]) if rest.len() <= 1 => {
+            let button = button(rest.first())?;
+            vec![
+                InputStep::Move { x: number(x1)?, y: number(y1)? },
+                InputStep::Press(button),
+                InputStep::Move { x: number(x2)?, y: number(y2)? },
+                InputStep::Release(button),
+            ]
+        }
+        ("wheel", [x, y, dy]) => vec![InputStep::Wheel { x: number(x)?, y: number(y)?, dy: number(dy)? }],
+        ("key", [combo]) => vec![InputStep::Key(combo.clone())],
+        ("type", [text]) => vec![InputStep::Text(text.clone())],
+        _ => return Err(USAGE.into()),
+    };
+    Ok(shared::Inject { surface: surface.clone(), steps })
 }
 
 fn pid_from(raw: &str) -> Result<u32, String> {
@@ -488,6 +545,41 @@ mod tests {
         assert_eq!((parsed.command, parsed.pid), (Command::ListDeclared(Declared::Actions), Some(5)));
         assert!(parse_args(&["set", "-c", "/"]).unwrap().config_dir.is_some());
         assert!(parse_args(&["set", "--pid", "5", "-c", "/"]).is_err(), "--pid and -c still exclude each other");
+    }
+
+    #[test]
+    fn input_turns_each_verb_into_the_events_a_real_device_would_send() {
+        use shared::{InputButton::*, InputStep::*};
+        let steps = |args: &[&str]| match parse_args(&[&["input", "bar"], args].concat()).unwrap().command {
+            Command::Input(inject) => {
+                assert_eq!(inject.surface, "bar");
+                inject.steps
+            }
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(steps(&["move", "1", "2.5"]), vec![Move { x: 1.0, y: 2.5 }]);
+        assert_eq!(steps(&["press"]), vec![Press(Left)]);
+        assert_eq!(steps(&["release", "right"]), vec![Release(Right)]);
+        assert_eq!(steps(&["click", "3", "4"]), vec![Move { x: 3.0, y: 4.0 }, Press(Left), Release(Left)]);
+        assert_eq!(
+            steps(&["drag", "1", "2", "-3", "4", "middle"]),
+            vec![Move { x: 1.0, y: 2.0 }, Press(Middle), Move { x: -3.0, y: 4.0 }, Release(Middle)]
+        );
+        assert_eq!(steps(&["wheel", "1", "2", "-1"]), vec![Wheel { x: 1.0, y: 2.0, dy: -1.0 }]);
+        assert_eq!(steps(&["key", "shift+Tab"]), vec![Key("shift+Tab".into())]);
+        assert_eq!(steps(&["type", "hi there"]), vec![Text("hi there".into())]);
+        for bad in [
+            &["input"][..],
+            &["input", "bar"],
+            &["input", "bar", "click", "1"],
+            &["input", "bar", "click", "1", "x"],
+            &["input", "bar", "press", "back"],
+            &["input", "bar", "type", "a", "b"],
+            &["input", "bar", "jump"],
+        ] {
+            assert!(parse_args(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(parse_args(&["input", "bar", "press", "--pid", "5"]).unwrap().pid, Some(5));
     }
 
     #[test]

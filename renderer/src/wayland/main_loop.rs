@@ -234,6 +234,19 @@ pub fn run(
             match app.client.handle_frame(frame) {
                 FrameOutcome::Handled => {}
                 FrameOutcome::ApplyPending => app.apply_pending(&qh, None),
+                FrameOutcome::Inject { id, inject } => {
+                    let outcome = match app.inject_input(&inject) {
+                        Ok(()) => shared::CallOutcome::Returned(serde_json::Value::Null),
+                        Err(why) => {
+                            warn!("`mantle input {}` refused: {why}", inject.surface);
+                            shared::CallOutcome::Failed(why)
+                        }
+                    };
+                    let result = RendererFrame::CallResult(shared::CallResult { id, outcome });
+                    if let Err(err) = app.outbound_tx.send(result) {
+                        error!("failed to answer `mantle input {}`: {err}", inject.surface);
+                    }
+                }
                 // Service immediately: lock declaration is tracked-surface state, not a
                 // capability-push result (ADR-0052 decision 3), and deferring weakens "secure now".
                 FrameOutcome::SetSessionLock(locked) => {

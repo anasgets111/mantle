@@ -168,6 +168,7 @@ fn frame_label(frame: &RendererFrame) -> &'static str {
         RendererFrame::SetState { .. } => "SetState",
         RendererFrame::Call(_) => "Call",
         RendererFrame::ListDeclared { .. } => "ListDeclared",
+        RendererFrame::Inject { .. } => "Inject",
     }
 }
 

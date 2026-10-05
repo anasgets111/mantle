@@ -5,6 +5,7 @@ use shared::{debug, error};
 
 use super::*;
 mod clipboard;
+mod inject;
 pub(in crate::wayland) mod keyboard;
 pub(super) use clipboard::{ClipboardSource, PendingPaste};
 pub(crate) use keyboard::NavigateKey;

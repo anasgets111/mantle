@@ -153,6 +153,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
         cli::Command::SetState(set) => control_client::send(set, &instance(false)?.dir),
         cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance(false)?.dir),
+        cli::Command::Input(inject) => control_client::inject(inject, &instance(false)?.dir),
         cli::Command::ListDeclared(declared) => control_client::list(declared, &instance(false)?.dir),
         cli::Command::Log { follow } => {
             let colour = std::io::IsTerminal::is_terminal(&std::io::stdout());
@@ -385,6 +386,9 @@ async fn run_supervisor(
                 // stamped by the connection that is holding its socket open for the answer.
                 RendererFrame::Call(call) => {
                     send_to_authoritative(&supervisor, &call_routes, call.id, SupervisorFrame::Call(call));
+                }
+                RendererFrame::Inject { id, inject } => {
+                    send_to_authoritative(&supervisor, &call_routes, id, SupervisorFrame::Inject { id, inject });
                 }
                 RendererFrame::ListDeclared { id, declared } => {
                     send_to_authoritative(&supervisor, &call_routes, id, SupervisorFrame::ListDeclared { id, declared });

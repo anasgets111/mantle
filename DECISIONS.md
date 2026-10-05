@@ -7988,3 +7988,20 @@ interactive move, resize and the window menu, and nothing more.
 
 Rejected: four `caret_*` properties, which crowd the field and leave `caret_color` beside them.
 Breaking, pre-1.0.
+
+## 0341. `mantle input` injects through the real input handlers
+
+Testing a running config needs synthetic input. A parallel dispatch to Lua would drift from real
+behaviour; compositor-level injection (virtual pointer, uinput) would reach other clients.
+
+1. **One instance, one core.** The renderer feeds injected steps to the same `pointer_event` and
+   `apply_key` that real events call; `type` takes the IME-commit path, so `max_length` and
+   `on_change` apply. Focus and modifiers are swapped in for one event and restored; the real
+   cursor, focus and clipboard are untouched.
+2. **No secrets.** Refused: a lock surface, a press on a masked field or `submit` node, any key
+   while a secure field holds focus, and Ctrl+C/Ctrl+V.
+3. **No compositor serial.** An injected press arms none and clears a stale one, so popup grabs and
+   `toplevel` requests warn and do nothing.
+
+Trade-offs: a request stops at its first refused step after running the earlier ones; only ctrl
+and shift modifiers. The App-level paths have no unit test until `App` has a compositor-free harness.

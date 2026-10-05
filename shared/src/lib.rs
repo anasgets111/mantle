@@ -177,6 +177,45 @@ pub enum Declared {
     States,
 }
 
+/// `mantle input <surface> ...`: synthetic input for one named surface of the running config, run
+/// through the same handlers as real input. Answered by a [`CallResult`]: `Returned(null)` once every
+/// step ran, or the refusal.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Inject {
+    /// A declared surface id, or `id@output` when that id has one instance per output.
+    pub surface: String,
+    pub steps: Vec<InputStep>,
+}
+
+/// One synthetic event. Coordinates are logical pixels in the surface.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum InputStep {
+    Move {
+        x: f64,
+        y: f64,
+    },
+    /// At the position the last `Move` or `Wheel` left on that surface.
+    Press(InputButton),
+    Release(InputButton),
+    /// `dy` notches, positive scrolling down like the wire's axis.
+    Wheel {
+        x: f64,
+        y: f64,
+        dy: f64,
+    },
+    /// A combo such as `ctrl+a`, `Return` or `shift+Tab`.
+    Key(String),
+    /// Committed text, as an IME commit or a paste would deliver it.
+    Text(String),
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum InputButton {
+    Left,
+    Right,
+    Middle,
+}
+
 /// The answer to one [`Call`], carrying `id` back so the Supervisor can find the peer that waits.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CallResult {
@@ -367,6 +406,12 @@ pub enum SupervisorFrame {
         id: u64,
         declared: Declared,
     },
+    /// A control client's `mantle input`, routed like [`Self::Call`]; the Renderer answers with a
+    /// [`CallResult`] carrying this `id`.
+    Inject {
+        id: u64,
+        inject: Inject,
+    },
     /// That call's answer, routed back to the waiting control client (ADR-0197).
     CallResult(CallResult),
 }
@@ -393,6 +438,11 @@ pub enum RendererFrame {
     ListDeclared {
         id: u64,
         declared: Declared,
+    },
+    /// Control-client frame: `mantle input`, its `id` zero like `Call`'s.
+    Inject {
+        id: u64,
+        inject: Inject,
     },
     /// A generation answering a forwarded [`Call`] (ADR-0197).
     CallResult(CallResult),

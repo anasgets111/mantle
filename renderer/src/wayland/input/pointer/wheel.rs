@@ -44,7 +44,7 @@ impl App {
     /// browser chaining to the parent; no config needs those edge cases. The offset written is
     /// unclamped: `layout::scene` owns the bound and writes back what it used.
     /// `on_wheel` receives the vertical axis only.
-    pub(super) fn scroll_at(
+    pub(in crate::wayland::input) fn scroll_at(
         &mut self,
         index: usize,
         position: (f64, f64),

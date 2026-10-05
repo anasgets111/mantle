@@ -1,4 +1,4 @@
-//! Client half of `mantle set`, `mantle toggle` (ADR-0112), `mantle call` (ADR-0197) and their bare
+//! Client half of `mantle set`, `mantle toggle` (ADR-0112), `mantle call` (ADR-0197), `mantle input` and their bare
 //! listings: connect to the running Supervisor, send a handshake and one frame, and wait for its
 //! answer, so a refused write or a failed call exits non-zero.
 //!
@@ -77,6 +77,16 @@ pub fn call(name: String, arguments: Vec<serde_json::Value>, instance_dir: &Path
             }
             Ok(())
         }
+    }
+}
+
+/// Sends one `mantle input` and fails with the shell's refusal (unknown or ambiguous surface, a
+/// lock surface, a `secure_submit` field).
+pub fn inject(inject: shared::Inject, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
+    let surface = inject.surface.clone();
+    match ask(instance_dir, RendererFrame::Inject { id: 0, inject }, &surface)? {
+        CallOutcome::Failed(why) => Err(format!("input to `{surface}` refused: {why}").into()),
+        CallOutcome::Returned(_) => Ok(()),
     }
 }
 

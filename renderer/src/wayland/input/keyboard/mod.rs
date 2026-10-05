@@ -514,6 +514,55 @@ impl App {
         }
     }
 
+    /// Runs `deliver` as though `surface_id` held the keyboard and `ctrl`/`shift` were down, then puts
+    /// the real focus and modifiers back. Refuses while a masked field holds focus: injection never
+    /// reaches a secret.
+    fn with_injected_keyboard<T>(
+        &mut self,
+        surface_id: &str,
+        (ctrl, shift): (bool, bool),
+        deliver: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, String> {
+        let focus = self.keyboard_focus.replace(surface_id.to_string());
+        let held = (self.ctrl_held, self.shift_held);
+        (self.ctrl_held, self.shift_held) = (ctrl, shift);
+        let result = if self.focused_secure_submit.is_some() {
+            Err("a `secure_submit` field holds the keyboard".to_string())
+        } else {
+            Ok(deliver(self))
+        };
+        self.keyboard_focus = focus;
+        (self.ctrl_held, self.shift_held) = held;
+        result
+    }
+
+    /// `mantle input key`: [`Self::apply_key`] with no serial and no repeat, so the clipboard chords
+    /// that need the compositor's selection are refused.
+    pub(in crate::wayland::input) fn inject_key(
+        &mut self,
+        surface_id: &str,
+        event: &KeyEvent,
+        modifiers: (bool, bool),
+    ) -> Result<(), String> {
+        if modifiers.0 && matches!(event.keysym, Keysym::c | Keysym::C | Keysym::v | Keysym::V) {
+            return Err("copy and paste need the compositor's clipboard".to_string());
+        }
+        self.with_injected_keyboard(surface_id, modifiers, |app| app.apply_key(event, false, None))
+    }
+
+    /// `mantle input type`: the commit path of an input method, so `max_length` and `on_change`
+    /// apply. Fails when no plain field is typing, which a real keystroke would drop silently.
+    pub(in crate::wayland::input) fn inject_text(&mut self, surface_id: &str, text: &str) -> Result<(), String> {
+        self.with_injected_keyboard(surface_id, (false, false), |app| {
+            app.prune_text_field_focus();
+            if !app.focused_text_field.as_ref().is_some_and(|field| app.text_field_takes_keys(field)) {
+                return Err(format!("no textfield is focused in {surface_id}; press one first"));
+            }
+            app.apply_ime_edit((0, 0), Some(text));
+            Ok(())
+        })?
+    }
+
     /// The `on_escape` this Escape press fires, resolved before the fields clear or drop focus.
     fn surface_escape_handler(&self, repeat: bool) -> Option<(String, Function)> {
         let plain = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)).map(|field| {

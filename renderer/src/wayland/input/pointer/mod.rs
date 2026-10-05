@@ -404,186 +404,201 @@ impl PointerHandler for App {
             let Some(index) = self.index_of_surface(&event.surface) else {
                 continue;
             };
-            match event.kind {
-                // Left/right/middle only (ADR-0050 second amendment); other codes cannot arm or
-                // fire a config handler.
-                PointerEventKind::Press { button, serial, .. } => {
-                    if pointer_button_name(button).is_none() {
-                        continue;
-                    }
-                    let instance_id = self.surfaces[index].surface_id.clone();
-                    // ADR-0049 amendment: this turn's re-resolve consumes it; `run` clears it at
-                    // turn end. Both click edges arm it (see [`ArmedSerial`]).
-                    self.input_serial = Some(ArmedSerial { serial, instance_id: instance_id.clone() });
-                    // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
-                    self.pointer_input_count += 1;
-                    self.cancel_text_input_composition();
-                    let hit = self.hit_under(index, event.position);
-                    // Read before the call consumes `hit.field`; a held draft is still a plain
-                    // field (ADR-0108).
-                    let pressed_a_field = hit.field.is_some();
-                    let kind = match &hit.field {
-                        Some(FieldTarget::Plain { .. }) => super::keyboard::ControlKind::Plain,
-                        Some(FieldTarget::Masked { .. }) => super::keyboard::ControlKind::Masked,
-                        None => super::keyboard::ControlKind::Button,
-                    };
-                    // Clones, not takes: the seams below compare what arrives against the focus
-                    // still held to decide whether to zeroize and what to repaint.
-                    let (masked, plain) = press_chooses_focus(
-                        hit.field,
-                        &instance_id,
-                        hit.caret,
-                        self.shift_held,
-                        self.focused_secure_submit.clone(),
-                        self.focused_text_field.clone(),
-                    );
-                    // Reassign through the zeroizing transition seam.
-                    self.focus_secure_submit(masked);
-                    self.focus_text_field(plain);
-                    let next = hit.control.map(|id| super::keyboard::FocusedControl {
-                        surface_id: instance_id.clone(),
-                        id,
-                        kind,
-                    });
-                    if pressed_a_field {
-                        self.set_control_focus(next);
-                    } else {
-                        self.focus_control(next);
-                    }
-                    // A press on the control Tab already focused still hides the outline.
-                    self.set_focus_visible(false);
-                    // A textfield press arms no click, so an ancestor `on_click` cannot fire
-                    // (ADR-0092); `textfield` is a leaf. This keeps notification reply boxes
-                    // from also activating the card.
-                    self.armed = hit.click.filter(|_| !pressed_a_field).map(|clickable| ArmedClick {
-                        instance_id: instance_id.clone(),
-                        rect: clickable.rect,
-                        link: clickable.link,
-                        button,
-                    });
-                    // Both press-time handlers run inside one window so `toplevel(id)` requests
-                    // queued by either are sent with this press's serial.
-                    crate::lua::toplevel::begin_press(self.client.lua(), event.position);
-                    if !pressed_a_field
-                        && let (Some(target), Some(name)) = (hit.press, pointer_button_name(button))
-                        && let Err((what, e)) = call_on_press(self.client.lua(), &target.handler, &target, name)
-                    {
-                        warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
-                    }
-                    // Left `on_drag` holds until release (ADR-0116 decision 1); other buttons stay
-                    // free for clicks, and fields drag nothing just as they click nothing.
-                    if button == BTN_LEFT
-                        && !pressed_a_field
-                        && let Some(target) = hit.drag
-                    {
-                        self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target });
-                        self.fire_on_drag(&instance_id, event.position, DragPhase::Start);
-                    }
-                    // The compositor owns the pointer after a move or resize and may send no release,
-                    // so nothing may stay armed for one.
-                    if self.send_toplevel_requests() {
-                        self.drag = None;
-                        self.armed = None;
-                    }
-                }
-                PointerEventKind::Release { button, serial, .. } => {
-                    let Some(name) = pointer_button_name(button) else {
-                        continue;
-                    };
-                    let instance_id = self.surfaces[index].surface_id.clone();
-                    // Clicks fire on release (ADR-0050 decision 2), so this serial arms a popup
-                    // opened by `on_click`.
-                    self.input_serial = Some(ArmedSerial { serial, instance_id: instance_id.clone() });
-                    self.pointer_input_count += 1;
-                    // The pointer is up, so motion stops growing a selection (ADR-0236).
-                    if let Some(field) = self.focused_text_field.as_mut() {
-                        field.selecting = false;
-                    }
-                    // Release does not change focus; drag-off must not un-focus a textfield. End
-                    // drag before click so a combined control commits before its click handler.
-                    if button == BTN_LEFT {
-                        self.fire_on_drag(&instance_id, event.position, DragPhase::End);
-                    }
-                    let hit = self.hit_under(index, event.position).click;
-                    let fires = release_completes_click(
-                        self.armed.as_ref(),
-                        &instance_id,
-                        hit.as_ref().map(|clickable| (clickable.rect, clickable.link.as_deref())),
-                        button,
-                    );
-                    // Clear before callback re-entry; only the matching button ends the slot.
-                    if release_ends_press(self.armed.as_ref(), button) {
-                        self.armed = None;
-                    }
-                    if let Some(clickable) = hit.filter(|_| fires) {
-                        match (clickable.link, clickable.handler) {
-                            // Links take `href`, not the paragraph rect; a link has no `submit`.
-                            (Some(href), Some(handler)) => {
-                                call_logged(&handler, href, format_args!("{instance_id}: on_link"));
-                            }
-                            (_, handler) => {
-                                if clickable.submit {
-                                    self.prune_secure_focus();
-                                    self.finish_secure_submit();
-                                }
-                                if let Some(handler) = handler {
-                                    self.fire_on_click(&instance_id, clickable.rect, name, clickable.at, &handler);
-                                }
-                            }
-                        }
-                    }
-                }
-                // Release will land elsewhere: cancel the armed click. `None` clears all hover
-                // (ADR-0062), since no later Motion may arrive to close a tooltip.
-                PointerEventKind::Leave { .. } => {
-                    // End held drag at the last position; no release reaches this surface.
-                    if let Some(&(_, position)) = self.pointer_at.as_ref() {
-                        let instance_id = self.surfaces[index].surface_id.clone();
-                        self.fire_on_drag(&instance_id, position, DragPhase::End);
-                    }
-                    self.armed = None;
-                    self.cursor_shown = None;
-                    self.pointer_at = None;
-                    let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
-                }
-                // Motion off the armed rect does not disarm; return and release still click. Enter
-                // and Motion update hover and may fire `on_hover` on crossings.
-                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                    let moved = matches!(event.kind, PointerEventKind::Motion { .. });
-                    let instance_id = self.surfaces[index].surface_id.clone();
-                    // Fires before the write: no `on_drag` handler can read `pointer_at`.
-                    if moved {
-                        self.fire_on_drag(&instance_id, event.position, DragPhase::Move);
-                        self.drag_selection(index, &instance_id, event.position);
-                    }
-                    self.pointer_at = Some((instance_id, event.position));
-                    // One lookup and one hit path serve both; `Scene::surface` lends its tree.
-                    let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                    let point = layout::hit::LogicalPoint { x: event.position.0 as f32, y: event.position.1 as f32 };
-                    let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
-                    self.sync_hover(index, tree, &path, HoverUpdate::Pointer);
-                    // Chosen while the tree is still borrowed, shown once that borrow has ended.
-                    let shape = layout::hit::cursor_under(&path, point, &self.shaping);
-                    self.show_cursor(shape);
-                }
-                // Wheel (ADR-0069); use the event's own position.
-                PointerEventKind::Axis { horizontal, vertical, .. } => {
-                    self.scroll_at(
-                        index,
-                        event.position,
-                        horizontal.absolute,
-                        horizontal.value120,
-                        vertical.absolute,
-                        vertical.value120,
-                    );
-                }
-            }
+            self.pointer_event(index, event.position, &event.kind, false);
         }
     }
 }
 
 impl App {
+    /// One pointer event on surface `index`: the path real `wl_pointer` events and `mantle input`
+    /// share. An `injected` press carries no compositor serial, so it arms none and a popup grab or
+    /// window move that wants one is refused.
+    pub(in crate::wayland::input) fn pointer_event(
+        &mut self,
+        index: usize,
+        position: (f64, f64),
+        kind: &PointerEventKind,
+        injected: bool,
+    ) {
+        match *kind {
+            // Left/right/middle only (ADR-0050 second amendment); other codes cannot arm or
+            // fire a config handler.
+            PointerEventKind::Press { button, serial, .. } => {
+                if pointer_button_name(button).is_none() {
+                    return;
+                }
+                let instance_id = self.surfaces[index].surface_id.clone();
+                // ADR-0049 amendment: this turn's re-resolve consumes it; `run` clears it at
+                // turn end. Both click edges arm it (see [`ArmedSerial`]).
+                // An injected press has no serial; clearing a stale one keeps it from authorizing a
+                // popup grab or window move.
+                self.input_serial = (!injected).then(|| ArmedSerial { serial, instance_id: instance_id.clone() });
+                // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
+                self.pointer_input_count += 1;
+                self.cancel_text_input_composition();
+                let hit = self.hit_under(index, position);
+                // Read before the call consumes `hit.field`; a held draft is still a plain
+                // field (ADR-0108).
+                let pressed_a_field = hit.field.is_some();
+                let kind = match &hit.field {
+                    Some(FieldTarget::Plain { .. }) => super::keyboard::ControlKind::Plain,
+                    Some(FieldTarget::Masked { .. }) => super::keyboard::ControlKind::Masked,
+                    None => super::keyboard::ControlKind::Button,
+                };
+                // Clones, not takes: the seams below compare what arrives against the focus
+                // still held to decide whether to zeroize and what to repaint.
+                let (masked, plain) = press_chooses_focus(
+                    hit.field,
+                    &instance_id,
+                    hit.caret,
+                    self.shift_held,
+                    self.focused_secure_submit.clone(),
+                    self.focused_text_field.clone(),
+                );
+                // Reassign through the zeroizing transition seam.
+                self.focus_secure_submit(masked);
+                self.focus_text_field(plain);
+                let next =
+                    hit.control.map(|id| super::keyboard::FocusedControl { surface_id: instance_id.clone(), id, kind });
+                if pressed_a_field {
+                    self.set_control_focus(next);
+                } else {
+                    self.focus_control(next);
+                }
+                // A press on the control Tab already focused still hides the outline.
+                self.set_focus_visible(false);
+                // A textfield press arms no click, so an ancestor `on_click` cannot fire
+                // (ADR-0092); `textfield` is a leaf. This keeps notification reply boxes
+                // from also activating the card.
+                self.armed = hit.click.filter(|_| !pressed_a_field).map(|clickable| ArmedClick {
+                    instance_id: instance_id.clone(),
+                    rect: clickable.rect,
+                    link: clickable.link,
+                    button,
+                });
+                // Both press-time handlers run inside one window so `toplevel(id)` requests
+                // queued by either are sent with this press's serial.
+                crate::lua::toplevel::begin_press(self.client.lua(), position);
+                if !pressed_a_field
+                    && let (Some(target), Some(name)) = (hit.press, pointer_button_name(button))
+                    && let Err((what, e)) = call_on_press(self.client.lua(), &target.handler, &target, name)
+                {
+                    warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
+                }
+                // Left `on_drag` holds until release (ADR-0116 decision 1); other buttons stay
+                // free for clicks, and fields drag nothing just as they click nothing.
+                if button == BTN_LEFT
+                    && !pressed_a_field
+                    && let Some(target) = hit.drag
+                {
+                    self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target });
+                    self.fire_on_drag(&instance_id, position, DragPhase::Start);
+                }
+                // The compositor owns the pointer after a move or resize and may send no release,
+                // so nothing may stay armed for one.
+                if self.send_toplevel_requests() {
+                    self.drag = None;
+                    self.armed = None;
+                }
+            }
+            PointerEventKind::Release { button, serial, .. } => {
+                let Some(name) = pointer_button_name(button) else {
+                    return;
+                };
+                let instance_id = self.surfaces[index].surface_id.clone();
+                // Clicks fire on release (ADR-0050 decision 2), so this serial arms a popup
+                // opened by `on_click`.
+                self.input_serial = (!injected).then(|| ArmedSerial { serial, instance_id: instance_id.clone() });
+                self.pointer_input_count += 1;
+                // The pointer is up, so motion stops growing a selection (ADR-0236).
+                if let Some(field) = self.focused_text_field.as_mut() {
+                    field.selecting = false;
+                }
+                // Release does not change focus; drag-off must not un-focus a textfield. End
+                // drag before click so a combined control commits before its click handler.
+                if button == BTN_LEFT {
+                    self.fire_on_drag(&instance_id, position, DragPhase::End);
+                }
+                let hit = self.hit_under(index, position).click;
+                let fires = release_completes_click(
+                    self.armed.as_ref(),
+                    &instance_id,
+                    hit.as_ref().map(|clickable| (clickable.rect, clickable.link.as_deref())),
+                    button,
+                );
+                // Clear before callback re-entry; only the matching button ends the slot.
+                if release_ends_press(self.armed.as_ref(), button) {
+                    self.armed = None;
+                }
+                if let Some(clickable) = hit.filter(|_| fires) {
+                    match (clickable.link, clickable.handler) {
+                        // Links take `href`, not the paragraph rect; a link has no `submit`.
+                        (Some(href), Some(handler)) => {
+                            call_logged(&handler, href, format_args!("{instance_id}: on_link"));
+                        }
+                        (_, handler) => {
+                            if clickable.submit {
+                                self.prune_secure_focus();
+                                self.finish_secure_submit();
+                            }
+                            if let Some(handler) = handler {
+                                self.fire_on_click(&instance_id, clickable.rect, name, clickable.at, &handler);
+                            }
+                        }
+                    }
+                }
+            }
+            // Release will land elsewhere: cancel the armed click. `None` clears all hover
+            // (ADR-0062), since no later Motion may arrive to close a tooltip.
+            PointerEventKind::Leave { .. } => {
+                // End held drag at the last position; no release reaches this surface.
+                if let Some(&(_, position)) = self.pointer_at.as_ref() {
+                    let instance_id = self.surfaces[index].surface_id.clone();
+                    self.fire_on_drag(&instance_id, position, DragPhase::End);
+                }
+                self.armed = None;
+                self.cursor_shown = None;
+                self.pointer_at = None;
+                let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
+                self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
+            }
+            // Motion off the armed rect does not disarm; return and release still click. Enter
+            // and Motion update hover and may fire `on_hover` on crossings.
+            PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                let moved = matches!(*kind, PointerEventKind::Motion { .. });
+                let instance_id = self.surfaces[index].surface_id.clone();
+                // Fires before the write: no `on_drag` handler can read `pointer_at`.
+                if moved {
+                    self.fire_on_drag(&instance_id, position, DragPhase::Move);
+                    self.drag_selection(index, &instance_id, position);
+                }
+                self.pointer_at = Some((instance_id, position));
+                // One lookup and one hit path serve both; `Scene::surface` lends its tree.
+                let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
+                let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+                let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
+                self.sync_hover(index, tree, &path, HoverUpdate::Pointer);
+                // Chosen while the tree is still borrowed, shown once that borrow has ended.
+                let shape = layout::hit::cursor_under(&path, point, &self.shaping);
+                // The real pointer's cursor is not an injected event's to set.
+                if !injected {
+                    self.show_cursor(shape);
+                }
+            }
+            // Wheel (ADR-0069); use the event's own position.
+            PointerEventKind::Axis { horizontal, vertical, .. } => {
+                self.scroll_at(
+                    index,
+                    position,
+                    horizontal.absolute,
+                    horizontal.value120,
+                    vertical.absolute,
+                    vertical.value120,
+                );
+            }
+        }
+    }
+
     /// One hit-test answers click, field, and drag (ADR-0050 decisions 1/4). Coordinates are
     /// logical surface-local while `paint_surface` remains scale `1.0`; a future HiDPI change must
     /// move this conversion with `paint_surface` and `apply_input_region`. Handlers and targets are
@@ -613,6 +628,13 @@ impl App {
             drag: drag_target(&path),
             press: press_target(&path, point),
         }
+    }
+
+    /// Whether a press or release at `position` would reach a masked field or a `submit` node, which
+    /// `mantle input` refuses to touch.
+    pub(in crate::wayland::input) fn reaches_a_secret(&self, index: usize, position: (f64, f64)) -> bool {
+        let hit = self.hit_under(index, position);
+        matches!(hit.field, Some(FieldTarget::Masked { .. })) || hit.click.is_some_and(|click| click.submit)
     }
 
     /// Grow the focused field's selection to the pointer, keeping its anchor: a press inside a
