@@ -8106,3 +8106,23 @@ Amends ADR-0336 item 1 and ADR-0343 item 4.
 Rejected: GL blend factors, which cover about 4 modes and are wrong over translucency; a second
 copy for the blurred input. Ceilings: one pass per blended layer, not one fused pass per node; a
 blended node's content-mode shadows blend apart from its content.
+
+## 0347. `window.geometry_inset` grows the buffer around the window geometry
+
+A client-decorated window draws its shadow and rounded corners outside its logical frame.
+
+1. **Split.** The buffer is the configure size (the geometry) plus a per-edge inset.
+   `xdg_surface.set_window_geometry(left, top, w, h)` names the frame. The root fills the
+   buffer, and the config places its frame with ordinary margin. Configure sizes and
+   `min_size`/`max_size` stay geometry sizes. Insets round to whole logical px, because the
+   surface size and the request are both integers.
+2. **No engine policy when maximized, fullscreen or tiled.** xdg-shell only advises dropping the
+   shadow, so the engine does not zero the inset. A config binds it to `toplevel(id):state()`,
+   per edge for tiling. An engine guess would remove that choice.
+3. **Input.** The content-following input region (ADR-0038 d5, ADR-0109) is unchanged, so the band
+   is click-through unless a config claims it with resize-handle nodes. A geometry-only region
+   would forbid in-band handles. A whole-buffer region would swallow clicks meant for windows
+   behind the shadow.
+
+Cost: an inset change paints one frame at the new buffer size with the previous layout, as a
+configure already does (ADR-0044 d2).

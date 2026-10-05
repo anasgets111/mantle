@@ -265,6 +265,7 @@ mod tests {
             min_size: None,
             max_size: None,
             decorations: Default::default(),
+            geometry_inset: Default::default(),
         })
     }
 

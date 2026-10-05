@@ -116,6 +116,7 @@ opens.
 | `min_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory hint to the compositor; layout does not enforce it. Both keys required, `0` leaves that axis unconstrained. Also the opening size on an axis the compositor leaves to the client ([size](#size)) |
 | `max_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size |
 | `decorations` | `"server"\|"client"\|Bound` | `"server"` | Who draws the window's frame: `"server"` asks the compositor for its decorations, `"client"` leaves the frame to the app. A compositor without `zxdg_decoration_manager_v1` always leaves it to the app; `toplevel(id):state().decoration` says which was chosen |
+| `geometry_inset` | `number\|Edges\|Bound`, `[0, 256]` | `0` | Room around the frame for a client-drawn shadow; the compositor sizes and tiles by the frame alone. A number sets all four edges ([client-side decoration](#client-side-decoration)) |
 | `on_close` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
 | `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
@@ -133,7 +134,8 @@ property on a reload asks again.
 ## Size
 
 The window's size is the compositor's configure. The root fills it on each axis where it has no
-`width`/`height` of its own; a set one sizes the root inside the window.
+`width`/`height` of its own; a set one sizes the root inside the window. A `geometry_inset` grows
+the surface past that size on each side ([client-side decoration](#client-side-decoration)).
 
 | Compositor | Opening size |
 | :--- | :--- |
@@ -155,6 +157,7 @@ the opening size.
 | Scroll content taller than the window | A `column { height = "fill", scroll = scroll("name") }` ([scroll](../guide/input.md#scroll)) |
 | Close it from a button inside it | Set its `visible` state to `false` from `on_click` |
 | Draw my own title bar | [Custom title bar](#custom-title-bar) |
+| Draw a shadow and rounded corners around my own frame | [Client-side decoration](#client-side-decoration) |
 | Open a menu from it | A [popup](popup.md) with `parent` set to the window's `id` |
 
 ### Custom title bar
@@ -240,6 +243,66 @@ return {
     },
 }
 ```
+
+### Client-side decoration
+
+A window that draws its own frame can also draw its shadow and rounded corners outside it.
+`geometry_inset` adds a band around the window's frame: the buffer is the frame plus the band, the
+root fills the whole buffer, and the compositor sizes, tiles and snaps by the frame alone
+(`xdg_surface.set_window_geometry`). Configure sizes, `min_size` and `max_size` are all the
+frame's. Put the frame inside the band with `padding` on a transparent root, and its `shadows` and
+`radius` draw into the band.
+
+Compositors expect no shadow on a maximized, fullscreen or tiled edge. The engine does not guess:
+bind `geometry_inset` to the [window state](#window-state) and zero those edges.
+
+```lua
+local frame = toplevel("main")
+local SHADOW = 24
+
+local function band(s)
+    if s.maximized or s.fullscreen then return 0 end
+    return {
+        left = s.tiled.left and 0 or SHADOW, right = s.tiled.right and 0 or SHADOW,
+        top = s.tiled.top and 0 or SHADOW, bottom = s.tiled.bottom and 0 or SHADOW,
+    }
+end
+local inset = frame:state():map(band)
+local floating = frame:state():map(function(s) return band(s) ~= 0 end)
+
+return {
+    window {
+        id = "main",
+        title = "Notes",
+        decorations = "client",
+        geometry_inset = inset,
+        child = column {
+            width = "fill", height = "fill", padding = inset,
+            children = {
+                column {
+                    width = "fill", height = "fill", background = "#1e1e2e",
+                    radius = floating:map(function(on) return on and 10 or 0 end),
+                    shadows = { { color = "#00000080", blur = 18, offset = { x = 0, y = 4 } } },
+                    children = {
+                        row {
+                            width = "fill", height = 32, padding = { left = 12 }, background = "#181825",
+                            on_press = function(_, button)
+                                if button == "left" then frame:move() else frame:show_menu() end
+                            end,
+                            children = { text { content = "Notes", foreground = "#cdd6f4", align_v = "center" } },
+                        },
+                    },
+                },
+            },
+        },
+    },
+}
+```
+
+The band takes no pointer input until something in it does: the [input region](index.md#input-region)
+follows content, and a shadow is not content. Resize handles go where the config puts them, inside
+the frame's edge as in the [custom title bar](#custom-title-bar), or in the band as transparent
+nodes with an `on_press` calling `:resize(edge)`.
 
 ### Confirm before closing
 

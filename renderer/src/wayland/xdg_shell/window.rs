@@ -6,7 +6,7 @@ use smithay_client_toolkit::reexports::csd_frame::WindowManagerCapabilities;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
 use super::*;
-use crate::layout::node::Decorations;
+use crate::layout::node::{Decorations, EdgeInsets};
 use crate::lua::call_logged;
 use crate::lua::toplevel::{Action, Bounds, Capabilities, Edge, Request, Tiled, ToplevelState};
 use crate::wayland::surface::MapState;
@@ -16,9 +16,10 @@ use crate::wayland::surface::TrackedRole;
 /// with no min size, that is the opening size when the first configure leaves an axis zero.
 /// Upgrade: an advisory initial size property, or solver-backed `Content` sizing (ADR-0077).
 const UNCONFIGURED_WINDOW_SIZE: (f32, f32) = (640.0, 480.0);
-/// Toplevel buffer size. `xdg_toplevel::configure` binds maximized and fullscreen sizes, so `Some`
-/// axes are authoritative; tiling compositors, including niri, always take this branch. A `None`
-/// axis means "the client picks", the ordinary first configure on a floating compositor. Choose
+/// Toplevel window geometry size, the buffer less `geometry_inset`. `xdg_toplevel::configure`
+/// binds maximized and fullscreen sizes, so `Some` axes are authoritative; tiling compositors,
+/// including niri, always take this branch. A `None` axis means "the client picks", the ordinary
+/// first configure on a floating compositor. Choose
 /// `min_size`, then 640x480, then clamp by positive `max_size`; a zero max means unset per
 /// `set_max_size`. Clamp both axes to 1 because a zero `wl_egl_window` is invalid.
 fn toplevel_size_for(
@@ -42,6 +43,12 @@ fn toplevel_size_for(
         axis(new_size.1, UNCONFIGURED_WINDOW_SIZE.1, min.height, max.height),
     )
 }
+/// The buffer size around a `geometry`-sized window and its `set_window_geometry` rect (x, y,
+/// width, height). Whole logical px, because both the surface size and the request are integers.
+fn window_frame(geometry: (u32, u32), inset: EdgeInsets) -> ((u32, u32), [u32; 4]) {
+    let [top, right, bottom, left] = [inset.top, inset.right, inset.bottom, inset.left].map(|n| n.round() as u32);
+    ((geometry.0 + left + right, geometry.1 + top + bottom), [left, top, geometry.0, geometry.1])
+}
 /// Live `xdg_toplevel` changes (ADR-0049 amendment). All protocol fields are diffed because
 /// title/app-id and size hints remain double-buffered after mapping; `id` is only reconcile
 /// identity. `Option<Option<SizeHint>>` distinguishes unchanged from changed-to-absent, which
@@ -53,9 +60,11 @@ struct WindowUpdate {
     min_size: Option<Option<SizeHint>>,
     max_size: Option<Option<SizeHint>>,
     decorations: Option<Decorations>,
+    geometry_inset: Option<EdgeInsets>,
 }
 fn window_update(applied: &WindowSpec, fresh: &WindowSpec) -> WindowUpdate {
     WindowUpdate {
+        geometry_inset: (fresh.geometry_inset != applied.geometry_inset).then_some(fresh.geometry_inset),
         title: (fresh.title != applied.title).then(|| fresh.title.clone()),
         app_id: (fresh.app_id != applied.app_id).then(|| fresh.app_id.clone()),
         min_size: (fresh.min_size != applied.min_size).then_some(fresh.min_size),
@@ -174,7 +183,7 @@ impl App {
         visible: bool,
     ) {
         self.surfaces.push(TrackedSurface::new(
-            TrackedRole::Window { window: None, spec: spec.clone() },
+            TrackedRole::Window { window: None, spec: spec.clone(), geometry: (0, 0) },
             instance.instance_id.clone(),
         ));
         if visible {
@@ -187,7 +196,7 @@ impl App {
     /// update, but retain the latest spec so a title changed three times while closed opens with
     /// the third value (ADR-0049 decision 1).
     pub(in crate::wayland) fn apply_window_change(&mut self, index: usize, fresh: WindowSpec) {
-        let TrackedRole::Window { window, spec: applied } = &mut self.surfaces[index].role else {
+        let TrackedRole::Window { window, spec: applied, .. } = &mut self.surfaces[index].role else {
             return;
         };
         let update = window_update(applied, &fresh);
@@ -212,6 +221,25 @@ impl App {
         if let Some(decorations) = update.decorations {
             window.request_decoration_mode(Some(decorations.into()));
         }
+        // No configure follows an inset change, so resize here; before the first configure there
+        // is no geometry yet, and that configure frames the window itself.
+        if update.geometry_inset.is_some()
+            && self.surfaces[index].map_state == MapState::Mapped
+            && let Some(buffer) = self.frame_window(index)
+        {
+            self.set_surface_size(index, buffer);
+        }
+    }
+
+    /// Stages `set_window_geometry` for the last configured geometry inside a buffer grown by
+    /// `geometry_inset`, committed by the paint that attaches that buffer; returns its size.
+    fn frame_window(&self, index: usize) -> Option<(u32, u32)> {
+        let TrackedRole::Window { window: Some(window), spec, geometry } = &self.surfaces[index].role else {
+            return None;
+        };
+        let (buffer, [x, y, width, height]) = window_frame(*geometry, spec.geometry_inset);
+        window.set_window_geometry(x, y, width, height);
+        Some(buffer)
     }
 
     /// Creates the toplevel and its required initial unbuffered commit (ADR-0040 decisions
@@ -219,9 +247,8 @@ impl App {
     /// the handler. `XdgShell::bind` already picked up `zxdg_decoration_manager_v1` with
     /// `xdg_wm_base`, so `WindowDecorations::RequestServer` plus
     /// [`Window::request_decoration_mode`] is the whole decoration path, with no second global.
-    /// No geometry request is needed: the default bounding box fits this edge-to-edge shell, with
-    /// no shadow to exclude and no subsurfaces. Missing xdg-shell logs once per attempt and leaves
-    /// the window absent, not fatal.
+    /// The window geometry waits for the first configure ([`App::frame_window`]). Missing
+    /// xdg-shell logs once per attempt and leaves the window absent, not fatal.
     pub(in crate::wayland) fn show_window(&mut self, qh: &QueueHandle<App>, index: usize) {
         let Some(xdg_shell) = self.xdg_shell.as_ref() else {
             error!(
@@ -299,11 +326,13 @@ impl WindowHandler for App {
         };
         let surface_id = self.surfaces[index].surface_id.clone();
         crate::lua::toplevel::publish(self.client.lua(), &surface_id, toplevel_state(&configure));
-        let TrackedRole::Window { spec, .. } = &self.surfaces[index].role else {
+        let TrackedRole::Window { spec, geometry, .. } = &mut self.surfaces[index].role else {
             return;
         };
-        let (width, height) = toplevel_size_for(configure.new_size, spec);
-        self.bind_and_clear(index, width, height);
+        *geometry = toplevel_size_for(configure.new_size, spec);
+        if let Some((width, height)) = self.frame_window(index) {
+            self.bind_and_clear(index, width, height);
+        }
     }
 }
 
@@ -319,6 +348,7 @@ mod tests {
             min_size: None,
             max_size: None,
             decorations: Default::default(),
+            geometry_inset: Default::default(),
         }
     }
 
@@ -367,6 +397,34 @@ mod tests {
         // A zero `max_size` axis is not a maximum of zero: `set_max_size`'s own "0 means no
         // expected maximum size in the given dimension".
         assert_eq!(toplevel_size_for((None, None), &spec), (400, 900));
+    }
+
+    #[test]
+    fn the_inset_grows_the_buffer_around_the_configured_geometry_and_never_the_geometry() {
+        let inset = EdgeInsets { top: 10.0, right: 20.0, bottom: 30.0, left: 40.0 };
+        // A maximized configure binds the geometry, so the shadow band is extra buffer.
+        let mut spec = settings_window();
+        spec.max_size = Some(SizeHint { width: 800.0, height: 600.0 });
+        let geometry = toplevel_size_for((nz(1920), nz(1080)), &spec);
+        assert_eq!(window_frame(geometry, inset), ((1980, 1120), [40, 10, 1920, 1080]));
+        // The client-picked size and its hints are the geometry's, not the buffer's.
+        spec.min_size = Some(SizeHint { width: 320.0, height: 240.0 });
+        assert_eq!(window_frame(toplevel_size_for((None, None), &spec), inset), ((380, 280), [40, 10, 320, 240]));
+        // Whole logical px: the surface size and `set_window_geometry` are integers.
+        let fractional = EdgeInsets { top: 7.6, right: 7.4, bottom: 0.0, left: 0.5 };
+        assert_eq!(window_frame((100, 100), fractional), ((108, 108), [1, 8, 100, 100]));
+        assert_eq!(window_frame((100, 100), EdgeInsets::default()), ((100, 100), [0, 0, 100, 100]));
+    }
+
+    #[test]
+    fn an_inset_change_is_its_own_update() {
+        let applied = settings_window();
+        let mut fresh = applied.clone();
+        fresh.geometry_inset = EdgeInsets { top: 24.0, ..Default::default() };
+        assert_eq!(
+            window_update(&applied, &fresh),
+            WindowUpdate { geometry_inset: Some(fresh.geometry_inset), ..WindowUpdate::default() }
+        );
     }
 
     #[test]

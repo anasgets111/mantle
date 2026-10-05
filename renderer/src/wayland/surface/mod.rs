@@ -90,6 +90,8 @@ pub(super) enum TrackedRole {
         /// `xdg_shell::window::window_update` baseline, retained while hidden so [`App::show_window`] uses
         /// the last re-resolved spec.
         spec: WindowSpec,
+        /// The window geometry size the last configure settled on, without `geometry_inset`.
+        geometry: (u32, u32),
     },
     Popup {
         /// `None` when hidden. `get_popup` consumes `xdg_positioner`, so every open builds a fresh
@@ -511,15 +513,7 @@ impl App {
     /// only in size source: layer-shell supplies it, while a toplevel's `None` axes may be chosen
     /// by the client (see `xdg_shell::window::toplevel_size_for`).
     pub(super) fn bind_and_clear(&mut self, index: usize, width: u32, height: u32) {
-        self.surfaces[index].configured_size = (width, height);
-        // The startup resolve used output size; replace it with the granted size and dirty the
-        // scene. This paint uses the old resolve; the next poll turn applies the corrected one;
-        // re-resolving here would run once per configure instead of once per startup burst
-        // (ADR-0044 decision 2).
-        self.client.set_instance_size(
-            &self.surfaces[index].surface_id,
-            layout::LogicalSize { width: width as f32, height: height as f32 },
-        );
+        self.set_surface_size(index, (width, height));
         // No buffer may attach before this first or remap configure; everything below may draw.
         if self.surfaces[index].map_state == MapState::AwaitingConfigure {
             self.surfaces[index].map_state = MapState::Mapped;
@@ -539,6 +533,19 @@ impl App {
         }
         self.paint_surface(index);
         self.sync_captures();
+    }
+
+    /// Records the logical buffer size; the next paint resizes the EGL window to it.
+    pub(super) fn set_surface_size(&mut self, index: usize, (width, height): (u32, u32)) {
+        self.surfaces[index].configured_size = (width, height);
+        // The startup resolve used output size; replace it with the granted size and dirty the
+        // scene. This paint uses the old resolve; the next poll turn applies the corrected one;
+        // re-resolving here would run once per configure instead of once per startup burst
+        // (ADR-0044 decision 2).
+        self.client.set_instance_size(
+            &self.surfaces[index].surface_id,
+            layout::LogicalSize { width: width as f32, height: height as f32 },
+        );
     }
 
     /// The only teardown; its order is ADR-0213's.
@@ -720,13 +727,16 @@ mod tests {
             min_size: None,
             max_size: None,
             decorations: Default::default(),
+            geometry_inset: Default::default(),
         }
     }
 
     #[test]
     fn a_dropped_role_object_leaves_an_unmapped_entry_that_pins_nothing() {
-        let mut tracked =
-            TrackedSurface::new(TrackedRole::Window { window: None, spec: window("settings") }, "settings".to_string());
+        let mut tracked = TrackedSurface::new(
+            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0) },
+            "settings".to_string(),
+        );
         tracked.map_state = MapState::Mapped;
         tracked.last_painted = Some((
             PaintKey { physical: (640, 480), scale_120: 120, logical: (640, 480) },
@@ -747,8 +757,10 @@ mod tests {
     /// owes it even when no tween ticks: the last tween frame may already have been drawn.
     #[test]
     fn a_repaint_deferred_to_a_frame_callback_comes_due_when_it_lands() {
-        let mut tracked =
-            TrackedSurface::new(TrackedRole::Window { window: None, spec: window("settings") }, "settings".to_string());
+        let mut tracked = TrackedSurface::new(
+            TrackedRole::Window { window: None, spec: window("settings"), geometry: (0, 0) },
+            "settings".to_string(),
+        );
         assert!(!tracked.due_a_repaint(), "nothing deferred, nothing stale");
         (tracked.frame_pending, tracked.paint_deferred) = (true, true);
         assert!(!tracked.due_a_repaint(), "a second frame in one refresh is never shown");

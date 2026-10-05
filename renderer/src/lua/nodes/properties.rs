@@ -626,6 +626,10 @@ props! {
         max_size: Bound<SizeHint> = range(0.0, 8192.0);
         /// Who draws the window's frame: `"server"` asks the compositor for its decorations, `"client"` leaves the frame to the app. A compositor without `zxdg_decoration_manager_v1` always leaves it to the app; `toplevel(id):state().decoration` says which was chosen.
         decorations: Bound<OneOf<Decorations>> = absent(Choice("server"));
+        /// Room around the window's frame for its shadow, rounded to whole px: the root fills the frame plus this band, and the compositor sizes, tiles and snaps by the frame alone. Sizes from the compositor and `min_size`/`max_size` are the frame's. A number sets all four edges.
+        ///
+        /// Book: Room around the frame for a client-drawn shadow; the compositor sizes and tiles by the frame alone. A number sets all four edges ([client-side decoration](#client-side-decoration))
+        geometry_inset: Bound<NumberOrEdges> = range(0.0, 256.0).absent(Number(0.0));
         /// The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing.
         on_close();
         /// Opens and closes the window; state and `id` survive (ADR-0049).

@@ -89,6 +89,8 @@ pub struct WindowSpec {
     pub min_size: Option<SizeHint>,
     pub max_size: Option<SizeHint>,
     pub decorations: Decorations,
+    /// The band between the buffer's edge and the window geometry, for a client-drawn shadow.
+    pub geometry_inset: EdgeInsets,
 }
 
 keywords! {
@@ -108,7 +110,16 @@ pub fn window_spec(properties: &PropMap) -> Result<WindowSpec, LayoutError> {
     let max_size = window::max_size.read(properties)?;
     check_max_size_above_min(min_size, max_size)?;
     let decorations = window::decorations.read(properties)?;
-    Ok(WindowSpec { id, title: window::title.read(properties)?, app_id, min_size, max_size, decorations })
+    let geometry_inset = window::geometry_inset.read(properties)?;
+    Ok(WindowSpec {
+        id,
+        title: window::title.read(properties)?,
+        app_id,
+        min_size,
+        max_size,
+        decorations,
+        geometry_inset,
+    })
 }
 
 keywords! {
@@ -408,6 +419,7 @@ mod tests {
                 min_size: Some(SizeHint { width: 320.0, height: 240.0 }),
                 max_size: Some(SizeHint { width: 1280.0, height: 960.0 }),
                 decorations: Decorations::Server,
+                geometry_inset: EdgeInsets::default(),
             }
         );
     }
@@ -426,6 +438,32 @@ mod tests {
             read(r#", decorations = "none""#).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "decorations"
         ));
+    }
+
+    #[test]
+    fn geometry_inset_takes_a_number_or_per_edge_table_and_refuses_negative_or_huge_bands() {
+        let lua = mlua::Lua::new();
+        let read = |inset: &str| {
+            let table: mlua::Table = lua
+                .load(format!(r#"return {{ kind = "window", id = "w", geometry_inset = {inset} }}"#))
+                .eval()
+                .unwrap();
+            window_spec(&props_from_table(&table)).map(|spec| spec.geometry_inset)
+        };
+        assert_eq!(read("24").unwrap(), EdgeInsets { top: 24.0, right: 24.0, bottom: 24.0, left: 24.0 });
+        assert_eq!(
+            read("{ left = 8, bottom = 30 }").unwrap(),
+            EdgeInsets { left: 8.0, bottom: 30.0, ..Default::default() }
+        );
+        for bad in ["-1", "{ top = 257 }", r#""wide""#] {
+            assert!(
+                matches!(
+                    read(bad).unwrap_err(),
+                    LayoutError::InvalidProperty { property, .. } if property == "geometry_inset"
+                ),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
