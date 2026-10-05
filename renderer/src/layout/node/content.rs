@@ -381,6 +381,34 @@ impl Prop for Caret {
     }
 }
 
+lua_shape! {
+    /// A `textfield`'s selection ink.
+    #[class = "Selection"]
+    #[derive(Default)]
+    pub(crate) struct SelectionKeys {
+        /// The highlight, used as given. Default: the field's `foreground` at 30% alpha.
+        pub(crate) background: Option<Rgba>,
+        /// The selected glyphs. Default: the field's text colour.
+        pub(crate) foreground: Option<Rgba>,
+    }
+}
+
+/// `textfield.selection`: `{ background, foreground }`, absent keys unset.
+pub(crate) struct Selection;
+
+spelled!(Selection => SelectionKeys::lua());
+
+impl Prop for Selection {
+    type Out = SelectionKeys;
+    fn read(row: &Property, value: Option<&Value>) -> Result<SelectionKeys, LayoutError> {
+        match value {
+            None => Ok(SelectionKeys::default()),
+            Some(Value::Table(table)) => SelectionKeys::read(row.name, table),
+            Some(value) => Err(invalid(row.name, format!("expected a table, got {}", preview_for_error(value)))),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

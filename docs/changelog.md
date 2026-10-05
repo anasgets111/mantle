@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- `textfield` takes `selection = { background, foreground }`: the highlight as given (tint it with alpha) and the selected glyphs' colour. Unset, the highlight stays `foreground` at 30% alpha and the glyphs keep the text colour.
+
 ## 0.4.0 - 2026-10-05
 
 - Box kinds take `outline = { commands = { .. } }`, any shape as one closed contour of `path` commands, in place of `radius`: a popover with its arrow, a speech bubble, a tab joined to its panel. A coordinate is px, `"NN%"` of the box or `{ from = "right", px = -12 }`, so the shape follows the box's size and may reach past it. Fill, border (one width and colour), shadows, inset shadows, `clip = "rounded"`, `mask`, `effect.backdrop`, `mantle_sdf`, hit testing and `behind_blur` follow it. `animate.outline` tweens point by point between lists of the same commands, springs included, and snaps otherwise.

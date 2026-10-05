@@ -676,7 +676,12 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 centered: true,
                 caret,
                 caret_on,
-                caret_style: CaretStyle { color: fade(bar.color, opacity), ..*bar },
+                caret_style: CaretStyle {
+                    color: fade(bar.color, opacity),
+                    selection: bar.selection.map(|c| fade(c, opacity)),
+                    selected_text: bar.selected_text.map(|c| fade(c, opacity)),
+                    ..*bar
+                },
             })
         }
 

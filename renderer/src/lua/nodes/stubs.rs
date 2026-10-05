@@ -13,13 +13,13 @@ use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BackdropKeys, Blend, BorderColor, CaretKeys, CornersInput,
     Easing, EdgesInput, EffectKeys, ExitBlock, Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand,
-    PopupAnchor, ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
+    PopupAnchor, SelectionKeys, ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 24] = [
+const NODE_SHAPES: [fn(String) -> String; 25] = [
     fill::<PathCommand>,
     fill::<AnchorInput>,
     fill::<OutlineCommand>,
@@ -33,6 +33,7 @@ const NODE_SHAPES: [fn(String) -> String; 24] = [
     fill::<ShaderKeys>,
     fill::<ShadowLayer>,
     fill::<CaretKeys>,
+    fill::<SelectionKeys>,
     fill::<KeyframeInput>,
     fill::<SpringConstants>,
     fill::<TextRun>,
@@ -378,6 +379,8 @@ const NODES_HEADER: &str = r##"---@meta
 {TextRun}
 
 {Caret}
+
+{Selection}
 
 {Transition}
 "##;

@@ -100,12 +100,23 @@ pub struct CaretStyle {
     /// Logical px, or a fraction of the line height when `1` or less; `None` is the whole line.
     pub height: Option<f32>,
     pub radius: f32,
+    /// The selection highlight as given; `None` is the text colour at 30% alpha.
+    pub selection: Option<Rgba>,
+    /// The selected glyphs' colour; `None` keeps the text colour.
+    pub selected_text: Option<Rgba>,
 }
 
 impl CaretStyle {
     /// The bar a field draws when `caret` says nothing.
     pub fn plain(font_size: f32, color: Rgba) -> Self {
-        Self { color, width: crate::text::shaping::caret_thickness(font_size), height: None, radius: 0.0 }
+        Self {
+            color,
+            width: crate::text::shaping::caret_thickness(font_size),
+            height: None,
+            radius: 0.0,
+            selection: None,
+            selected_text: None,
+        }
     }
 
     /// The bar's height in a line `line_height` tall.
@@ -318,11 +329,14 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             let color = typeface::foreground.read(properties)?.expect("`foreground` has a default");
             let face = Typeface::read(properties)?;
             let keys = textfield::caret.read(properties)?;
+            let ink = textfield::selection.read(properties)?;
             let caret = CaretStyle {
                 color: keys.color.unwrap_or(color),
                 width: keys.width.unwrap_or(crate::text::shaping::caret_thickness(face.font_size)),
                 height: keys.height,
                 radius: keys.radius.unwrap_or(0.0),
+                selection: ink.background,
+                selected_text: ink.foreground,
             };
             let target = textfield::secure_submit.read(properties)?;
             if target.is_some() && !textfield::initial_text.read(properties)?.is_empty() {
@@ -489,6 +503,24 @@ mod tests {
     }
 
     #[test]
+    fn a_textfield_selection_table_sets_the_highlight_and_the_selected_glyphs_ink() {
+        let lua = Lua::new();
+        let caret = |src| match style(&lua, src).unwrap() {
+            Some(PaintStyle::TextField { caret, .. }) => caret,
+            _ => unreachable!(),
+        };
+        let plain = caret("return { kind = 'textfield' }");
+        assert_eq!((plain.selection, plain.selected_text), (None, None), "unset keeps today's look");
+        let set =
+            caret("return { kind = 'textfield', selection = { background = '#00FF0080', foreground = '#0000FF' } }");
+        assert_eq!(set.selection, Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 128.0 / 255.0 }));
+        assert_eq!(set.selected_text, Some(Rgba { r: 0.0, g: 0.0, b: 1.0, a: 1.0 }));
+        for bad in ["{ colour = '#fff' }", "3"] {
+            assert!(style(&lua, &format!("return {{ kind = 'textfield', selection = {bad} }}")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
     fn a_textfield_caret_table_reads_its_keys_and_defaults_to_the_foreground_line() {
         let lua = Lua::new();
         let caret = |src| match style(&lua, src).unwrap() {
@@ -497,14 +529,24 @@ mod tests {
         };
         let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
         let plain = caret("return { kind = 'textfield', font_size = 32, foreground = '#FF0000' }");
-        assert_eq!(plain, CaretStyle { color: red, width: 2.0, height: None, radius: 0.0 });
+        assert_eq!(
+            plain,
+            CaretStyle { color: red, width: 2.0, height: None, radius: 0.0, selection: None, selected_text: None }
+        );
         let set = caret(
             "return { kind = 'textfield', foreground = '#FF0000', \
              caret = { color = '#00FF00', width = 3, height = 0.5, radius = 1.5 } }",
         );
         assert_eq!(
             set,
-            CaretStyle { color: Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }, width: 3.0, height: Some(0.5), radius: 1.5 }
+            CaretStyle {
+                color: Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 },
+                width: 3.0,
+                height: Some(0.5),
+                radius: 1.5,
+                selection: None,
+                selected_text: None
+            }
         );
         assert_eq!((set.bar_height(20.0), CaretStyle { height: Some(8.0), ..set }.bar_height(20.0)), (10.0, 8.0));
         assert_eq!(caret("return { kind = 'textfield', caret = { width = 4 } }").width, 4.0);

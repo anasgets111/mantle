@@ -436,20 +436,25 @@ impl TextPainter {
                 // Behind the glyphs, so the words inside it stay readable. One rect per visually
                 // contiguous stretch: a selection crossing a direction change is not one box.
                 if let Some((lo, hi)) = selection.map(|(anchor, at)| (anchor.min(at), anchor.max(at))) {
-                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| glyph.start < hi && glyph.end > lo) {
+                    for (x0, x1) in x_spans(&laid.glyphs, |glyph| selected(glyph, lo, hi)) {
                         self.fill(
                             left + x0 * scale,
                             top,
                             (x1 - x0) * scale,
                             step,
                             0.0,
-                            Rgba { a: color.a * 0.3, ..color },
+                            caret_style.selection.unwrap_or(Rgba { a: color.a * 0.3, ..color }),
                         );
                     }
                 }
                 let style = |start: usize| runs.iter().find(|run| run.range.contains(&(line_start + start)));
+                let selected_text = caret_style.selected_text.zip(selection.map(|(a, b)| (a.min(b), a.max(b))));
                 let key = |glyph: &Glyph| {
-                    (glyph.face, glyph.coords, style(glyph.start).and_then(|run| run.color).unwrap_or(color))
+                    let ink = match selected_text {
+                        Some((ink, (lo, hi))) if selected(glyph, lo, hi) => ink,
+                        _ => style(glyph.start).and_then(|run| run.color).unwrap_or(color),
+                    };
+                    (glyph.face, glyph.coords, ink)
                 };
                 for group in laid.glyphs.chunk_by(|a, b| key(a) == key(b)) {
                     let glyphs = group.iter().map(|glyph| PositionedGlyph {
@@ -512,6 +517,11 @@ impl TextPainter {
         paint.set_font_size(font_size);
         let _ = self.canvas.fill_glyph_run(*font, coords, glyphs, &paint);
     }
+}
+
+/// Whether `glyph` lies in the selected bytes `lo..hi`.
+fn selected(glyph: &Glyph, lo: usize, hi: usize) -> bool {
+    glyph.start < hi && glyph.end > lo
 }
 
 #[cfg(test)]
@@ -588,7 +598,7 @@ mod tests {
         // selection cannot be one rect.
         let (lo, hi) = (4, 7);
         assert_eq!(
-            x_spans(&glyphs, |glyph| glyph.start < hi && glyph.end > lo),
+            x_spans(&glyphs, |glyph| selected(glyph, lo, hi)),
             vec![(0.0, 20.0), (30.0, 40.0)],
             "one rect per visually contiguous stretch"
         );

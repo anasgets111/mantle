@@ -22,7 +22,7 @@ use crate::layout::node::{
     ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
     NumberOrCorners, NumberOrEdges, Outline, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root,
-    Scale, SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign,
+    Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign,
     TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
@@ -552,8 +552,10 @@ props! {
         placeholder: Bound<Text> = absent(Lua(r#""""#));
         /// Colour of the placeholder.
         placeholder_color: Bound<Color> = absent(Prose("`foreground`"));
-        /// The caret bar: `{ color, width, height, radius }`. `color` defaults to `foreground`; the selection highlight keeps `foreground`. `width` is px, default a sixteenth of `font_size` rounded, at least `1`. `height` is px, or a fraction of the line height when `1` or less; default the whole line, centred on it. `radius` is px, default `0`. Each key takes a signal. Paint only: `animate` snaps it.
+        /// The caret bar: `{ color, width, height, radius }`. `color` defaults to `foreground`; `width` is px, default a sixteenth of `font_size` rounded, at least `1`. `height` is px, or a fraction of the line height when `1` or less; default the whole line, centred on it. `radius` is px, default `0`. Each key takes a signal. Paint only: `animate` snaps it.
         caret: Bound<Caret>;
+        /// The selection's ink: `{ background, foreground }`. `background` is the highlight, used as given (add alpha to tint); default the field's `foreground` at 30% alpha. `foreground` colours the selected glyphs; default the text colour. Each key takes a signal. Paint only: `animate` snaps it.
+        selection: Bound<Selection>;
         /// Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal.
         disabled: Bound<Flag> = absent(Bool(false));
         /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.

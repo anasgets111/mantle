@@ -38,9 +38,9 @@ pub use animate::{
     Dissolve, MAX_SHADER_IMAGES, MoveSpec, ShaderImage, ShaderParam, TransitionSpec, Tween, advance, depart,
     is_paint_only, retarget, retarget_measured, retarget_scroll, scroll_spec, scroll_target,
 };
+pub(crate) use content::{Caret, Content, Font, FontVariations, Live, MaxLines, Region, Selection};
 #[cfg(test)]
-pub(crate) use content::CaretKeys;
-pub(crate) use content::{Caret, Content, Font, FontVariations, Live, MaxLines, Region};
+pub(crate) use content::{CaretKeys, SelectionKeys};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 #[cfg(test)]
 pub(crate) use content::{SpanKind, TextRun};
