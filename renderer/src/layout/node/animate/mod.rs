@@ -12,10 +12,12 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 
 use super::prop::Prop;
+use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
     Axes, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData, PropMap,
-    Rgba, Shadow, Shadows, fields, invalid, parse_hex_color, tweened, value_as_f32,
+    Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill, parse_hex_color, tweened,
+    value_as_f32,
 };
 use crate::lua::luacats::spelled;
 
@@ -68,6 +70,18 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 /// `shadow` at zero alpha: an unset layer paints nothing, without a second hue to cross.
 fn faded(shadow: &Shadow) -> Shadow {
     Shadow { color: Rgba { a: 0.0, ..shadow.color }, ..*shadow }
+}
+
+fn clear(color: Rgba) -> Rgba {
+    Rgba { a: 0.0, ..color }
+}
+
+/// `layer` at zero alpha: an unset colour paints nothing, and a gradient has no fade to give.
+fn faded_layer(layer: &Layer) -> Layer {
+    match layer {
+        Layer::Color(color) => Layer::Color(clear(*color)),
+        snap => snap.clone(),
+    }
 }
 
 /// How one property eases: `animate = { width = 200 }` or
@@ -136,7 +150,8 @@ pub fn depart(
 /// three key sets, the edges `{ top, right, bottom, left }`, the corners `{ top_left, .. }` or the
 /// axes `{ x, y }`, an absent key reading as the property's default (`0`, or `1` for a `scale`).
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
-/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. `Effect` is an `effect`'s
+/// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. `Layers` is a `background`
+/// list: colour layers mix, any other layer snaps to the target's, and a layer one side lacks fades. `Effect` is an `effect`'s
 /// `[blur, saturate, brightness, contrast]` and the same four of its `backdrop`, a missing key
 /// reading as off: `0` for a blur, `1` for a colour filter; its `shader` table is carried as the
 /// target has it and never tweened (ADR-0336). Two different shapes
@@ -150,14 +165,22 @@ pub enum Animatable {
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
     Shadows(Vec<Shadow>),
+    Layers(Vec<Layer>),
     Effect([f32; 8], Option<Value>),
+}
+
+/// One `background` layer in a tween: a colour, or a gradient carried as written (it snaps).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Layer {
+    Color(Rgba),
+    Snap(Value),
 }
 
 /// An `effect` with every filter off: blurs `0`, colour filters `1`.
 const EFFECT_OFF: [f32; 8] = [0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0];
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
@@ -165,7 +188,8 @@ spelled!(Animatable => format!(
     Axes::lua(),
     EffectKeys::lua(),
     PathCommands::lua(),
-    Shadows::lua()
+    Shadows::lua(),
+    Vec::<BackgroundLayer>::lua()
 ));
 
 impl Animatable {
@@ -181,6 +205,7 @@ impl Animatable {
             }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
+            Self::Layers(ref layers) => Self::Layers(layers.iter().map(faded_layer).collect()),
             Self::Effect(..) => Self::Effect(EFFECT_OFF, None),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
@@ -217,6 +242,27 @@ impl Animatable {
         }
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
+        }
+        if property == "background"
+            && let Value::Table(table) = value
+        {
+            // A gradient table snaps, as it always has.
+            if !is_layer_list(table) {
+                return Ok(None);
+            }
+            let len = input::array_len(property, table, MAX_BACKGROUNDS)?;
+            let layers = (1..=len).map(|i| {
+                let layer: Value = table.raw_get(i).map_err(|e| invalid(property, e.to_string()))?;
+                let layer = layer.as_table().and_then(layer_fill).unwrap_or(layer);
+                match &layer {
+                    Value::String(s) if s.as_bytes().starts_with(b"#") => {
+                        let name = format!("{property}[{i}]");
+                        Ok(Layer::Color(parse_hex_color(&name, &checked_string(&name, s)?)?))
+                    }
+                    _ => Ok(Layer::Snap(layer)),
+                }
+            });
+            return Ok(Some(Self::Layers(layers.collect::<Result<_, LayoutError>>()?)));
         }
         match value {
             Value::String(s) => {
@@ -274,7 +320,7 @@ impl Animatable {
                 }
             }
             (Self::Color(a), Self::Color(b)) => out = [a.r - b.r, a.g - b.g, a.b - b.b, a.a - b.a],
-            // ponytail: a path or shadow list gives a spring no velocity; per-point rates would carry it.
+            // ponytail: a path, shadow or background list gives a spring no velocity; per-point rates would carry it.
             _ => {}
         }
         out
@@ -322,6 +368,16 @@ impl Animatable {
                 });
                 Self::Shadows(layers.collect())
             }
+            (Self::Layers(a), Self::Layers(b)) => {
+                let layers = (0..a.len().max(b.len())).filter_map(|i| match (a.get(i), b.get(i)) {
+                    (Some(Layer::Color(x)), Some(Layer::Color(y))) => Some(Layer::Color(mix(*x, *y, t))),
+                    (Some(Layer::Color(x)), None) => Some(Layer::Color(mix(*x, clear(*x), t))),
+                    (None, Some(Layer::Color(y))) => Some(Layer::Color(mix(clear(*y), *y, t))),
+                    // A snapping layer, or a colour that meets one, takes the target's at once; one the target lacks is gone.
+                    (_, y) => y.cloned(),
+                });
+                Self::Layers(layers.collect())
+            }
             (Self::Path(a), Self::Path(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |path| Self::Path(Rc::new(path))),
             // The two shapes come from the same property, so this pair cannot be mixed; snap to
             // the target rather than guess if it ever is.
@@ -357,6 +413,16 @@ impl Animatable {
                     table.set("shader", shader.clone())?;
                 }
                 Value::Table(table)
+            }
+            Self::Layers(ref layers) => {
+                let list = lua.create_table_with_capacity(layers.len(), 0)?;
+                for layer in layers {
+                    list.push(match layer {
+                        Layer::Color(color) => Value::String(lua.create_string(hex_of(*color))?),
+                        Layer::Snap(value) => value.clone(),
+                    })?;
+                }
+                Value::Table(list)
             }
             Self::Shadows(ref layers) => {
                 let list = lua.create_table_with_capacity(layers.len(), 0)?;
@@ -1190,6 +1256,32 @@ mod tests {
         // A number against a table snaps: a `scale = 2` meeting `scale = { x = 2 }`.
         let snapped = Animatable::Number(2.0).lerp(&table("return { x = 2 }", "scale"), 0.5, "scale");
         assert_eq!(snapped, table("return { x = 2 }", "scale"));
+    }
+
+    /// Colour layers mix pairwise, a layer one side lacks fades, a gradient layer snaps to the
+    /// target's, and a list round-trips through the value written back for the parsers.
+    #[test]
+    fn background_layers_tween_pairwise_and_an_extra_layer_fades() {
+        let lua = Lua::new();
+        let layers = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("background", Some(&value)).unwrap().unwrap()
+        };
+        let from = layers(r##"return { "#000000ff" }"##);
+        let to = layers(r##"return { "#ffffffff", { fill = "#ff0000ff" } }"##);
+        let Animatable::Layers(mid) = from.lerp(&to, 0.5, "background") else { panic!("a layer list") };
+        let Layer::Color(first) = mid[0] else { panic!("a colour") };
+        assert_eq!((first.r, first.a), (0.5, 1.0));
+        let Layer::Color(second) = mid[1] else { panic!("a colour") };
+        assert_eq!((second.r, second.a), (1.0, 0.5), "the extra layer fades in");
+        let Animatable::Layers(out) = to.lerp(&from, 0.5, "background") else { panic!("a layer list") };
+        assert_eq!(out.len(), 2, "and fades out");
+        let gradient =
+            layers(r##"return { { gradient = "radial", stops = { { 0, "#000000" }, { 1, "#ffffff" } } } }"##);
+        assert_eq!(from.lerp(&gradient, 0.1, "background"), gradient, "a gradient snaps");
+        assert_eq!(gradient.lerp(&from, 0.1, "background"), from, "also away from one");
+        let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
+        assert_eq!(Animatable::from_value("background", Some(&Value::Table(written))).unwrap(), Some(to));
     }
 
     /// Layer by layer; a layer only one side has fades in at its own geometry, and a spring's

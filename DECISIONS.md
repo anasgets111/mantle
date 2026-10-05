@@ -8022,3 +8022,17 @@ and shift modifiers. The App-level paths have no unit test until `App` has a com
    always scrubs and stays armed.
 
 Breaking: `on_navigate` becomes `on_key`. Arrows repeat only when an `on_key` on the path hears them.
+
+## 0343. `background` takes a list of layers, first on top
+
+1. **Order.** One fill, or up to 16 layers first on top, as CSS multiple backgrounds and `shadows`.
+   The canvas draws them bottom-up through the one box path, so radius, smoothing, scoop and the
+   border inset apply to each. `{}` is no background.
+2. **Single value kept.** A colour or gradient stays valid, as `radius` takes a number or a table: a
+   table is a list when it has array entries or none, else a gradient.
+3. **Table-form layer.** `{ fill = <colour|gradient> }` gives a later per-layer key a place; only
+   `fill` is accepted.
+4. **Normal compositing.** A box is opaque when any colour layer is; that holds only under normal
+   blend. Colour layers tween by index, a layer one side lacks fades, gradients snap.
+
+Rejected: a separate `backgrounds` key, a second spelling of one feature.

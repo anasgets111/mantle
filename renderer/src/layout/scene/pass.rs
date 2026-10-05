@@ -2372,6 +2372,33 @@ mod tests {
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.x, 1.0, "and keeps its margin");
     }
 
+    /// A signal in a `background` layer, bare or under `fill`, resolves like a top-level one (ADR-0327).
+    #[test]
+    fn a_background_layer_takes_a_signal() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let lua = scene_lua();
+        let new = |hex: &str| {
+            let colour = Value::String(lua.create_string(hex).unwrap());
+            crate::lua::signal::Signal::new_live(colour, crate::lua::signal::DirtyFlag::new()).0
+        };
+        lua.globals().set("top", new("#FF0000")).unwrap();
+        lua.globals().set("under", new("#0000FF")).unwrap();
+        let table: mlua::Table = lua
+            .load(r#"return panel { id = "bar", child = rect { background = { top, { fill = under } }, width = 4, height = 4 } }"#)
+            .eval()
+            .unwrap();
+        let surface = deserialize_lua_table(&table).unwrap();
+
+        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+
+        let child = &scene.surface("bar@TEST").unwrap().children[0];
+        let Some(PaintStyle::Box { background, .. }) = &child.paint else { panic!("{:?}", child.paint) };
+        let blue = |fill: &node::Fill| matches!(fill, node::Fill::Color(c) if (c.r, c.b) == (0.0, 1.0));
+        assert!(matches!(&background[0], node::Fill::Color(c) if (c.r, c.b) == (1.0, 0.0)), "{background:?}");
+        assert!(blue(&background[1]), "{background:?}");
+    }
+
     #[test]
     fn the_resolved_tree_holds_a_signals_current_value_not_the_handle() {
         let mut scene = Scene::new();

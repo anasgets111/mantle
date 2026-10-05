@@ -44,7 +44,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Option<Fill>, radius: Radii, border: BorderPaint, widths: EdgeInsets },
+    Box { background: Vec<Fill>, radius: Radii, border: BorderPaint, widths: EdgeInsets },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -598,7 +598,7 @@ mod tests {
         let cmd = |x: f32| {
             let rect = LogicalRect { x, y: 10.0, width: 20.0, height: 20.0 };
             let draw = Draw::Box {
-                background: Some(Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })),
+                background: vec![Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })],
                 radius: Radii::default(),
                 border: BorderPaint::default(),
                 widths: EdgeInsets::default(),

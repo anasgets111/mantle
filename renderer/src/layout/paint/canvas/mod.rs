@@ -221,8 +221,8 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             }
             Draw::Box { background, radius, border, widths } => {
                 let t0 = timing.then(Instant::now);
-                // `None` skips the fill; alpha 0 remains an explicit transparent rect.
-                if let Some(fill) = background {
+                // No layers skips the fill; alpha 0 remains an explicit transparent rect. The first layer is on top.
+                for fill in background.iter().rev() {
                     fill_rect(painter.canvas_mut(), rect, *radius, fill);
                 }
                 paint_border(painter.canvas_mut(), rect, *radius, border, *widths, 1.0);

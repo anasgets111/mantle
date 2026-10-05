@@ -18,11 +18,12 @@ use crate::layout::node::prop::{
     Structural, Text,
 };
 use crate::layout::node::{
-    Align, Anchor, AnchorRect, Animations, Axes, Caret, Children, ClipShape, ColorOrEdges, ConstraintAdjustment,
-    Content, CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font, FontVariations, Items,
-    KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params,
-    PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows,
-    SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, TrimAxis, Wrap,
+    Align, Anchor, AnchorRect, Animations, Axes, Background, Caret, Children, ClipShape, ColorOrEdges,
+    ConstraintAdjustment, Content, CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font,
+    FontVariations, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners,
+    NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale,
+    SecureSubmitTarget, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec,
+    TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Spelling, fun, spelling};
@@ -313,10 +314,10 @@ props! {
         hittable: Bound<Flag> = absent(Prose("inherited; `true` at the root"));
     }
     mod paint(BOX) {
-        /// Absent draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
+        /// A colour, a gradient, or up to 16 layers, first on top. Absent or `{}` draws nothing, unlike an explicit transparent `"#00000000"`. A gradient snaps under `animate`.
         ///
-        /// Book: A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate`
-        background: Bound<Fill>;
+        /// Book: A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps
+        background: Bound<Background>;
         /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "rounded"`. Hit-testing and `behind_blur` ignore it.
         ///
         /// Book: Multiplies the alpha of this node and its subtree; see [Mask](#mask)

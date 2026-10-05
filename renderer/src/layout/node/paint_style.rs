@@ -129,7 +129,8 @@ pub enum PaintStyle {
     /// A negative `radius` is a scoop (`node::parse_radius`). `mask` covers the node's own paint
     /// and its subtree (ADR-0255).
     Box {
-        background: Option<Fill>,
+        /// First layer on top; empty draws nothing.
+        background: Vec<Fill>,
         radius: Radii,
         border: BorderPaint,
         widths: EdgeInsets,
@@ -398,11 +399,12 @@ mod tests {
     #[test]
     fn a_list_has_a_box_that_draws_nothing_and_carries_its_clip() {
         let lua = Lua::new();
-        let Some(PaintStyle::Box { background: None, clip: ClipShape::None, .. }) =
+        let Some(PaintStyle::Box { background, clip: ClipShape::None, .. }) =
             style(&lua, "return { kind = 'list', direction = 'row' }").unwrap()
         else {
             panic!("a list paints an empty, unclipping box");
         };
+        assert!(background.is_empty());
     }
 
     #[test]

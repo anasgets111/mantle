@@ -3,7 +3,9 @@
 use mlua::Value;
 
 use crate::layout::node::prop::{Prop, keywords};
-use crate::layout::node::{LayoutError, Property, Rgba, checked_string, invalid, parse_hex_color, preview_for_error};
+use crate::layout::node::{
+    LayoutError, Property, Rgba, checked_string, input, invalid, only_keys, parse_hex_color, preview_for_error,
+};
 use crate::lua::luacats::{LuaType, lua_shape, spelled};
 
 /// A box's fill: one colour, or a gradient across its box (ADR-0255).
@@ -113,23 +115,70 @@ impl GradientInput {
 
 spelled!(Fill => "Color|Gradient");
 
-/// `background`. Absent is `None`, not transparent black: `fill_rect` skips it, while
+/// A colour or gradient as `fill`, `stroke` and a `background` layer take it.
+fn fill_of(property: &str, value: &Value) -> Result<Fill, LayoutError> {
+    match value {
+        Value::String(s) => Ok(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?)),
+        Value::Table(table) => Ok(Fill::Gradient(Gradient::read(property, table)?)),
+        _ => Err(invalid(
+            property,
+            format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),
+        )),
+    }
+}
+
+/// Path `fill` and `stroke`. Absent is `None`, not transparent black: it paints nothing, while
 /// `#RRGGBBAA` with `AA = 00` remains an explicit transparent fill.
 impl Prop for Fill {
     type Out = Option<Fill>;
     fn read(row: &Property, value: Option<&Value>) -> Result<Option<Fill>, LayoutError> {
-        let property = row.name;
-        let Some(value) = value else {
-            return Ok(None);
+        value.map(|value| fill_of(row.name, value)).transpose()
+    }
+}
+
+// ponytail: 16 layers, each a full-box path fill; raise it with a measured budget.
+pub(crate) const MAX_BACKGROUNDS: usize = 16;
+
+/// `background`: one fill, or a list of layers, first on top like CSS and `shadows`. A layer is a
+/// colour, a gradient or `{ fill = <colour|gradient> }`. Empty or absent draws nothing.
+pub(crate) struct Background;
+
+/// One layer of the list; the alias is hand-written in the stub header beside `Gradient`.
+pub(crate) struct BackgroundLayer;
+
+spelled!(BackgroundLayer => "BackgroundLayer");
+spelled!(Background => format!("{}|{}", Fill::lua(), Vec::<BackgroundLayer>::lua()));
+
+/// A `background` table that is a layer list, not a gradient: dense entries, or none at all.
+pub(crate) fn is_layer_list(table: &mlua::Table) -> bool {
+    table.raw_len() > 0 || table.is_empty()
+}
+
+/// One layer's fill, unwrapped from the `{ fill = .. }` form.
+pub(crate) fn layer_fill(table: &mlua::Table) -> Option<Value> {
+    table.contains_key("fill").unwrap_or(false).then(|| table.get("fill").unwrap_or(Value::Nil))
+}
+
+impl Prop for Background {
+    type Out = Vec<Fill>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Vec<Fill>, LayoutError> {
+        let Some(Value::Table(list)) = value.filter(|v| matches!(v, Value::Table(t) if is_layer_list(t))) else {
+            return Ok(Fill::read(row, value)?.into_iter().collect());
         };
-        match value {
-            Value::String(s) => Ok(Some(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?))),
-            Value::Table(table) => Ok(Some(Fill::Gradient(Gradient::read(property, table)?))),
-            _ => Err(invalid(
-                property,
-                format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),
-            )),
-        }
+        let len = input::array_len(row.name, list, MAX_BACKGROUNDS)?;
+        (1..=len)
+            .map(|i| {
+                let name = format!("{}[{i}]", row.name);
+                let layer: Value = list.raw_get(i).map_err(|e| invalid(&name, e.to_string()))?;
+                match layer.as_table().and_then(|table| layer_fill(table).map(|inner| (table, inner))) {
+                    Some((table, inner)) => {
+                        only_keys(&name, table, &["fill"])?;
+                        fill_of(&name, &inner)
+                    }
+                    None => fill_of(&name, &layer),
+                }
+            })
+            .collect()
     }
 }
 
@@ -220,11 +269,9 @@ mod tests {
             ("conic", GradientShape::Conic { angle: 0.0 }),
         ] {
             let src = format!(r#"return {{ kind = "rect", background = {{ gradient = "{shape}", {stops} }} }}"#);
-            let Some(Fill::Gradient(gradient)) = fields::paint::background.read(&eval_props(&lua, &src)).unwrap()
-            else {
-                panic!("{shape}")
-            };
-            assert_eq!(gradient, Gradient { shape: expected, stops: vec![(0.0, WHITE), (1.0, CLEAR)] }, "{shape}");
+            let background = fields::paint::background.read(&eval_props(&lua, &src)).unwrap();
+            let [Fill::Gradient(gradient)] = background.as_slice() else { panic!("{shape}") };
+            assert_eq!(*gradient, Gradient { shape: expected, stops: vec![(0.0, WHITE), (1.0, CLEAR)] }, "{shape}");
         }
     }
 

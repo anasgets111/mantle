@@ -56,8 +56,8 @@ pub use style::{
     transformed_bounds,
 };
 pub(crate) use style::{
-    Axes, ColorOrEdges, CornerShape, Cursor, Direction, EffectKeys, Effects, NumberOrCorners, NumberOrEdges, Scale,
-    ShadowMode, Shadows,
+    Axes, Background, ColorOrEdges, CornerShape, Cursor, Direction, EffectKeys, Effects, NumberOrCorners,
+    NumberOrEdges, Scale, ShadowMode, Shadows, is_layer_list, layer_fill,
 };
 pub use surface::{Anchor, Exclusive, KeyboardInteractivity, LayerKind, PanelSpec, SurfaceTopology, panel_spec};
 #[cfg(test)]

@@ -10,6 +10,7 @@ use crate::lua::luacats::lua_shape;
 mod fill;
 #[cfg(test)]
 pub(crate) use fill::GradientStop;
+pub(crate) use fill::{Background, BackgroundLayer, MAX_BACKGROUNDS, is_layer_list, layer_fill};
 pub use fill::{Fill, Gradient, GradientShape, Mask, MaskSource};
 
 mod transform;
@@ -827,7 +828,7 @@ mod tests {
     #[test]
     fn background_absent_is_none() {
         let props = PropMap::default();
-        assert_eq!(fields::paint::background.read(&props).unwrap(), None);
+        assert!(fields::paint::background.read(&props).unwrap().is_empty());
     }
 
     #[test]
@@ -837,7 +838,7 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            Some(Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 }))
+            vec![Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 })]
         );
     }
 
@@ -848,13 +849,39 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            Some(Fill::Color(Rgba {
+            vec![Fill::Color(Rgba {
                 r: 0x33 as f32 / 255.0,
                 g: 0x66 as f32 / 255.0,
                 b: 0x99 as f32 / 255.0,
                 a: 0x80 as f32 / 255.0,
-            }))
+            })]
         );
+    }
+
+    /// One value stays valid beside a list, first layer on top; `{ fill = .. }` is a layer, a layer
+    /// table takes no other key, and 16 is the ceiling.
+    #[test]
+    fn background_takes_a_list_of_layers() {
+        let lua = mlua::Lua::new();
+        let read = |src: &str| {
+            let table: mlua::Table =
+                lua.load(format!("return {{ kind = 'rect', background = {src} }}")).eval().unwrap();
+            fields::paint::background.read(&props_from_table(&table))
+        };
+        let colour = |hex: &str| Fill::Color(parse_hex_color("background", hex).unwrap());
+        let grey = "{ gradient = 'radial', stops = { { 0, '#000000' }, { 1, '#ffffff' } } }";
+        assert_eq!(read("'#112233'").unwrap(), [colour("#112233")]);
+        assert_eq!(read(&format!("{{ '#112233', {{ fill = '#445566' }}, {grey} }}")).unwrap().len(), 3);
+        assert_eq!(read("{ { fill = '#445566' } }").unwrap(), [colour("#445566")]);
+        assert_eq!(read("{ '#112233', '#445566' }").unwrap(), [colour("#112233"), colour("#445566")]);
+        assert!(matches!(read(grey).unwrap().as_slice(), [Fill::Gradient(_)]), "a gradient table is not a list");
+        assert!(read("{}").unwrap().is_empty());
+        assert!(read(&format!("{{ {} }}", vec!["'#112233'"; 16].join(","))).is_ok());
+        let err = read(&format!("{{ {} }}", vec!["'#112233'"; 17].join(","))).unwrap_err();
+        assert!(err.to_string().contains("at most 16"), "{err}");
+        let err = read("{ { fill = '#112233', blend = 'x' } }").unwrap_err();
+        assert!(err.to_string().contains("background[1]") && err.to_string().contains("blend"), "{err}");
+        assert!(read("{ '#112233', 5 }").unwrap_err().to_string().contains("background[2]"));
     }
 
     #[test]
@@ -924,7 +951,7 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::background.read(&props).unwrap(),
-            Some(Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }))
+            vec![Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })]
         );
     }
 

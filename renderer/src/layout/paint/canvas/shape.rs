@@ -1047,6 +1047,30 @@ mod tests {
         assert!(px.iter().all(|p| (126..=130).contains(&p.3)), "painted once, got {px:?}");
     }
 
+    /// A `background` list paints bottom-up, so the first layer is on top, through the same box
+    /// path: a gradient layer over a colour, and a smoothed outline cutting every layer.
+    #[test]
+    fn background_layers_composite_first_on_top_inside_the_outline() {
+        let at = |background: &str, extra: &str, points: &[(usize, usize)]| {
+            let src = format!(r##"rect {{ width = 64, height = 64, background = {background}{extra} }}"##);
+            paint_points(&src, points)
+        };
+        let Some(px) = at(r##"{ "#FF0000BF", "#0000FFFF" }"##, "", &[(32, 32)]) else { return };
+        let (red, blue) = (px[0].0 as i32, px[0].2 as i32);
+        assert!((red - 191).abs() <= 2 && (blue - 64).abs() <= 2 && px[0].3 == 255, "red over blue: {px:?}");
+        let flipped = at(r##"{ "#0000FFFF", "#FF0000BF" }"##, "", &[(32, 32)]).unwrap();
+        assert_eq!((flipped[0].0, flipped[0].2), (0, 255), "an opaque first layer hides the rest: {flipped:?}");
+
+        let ramp = r##"{ { gradient = "linear", angle = 90, stops = { { 0, "#FF000000" }, { 1, "#FF0000FF" } } }, { fill = "#0000FFFF" } }"##;
+        let px = at(ramp, "", &[(2, 32), (61, 32)]).unwrap();
+        assert!(px[0].0 < 40 && px[0].2 > 215 && px[1].0 > 215 && px[1].2 < 40, "ramp over blue: {px:?}");
+
+        let both = r##"{ "#00000080", "#00000080" }"##;
+        let px = at(both, ", radius = 16, corner_smoothing = 1", &[(12, 0), (32, 32)]).unwrap();
+        assert!(px[0].3 < 64, "the smoothed corner cuts both layers, got {px:?}");
+        assert!((187..=195).contains(&px[1].3), "two half layers leave 75%, got {px:?}");
+    }
+
     /// A slider's fill at 0% is a zero-width box; it once drew a 1px line.
     #[test]
     fn a_zero_width_box_paints_nothing() {

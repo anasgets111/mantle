@@ -128,7 +128,8 @@ fn build_node(
     // ADR-0254 decision 2, ADR-0260. An opaque box draws as it did in either mode.
     let (radius, opaque, boxed) = match &node.paint {
         Some(PaintStyle::Box { background, radius, mask, .. }) => {
-            let opaque = matches!(background, Some(Fill::Color(fill)) if fill.a >= 1.0)
+            // Normal blend: one opaque layer anywhere leaves the box opaque.
+            let opaque = background.iter().any(|fill| matches!(fill, Fill::Color(c) if c.a >= 1.0))
                 && mask.is_none()
                 && effect.blur == 0.0
                 && effect.shader.is_none()
@@ -191,7 +192,7 @@ fn build_node(
             }
         } else {
             let effect = node::Effect { shadows: faded.collect(), ..node::Effect::default() };
-            let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
+            let black = vec![Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })];
             let fill =
                 Draw::Box { background: black, radius, border: BorderPaint::default(), widths: EdgeInsets::default() };
             let draw = Draw::Layer { effect, shader: None, silhouette: true, commands: vec![cmd(clip, fill)] };
@@ -280,7 +281,10 @@ fn build_node(
             })
         };
         let widths = EdgeInsets { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 };
-        out.push(cmd(clip, Draw::Box { background: None, radius: Radii::default(), border: border(white), widths }));
+        out.push(cmd(
+            clip,
+            Draw::Box { background: Vec::new(), radius: Radii::default(), border: border(white), widths },
+        ));
         let inner = LogicalRect {
             x: px.x + 2.0 * scale,
             y: px.y + 2.0 * scale,
@@ -291,7 +295,7 @@ fn build_node(
             rect: inner,
             clip,
             draw: in_buffer_pixels(
-                Draw::Box { background: None, radius: Radii::default(), border: border(black), widths },
+                Draw::Box { background: Vec::new(), radius: Radii::default(), border: border(black), widths },
                 scale,
             ),
         });
@@ -401,13 +405,14 @@ fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option<Draw>) {
     let Some(Draw::Box { background, radius, border, widths }) = draw else {
         return (draw, None);
     };
-    let fill = background.map(|color| Draw::Box {
-        background: Some(color),
+    let fill = (!background.is_empty()).then(|| Draw::Box {
+        background,
         radius,
         border: BorderPaint::default(),
         widths: EdgeInsets::default(),
     });
-    let border = (widths != EdgeInsets::default()).then_some(Draw::Box { background: None, radius, border, widths });
+    let border =
+        (widths != EdgeInsets::default()).then_some(Draw::Box { background: Vec::new(), radius, border, widths });
     (fill, border)
 }
 
@@ -470,7 +475,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
         PaintStyle::Box { background, radius, border, widths, clip: _, mask: _ } => Some(Draw::Box {
-            background: background.as_ref().map(|fill| fade_fill(fill, opacity)),
+            background: background.iter().map(|fill| fade_fill(fill, opacity)).collect(),
             radius: *radius,
             border: fade_border(border, opacity),
             widths: *widths,
@@ -922,7 +927,7 @@ mod tests {
 
     fn box_alpha(cmd: &DrawCmd) -> f32 {
         match &cmd.draw {
-            Draw::Box { background: Some(Fill::Color(color)), .. } => color.a,
+            Draw::Box { background, .. } if let [Fill::Color(color)] = background.as_slice() => color.a,
             other => panic!("expected a filled box, got {other:?}"),
         }
     }
@@ -1100,7 +1105,10 @@ mod tests {
             .commands
             .iter()
             .filter_map(|c| match &c.draw {
-                Draw::Box { background: Some(Fill::Color(color)), .. } => Some(*color),
+                Draw::Box { background, .. } => match background.as_slice() {
+                    [Fill::Color(color)] => Some(*color),
+                    _ => None,
+                },
                 _ => None,
             })
             .collect();
@@ -1227,7 +1235,7 @@ mod tests {
     fn a_transformed_child_under_an_empty_clip_draws_nothing() {
         fn blue(commands: &[DrawCmd]) -> bool {
             commands.iter().any(|c| {
-                let fill = matches!(&c.draw, Draw::Box { background: Some(Fill::Color(c)), .. } if (c.b * 255.0).round() as u8 == 0x66);
+                let fill = matches!(&c.draw, Draw::Box { background, .. } if matches!(background.as_slice(), [Fill::Color(c)] if (c.b * 255.0).round() as u8 == 0x66));
                 fill || c.draw.nested().is_some_and(blue)
             })
         }
@@ -1819,8 +1827,10 @@ mod tests {
         let order: Vec<_> = commands
             .iter()
             .map(|cmd| match &cmd.draw {
-                Draw::Box { background: Some(_), widths, .. } if *widths == EdgeInsets::default() => "fill",
-                Draw::Box { background: None, .. } => "border",
+                Draw::Box { background, widths, .. } if !background.is_empty() && *widths == EdgeInsets::default() => {
+                    "fill"
+                }
+                Draw::Box { background, .. } if background.is_empty() => "border",
                 other => panic!("{other:?}"),
             })
             .collect();
@@ -1864,9 +1874,8 @@ mod tests {
             r##"rect { width = 80, height = 32, opacity = 0.5,
                 background = { gradient = "radial", stops = { { 0, "#ffffff" }, { 1, "#ffffff80" } } } }"##,
         );
-        let Draw::Box { background: Some(Fill::Gradient(gradient)), .. } = &list.commands[1].draw else {
-            panic!("{list:?}")
-        };
+        let Draw::Box { background, .. } = &list.commands[1].draw else { panic!("{list:?}") };
+        let [Fill::Gradient(gradient)] = background.as_slice() else { panic!("{list:?}") };
         let alphas: Vec<f32> = gradient.stops.iter().map(|(_, color)| color.a).collect();
         assert_eq!(alphas, [0.5, 0.5 * 128.0 / 255.0]);
     }
@@ -1896,7 +1905,9 @@ mod tests {
         commands
             .iter()
             .flat_map(|c| match &c.draw {
-                Draw::Box { background: Some(Fill::Color(color)), .. } => vec![(color.r * 255.0).round() as u8],
+                Draw::Box { background, .. } if let [Fill::Color(color)] = background.as_slice() => {
+                    vec![(color.r * 255.0).round() as u8]
+                }
                 draw => draw.nested().map_or_else(Vec::new, fill_order),
             })
             .collect()
@@ -1937,6 +1948,27 @@ mod tests {
         let opaque = card("");
         assert!(opaque.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Shadow { knockout: false, .. })));
         assert_eq!(card(r#"shadow_mode = "content","#), opaque, "the same in either mode (ADR-0260)");
+    }
+
+    /// One opaque colour layer, on top or below, makes a box opaque: its shadow is not knocked out.
+    #[test]
+    fn a_box_with_an_opaque_background_layer_is_opaque() {
+        let knockout = |background: &str| {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, background = {background}, shadows = {{ {{ blur = 4 }} }} }}"##
+            ));
+            let Some(Draw::Shadow { knockout, .. }) =
+                list.commands.iter().map(|cmd| &cmd.draw).find(|draw| matches!(draw, Draw::Shadow { .. })).cloned()
+            else {
+                panic!("a shadow");
+            };
+            knockout
+        };
+        assert!(!knockout(r##"{ "#ffffffff", "#ffffff80" }"##), "an opaque top layer");
+        assert!(!knockout(r##"{ "#ffffff80", "#000000ff" }"##), "an opaque bottom layer");
+        assert!(knockout(
+            r##"{ "#ffffff80", { gradient = "radial", stops = { { 0, "#000000" }, { 1, "#ffffff" } } } }"##
+        ));
     }
 
     /// `shadows` paints its layers bottom first, so the first is on top: one gradient each under a
@@ -2033,11 +2065,10 @@ mod tests {
             [0.5],
             "faded with the node"
         );
-        let [DrawCmd { draw: Draw::Box { background: Some(node::Fill::Color(fill)), radius, .. }, .. }] =
-            commands.as_slice()
-        else {
+        let [DrawCmd { draw: Draw::Box { background, radius, .. }, .. }] = commands.as_slice() else {
             panic!("the silhouette alone: {commands:?}")
         };
+        let [node::Fill::Color(fill)] = background.as_slice() else { panic!("a colour: {background:?}") };
         assert_eq!((fill.a, *radius), (1.0, Radii::from(-6.0)));
         assert!(list.commands[2..].iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "the label outside it");
     }

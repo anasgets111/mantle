@@ -133,7 +133,7 @@ impl ResolvedNode {
             Some(PaintStyle::Box { clip, .. }) => *clip = shape,
             paint => {
                 *paint = Some(PaintStyle::Box {
-                    background: None,
+                    background: Vec::new(),
                     radius: Default::default(),
                     border: Default::default(),
                     widths: Default::default(),

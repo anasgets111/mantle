@@ -85,7 +85,7 @@ colours and no short `#RGB` form.
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `background` | `Color\|Gradient\|Bound` | None | A colour or [gradient](#gradients). Absent draws nothing; `"#00000000"` is an explicit transparent fill. A gradient snaps under `animate` |
+| `background` | `Color\|Gradient\|BackgroundLayer[]\|Bound` | None | A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps |
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
@@ -206,6 +206,26 @@ return row {
     },
 }
 ```
+
+## Background layers
+
+`background` also takes a list of layers, as CSS multiple backgrounds: the first is on top, like
+[`shadows`](#shadows). A layer is a colour, a gradient, or `{ fill = <colour or gradient> }`. Every
+layer shares the box's `radius`, `corner_shape` and `corner_smoothing`. At most 16; `{}` draws
+nothing. A single colour or gradient stays valid.
+
+```lua
+rect {
+    width = 120, height = 40, radius = 12,
+    background = {
+        { gradient = "linear", stops = { { 0, "#FFFFFF33" }, { 1, "#FFFFFF00" } } },
+        "#313244",
+    },
+}
+```
+
+Under `animate`, colour layers tween pairwise and a layer only one side has fades in or out. A
+gradient layer snaps.
 
 ## Clip
 

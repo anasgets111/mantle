@@ -271,7 +271,8 @@ fn takes_input_as_a_box(node: &ResolvedNode, paint_claims: bool) -> bool {
     let paints = paint_claims
         && match &node.paint {
             Some(PaintStyle::Box { background, widths, .. }) => {
-                background.is_some() || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
+                !background.is_empty()
+                    || [widths.top, widths.right, widths.bottom, widths.left].iter().any(|w| *w > 0.0)
             }
             Some(PaintStyle::Path(path)) => {
                 (path.fill.is_some() || path.stroke.is_some() && path.stroke_width > 0.0)
@@ -475,7 +476,7 @@ mod tests {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 100.0), solid_paint(), Vec::new());
         card.behind_blur = true;
         card.paint = Some(PaintStyle::Box {
-            background: Some(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })),
+            background: vec![node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })],
             radius: node::Radii::from(20.0),
             border: node::BorderPaint::default(),
             widths: crate::layout::node::EdgeInsets::default(),

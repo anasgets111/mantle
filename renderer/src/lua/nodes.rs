@@ -694,6 +694,9 @@ mod meta_stub_tests {
                     "{ gradient = \"conic\", angle = 45, stops = { { 0, \"#112233\" }, { 1, \"#11223300\" } } }".into(),
                 );
             }
+            (_, "BackgroundLayer[]") => {
+                return Some("{ \"#11223380\", { fill = \"#112233\" }, { gradient = \"radial\", stops = { { 0, \"#112233\" }, { 1, \"#445566\" } } } }".into());
+            }
             // Inline table shapes have no alias.
             ("anchor", shape) if shape.starts_with('{') => return Some("{ top = true, left = true }".to_string()),
             ("min_size" | "max_size", _) => return Some("{ width = 8.5, height = 8.5 }".to_string()),
