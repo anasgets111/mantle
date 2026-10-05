@@ -89,6 +89,15 @@ fn drag_local(
     local_pointer(&path, drag.rect, point)
 }
 
+/// Innermost node with callable `on_press`; unhandled nodes are transparent, like `on_click`'s scan.
+fn press_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint) -> Option<PressTarget> {
+    path.iter().enumerate().rev().find_map(|(depth, node)| {
+        let handler = pointer::on_press.read(&node.properties).ok().flatten()?;
+        let rect = layout::hit::absolute_rect(&path[..=depth])?;
+        Some(PressTarget { rect, handler, at: local_pointer(&path[..=depth], rect, point) })
+    })
+}
+
 /// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
 /// so a handle inside a draggable track leaves the track draggable.
 fn drag_target(path: &[&layout::ResolvedNode]) -> Option<DragTarget> {
@@ -120,6 +129,13 @@ struct DragTarget {
     rect: LogicalRect,
     handler: Function,
     id: layout::scene::NodeId,
+}
+
+/// The `on_press` node under a press, with its rect and the node-local pointer.
+struct PressTarget {
+    rect: LogicalRect,
+    handler: Function,
+    at: layout::hit::LogicalPoint,
 }
 
 /// Press/release target: handler, click-identity rect (see [`ArmedClick`]), and link `href`.
@@ -167,6 +183,7 @@ struct PointerHit {
     caret: Option<usize>,
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
     drag: Option<DragTarget>,
+    press: Option<PressTarget>,
 }
 
 fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
@@ -310,6 +327,19 @@ pub(in crate::wayland::input) fn call_on_click(
     on_click.call::<()>((argument, button, pointer)).map_err(|e| ("on_click raised, ignoring it", e))
 }
 
+/// Call `on_press` like `on_click`: rect, button name and node-local pointer.
+fn call_on_press(
+    lua: &Lua,
+    on_press: &Function,
+    target: &PressTarget,
+    button: &str,
+) -> Result<(), (&'static str, mlua::Error)> {
+    let rect = rect_table(lua, target.rect).map_err(|e| ("could not build on_press's rect argument", e))?;
+    let pointer =
+        local_pointer_table(lua, target.at).map_err(|e| ("could not build on_press's pointer argument", e))?;
+    on_press.call::<()>((rect, button, pointer)).map_err(|e| ("on_press raised, ignoring it", e))
+}
+
 /// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
 /// decision 1). Local coordinates avoid repeated subtraction in handlers; unclamped coordinates
 /// let each config apply its own `min`/`max`.
@@ -431,6 +461,15 @@ impl PointerHandler for App {
                         link: clickable.link,
                         button,
                     });
+                    // Both press-time handlers run inside one window so `toplevel(id)` requests
+                    // queued by either are sent with this press's serial.
+                    crate::lua::toplevel::begin_press(self.client.lua(), event.position);
+                    if !pressed_a_field
+                        && let (Some(target), Some(name)) = (hit.press, pointer_button_name(button))
+                        && let Err((what, e)) = call_on_press(self.client.lua(), &target.handler, &target, name)
+                    {
+                        warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
+                    }
                     // Left `on_drag` holds until release (ADR-0116 decision 1); other buttons stay
                     // free for clicks, and fields drag nothing just as they click nothing.
                     if button == BTN_LEFT
@@ -439,6 +478,12 @@ impl PointerHandler for App {
                     {
                         self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target });
                         self.fire_on_drag(&instance_id, event.position, DragPhase::Start);
+                    }
+                    // The compositor owns the pointer after a move or resize and may send no release,
+                    // so nothing may stay armed for one.
+                    if self.send_toplevel_requests() {
+                        self.drag = None;
+                        self.armed = None;
                     }
                 }
                 PointerEventKind::Release { button, serial, .. } => {
@@ -545,7 +590,7 @@ impl App {
     /// cloned out of the lent tree; the tree itself is not.
     fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit { click: None, field: None, control: None, caret: None, drag: None };
+            return PointerHit { click: None, field: None, control: None, caret: None, drag: None, press: None };
         };
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
         let path = layout::hit::hit_path(tree, point);
@@ -566,6 +611,7 @@ impl App {
                 .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
             drag: drag_target(&path),
+            press: press_target(&path, point),
         }
     }
 
@@ -794,6 +840,33 @@ mod tests {
         assert_eq!(wheel_target(&beside).map(|(depth, ..)| depth), Some(1), "the track, past the thumb");
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
         assert!(drag_target(&[&bare]).is_none() && wheel_target(&[&bare]).is_none());
+    }
+
+    #[test]
+    fn on_press_takes_the_innermost_handler_and_gets_rect_button_and_local_pointer() {
+        let lua = Lua::new();
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&seen);
+        let handler = Value::Function(
+            lua.create_function(move |_, (rect, button, pointer): (Table, String, Table)| {
+                sink.borrow_mut().push((rect.get::<f32>("width").unwrap(), button, pointer.get::<f32>("x").unwrap()));
+                Ok(())
+            })
+            .unwrap(),
+        );
+        let mut bar = hit_node(&lua, "row", (10.0, 4.0, 40.0, 24.0), false);
+        std::rc::Rc::make_mut(&mut bar.properties).insert("on_press", handler);
+        bar.children.push(hit_node(&lua, "icon", (5.0, 2.0, 20.0, 20.0), true));
+        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
+        root.children.push(bar);
+
+        let at = layout::hit::LogicalPoint { x: 20.0, y: 12.0 };
+        let path = layout::hit::hit_path(&root, at);
+        let target = press_target(&path, at).expect("the bar carries on_press; its icon child is transparent");
+        call_on_press(&lua, &target.handler, &target, "right").unwrap();
+        assert_eq!(*seen.borrow(), vec![(40.0, "right".to_string(), 10.0)]);
+        let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
+        assert!(press_target(&[&bare], at).is_none());
     }
 
     #[test]

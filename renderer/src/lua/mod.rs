@@ -23,6 +23,7 @@ pub mod signal;
 pub mod store;
 pub mod surfaces;
 pub mod timer;
+pub(crate) mod toplevel;
 
 pub(crate) use location::{call_logged, describe, warn_raised};
 pub use nodes::VirtualNode;
@@ -206,6 +207,7 @@ impl Loader {
         fonts::register(&lua)?;
         fuzzy::register(&lua)?;
         focus::register(&lua)?;
+        toplevel::register(&lua)?;
         signal::register(&lua, dirty)?;
         store::register(&lua)?;
         session_process::register(&lua)?;

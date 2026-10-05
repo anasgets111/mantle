@@ -1,9 +1,12 @@
 //! `window` (`xdg_toplevel`): creation, size negotiation and live property updates.
 
-use shared::{debug, error};
+use shared::{debug, error, warn};
+
+use wayland_protocols::xdg::shell::client::xdg_toplevel::ResizeEdge;
 
 use super::*;
 use crate::lua::call_logged;
+use crate::lua::toplevel::{Action, Edge, Request};
 use crate::wayland::surface::MapState;
 use crate::wayland::surface::TrackedRole;
 
@@ -61,7 +64,57 @@ fn size_hint_pair(hint: Option<SizeHint>) -> Option<(u32, u32)> {
     hint.map(|hint| (hint.width.max(0.0) as u32, hint.height.max(0.0) as u32))
 }
 
+/// The press serial `window`'s frame request may carry, or why it may not: compositors check the
+/// serial against the press that started the grab, so one armed on another surface is refused.
+fn frame_serial(shown: bool, armed: Option<&ArmedSerial>, window: &str) -> Result<u32, &'static str> {
+    match armed {
+        _ if !shown => Err("names no shown window"),
+        Some(armed) if armed.instance_id == window => Ok(armed.serial),
+        Some(_) => Err("is not the surface that was pressed"),
+        None => Err("has no press serial armed"),
+    }
+}
+
+fn resize_edge(edge: Edge) -> ResizeEdge {
+    match edge {
+        Edge::Top => ResizeEdge::Top,
+        Edge::Bottom => ResizeEdge::Bottom,
+        Edge::Left => ResizeEdge::Left,
+        Edge::Right => ResizeEdge::Right,
+        Edge::TopLeft => ResizeEdge::TopLeft,
+        Edge::TopRight => ResizeEdge::TopRight,
+        Edge::BottomLeft => ResizeEdge::BottomLeft,
+        Edge::BottomRight => ResizeEdge::BottomRight,
+    }
+}
+
 impl App {
+    /// Sends the `toplevel(id)` requests the press-time callbacks queued, with this press's serial
+    /// (ADR-0049 amendment). Returns whether the compositor took the pointer, so the caller drops
+    /// the press state it will never see released. A refused request warns and sends nothing.
+    pub(in crate::wayland) fn send_toplevel_requests(&mut self) -> bool {
+        let mut sent = false;
+        for Request { window: id, action } in crate::lua::toplevel::end_press(self.client.lua()) {
+            let window = self.surfaces.iter().find_map(|tracked| match &tracked.role {
+                TrackedRole::Window { window: Some(window), .. } if tracked.surface_id == id => Some(window),
+                _ => None,
+            });
+            let serial = frame_serial(window.is_some(), self.input_serial.as_ref(), &id);
+            let (Some(window), Ok(serial), Some(seat)) = (window, &serial, self.seat_state.seats().next()) else {
+                let why = serial.err().unwrap_or("has no seat");
+                warn!("toplevel({id:?}): {why}, so the frame request was not sent");
+                continue;
+            };
+            match action {
+                Action::Move => window.move_(&seat, *serial),
+                Action::Resize(edge) => window.resize(&seat, *serial, resize_edge(edge)),
+                Action::Menu(at) => window.show_window_menu(&seat, *serial, at),
+            }
+            sent = true;
+        }
+        sent
+    }
+
     /// [`App::create_surfaces`]'s `window` arm: always track it, but create `xdg_toplevel` only
     /// when visible (ADR-0049 decision 1). The entry lets later re-resolves observe `visible`.
     pub(in crate::wayland) fn create_window(
@@ -316,5 +369,17 @@ mod tests {
         assert_eq!(window_update(&applied, &fresh), WindowUpdate { max_size: Some(None), ..WindowUpdate::default() });
         assert_eq!(size_hint_pair(None), None, "which `Window::set_max_size` sends as the protocol's zero");
         assert_eq!(size_hint_pair(Some(SizeHint { width: 320.0, height: 240.0 })), Some((320, 240)));
+    }
+
+    fn armed(on: &str) -> ArmedSerial {
+        ArmedSerial { serial: 7, instance_id: on.into() }
+    }
+
+    #[test]
+    fn a_frame_request_needs_a_shown_window_and_its_own_press_serial() {
+        assert_eq!(frame_serial(true, Some(&armed("main")), "main"), Ok(7));
+        assert!(frame_serial(false, Some(&armed("main")), "main").is_err(), "hidden or unknown window");
+        assert!(frame_serial(true, Some(&armed("other")), "main").is_err(), "another surface's press");
+        assert!(frame_serial(true, None, "main").is_err(), "no armed serial");
     }
 }

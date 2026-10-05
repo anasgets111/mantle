@@ -106,6 +106,26 @@ function FocusHandle:set_text(text) end
 ---@return FocusHandle
 function focus_target(name) end
 
+---@class ToplevelHandle
+---A named `window` the app draws its own frame for. Each method asks the compositor to take over the pointer, and only works inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, it logs a warning and does nothing.
+local ToplevelHandle = {}
+
+---Start an interactive move of the window, as dragging a title bar does.
+function ToplevelHandle:move() end
+
+---Start an interactive resize from an edge or corner of the window.
+---@param edge string `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`.
+function ToplevelHandle:resize(edge) end
+
+---Open the compositor's window menu at the pointer's press position.
+function ToplevelHandle:show_menu() end
+
+---Names a `window` whose frame the app draws; call `:move()`, `:resize(edge)` or `:show_menu()` on it from an `on_press`.
+---[docs](https://anasgets111.github.io/mantle/surfaces/window.html#custom-title-bar)
+---@param id string The `id` of a `window`.
+---@return ToplevelHandle
+function toplevel(id) end
+
 ---@class SessionProcessHandle
 ---A program declared with `session_process`. Each field is a signal over its `mantle.processes`
 ---entry, `nil` before the first push; while `running` is false they describe the finished run.

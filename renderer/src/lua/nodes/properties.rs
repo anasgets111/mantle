@@ -285,7 +285,7 @@ props! {
         /// Pointer shape over this node; the innermost node that sets one wins (ADR-0107).
         ///
         /// Book: One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins
-        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
+        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
         /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
         on_hover(hovered: bool);
     }
@@ -293,6 +293,8 @@ props! {
     mod pointer(ALL) {
         /// On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. A press on a `textfield` that takes the keyboard goes to the field instead.
         on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
+        /// On press of any mouse button, before `on_click` and before the release. `rect` and `pointer` are as in `on_click`. The only place `toplevel(id)` can move, resize or open the window menu, since compositors honour those for the press serial; an `on_drag` `"start"` works too. Not called for a press on a `textfield`.
+        on_press(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint);
         /// Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
         on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase);
         /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.

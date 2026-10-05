@@ -151,7 +151,60 @@ the opening size.
 | Give it a starting size | `min_size`, or a compositor rule |
 | Scroll content taller than the window | A `column { height = "fill", scroll = scroll("name") }` ([scroll](../guide/input.md#scroll)) |
 | Close it from a button inside it | Set its `visible` state to `false` from `on_click` |
+| Draw my own title bar | [Custom title bar](#custom-title-bar) |
 | Open a menu from it | A [popup](popup.md) with `parent` set to the window's `id` |
+
+### Custom title bar
+
+An app that draws its own frame asks the compositor to run the pointer: `toplevel(id)` takes a
+`window`'s `id` and has three methods, called from an [`on_press`](../guide/input.md) (or an
+`on_drag` `"start"`).
+
+| Method | Does |
+| :--- | :--- |
+| `:move()` | Starts an interactive move, as dragging a title bar does |
+| `:resize(edge)` | Starts a resize from `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`; any other value raises |
+| `:show_menu()` | Opens the compositor's window menu at the press position |
+
+Compositors honour these only for the serial of the press that started them, so a call from
+`on_click`, a timer or any other callback, on a hidden window, or on a press that landed on a
+different surface logs a warning and sends nothing. After a request the compositor owns the
+pointer and may send no release: the engine drops the drag and the armed click, so `on_drag` gets no
+`"end"` and `on_click` does not fire. There is no minimize, maximize or fullscreen request; the
+compositor's own bindings still do those.
+
+```lua
+local frame = toplevel("main")
+local GRIP = 6
+
+local function grip(edge, props)
+    props.on_press = function(_, button)
+        if button == "left" then frame:resize(edge) end
+    end
+    return rect(props)
+end
+
+return {
+    window {
+        id = "main",
+        title = "Notes",
+        child = column {
+            width = "fill", height = "fill", background = "#1e1e2e",
+            children = {
+                grip("top", { width = "fill", height = GRIP, cursor = "n-resize" }),
+                row {
+                    width = "fill", height = 32, padding = { left = 12, right = 12 }, background = "#181825",
+                    on_press = function(_, button)
+                        if button == "left" then frame:move() else frame:show_menu() end
+                    end,
+                    children = { text { content = "Notes", foreground = "#cdd6f4", align_v = "center" } },
+                },
+                grip("bottom_right", { width = GRIP, height = GRIP, align_h = "end", cursor = "se-resize" }),
+            },
+        },
+    },
+}
+```
 
 ### Confirm before closing
 
@@ -199,7 +252,8 @@ return { editor }
 | `max_size` below `min_size` is refused | Keep every non-zero `max_size` axis at or above `min_size`'s, or `0` |
 | `width = 600` on the window doesn't resize it | That sizes the root inside the window; the compositor owns the window's size |
 | A click on the window's empty background reaches the window behind it | Put the background on a `"fill"` child, not the window ([input region](index.md#input-region)) |
-| No title bar under a compositor without server-side decorations | The engine draws none; draw your own row, or use compositor rules |
+| No title bar under a compositor without server-side decorations | The engine draws none; draw your own row ([custom title bar](#custom-title-bar)), or use compositor rules |
+| `toplevel("main"):move()` warns and does nothing | Call it from `on_press`, not `on_click`; the press serial is gone by release |
 
 See also: [surfaces](index.md), [popup](popup.md), [nodes](../nodes/index.md),
 [signals](../guide/signals.md).

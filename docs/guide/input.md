@@ -50,6 +50,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
 | `on_click(rect, button, pointer)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored |
+| `on_press(rect, button, pointer)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. Not called for a press on a `textfield`. See below |
 | `on_drag(rect, pointer, phase)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
@@ -60,6 +61,12 @@ node's laid-out box moved between press and release, so give press feedback with
 `translate` rather than `width` or `margin`. A press on a `textfield` that takes the keyboard never
 clicks, not even an `on_click` on the field or around it, and a link in a `text` (`on_link`) takes
 the click before any `on_click`, the text's own included.
+
+**Press.** `on_press` is the one place a callback can start a window move, resize or menu with
+[`toplevel(id)`](../surfaces/window.md#custom-title-bar): the compositor checks those requests
+against the press, and `on_click` fires on release, too late. An `on_drag` `"start"` works too.
+After the compositor takes the pointer it may send no release, so the engine ends the drag and the
+armed click; `on_drag` gets no `"end"` and `on_click` does not fire.
 
 **Drag.** A left press on an `on_drag` node calls `"start"` at once, so clicking a slider track
 also seeks. Every pointer motion on that surface then calls `"move"`, wherever the pointer is.

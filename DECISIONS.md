@@ -7933,3 +7933,21 @@ a shader over a subtree. The roadmap's won't-do row now covers only the desktop 
 
 Rejected: a `shader` node with a child input, which cannot read a sibling's pixels and repeats the
 layer's offscreen; reading the desktop, which the compositor owns.
+
+## 0337. A `toplevel(id)` handle moves, resizes and opens the menu of a window the app frames itself
+
+Mantle is a UI library for apps, not a compositor: an app that draws its own frame needs
+interactive move, resize and the window menu, and nothing more.
+
+1. **Handle.** `toplevel(id)` is userdata like `focus_target`: `:move()`, `:resize(edge)` with eight
+   edge names, and `:show_menu()` at the press position. Methods queue; the app drains them after
+   the press-time callbacks.
+2. **Press serial only.** Compositors check these against the press serial (smithay's
+   `has_grab`), and `on_click` fires on release. A request goes out only from `on_press` or an
+   `on_drag` "start", with the armed serial, on the window that was pressed; anything else warns and
+   sends nothing, like a refused popup grab.
+3. **`on_press(rect, button, pointer)`** fires at press for any button, innermost handler first,
+   skipped on textfields like `on_click`.
+4. **The compositor takes the pointer.** No release may follow a move or resize, so the engine
+   clears its drag and press state: `on_drag` gets no "end" and `on_click` does not fire.
+5. **No minimize, maximize or fullscreen.** Those are compositor policy; its own bindings cover them.

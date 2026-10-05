@@ -423,6 +423,14 @@ macro_rules! lua_table {
 }
 pub(crate) use lua_table;
 
+/// A method name as Lua spells it: `r#move` for a Lua name that is a Rust keyword.
+pub(crate) const fn unraw(ident: &str) -> &str {
+    match ident.as_bytes() {
+        [b'r', b'#', ..] => ident.split_at(2).1,
+        _ => ident,
+    }
+}
+
 /// Implements `UserData` for a handle from its methods, and its `---@class` stub from theirs:
 ///
 /// ```ignore
@@ -439,7 +447,7 @@ macro_rules! lua_class {
     }) => {
         impl mlua::UserData for $class {
             fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
-                $(methods.add_method(stringify!($method), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<()> { $body });)*
+                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<()> { $body });)*
             }
         }
 
@@ -449,7 +457,7 @@ macro_rules! lua_class {
             }
             #[cfg(test)]
             fn classes(out: &mut Vec<String>) {
-                const METHODS: &[(&str, $crate::lua::luacats::Signature)] = &[$((stringify!($method), $crate::lua::luacats::Signature {
+                const METHODS: &[(&str, $crate::lua::luacats::Signature)] = &[$(($crate::lua::luacats::unraw(stringify!($method)), $crate::lua::luacats::Signature {
                     doc: concat!($($method_doc, "\n",)* ""),
                     params: &[$($crate::lua::luacats::param!(stringify!($param), [$($param_doc)*], $param_ty, <$param_ty as $crate::lua::luacats::LuaType>::lua)),*],
                     returns: &[],
