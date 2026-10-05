@@ -577,7 +577,11 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                     load: *load,
                     retained: cover,
                     shader: dissolve.and_then(|dissolve| {
-                        dissolve.spec.shader.clone().map(|path| (path, dissolve.spec.params.clone()))
+                        dissolve
+                            .spec
+                            .shader
+                            .clone()
+                            .map(|path| (path, dissolve.spec.params.clone(), sampler_files(&dissolve.spec.images)))
                     }),
                     dissolve: match dissolve {
                         Some(dissolve) => Some(dissolve.progress),
@@ -904,6 +908,7 @@ mod tests {
                 easing: Default::default(),
                 shader: None,
                 params: Vec::new(),
+                images: Vec::new(),
             },
             progress: 0.25,
         }));

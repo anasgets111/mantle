@@ -215,6 +215,18 @@ impl Placement {
         }
     }
 
+    /// The anchor rect measured from a parent window's geometry origin, which xdg-shell uses, rather than its buffer's.
+    pub(super) fn within_geometry_of(self, (x, y): (f32, f32)) -> Self {
+        Self {
+            anchor_rect: crate::text::snap::LogicalRect {
+                x: self.anchor_rect.x - x,
+                y: self.anchor_rect.y - y,
+                ..self.anchor_rect
+            },
+            ..self
+        }
+    }
+
     /// Whether both axes have a size to ask for. A `Content` axis reads zero until the tree is
     /// measured, and `set_size` raises `invalid_input` on a zero.
     pub(super) fn is_measured(&self) -> bool {
@@ -636,6 +648,19 @@ mod tests {
         spec.height = node::SizeMode::Content;
         let nothing = LogicalRect::default();
         assert_eq!(popup_requested_size(&spec, nothing), (0.0, 0.0));
+    }
+
+    #[test]
+    fn a_placement_is_measured_from_the_parents_geometry_origin() {
+        let spec = popup_spec_fixture();
+        let placement = Placement::of(&spec, (10.0, 10.0));
+        let moved = placement.within_geometry_of((40.0, 8.0));
+        assert_eq!(
+            (moved.anchor_rect.x, moved.anchor_rect.y),
+            (placement.anchor_rect.x - 40.0, placement.anchor_rect.y - 8.0)
+        );
+        assert_eq!(moved.anchor_rect.width, placement.anchor_rect.width);
+        assert_eq!(placement.within_geometry_of((0.0, 0.0)), placement);
     }
 
     #[test]

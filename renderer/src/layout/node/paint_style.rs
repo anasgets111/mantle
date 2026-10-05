@@ -598,20 +598,19 @@ mod tests {
     #[test]
     fn shader_images_are_checked_as_sampler_names_and_absolute_raster_paths() {
         let lua = Lua::new();
-        let parsed = style(&lua, r#"return { kind = "shader", images = { b = "/b.png", a = "/a.webp" } }"#);
+        let parsed = style(&lua, r#"return { kind = "shader", images = { b = "/b.png", a = "/a.WEBP" } }"#);
         let Ok(Some(PaintStyle::Shader { images, .. })) = parsed else { panic!("{parsed:?}") };
-        assert_eq!(images, [("a".to_string(), "/a.webp".to_string()), ("b".to_string(), "/b.png".to_string())]);
+        assert_eq!(images, [("a".to_string(), "/a.WEBP".to_string()), ("b".to_string(), "/b.png".to_string())]);
         let nine = (0..9).map(|i| format!("i{i} = \"/x.png\"")).collect::<Vec<_>>().join(", ");
         let refused = [
             ("{ [\"1a\"] = \"/x.png\" }", "images.1a"),
-            ("{ [\"a-b\"] = \"/x.png\" }", "images.a-b"),
             ("{ u_progress = \"/x.png\" }", "images.u_progress"),
-            ("{ mantle_opacity = \"/x.png\" }", "images.mantle_opacity"),
-            ("{ fragColor = \"/x.png\" }", "images.fragColor"),
             ("{ a_size = \"/x.png\" }", "images.a_size"),
+            ("{ texture = \"/x.png\" }", "images.texture"),
             ("{ a = \"x.png\" }", "images.a"),
             ("{ a = \"/x.svg\" }", "images.a"),
-            ("{ a = 1 }", "images"),
+            ("{ a = \"/x.gif\" }", "images.a"),
+            ("{ a = 1 }", "images.a"),
             ("\"/x.png\"", "images"),
             ("{ \"/x.png\" }", "images"),
             (&format!("{{ {nine} }}"), "images"),

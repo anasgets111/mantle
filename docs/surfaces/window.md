@@ -133,9 +133,10 @@ property on a reload asks again.
 
 ## Size
 
-The window's size is the compositor's configure. The root fills it on each axis where it has no
-`width`/`height` of its own; a set one sizes the root inside the window. A `geometry_inset` grows
-the surface past that size on each side ([client-side decoration](#client-side-decoration)).
+The window's size is the compositor's configure. The `window` node fills it on each axis where it has no
+`width`/`height` of its own; a set one sizes the node inside the window. Its `child` sizes to its
+content unless it sets `"fill"`. A `geometry_inset` grows the surface past that size on each side
+([client-side decoration](#client-side-decoration)).
 
 | Compositor | Opening size |
 | :--- | :--- |
@@ -248,10 +249,10 @@ return {
 
 A window that draws its own frame can also draw its shadow and rounded corners outside it.
 `geometry_inset` adds a band around the window's frame: the buffer is the frame plus the band, the
-root fills the whole buffer, and the compositor sizes, tiles and snaps by the frame alone
+`window` node fills the whole buffer, and the compositor sizes, tiles and snaps by the frame alone
 (`xdg_surface.set_window_geometry`). Configure sizes, `min_size` and `max_size` are all the
-frame's. Put the frame inside the band with `padding` on a transparent root, and its `shadows` and
-`radius` draw into the band.
+frame's. The `child` fills the buffer too if it says `"fill"`; give the frame a `margin` of the
+band, and its `shadows` and `radius` draw into the band.
 
 Compositors expect no shadow on a maximized, fullscreen or tiled edge. The engine does not guess:
 bind `geometry_inset` to the [window state](#window-state) and zero those edges.
@@ -268,7 +269,21 @@ local function band(s)
     }
 end
 local inset = frame:state():map(band)
-local floating = frame:state():map(function(s) return band(s) ~= 0 end)
+local floating = frame:state():map(function(s)
+    local t = s.tiled
+    return not (s.maximized or s.fullscreen or t.left or t.right or t.top or t.bottom)
+end)
+
+local GRIP = 8
+local function grip(edge, cursor, props)
+    props.background = "#00000000"
+    props.cursor = cursor
+    props.visible = floating
+    props.on_press = function(_, button)
+        if button == "left" then frame:resize(edge) end
+    end
+    return rect(props)
+end
 
 return {
     window {
@@ -276,11 +291,11 @@ return {
         title = "Notes",
         decorations = "client",
         geometry_inset = inset,
-        child = column {
-            width = "fill", height = "fill", padding = inset,
+        child = rect {
+            width = "fill", height = "fill",
             children = {
                 column {
-                    width = "fill", height = "fill", background = "#1e1e2e",
+                    width = "fill", height = "fill", margin = inset, background = "#1e1e2e",
                     radius = floating:map(function(on) return on and 10 or 0 end),
                     shadows = { { color = "#00000080", blur = 18, offset = { x = 0, y = 4 } } },
                     children = {
@@ -293,16 +308,21 @@ return {
                         },
                     },
                 },
+                grip("top", "n-resize", { width = "fill", height = GRIP }),
+                grip("bottom", "s-resize", { width = "fill", height = GRIP, align_v = "end" }),
+                grip("left", "w-resize", { width = GRIP, height = "fill" }),
+                grip("right", "e-resize", { width = GRIP, height = "fill", align_h = "end" }),
             },
         },
     },
 }
 ```
 
-The band takes no pointer input until something in it does: the [input region](index.md#input-region)
-follows content, and a shadow is not content. Resize handles go where the config puts them, inside
-the frame's edge as in the [custom title bar](#custom-title-bar), or in the band as transparent
-nodes with an `on_press` calling `:resize(edge)`.
+The `rect` root stacks its children, so the grips lie over the band's edges: a transparent
+`background` makes each one claim input ([input region](index.md#input-region)), and `visible =
+floating` removes them when the window is maximized, fullscreen or tiled. The shadow itself is not
+content and takes no pointer input. Corner grips are more of the same, sized `GRIP * 2` and listed
+after the edges.
 
 ### Confirm before closing
 
@@ -348,7 +368,7 @@ return { editor }
 | `min_size` doesn't stop the root shrinking | It is advisory to the compositor; layout does not enforce it |
 | `min_size = { width = 400 }` is refused | Name both axes; `0` leaves one unconstrained |
 | `max_size` below `min_size` is refused | Keep every non-zero `max_size` axis at or above `min_size`'s, or `0` |
-| `width = 600` on the window doesn't resize it | That sizes the root inside the window; the compositor owns the window's size |
+| `width = 600` on the window doesn't resize it | That sizes the `window` node inside the window; the compositor owns the window's size |
 | A click on the window's empty background reaches the window behind it | Put the background on a `"fill"` child, not the window ([input region](index.md#input-region)) |
 | No title bar under a compositor without server-side decorations | The engine draws none; draw your own row ([custom title bar](#custom-title-bar)), or use compositor rules |
 | `decorations = "server"` still leaves a bare window | The compositor has no `zxdg_decoration_manager_v1` or chose client-side; check `toplevel(id):state().decoration` |

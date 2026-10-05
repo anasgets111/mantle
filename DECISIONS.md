@@ -8112,8 +8112,8 @@ blended node's content-mode shadows blend apart from its content.
 A client-decorated window draws its shadow and rounded corners outside its logical frame.
 
 1. **Split.** The buffer is the configure size (the geometry) plus a per-edge inset.
-   `xdg_surface.set_window_geometry(left, top, w, h)` names the frame. The root fills the
-   buffer, and the config places its frame with ordinary margin. Configure sizes and
+   `xdg_surface.set_window_geometry(left, top, w, h)` names the frame. The `window` node fills the
+   buffer, and the config places its frame with ordinary margin on a child that says `"fill"`. Configure sizes and
    `min_size`/`max_size` stay geometry sizes. Insets round to whole logical px, because the
    surface size and the request are both integers.
 2. **No engine policy when maximized, fullscreen or tiled.** xdg-shell only advises dropping the
@@ -8126,3 +8126,6 @@ A client-decorated window draws its shadow and rounded corners outside its logic
 
 Cost: an inset change paints one frame at the new buffer size with the previous layout, as a
 configure already does (ADR-0044 d2).
+
+Amendment: a popup's anchor rect is measured from the parent's window geometry, so
+`Placement::within_geometry_of` subtracts the parent window's rounded (left, top) inset.

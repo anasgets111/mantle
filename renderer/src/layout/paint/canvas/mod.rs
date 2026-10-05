@@ -294,7 +294,11 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         // the frame, which is why they were built first and why they stay.
                         let crossed = match (walk.shaders.as_mut(), from, to) {
                             (Some(shaders), Some((from, from_rect, _)), Some((to, to_rect, _))) => {
-                                let params = shader.as_ref().map_or(&[][..], |(_, params)| params.as_slice());
+                                let (params, files) =
+                                    shader.as_ref().map_or((&[][..], &[][..]), |(_, params, files)| {
+                                        (params.as_slice(), files.as_slice())
+                                    });
+                                let images = sampler_images(painter.canvas_mut(), walk.images, files);
                                 // The incoming picture's visible box, so the cross ends where the plain draw resumes.
                                 let seen = to_rect.intersect(rect);
                                 let round = LogicalRect {
@@ -316,9 +320,9 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                                     round,
                                     progress: *progress,
                                     params,
-                                    images: &[],
+                                    images: &images,
                                 };
-                                let effect = shader.as_ref().map(|(path, _)| path.as_path());
+                                let effect = shader.as_ref().map(|(path, ..)| path.as_path());
                                 // SAFETY: `Shaders` is built only with `gl` current on this thread and shared
                                 // with the canvas, which is what `draw` requires.
                                 unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), effect, &run) }
@@ -1243,6 +1247,45 @@ pub(crate) mod tests {
         }
     }
 
+    /// A transition shader's `images` take the units after `u_from` and `u_to`, so sampling one
+    /// leaves both pictures readable.
+    #[test]
+    fn a_transition_shader_samples_its_image_beside_both_pictures() {
+        let dir = tempfile::tempdir().unwrap();
+        let (red, green) = (solid_svg(dir.path(), "red.svg", "red"), solid_svg(dir.path(), "green.svg", "lime"));
+        let blue = png(dir.path(), "blue.png", (1, 1), &[0, 0, 255, 255]);
+        let frag = dir.path().join("cross.frag");
+        std::fs::write(
+            &frag,
+            "void main() { fragColor = vec4(mantle_from(v_uv).r, mantle_to(v_uv).g, texture(map, v_uv).b, 1.0); }",
+        )
+        .unwrap();
+        let Some(instance) = init_headless_egl(32, 32) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 32, 32) else { return };
+        let src = format!(
+            r#"return panel {{ id = "bar", width = 32, height = 32, child = image {{ width = 32, height = 32, source = "{}" }} }}"#,
+            green.display()
+        );
+        let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 32.0, height: 32.0 });
+        let mut list = build(&root, 1.0, None);
+        for cmd in &mut list.commands {
+            if let Draw::Image { retained, dissolve, shader, .. } = &mut cmd.draw {
+                *retained = Some(red.display().to_string());
+                *dissolve = Some(0.0);
+                let map = ("map".to_string(), blue.display().to_string(), crate::image::FileVersion::read(&blue));
+                *shader = Some((frag.clone(), Vec::new(), vec![map]));
+            }
+        }
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 32, y1: 32 };
+        let _ = execute("test", &mut painter, images, captures, &list, 1.0, (32.0, 32.0), &[whole], shaders);
+        assert_eq!(pixel_at(painter.canvas_mut(), 16, 16), (255, 255, 255, 255));
+    }
+
     /// `corner_smoothing` reaches the plain fill and the shader's SDF alike: pixel (12, 0) of a 64 px
     /// box at radius 16 is inside the circle and outside the smoothed corner (the shader approximates
     /// that corner, so its alpha is only low, not zero).
@@ -2096,18 +2139,10 @@ pub(crate) mod tests {
         assert_eq!(px, [(255, 255, 0, 255), (51, 255, 0, 255), (153, 255, 0, 255), (0, 255, 0, 255)]);
     }
 
-    /// A 2x2 PNG: red and green over blue and white, opaque.
-    fn four_texel_png(dir: &std::path::Path) -> std::path::PathBuf {
-        let path = dir.join("four.png");
-        let pixels = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
-        ::image::RgbaImage::from_raw(2, 2, pixels.to_vec()).unwrap().save(&path).unwrap();
-        path
-    }
-
-    /// A one-colour 1x1 PNG.
-    fn flat_png(dir: &std::path::Path, name: &str, rgba: [u8; 4]) -> std::path::PathBuf {
+    /// A `width`x`height` PNG of straight RGBA `pixels`.
+    fn png(dir: &std::path::Path, name: &str, (width, height): (u32, u32), pixels: &[u8]) -> std::path::PathBuf {
         let path = dir.join(name);
-        ::image::RgbaImage::from_raw(1, 1, rgba.to_vec()).unwrap().save(&path).unwrap();
+        ::image::RgbaImage::from_raw(width, height, pixels.to_vec()).unwrap().save(&path).unwrap();
         path
     }
 
@@ -2115,7 +2150,7 @@ pub(crate) mod tests {
     #[test]
     fn an_effect_shader_samples_its_image_beside_its_input() {
         let dir = tempfile::tempdir().unwrap();
-        let png = flat_png(dir.path(), "blue.png", [0, 0, 255, 255]);
+        let png = png(dir.path(), "blue.png", (1, 1), &[0, 0, 255, 255]);
         let frag = dir.path().join("fx.frag");
         // Red from the input, blue from the image.
         std::fs::write(
@@ -2143,7 +2178,9 @@ pub(crate) mod tests {
     #[test]
     fn a_shader_samples_its_image_and_reads_its_size() {
         let dir = tempfile::tempdir().unwrap();
-        let png = four_texel_png(dir.path());
+        // Red and green over blue and white, opaque.
+        let four = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        let png = png(dir.path(), "four.png", (2, 2), &four);
         let frag = dir.path().join("tex.frag");
         std::fs::write(
             &frag,
@@ -2171,7 +2208,7 @@ pub(crate) mod tests {
     fn a_shader_with_two_images_reads_each_from_its_own_unit() {
         let dir = tempfile::tempdir().unwrap();
         let (red, blue) =
-            (flat_png(dir.path(), "r.png", [255, 0, 0, 255]), flat_png(dir.path(), "b.png", [0, 0, 255, 255]));
+            (png(dir.path(), "r.png", (1, 1), &[255, 0, 0, 255]), png(dir.path(), "b.png", (1, 1), &[0, 0, 255, 255]));
         let frag = dir.path().join("two.frag");
         std::fs::write(&frag, "void main() { fragColor = v_uv.x < 0.5 ? texture(a, v_uv) : texture(b, v_uv); }")
             .unwrap();
@@ -2205,6 +2242,81 @@ pub(crate) mod tests {
         );
         let Some(px) = paint_with_gl(&src, (64, 16), &[(8, 8), (56, 8)]) else { return };
         assert_eq!(px, [(0, 255, 0, 255); 2]);
+    }
+
+    /// The same, through an `effect.shader`, which reads the stage's blank image on its own path.
+    #[test]
+    fn an_effect_shader_image_that_is_missing_samples_transparent_black() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("fx.frag");
+        std::fs::write(
+            &frag,
+            "void main() { fragColor = vec4(0.0, 1.0 - texture(map, v_uv).a, map_size.x - 1.0, 1.0); }",
+        )
+        .unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 32, height = 16, child = rect {{ width = 32, height = 16,
+                background = "#FF0000FF", effect = {{ shader = {{ source = "{}", images = {{ map = "{}/gone.png" }} }} }} }} }}"##,
+            frag.display(),
+            dir.path().display()
+        );
+        let Some(px) = paint_with_gl(&src, (32, 16), &[(16, 8)]) else { return };
+        assert_eq!(px, [(0, 255, 0, 255)]);
+    }
+
+    /// Texels are premultiplied and read as stored: a half-alpha red PNG samples as half red, half alpha.
+    #[test]
+    fn a_sampled_texel_is_premultiplied() {
+        let dir = tempfile::tempdir().unwrap();
+        let half = png(dir.path(), "half.png", (1, 1), &[255, 0, 0, 128]);
+        let frag = dir.path().join("half.frag");
+        std::fs::write(&frag, "void main() { fragColor = texture(tex, v_uv); }").unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 16, height = 16, child = shader {{ width = 16, height = 16,
+                source = "{}", images = {{ tex = "{}" }} }} }}"##,
+            frag.display(),
+            half.display()
+        );
+        let Some(px) = paint_with_gl(&src, (16, 16), &[(8, 8)]) else { return };
+        assert!(px[0].0.abs_diff(128) <= 1 && px[0].3 == 128 && px[0].1 == 0, "{px:?}");
+    }
+
+    /// One file declared with two name sets is two programs; a repeat of either adds none.
+    #[test]
+    fn one_shader_file_with_two_image_name_sets_compiles_two_programs() {
+        let Some(instance) = init_headless_egl(8, 8) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
+        let gl = test_gl(&instance);
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("any.frag");
+        std::fs::write(&frag, "void main() { fragColor = vec4(1.0); }").unwrap();
+        let mut stage = image_shader::ShaderStage::default();
+        let mut run = |names: &[&'static str]| {
+            let images: Vec<_> = names.iter().map(|name| (*name, None)).collect();
+            let rect = LogicalRect { x: 0.0, y: 0.0, width: 8.0, height: 8.0 };
+            let run = image_shader::Run {
+                cross: None,
+                rect,
+                logical_size: (8.0, 8.0),
+                transform: None,
+                clip: PhysicalRect { x0: 0, y0: 0, x1: 8, y1: 8 },
+                target_size: (8.0, 8.0),
+                target_origin: (0.0, 0.0),
+                opacity: 1.0,
+                radii: node::Radii::default(),
+                round: rect,
+                progress: 0.0,
+                params: &[],
+                images: &images,
+            };
+            // SAFETY: `gl` is the context current on this thread and shares the canvas.
+            unsafe { stage.draw(&gl, painter.canvas_mut(), Some(&frag), &run) };
+        };
+        run(&["a"]);
+        run(&["b"]);
+        run(&["a"]);
+        assert_eq!(stage.program_count(), 2);
     }
 
     /// ADR-0256. femtovg opens a flush on the program its last one ended on without setting that

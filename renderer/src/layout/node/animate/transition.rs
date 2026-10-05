@@ -35,6 +35,8 @@ lua_shape! {
         pub shader: Option<PathBuf>,
         /// Uniform values by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
         pub params: Value as Option<Params>,
+        /// Sampler names to absolute `.png`, `.jpg`, `.jpeg` or `.webp` paths, as `shader.images`; each declares `uniform sampler2D name` and `uniform vec2 name_size`. Refused without `shader`.
+        pub images: Value as Option<Images>,
     }
 }
 
@@ -44,6 +46,7 @@ pub struct TransitionSpec {
     pub easing: Easing,
     pub shader: Option<PathBuf>,
     pub params: Vec<ShaderParam>,
+    pub images: Vec<ShaderImage>,
 }
 
 spelled!(TransitionSpec => TransitionInput::lua());
@@ -70,7 +73,7 @@ fn parse_transition(value: Option<&Value>) -> Result<Option<TransitionSpec>, Lay
 
 impl TransitionInput {
     fn into_transition(self) -> Result<TransitionSpec, LayoutError> {
-        let Self { duration, easing, shader, params } = self;
+        let Self { duration, easing, shader, params, images } = self;
         let duration = required_duration("transition", Some(duration))?;
         if let Some(path) = &shader
             && !path.is_absolute()
@@ -81,8 +84,12 @@ impl TransitionInput {
         if shader.is_none() && !params.is_empty() {
             return Err(invalid("transition.params", "there is no `shader` for these to reach"));
         }
+        let images = parse_shader_images("transition.images", &images)?;
+        if shader.is_none() && !images.is_empty() {
+            return Err(invalid("transition.images", "there is no `shader` for these to reach"));
+        }
         let easing = easing.unwrap_or_default();
-        Ok(TransitionSpec { duration, easing, shader, params })
+        Ok(TransitionSpec { duration, easing, shader, params, images })
     }
 }
 
@@ -105,50 +112,57 @@ impl Prop for Params {
     }
 }
 
-/// `params = { softness = 0.1, tint = { 1, 0.5, 0, 1 } }`: uniform names to a number or a list of
-/// up to [`MAX_PARAM_NUMBERS`] (ADR-0184, vectors ADR-0253, arrays ADR-0300). Sorted, so the list is a value two runs can compare.
-pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) -> Result<Vec<ShaderParam>, LayoutError> {
+/// Reads a table of names to values, sorted by name so the list is a value two runs can compare.
+fn parse_named(
+    what: &str,
+    value: &Value,
+    expected: &str,
+    mut read: impl FnMut(&str, &str, &Value) -> Result<(), LayoutError>,
+) -> Result<(), LayoutError> {
     let table = match value {
-        Value::Nil => return Ok(Vec::new()),
+        Value::Nil => return Ok(()),
         Value::Table(table) => table,
         other => {
-            return Err(invalid(
-                what,
-                format!(
-                    "expected a table of uniform names to a number or a list of numbers, got {}",
-                    preview_for_error(other)
-                ),
-            ));
+            return Err(invalid(what, format!("expected a table of {expected}, got {}", preview_for_error(other))));
         }
     };
-    let mut out = Vec::new();
     for pair in table.pairs::<Value, Value>() {
         let (key, value) = pair.map_err(|e| invalid(what, e.to_string()))?;
         let Value::String(key) = key else {
-            return Err(invalid(what, format!("keys are uniform names, got {}", preview_for_error(&key))));
+            return Err(invalid(what, format!("keys are names, got {}", preview_for_error(&key))));
         };
         let name = key.to_str().map_err(|e| invalid(what, e.to_string()))?.to_string();
-        let field = format!("{what}.{name}");
+        read(&name, &format!("{what}.{name}"), &value)?;
+    }
+    Ok(())
+}
+
+/// `params = { softness = 0.1, tint = { 1, 0.5, 0, 1 } }`: uniform names to a number or a list of
+/// up to [`MAX_PARAM_NUMBERS`] (ADR-0184, vectors ADR-0253, arrays ADR-0300).
+pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) -> Result<Vec<ShaderParam>, LayoutError> {
+    let mut out = Vec::new();
+    parse_named(what, value, "uniform names to a number or a list of numbers", |name, field, value| {
         let finite = |value: &Value| {
-            value_as_f32(&field, value)?
+            value_as_f32(field, value)?
                 .filter(|number| number.is_finite())
-                .ok_or_else(|| invalid(&field, format!("expected a finite number, got {}", preview_for_error(value))))
+                .ok_or_else(|| invalid(field, format!("expected a finite number, got {}", preview_for_error(value))))
         };
-        let numbers = match &value {
+        let numbers = match value {
             Value::Table(list) => {
                 let len = list.raw_len();
                 if !(1..=MAX_PARAM_NUMBERS).contains(&len) {
-                    return Err(invalid(&field, format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got {len}")));
+                    return Err(invalid(field, format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got {len}")));
                 }
                 (1..=len)
-                    .map(|index| finite(&list.raw_get(index).map_err(|e| invalid(&field, e.to_string()))?))
+                    .map(|index| finite(&list.raw_get(index).map_err(|e| invalid(field, e.to_string()))?))
                     .collect::<Result<_, _>>()?
             }
             scalar => vec![finite(scalar)?],
         };
-        out.push((name, numbers));
-    }
-    // Sorted uniform names make equivalent shader runs compare equal; the shader ignores names it lacks.
+        out.push((name.to_string(), numbers));
+        Ok(())
+    })?;
+    // The shader ignores names it lacks.
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
@@ -171,47 +185,121 @@ impl Prop for Images {
     }
 }
 
-/// `images = { normal = "/abs/normal.png" }`: sampler names to raster files. Each name becomes a
-/// GLSL identifier, so it is checked here against the prelude's own, which `params` never needed.
-/// Sorted, so the list is a value two runs can compare.
+/// `images = { normal = "/abs/normal.png" }`: names become GLSL identifiers, so they are checked here.
 pub(in crate::layout::node) fn parse_shader_images(what: &str, value: &Value) -> Result<Vec<ShaderImage>, LayoutError> {
-    let table = match value {
-        Value::Nil => return Ok(Vec::new()),
-        Value::Table(table) => table,
-        other => {
-            return Err(invalid(
-                what,
-                format!("expected a table of sampler names to absolute paths, got {}", preview_for_error(other)),
-            ));
-        }
-    };
     let mut out = Vec::new();
-    for pair in table.pairs::<Value, Value>() {
-        let (key, value) = pair.map_err(|e| invalid(what, e.to_string()))?;
-        let (Value::String(key), Value::String(path)) = (&key, &value) else {
-            return Err(invalid(what, format!("expected `name = \"/abs/path\"`, got {}", preview_for_error(&value))));
+    parse_named(what, value, "sampler names to absolute paths", |name, field, value| {
+        let Value::String(path) = value else {
+            return Err(invalid(field, format!("expected an absolute path, got {}", preview_for_error(value))));
         };
-        let name = key.to_str().map_err(|e| invalid(what, e.to_string()))?.to_string();
-        let field = format!("{what}.{name}");
-        if let Some(why) = sampler_name_error(&name) {
-            return Err(invalid(&field, why));
+        if let Some(why) = sampler_name_error(name) {
+            return Err(invalid(field, why));
         }
-        let path = path.to_str().map_err(|e| invalid(&field, e.to_string()))?.to_string();
+        let path = path.to_str().map_err(|e| invalid(field, e.to_string()))?.to_string();
         if !path.starts_with('/') {
-            return Err(invalid(&field, format!("expected an absolute path, got `{path}`")));
+            return Err(invalid(field, format!("expected an absolute path, got `{path}`")));
         }
-        // Rasterizing a vector at the sampler's 8192px box would be a 256 MiB texture.
-        if crate::image::is_vector(std::path::Path::new(&path)) {
-            return Err(invalid(&field, "expected a raster file (PNG, JPEG, WebP), not an SVG"));
+        // No GIF: an animated sampler has no frame tick.
+        let raster = std::path::Path::new(&path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| ["png", "jpg", "jpeg", "webp"].iter().any(|allowed| e.eq_ignore_ascii_case(allowed)));
+        if !raster {
+            return Err(invalid(field, "expected a `.png`, `.jpg`, `.jpeg` or `.webp` file"));
         }
-        out.push((name, path));
-        if out.len() > MAX_SHADER_IMAGES {
-            return Err(invalid(what, format!("expected at most {MAX_SHADER_IMAGES} images")));
-        }
+        out.push((name.to_string(), path));
+        Ok(())
+    })?;
+    if out.len() > MAX_SHADER_IMAGES {
+        return Err(invalid(what, format!("expected at most {MAX_SHADER_IMAGES} images")));
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     Ok(out)
 }
+
+/// GLSL ES 3.0 keywords and the builtins a sampler name would redefine.
+const GLSL_RESERVED: &[&str] = &[
+    "attribute",
+    "bool",
+    "break",
+    "bvec2",
+    "bvec3",
+    "bvec4",
+    "case",
+    "centroid",
+    "const",
+    "continue",
+    "default",
+    "discard",
+    "do",
+    "else",
+    "false",
+    "float",
+    "flat",
+    "for",
+    "highp",
+    "if",
+    "in",
+    "inout",
+    "int",
+    "invariant",
+    "isampler2D",
+    "ivec2",
+    "ivec3",
+    "ivec4",
+    "layout",
+    "lowp",
+    "mat2",
+    "mat3",
+    "mat4",
+    "mediump",
+    "out",
+    "precision",
+    "return",
+    "sampler2D",
+    "sampler3D",
+    "samplerCube",
+    "smooth",
+    "struct",
+    "switch",
+    "true",
+    "uint",
+    "uniform",
+    "uvec2",
+    "uvec3",
+    "uvec4",
+    "varying",
+    "vec2",
+    "vec3",
+    "vec4",
+    "void",
+    "while",
+    "texture",
+    "texelFetch",
+    "mix",
+    "min",
+    "max",
+    "clamp",
+    "step",
+    "smoothstep",
+    "fract",
+    "floor",
+    "ceil",
+    "mod",
+    "abs",
+    "sign",
+    "pow",
+    "exp",
+    "log",
+    "sqrt",
+    "sin",
+    "cos",
+    "length",
+    "dot",
+    "cross",
+    "normalize",
+    "reflect",
+];
 
 /// Why `name` cannot be declared as `uniform sampler2D name` and `name_size` beside the prelude's
 /// `u_*`, `mantle_*`, `v_uv` and `fragColor`, or `None`.
@@ -227,6 +315,9 @@ fn sampler_name_error(name: &str) -> Option<&'static str> {
     }
     if name.ends_with("_size") || matches!(name, "v_uv" | "fragColor" | "main") {
         return Some("`*_size` is another image's pixel size, and `v_uv`, `fragColor` and `main` are the prelude's");
+    }
+    if GLSL_RESERVED.contains(&name) {
+        return Some("a GLSL keyword or builtin function cannot name a sampler");
     }
     None
 }
@@ -287,6 +378,7 @@ mod tests {
             easing: Easing::Linear,
             shader: None,
             params: Vec::new(),
+            images: Vec::new(),
         };
         let started = Instant::now();
         let mut dissolve = Dissolve::start("/tmp/a.png".into(), "/tmp/b.png".into(), spec.clone(), started);
@@ -306,6 +398,7 @@ mod tests {
             easing: Easing::OutBack,
             shader: None,
             params: Vec::new(),
+            images: Vec::new(),
         };
         let mut dissolve = Dissolve::start("/tmp/a.png".into(), "/tmp/b.png".into(), overshoot, started);
         for millis in [40, 120, 200, 280, 360] {
@@ -318,5 +411,23 @@ mod tests {
         let mut dissolve = Dissolve::start("/tmp/a.png".into(), "/tmp/b.png".into(), spec.clone(), started);
         assert!(dissolve.advance(started - Duration::from_millis(50)));
         assert_eq!(dissolve.progress, 0.0);
+    }
+
+    /// A transition's `images` parse as a `shader`'s do, and need a `shader` to reach.
+    #[test]
+    fn a_transition_takes_images_only_beside_a_shader() {
+        let lua = mlua::Lua::new();
+        let parse = |src: &str| parse_transition(Some(&lua.load(format!("return {src}")).eval::<Value>().unwrap()));
+        let spec = parse(r#"{ duration = 100, shader = "/s.frag", images = { b = "/b.png", a = "/a.png" } }"#)
+            .unwrap()
+            .unwrap();
+        assert_eq!(spec.images, [("a".to_string(), "/a.png".to_string()), ("b".to_string(), "/b.png".to_string())]);
+        for (src, property) in [
+            (r#"{ duration = 100, images = { a = "/a.png" } }"#, "transition.images"),
+            (r#"{ duration = 100, shader = "/s.frag", images = { u_a = "/a.png" } }"#, "transition.images.u_a"),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(matches!(&err, LayoutError::InvalidProperty { property: p, .. } if p == property), "{err:?}");
+        }
     }
 }

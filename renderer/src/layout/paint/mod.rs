@@ -92,9 +92,9 @@ pub enum Draw {
         /// when the node is showing one picture, which is when `retained` is a gap cover rather
         /// than the source being crossed away from.
         dissolve: Option<f32>,
-        /// The config shader this cross is drawn with and the `params` it is given (ADR-0184).
+        /// The config shader this cross is drawn with, its `params` and `images` (ADR-0184).
         /// `None` is the built-in dissolve, and so is a shader that would not build.
-        shader: Option<(std::path::PathBuf, Vec<node::ShaderParam>)>,
+        shader: Option<(std::path::PathBuf, Vec<node::ShaderParam>, Vec<SamplerFile>)>,
         /// `image.source_blur` in physical pixels (ADR-0240). `0` for no blur, which `ImageCache`
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
@@ -294,7 +294,7 @@ impl DisplayList {
         fn walk<'a>(commands: &'a [DrawCmd], out: &mut Vec<image::ImageRequest<'a>>) {
             for command in commands {
                 let files = match &command.draw {
-                    Draw::Shader { images, .. } => images.as_slice(),
+                    Draw::Shader { images, .. } | Draw::Image { shader: Some((_, _, images)), .. } => images.as_slice(),
                     Draw::Layer { shader: Some(shader), .. } | Draw::Backdrop { shader: Some(shader), .. } => {
                         shader.images.as_slice()
                     }

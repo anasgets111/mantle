@@ -16,12 +16,8 @@ use crate::wayland::surface::TrackedRole;
 /// with no min size, that is the opening size when the first configure leaves an axis zero.
 /// Upgrade: an advisory initial size property, or solver-backed `Content` sizing (ADR-0077).
 const UNCONFIGURED_WINDOW_SIZE: (f32, f32) = (640.0, 480.0);
-/// Toplevel window geometry size, the buffer less `geometry_inset`. `xdg_toplevel::configure`
-/// binds maximized and fullscreen sizes, so `Some` axes are authoritative; tiling compositors,
-/// including niri, always take this branch. A `None` axis means "the client picks", the ordinary
-/// first configure on a floating compositor. Choose
-/// `min_size`, then 640x480, then clamp by positive `max_size`; a zero max means unset per
-/// `set_max_size`. Clamp both axes to 1 because a zero `wl_egl_window` is invalid.
+/// Window geometry size (the buffer less `geometry_inset`): a configured axis wins, else
+/// `min_size`, else 640x480, clamped by a positive `max_size` and to at least 1.
 fn toplevel_size_for(
     new_size: (Option<std::num::NonZeroU32>, Option<std::num::NonZeroU32>),
     spec: &WindowSpec,
@@ -45,7 +41,7 @@ fn toplevel_size_for(
 }
 /// The buffer size around a `geometry`-sized window and its `set_window_geometry` rect (x, y,
 /// width, height). Whole logical px, because both the surface size and the request are integers.
-fn window_frame(geometry: (u32, u32), inset: EdgeInsets) -> ((u32, u32), [u32; 4]) {
+pub(super) fn window_frame(geometry: (u32, u32), inset: EdgeInsets) -> ((u32, u32), [u32; 4]) {
     let [top, right, bottom, left] = [inset.top, inset.right, inset.bottom, inset.left].map(|n| n.round() as u32);
     ((geometry.0 + left + right, geometry.1 + top + bottom), [left, top, geometry.0, geometry.1])
 }
@@ -221,8 +217,7 @@ impl App {
         if let Some(decorations) = update.decorations {
             window.request_decoration_mode(Some(decorations.into()));
         }
-        // No configure follows an inset change, so resize here; before the first configure there
-        // is no geometry yet, and that configure frames the window itself.
+        // No configure follows an inset change; before the first one there is no geometry to frame.
         if update.geometry_inset.is_some()
             && self.surfaces[index].map_state == MapState::Mapped
             && let Some(buffer) = self.frame_window(index)

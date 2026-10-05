@@ -58,6 +58,7 @@ return { panel {
 | `easing` | An [easing](../guide/animation.md) | `"in_out_quad"` | Drives `u_progress` |
 | `shader` | Absolute `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
 | `params` | `{ name = number \| { up to 4096 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |
+| `images` | `{ name = "/abs/path.png" }` | `{}` | Up to 8 rasters to sample by name, with the rules of a [shader node's `images`](shader.md#images); they take the units after `u_from` and `u_to`. Refused without `shader` |
 
 The first picture appears without a transition. A transition shader gets everything a
 [shader node](shader.md#the-frag-file) gets, plus:
@@ -107,7 +108,7 @@ image {
 | The shell stutters while images load | Inline decode blocks drawing. Set `async = true` |
 | `source = "firefox"` draws nothing | `source` is a path. Use [`icon`](icon.md) for theme names |
 | A relative `source` draws nothing | It resolves against the Renderer's working directory, not the config. Build paths from `mantle.config_dir` |
-| `transition.params` is refused | `params` needs a `shader` |
+| `transition.params` or `transition.images` is refused | Both need a `shader` |
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).
 

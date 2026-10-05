@@ -186,7 +186,7 @@ impl App {
         // An open popup whose placement has moved since its positioner was given one, so an open
         // popup follows its size instead of keeping the one it opened at.
         let moved = (visible && popup.is_some())
-            .then(|| Placement::of(spec, *requested))
+            .then(|| Placement::of(spec, *requested).within_geometry_of(self.parent_origin(&spec.parent)))
             .filter(|placement| placement.is_measured() && Some(*placement) != *positioned);
         let action = popup_visibility_action(visible, popup.is_some(), *dismissed_at, self.pointer_input_count);
         if !visible && let TrackedRole::Popup { dismissed_at, refusal_logged, .. } = &mut self.surfaces[index].role {
@@ -228,7 +228,7 @@ impl App {
             return;
         };
         let spec = spec.clone();
-        let placement = Placement::of(&spec, *requested);
+        let placement = Placement::of(&spec, *requested).within_geometry_of(self.parent_origin(&spec.parent));
 
         // Nothing measured on a `Content` axis yet, so there is no size to ask for. Decline and
         // let the next pass open it, rather than inventing one the surface would then cut.
@@ -329,6 +329,18 @@ impl App {
             "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
             if grab.is_some() { "taken" } else { "not requested" }
         );
+    }
+
+    /// Where `parent`'s window geometry starts in its buffer: a `geometry_inset` window's (left, top), else zero.
+    fn parent_origin(&self, parent: &str) -> (f32, f32) {
+        let ids = self.surfaces.iter().map(|tracked| tracked.surface_id.as_str());
+        match parent_instance_index(ids, parent, None).map(|index| &self.surfaces[index].role) {
+            Some(TrackedRole::Window { spec, .. }) => {
+                let [x, y, ..] = super::window::window_frame((0, 0), spec.geometry_inset).1;
+                (x as f32, y as f32)
+            }
+            _ => (0.0, 0.0),
+        }
     }
 
     /// A positioner carrying `placement`; `None` when the compositor has no `xdg_wm_base` or
