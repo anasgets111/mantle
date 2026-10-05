@@ -93,7 +93,7 @@ local launcher = panel {
                 foreground = "#cdd6f4",
                 placeholder = "Search apps",
                 placeholder_color = "#6c7086",
-                caret_color = "#89b4fa",
+                caret = { color = "#89b4fa" },
                 autofocus = true,
                 on_change = function(q) query:set(q) end,
             },

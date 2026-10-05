@@ -104,7 +104,7 @@ local launcher = panel {
                 foreground = theme.text,
                 placeholder = "Search apps",
                 placeholder_color = theme.muted,
-                caret_color = theme.accent,
+                caret = { color = theme.accent },
                 autofocus = true,
                 on_change = function(q) query:set(q) end,
             },
