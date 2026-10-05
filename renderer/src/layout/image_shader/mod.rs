@@ -1,5 +1,6 @@
 //! Runs a config-supplied fragment shader over an `image` node's two transition endpoints
-//! (ADR-0184), or over a `shader` node's box with no endpoints (ADR-0253), which is what makes a
+//! (ADR-0184), over a `shader` node's box with no endpoints (ADR-0253), or over a node's painted
+//! subtree as an `effect.shader` (ADR-0336, [`ShaderStage::content`]), which is what makes a
 //! wipe, a disc or a pixelate a config's to write rather than a name this engine has to ship.
 //!
 //! A `Wipe` arm in a Rust match would be the mistake ADR-0055 already ruled on for the wallpaper
@@ -19,7 +20,7 @@
 //! A shader that will not compile or link is reported once per revision and that path is refused
 //! from then on, which drops the node back to `layout::paint`'s cross-dissolve for the rest of
 //! the run: a real fallback rather than a snap (ADR-0181). A `shader` node has no fallback and
-//! draws nothing (ADR-0253).
+//! draws nothing (ADR-0253); an `effect.shader` leaves its node as painted (ADR-0336).
 //!
 //! A shader that compiles and draws something ugly draws it: the engine cannot tell intent from
 //! mistake. A shader that hangs the GPU hangs the session, and nothing here promises otherwise --
@@ -60,6 +61,23 @@ uniform vec4 mantle_radii;
 uniform vec4 mantle_reach;
 uniform vec4 mantle_power;
 uniform vec4 mantle_round;
+
+// Signed distance in logical px from the node's corner to its outline, negative inside: a box SDF over `mantle_round` (x, y, w, h in logical px from the node corner), rounded by `mantle_radii` (tl, tr, br, bl).
+// A smoothed corner reaches `mantle_reach` along each side and is approximated by the superellipse of exponent `mantle_power` through its endpoints and diagonal midpoint, with d taken as (L - reach) over the gradient of L; exact (power 2) for a circular corner.
+float mantle_sdf(vec2 p) {
+    vec2 half_size = mantle_round.zw * 0.5;
+    p -= mantle_round.xy + half_size;
+    float e = p.x < 0.0 ? (p.y < 0.0 ? mantle_reach.x : mantle_reach.w) : (p.y < 0.0 ? mantle_reach.y : mantle_reach.z);
+    float n = p.x < 0.0 ? (p.y < 0.0 ? mantle_power.x : mantle_power.w) : (p.y < 0.0 ? mantle_power.y : mantle_power.z);
+    vec2 q = abs(p) - half_size + e;
+    vec2 c = max(q, 0.0);
+    float d = length(c) + min(max(q.x, q.y), 0.0) - e;
+    if (n != 2.0 && max(q.x, q.y) > 0.0) {
+        float l = pow(pow(c.x, n) + pow(c.y, n), 1.0 / n);
+        d = (l - e) * pow(max(l, 1e-4), n - 1.0) / length(pow(max(c, 1e-4), vec2(n - 1.0)));
+    }
+    return d;
+}
 "#;
 
 /// The transition's half of the contract, between [`PRELUDE`] and [`RENAME`].
@@ -88,6 +106,24 @@ vec4 mantle_from(vec2 uv) { return mantle_sample(u_from, u_from_rect, uv); }
 vec4 mantle_to(vec2 uv) { return mantle_sample(u_to, u_to_rect, uv); }
 "#;
 
+/// The `effect.shader` half of the contract, in place of [`SAMPLERS`] (ADR-0336). `u_input` is the
+/// node's painted subtree in an offscreen that may reach past the box, so `mantle_input` takes box
+/// coordinates as `mantle_from` does, `u_input_rect` placing the texture in box fractions. An
+/// offscreen image keeps its top row last, which the sample undoes.
+const INPUT: &str = r#"
+precision highp sampler2D;
+uniform sampler2D u_input;
+uniform vec4 u_input_rect;
+
+vec4 mantle_input(vec2 uv) {
+    vec2 local = (uv - u_input_rect.xy) / u_input_rect.zw;
+    if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
+        return vec4(0.0);
+    }
+    return texture(u_input, vec2(local.x, 1.0 - local.y));
+}
+"#;
+
 const RENAME: &str = r#"
 #define main mantle_effect
 #line 1
@@ -104,20 +140,9 @@ const EPILOGUE: &str = r#"
 #undef main
 void main() {
     mantle_effect();
-    // Rounded corners (tl, tr, br, bl in logical px): a box SDF over `mantle_round` (x, y, w, h in logical px from the node corner), antialiased by its own slope.
-    // A smoothed corner reaches `mantle_reach` along each side and is approximated by the superellipse of exponent `mantle_power` through its endpoints and diagonal midpoint, with d taken as (L - reach) over the gradient of L; exact (power 2) for a circular corner.
+    // Rounded corners: antialiased by the outline's own slope.
     if (mantle_radii != vec4(0.0)) {
-        vec2 half_size = mantle_round.zw * 0.5;
-        vec2 p = v_uv * u_size - mantle_round.xy - half_size;
-        float e = p.x < 0.0 ? (p.y < 0.0 ? mantle_reach.x : mantle_reach.w) : (p.y < 0.0 ? mantle_reach.y : mantle_reach.z);
-        float n = p.x < 0.0 ? (p.y < 0.0 ? mantle_power.x : mantle_power.w) : (p.y < 0.0 ? mantle_power.y : mantle_power.z);
-        vec2 q = abs(p) - half_size + e;
-        vec2 c = max(q, 0.0);
-        float d = length(c) + min(max(q.x, q.y), 0.0) - e;
-        if (n != 2.0 && max(q.x, q.y) > 0.0) {
-            float l = pow(pow(c.x, n) + pow(c.y, n), 1.0 / n);
-            d = (l - e) * pow(max(l, 1e-4), n - 1.0) / length(pow(max(c, 1e-4), vec2(n - 1.0)));
-        }
+        float d = mantle_sdf(v_uv * u_size);
         fragColor *= 1.0 - smoothstep(-0.5 * fwidth(d), 0.5 * fwidth(d), d);
     }
     fragColor *= mantle_opacity;
@@ -152,11 +177,24 @@ void main() {
 }
 "#;
 
+/// Which contract a program is assembled against; one file may serve more than one.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Variant {
+    /// A `shader` node: no textures (ADR-0253).
+    Plain,
+    /// A transition: [`SAMPLERS`] (ADR-0184).
+    Cross,
+    /// An `effect.shader`: [`INPUT`] (ADR-0336).
+    Input,
+}
+
 /// A compiled config shader and the uniform locations it turned out to have.
 struct Program {
     program: glow::Program,
     from: Option<glow::UniformLocation>,
     to: Option<glow::UniformLocation>,
+    input: Option<glow::UniformLocation>,
+    input_rect: Option<glow::UniformLocation>,
     progress: Option<glow::UniformLocation>,
     size: Option<glow::UniformLocation>,
     from_rect: Option<glow::UniformLocation>,
@@ -215,6 +253,19 @@ pub struct Run<'a> {
     pub params: &'a [node::ShaderParam],
 }
 
+/// One [`ShaderStage::content`] run: `input` through the program into `target`, which is the same
+/// size.
+pub struct ContentRun<'a> {
+    pub input: ImageId,
+    pub target: ImageId,
+    /// The textures' `(x, y, w, h)` in box fractions, as `u_input_rect` and the span of `v_uv`.
+    pub rect: [f32; 4],
+    /// The node's box in logical px, rounded by `radii` for `mantle_sdf`.
+    pub logical_size: (f32, f32),
+    pub radii: node::Radii,
+    pub params: &'a [node::ShaderParam],
+}
+
 /// Compiled config shaders for this GL context, and the one quad they all draw.
 #[derive(Default)]
 pub struct ShaderStage {
@@ -223,9 +274,9 @@ pub struct ShaderStage {
     /// it is not tried again until the bytes change. Keying on the path alone left a config editing
     /// its own effect looking at a program compiled minutes ago, with no way to reach it short of
     /// restarting the shell.
-    /// The flag is whether it was built with [`SAMPLERS`]: one file may be both a transition and a
-    /// `shader` node, and the two assemble differently.
-    programs: HashMap<(PathBuf, bool), (crate::image::FileVersion, Option<Program>)>,
+    /// The variant is how it was assembled: one file may be a transition, a `shader` node and an
+    /// `effect.shader`, and the three assemble differently.
+    programs: HashMap<(PathBuf, Variant), (crate::image::FileVersion, Option<Program>)>,
     /// [`FADE`], compiled on first use. `None` until then; `Some(None)` if the engine's own shader
     /// would not build, which is not tried again -- the same shape `programs` uses, and the point
     /// where a node drops back to the two-draw approximation.
@@ -236,6 +287,8 @@ pub struct ShaderStage {
     vertex: Option<glow::Shader>,
     /// `blur::BLUR`, built on first use, in `fade`'s shape.
     blur: Option<Option<Blur>>,
+    /// What [`Self::content`] draws through, created on first use.
+    framebuffer: Option<glow::Framebuffer>,
 }
 
 impl ShaderStage {
@@ -270,12 +323,11 @@ impl ShaderStage {
         // still be live.
         // SAFETY: caller's contract.
         let Some(quad) = (unsafe { self.ensure_quad(gl) }) else { return false };
+        let variant = if run.cross.is_some() { Variant::Cross } else { Variant::Plain };
         // SAFETY: caller's contract.
-        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, run.cross.is_some()) });
+        let chosen = effect.filter(|path| unsafe { self.ensure_program(gl, path, variant) });
         let program = match chosen {
-            Some(path) => {
-                self.programs.get(&(path.to_path_buf(), run.cross.is_some())).and_then(|(_, program)| program.as_ref())
-            }
+            Some(path) => self.programs.get(&(path.to_path_buf(), variant)).and_then(|(_, program)| program.as_ref()),
             // A `shader` node has nothing to fall back to.
             None if run.cross.is_none() => return false,
             None => {
@@ -312,7 +364,7 @@ impl ShaderStage {
             return;
         }
         // SAFETY: caller's contract.
-        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, true) };
+        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, Variant::Cross) };
         self.fade = Some(built);
     }
 
@@ -335,9 +387,9 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, textured: bool) -> bool {
+    unsafe fn ensure_program(&mut self, gl: &glow::Context, path: &Path, variant: Variant) -> bool {
         let version = crate::image::FileVersion::read(path);
-        let key = (path.to_path_buf(), textured);
+        let key = (path.to_path_buf(), variant);
         if let Some((known, program)) = self.programs.get(&key)
             && *known == version
         {
@@ -351,7 +403,7 @@ impl ShaderStage {
         }
         let built = match std::fs::read_to_string(path) {
             // SAFETY: caller's contract.
-            Ok(source) => unsafe { self.build(gl, path, &source, textured) },
+            Ok(source) => unsafe { self.build(gl, path, &source, variant) },
             Err(err) => {
                 error!("{}: {err}", path.display());
                 None
@@ -365,11 +417,11 @@ impl ShaderStage {
     /// # Safety
     ///
     /// The context is current.
-    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str, textured: bool) -> Option<Program> {
+    unsafe fn build(&mut self, gl: &glow::Context, path: &Path, source: &str, variant: Variant) -> Option<Program> {
         // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
         // after creating it, and by `destroy` at teardown.
         unsafe {
-            let program = self.link(gl, path, &assemble(source, textured))?;
+            let program = self.link(gl, path, &assemble(source, variant))?;
             let named = |name: &str| gl.get_uniform_location(program, name);
             let mut params = HashMap::new();
             for index in 0..gl.get_active_uniforms(program) {
@@ -402,6 +454,8 @@ impl ShaderStage {
                 program,
                 from: named("u_from"),
                 to: named("u_to"),
+                input: named("u_input"),
+                input_rect: named("u_input_rect"),
                 progress: named("u_progress"),
                 size: named("u_size"),
                 from_rect: named("u_from_rect"),
@@ -504,40 +558,8 @@ impl ShaderStage {
 
             gl.uniform_1_f32(program.progress.as_ref(), run.progress);
             gl.uniform_1_f32(program.opacity.as_ref(), run.opacity);
-            let squircles = run.radii.squircles(run.round.width, run.round.height);
-            let reach: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(run.radii.0[i], |s| s.reach));
-            let power: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(2.0, |s| s.power));
-            gl.uniform_4_f32_slice(program.radii.as_ref(), &run.radii.0);
-            gl.uniform_4_f32_slice(program.reach.as_ref(), &reach);
-            gl.uniform_4_f32_slice(program.power.as_ref(), &power);
-            gl.uniform_4_f32(program.round.as_ref(), run.round.x, run.round.y, run.round.width, run.round.height);
-            gl.uniform_2_f32(program.size.as_ref(), run.logical_size.0, run.logical_size.1);
-
-            // Every param the program has, not only the ones this node supplied. A uniform holds
-            // its value in the program, and two nodes sharing one shader would otherwise inherit
-            // each other's: the one that omits `softness` would get whatever the other last set.
-            for (name, (location, width, length, warned)) in &program.params {
-                let count = width * length;
-                // Empty when this node leaves it out: a parsed list holds at least one number.
-                let given = run.params.iter().find(|(param, _)| param == name).map_or(&[][..], |(_, value)| value);
-                // Logged, not refused: the mismatch is only knowable here, after the pass.
-                if !given.is_empty() && given.len() != count && !warned.replace(true) {
-                    error!("`params.{name}` has {} numbers for a uniform of {count}; padded or truncated", given.len());
-                }
-                let padded: Vec<f32>;
-                let value = if given.len() == count {
-                    given
-                } else {
-                    padded = given.iter().copied().chain(std::iter::repeat(0.0)).take(count).collect();
-                    &padded
-                };
-                match width {
-                    2 => gl.uniform_2_f32_slice(Some(location), value),
-                    3 => gl.uniform_3_f32_slice(Some(location), value),
-                    4 => gl.uniform_4_f32_slice(Some(location), value),
-                    _ => gl.uniform_1_f32_slice(Some(location), value),
-                }
-            }
+            Self::set_shape(gl, program, run.radii, run.round, run.logical_size);
+            Self::set_params(gl, program, run.params);
 
             // Premultiplied source-over, and `FUNC_ADD` set rather than inherited: nothing in
             // femtovg ever sets an equation, so it is whatever GL was left at.
@@ -570,6 +592,144 @@ impl ShaderStage {
         true
     }
 
+    /// Binds the outline uniforms behind `mantle_sdf`: `radii` rounding `round`, the box in logical px
+    /// from the node's corner, inside a node of `logical_size`.
+    ///
+    /// # Safety
+    ///
+    /// The context is current and `program` is in use.
+    unsafe fn set_shape(
+        gl: &glow::Context,
+        program: &Program,
+        radii: node::Radii,
+        round: LogicalRect,
+        logical_size: (f32, f32),
+    ) {
+        let squircles = radii.squircles(round.width, round.height);
+        let reach: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(radii.0[i], |s| s.reach));
+        let power: [f32; 4] = std::array::from_fn(|i| squircles[i].map_or(2.0, |s| s.power));
+        // SAFETY: caller's contract.
+        unsafe {
+            gl.uniform_4_f32_slice(program.radii.as_ref(), &radii.0);
+            gl.uniform_4_f32_slice(program.reach.as_ref(), &reach);
+            gl.uniform_4_f32_slice(program.power.as_ref(), &power);
+            gl.uniform_4_f32(program.round.as_ref(), round.x, round.y, round.width, round.height);
+            gl.uniform_2_f32(program.size.as_ref(), logical_size.0, logical_size.1);
+        }
+    }
+
+    /// Binds every `params` uniform the program has.
+    ///
+    /// # Safety
+    ///
+    /// The context is current and `program` is in use.
+    unsafe fn set_params(gl: &glow::Context, program: &Program, params: &[node::ShaderParam]) {
+        // SAFETY: caller's contract.
+        unsafe {
+            // Every param the program has, not only the ones this node supplied. A uniform holds
+            // its value in the program, and two nodes sharing one shader would otherwise inherit
+            // each other's: the one that omits `softness` would get whatever the other last set.
+            for (name, (location, width, length, warned)) in &program.params {
+                let count = width * length;
+                // Empty when this node leaves it out: a parsed list holds at least one number.
+                let given = params.iter().find(|(param, _)| param == name).map_or(&[][..], |(_, value)| value);
+                // Logged, not refused: the mismatch is only knowable here, after the pass.
+                if !given.is_empty() && given.len() != count && !warned.replace(true) {
+                    error!("`params.{name}` has {} numbers for a uniform of {count}; padded or truncated", given.len());
+                }
+                let padded: Vec<f32>;
+                let value = if given.len() == count {
+                    given
+                } else {
+                    padded = given.iter().copied().chain(std::iter::repeat(0.0)).take(count).collect();
+                    &padded
+                };
+                match width {
+                    2 => gl.uniform_2_f32_slice(Some(location), value),
+                    3 => gl.uniform_3_f32_slice(Some(location), value),
+                    4 => gl.uniform_4_f32_slice(Some(location), value),
+                    _ => gl.uniform_1_f32_slice(Some(location), value),
+                }
+            }
+        }
+    }
+
+    /// Runs the `effect.shader` at `source` over `run.input`, writing every pixel of `run.target`
+    /// (ADR-0336). Answers `false`, drawing nothing, for a program that will not build, a texture
+    /// that is gone or no framebuffer.
+    ///
+    /// # Safety
+    ///
+    /// As [`ShaderStage::draw`].
+    pub unsafe fn content(
+        &mut self,
+        gl: &glow::Context,
+        canvas: &mut Canvas<OpenGl>,
+        source: &Path,
+        run: &ContentRun,
+    ) -> bool {
+        let (Ok(input), Ok(target)) = (canvas.get_native_texture(run.input), canvas.get_native_texture(run.target))
+        else {
+            return false;
+        };
+        let Ok((width, height)) = canvas.image_size(run.target) else { return false };
+        // SAFETY: caller's contract.
+        let Some((vao, buffer)) = (unsafe { self.ensure_quad(gl) }) else { return false };
+        // SAFETY: caller's contract.
+        if !unsafe { self.ensure_program(gl, source, Variant::Input) } {
+            return false;
+        }
+        if self.framebuffer.is_none() {
+            // SAFETY: caller's contract.
+            self.framebuffer = unsafe { gl.create_framebuffer() }.ok();
+        }
+        let (Some(framebuffer), Some((_, Some(program)))) =
+            (self.framebuffer, self.programs.get(&(source.to_path_buf(), Variant::Input)))
+        else {
+            return false;
+        };
+        crate::layout::paint::flush(canvas);
+
+        // SAFETY: caller's contract. The framebuffer, viewport and state femtovg left are put back
+        // before it records another command.
+        unsafe {
+            let saved = State::capture(gl);
+            let previous = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
+            let mut viewport = [0; 4];
+            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+            gl.use_program(Some(program.program));
+            gl.bind_vertex_array(Some(vao));
+            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+            // Clip space to the target's own rows (the top is the last), `v_uv` in box fractions.
+            let [x, y, w, h] = run.rect;
+            let corners = [-1.0, 1.0, x, y, 1.0, 1.0, x + w, y, -1.0, -1.0, x, y + h, 1.0, -1.0, x + w, y + h];
+            let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
+            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
+            // Every pixel is written, so the target's stale ones need no clear.
+            for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
+                gl.disable(slot);
+            }
+            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
+            gl.viewport(0, 0, width as i32, height as i32);
+            gl.active_texture(glow::TEXTURE0);
+            gl.bind_texture(glow::TEXTURE_2D, Some(input));
+            gl.uniform_1_i32(program.input.as_ref(), 0);
+            gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
+            let (logical_width, logical_height) = run.logical_size;
+            let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
+            Self::set_shape(gl, program, run.radii, outline, run.logical_size);
+            Self::set_params(gl, program, run.params);
+            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+            // A deleted texture still attached to a framebuffer keeps its storage.
+            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, None, 0);
+            gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+            gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+            saved.restore(gl);
+        }
+        true
+    }
+
     /// Frees every GL object while the context is still current. A context that has gone away takes
     /// its objects with it, so this is for an orderly teardown and not for recovery.
     ///
@@ -591,6 +751,9 @@ impl ShaderStage {
                 gl.delete_program(blur.program);
                 gl.delete_framebuffer(blur.framebuffer);
             }
+            if let Some(framebuffer) = self.framebuffer.take() {
+                gl.delete_framebuffer(framebuffer);
+            }
             if let Some(vertex) = self.vertex.take() {
                 gl.delete_shader(vertex);
             }
@@ -604,10 +767,15 @@ impl ShaderStage {
 }
 
 /// The whole source a config's file is compiled as: the contract, then the file at line 1, then the
-/// engine's own `main`. Split out so a test can read it without a GL context.
-fn assemble(source: &str, textured: bool) -> String {
-    let samplers = if textured { SAMPLERS } else { "" };
-    format!("{PRELUDE}{samplers}{RENAME}{source}{EPILOGUE}")
+/// engine's own `main`. An `effect.shader` has no `main` of the engine's: it replaces the content,
+/// so there is no opacity to apply and no outline to cut. Split out so a test can read it without
+/// a GL context.
+fn assemble(source: &str, variant: Variant) -> String {
+    match variant {
+        Variant::Plain => format!("{PRELUDE}{RENAME}{source}{EPILOGUE}"),
+        Variant::Cross => format!("{PRELUDE}{SAMPLERS}{RENAME}{source}{EPILOGUE}"),
+        Variant::Input => format!("{PRELUDE}{INPUT}\n#line 1\n{source}"),
+    }
 }
 
 /// A finite, positive dimension, or `None`. Sizes below one are legitimate and must not be clamped
@@ -698,7 +866,7 @@ mod tests {
     /// line at line 1 so a compiler error names a line the config can find.
     #[test]
     fn a_config_shader_is_wrapped_so_the_engine_owns_the_last_operation() {
-        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n", true);
+        let assembled = assemble("void main() { fragColor = mantle_to(v_uv); }\n", Variant::Cross);
 
         let effect = assembled.find("#define main mantle_effect").expect("the rename");
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
@@ -718,7 +886,7 @@ mod tests {
     /// `sampler2D` would read unit 0, whatever femtovg left there.
     #[test]
     fn a_shader_node_is_assembled_without_samplers() {
-        let assembled = assemble("void main() { fragColor = vec4(u_progress); }\n", false);
+        let assembled = assemble("void main() { fragColor = vec4(u_progress); }\n", Variant::Plain);
         let user = assembled.find("void main() { fragColor").expect("the config's own source");
         let prelude = &assembled[..user];
         for absent in ["sampler2D", "mantle_from", "mantle_to", "u_fill"] {
@@ -729,6 +897,28 @@ mod tests {
         }
         assert!(prelude.trim_end().ends_with("#line 1"));
         assert!(assembled.ends_with(EPILOGUE));
+    }
+
+    /// ADR-0336. An `effect.shader` has the input and the outline, no rename and no epilogue: it
+    /// replaces the content, so there is no opacity to apply and no corner to cut. Every variant
+    /// can measure the outline.
+    #[test]
+    fn an_effect_shader_is_assembled_with_the_input_and_no_epilogue() {
+        let source = "void main() { fragColor = mantle_input(v_uv) * step(mantle_sdf(v_uv * u_size), 0.0); }\n";
+        let assembled = assemble(source, Variant::Input);
+        let user = assembled.find("void main() { fragColor").expect("the config's own source");
+        let prelude = &assembled[..user];
+        for present in ["uniform sampler2D u_input;", "uniform vec4 u_input_rect;", "vec4 mantle_input(vec2 uv)"] {
+            assert!(prelude.contains(present), "`{present}` missing from {prelude}");
+        }
+        assert!(prelude.contains("float mantle_sdf(vec2 p)") && prelude.trim_end().ends_with("#line 1"));
+        assert!(assembled.ends_with(source), "nothing of the engine's follows the config's source");
+        for absent in ["mantle_effect", "mantle_from", "u_from"] {
+            assert!(!assembled.contains(absent), "`{absent}` in an effect shader");
+        }
+        for variant in [Variant::Plain, Variant::Cross] {
+            assert!(assemble(source, variant).contains("float mantle_sdf(vec2 p)"));
+        }
     }
 
     /// A box smaller than one logical pixel is legitimate -- a tween passes through it -- and must

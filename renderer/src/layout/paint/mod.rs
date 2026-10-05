@@ -144,13 +144,24 @@ pub enum Draw {
     /// A box's shadow as one gradient quad under its fill (ADR-0254), cut out under the box when
     /// `knockout` (ADR-0260). `shadow.color` carries the inherited opacity.
     Shadow { shadow: node::Shadow, radius: Radii, knockout: bool },
-    /// A subtree drawn offscreen, then composited over its own shadow and through `content_blur`
-    /// (ADR-0254). `rect` is the node's box; `clip` covers everything the effect reaches. A
-    /// `silhouette` is a scoop's fill, and only its shadow draws, cut out under the box (ADR-0260).
-    Layer { effect: node::Effect, silhouette: bool, commands: Vec<DrawCmd> },
+    /// A subtree drawn offscreen, then through its `shader`, then composited over its own shadow
+    /// and through `effect.blur` (ADR-0254, ADR-0336). `rect` is the node's box; `clip` covers
+    /// everything the effect reaches. A `silhouette` is a scoop's fill, and only its shadow draws,
+    /// cut out under the box (ADR-0260).
+    Layer { effect: node::Effect, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
     /// and drawn through its `radius` at `alpha` (ADR-0256). `clip` covers the 3 sigma the blur reads.
     Backdrop { sigma: f32, tone: node::Tone, radius: Radii, alpha: f32 },
+}
+
+/// A layer's `effect.shader` (ADR-0336). `version` is the file's, so an edit changes the list and
+/// the stage recompiles (ADR-0253); `radius` is the node's outline, which `mantle_sdf` measures.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LayerShader {
+    pub source: std::path::PathBuf,
+    pub version: crate::image::FileVersion,
+    pub params: Vec<node::ShaderParam>,
+    pub radius: Radii,
 }
 
 /// One drawable node: what, where, and its precomputed ancestor clip. Intersections are axis
@@ -633,6 +644,11 @@ mod tests {
         let src =
             format!(r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = {child} }}"##);
         build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None)
+    }
+
+    /// As [`effect_surface`], from a whole config.
+    pub(super) fn effect_surface_src(src: &str) -> DisplayList {
+        build(&resolved_surface(&Lua::new(), src, LogicalSize { width: 200.0, height: 100.0 }), 1.0, None)
     }
 
     /// A translate is logical, so at scale 2 its drawn bounds move twice as far as its offset.

@@ -10,7 +10,7 @@ use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintS
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
-use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, grow_y, shadow_rect};
+use super::{DisplayList, Draw, DrawCmd, LayerShader, UNCLIPPED, command_bounds, grow, grow_y, shadow_rect};
 
 /// Focused field and draw-safe content. Masked fields carry only destination and character count,
 /// never secret bytes (`shared::SecureBuffer::expose_secret`, ADR-0005). Plain fields use `NodeId`,
@@ -129,6 +129,7 @@ fn build_node(
             let opaque = matches!(background, Some(Fill::Color(fill)) if fill.a >= 1.0)
                 && mask.is_none()
                 && effect.blur == 0.0
+                && effect.shader.is_none()
                 && opacity >= 1.0;
             (*radius, opaque, !opaque && !effect.content_shadow)
         }
@@ -136,7 +137,7 @@ fn build_node(
     };
     // A gradient cannot draw a scoop, so a scoop's box shadow is its silhouette's.
     let casts = !effect.shadows.is_empty() && (boxed || (opaque && !radius.scoop()));
-    let layered = if casts { node::Effect { shadows: Vec::new(), ..*effect } } else { effect.clone() };
+    let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
     let own = layer_bounds(rect, &layered, scale);
     let reach = if casts && !radius.scoop() {
         let body = if effect.blur > 0.0 { own } else { snap_to_physical(rect, scale) };
@@ -192,7 +193,7 @@ fn build_node(
             let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
             let fill =
                 Draw::Box { background: black, radius, colors: BorderColor::default(), widths: EdgeInsets::default() };
-            let draw = Draw::Layer { effect, silhouette: true, commands: vec![cmd(clip, fill)] };
+            let draw = Draw::Layer { effect, shader: None, silhouette: true, commands: vec![cmd(clip, fill)] };
             out.push(cmd(parent_clip.intersect(reach), draw));
         }
     }
@@ -298,8 +299,15 @@ fn build_node(
         let pad = layered.shadows.iter().fold(0.0_f32, |pad, shadow| {
             pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
         });
-        let target = snap_to_physical(grow(surface, pad.max(self::reach(layered.blur))), scale);
-        let draw = Draw::Layer { effect: layered, silhouette: false, commands };
+        let target =
+            snap_to_physical(grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(&layered))), scale);
+        let shader = layered.shader.take().map(|shader| LayerShader {
+            version: crate::image::FileVersion::read(&shader.source),
+            source: shader.source,
+            params: shader.params,
+            radius,
+        });
+        let draw = Draw::Layer { effect: layered, shader, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
     if let Some(matrix) = node.paint_matrix(rect) {
@@ -352,12 +360,13 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         Draw::Shadow { shadow: cast, radius, knockout } => {
             Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
         }
-        Draw::Layer { effect, silhouette, commands } => Draw::Layer {
+        Draw::Layer { effect, shader, silhouette, commands } => Draw::Layer {
             effect: node::Effect {
                 shadows: effect.shadows.into_iter().map(shadow).collect(),
                 blur: effect.blur * scale,
                 ..effect
             },
+            shader: shader.map(|shader| LayerShader { radius: shader.radius * scale, ..shader }),
             silhouette,
             commands,
         },
@@ -675,11 +684,16 @@ fn reach(sigma: f32) -> f32 {
     3.0 * sigma
 }
 
-/// A layer's offscreen: the box padded for the further-reaching blur, and where that padded box
-/// lands as the shadow.
+/// How far past the box `effect.shader` reads and draws, logical px.
+fn shader_padding(effect: &node::Effect) -> f32 {
+    effect.shader.as_ref().map_or(0.0, |shader| shader.padding)
+}
+
+/// A layer's offscreen: the box padded for the furthest-reaching blur or shader, and where that
+/// padded box lands as the shadow.
 fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> PhysicalRect {
     let shadow_reach = effect.shadows.iter().fold(0.0_f32, |most, shadow| most.max(reach(shadow.blur / 2.0)));
-    let padded = grow(rect, shadow_reach.max(reach(effect.blur)));
+    let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(effect)));
     let own = snap_to_physical(padded, scale);
     effect
         .shadows
@@ -689,7 +703,7 @@ fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> Physica
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{IMAGE_MASKED, effect_surface, masked, pins, resolved_surface};
+    use super::super::tests::{IMAGE_MASKED, effect_surface, effect_surface_src, masked, pins, resolved_surface};
     use super::*;
 
     use mlua::Lua;
@@ -1703,6 +1717,37 @@ mod tests {
         assert_ne!(build(&tree, 1.0, None), before);
     }
 
+    /// ADR-0336. A node with `effect.shader` is one layer carrying the program, and the repaint it
+    /// causes reaches every input: `padding` grows its clip, and a `params` change or a saved file
+    /// changes the command, which is what keeps `TextPainter` from compositing the old layer.
+    #[test]
+    fn an_effect_shader_layer_carries_its_padding_params_and_file_version() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.frag");
+        std::fs::write(&path, "void main() {}").unwrap();
+        let src = |padding: u32, k: u32| {
+            format!(
+                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = rect {{ width = 20,
+                height = 20, radius = 5, background = "#ffffff", effect = {{ shader = {{ source = "{}",
+                padding = {padding}, params = {{ k = {k} }} }} }} }} }}"##,
+                path.display()
+            )
+        };
+        let layer = |padding, k| {
+            let list = effect_surface_src(&src(padding, k));
+            list.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).expect("a layer").clone()
+        };
+        let plain = layer(0, 1);
+        let Draw::Layer { shader: Some(shader), effect, .. } = &plain.draw else { panic!("a shader layer: {plain:?}") };
+        assert_eq!((shader.params.clone(), shader.radius), (vec![("k".to_string(), vec![1.0])], Radii::from(5.0)));
+        assert!(effect.shader.is_none(), "the program travels in the layer's `shader` alone");
+        assert!(plain.clip.x0 >= 38 && plain.clip.x1 <= 62, "the box and its outline's edge: {:?}", plain.clip);
+        assert_eq!(layer(12, 1).clip, PhysicalRect { x0: 28, y0: 28, x1: 72, y1: 72 }, "padding grows the clip");
+        assert_ne!(layer(0, 2), plain, "a param change is a different command");
+        std::fs::write(&path, "void main() { fragColor = vec4(1.0); }").unwrap();
+        assert_ne!(layer(0, 1), plain, "so is a saved file");
+    }
+
     /// Qt's `OpacityMask` covers the item, not only its children, so the node's own fill and border
     /// are drawn inside the masked group, in the order an unmasked box draws them.
     #[test]
@@ -1902,7 +1947,7 @@ mod tests {
             r##"rect { width = 40, height = 20, radius = 6, corner_shape = "scoop", background = "#ffffff40",
                 opacity = 0.5, shadows = { { offset = { y = 4 } } }, children = { text { content = "hi" } } }"##,
         );
-        let Draw::Layer { effect, silhouette: true, commands } = &list.commands[1].draw else {
+        let Draw::Layer { effect, silhouette: true, commands, .. } = &list.commands[1].draw else {
             panic!("{:?}", list.commands)
         };
         assert_eq!(

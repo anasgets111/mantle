@@ -44,7 +44,7 @@ A card: a translucent rounded fill, a hairline border and a soft shadow below it
 | Box kind | A node that paints a box: `rect`, `row`, `column` and the four [surface](../surfaces/index.md) roles (`panel`, `window`, `popup`, `lock`) |
 | Repaint | Mantle redraws the changed part of a surface's buffer; an unchanged surface is not redrawn |
 | Offscreen pass | The subtree is drawn into a temporary texture, filtered or masked, then composited back. Costs a texture and an extra draw |
-| Layer | The offscreen pass that `effect.blur`, a colour filter and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
+| Layer | The offscreen pass that `effect.shader`, `effect.blur`, a colour filter and some shadows use. Unlike other offscreen passes, Mantle keeps it and reuses it while the subtree does not change |
 | Glass | A box with `effect.backdrop.blur` or a backdrop colour filter |
 | Sigma | A Gaussian blur's standard deviation in logical px. The blur reaches about 3 sigma |
 
@@ -464,6 +464,79 @@ rect {
 
 The usual glass: CSS `backdrop-filter: blur(45px) saturate(2)`.
 
+### Shader effects
+
+`effect.shader` runs a fragment shader of yours over the node's painted subtree: the fill, children and
+border drawn offscreen, which the program reads as a texture and replaces with its output. It is how
+a duotone, a chromatic aberration, a ripple or a glow that follows the node's own shape is a config's
+to write. A [`shader` node](../nodes/shader.md) draws one quad and reads nothing; this reads the pixels.
+
+```lua
+rect {
+    width = 240,
+    height = 80,
+    radius = 20,
+    corner_smoothing = 0.6,
+    background = "#335577",
+    effect = {
+        shader = {
+            source = mantle.config_dir .. "/shaders/outline.frag",
+            params = { width = 3, tint = { 1, 0.8, 0.2, 1 } },
+            padding = 4,
+        },
+    },
+}
+```
+
+| Key | Type | Default | Behaviour |
+| :--- | :--- | :--- | :--- |
+| `source` | `string` | required | Absolute `.frag` path; relative is refused |
+| `input` | `"content"` | `"content"` | What `u_input` holds: the node's painted subtree |
+| `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
+| `padding` | `number`, `[0, 512]` | `0` | Logical px around the box the program can read and draw. The layer, its damage and its clip grow by it |
+
+The `.frag` contract is the [`shader` node's](../nodes/shader.md#the-frag-file) with these changes.
+Write `void main()` and set `fragColor` to premultiplied RGBA.
+
+| Name | Type | What |
+| :--- | :--- | :--- |
+| `v_uv` | `in vec2` | Box coordinate, top-left origin, y down. `0..1` over the box, and outside it over the padding |
+| `u_size` | `vec2` | The node's box in logical px, without the padding |
+| `mantle_input(uv)` | `vec4` | The subtree at a box coordinate, premultiplied; transparent outside the padded area |
+| `u_input`, `u_input_rect` | `sampler2D`, `vec4` | The texture and where it sits as `(x, y, w, h)` in box fractions. Use `mantle_input`, which handles the texture's orientation |
+| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii and `corner_smoothing`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
+| `u_progress`, `mantle_opacity` | | Not set |
+
+Unlike a `shader` node, no step follows your `main`: the output is not rounded to `radius` and not
+multiplied by `opacity`, since the subtree already carries its opacity. Cut to the outline yourself
+with `mantle_sdf` when you want to.
+
+<!-- file: shaders/outline.frag -->
+```glsl
+uniform float width;
+uniform vec4 tint;
+
+void main() {
+    vec4 body = mantle_input(v_uv);
+    float d = mantle_sdf(v_uv * u_size);
+    // A rim `width` px deep just inside the outline, over the subtree.
+    float rim = smoothstep(-width - 0.5, -width + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
+    fragColor = body * (1.0 - rim * tint.a) + vec4(tint.rgb * tint.a, tint.a) * rim;
+}
+```
+
+| Case | Result |
+| :--- | :--- |
+| The shader fails to compile or link | Logged once per revision of the file; the node draws as if it had no `shader` |
+| The `.frag` is saved | The config reloads, which recompiles it and repaints the node |
+| `params` or the file change | The layer is redrawn; an unchanged layer is reused |
+| `animate` on `effect` | Tweens `blur` and the colour filters; the `shader` table, `params` and `padding` take the target's value at once |
+| Hit testing and input regions | Ignore it: a shader draws pixels, not shape |
+
+Order: the shader reads the node after its fill, children and border, and its output goes through
+`shadows` (content mode), then `effect.blur` and the colour filters. `padding` is cut at the same
+clips as a shadow, so a node at a surface's edge has no room to pad into.
+
 ## Combining effects
 
 One node paints in this order, each step over the last. The order is fixed: the keys of `effect` apply in it, whatever order the table lists them in.
@@ -473,8 +546,9 @@ One node paints in this order, each step over the last. The order is fixed: the 
 2. **Shadow**, when it is a gradient quad or a silhouette.
 3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
    goes through an offscreen pass.
-4. **Layer**: for `effect.blur`, a colour filter or a layered shadow, the body is drawn offscreen,
-   its shadow cast from it, then the body blurred and recoloured.
+4. **Layer**: for `effect.shader`, `effect.blur`, a colour filter or a layered shadow, the body is
+   drawn offscreen, run through the shader, its shadow cast from that, then it is blurred and
+   recoloured.
 5. **Transform** (`scale`, `rotate`, `translate`) wraps all of the above.
 
 | Combination | What happens | Do this |

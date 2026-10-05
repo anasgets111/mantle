@@ -2,7 +2,8 @@
 
 Runs a fragment shader from the config over the node's box: a glow, an animated gradient, a
 procedural pattern. It reads no textures and takes no input. To run a shader between two pictures,
-use an [image transition](image.md#transition).
+use an [image transition](image.md#transition); to run one over a node's painted subtree, use
+[`effect.shader`](../guide/paint.md#shader-effects), which shares this page's `.frag` contract.
 
 A band that glows in over 400 ms when `pulse_on` turns true:
 
@@ -67,6 +68,7 @@ first line.
 | `u_size` | `vec2` | The node's size in logical px |
 | `uniform float`, `vec2`, `vec3`, `vec4` of your own, or arrays of them | | Set from `params` by name, `0` when `params` leaves one out. An array takes one flat list, element after element. A `params` name with no uniform is ignored; a wrong component count is padded or truncated and logged once |
 
+`mantle_sdf` and `mantle_input` exist only for [`effect.shader`](../guide/paint.md#shader-effects).
 Write `void main()`. `params` never sets a uniform named `u_*` or `mantle_*`. A uniform the shader reads of any
 other type, such as an `int` or a `sampler2D`, refuses the whole shader.
 

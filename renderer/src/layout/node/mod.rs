@@ -44,7 +44,7 @@ pub use paint_style::{CaptureTarget, PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]
-pub(crate) use style::{BackdropKeys, GradientStop, ShadowLayer};
+pub(crate) use style::{BackdropKeys, GradientStop, ShaderKeys, ShadowLayer};
 // `wayland::tests`' and `instance::tests`' fixtures name it `node::LockSpec`; nothing else does.
 #[cfg(test)]
 pub use spec::LockSpec;

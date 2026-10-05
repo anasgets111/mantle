@@ -6062,7 +6062,8 @@ an `image` transition already uses, and its inputs are `u_size`, `u_progress` an
 8. **No input region.** Its alpha is only known on the GPU, so the box claims no input; a config
    adds a `button` or `rect` for a hit area.
 
-Still rejected: a shader over an arbitrary subtree, or as a persistent filter.
+Still rejected: a shader over an arbitrary subtree, or as a persistent filter. Amended by ADR-0336:
+`effect.shader` runs one over a node's painted subtree.
 
 **Amends ADR-0184 decisions 4, 5 and 7 and the rejected shader node, and ADR-0047 decision 3.**
 
@@ -7907,3 +7908,28 @@ filtering, which differs from every browser; a separate pass, a full-size read a
 
 Rejected: CSS `corner-shape: superellipse(k)`, since authors bring Figma and Apple values (0.6 on
 iOS) and it would be a second scalar meaning for the same corner.
+
+## 0336. `effect.shader` runs a config's fragment shader over a node's painted subtree
+
+Amends ADR-0333 decision 1, ADR-0253's "still rejected" line and ADR-0184 decision 1's rejection of
+a shader over a subtree. The roadmap's won't-do row now covers only the desktop behind a surface.
+
+1. **Shape.** `effect = { shader = { source, input = "content", params, padding } }`: `source`
+   absolute (ADR-0184), `params` as ADR-0253 decision 4, `padding` logical px in [0, 512].
+   `input` takes only `"content"`, the node's painted subtree.
+2. **Why the old costs are paid now.** ADR-0184 rejected offscreen targets, clip interaction and
+   undefined inputs; `Draw::Layer` already owns the offscreen (ADR-0254, ADR-0258), the subtree is
+   the one defined input, and the layer's clip and damage cover its reach.
+3. **Order.** After the node paints, before `blur`, colour filters and content-mode shadows, which
+   see the program's output. Cost: one full quad into a pooled scratch of the layer's size.
+4. **Contract.** A third prelude variant: `u_input`, `u_input_rect`, `mantle_input(uv)` in box
+   coordinates, `u_size`, and `mantle_sdf(p)`, the signed distance to the outline (ADR-0335,
+   approximate when smoothed). No engine epilogue: the content already carries opacity, and cutting
+   to the outline is the program's choice.
+5. **`padding`** grows the layer's clip, damage and cull, cut by clipping ancestors like a shadow.
+6. **Reload and failure.** The layer carries the file version and `params`, so a save or a uniform
+   change repaints. A failed build logs once per revision and leaves the node as painted.
+7. **Not tweened.** The shader table snaps; blur and colour filters still tween.
+
+Rejected: a `shader` node with a child input, which cannot read a sibling's pixels and repeats the
+layer's offscreen; reading the desktop, which the compositor owns.

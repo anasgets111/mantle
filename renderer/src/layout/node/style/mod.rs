@@ -357,6 +357,8 @@ impl Shadow {
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Effect {
     pub shadows: Vec<Shadow>,
+    /// A program run over the painted subtree, before `blur` and `tone` (ADR-0336).
+    pub shader: Option<EffectShader>,
     pub blur: f32,
     pub tone: Tone,
     pub backdrop: f32,
@@ -365,11 +367,33 @@ pub struct Effect {
 }
 
 impl Effect {
-    /// Whether the node's own output needs an offscreen: a shadow, a blur or a colour filter.
+    /// Whether the node's own output needs an offscreen: a shadow, a shader, a blur or a colour filter.
     pub fn layers(&self) -> bool {
-        !self.shadows.is_empty() || self.blur > 0.0 || !self.tone.is_identity()
+        !self.shadows.is_empty() || self.shader.is_some() || self.blur > 0.0 || !self.tone.is_identity()
     }
 }
+
+/// `effect.shader`: an absolute `.frag` path, its `params`, and `padding` logical px around the box
+/// the program may read and draw (ADR-0336).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EffectShader {
+    pub source: std::path::PathBuf,
+    pub params: Vec<ShaderParam>,
+    pub padding: f32,
+}
+
+keywords! {
+    /// `effect.shader.input`: the pixels the program reads as `u_input`.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub enum ShaderInput {
+        /// The node's painted subtree.
+        #[default]
+        Content,
+    }
+}
+
+/// The most `effect.shader.padding` grows the offscreen, in logical px.
+const SHADER_PADDING: (f32, f32) = (0.0, 512.0);
 
 /// CSS `saturate()`, `brightness()` and `contrast()` in that order, each `1` for off, applied to
 /// straight sRGB as the CSS shorthands do (ADR-0334).
@@ -441,6 +465,17 @@ lua_shape! {
 }
 
 lua_shape! {
+    /// `effect.shader`: a config fragment shader over the node's painted subtree.
+    #[alias = "EffectShader"]
+    pub(crate) struct ShaderKeys {
+        pub(crate) source: std::path::PathBuf,
+        pub(crate) input: Option<ShaderInput>,
+        pub(crate) params: Value as Option<Params>,
+        pub(crate) padding: Option<f32>,
+    }
+}
+
+lua_shape! {
     /// `effect`: CSS `filter` for a node.
     #[alias = "Effect"]
     #[derive(Default)]
@@ -449,6 +484,7 @@ lua_shape! {
         pub(crate) saturate: Option<f32>,
         pub(crate) brightness: Option<f32>,
         pub(crate) contrast: Option<f32>,
+        pub(crate) shader: Option<ShaderKeys>,
         pub(crate) backdrop: Option<BackdropKeys>,
     }
 }
@@ -482,8 +518,21 @@ impl Prop for Effects {
             }),
             None => None,
         };
+        let shader = match keys.shader {
+            Some(shader) => {
+                if !shader.source.is_absolute() {
+                    return Err(invalid(
+                        "effect.shader.source",
+                        format!("expected an absolute path, got `{}`", shader.source.display()),
+                    ));
+                }
+                Some(ShaderKeys { padding: within("shader.padding", SHADER_PADDING, shader.padding)?, ..shader })
+            }
+            None => None,
+        };
         Ok(EffectKeys {
             blur: within("blur", SHADOW_BLUR, keys.blur)?,
+            shader,
             saturate: within("saturate", TONE, keys.saturate)?,
             brightness: within("brightness", TONE, keys.brightness)?,
             contrast: within("contrast", TONE, keys.contrast)?,
@@ -539,8 +588,21 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         contrast: contrast.unwrap_or(1.0),
     };
     let backdrop = filters.backdrop.unwrap_or_default();
+    let shader = filters
+        .shader
+        .map(|keys| {
+            // ponytail: "content" is the only input; "backdrop" adds a field here and a draw in `draw_layer`.
+            let ShaderInput::Content = keys.input.unwrap_or_default();
+            Ok::<_, LayoutError>(EffectShader {
+                source: keys.source,
+                params: super::animate::parse_shader_params("effect.shader.params", &keys.params)?,
+                padding: keys.padding.unwrap_or(0.0),
+            })
+        })
+        .transpose()?;
     Ok(Effect {
         shadows,
+        shader,
         blur: filters.blur.unwrap_or(0.0),
         tone: tone(filters.saturate, filters.brightness, filters.contrast),
         backdrop: backdrop.blur.unwrap_or(0.0),
@@ -1194,6 +1256,46 @@ mod tests {
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("expected a string or a table")),
             "{err}"
         );
+    }
+
+    /// ADR-0336. `effect.shader` needs an absolute `source`, defaults `input` and `padding`, reads
+    /// `params` as a `shader` node does, and refuses what it does not know.
+    #[test]
+    fn effect_shader_parses_its_keys_and_refuses_the_rest() {
+        let lua = Lua::new();
+        let parse = |src: &str| parse_effect(&rect_props(&lua, src));
+        let shader = |padding| EffectShader {
+            source: "/s.frag".into(),
+            params: vec![("a".into(), vec![2.0]), ("b".into(), vec![1.0, 2.0])],
+            padding,
+        };
+        let full = r#"return { effect = { shader = { source = "/s.frag", input = "content", padding = 12,
+            params = { a = 2, b = { 1, 2 } } } } }"#;
+        assert_eq!(parse(full).unwrap(), Effect { shader: Some(shader(12.0)), ..Effect::default() });
+        let bare = parse(r#"return { effect = { shader = { source = "/s.frag" } } }"#).unwrap();
+        let shader = bare.shader.as_ref().unwrap();
+        assert_eq!((shader.padding, shader.params.len()), (0.0, 0));
+        assert!(bare.layers(), "a shader alone needs the offscreen");
+        for (src, property) in [
+            (r#"return { effect = { shader = { source = "s.frag" } } }"#, "effect.shader.source"),
+            (r#"return { effect = { shader = { source = "" } } }"#, "effect.shader.source"),
+            (r#"return { effect = { shader = {} } }"#, "effect.shader"),
+            (r#"return { effect = { shader = "/s.frag" } }"#, "effect"),
+            (r#"return { effect = { shader = { source = "/s.frag", glow = 1 } } }"#, "effect.shader"),
+            (r#"return { effect = { shader = { source = "/s.frag", input = "backdrop" } } }"#, "effect.shader"),
+            (r#"return { effect = { shader = { source = "/s.frag", padding = -1 } } }"#, "effect.shader.padding"),
+            (r#"return { effect = { shader = { source = "/s.frag", padding = 513 } } }"#, "effect.shader.padding"),
+            (
+                r#"return { effect = { shader = { source = "/s.frag", params = { a = "x" } } } }"#,
+                "effect.shader.params.a",
+            ),
+        ] {
+            let err = parse(src).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property: got, .. } if got == property),
+                "{src}: {err:?}"
+            );
+        }
     }
 
     /// Qt's `MultiEffect` defaults: a shadow is opaque black until coloured, and is absent until

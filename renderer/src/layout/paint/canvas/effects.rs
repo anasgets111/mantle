@@ -10,7 +10,7 @@ use crate::layout::node::{self, Radii, Rgba};
 use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
-use super::super::{UNCLIPPED, any_draw_matches, grow, shadow_rect, transformed, volatile};
+use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, shadow_rect, transformed, volatile};
 use super::shape::box_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
 
@@ -53,8 +53,9 @@ fn knocked_out(rect: LogicalRect, radius: Radii, outside: LogicalRect) -> Path {
     path
 }
 
-/// A subtree under its own shadows, `effect.blur` and colour filters (ADR-0254, ADR-0334). Both are blurs into
-/// pooled targets, and an unchanged layer composites what it last finished (ADR-0258).
+/// A subtree under its own `effect.shader`, shadows, `effect.blur` and colour filters (ADR-0254,
+/// ADR-0334, ADR-0336), each a pass into pooled targets. An unchanged layer composites what it
+/// last finished (ADR-0258).
 pub(super) fn draw_layer(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -62,7 +63,7 @@ pub(super) fn draw_layer(
     target: RenderTarget,
     frame: Frame,
 ) {
-    let Draw::Layer { effect, silhouette, commands } = &command.draw else { return };
+    let Draw::Layer { effect, shader, silhouette, commands } = &command.draw else { return };
     let (node::Effect { shadows, blur, tone, .. }, silhouette) = (effect, *silhouette);
     let (rect, clip) = (command.rect, command.clip);
     let size = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
@@ -76,12 +77,18 @@ pub(super) fn draw_layer(
             else {
                 return;
             };
+            // The shader's output is what the shadows, blur and colour filters see. A failed build
+            // leaves the node as painted, and that frame uncached so only a revision retries.
+            let shaded =
+                shader.as_ref().and_then(|shader| shaded(painter, walk, content, size, command.rect, area, shader));
+            let content = shaded.unwrap_or(content);
             let mut casts: Vec<ImageId> =
                 shadows.iter().map_while(|shadow| cast_shadow(painter, walk, content, size, *shadow, target)).collect();
             let sharp = *blur < MIN_SIGMA && tone.is_identity();
             let blurred = blurred(painter, walk, content, size, (*blur, *tone));
             // A filter a full pool refused leaves this frame unfiltered, not every frame after.
-            let filtered = casts.len() == shadows.len() && sharp == blurred.is_none();
+            let filtered =
+                casts.len() == shadows.len() && sharp == blurred.is_none() && shader.is_none() == shaded.is_none();
             // All or none: the layers kept would be the top ones, the bottom ones missing. The partial
             // casts stay in `walk.scratch` and recycle with the frame.
             if casts.len() != shadows.len() {
@@ -115,6 +122,41 @@ pub(super) fn draw_layer(
     if !silhouette {
         fill_image(canvas, content, area, 1.0);
     }
+}
+
+/// `content` through the layer's `effect.shader` into a scratch the size of `area`, the box
+/// `rect` seen through it; `None` when the program or a target is missing.
+fn shaded(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    content: ImageId,
+    size: (usize, usize),
+    rect: LogicalRect,
+    area: LogicalRect,
+    shader: &LayerShader,
+) -> Option<ImageId> {
+    // A box with no area has no `v_uv` to place.
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return None;
+    }
+    let target = scratch(painter, walk, size)?;
+    let scale = walk.scale;
+    let Shaders { gl, stage } = walk.shaders.as_mut()?;
+    let run = image_shader::ContentRun {
+        input: content,
+        target,
+        rect: [
+            (area.x - rect.x) / rect.width,
+            (area.y - rect.y) / rect.height,
+            area.width / rect.width,
+            area.height / rect.height,
+        ],
+        logical_size: (rect.width / scale, rect.height / scale),
+        radii: (shader.radius * (1.0 / scale)).fit(rect.width / scale, rect.height / scale),
+        params: &shader.params,
+    };
+    // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
+    unsafe { stage.content(gl, painter.canvas_mut(), &shader.source, &run) }.then_some(target)
 }
 
 /// `image_shader`'s blur divides by `u_sigma`.
@@ -900,5 +942,126 @@ mod tests {
         let retired = painter.sweep_layers("test", |_| true);
         assert_eq!(retired, [(big_id, (5000, 5000))]);
         assert!(painter.layer("other", &small).is_some());
+    }
+
+    /// A 32px box at (16, 16) on a white 64x96 panel with `effect.shader` running `frag`, read at
+    /// `points`. `shader` holds the keys after `source`, `body` the box's own.
+    fn paint_shader(frag: &str, shader: &str, body: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("effect.frag");
+        std::fs::write(&path, frag).unwrap();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF",
+                padding = {{ top = 16, left = 16 }}, child = rect {{ width = 32, height = 32,
+                effect = {{ shader = {{ source = "{}", {shader} }} }}, {body} }} }}"##,
+            path.display()
+        );
+        paint_with_gl(&src, (64, 96), points)
+    }
+
+    /// ADR-0336. The program reads the subtree and its output replaces it: an inversion turns a
+    /// red box cyan and the ground around it stays, and a pass-through keeps a two-colour box the
+    /// way up it was drawn.
+    #[test]
+    fn an_effect_shader_replaces_the_subtree_with_its_output() {
+        let invert = "void main() { vec4 c = mantle_input(v_uv); fragColor = vec4(vec3(c.a) - c.rgb, c.a); }";
+        let Some(px) = paint_shader(invert, "", r##"background = "#FF0000FF""##, &[(32, 32), (8, 8)]) else { return };
+        assert!(near(px[0], (0, 255, 255)), "inverted: {px:?}");
+        assert!(near(px[1], (255, 255, 255)), "outside the box: {px:?}");
+
+        let same = "void main() { fragColor = mantle_input(v_uv); }";
+        let halves = r##"children = { column { children = {
+            rect { width = 32, height = 16, background = "#FF0000FF" },
+            rect { width = 32, height = 16, background = "#0000FFFF" } } } }"##;
+        let Some(px) = paint_shader(same, "", halves, &[(32, 20), (32, 44)]) else { return };
+        assert!(near(px[0], (255, 0, 0)) && near(px[1], (0, 0, 255)), "top red, bottom blue: {px:?}");
+    }
+
+    /// ADR-0336. `padding` is room past the box the program draws into, and nothing without it.
+    #[test]
+    fn effect_shader_padding_lets_the_program_draw_past_the_box() {
+        let fill = "void main() { fragColor = vec4(0.0, 1.0, 0.0, 1.0); }";
+        let points = [(12, 32), (32, 32), (4, 32)];
+        let Some(px) = paint_shader(fill, "padding = 8", "", &points) else { return };
+        assert!(near(px[0], (0, 255, 0)) && near(px[1], (0, 255, 0)), "the padding and the box: {px:?}");
+        assert!(near(px[2], (255, 255, 255)), "and no further: {px:?}");
+        let Some(px) = paint_shader(fill, "", "", &points) else { return };
+        assert!(near(px[0], (255, 255, 255)) && near(px[1], (0, 255, 0)), "the box alone: {px:?}");
+    }
+
+    /// ADR-0335, ADR-0336. `mantle_sdf` is negative inside the outline and positive outside, at a
+    /// rounded corner and at a smoothed one, which cuts more of the corner away from its diagonal.
+    #[test]
+    fn mantle_sdf_is_negative_inside_the_outline_and_positive_outside() {
+        let frag = "void main() { fragColor = mantle_sdf(v_uv * u_size) < 0.0 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 0.0, 0.0, 1.0); }";
+        let inside = |p: (u8, u8, u8, u8)| p == (255, 0, 0, 255);
+        // A 48px box at (16, 16), radius 16: (17, 17) is 1.5px in along the diagonal, (22, 22) 6.5px;
+        // (17, 25) is 1.5px in from the left edge and 9.5px down, where the smoothed curve is further out.
+        let points = [(17, 17), (22, 22), (17, 25), (40, 40), (14, 40), (16, 40)];
+        let body = "width = 48, height = 48, radius = 16";
+        let Some(px) = paint_shader(frag, "padding = 4", body, &points) else { return };
+        assert_eq!(
+            px.iter().copied().map(inside).collect::<Vec<_>>(),
+            [false, true, true, true, false, true],
+            "circular: {px:?}"
+        );
+        let smooth = format!("{body}, corner_smoothing = 0.6");
+        let Some(px) = paint_shader(frag, "padding = 4", &smooth, &points) else { return };
+        assert_eq!(
+            px.iter().copied().map(inside).collect::<Vec<_>>(),
+            [false, true, false, true, false, true],
+            "smoothed: {px:?}"
+        );
+    }
+
+    /// ADR-0336. A shader that does not build leaves the node as painted.
+    #[test]
+    fn an_effect_shader_that_fails_to_build_draws_the_node_plain() {
+        let Some(px) = paint_shader(
+            "void main() { nonsense }",
+            "padding = 8",
+            r##"background = "#FF0000FF""##,
+            &[(32, 32), (12, 32)],
+        ) else {
+            return;
+        };
+        assert!(near(px[0], (255, 0, 0)) && near(px[1], (255, 255, 255)), "{px:?}");
+    }
+
+    /// ADR-0336. A `params` change or a saved `.frag` repaints the layer instead of compositing the
+    /// one kept from the last paint.
+    #[test]
+    fn a_param_change_or_a_saved_file_replaces_the_kept_layer() {
+        let Some(instance) = init_headless_egl(64, 96) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 96) else { return };
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("effect.frag");
+        std::fs::write(&path, "uniform float k; void main() { fragColor = vec4(k, 0.0, 0.0, 1.0); }").unwrap();
+        let list = |k: u32| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 64, height = 96, background = "#FFFFFFFF", padding = 16,
+                    child = rect {{ width = 32, height = 32, effect = {{ shader = {{ source = "{}",
+                    params = {{ k = {k} }} }} }} }} }}"##,
+                path.display()
+            );
+            build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 96.0 }), 1.0, None)
+        };
+        let (gl, mut stage) = (test_gl(&instance), image_shader::ShaderStage::default());
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 96 };
+        let mut paint = |painter: &mut TextPainter, list: &DisplayList| {
+            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let _ = execute("a", painter, images, captures, list, 1.0, (64.0, 96.0), &[whole], shaders);
+            pixel_at(painter.canvas_mut(), 32, 32)
+        };
+        let one = list(1);
+        assert!(near(paint(&mut painter, &one), (255, 0, 0)));
+        let layer = one.commands.iter().find(|cmd| matches!(cmd.draw, Draw::Layer { .. })).unwrap();
+        assert!(painter.layer("a", layer).is_some(), "kept after the first paint");
+        assert!(near(paint(&mut painter, &one), (255, 0, 0)), "and composited again");
+        assert!(near(paint(&mut painter, &list(0)), (0, 0, 0)), "a new param repaints it");
+        std::fs::write(&path, "uniform float k; void main() { fragColor = vec4(0.0, 0.0, 1.0 - k, 1.0); }").unwrap();
+        assert!(near(paint(&mut painter, &list(0)), (0, 0, 255)), "so does a saved file");
     }
 }

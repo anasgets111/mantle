@@ -50,6 +50,7 @@ pub(crate) use spring::SpringConstants;
 pub(crate) use transition::Params;
 #[cfg(test)]
 pub(crate) use transition::TransitionInput;
+pub(super) use transition::parse_shader_params;
 pub use transition::{Dissolve, ShaderParam, TransitionSpec};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
@@ -137,7 +138,8 @@ pub fn depart(
 /// `Path` is a path's `commands`, which tween point by point only between lists of the same ops
 /// and hole flags. `Shadows` is a `shadows` list, tweened layer by layer. `Effect` is an `effect`'s
 /// `[blur, saturate, brightness, contrast]` and the same four of its `backdrop`, a missing key
-/// reading as off: `0` for a blur, `1` for a colour filter. Two different shapes
+/// reading as off: `0` for a blur, `1` for a colour filter; its `shader` table is carried as the
+/// target has it and never tweened (ADR-0336). Two different shapes
 /// snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches between a
 /// number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
@@ -148,7 +150,7 @@ pub enum Animatable {
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
     Shadows(Vec<Shadow>),
-    Effect([f32; 8]),
+    Effect([f32; 8], Option<Value>),
 }
 
 /// An `effect` with every filter off: blurs `0`, colour filters `1`.
@@ -179,7 +181,7 @@ impl Animatable {
             }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
-            Self::Effect(_) => Self::Effect(EFFECT_OFF),
+            Self::Effect(..) => Self::Effect(EFFECT_OFF, None),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
             Self::Percent(_) => Self::Percent(0.0),
@@ -210,7 +212,8 @@ impl Animatable {
                 b.brightness,
                 b.contrast,
             ];
-            return Ok(Some(Self::Effect(std::array::from_fn(|i| given[i].unwrap_or(EFFECT_OFF[i])))));
+            let shader = value.as_table().and_then(|table| table.get::<Value>("shader").ok()).filter(|v| !v.is_nil());
+            return Ok(Some(Self::Effect(std::array::from_fn(|i| given[i].unwrap_or(EFFECT_OFF[i])), shader)));
         }
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
@@ -263,7 +266,7 @@ impl Animatable {
                 }
             }
             // The two levels share four slots, the larger displacement of each pair standing for it.
-            (Self::Effect(a), Self::Effect(b)) => {
+            (Self::Effect(a, _), Self::Effect(b, _)) => {
                 for (i, (x, y)) in a.iter().zip(b).enumerate() {
                     if (x - y).abs() > out[i % 4].abs() {
                         out[i % 4] = x - y;
@@ -292,10 +295,13 @@ impl Animatable {
                 }
                 Self::Fields { keys, values }
             }
-            (Self::Effect(a), Self::Effect(b)) => Self::Effect(std::array::from_fn(|i| {
-                let (lo, hi) = if i % 4 == 0 { SHADOW_BLUR } else { TONE };
-                (a[i] + (b[i] - a[i]) * t).clamp(lo, hi)
-            })),
+            (Self::Effect(a, _), Self::Effect(b, shader)) => Self::Effect(
+                std::array::from_fn(|i| {
+                    let (lo, hi) = if i % 4 == 0 { SHADOW_BLUR } else { TONE };
+                    (a[i] + (b[i] - a[i]) * t).clamp(lo, hi)
+                }),
+                shader.clone(),
+            ),
             (Self::Color(a), Self::Color(b)) => Self::Color(mix(*a, *b, t)),
             // The shorter list pads with the other's layers faded out, as `identity` fades them.
             (Self::Shadows(a), Self::Shadows(b)) => {
@@ -339,7 +345,7 @@ impl Animatable {
                 Value::Table(table)
             }
             Self::Path(ref path) => tweened(lua, path)?,
-            Self::Effect(values) => {
+            Self::Effect(values, ref shader) => {
                 let level = |values: &[f32]| {
                     lua.create_table_from(
                         ["blur", "saturate", "brightness", "contrast"].into_iter().zip(values.iter().copied()),
@@ -347,6 +353,9 @@ impl Animatable {
                 };
                 let table = level(&values[..4])?;
                 table.set("backdrop", level(&values[4..])?)?;
+                if let Some(shader) = shader {
+                    table.set("shader", shader.clone())?;
+                }
                 Value::Table(table)
             }
             Self::Shadows(ref layers) => {
@@ -1225,6 +1234,11 @@ mod tests {
         let backdrop: mlua::Table = mid.get("backdrop").unwrap();
         assert_eq!((mid.get::<f32>("saturate").unwrap(), mid.get::<f32>("contrast").unwrap()), (2.0, 1.0));
         assert_eq!((backdrop.get::<f32>("contrast").unwrap(), backdrop.get::<f32>("saturate").unwrap()), (0.5, 1.0));
+        // The shader is not tweened: the target's table carries through at once (ADR-0336).
+        let (from, to) = (effect("return { blur = 8 }"), effect(r#"return { shader = { source = "/s.frag" } }"#));
+        let Value::Table(mid) = from.lerp(&to, 0.5, "effect").to_value(&lua).unwrap() else { panic!("a table") };
+        assert_eq!(mid.get::<mlua::Table>("shader").unwrap().get::<String>("source").unwrap(), "/s.frag");
+        assert_eq!(mid.get::<f32>("blur").unwrap(), 4.0);
         let empty = effect("return {}");
         let Value::Table(back) = empty.to_value(&lua).unwrap() else { panic!("a table") };
         lua.globals().set("e", back).unwrap();

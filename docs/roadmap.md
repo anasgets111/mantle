@@ -49,6 +49,6 @@ Wanted, but each needs a consumer or a decision first.
 | Framework settings schema | `persistent_table` with config-declared files | — |
 | Per-panel IPC commands | `mantle set`, `toggle` and `call` | — |
 | Deferred surface loader | Wayland objects are created when shown; the [Lua CPU budget](guide/runtime.md#limits-and-budgets) guards one signal resolve, not a whole evaluation | 0157 |
-| Shaders over a subtree or as a persistent filter | `image.transition` and the input-less `shader` node keep a stable contract. Fixed blur or shadow is `effect.blur` and `shadows` | 0184, 0253, 0254 |
+| Shaders over the desktop behind a surface | The compositor owns those pixels. `effect.shader` reads what this surface painted, a node's subtree; the input-less `shader` node and `image.transition` keep their contracts | 0184, 0253, 0336 |
 | Display manager (PAM as root, sessions, seats) | greetd; see Greeter | — |
 | X11 or i3 | The target is a Wayland session shell | — |
