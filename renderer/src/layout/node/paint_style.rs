@@ -544,8 +544,7 @@ mod tests {
                 width: 3.0,
                 height: Some(0.5),
                 radius: 1.5,
-                selection: None,
-                selected_text: None
+                ..plain
             }
         );
         assert_eq!((set.bar_height(20.0), CaretStyle { height: Some(8.0), ..set }.bar_height(20.0)), (10.0, 8.0));

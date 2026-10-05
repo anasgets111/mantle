@@ -484,8 +484,7 @@ fn faded(
     canvas.reset_scissor();
     canvas.clear_rect(0, 0, read.size.0 as u32, read.size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
     fill_image(canvas, image, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
-    // The mask is placed in the box's coordinates, so draw it under the read's own transform,
-    // over the target's corners mapped back.
+    // The mask is placed in the box's coordinates, so draw it under the read's own transform.
     canvas.set_transform(&read.view);
     let back = read.view.inverse();
     let mut whole = Path::new();

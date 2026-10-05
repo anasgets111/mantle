@@ -206,10 +206,14 @@ mod tests {
         FakePortal::setting_changed(fake.signal_emitter(), "org.example", "color-scheme", Value::from(2u32))
             .await
             .unwrap();
+        // The values already changed, so an unfiltered re-read would publish a new state.
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), changed.recv()).await;
+        assert!(quiet.is_err(), "the unrelated namespace must not wake a push");
+        assert_eq!(appearance.snapshot().color_scheme, ColorScheme::Dark);
+
         FakePortal::setting_changed(fake.signal_emitter(), NAMESPACE, "color-scheme", Value::from(2u32)).await.unwrap();
         within(changed.recv()).await;
         assert_eq!(appearance.snapshot().color_scheme, ColorScheme::Light);
-        assert!(changed.try_recv().is_err(), "the unrelated namespace must not wake a push");
     }
 
     #[tokio::test]

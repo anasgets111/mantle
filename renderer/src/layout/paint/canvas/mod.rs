@@ -1471,6 +1471,17 @@ pub(crate) mod tests {
         assert!(!red(20, 26), "the corner is rounded off by `radius`");
     }
 
+    #[test]
+    fn a_selection_paints_its_background_and_recolours_the_selected_glyphs() {
+        let src = r##"return panel { id = "bar", width = 120, height = 64, child = textfield { width = 120, font_size = 40,
+            on_change = function(text) end, selection = { background = "#FF0000", foreground = "#0000FF" } } }"##;
+        let points: Vec<_> = (0..64).flat_map(|y| (0..120).map(move |x| (x, y))).collect();
+        let Some(px) = paint_with_selection(src, (120, 64), &points, Some("MMM")) else { return };
+        let near = |p: &(u8, u8, u8, u8), c: [u8; 3]| [p.0, p.1, p.2].iter().zip(c).all(|(a, b)| a.abs_diff(b) <= 3);
+        assert!(near(&px[2 * 120 + 2], [255, 0, 0]), "highlight above the glyphs: {:?}", px[2 * 120 + 2]);
+        assert!(px.iter().any(|p| near(p, [0, 0, 255])), "no selected glyph pixel took the foreground");
+    }
+
     /// `line_height` sets layout only: a descender below a tight line box is painted (CSS overflow
     /// visible). The engine seats the baseline from the box top, so no ink rises above it here;
     /// the build test covers the clip above.
@@ -1953,6 +1964,17 @@ pub(crate) mod tests {
         size: (u32, u32),
         points: &[(usize, usize)],
     ) -> Option<Vec<(u8, u8, u8, u8)>> {
+        paint_with_selection(src, size, points, None)
+    }
+
+    /// [`paint_with_gl`] with the root's first child, a `textfield`, focused on `selected` text
+    /// selected whole.
+    pub(super) fn paint_with_selection(
+        src: &str,
+        size: (u32, u32),
+        points: &[(usize, usize)],
+        selected: Option<&str>,
+    ) -> Option<Vec<(u8, u8, u8, u8)>> {
         let instance = init_headless_egl(size.0 as i32, size.1 as i32)?;
         let shaping = ShapingHandle::spawn();
         let mut painter = text_painter(&instance, &shaping, size.0, size.1)?;
@@ -1960,7 +1982,13 @@ pub(crate) mod tests {
         let gl = test_gl(&instance);
         let mut stage = image_shader::ShaderStage::default();
         let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-        let list = build(&root, 1.0, None);
+        let focus = selected.map(|text| super::super::FieldFocus::Plain {
+            id: root.children[0].id,
+            text,
+            caret: Some((0, text.len())),
+            caret_on: false,
+        });
+        let list = build(&root, 1.0, focus.as_ref());
         let (target, whole) =
             ((size.0 as f32, size.1 as f32), PhysicalRect { x0: 0, y0: 0, x1: size.0 as i32, y1: size.1 as i32 });
         let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
