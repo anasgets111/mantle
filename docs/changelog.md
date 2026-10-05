@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-05
+
 - Box kinds take `outline = { commands = { .. } }`, any shape as one closed contour of `path` commands, in place of `radius`: a popover with its arrow, a speech bubble, a tab joined to its panel. A coordinate is px, `"NN%"` of the box or `{ from = "right", px = -12 }`, so the shape follows the box's size and may reach past it. Fill, border (one width and colour), shadows, inset shadows, `clip = "rounded"`, `mask`, `effect.backdrop`, `mantle_sdf`, hit testing and `behind_blur` follow it. `animate.outline` tweens point by point between lists of the same commands, springs included, and snaps otherwise.
 - `path` commands take `{ op = "corner", points = { x, y }, radius = r, corner_smoothing = s }`, which rounds the turn at one point as a continuous corner.
 - `effect.shader` takes `progress` (`[-8192, 8192]`, default `0`), which becomes `u_progress` as on a `shader` node. `animate = { effect = .. }` tweens it, keyframes and `loops = "infinite"` included, so a content or backdrop shader animates without Lua running per frame; the rest of the `shader` table still takes the target's value at once.
