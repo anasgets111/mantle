@@ -79,15 +79,16 @@ fn local_pointer(
         .unwrap_or(layout::hit::LogicalPoint { x: point.x - rect.x, y: point.y - rect.y })
 }
 
-/// [`local_pointer`] for a held drag, through the node's current path. A node gone from `root`
-/// keeps the raw point.
+/// A held drag's current rect and [`local_pointer`], through the node's current path, so a node
+/// that moves under its own drag reports one frame. A node gone from `root` keeps the press rect.
 fn drag_local(
     root: Option<&layout::ResolvedNode>,
     drag: &DragTarget,
     point: layout::hit::LogicalPoint,
-) -> layout::hit::LogicalPoint {
+) -> (LogicalRect, layout::hit::LogicalPoint) {
     let path = root.and_then(|root| layout::hit::path_to_node(root, drag.id)).unwrap_or_default();
-    local_pointer(&path, drag.rect, point)
+    let rect = layout::hit::absolute_rect(&path).unwrap_or(drag.rect);
+    (rect, local_pointer(&path, rect, point))
 }
 
 /// Innermost node with callable `on_press`; unhandled nodes are transparent, like `on_click`'s scan.
@@ -691,8 +692,8 @@ impl App {
             return;
         };
         let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
-        let local = drag_local(self.client.scene().surface(instance_id), &drag.target, point);
-        let DragTarget { rect, handler, .. } = drag.target.clone();
+        let (rect, local) = drag_local(self.client.scene().surface(instance_id), &drag.target, point);
+        let handler = drag.target.handler.clone();
         if phase == DragPhase::End {
             self.drag = None;
         }
@@ -1032,8 +1033,8 @@ mod tests {
         }
     }
 
-    /// A held drag maps through the node's path now, not the press-time `rect`; with no usable path
-    /// the raw point minus that `rect` stands.
+    /// A held drag maps through the node's path now and reports its current rect, not the
+    /// press-time one; with no path the raw point minus the press `rect` stands.
     #[test]
     fn on_drag_pointer_follows_the_node_and_falls_back_to_the_raw_point() {
         let lua = Lua::new();
@@ -1055,16 +1056,18 @@ mod tests {
         let cases: [Case; 3] = [
             ("moved since the press", |_| {}, pt(15.0, 4.0)),
             ("translated", |n| n.transform.translate = (100.0, 0.0), pt(-85.0, 4.0)),
-            ("degenerate transform", |n| n.transform.scale = (0.0, 0.0), pt(23.0, 4.0)),
+            ("degenerate transform", |n| n.transform.scale = (0.0, 0.0), pt(15.0, 4.0)),
         ];
+        let now = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
         for (name, mutate, want) in cases {
             let (root, id) = build(mutate);
-            assert_eq!(drag_local(Some(&root), &drag(id), point), want, "{name}");
+            assert_eq!(drag_local(Some(&root), &drag(id), point), (now, want), "{name}");
         }
         let (root, _) = build(|_| {});
         let gone = drag(layout::scene::NodeId::test(u64::MAX));
-        assert_eq!(drag_local(Some(&root), &gone, point), pt(23.0, 4.0), "removed mid-drag");
-        assert_eq!(drag_local(None, &gone, point), pt(23.0, 4.0), "surface gone");
+        let pressed = (drag(gone.id).rect, pt(23.0, 4.0));
+        assert_eq!(drag_local(Some(&root), &gone, point), pressed, "removed mid-drag");
+        assert_eq!(drag_local(None, &gone, point), pressed, "surface gone");
     }
 
     /// ADR-0114: `submit = true` alone makes a node a click target, with no Lua handler to call.

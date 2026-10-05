@@ -312,7 +312,7 @@ props! {
         on_click(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
         /// On press of any mouse button, before `on_click` and before the release. `rect` and `pointer` are as in `on_click`. The only place `toplevel(id)` can move, resize or open the window menu, since compositors honour those for the press serial; an `on_drag` `"start"` works too. Not called for a press on a `textfield`.
         on_press(rect: LogicalRect, button: MouseButton, pointer: LogicalPoint, modifiers: Modifiers);
-        /// Left-button drag (ADR-0116). `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
+        /// Left-button drag (ADR-0116). `rect` is the node's box at each call, so it follows a node that moves under its own drag. `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface.
         on_drag(rect: LogicalRect, pointer: LogicalPoint, phase: DragPhase, modifiers: Modifiers);
         /// Vertical wheel in notches, positive away from the user, fractional on touchpads (ADR-0116). The innermost handler or scroll container wins; on one node, the `scroll`.
         on_wheel(rect: LogicalRect, steps: f64, modifiers: Modifiers);
