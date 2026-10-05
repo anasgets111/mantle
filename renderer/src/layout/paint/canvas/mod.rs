@@ -428,7 +428,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 draw_layer(painter, walk, command, target, frame);
                 current_clip = None;
             }
-            Draw::Backdrop { .. } => draw_backdrop(painter, walk, command),
+            Draw::Backdrop { .. } => draw_backdrop(painter, walk, command, target),
         }
     }
     if pushed {
@@ -597,42 +597,52 @@ fn offscreen(
     };
     run(painter, walk, commands, RenderTarget::Image(image), inner);
 
-    // Multiplying alpha keeps the target premultiplied, and so masks a shader quad drawn into it
-    // too. The fill covers the whole target: a pixel it misses keeps its alpha.
-    if let Some((mask, box_px)) = mask {
-        let paint = match &mask.source {
-            MaskSource::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
-            MaskSource::Node(_) => None, // Lowered to Draw::NodeMask by build_node.
-            // A missing mask image leaves the subtree unmasked, the answer an allocation failure
-            // above gets too.
-            MaskSource::Image(file) => {
-                let request = ImageRequest {
-                    path: std::path::Path::new(file),
-                    box_px: *box_px,
-                    tint: None,
-                    fit: Fit::Stretch,
-                    blur_px: 0,
-                };
-                walk.images
-                    .image(painter.canvas_mut(), &request, Load::Inline)
-                    .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0))
-            }
-        };
-        if let Some(paint) = paint {
-            let canvas = painter.canvas_mut();
-            canvas.reset_scissor();
-            canvas.global_composite_operation(match mask.invert {
-                false => CompositeOperation::DestinationIn,
-                true => CompositeOperation::DestinationOut,
-            });
-            canvas.fill_path(&whole, &paint.with_anti_alias(false));
-        }
+    if let Some(mask) = mask {
+        apply_mask(painter, walk, rect, &whole, mask);
     }
 
     let canvas = painter.canvas_mut();
     canvas.restore();
     canvas.set_render_target(target);
     Some(image)
+}
+
+/// Multiplies the current target's alpha by `mask` over `rect`, which keeps it premultiplied, and so
+/// masks a shader quad drawn into it too. `whole` covers the target: a pixel it misses keeps its alpha.
+fn apply_mask(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    rect: LogicalRect,
+    whole: &Path,
+    (mask, box_px): &(node::Mask, (u32, u32)),
+) {
+    let paint = match &mask.source {
+        MaskSource::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
+        MaskSource::Node(_) => None, // Lowered to Draw::NodeMask by build_node.
+        // A missing mask image leaves the subtree unmasked, the answer an allocation failure
+        // in `offscreen` gets too.
+        MaskSource::Image(file) => {
+            let request = ImageRequest {
+                path: std::path::Path::new(file),
+                box_px: *box_px,
+                tint: None,
+                fit: Fit::Stretch,
+                blur_px: 0,
+            };
+            walk.images
+                .image(painter.canvas_mut(), &request, Load::Inline)
+                .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0))
+        }
+    };
+    if let Some(paint) = paint {
+        let canvas = painter.canvas_mut();
+        canvas.reset_scissor();
+        canvas.global_composite_operation(match mask.invert {
+            false => CompositeOperation::DestinationIn,
+            true => CompositeOperation::DestinationOut,
+        });
+        canvas.fill_path(whole, &paint.with_anti_alias(false));
+    }
 }
 
 /// File-draw parameters shared by icon and image commands. The request's `tint` is `None` for an

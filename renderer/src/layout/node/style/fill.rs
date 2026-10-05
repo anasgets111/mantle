@@ -215,13 +215,27 @@ impl Prop for Mask {
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a table, got {}", preview_for_error(value))));
         };
+        Mask::from_table(property, table).map(Some)
+    }
+}
+
+/// A shape field such as `effect.backdrop.mask`.
+impl input::Input for Mask {
+    fn from_value(property: &str, key: &str, value: &Value) -> Result<Option<Self>, LayoutError> {
+        let Value::Table(table) = value else { return Ok(None) };
+        Mask::from_table(&format!("{property}.{key}"), table).map(Some)
+    }
+}
+
+impl Mask {
+    fn from_table(property: &str, table: &mlua::Table) -> Result<Mask, LayoutError> {
         let MaskInput { gradient, angle, stops, source, node, invert } = MaskInput::read(property, table)?;
         let any_gradient = gradient.is_some() || angle.is_some() || stops.is_some();
         if let Some(id) = node {
             if source.is_some() || any_gradient || id.is_empty() {
                 return Err(invalid(property, "name exactly one nonempty `node`, `source` or gradient"));
             }
-            return Ok(Some(Mask { source: MaskSource::Node(id), invert: invert.unwrap_or(false) }));
+            return Ok(Mask { source: MaskSource::Node(id), invert: invert.unwrap_or(false) });
         }
         let source = match (source, any_gradient) {
             (Some(_), true) | (None, false) => {
@@ -236,7 +250,7 @@ impl Prop for Mask {
                 MaskSource::Gradient(GradientInput { gradient, angle, stops }.into_gradient(property)?)
             }
         };
-        Ok(Some(Mask { source, invert: invert.unwrap_or(false) }))
+        Ok(Mask { source, invert: invert.unwrap_or(false) })
     }
 }
 

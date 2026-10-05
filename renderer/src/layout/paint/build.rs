@@ -203,6 +203,10 @@ fn build_node(
             radius: radius.clone(),
             alpha: opacity,
             shader,
+            mask: effect
+                .backdrop_mask
+                .clone()
+                .map(|mask| (mask, (physical_edge(rect.width, scale), physical_edge(rect.height, scale)))),
         };
         out.push(cmd(parent_clip.intersect(read), draw));
     }
@@ -432,12 +436,13 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             silhouette,
             commands,
         },
-        Draw::Backdrop { sigma, tone, radius, alpha, shader } => Draw::Backdrop {
+        Draw::Backdrop { sigma, tone, radius, alpha, shader, mask } => Draw::Backdrop {
             sigma: sigma * scale,
             tone,
             radius: radius * scale,
             alpha,
             shader: shader.map(|shader| LayerShader { radius: shader.radius * scale, ..shader }),
+            mask,
         },
         draw @ (Draw::Text { .. }
         | Draw::Icon { .. }
@@ -2458,7 +2463,8 @@ mod tests {
                 tone: node::Tone::default(),
                 radius: Radii::from(6.0),
                 alpha: 0.5,
-                shader: None
+                shader: None,
+                mask: None
             }
         );
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });

@@ -8168,3 +8168,23 @@ Children are hit where paint cuts them: the box rect under `clip = "box"`, the c
 `"rounded"`. Input regions claim the contour's strips, not its bounds. Shares cap at ±1600% and
 placed coordinates clamp to ±8192, since femtovg, `kurbo::flatten` and the region scanline hang
 on huge coordinates. The 3° SDF bound holds to about 8 corners, widening beyond to fit 256 points.
+
+## 0349. `effect.backdrop.mask` fades the glass by crossfade
+
+A node `mask` (ADR-0255) never reached the node's own glass (ADR-0256), which paints before the
+body, so a soft scroll edge or a feathered panel could not be built. `effect.backdrop` takes
+`mask`, with a node mask's `gradient` or `source` and `invert`; `node` is refused, since it needs a
+child to lower. The key sits on `backdrop`, so node `mask` and the glass-inside-a-masked-parent
+limit are unchanged.
+
+1. **Crossfade, not variable sigma.** The glass (blur, tone and backdrop shader output) is masked
+   in a scratch image through the node-mask path, then replaces the ground by its alpha:
+   `ground * (1 - a*m) + glass * a*m`. At large sigma the faded band reads as a dissolve between
+   sharp and blurred, not a blur radius falling to zero. A variable-sigma blur (a mip chain
+   sampled by mask value) was rejected as a new GL pass per level for a difference visible only
+   at large sigma; it is the upgrade path.
+2. **Cost.** One extra scratch image and two fills per masked glass. If the scratch image cannot
+   be allocated, the glass draws whole. The mask snaps under `animate`, as a node mask does.
+
+Ceiling: the ground is cut by the masked glass's own alpha, so over a translucent ground some
+sharp ground shows through where the frost is itself translucent.

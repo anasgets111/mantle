@@ -396,6 +396,8 @@ pub struct Effect {
     pub tone: Tone,
     pub backdrop: f32,
     pub backdrop_tone: Tone,
+    /// `effect.backdrop.mask`: scales the glass's coverage.
+    pub backdrop_mask: Option<Mask>,
     pub content_shadow: bool,
     /// `blend`: how the finished subtree composites onto the backdrop, after every filter.
     pub blend: Blend,
@@ -540,6 +542,7 @@ lua_shape! {
         pub(crate) saturate: Option<f32>,
         pub(crate) brightness: Option<f32>,
         pub(crate) contrast: Option<f32>,
+        pub(crate) mask: Option<Mask>,
     }
 }
 
@@ -596,6 +599,12 @@ impl Prop for Effects {
                 saturate: within("backdrop.saturate", TONE, b.saturate)?,
                 brightness: within("backdrop.brightness", TONE, b.brightness)?,
                 contrast: within("backdrop.contrast", TONE, b.contrast)?,
+                mask: match b.mask {
+                    Some(Mask { source: MaskSource::Node(_), .. }) => {
+                        return Err(invalid("effect.backdrop.mask", "takes a `gradient` or a `source`, not a `node`"));
+                    }
+                    mask => mask,
+                },
             }),
             None => None,
         };
@@ -703,6 +712,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         tone: tone(filters.saturate, filters.brightness, filters.contrast),
         backdrop: backdrop.blur.unwrap_or(0.0),
         backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
+        backdrop_mask: backdrop.mask,
         content_shadow,
         blend: common::blend.read(properties)?,
     })
@@ -1545,6 +1555,7 @@ mod tests {
             ("return { effect = { blur = 1, glow = 2 } }", "effect"),
             ("return { effect = { backdrop = { blur = 1, glow = 2 } } }", "effect.backdrop"),
             ("return { effect = { backdrop_blur = 2 } }", "effect"),
+            (r#"return { effect = { backdrop = { mask = { node = "m" } } } }"#, "effect.backdrop.mask"),
             ("return { effect = 3 }", "effect"),
             ("return { shadows = { { color = 3, blur = 1 } } }", "shadows[1]"),
             (r#"return { shadow_mode = "Drop" }"#, "shadow_mode"),

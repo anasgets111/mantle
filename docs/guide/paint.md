@@ -592,6 +592,41 @@ rect {
 
 The usual glass: CSS `backdrop-filter: blur(45px) saturate(2)`.
 
+### Progressive blur
+
+`effect.backdrop.mask` takes the values of a node's [`mask`](#mask) (a `gradient` or a `source`
+image; not a `node`) and scales the glass's coverage. Where the mask is clear the ground shows
+through untouched, with no blur, colour filter or backdrop shader output; where it is opaque the
+glass is whole; between, it is a crossfade of the two. It is the soft edge under a toolbar, or a
+panel whose frost feathers out. The mask never touches the node's fill, border or children.
+
+<!-- shot-alt: A mountain illustration whose ridges blur toward the bottom edge, the blur fading to a sharp picture over 130 px. -->
+```lua,shot
+rect {
+    width = 360,
+    height = 200,
+    radius = 16,
+    clip = "rounded",
+    children = {
+        image { source = "/usr/share/backgrounds/default.png", width = "fill", height = "fill", async = true },
+        rect {
+            width = "fill",
+            height = 130,
+            align_v = "end",
+            effect = {
+                backdrop = {
+                    blur = 10,
+                    mask = { gradient = "linear", angle = 0, stops = { { 0, "#FFFFFFFF" }, { 1, "#FFFFFF00" } } },
+                },
+            },
+        },
+    },
+}
+```
+
+A crossfade, not a blur radius that falls off: at a large sigma the faded part reads as a blend of
+the sharp and the blurred picture. `invert = true` flips the mask as on a node.
+
 ### Shader effects
 
 `effect.shader` runs a fragment shader of yours over the node's painted subtree: the fill, children and
@@ -756,7 +791,7 @@ One node paints in this order, each step over the last. The order is fixed: the 
 
 | Combination | What happens | Do this |
 | :--- | :--- | :--- |
-| `mask` and `effect.backdrop.blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | Put the glass on a child of the masked node |
+| `mask` and `effect.backdrop.blur` on one node | The mask fades the fill, border and subtree, not the node's own glass or box shadow | `effect.backdrop.mask` for the glass; a child of the masked node for the rest |
 | `effect.blur` and `effect.backdrop.blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
 | `effect.backdrop.blur` inside a parent with `mask`, `effect.blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
 | `effect.backdrop.blur` inside `clip = "rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |

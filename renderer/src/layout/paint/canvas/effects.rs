@@ -13,7 +13,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
 use super::shape::box_path;
 use super::vector_path::femtovg_path;
-use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
+use super::{Draw, DrawCmd, Frame, Shaders, Walk, apply_mask, fill_image, flush, offscreen, scratch};
 use crate::layout::node::outline::inset;
 use kurbo::Shape as _;
 
@@ -426,8 +426,13 @@ fn cast_shadow(
 /// Blurs and recolours (sigma and tone) what the current target holds under the command's clip,
 /// the 3 sigma the blur reads, into the box (ADR-0256). A `shader` reads the copy and the filtered
 /// copy instead and its output replaces the whole area, so it must return the input to leave a pixel.
-pub(super) fn draw_backdrop(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, command: &DrawCmd) {
-    let Draw::Backdrop { sigma, tone, radius, alpha, shader } = &command.draw else { return };
+pub(super) fn draw_backdrop(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    command: &DrawCmd,
+    target: RenderTarget,
+) {
+    let Draw::Backdrop { sigma, tone, radius, alpha, shader, mask } = &command.draw else { return };
     let (rect, clip, alpha) = (command.rect, command.clip, *alpha);
     let Some(read) = read_target(painter, walk, clip) else { return };
     let frost = (*sigma > 0.0 || !tone.is_identity())
@@ -441,13 +446,59 @@ pub(super) fn draw_backdrop(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, 
     let inputs = (read.copy, frost.unwrap_or(read.copy));
     // A program that fails to build leaves the frost.
     let out = shader.as_ref().and_then(|shader| shaded(painter, walk, inputs, read.size, rect, read.at, shader));
-    match (out, frost) {
-        (Some(out), _) => {
-            replace(painter.canvas_mut(), &box_path(area, &Radii::default()), &read.paint(out, alpha), alpha)
+    let (image, path) = match (out, frost) {
+        (Some(out), _) => (out, box_path(area, &Radii::default())),
+        (None, Some(frost)) => (frost, box_path(rect, radius)),
+        (None, None) => return,
+    };
+    // ponytail: crossfade, so a large sigma reads as a blend, not a falling radius; upgrade: mip-chain blur.
+    // An image the mask could not be drawn into shows whole.
+    let faded = mask.as_ref().and_then(|mask| faded(painter, walk, &read, image, rect, mask, target));
+    let canvas = painter.canvas_mut();
+    match faded {
+        // Its alpha is the mask's, so the ground it covers is cut by `alpha * mask` too.
+        Some(faded) => {
+            let paint = read.paint(faded, alpha);
+            replace_with(canvas, &path, &paint, &paint)
         }
-        (None, Some(frost)) => replace(painter.canvas_mut(), &box_path(rect, radius), &read.paint(frost, alpha), alpha),
-        (None, None) => {}
+        None => replace(canvas, &path, &read.paint(image, alpha), alpha),
     }
+}
+
+/// `image`, one of a read's pixels, with its alpha scaled by `mask` over `rect`.
+fn faded(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    read: &Read,
+    image: ImageId,
+    rect: LogicalRect,
+    mask: &(node::Mask, (u32, u32)),
+    target: RenderTarget,
+) -> Option<ImageId> {
+    let faded = scratch(painter, walk, read.size)?;
+    let (width, height) = (read.size.0 as f32, read.size.1 as f32);
+    let canvas = painter.canvas_mut();
+    canvas.save();
+    canvas.set_render_target(RenderTarget::Image(faded));
+    canvas.reset_transform();
+    canvas.reset_scissor();
+    canvas.clear_rect(0, 0, read.size.0 as u32, read.size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    fill_image(canvas, image, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
+    // The mask is placed in the box's coordinates, so draw it under the read's own transform,
+    // over the target's corners mapped back.
+    canvas.set_transform(&read.view);
+    let back = read.view.inverse();
+    let mut whole = Path::new();
+    for (i, (x, y)) in [(0.0, 0.0), (width, 0.0), (width, height), (0.0, height)].into_iter().enumerate() {
+        let (x, y) = back.transform_point(x, y);
+        if i == 0 { whole.move_to(x, y) } else { whole.line_to(x, y) }
+    }
+    whole.close();
+    apply_mask(painter, walk, rect, &whole, mask);
+    let canvas = painter.canvas_mut();
+    canvas.restore();
+    canvas.set_render_target(target);
+    Some(faded)
 }
 
 /// A copy of the target's pixels under an area, and where it lies in the coordinates in force
@@ -457,6 +508,8 @@ pub(super) struct Read {
     pub(super) size: (usize, usize),
     at: LogicalRect,
     angle: f32,
+    /// The transform that draws the box's coordinates onto the copy's pixels.
+    view: femtovg::Transform2D,
 }
 
 impl Read {
@@ -512,15 +565,23 @@ pub(super) fn read_target(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, ar
     let angle = b.atan2(a);
     let (sin, cos) = angle.sin_cos();
     let (width, height) = (size.0 as f32 * a.hypot(b), size.1 as f32 * (d * cos - c * sin));
-    Some(Read { copy, size, at: LogicalRect { x, y, width, height }, angle })
+    let mut view = to_target;
+    view.0[4] -= region.x0 as f32;
+    view.0[5] -= region.y0 as f32;
+    Some(Read { copy, size, at: LogicalRect { x, y, width, height }, angle, view })
 }
 
 /// Fills `path` with `paint` in place of what is there, a lerp by `alpha`: source-over would show
 /// a translucent ground through it.
 pub(super) fn replace(canvas: &mut Canvas<OpenGl>, path: &Path, paint: &Paint, alpha: f32) {
+    replace_with(canvas, path, &Paint::color(Color::rgbaf(0.0, 0.0, 0.0, alpha)), paint);
+}
+
+/// [`replace`] with the ground cut by the alpha of `cut` in place of a flat one.
+fn replace_with(canvas: &mut Canvas<OpenGl>, path: &Path, cut: &Paint, paint: &Paint) {
     canvas.save();
     canvas.global_composite_operation(CompositeOperation::DestinationOut);
-    canvas.fill_path(path, &Paint::color(Color::rgbaf(0.0, 0.0, 0.0, alpha)));
+    canvas.fill_path(path, cut);
     canvas.global_composite_operation(CompositeOperation::Lighter);
     canvas.fill_path(path, paint);
     canvas.restore();
@@ -1096,6 +1157,22 @@ mod tests {
             assert_eq!(fixed[4], (0, 255, 0, 255), "the border is sharp");
             assert_eq!(fixed[5], (255, 0, 0, 255), "and so is the child");
         }
+    }
+
+    /// `effect.backdrop.mask` scales the glass's coverage: the stripes blur where the mask is opaque,
+    /// stay the ground where it is clear, and cross between them under the ramp.
+    #[test]
+    fn a_backdrop_mask_fades_the_glass_from_blurred_to_the_unfiltered_ground() {
+        let src = &(STRIPES.to_owned()
+            + r##"return panel { id = "bar", width = 96, height = 48, child = rect { width = "fill", height = "fill",
+                background = { gradient = "linear", angle = 90, stops = stops },
+                children = { rect { width = "fill", height = "fill", effect = { backdrop = { blur = 4,
+                    mask = { gradient = "linear", angle = 90, stops = {
+                        { 0, "#FFFFFFFF" }, { 0.3, "#FFFFFFFF" }, { 0.6, "#FFFFFF00" }, { 1, "#FFFFFF00" } } } } } } } } }"##);
+        let Some(px) = paint_with_gl(src, (96, 48), &[(20, 24), (44, 24), (84, 24), (92, 24)]) else { return };
+        assert!((60..=196).contains(&px[0].0), "opaque mask: the white stripe is blurred grey: {px:?}");
+        assert!((10..=80).contains(&px[1].0), "mid ramp: the black stripe is part way to its blur: {px:?}");
+        assert_eq!((px[2], px[3]), ((255, 255, 255, 255), (0, 0, 0, 255)), "clear mask: the stripes are untouched");
     }
 
     /// ADR-0256. A frosted node fading in crosses from its backdrop to the blur, never through the

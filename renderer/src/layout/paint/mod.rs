@@ -147,8 +147,16 @@ pub enum Draw {
     Layer { effect: Box<node::Effect>, shader: Option<LayerShader>, silhouette: bool, commands: Vec<DrawCmd> },
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
     /// and drawn through its `radius` at `alpha` (ADR-0256), then the `shader` reading it drawn over
-    /// it. `clip` covers the 3 sigma the blur reads and the shader's padding.
-    Backdrop { sigma: f32, tone: node::Tone, radius: Radii, alpha: f32, shader: Option<LayerShader> },
+    /// it. `clip` covers the 3 sigma the blur reads and the shader's padding. A `mask` scales the
+    /// glass's coverage, with the physical box an image mask is cached under.
+    Backdrop {
+        sigma: f32,
+        tone: node::Tone,
+        radius: Radii,
+        alpha: f32,
+        shader: Option<LayerShader>,
+        mask: Option<(node::Mask, (u32, u32))>,
+    },
 }
 
 /// Whether `draw` reads what its target holds under it: a backdrop, or a layer blending onto it.
@@ -238,7 +246,10 @@ fn volatile(draw: &Draw) -> bool {
 /// The file an image `mask` reads, which changes under an unchanged list as an `image`'s does.
 fn mask_file(draw: &Draw) -> Option<&str> {
     match draw {
-        Draw::Clipped { mask: Some((node::Mask { source: node::MaskSource::Image(file), .. }, _)), .. } => Some(file),
+        Draw::Clipped { mask: Some((node::Mask { source: node::MaskSource::Image(file), .. }, _)), .. }
+        | Draw::Backdrop { mask: Some((node::Mask { source: node::MaskSource::Image(file), .. }, _)), .. } => {
+            Some(file)
+        }
         _ => None,
     }
 }
@@ -314,7 +325,7 @@ impl DisplayList {
                             });
                         }
                     }
-                    Draw::Clipped { mask, commands, .. } => {
+                    Draw::Clipped { mask, .. } | Draw::Backdrop { mask, .. } => {
                         if let (Some(file), Some((_, box_px))) = (mask_file(&command.draw), mask) {
                             out.push(image::ImageRequest {
                                 path: std::path::Path::new(file),
@@ -324,7 +335,7 @@ impl DisplayList {
                                 blur_px: 0,
                             });
                         }
-                        walk(commands, out);
+                        command.draw.nested().into_iter().for_each(|nested| walk(nested, out));
                     }
                     draw => draw.nested().into_iter().for_each(|nested| walk(nested, out)),
                 }
@@ -710,6 +721,7 @@ mod tests {
                 radius: Radii::default(),
                 alpha: 1.0,
                 shader: None,
+                mask: None,
             },
         }
     }
