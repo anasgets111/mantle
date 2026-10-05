@@ -7963,3 +7963,14 @@ interactive move, resize and the window menu, and nothing more.
 3. **Why the pre-pass.** A content-sized grid of plain `1fr` tracks drops item margins
    (DioxusLabs/taffy#1177), and flex cannot keep slots equal once a child has min or max sizes.
    The slot lives in the container's style, so an unchanged tree is not re-solved.
+
+## 0339. `wrap` is flex-wrap, and `wrap` with `homogeneous` is a fixed-slot grid
+
+1. **Flex-wrap.** `wrap = true` on a `row` or `column` breaks children onto new lines at the
+   main-axis size. `spacing` gaps a line, `line_spacing` gaps lines, `align_*` packs each line,
+   and the cross size grows with the line count. A `"fill"` child counts as zero when lines break,
+   then takes what its line leaves.
+2. **With `homogeneous`**, tracks are `repeat(auto-fill, slot)`: every cell is the largest child's
+   size across all lines. Taffy's auto-fill gives one track when the size is indefinite, so this
+   needs a main-axis bound; plain `wrap` without one is a single line, as CSS.
+3. **Refused with `scroll`,** whose extent assumes one main-axis line. A `list` takes neither.

@@ -363,6 +363,12 @@ props! {
         ///
         /// Book: `true` gives every visible child one equal main-axis slot, as GTK's `homogeneous`; see [equal slots](row-column.md#equal-slots)
         homogeneous: Bound<Flag> = absent(Bool(false));
+        /// `true` flows children onto new lines when the next does not fit the main axis, CSS `flex-wrap`. `spacing` sits within a line, `line_spacing` between lines, and the container's `align_*` pack each line and the lines. With `homogeneous`, every cell is the largest child's size across all lines. Needs a bounded main axis (`width`, `"fill"`, `max_*` or a stretching cross axis); content-sized it is one line. Refused with `scroll`.
+        ///
+        /// Book: `true` flows children onto new lines when the next does not fit the main axis, CSS `flex-wrap`; see [wrapping](row-column.md#wrapping). Refused with `scroll`
+        wrap: Bound<Flag> = absent(Bool(false));
+        /// Px between lines under `wrap`, `0` by default; negative values overlap them. Ignored without `wrap`.
+        line_spacing: Bound<Num> = absent(Number(0.0));
     }
     mod text(TEXT) {
         /// A string, or up to 10000 runs, drawn as one paragraph.
@@ -701,7 +707,8 @@ mod tests {
     fn rows_sharing_a_name_agree() {
         let rows: Vec<&Property> = properties().collect();
         for (index, a) in rows.iter().enumerate() {
-            for b in rows[index + 1..].iter().filter(|b| b.name == a.name) {
+            // Same name, other type (`wrap` is a string on a `text`): nothing to agree on.
+            for b in rows[index + 1..].iter().filter(|b| b.name == a.name && (b.ty)() == (a.ty)()) {
                 let both = |x: bool, y: bool| !(x && y);
                 assert!(both(!a.choices.is_empty(), !b.choices.is_empty()) || a.choices == b.choices, "{}", a.name);
                 assert!(both(a.range.is_some(), b.range.is_some()) || a.range == b.range, "{}", a.name);

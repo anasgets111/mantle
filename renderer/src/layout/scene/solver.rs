@@ -62,8 +62,8 @@ pub(super) enum Measure {
     /// A `textfield`'s one text line: height only, since its width is the config's to give.
     Line(f32),
     /// Marks a `homogeneous` container: [`fit_slots`] sizes its slot track before each solve.
-    /// `content` is whether its main size is the content's, the only case the slot decides.
-    Slots { axis: MainAxis, content: bool },
+    /// `content` is whether its main size is the content's; only then, or under `wrap`, does the slot decide.
+    Slots { axis: MainAxis, content: bool, wrap: bool },
 }
 
 /// `Content` and `Fill` map to taffy's `auto`; `Fill` gets its meaning from parent flow and
@@ -103,22 +103,34 @@ fn content_sized(style: &LayoutStyle, axis: MainAxis) -> bool {
     }
 }
 
-/// A `homogeneous` container is a grid of one equal `1fr` track per child along its main axis.
-/// Content-sized, each track is at least `slot`, the largest child ([`fit_slots`]); otherwise it
-/// may shrink to zero, so the tracks share the axis like `"fill"` children. A `1fr` track alone
-/// would size a content-sized container without its children's margins (DioxusLabs/taffy#1177).
-fn set_slot(out: &mut taffy::Style, axis: MainAxis, slot: f32, content: bool) {
-    let track =
-        vec![taffy::style_helpers::minmax(length(if content { slot } else { 0.0 }), taffy::style_helpers::fr(1.0))];
+/// Whether a flow container wraps. Read here, not in `LayoutStyle`, because `wrap` is also a
+/// `text` property with another type.
+fn wraps(properties: &PropMap) -> Result<bool, LayoutError> {
+    node::fields::flow_layout::wrap.read(properties)
+}
+
+/// A `homogeneous` container is a grid of equal tracks along its main axis, `slot` the largest
+/// child ([`fit_slots`]). Unwrapped, one `1fr` track per child: content-sized it is at least `slot`,
+/// otherwise it may shrink to zero, so the tracks share the axis like `"fill"` children. Wrapped,
+/// as many fixed `slot` tracks as fit, so a line packs by `align_*`. A `1fr` track alone would size
+/// a content-sized container without its children's margins (DioxusLabs/taffy#1177).
+fn set_slot(out: &mut taffy::Style, axis: MainAxis, slot: f32, content: bool, wrap: bool) {
+    use taffy::style_helpers::{fr, minmax, repeat};
+    let track = || {
+        if content { minmax(length(slot), fr(1.0)) } else { minmax(length(0.0), fr(1.0)) }
+    };
+    let cells = || vec![repeat(taffy::RepetitionCount::AutoFill, vec![minmax(length(slot), length(slot))])];
+    // Items fill along the main axis first: columns for a row, rows for a column.
+    (out.grid_auto_flow, (out.grid_template_columns, out.grid_template_rows)) = match (axis, wrap) {
+        (MainAxis::Horizontal, true) => (taffy::GridAutoFlow::Row, (cells(), Vec::new())),
+        (MainAxis::Vertical, true) => (taffy::GridAutoFlow::Column, (Vec::new(), cells())),
+        (MainAxis::Horizontal, false) => (taffy::GridAutoFlow::Column, (Vec::new(), Vec::new())),
+        (MainAxis::Vertical, false) => (taffy::GridAutoFlow::Row, (Vec::new(), Vec::new())),
+    };
     match axis {
-        MainAxis::Horizontal => {
-            out.grid_auto_flow = taffy::GridAutoFlow::Column;
-            out.grid_auto_columns = track;
-        }
-        MainAxis::Vertical => {
-            out.grid_auto_flow = taffy::GridAutoFlow::Row;
-            out.grid_auto_rows = track;
-        }
+        MainAxis::Horizontal if !wrap => out.grid_auto_columns = vec![track()],
+        MainAxis::Vertical if !wrap => out.grid_auto_rows = vec![track()],
+        _ => {}
     }
 }
 
@@ -193,15 +205,37 @@ pub(super) fn taffy_style(
                 MainAxis::Vertical => taffy::FlexDirection::Column,
             };
             // A flow container packs along its own axis; children control the other axis.
-            out.justify_content = Some(main_align(match axis {
-                MainAxis::Horizontal => style.align_h,
-                MainAxis::Vertical => style.align_v,
-            }));
+            let (main, cross) = match axis {
+                MainAxis::Horizontal => (style.align_h, style.align_v),
+                MainAxis::Vertical => (style.align_v, style.align_h),
+            };
+            let wrap = wraps(properties)?;
             // Adjacent-child spacing is a flex gap; set both axes because there is one flex line.
             out.gap = taffy::Size { width: length(style.spacing), height: length(style.spacing) };
+            if wrap {
+                out.flex_wrap = taffy::FlexWrap::Wrap;
+                out.gap = match axis {
+                    MainAxis::Horizontal => {
+                        taffy::Size { width: length(style.spacing), height: length(style.line_spacing) }
+                    }
+                    MainAxis::Vertical => {
+                        taffy::Size { width: length(style.line_spacing), height: length(style.spacing) }
+                    }
+                };
+                if properties.contains_key("scroll") {
+                    return Err(node::invalid("wrap", "`wrap` cannot scroll: remove `scroll` or `wrap`"));
+                }
+            }
+            // `main` packs a line and `cross` the lines, unset (stretch) without `wrap`.
+            let (main, cross) = (Some(main_align(main)), wrap.then(|| main_align(cross)));
+            (out.justify_content, out.align_content) = (main, cross);
             if style.homogeneous {
                 out.display = taffy::Display::Grid;
-                set_slot(&mut out, axis, 0.0, content_sized(style, axis));
+                set_slot(&mut out, axis, 0.0, content_sized(style, axis), wrap);
+                // A grid's `justify_*` is always horizontal.
+                if axis == MainAxis::Vertical {
+                    (out.justify_content, out.align_content) = (cross, main);
+                }
             }
         }
         // ADR-0023's stacking model is one auto-sized grid cell: children overlap and align
@@ -321,9 +355,14 @@ pub(super) fn update_solver_node(
         solver_style.size = current.size;
     }
     // The slot [`fit_slots`] wrote is not rebuilt here; taking it back would dirty the node every pass.
-    if matches!(measure, Some(Measure::Slots { .. })) {
-        solver_style.grid_auto_columns.clone_from(&current.grid_auto_columns);
-        solver_style.grid_auto_rows.clone_from(&current.grid_auto_rows);
+    if let Some(Measure::Slots { wrap, .. }) = measure {
+        if wrap {
+            solver_style.grid_template_columns.clone_from(&current.grid_template_columns);
+            solver_style.grid_template_rows.clone_from(&current.grid_template_rows);
+        } else {
+            solver_style.grid_auto_columns.clone_from(&current.grid_auto_columns);
+            solver_style.grid_auto_rows.clone_from(&current.grid_auto_rows);
+        }
     }
     if *current != solver_style {
         tree.set_style(id, solver_style).map_err(taffy_failed)?;
@@ -417,7 +456,7 @@ pub(super) fn measure_for(
     if let Some(axis) = main_axis_of(kind, properties)?
         && style.homogeneous
     {
-        return Ok(Some(Measure::Slots { axis, content: content_sized(style, axis) }));
+        return Ok(Some(Measure::Slots { axis, content: content_sized(style, axis), wrap: wraps(properties)? }));
     }
     Ok(match kind {
         // `node::paint_style` gives every `text` a `PaintStyle::Text` and `flow_kind` cannot route
@@ -581,7 +620,7 @@ fn measure_leaf(
     )
 }
 
-/// Writes the slot of every content-sized `homogeneous` container under `node`: the largest margin
+/// Writes the slot of every content-sized or wrapping `homogeneous` container under `node`: the largest margin
 /// box its children want along its main axis, each measured as a root at max-content. Innermost
 /// first, as an inner container's slot decides its outer child's size. A write only on change, so a
 /// solve that changed nothing stays a cache hit.
@@ -595,9 +634,12 @@ fn fit_slots(
     for child in tree.children(node).map_err(taffy_failed)? {
         fit_slots(tree, child, shaping)?;
     }
-    let Some(&Measure::Slots { axis, content: true }) = tree.get_node_context(node) else {
+    let Some(&Measure::Slots { axis, content, wrap }) = tree.get_node_context(node) else {
         return Ok(());
     };
+    if !content && !wrap {
+        return Ok(());
+    }
     let mut slot = 0.0_f32;
     for child in tree.children(node).map_err(taffy_failed)? {
         if tree.style(child).map_err(taffy_failed)?.display == taffy::Display::None {
@@ -616,18 +658,18 @@ fn fit_slots(
         };
         slot = slot.max(extent + margin);
     }
-    write_slot(tree, node, axis, slot)
+    write_slot(tree, node, (axis, content, wrap), slot)
 }
 
 /// Its own frame, for the `taffy::Style` it clones, as [`hold_leavers`].
 fn write_slot(
     tree: &mut taffy::TaffyTree<Measure>,
     node: taffy::NodeId,
-    axis: MainAxis,
+    (axis, content, wrap): (MainAxis, bool, bool),
     slot: f32,
 ) -> Result<(), LayoutError> {
     let mut style = tree.style(node).map_err(taffy_failed)?.clone();
-    set_slot(&mut style, axis, slot, true);
+    set_slot(&mut style, axis, slot, content, wrap);
     if *tree.style(node).map_err(taffy_failed)? != style {
         tree.set_style(node, style).map_err(taffy_failed)?;
     }
@@ -1197,6 +1239,109 @@ pub(super) mod tests {
         lua.load("label:set('mmmmmmmm')").exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert!(width(&scene) > before * 2.0, "both slots grew to the longer label");
+    }
+
+    fn corners(node: &ResolvedNode) -> Vec<(f32, f32)> {
+        node.children.iter().map(|c| (c.rect.x, c.rect.y)).collect()
+    }
+
+    fn rects(n: usize, extra: &str) -> String {
+        (0..n).map(|_| format!("rect {{ width = 40, height = 10, {extra} }}")).collect::<Vec<_>>().join(", ")
+    }
+
+    /// Lines break where the next child no longer fits, `spacing` sits in a line and
+    /// `line_spacing` between lines, and a content-sized cross axis grows with the lines.
+    #[test]
+    fn a_wrapping_row_breaks_at_its_width_and_grows_with_its_lines() {
+        let (scene, ..) = bar(&format!(
+            "panel {{ id = 'bar', child = row {{ wrap = true, width = 100, spacing = 5, line_spacing = 7,
+                children = {{ {} }} }} }}",
+            rects(3, "")
+        ));
+        let row = flow_of(&scene);
+        assert_eq!(corners(row), [(0.0, 0.0), (45.0, 0.0), (0.0, 17.0)]);
+        assert_eq!(row.rect.height, 27.0, "two lines of 10 and a gap of 7");
+    }
+
+    #[test]
+    fn a_wrapping_column_flows_into_columns() {
+        let (scene, ..) = bar(
+            "panel { id = 'bar', child = column { wrap = true, height = 100, spacing = 5, line_spacing = 7,
+                children = { rect { width = 10, height = 40 }, rect { width = 10, height = 40 }, rect { width = 10, height = 40 } } } }",
+        );
+        let column = flow_of(&scene);
+        assert_eq!(corners(column), [(0.0, 0.0), (0.0, 45.0), (17.0, 0.0)]);
+        assert_eq!(column.rect.width, 27.0);
+    }
+
+    /// `align_h` packs each line on its own and `align_v` packs the lines in the container.
+    #[test]
+    fn a_wrapping_row_packs_each_line_and_the_lines() {
+        let (scene, ..) = bar(&format!(
+            "panel {{ id = 'bar', child = row {{ wrap = true, width = 100, height = 50, spacing = 5,
+                align_h = 'center', align_v = 'end', children = {{ {} }} }} }}",
+            rects(3, "")
+        ));
+        assert_eq!(corners(flow_of(&scene)), [(7.5, 30.0), (52.5, 30.0), (30.0, 40.0)]);
+    }
+
+    /// A `"fill"` child counts as zero when lines break, then takes what its own line leaves.
+    #[test]
+    fn a_fill_child_in_a_wrapping_row_takes_the_slack_of_its_line() {
+        let (scene, ..) = bar("panel { id = 'bar', child = row { wrap = true, width = 100, children = {
+                rect { width = 40, height = 10 }, rect { width = 'fill', height = 10 },
+                rect { width = 40, height = 10 }, rect { width = 40, height = 10 } } } }");
+        let row = flow_of(&scene);
+        assert_eq!(row.children[1].rect.width, 20.0);
+        assert_eq!(corners(row), [(0.0, 0.0), (40.0, 0.0), (60.0, 0.0), (0.0, 10.0)]);
+    }
+
+    /// Without a bound there is nothing to break at: one line, as CSS; `max_width` is a bound.
+    #[test]
+    fn a_wrapping_row_without_a_bound_is_one_line_and_max_width_bounds_it() {
+        let (scene, ..) =
+            bar(&format!("panel {{ id = 'bar', child = row {{ wrap = true, children = {{ {} }} }} }}", rects(3, "")));
+        assert_eq!((flow_of(&scene).rect.width, flow_of(&scene).rect.height), (120.0, 10.0));
+        let (scene, ..) = bar(&format!(
+            "panel {{ id = 'bar', child = row {{ wrap = true, max_width = 100, children = {{ {} }} }} }}",
+            rects(3, "")
+        ));
+        assert_eq!((flow_of(&scene).rect.width, flow_of(&scene).rect.height), (80.0, 20.0));
+        let (scene, ..) = bar(&format!(
+            "panel {{ id = 'bar', child = row {{ wrap = true, homogeneous = true, children = {{ {} }} }} }}",
+            rects(2, "")
+        ));
+        assert_eq!(corners(flow_of(&scene)), [(0.0, 0.0), (0.0, 10.0)], "no bound: one cell per line");
+    }
+
+    /// Every cell is the largest child's size, across all lines: a real grid.
+    #[test]
+    fn a_homogeneous_wrapping_row_is_a_grid_of_the_largest_cell() {
+        let (scene, ..) = bar(
+            "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 100, spacing = 5, line_spacing = 7,
+                children = { rect { width = 30, height = 10 }, rect { width = 45, height = 10 },
+                             rect { width = 20, height = 10 }, rect { width = 20, height = 10 } } } }",
+        );
+        let row = flow_of(&scene);
+        assert_eq!(corners(row), [(0.0, 0.0), (50.0, 0.0), (0.0, 17.0), (50.0, 17.0)]);
+        assert_eq!(row.rect.height, 27.0);
+    }
+
+    #[test]
+    fn a_homogeneous_wrapping_column_is_a_grid_of_the_largest_cell() {
+        let (scene, ..) =
+            bar("panel { id = 'bar', child = column { wrap = true, homogeneous = true, height = 100, line_spacing = 3,
+                children = { rect { width = 10, height = 30 }, rect { width = 25, height = 45 },
+                             rect { width = 10, height = 30 } } } }");
+        assert_eq!(corners(flow_of(&scene)), [(0.0, 0.0), (0.0, 45.0), (28.0, 0.0)]);
+    }
+
+    #[test]
+    fn wrap_and_scroll_are_refused_together() {
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from("panel { id = 'bar', child = row { wrap = true, scroll = scroll('s') } }");
+        let err = apply_at(&mut Scene::new(), &[surface], full(), &shaping, &lua).unwrap_err();
+        assert!(err.to_string().contains("wrap"), "{err}");
     }
 
     /// A share is a footprint, and the positioning advances by a footprint including

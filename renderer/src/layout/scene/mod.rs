@@ -166,6 +166,7 @@ pub(crate) struct LayoutStyle {
     align_v: Align,
     spacing: f32,
     homogeneous: bool,
+    line_spacing: f32,
     visible: bool,
     opacity: f32,
     z: f32,
@@ -198,6 +199,7 @@ impl LayoutStyle {
             // `row`/`column`'s row; a `list`'s agrees, and no other kind has one.
             spacing: flow::spacing.read(properties)?,
             homogeneous: flow_layout::homogeneous.read(properties)?,
+            line_spacing: flow_layout::line_spacing.read(properties)?,
             visible: common::visible.read(properties)?,
             opacity: common::opacity.read(properties)?,
             // -0.0 would sort below its z = 0 siblings.

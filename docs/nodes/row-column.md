@@ -46,6 +46,8 @@ return row {
 | `spacing` | `number\|Bound` | `0` | Px between visible children; negative values overlap them. Not range-checked |
 | `scroll` | `Bound` | None | A `scroll(name)` signal; makes the node a scrolling viewport along its main axis ([scroll](../guide/input.md#scroll)) |
 | `homogeneous` | `boolean\|Bound` | `false` | `true` gives every visible child one equal main-axis slot, as GTK's `homogeneous`; see [equal slots](row-column.md#equal-slots) |
+| `wrap` | `boolean\|Bound` | `false` | `true` flows children onto new lines when the next does not fit the main axis, CSS `flex-wrap`; see [wrapping](row-column.md#wrapping). Refused with `scroll` |
+| `line_spacing` | `number\|Bound` | `0` | Px between lines under `wrap`, `0` by default; negative values overlap them. Ignored without `wrap` |
 <!-- End of the generated table. -->
 
 How the container packs its children:
@@ -69,6 +71,7 @@ How the container packs its children:
 | Make children equal width | `homogeneous = true` on the row, or [equal slots](#equal-slots) |
 | Scroll overflowing content | Bound the axis (`height` or `max_height` on a column), then `scroll = scroll("name")` ([scroll](../guide/input.md#scroll)) |
 | Overlap items, like stacked avatars | Negative `spacing` |
+| Flow chips or tiles onto lines | `wrap = true`, [below](#wrapping) |
 
 ### Equal slots
 
@@ -97,6 +100,44 @@ return row {
     },
 }
 ```
+
+### Wrapping
+
+`wrap = true` starts a new line when the next child does not fit the main axis: a `row` breaks into
+lines top to bottom, a `column` into columns left to right.
+
+| Property | Effect |
+| :--- | :--- |
+| `spacing` | Between children within a line |
+| `line_spacing` | Between lines; `0` by default |
+| `align_h` / `align_v` | The container's main-axis value packs each line; its cross-axis value packs the lines. `"stretch"` packs as `"start"` |
+| Child cross alignment | Places the child within its line, not within the container |
+| `"fill"` child | Counts as zero when lines break, then takes what its line leaves |
+| Content-sized cross axis | Grows with the lines |
+| `homogeneous` | Every cell is the largest child's size across all lines, a grid |
+| `scroll` | Refused: a wrapped container has no single main-axis extent to scroll |
+
+A line breaks only against a bounded main axis: `width`, `"fill"`, a `max_width` (`max_height`) or a
+stretching cross axis. A content-sized container with none holds one line. A `homogeneous` wrapping
+container needs the bound itself, and without one has a single cell per line.
+
+A chip field:
+
+```lua
+local chips = {}
+for _, name in ipairs({ "Rust", "Lua", "Wayland", "Taffy", "GPU", "Fonts", "Icons" }) do
+    chips[#chips + 1] = row {
+        padding = { left = 10, right = 10, top = 4, bottom = 4 },
+        radius = 12,
+        background = "#313244",
+        children = { text { content = name, foreground = "#CDD6F4" } },
+    }
+end
+
+return row { wrap = true, width = 180, spacing = 6, line_spacing = 6, children = chips }
+```
+
+With `homogeneous = true` the same chips become a grid of equal tiles, each the widest chip.
 
 ### Push items apart
 
