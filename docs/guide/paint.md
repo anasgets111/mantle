@@ -90,7 +90,7 @@ colours and no short `#RGB` form.
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
-| `border_color` | `Color\|BorderColors\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width |
+| `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
@@ -150,7 +150,7 @@ return row {
 
 ## Gradients
 
-`background` and `mask` take a gradient table.
+`background`, `mask` and `border_color` take a gradient table.
 
 ```lua
 background = {
@@ -165,6 +165,17 @@ background = {
 | `gradient` | `"linear"`, `"radial"` or `"conic"` |
 | `angle` | Degrees clockwise from the top, as in CSS. `"linear"` default 180 (top to bottom), `"conic"` default 0 (starts at twelve o'clock). `"radial"` refuses it |
 | `stops` | At least 2 `{ position, colour }` pairs. Positions in `[0, 1]`, never descending; two equal positions make a hard edge |
+
+On `border_color` the gradient spans the node's box and shows only where `border_width` draws, so
+width, `radius`, `corner_shape` and `corner_smoothing` shape the ring as for a flat colour.
+
+```lua
+rect {
+    width = 120, height = 40, radius = 12,
+    border_width = 2,
+    border_color = { gradient = "conic", stops = { { 0, "#CBA6F7" }, { 0.5, "#89B4FA" }, { 1, "#CBA6F7" } } },
+}
+```
 
 | Shape | Geometry |
 | :--- | :--- |
@@ -671,8 +682,9 @@ rect {
 }
 ```
 
-`border_color` takes only flat colours, so paint the gradient as an outer fill and cover all but a
-2px ring with an opaque inner box. Keep the inner radius the outer radius minus the ring width.
+This paints the gradient as an outer fill and covers all but a 2px ring with an opaque inner box;
+keep the inner radius the outer radius minus the ring width. For a ring on one box, give
+`border_color` the gradient instead ([Gradients](#gradients)).
 
 ### Circular avatar
 

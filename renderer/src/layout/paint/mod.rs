@@ -35,7 +35,7 @@ pub(crate) fn compose_preedit(
 }
 
 use crate::image::{self, Fit, Load};
-use crate::layout::node::{self, BorderColor, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
+use crate::layout::node::{self, BorderPaint, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::NodeId;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -44,7 +44,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 #[derive(Debug, Clone, PartialEq)]
 pub enum Draw {
     /// Box fill, then border, for containers and all surface roles.
-    Box { background: Option<Fill>, radius: Radii, colors: BorderColor, widths: EdgeInsets },
+    Box { background: Option<Fill>, radius: Radii, border: BorderPaint, widths: EdgeInsets },
     Text {
         content: std::sync::Arc<str>,
         /// Byte ranges drawn in another face, underlined, or recoloured (ADR-0104).
@@ -608,7 +608,7 @@ mod tests {
             let draw = Draw::Box {
                 background: Some(Fill::Color(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })),
                 radius: Radii::default(),
-                colors: BorderColor::default(),
+                border: BorderPaint::default(),
                 widths: EdgeInsets::default(),
             };
             DrawCmd { rect, clip: snap_to_physical(rect, 1.0), draw }

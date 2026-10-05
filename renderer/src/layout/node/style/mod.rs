@@ -289,26 +289,43 @@ lua_shape! {
     }
 }
 
-/// `border_color`: one colour for every edge, or [`BorderColor`].
+/// What a border is painted with: per-edge colours, or one gradient along the whole outline.
+#[derive(Debug, Clone, PartialEq)]
+pub enum BorderPaint {
+    Edges(BorderColor),
+    Gradient(Gradient),
+}
+
+impl Default for BorderPaint {
+    fn default() -> Self {
+        Self::Edges(BorderColor::default())
+    }
+}
+
+/// `border_color`: one colour for every edge, [`BorderColor`], or a [`Gradient`] over the whole outline.
 pub(crate) struct ColorOrEdges;
 
-spelled!(ColorOrEdges => format!("{}|{}", Rgba::lua(), BorderColor::lua()));
+spelled!(ColorOrEdges => format!("{}|{}|{}", Rgba::lua(), BorderColor::lua(), Gradient::lua()));
 
 impl Prop for ColorOrEdges {
-    type Out = BorderColor;
-    fn read(row: &Property, value: Option<&Value>) -> Result<BorderColor, LayoutError> {
+    type Out = BorderPaint;
+    fn read(row: &Property, value: Option<&Value>) -> Result<BorderPaint, LayoutError> {
         let property = row.name;
         let Some(value) = value else {
-            return Ok(BorderColor::default());
+            return Ok(BorderPaint::default());
         };
         if let Value::String(s) = value {
             let color = Some(parse_hex_color(property, &checked_string(property, s)?)?);
-            return Ok(BorderColor { top: color, right: color, bottom: color, left: color });
+            return Ok(BorderPaint::Edges(BorderColor { top: color, right: color, bottom: color, left: color }));
         }
         let Value::Table(table) = value else {
             return Err(invalid(property, format!("expected a string or a table, got {}", preview_for_error(value))));
         };
-        BorderColor::read(property, table)
+        // ponytail: a gradient spans the whole outline, so an edge's own gradient is refused; upgrade: clip each edge's band to its gradient.
+        if table.contains_key("gradient").map_err(|e| invalid(property, e.to_string()))? {
+            return Ok(BorderPaint::Gradient(Gradient::read(property, table)?));
+        }
+        BorderColor::read(property, table).map(BorderPaint::Edges)
     }
 }
 
@@ -1174,7 +1191,7 @@ mod tests {
     #[test]
     fn border_color_absent_is_all_none() {
         let props = PropMap::default();
-        assert_eq!(fields::paint::border_color.read(&props).unwrap(), BorderColor::default());
+        assert_eq!(fields::paint::border_color.read(&props).unwrap(), BorderPaint::default());
     }
 
     #[test]
@@ -1185,7 +1202,7 @@ mod tests {
         let red = Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
         assert_eq!(
             fields::paint::border_color.read(&props).unwrap(),
-            BorderColor { top: red, right: red, bottom: red, left: red }
+            BorderPaint::Edges(BorderColor { top: red, right: red, bottom: red, left: red })
         );
     }
 
@@ -1199,13 +1216,42 @@ mod tests {
         let props = props_from_table(&table);
         assert_eq!(
             fields::paint::border_color.read(&props).unwrap(),
-            BorderColor {
+            BorderPaint::Edges(BorderColor {
                 top: Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
                 right: None,
                 bottom: None,
                 left: Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }),
-            }
+            })
         );
+    }
+
+    #[test]
+    fn border_color_takes_a_gradient_table_and_refuses_one_per_edge() {
+        let lua = mlua::Lua::new();
+        let read = |src: &str| {
+            let table: mlua::Table =
+                lua.load(format!("return {{ kind = \"rect\", border_color = {src} }}")).eval().unwrap();
+            fields::paint::border_color.read(&props_from_table(&table))
+        };
+        let stops = r##"stops = { { 0, "#ff0000" }, { 1, "#0000ff" } }"##;
+        let Ok(BorderPaint::Gradient(gradient)) = read(&format!(r#"{{ gradient = "conic", angle = 90, {stops} }}"#))
+        else {
+            panic!("a gradient table is a gradient border")
+        };
+        assert_eq!(gradient.shape, GradientShape::Conic { angle: 90.0 });
+        assert_eq!(gradient.stops.len(), 2);
+        for bad in [
+            format!(r#"{{ top = {{ gradient = "linear", {stops} }} }}"#),
+            format!(r##"{{ gradient = "linear", top = "#ff0000", {stops} }}"##),
+        ] {
+            let err = read(&bad).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "border_color"),
+                "{bad}: {err}"
+            );
+        }
+        let err = read(r##"{ gradient = "linear", stops = { { 0, "#ff0000" } } }"##).unwrap_err();
+        assert!(err.to_string().contains("at least two"), "{err}");
     }
 
     #[test]

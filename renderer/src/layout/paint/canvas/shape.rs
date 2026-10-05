@@ -6,7 +6,7 @@ use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
 use crate::layout::node::corner::Squircle;
-use crate::layout::node::{BorderColor, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
+use crate::layout::node::{BorderColor, BorderPaint, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 
 /// Below this the two sides of a box count as equal (`box_path`): the 0.05 px band the sweep in
@@ -127,9 +127,13 @@ pub(super) fn fill_rect(canvas: &mut Canvas<OpenGl>, rect: LogicalRect, radius: 
     canvas.fill_path(&box_path(rect, radius), &paint);
 }
 
+fn color_paint(color: Rgba) -> Paint {
+    Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a))
+}
+
 pub(super) fn fill_paint(fill: &Fill, rect: LogicalRect) -> Paint {
     match fill {
-        Fill::Color(color) => Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)),
+        Fill::Color(color) => color_paint(*color),
         Fill::Gradient(gradient) => gradient_paint(gradient, rect),
     }
 }
@@ -162,23 +166,33 @@ pub(super) fn gradient_paint(gradient: &Gradient, rect: LogicalRect) -> Paint {
 /// edge would straddle it, half inside and half outside. With radius 0, each edge that declares
 /// both a non-zero width and a colour fills its own rectangle. Every other border, per-edge on a
 /// rounded box or any on a scoop, fills the band between the box's outline and one inset by each
-/// edge's width ([`shaped_border`]).
+/// edge's width ([`shaped_border`]). A gradient is one paint over the node's whole box, so it
+/// counts as a uniform colour and every edge takes it.
 pub(super) fn paint_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     radius: Radii,
-    colors: BorderColor,
+    border: &BorderPaint,
     widths: EdgeInsets,
     scale: f32,
 ) {
     let uniform_width = widths.top == widths.right && widths.right == widths.bottom && widths.bottom == widths.left;
-    let uniform_color = matches!(
-        (colors.top, colors.right, colors.bottom, colors.left),
-        (Some(t), Some(r), Some(b), Some(l)) if t == r && r == b && b == l
-    );
+    let uniform_paint = match border {
+        BorderPaint::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
+        BorderPaint::Edges(BorderColor { top: Some(t), right: Some(r), bottom: Some(b), left: Some(l) })
+            if t == r && r == b && b == l =>
+        {
+            Some(color_paint(*t))
+        }
+        BorderPaint::Edges(_) => None,
+    };
 
-    if uniform_width && uniform_color && widths.top > 0.0 && !radius.is_zero() && !radius.scoop() {
-        let color = colors.top.expect("uniform_color's match arm above guarantees Some on every edge");
+    if let Some(mut paint) = uniform_paint
+        && uniform_width
+        && widths.top > 0.0
+        && !radius.is_zero()
+        && !radius.scoop()
+    {
         // `snap_border_band` rounds a box's own two edges to nearest, so it snaps the node's span
         // on each axis, not only a hairline's thickness. The stroke's thickness is snapped the same
         // way (band-of-one starting at `rect.x`, only the thickness half kept), so with integer box
@@ -198,20 +212,27 @@ pub(super) fn paint_border(
             },
             radius,
         );
-        let mut paint = Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a));
         paint.set_line_width(width);
         canvas.stroke_path(&path, &paint);
         return;
     }
 
     if !radius.is_zero() {
-        shaped_border(canvas, rect, radius, colors, widths, scale);
+        shaped_border(canvas, rect, radius, border, widths, scale);
         return;
     }
 
     // Corners overlap here rather than mitre: each edge is its own filled rect spanning the node's
     // full width or height, so two adjacent non-zero edges both cover the corner they share.
     let LogicalRect { x, y, width: w, height: h } = rect;
+    let edge_paint = |color: Option<Rgba>| match border {
+        BorderPaint::Gradient(gradient) => Some(gradient_paint(gradient, rect)),
+        BorderPaint::Edges(_) => color.map(color_paint),
+    };
+    let colors = match border {
+        BorderPaint::Edges(colors) => *colors,
+        BorderPaint::Gradient(_) => BorderColor::default(),
+    };
     for (color, thickness, edge_rect, axis) in [
         (colors.top, widths.top, LogicalRect { x, y, width: w, height: widths.top }, EdgeAxis::Horizontal),
         (
@@ -228,7 +249,7 @@ pub(super) fn paint_border(
             EdgeAxis::Vertical,
         ),
     ] {
-        paint_border_edge(canvas, color, thickness, edge_rect, axis, scale);
+        paint_border_edge(canvas, edge_paint(color), thickness, edge_rect, axis, scale);
     }
 }
 
@@ -381,7 +402,7 @@ fn shaped_border(
     canvas: &mut Canvas<OpenGl>,
     rect: LogicalRect,
     radius: Radii,
-    colors: BorderColor,
+    border: &BorderPaint,
     widths: EdgeInsets,
     scale: f32,
 ) {
@@ -393,7 +414,11 @@ fn shaped_border(
     let thick = |width: f32| snap_border_band(rect.x, width, scale).1;
     // Clockwise from the top, the order the walk below takes; corner `i` opens edge `i`.
     let edges = [widths.top, widths.right, widths.bottom, widths.left].map(thick);
-    let paints = [colors.top, colors.right, colors.bottom, colors.left];
+    // A gradient is one paint on every edge, so a placeholder colour makes them all alike.
+    let paints = match border {
+        BorderPaint::Edges(colors) => [colors.top, colors.right, colors.bottom, colors.left],
+        BorderPaint::Gradient(_) => [Some(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }); 4],
+    };
     let drawn: [Option<Rgba>; 4] = std::array::from_fn(|i| paints[i].filter(|_| edges[i] > 0.0));
     if drawn.iter().all(Option::is_none) {
         return;
@@ -417,7 +442,11 @@ fn shaped_border(
         if before + after > 0.0 { before / (before + after) } else { 0.5 }
     };
     let fill = |canvas: &mut Canvas<OpenGl>, outline: Outline, color: Rgba| {
-        canvas.fill_path(&outline.path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
+        let paint = match border {
+            BorderPaint::Gradient(gradient) => gradient_paint(gradient, rect),
+            BorderPaint::Edges(_) => color_paint(color),
+        };
+        canvas.fill_path(&outline.path, &paint);
     };
 
     if let [Some(first), ..] = drawn
@@ -475,13 +504,13 @@ enum EdgeAxis {
 /// thin axis can straddle a pixel boundary and blur.
 fn paint_border_edge(
     canvas: &mut Canvas<OpenGl>,
-    color: Option<Rgba>,
+    paint: Option<Paint>,
     width: f32,
     edge_rect: LogicalRect,
     axis: EdgeAxis,
     scale: f32,
 ) {
-    let Some(color) = color else { return };
+    let Some(paint) = paint else { return };
     if width <= 0.0 {
         return;
     }
@@ -497,7 +526,7 @@ fn paint_border_edge(
     };
     let mut path = Path::new();
     path.rect(edge_rect.x, edge_rect.y, edge_rect.width, edge_rect.height);
-    canvas.fill_path(&path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
+    canvas.fill_path(&path, &paint);
 }
 
 #[cfg(test)]
@@ -639,6 +668,39 @@ mod tests {
 
         assert_eq!(pixel_at(painter.canvas_mut(), 20, 1), (255, 255, 255, 255));
         assert_eq!(pixel_at(painter.canvas_mut(), 20, 38), (0, 0, 0, 255));
+    }
+
+    /// A gradient border runs along the whole outline on every path `paint_border` takes: the
+    /// stroke (uniform, rounded), the shaped band (per-edge width, smoothed corners, scoop) and the
+    /// four rects (radius 0). Opposite edges take opposite end stops and the inside stays empty.
+    #[test]
+    fn a_gradient_border_follows_the_outline_on_every_border_path() {
+        let gradient = r##"border_color = { gradient = "linear", angle = 90,
+            stops = { { 0, "#FF0000" }, { 1, "#0000FF" } } }"##;
+        for (name, shape) in [
+            ("stroke", "radius = 8, border_width = 4"),
+            ("rects", "border_width = 4"),
+            ("per-edge band", "radius = 8, border_width = { left = 4, right = 4, top = 4, bottom = 2 }"),
+            (
+                "smoothed band",
+                "radius = 12, corner_smoothing = 1, border_width = { left = 4, right = 4, top = 4, bottom = 2 }",
+            ),
+            ("scoop band", "radius = 8, corner_shape = \"scoop\", border_width = 4"),
+        ] {
+            let child = format!("rect {{ width = 40, height = 40, {shape}, {gradient} }}");
+            let Some(px) = paint_points(&child, &[(1, 20), (38, 20), (20, 20)]) else { return };
+            assert!(
+                px[0].3 > 245 && px[0].0 > 220 && px[0].2 < 40,
+                "{name}: left edge is the first stop, got {:?}",
+                px[0]
+            );
+            assert!(
+                px[1].3 > 245 && px[1].2 > 220 && px[1].0 < 40,
+                "{name}: right edge is the last stop, got {:?}",
+                px[1]
+            );
+            assert_eq!(px[2].3, 0, "{name}: the inside stays empty");
+        }
     }
 
     /// A scoop's border follows its arcs: the cut corner stays empty, the band runs along the arc,

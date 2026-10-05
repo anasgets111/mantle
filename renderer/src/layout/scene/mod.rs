@@ -134,7 +134,7 @@ impl ResolvedNode {
                 *paint = Some(PaintStyle::Box {
                     background: None,
                     radius: Default::default(),
-                    colors: Default::default(),
+                    border: Default::default(),
                     widths: Default::default(),
                     clip: shape,
                     mask: None,

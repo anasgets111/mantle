@@ -83,6 +83,13 @@ lua_shape! {
     }
 }
 
+impl Gradient {
+    /// A gradient table as `background` and `border_color` take it.
+    pub(super) fn read(property: &str, table: &mlua::Table) -> Result<Gradient, LayoutError> {
+        GradientInput::read(property, table)?.into_gradient(property)
+    }
+}
+
 impl GradientInput {
     fn into_gradient(self, property: &str) -> Result<Gradient, LayoutError> {
         let shape = match (self.gradient, self.angle) {
@@ -117,9 +124,7 @@ impl Prop for Fill {
         };
         match value {
             Value::String(s) => Ok(Some(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?))),
-            Value::Table(table) => {
-                Ok(Some(Fill::Gradient(GradientInput::read(property, table)?.into_gradient(property)?)))
-            }
+            Value::Table(table) => Ok(Some(Fill::Gradient(Gradient::read(property, table)?))),
             _ => Err(invalid(
                 property,
                 format!("expected a hex colour or a gradient table, got {}", preview_for_error(value)),

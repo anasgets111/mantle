@@ -477,7 +477,7 @@ mod tests {
         card.paint = Some(PaintStyle::Box {
             background: Some(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 })),
             radius: node::Radii::from(20.0),
-            colors: node::BorderColor::default(),
+            border: node::BorderPaint::default(),
             widths: crate::layout::node::EdgeInsets::default(),
             clip: node::ClipShape::Box,
             mask: None,

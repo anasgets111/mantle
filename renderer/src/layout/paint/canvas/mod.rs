@@ -219,13 +219,13 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.paths += t0.elapsed();
                 }
             }
-            Draw::Box { background, radius, colors, widths } => {
+            Draw::Box { background, radius, border, widths } => {
                 let t0 = timing.then(Instant::now);
                 // `None` skips the fill; alpha 0 remains an explicit transparent rect.
                 if let Some(fill) = background {
                     fill_rect(painter.canvas_mut(), rect, *radius, fill);
                 }
-                paint_border(painter.canvas_mut(), rect, *radius, *colors, *widths, 1.0);
+                paint_border(painter.canvas_mut(), rect, *radius, border, *widths, 1.0);
                 if let Some(t0) = t0 {
                     walk.split.boxes += t0.elapsed();
                 }

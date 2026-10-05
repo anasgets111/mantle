@@ -1172,6 +1172,7 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(Animatable::from_value("background", Some(&gradient)).unwrap(), None, "a gradient snaps");
+        assert_eq!(Animatable::from_value("border_color", Some(&gradient)).unwrap(), None, "a gradient border snaps");
     }
 
     #[test]

@@ -705,7 +705,7 @@ mod meta_stub_tests {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }
             ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
-            ("fill" | "stroke", "Gradient") => return sample("background", "Gradient"),
+            ("fill" | "stroke" | "border_color", "Gradient") => return sample("background", "Gradient"),
             ("params", _) => return Some("{ a = 0.5, b = { 1, 2, 3, 4 } }".to_string()),
             ("font_variations", _) => return Some("{ FILL = 1, GRAD = -25 }".to_string()),
             ("secure_submit", _) => {

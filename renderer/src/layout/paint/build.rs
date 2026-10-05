@@ -6,7 +6,9 @@
 //! `ResolvedNode.rect` is parent-relative, so [`build_node`] accumulates an absolute origin as it
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
-use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun};
+use crate::layout::node::{
+    self, BorderColor, BorderPaint, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
+};
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -192,7 +194,7 @@ fn build_node(
             let effect = node::Effect { shadows: faded.collect(), ..node::Effect::default() };
             let black = Some(Fill::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }));
             let fill =
-                Draw::Box { background: black, radius, colors: BorderColor::default(), widths: EdgeInsets::default() };
+                Draw::Box { background: black, radius, border: BorderPaint::default(), widths: EdgeInsets::default() };
             let draw = Draw::Layer { effect, shader: None, silhouette: true, commands: vec![cmd(clip, fill)] };
             out.push(cmd(parent_clip.intersect(reach), draw));
         }
@@ -271,10 +273,16 @@ fn build_node(
     {
         let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
         let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-        let border =
-            |color| BorderColor { top: Some(color), right: Some(color), bottom: Some(color), left: Some(color) };
+        let border = |color| {
+            BorderPaint::Edges(BorderColor {
+                top: Some(color),
+                right: Some(color),
+                bottom: Some(color),
+                left: Some(color),
+            })
+        };
         let widths = EdgeInsets { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 };
-        out.push(cmd(clip, Draw::Box { background: None, radius: Radii::default(), colors: border(white), widths }));
+        out.push(cmd(clip, Draw::Box { background: None, radius: Radii::default(), border: border(white), widths }));
         let inner = LogicalRect {
             x: px.x + 2.0 * scale,
             y: px.y + 2.0 * scale,
@@ -285,7 +293,7 @@ fn build_node(
             rect: inner,
             clip,
             draw: in_buffer_pixels(
-                Draw::Box { background: None, radius: Radii::default(), colors: border(black), widths },
+                Draw::Box { background: None, radius: Radii::default(), border: border(black), widths },
                 scale,
             ),
         });
@@ -328,10 +336,10 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         ..shadow
     };
     match draw {
-        Draw::Box { background, radius, colors, widths } => Draw::Box {
+        Draw::Box { background, radius, border, widths } => Draw::Box {
             background,
             radius: radius * scale,
-            colors,
+            border,
             widths: EdgeInsets {
                 top: widths.top * scale,
                 right: widths.right * scale,
@@ -392,16 +400,16 @@ fn rounded_clip(node: &ResolvedNode) -> Option<Radii> {
 /// Splits a box into fill and border so [`build_node`] can mask children between them. Other draws
 /// stay whole; [`rounded_clip`] only returns for boxes.
 fn split_fill_and_border(draw: Option<Draw>) -> (Option<Draw>, Option<Draw>) {
-    let Some(Draw::Box { background, radius, colors, widths }) = draw else {
+    let Some(Draw::Box { background, radius, border, widths }) = draw else {
         return (draw, None);
     };
     let fill = background.map(|color| Draw::Box {
         background: Some(color),
         radius,
-        colors: BorderColor::default(),
+        border: BorderPaint::default(),
         widths: EdgeInsets::default(),
     });
-    let border = (widths != EdgeInsets::default()).then_some(Draw::Box { background: None, radius, colors, widths });
+    let border = (widths != EdgeInsets::default()).then_some(Draw::Box { background: None, radius, border, widths });
     (fill, border)
 }
 
@@ -414,20 +422,27 @@ fn fade(color: Rgba, opacity: f32) -> Rgba {
 fn fade_fill(fill: &Fill, opacity: f32) -> Fill {
     match fill {
         Fill::Color(color) => Fill::Color(fade(*color, opacity)),
-        Fill::Gradient(gradient) => Fill::Gradient(node::Gradient {
-            stops: gradient.stops.iter().map(|(at, color)| (*at, fade(*color, opacity))).collect(),
-            ..*gradient
-        }),
+        Fill::Gradient(gradient) => Fill::Gradient(fade_gradient(gradient, opacity)),
+    }
+}
+
+fn fade_gradient(gradient: &node::Gradient, opacity: f32) -> node::Gradient {
+    node::Gradient {
+        stops: gradient.stops.iter().map(|(at, color)| (*at, fade(*color, opacity))).collect(),
+        ..*gradient
     }
 }
 
 /// Multiplies border-edge alpha; absent edges stay absent.
-fn fade_border(colors: BorderColor, opacity: f32) -> BorderColor {
-    BorderColor {
-        top: colors.top.map(|c| fade(c, opacity)),
-        right: colors.right.map(|c| fade(c, opacity)),
-        bottom: colors.bottom.map(|c| fade(c, opacity)),
-        left: colors.left.map(|c| fade(c, opacity)),
+fn fade_border(border: &BorderPaint, opacity: f32) -> BorderPaint {
+    match border {
+        BorderPaint::Edges(colors) => BorderPaint::Edges(BorderColor {
+            top: colors.top.map(|c| fade(c, opacity)),
+            right: colors.right.map(|c| fade(c, opacity)),
+            bottom: colors.bottom.map(|c| fade(c, opacity)),
+            left: colors.left.map(|c| fade(c, opacity)),
+        }),
+        BorderPaint::Gradient(gradient) => BorderPaint::Gradient(fade_gradient(gradient, opacity)),
     }
 }
 
@@ -456,10 +471,10 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
-        PaintStyle::Box { background, radius, colors, widths, clip: _, mask: _ } => Some(Draw::Box {
+        PaintStyle::Box { background, radius, border, widths, clip: _, mask: _ } => Some(Draw::Box {
             background: background.as_ref().map(|fill| fade_fill(fill, opacity)),
             radius: *radius,
-            colors: fade_border(*colors, opacity),
+            border: fade_border(border, opacity),
             widths: *widths,
         }),
 
@@ -1031,11 +1046,25 @@ mod tests {
             border_color = { top = "#ff0000ff" }, border_width = { top = 2 } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let list = build(&tree, 1.0, None);
-        let Draw::Box { colors, .. } = &list.commands[0].draw else {
-            panic!("expected a box");
+        let Draw::Box { border: BorderPaint::Edges(colors), .. } = &list.commands[0].draw else {
+            panic!("expected a box with edge colours");
         };
         assert_eq!(colors.top.unwrap().a, 0.5);
         assert!(colors.bottom.is_none(), "an edge the config never coloured is not faded into existence");
+    }
+
+    /// A gradient border fades through its stops like a gradient background.
+    #[test]
+    fn a_gradient_border_fades_every_stop() {
+        let lua = Lua::new();
+        let src = r##"return panel { id = "bar", width = 200, height = 40, opacity = 0.5, border_width = 2,
+            border_color = { gradient = "linear", stops = { { 0, "#ff0000ff" }, { 1, "#0000ffff" } } } }"##;
+        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let list = build(&tree, 1.0, None);
+        let Draw::Box { border: BorderPaint::Gradient(gradient), .. } = &list.commands[0].draw else {
+            panic!("expected a gradient border");
+        };
+        assert_eq!(gradient.stops.iter().map(|(_, c)| c.a).collect::<Vec<_>>(), [0.5, 0.5]);
     }
 
     /// `opacity = 0` and `visible = false` are different, deliberately: a transparent node still

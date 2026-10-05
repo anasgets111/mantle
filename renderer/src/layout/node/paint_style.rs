@@ -48,7 +48,7 @@ pub enum PaintStyle {
     Box {
         background: Option<Fill>,
         radius: Radii,
-        colors: BorderColor,
+        border: BorderPaint,
         widths: EdgeInsets,
         clip: ClipShape,
         mask: Option<Mask>,
@@ -143,7 +143,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => PaintStyle::Box {
             background: paint::background.read(properties)?,
             radius: parse_radius(properties)?,
-            colors: paint::border_color.read(properties)?,
+            border: paint::border_color.read(properties)?,
             widths: paint::border_width.read(properties)?,
             clip: ClipShape::of(kind, properties)?,
             mask: paint::mask.read(properties)?,

@@ -321,7 +321,7 @@ props! {
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
         /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
-        /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width.
+        /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate`.
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
         border_width: Bound<NumberOrEdges> = range(0.0, 8192.0).absent(Number(0.0));
