@@ -1305,15 +1305,14 @@ mod tests {
             || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
         let (small_id, big_id) = (image(), image());
         painter.keep_layer("other", &small, (Vec::new(), small_id), (8, 8));
-        painter.recycle_scratch([]);
+        painter.recycle_scratch("test", []);
         painter.keep_layer("test", &big, (Vec::new(), big_id), (5000, 5000));
         let retired = painter.sweep_layers("test", |_| true);
         assert_eq!(retired, [(big_id, (5000, 5000))]);
         assert!(painter.layer("other", &small).is_some());
     }
 
-    /// A gone surface's layers and the pooled offscreens too big for any surface left are deleted
-    /// at release, not aged out by paints that never come; another surface's layers stay.
+    /// A gone surface's layers and the pooled offscreens are deleted at release, not aged out by paints that never come; another surface's layers stay.
     #[test]
     fn releasing_a_surface_deletes_its_layers_and_the_pool() {
         let Some(instance) = init_headless_egl(8, 8) else { return };
@@ -1326,12 +1325,13 @@ mod tests {
         let (gone, other, big, small) = (image(), image(), image(), image());
         painter.keep_layer("lock", &command, (Vec::new(), gone), (8, 8));
         painter.keep_layer("bar", &command, (Vec::new(), other), (8, 8));
-        painter.recycle_scratch([(big, (80, 80)), (small, (8, 8))]);
-        painter.release_surface("lock", (8, 8));
+        painter.recycle_scratch("lock", [(big, (8, 8))]);
+        painter.recycle_scratch("bar", [(small, (8, 8))]);
+        painter.release_surface("lock");
         assert!(painter.layer("lock", &command).is_none());
         assert!(painter.layer("bar", &command).is_some());
-        assert!(painter.take_scratch((80, 80)).is_none());
-        assert!(painter.take_scratch((8, 8)).is_some(), "a size a live surface can still ask for stays");
+        assert!(painter.take_scratch("lock", (8, 8)).is_none());
+        assert!(painter.take_scratch("bar", (8, 8)).is_some(), "another surface's pooled size stays");
     }
 
     /// A 32px box at (16, 16) on a white 64x96 panel with `effect.shader` running `frag`, read at

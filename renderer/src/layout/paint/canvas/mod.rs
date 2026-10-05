@@ -149,7 +149,7 @@ pub fn execute(
     // Recycle scratch targets only after flush; femtovg still executes queued calls at flush, as
     // `release_shadow_images` does for drop-shadow targets.
     let retired = painter.sweep_layers(surface, |kept| holds(&list.commands, kept));
-    painter.recycle_scratch(walk.scratch.drain(..).chain(retired));
+    painter.recycle_scratch(surface, walk.scratch.drain(..).chain(retired));
     (walk.drawn, walk.split)
 }
 
@@ -528,7 +528,7 @@ fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usi
     // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
     // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
     let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
-    let image = match painter.take_scratch(size) {
+    let image = match painter.take_scratch(walk.surface, size) {
         Some(image) => image,
         None => painter.canvas_mut().create_image_empty(size.0, size.1, PixelFormat::Rgba8, flags).ok()?,
     };
@@ -2397,12 +2397,12 @@ pub(crate) mod tests {
         let root = resolved_surface(&Lua::new(), &src(40), LogicalSize { width: 96.0, height: 64.0 });
         let mut images = ImageCache::new();
         paint_tree(&mut painter, &mut images, &root, 1.0);
-        let first = painter.take_scratch((48, 48)).unwrap();
-        let second = painter.take_scratch((48, 48)).unwrap();
-        assert!(painter.take_scratch((48, 48)).is_none(), "exactly two offscreens even with rounded clipping");
-        painter.recycle_scratch([(first, (48, 48)), (second, (48, 48))]);
+        let first = painter.take_scratch("test", (48, 48)).unwrap();
+        let second = painter.take_scratch("test", (48, 48)).unwrap();
+        assert!(painter.take_scratch("test", (48, 48)).is_none(), "exactly two offscreens even with rounded clipping");
+        painter.recycle_scratch("test", [(first, (48, 48)), (second, (48, 48))]);
         paint_tree(&mut painter, &mut images, &root, 1.0);
-        let reused = [painter.take_scratch((48, 48)).unwrap(), painter.take_scratch((48, 48)).unwrap()];
+        let reused = [painter.take_scratch("test", (48, 48)).unwrap(), painter.take_scratch("test", (48, 48)).unwrap()];
         assert!(reused.contains(&first) && reused.contains(&second));
     }
 }
