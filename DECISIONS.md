@@ -8007,6 +8007,11 @@ behaviour; compositor-level injection (virtual pointer, uinput) would reach othe
 Trade-offs: a request stops at its first refused step after running the earlier ones; only ctrl
 and shift modifiers. The App-level paths have no unit test until `App` has a compositor-free harness.
 
+Amendment: `leave` is the pointer's Leave for one surface. It writes hover off, ends `on_drag` and
+clears `armed` through `pointer_left_destroyed_surface`. Other injected pointer state stays until
+`leave` or real motion. Injection restores focus it moved off another surface, unless it focused a
+field of its own, since one field holds focus at a time. `alt` and `super` read as not held.
+
 ## 0342. `on_key` bubbles from the focused node to the surface and replaces `on_navigate`
 
 1. **Bubbling.** `on_key(key)` on any node or surface hears `{ name, text, modifiers, repeat }`,
@@ -8080,8 +8085,11 @@ Amends ADR-0336 item 1 and ADR-0343 item 4.
    the desktop. Both join `expand_backdrops`, seed a rounded clip and block layer caching.
 2. **Backdrop shader.** It runs inside `Draw::Backdrop` from that one copy. `u_input` is the sharp
    copy, and `u_input_blurred` is the `effect.backdrop` frost, or the copy again when there is no
-   frost. The output draws source-over at the node's opacity, before the node itself. `padding`
-   grows the read area. Box kinds only.
+   frost. The output replaces the read area, `padding` included, the way the frost does through
+   `replace()`, and node opacity mixes it with the original copy. A program returns
+   `mantle_input(uv)` to leave a pixel unchanged, and must do so outside its outline. Source-over
+   was rejected: it double-counted alpha on a translucent ground and let unrefracted ground show
+   through. Box kinds only.
 3. **Blend.** All 18 modes use the W3C formulas on premultiplied sRGB, plus Apple's plus-lighter
    and plus-darker as clamped sums, in one engine pass whose result replaces the copy. `"normal"`
    keeps the plain fill path and costs nothing.

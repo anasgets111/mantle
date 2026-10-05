@@ -191,6 +191,10 @@ impl EdgeInsets {
     pub fn vertical(&self) -> f32 {
         self.top + self.bottom
     }
+
+    pub fn scaled(self, k: f32) -> Self {
+        Self { top: self.top * k, right: self.right * k, bottom: self.bottom * k, left: self.left * k }
+    }
 }
 
 prop::keywords! {

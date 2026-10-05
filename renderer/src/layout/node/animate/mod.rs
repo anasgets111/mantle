@@ -69,7 +69,7 @@ fn mix(a: Rgba, b: Rgba, t: f32) -> Rgba {
 
 /// `shadow` at zero alpha: an unset layer paints nothing, without a second hue to cross.
 fn faded(shadow: &Shadow) -> Shadow {
-    Shadow { color: Rgba { a: 0.0, ..shadow.color }, ..*shadow }
+    Shadow { color: clear(shadow.color), ..*shadow }
 }
 
 fn clear(color: Rgba) -> Rgba {
@@ -211,7 +211,7 @@ impl Animatable {
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
             Self::Percent(_) => Self::Percent(0.0),
-            Self::Color(colour) => Self::Color(Rgba { a: 0.0, ..colour }),
+            Self::Color(colour) => Self::Color(clear(colour)),
         }
     }
 
@@ -244,13 +244,22 @@ impl Animatable {
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
         }
+        if property == "background" {
+            // A lone colour or gradient is a one-layer list, so it mixes with a list on the other side.
+            let lone = match value {
+                Value::String(s) if s.as_bytes().starts_with(b"#") => {
+                    Some(Layer::Color(parse_hex_color(property, &checked_string(property, s)?)?, Blend::Normal))
+                }
+                Value::Table(table) if !is_layer_list(table) => Some(Layer::Snap(value.clone())),
+                _ => None,
+            };
+            if let Some(layer) = lone {
+                return Ok(Some(Self::Layers(vec![layer])));
+            }
+        }
         if property == "background"
             && let Value::Table(table) = value
         {
-            // A gradient table snaps, as it always has.
-            if !is_layer_list(table) {
-                return Ok(None);
-            }
             let len = input::array_len(property, table, MAX_BACKGROUNDS)?;
             let layers = (1..=len).map(|i| {
                 let layer: Value = table.raw_get(i).map_err(|e| invalid(property, e.to_string()))?;
@@ -1042,7 +1051,10 @@ mod tests {
         .unwrap()
         .0;
         assert_eq!(specs["background"].eased().1, Easing::OutCubic);
-        assert_eq!(specs["background"].from, Some(Animatable::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 })));
+        assert_eq!(
+            specs["background"].from,
+            Some(Animatable::Layers(vec![Layer::Color(Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }, Blend::Normal)]))
+        );
     }
 
     #[test]
@@ -1160,7 +1172,10 @@ mod tests {
         assert!(depart("rect", &mut tweens, &mut properties, Instant::now(), &lua).unwrap());
         let started: BTreeMap<&str, &Tween> = tweens.iter().map(|t| (t.property, t)).collect();
         assert_eq!(started["width"].from, Animatable::Percent(0.0));
-        assert_eq!(started["background"].from, Animatable::Color(Rgba { r: 0.2, g: 0.4, b: 1.0, a: 0.0 }));
+        assert_eq!(
+            started["background"].from,
+            Animatable::Layers(vec![Layer::Color(Rgba { r: 0.2, g: 0.4, b: 1.0, a: 0.0 }, Blend::Normal)])
+        );
     }
 
     #[test]
@@ -1253,7 +1268,11 @@ mod tests {
             .load(r##"return { gradient = "linear", stops = { { 0, "#000000" }, { 1, "#ffffff" } } }"##)
             .eval()
             .unwrap();
-        assert_eq!(Animatable::from_value("background", Some(&gradient)).unwrap(), None, "a gradient snaps");
+        assert_eq!(
+            Animatable::from_value("background", Some(&gradient)).unwrap(),
+            Some(Animatable::Layers(vec![Layer::Snap(gradient.clone())])),
+            "a lone gradient is one snapping layer"
+        );
         assert_eq!(Animatable::from_value("border_color", Some(&gradient)).unwrap(), None, "a gradient border snaps");
     }
 
@@ -1296,6 +1315,10 @@ mod tests {
             layers(r##"return { { gradient = "radial", stops = { { 0, "#000000" }, { 1, "#ffffff" } } } }"##);
         assert_eq!(from.lerp(&gradient, 0.1, "background"), gradient, "a gradient snaps");
         assert_eq!(gradient.lerp(&from, 0.1, "background"), from, "also away from one");
+        let lone = layers(r##"return "#000000ff""##);
+        let Animatable::Layers(mid) = lone.lerp(&to, 0.5, "background") else { panic!("a layer list") };
+        let Layer::Color(first, _) = mid[0] else { panic!("a colour") };
+        assert_eq!(first.r, 0.5, "a lone colour mixes with a list instead of snapping");
         let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
         assert_eq!(Animatable::from_value("background", Some(&Value::Table(written))).unwrap(), Some(to));
     }
@@ -1389,13 +1412,13 @@ mod tests {
     #[test]
     fn a_colour_halfway_is_the_channel_midpoint_and_round_trips_as_hex() {
         let lua = Lua::new();
-        let black = Animatable::from_value("background", Some(&Value::String(lua.create_string("#000000").unwrap())))
+        let black = Animatable::from_value("border_color", Some(&Value::String(lua.create_string("#000000").unwrap())))
             .unwrap()
             .unwrap();
-        let white = Animatable::from_value("background", Some(&Value::String(lua.create_string("#ffffff").unwrap())))
+        let white = Animatable::from_value("border_color", Some(&Value::String(lua.create_string("#ffffff").unwrap())))
             .unwrap()
             .unwrap();
-        let mid = black.lerp(&white, 0.5, "background");
+        let mid = black.lerp(&white, 0.5, "border_color");
         let Value::String(hex) = mid.to_value(&lua).unwrap() else { panic!("a colour writes back as a string") };
         assert_eq!(hex.to_str().unwrap(), "#808080ff");
     }

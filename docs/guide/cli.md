@@ -269,16 +269,21 @@ focus.
 | :--- | :--- |
 | `move X Y` | Pointer motion to `X`, `Y`: logical pixels in the surface |
 | `press [button]`, `release [button]` | A button edge at the last position; `button` is `left` (default), `right` or `middle`. Needs a `move`, `click`, `drag` or `wheel` on that surface first |
+| `leave` | The pointer leaving the surface: hover is written off, a held `on_drag` ends and an armed click is dropped |
 | `click X Y [button]` | `move`, `press`, `release` |
 | `drag X1 Y1 X2 Y2 [button]` | `move` to the start, `press`, `move` to the end, `release`: an `on_drag` runs `"start"`, `"move"` and `"end"` |
 | `wheel X Y DY` | `DY` notches at `X`, `Y`, positive scrolling down. `on_wheel` gets the negated count, as for a real wheel |
-| `key <combo>` | One key press: `Return`, `Down`, `a`, or with modifiers, `ctrl+a`, `shift+Tab`. Only `ctrl` and `shift` are modifiers; names are xkb keysyms, case-insensitive |
-| `type <text>` | The text as one commit, as an input method or a paste delivers it, so `max_length` and `on_change` apply. Fails when no `textfield` in that surface is focused |
+| `key <combo>` | One key press: `Return`, `Down`, `a`, or with modifiers, `ctrl+a`, `shift+Tab`. Only `ctrl` and `shift` are modifiers; names are xkb keysyms in any case. `on_key` sees `alt` and `super` as not held |
+| `type <text>` | The text as one commit, as an input method or a paste delivers it, so `max_length` and `on_change` apply. Fails when no `textfield` in that surface is focused, or the text is empty or holds a control character |
 
 `<surface>` is the id the config declares. A surface with an instance per output is named
 `id@output`; the bare `id` works only while one instance is shown. A hidden surface is not found.
 Click a `textfield` to focus it, then `type` or `key`; each command is one request, and the scene
 re-resolves between requests, not between the steps of one.
+
+A click or `key` can change which field or control that surface has focused. Focus on another
+surface is kept, unless the injection focuses something of its own: one field holds focus at a time. Pointer state stays where injected input left it, hover and `pointer(name)`
+included, until a `leave` or real pointer motion; a `press` with no `release` stays held the same way.
 
 Refused, with an error on stderr and exit 1:
 

@@ -594,9 +594,11 @@ clips as a shadow, so a node at a surface's edge has no room to pad into.
 With `input = "backdrop"` the program reads what this surface already painted under the box and
 `padding` around it, never the desktop behind the surface. It runs before the node paints, beside
 `effect.backdrop`: one copy of those pixels feeds both, and `mantle_input_blurred` reads the frost
-the backdrop filters made from it. The output is drawn over the ground at the node's `opacity`, and
-the node's fill, children and border paint over it. Offsetting the coordinate by the outline's
-distance is a refraction. Box kinds only.
+the backdrop filters made from it. The output replaces the whole read area, `padding` included, mixed
+with the original pixels by the node's `opacity`; the node's fill, children and border paint over it.
+Return `mantle_input(uv)` to leave a pixel as it was, and do so outside the outline, or the pixel
+comes out as whatever the program returns. Offsetting the coordinate by the outline's distance is a
+refraction. Box kinds only.
 
 ```lua
 rect {
@@ -619,7 +621,8 @@ void main() {
     // Up to 8 px of pull toward the centre in the outer 12 px of the shape.
     vec2 toward = normalize(u_size * 0.5 - p + 1e-4);
     vec2 bent = v_uv + toward * smoothstep(-12.0, 0.0, d) * 8.0 / u_size;
-    fragColor = mantle_input_blurred(bent) * (1.0 - smoothstep(-0.5, 0.5, d));
+    float inside = 1.0 - smoothstep(-0.5, 0.5, d);
+    fragColor = mix(mantle_input(v_uv), mantle_input_blurred(bent), inside);
 }
 ```
 
@@ -658,8 +661,8 @@ under `animate`.
 One node paints in this order, each step over the last. The order is fixed: the keys of `effect` apply in it, whatever order the table lists them in.
 
 1. **Backdrop** (`effect.backdrop`): replaces the pixels under the box with their blur, then
-   `saturate`, `brightness` and `contrast`; a backdrop shader then draws over them from the same
-   copy. It reads what precedes the node, so it comes first.
+   `saturate`, `brightness` and `contrast`; a backdrop shader instead replaces them with its output,
+   from the same copy. It reads what precedes the node, so it comes first.
 2. **Shadow**, when it is a gradient quad or a silhouette.
 3. **Body**: fill, children in `z` order, border. With a `mask` or a `clip = "rounded"` the body
    goes through an offscreen pass. A blended `background` or `shadows` layer blends as it draws.

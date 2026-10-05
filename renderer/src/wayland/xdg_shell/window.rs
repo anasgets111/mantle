@@ -64,10 +64,22 @@ fn window_update(applied: &WindowSpec, fresh: &WindowSpec) -> WindowUpdate {
     }
 }
 
-fn decoration_mode(decorations: Decorations) -> DecorationMode {
-    match decorations {
-        Decorations::Server => DecorationMode::Server,
-        Decorations::Client => DecorationMode::Client,
+impl From<Decorations> for DecorationMode {
+    fn from(decorations: Decorations) -> Self {
+        match decorations {
+            Decorations::Server => Self::Server,
+            Decorations::Client => Self::Client,
+        }
+    }
+}
+
+/// Anything the compositor does not name server-side is drawn by the client.
+impl From<DecorationMode> for Decorations {
+    fn from(mode: DecorationMode) -> Self {
+        match mode {
+            DecorationMode::Server => Self::Server,
+            _ => Self::Client,
+        }
     }
 }
 
@@ -93,10 +105,7 @@ fn toplevel_state(configure: &WindowConfigure) -> ToplevelState {
             fullscreen: caps.contains(WindowManagerCapabilities::FULLSCREEN),
             minimize: caps.contains(WindowManagerCapabilities::MINIMIZE),
         },
-        decoration: match configure.decoration_mode {
-            DecorationMode::Server => Decorations::Server,
-            _ => Decorations::Client,
-        },
+        decoration: configure.decoration_mode.into(),
     }
 }
 /// A [`SizeHint`] in protocol units; `None` remains unset, sent as protocol zero.
@@ -201,7 +210,7 @@ impl App {
             window.set_max_size(size_hint_pair(max_size));
         }
         if let Some(decorations) = update.decorations {
-            window.request_decoration_mode(Some(decoration_mode(decorations)));
+            window.request_decoration_mode(Some(decorations.into()));
         }
     }
 
@@ -231,7 +240,7 @@ impl App {
         let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, qh);
         // The constructor decides whether the decoration object exists; this sets its mode.
         // The compositor's answer is accepted and published through `toplevel(id):state()`.
-        window.request_decoration_mode(Some(decoration_mode(spec.decorations)));
+        window.request_decoration_mode(Some(spec.decorations.into()));
         window.set_title(spec.title.clone());
         window.set_app_id(spec.app_id.clone());
         // Hints do not clamp layout, but bound the size chosen for `None` configure axes.
@@ -418,8 +427,8 @@ mod tests {
             window_update(&applied, &fresh),
             WindowUpdate { decorations: Some(Decorations::Client), ..WindowUpdate::default() }
         );
-        assert_eq!(decoration_mode(Decorations::Client), DecorationMode::Client);
-        assert_eq!(decoration_mode(Decorations::Server), DecorationMode::Server);
+        assert_eq!(DecorationMode::from(Decorations::Client), DecorationMode::Client);
+        assert_eq!(DecorationMode::from(Decorations::Server), DecorationMode::Server);
     }
 
     #[test]

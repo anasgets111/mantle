@@ -242,6 +242,37 @@ impl App {
         result
     }
 
+    /// Runs `inject`, then puts back any focus it moved off another surface: an injected event may
+    /// focus what it lands on, never take focus from where the real keyboard is.
+    pub(in crate::wayland::input) fn keeping_foreign_focus<T>(
+        &mut self,
+        surface_id: &str,
+        inject: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        let saved = (self.focused_control.clone(), self.focused_text_field.clone(), self.focused_secure_submit.clone());
+        let visible = self.focus_visible;
+        let result = inject(self);
+        let taken = |saved: Option<&str>, now: Option<&str>| focus_taken(saved, now, surface_id);
+        if taken(saved.0.as_ref().map(|c| &*c.surface_id), self.focused_control.as_ref().map(|c| &*c.surface_id))
+            && saved.0 != self.focused_control
+        {
+            self.set_control_focus(saved.0);
+            self.focus_visible = visible;
+        }
+        let text_state = |f: &FocusedTextField| (f.surface_id.clone(), f.id, f.selection, f.typing, f.buffer.len());
+        if taken(saved.1.as_ref().map(|f| &*f.surface_id), self.focused_text_field.as_ref().map(|f| &*f.surface_id))
+            && saved.1.as_ref().map(text_state) != self.focused_text_field.as_ref().map(text_state)
+        {
+            self.focus_text_field(saved.1);
+        }
+        if taken(saved.2.as_ref().map(|f| &*f.surface_id), self.focused_secure_submit.as_ref().map(|f| &*f.surface_id))
+            && saved.2 != self.focused_secure_submit
+        {
+            self.focus_secure_submit(saved.2);
+        }
+        result
+    }
+
     pub(in crate::wayland) fn prune_control_focus(&mut self) {
         if self
             .focused_control
@@ -435,9 +466,24 @@ impl App {
     }
 }
 
+/// Whether an injection aimed at `injected` moved focus off another surface: the saved focus sat
+/// elsewhere and what is held now is not something the injection itself focused.
+fn focus_taken(saved: Option<&str>, now: Option<&str>, injected: &str) -> bool {
+    saved.is_some_and(|saved| saved != injected) && now != Some(injected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_injection_may_focus_its_own_surface_but_never_take_focus_from_another() {
+        assert!(focus_taken(Some("a"), None, "b"), "pruned away");
+        assert!(focus_taken(Some("a"), Some("a"), "b"), "same surface, state may have changed");
+        assert!(!focus_taken(Some("a"), Some("b"), "b"), "the press focused a field of its own");
+        assert!(!focus_taken(Some("b"), None, "b"), "its own surface's focus is the injection's to change");
+        assert!(!focus_taken(None, Some("b"), "b"));
+    }
     use crate::wayland::input::keyboard::tests::{plain_textfield, secure_submit_table, textfield};
     use crate::wayland::input::tests::hit_node;
 

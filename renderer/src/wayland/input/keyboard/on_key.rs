@@ -1,5 +1,4 @@
-//! `on_key`: the keys a plain field or secure field does not take, bubbled from the keyboard-focused
-//! node through its ancestors to the surface root.
+//! `on_key`: the keys no field takes, bubbled from the focused node up to the surface root.
 
 use mlua::IntoLua;
 use xkbcommon::xkb;

@@ -315,12 +315,15 @@ impl KeyboardHandler for App {
         if self.ctrl_held {
             self.prune_secure_focus();
             self.prune_text_field_focus();
+            // Only a field that takes the chord keeps it; with none focused it bubbles to `on_key`.
+            let field_takes = self.secure_field_takes_keys()
+                || self.focused_text_field.as_ref().is_some_and(|field| self.text_field_takes_keys(field));
             match event.raw_code {
-                46 => {
+                46 if field_takes => {
                     self.copy_selection(serial);
                     return;
                 }
-                47 => {
+                47 if field_takes => {
                     self.start_paste();
                     return;
                 }
@@ -518,26 +521,25 @@ impl App {
         }
     }
 
-    /// Runs `deliver` as though `surface_id` held the keyboard and `ctrl`/`shift` were down, then puts
-    /// the real focus and modifiers back. Refuses while a masked field holds focus: injection never
-    /// reaches a secret.
+    /// Runs `deliver` as though `surface_id` held the keyboard and `ctrl`/`shift` were the only
+    /// modifiers down, then puts the real keyboard focus and modifiers back. Refuses while a masked
+    /// field holds focus: injection never reaches a secret.
     fn with_injected_keyboard<T>(
         &mut self,
         surface_id: &str,
         (ctrl, shift): (bool, bool),
         deliver: impl FnOnce(&mut Self) -> T,
     ) -> Result<T, String> {
+        if self.focused_secure_submit.is_some() {
+            return Err("a `secure_submit` field holds the keyboard".to_string());
+        }
         let focus = self.keyboard_focus.replace(surface_id.to_string());
-        let held = (self.ctrl_held, self.shift_held);
-        (self.ctrl_held, self.shift_held) = (ctrl, shift);
-        let result = if self.focused_secure_submit.is_some() {
-            Err("a `secure_submit` field holds the keyboard".to_string())
-        } else {
-            Ok(deliver(self))
-        };
+        let held = (self.ctrl_held, self.shift_held, self.alt_held, self.super_held);
+        (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = (ctrl, shift, false, false);
+        let result = self.keeping_foreign_focus(surface_id, deliver);
         self.keyboard_focus = focus;
-        (self.ctrl_held, self.shift_held) = held;
-        result
+        (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = held;
+        Ok(result)
     }
 
     /// `mantle input key`: [`Self::apply_key`] with no serial and no repeat, so the clipboard chords
@@ -557,6 +559,7 @@ impl App {
     /// `mantle input type`: the commit path of an input method, so `max_length` and `on_change`
     /// apply. Fails when no plain field is typing, which a real keystroke would drop silently.
     pub(in crate::wayland::input) fn inject_text(&mut self, surface_id: &str, text: &str) -> Result<(), String> {
+        check_injected_text(text)?;
         self.with_injected_keyboard(surface_id, (false, false), |app| {
             app.prune_text_field_focus();
             if !app.focused_text_field.as_ref().is_some_and(|field| app.text_field_takes_keys(field)) {
@@ -589,10 +592,29 @@ impl App {
     }
 }
 
+/// The text `ime_change` would drop silently, named so `mantle input type` can fail.
+fn check_injected_text(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("`type` needs text".to_string());
+    }
+    if text.chars().any(char::is_control) {
+        return Err("text with a control character is dropped; send those through `key`".to_string());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(in crate::wayland) mod tests {
     use super::super::tests::hit_node;
     use super::*;
+
+    #[test]
+    fn injected_text_the_input_method_path_would_drop_is_an_error() {
+        assert!(check_injected_text("héllo ").is_ok());
+        assert!(check_injected_text("").is_err());
+        assert!(check_injected_text("a\nb").is_err());
+        assert!(check_injected_text("\u{7f}").is_err());
+    }
     use crate::layout::secure_submit::sole_secure_submit;
     use crate::layout::secure_submit::tree_can_authenticate;
 

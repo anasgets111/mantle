@@ -7,7 +7,7 @@ use femtovg::{Canvas, ImageId};
 use glow::HasContext;
 
 use super::ShaderStage;
-use super::state::State;
+use super::state::{WHOLE, quad_pass};
 use crate::layout::node::Blend;
 
 /// One W3C Compositing formula on premultiplied pixels: `u_source` over `u_backdrop` with the
@@ -125,43 +125,27 @@ impl ShaderStage {
         ) else {
             return false;
         };
-        crate::layout::paint::flush(canvas);
-
-        // SAFETY: caller's contract. The framebuffer, viewport and state femtovg left are put back
-        // before it records another command.
+        // SAFETY: caller's contract.
         unsafe {
-            let saved = State::capture(gl);
-            let previous = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
-            let mut viewport = [0; 4];
-            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
-            gl.use_program(Some(blending.program));
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-            // The whole target, in GL's row order like the backdrop it is the size of.
-            let corners: [f32; 16] =
-                [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0];
-            let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
-            for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
-                gl.disable(slot);
-            }
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
-            gl.viewport(0, 0, width as i32, height as i32);
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, Some(source));
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(backdrop));
-            gl.uniform_1_i32(blending.backdrop.as_ref(), 0);
-            gl.uniform_1_i32(blending.source.as_ref(), 1);
-            gl.uniform_matrix_3_f32_slice(blending.map.as_ref(), false, &pass.map);
-            gl.uniform_1_i32(blending.mode.as_ref(), pass.mode as i32);
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-            // A deleted texture still attached to a framebuffer keeps its storage.
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, None, 0);
-            gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
-            gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            saved.restore(gl);
+            quad_pass(gl, canvas, (blending.program, framebuffer), (vao, buffer), &WHOLE, |gl| {
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(target),
+                    0,
+                );
+                gl.viewport(0, 0, width as i32, height as i32);
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(source));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(backdrop));
+                gl.uniform_1_i32(blending.backdrop.as_ref(), 0);
+                gl.uniform_1_i32(blending.source.as_ref(), 1);
+                gl.uniform_matrix_3_f32_slice(blending.map.as_ref(), false, &pass.map);
+                gl.uniform_1_i32(blending.mode.as_ref(), pass.mode as i32);
+                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+            });
         }
         true
     }

@@ -187,6 +187,11 @@ struct PointerHit {
     press: Option<PressTarget>,
 }
 
+/// A masked field, or the `submit` node that sends one.
+fn hits_a_secret(field: Option<&FieldTarget>, click: Option<&Clickable>) -> bool {
+    matches!(field, Some(FieldTarget::Masked { .. })) || click.is_some_and(|click| click.submit)
+}
+
 fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
     path.iter()
         .rev()
@@ -648,7 +653,7 @@ impl App {
     /// `mantle input` refuses to touch.
     pub(in crate::wayland::input) fn reaches_a_secret(&self, index: usize, position: (f64, f64)) -> bool {
         let hit = self.hit_under(index, position);
-        matches!(hit.field, Some(FieldTarget::Masked { .. })) || hit.click.is_some_and(|click| click.submit)
+        hits_a_secret(hit.field.as_ref(), hit.click.as_ref())
     }
 
     /// Grow the focused field's selection to the pointer, keeping its anchor: a press inside a
@@ -800,7 +805,9 @@ mod tests {
     use super::super::tests::hit_node;
     use super::*;
     use crate::layout::node::MoveTween;
-    use crate::wayland::input::keyboard::tests::{draft, secure_submit_table, textfield};
+    use crate::wayland::input::keyboard::tests::{
+        draft, plain_textfield, secure_submit_table, textfield, with_property,
+    };
     use mlua::Table;
 
     fn pt(x: f32, y: f32) -> layout::hit::LogicalPoint {
@@ -819,6 +826,21 @@ mod tests {
         assert_eq!(focusable_hit(&[&button]), Some(button.id));
         assert_eq!(focusable_hit(&[&button, &unnamed]), Some(button.id));
         assert_eq!(focusable_hit(&[&unnamed]), None);
+    }
+
+    #[test]
+    fn a_masked_field_or_a_submit_node_is_a_secret_and_a_plain_field_is_not() {
+        let lua = Lua::new();
+        let point = pt(1.0, 1.0);
+        let masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        assert!(hits_a_secret(focused_field(&[&masked]).as_ref(), None));
+        let plain = plain_textfield(&lua);
+        assert!(!hits_a_secret(focused_field(&[&plain]).as_ref(), None));
+        let submit = with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "submit", Value::Boolean(true));
+        let click = click_target(&[&submit], point).expect("a submit node is clickable");
+        assert!(hits_a_secret(None, Some(&click)));
+        let inert = hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), true);
+        assert!(!hits_a_secret(None, click_target(&[&inert], point).as_ref()));
     }
 
     #[test]

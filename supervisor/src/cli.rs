@@ -332,7 +332,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
 /// press and release a real pointer would send.
 fn inject_from(words: Vec<String>) -> Result<shared::Inject, String> {
     use shared::{InputButton, InputStep};
-    const USAGE: &str = "input takes a surface and a verb: move X Y | press [BUTTON] | release [BUTTON] | click X Y [BUTTON] | drag X1 Y1 X2 Y2 [BUTTON] | wheel X Y DY | key COMBO | type TEXT";
+    const USAGE: &str = "input takes a surface and a verb: move X Y | press [BUTTON] | release [BUTTON] | leave | click X Y [BUTTON] | drag X1 Y1 X2 Y2 [BUTTON] | wheel X Y DY | key COMBO | type TEXT";
     let [surface, verb, args @ ..] = words.as_slice() else { return Err(USAGE.into()) };
     let number = |raw: &String| {
         raw.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{raw:?} is not a number"))
@@ -347,6 +347,7 @@ fn inject_from(words: Vec<String>) -> Result<shared::Inject, String> {
         ("move", [x, y]) => vec![InputStep::Move { x: number(x)?, y: number(y)? }],
         ("press", [] | [_]) => vec![InputStep::Press(button(args.first())?)],
         ("release", [] | [_]) => vec![InputStep::Release(button(args.first())?)],
+        ("leave", []) => vec![InputStep::Leave],
         ("click", [x, y, rest @ ..]) if rest.len() <= 1 => {
             let button = button(rest.first())?;
             vec![InputStep::Move { x: number(x)?, y: number(y)? }, InputStep::Press(button), InputStep::Release(button)]
@@ -560,6 +561,7 @@ mod tests {
         assert_eq!(steps(&["move", "1", "2.5"]), vec![Move { x: 1.0, y: 2.5 }]);
         assert_eq!(steps(&["press"]), vec![Press(Left)]);
         assert_eq!(steps(&["release", "right"]), vec![Release(Right)]);
+        assert_eq!(steps(&["leave"]), vec![Leave]);
         assert_eq!(steps(&["click", "3", "4"]), vec![Move { x: 3.0, y: 4.0 }, Press(Left), Release(Left)]);
         assert_eq!(
             steps(&["drag", "1", "2", "-3", "4", "middle"]),

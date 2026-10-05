@@ -45,7 +45,7 @@ use shared::error;
 use crate::layout::node;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 use blur::Blur;
-use state::State;
+use state::{State, quad_pass};
 
 /// Prepended to every config shader, and the whole of the contract a shader writes against
 /// (ADR-0184). Kept here rather than asked of the config so that a shader is a mask and not a
@@ -702,47 +702,33 @@ impl ShaderStage {
         else {
             return false;
         };
-        crate::layout::paint::flush(canvas);
-
-        // SAFETY: caller's contract. The framebuffer, viewport and state femtovg left are put back
-        // before it records another command.
+        // Clip space to the target's own rows (the top is the last), `v_uv` in box fractions.
+        let [x, y, w, h] = run.rect;
+        let corners = [-1.0, 1.0, x, y, 1.0, 1.0, x + w, y, -1.0, -1.0, x, y + h, 1.0, -1.0, x + w, y + h];
+        // SAFETY: caller's contract.
         unsafe {
-            let saved = State::capture(gl);
-            let previous = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
-            let mut viewport = [0; 4];
-            gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
-            gl.use_program(Some(program.program));
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-            // Clip space to the target's own rows (the top is the last), `v_uv` in box fractions.
-            let [x, y, w, h] = run.rect;
-            let corners = [-1.0, 1.0, x, y, 1.0, 1.0, x + w, y, -1.0, -1.0, x, y + h, 1.0, -1.0, x + w, y + h];
-            let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
-            // Every pixel is written, so the target's stale ones need no clear.
-            for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
-                gl.disable(slot);
-            }
-            gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
-            gl.viewport(0, 0, width as i32, height as i32);
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(input));
-            gl.uniform_1_i32(program.input.as_ref(), 0);
-            gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
-            gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
-            let (logical_width, logical_height) = run.logical_size;
-            let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
-            Self::set_shape(gl, program, run.radii, outline, run.logical_size);
-            Self::set_params(gl, program, run.params);
-            gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
-            // A deleted texture still attached to a framebuffer keeps its storage.
-            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, None, 0);
-            gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
-            gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
-            saved.restore(gl);
+            quad_pass(gl, canvas, (program.program, framebuffer), (vao, buffer), &corners, |gl| {
+                gl.framebuffer_texture_2d(
+                    glow::FRAMEBUFFER,
+                    glow::COLOR_ATTACHMENT0,
+                    glow::TEXTURE_2D,
+                    Some(target),
+                    0,
+                );
+                gl.viewport(0, 0, width as i32, height as i32);
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(input));
+                gl.uniform_1_i32(program.input.as_ref(), 0);
+                gl.uniform_1_i32(program.input_blurred.as_ref(), 1);
+                gl.uniform_4_f32_slice(program.input_rect.as_ref(), &run.rect);
+                let (logical_width, logical_height) = run.logical_size;
+                let outline = LogicalRect { x: 0.0, y: 0.0, width: logical_width, height: logical_height };
+                Self::set_shape(gl, program, run.radii, outline, run.logical_size);
+                Self::set_params(gl, program, run.params);
+                gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
+            });
         }
         true
     }

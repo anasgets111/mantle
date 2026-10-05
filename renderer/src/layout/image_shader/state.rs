@@ -1,6 +1,52 @@
 //! The GL state a shader run changes, saved and put back.
 
+use femtovg::Canvas;
+use femtovg::renderer::OpenGl;
 use glow::HasContext;
+
+/// A quad over a whole target, in GL's row order: clip x, y, then the texture's u, v per corner.
+pub(super) const WHOLE: [f32; 16] =
+    [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+/// One quad pass into `framebuffer`: `program` draws `corners` with blend and every test off, and
+/// the framebuffer, viewport and state femtovg left are put back before it records again. `draw`
+/// attaches each target, sets its viewport, textures and uniforms, and draws.
+///
+/// # Safety
+///
+/// The context is current, and `program`, `quad` and `framebuffer` belong to it.
+pub(super) unsafe fn quad_pass(
+    gl: &glow::Context,
+    canvas: &mut Canvas<OpenGl>,
+    (program, framebuffer): (glow::Program, glow::Framebuffer),
+    (vao, buffer): (glow::VertexArray, glow::Buffer),
+    corners: &[f32; 16],
+    draw: impl FnOnce(&glow::Context),
+) {
+    crate::layout::paint::flush(canvas);
+    // SAFETY: caller's contract.
+    unsafe {
+        let saved = State::capture(gl);
+        let previous = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
+        let mut viewport = [0; 4];
+        gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
+        gl.use_program(Some(program));
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+        let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
+        for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
+            gl.disable(slot);
+        }
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(framebuffer));
+        draw(gl);
+        // A deleted texture still attached to a framebuffer keeps its storage.
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, None, 0);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, previous);
+        gl.viewport(viewport[0], viewport[1], viewport[2], viewport[3]);
+        saved.restore(gl);
+    }
+}
 
 /// Every piece of GL state one run changes, read before and put back after.
 ///

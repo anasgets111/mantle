@@ -5,8 +5,7 @@ use mlua::Value;
 use super::*;
 use crate::lua::signal::{any_pointer_registered, is_read};
 
-/// Writes each signal its position, `nil` off the node. One that nothing reads gets no table and no
-/// dirty mark, only a `nil` where a stale position was left, so motion over it costs the walk alone.
+/// Writes each signal its position, `nil` off the node; an unread one gets no table and no dirty mark.
 pub(crate) fn apply_pointer_writes(
     lua: &Lua,
     writes: Vec<(crate::lua::signal::Signal, Option<layout::hit::LogicalPoint>)>,

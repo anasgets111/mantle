@@ -62,6 +62,14 @@ fn parse_combo(combo: &str) -> Result<(KeyEvent, (bool, bool)), String> {
     Ok((KeyEvent { time: 0, raw_code: 0, keysym, utf8 }, (ctrl, shift)))
 }
 
+/// Every key step parses, checked before the first step runs so a bad combo delivers nothing.
+fn check_combos(steps: &[InputStep]) -> Result<(), String> {
+    steps.iter().try_for_each(|step| match step {
+        InputStep::Key(combo) => parse_combo(combo).map(drop),
+        _ => Ok(()),
+    })
+}
+
 fn evdev(button: InputButton) -> u32 {
     match button {
         InputButton::Left => BTN_LEFT,
@@ -82,28 +90,23 @@ impl App {
         if matches!(self.surfaces[index].role, TrackedRole::Lock { .. }) {
             return Err(format!("{surface_id} is a lock surface"));
         }
-        // Parsed up front so a bad combo delivers nothing.
-        let combos = inject
-            .steps
-            .iter()
-            .map(|step| match step {
-                InputStep::Key(combo) => parse_combo(combo).map(Some),
-                _ => Ok(None),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        for (step, combo) in inject.steps.iter().zip(combos) {
-            match (step, combo) {
-                (InputStep::Move { x, y }, _) => self.inject_motion(index, (*x, *y)),
-                (InputStep::Press(button), _) => self.inject_button(index, *button, true)?,
-                (InputStep::Release(button), _) => self.inject_button(index, *button, false)?,
-                (InputStep::Wheel { x, y, dy }, _) => {
+        check_combos(&inject.steps)?;
+        for step in &inject.steps {
+            match step {
+                InputStep::Move { x, y } => self.inject_motion(index, (*x, *y)),
+                InputStep::Press(button) => self.inject_button(index, *button, true)?,
+                InputStep::Release(button) => self.inject_button(index, *button, false)?,
+                InputStep::Wheel { x, y, dy } => {
                     self.inject_motion(index, (*x, *y));
                     let value120 = (dy * 120.0).round() as i32;
                     self.scroll_at(index, (*x, *y), 0.0, 0, 0.0, value120);
                 }
-                (InputStep::Key(_), Some((event, modifiers))) => self.inject_key(&surface_id, &event, modifiers)?,
-                (InputStep::Text(text), _) => self.inject_text(&surface_id, text)?,
-                (InputStep::Key(_), None) => unreachable!("every key step was parsed above"),
+                InputStep::Leave => self.pointer_left_destroyed_surface(index),
+                InputStep::Key(combo) => {
+                    let (event, modifiers) = parse_combo(combo)?;
+                    self.inject_key(&surface_id, &event, modifiers)?;
+                }
+                InputStep::Text(text) => self.inject_text(&surface_id, text)?,
             }
         }
         Ok(())
@@ -131,7 +134,8 @@ impl App {
         } else {
             PointerEventKind::Release { time: 0, button, serial }
         };
-        self.pointer_event(index, position, &kind, true);
+        let surface_id = surface_id.clone();
+        self.keeping_foreign_focus(&surface_id, |app| app.pointer_event(index, position, &kind, true));
         Ok(())
     }
 }
@@ -139,6 +143,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bad_combo_anywhere_refuses_the_whole_sequence() {
+        let steps =
+            [InputStep::Move { x: 1.0, y: 1.0 }, InputStep::Key("ctrl+a".into()), InputStep::Key("alt+x".into())];
+        assert!(check_combos(&steps).unwrap_err().contains("alt"));
+        assert!(check_combos(&steps[..2]).is_ok());
+    }
 
     #[test]
     fn a_name_picks_its_instance_and_several_need_the_output() {

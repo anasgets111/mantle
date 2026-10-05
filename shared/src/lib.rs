@@ -197,6 +197,9 @@ pub enum InputStep {
     /// At the position the last `Move` or `Wheel` left on that surface.
     Press(InputButton),
     Release(InputButton),
+    /// The pointer leaving the surface: hover is written off, a held drag ends, an armed click
+    /// is dropped. Injected pointer state otherwise stays until real motion.
+    Leave,
     /// `dy` notches, positive scrolling down like the wire's axis.
     Wheel {
         x: f64,

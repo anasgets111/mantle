@@ -181,11 +181,13 @@ fn build_node(
         Some(PaintStyle::Box { mask: Some(mask), .. }) => Some(mask),
         _ => None,
     };
+    // A backdrop shader's padding can reach back into the clip from a box that is itself outside it.
+    let padded_read = shader_padding(&effect.backdrop_shader) > 0.0 && !parent_clip.intersect(read).is_empty();
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
     if let Some(PaintStyle::Box { radius, .. }) = node.paint
         && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity() || effect.backdrop_shader.is_some())
         && opacity > 0.0
-        && !clip.is_empty()
+        && (!clip.is_empty() || padded_read)
     {
         let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius));
         let draw =
@@ -372,17 +374,9 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         ..shadow
     };
     match draw {
-        Draw::Box { background, radius, border, widths } => Draw::Box {
-            background,
-            radius: radius * scale,
-            border,
-            widths: EdgeInsets {
-                top: widths.top * scale,
-                right: widths.right * scale,
-                bottom: widths.bottom * scale,
-                left: widths.left * scale,
-            },
-        },
+        Draw::Box { background, radius, border, widths } => {
+            Draw::Box { background, radius: radius * scale, border, widths: widths.scaled(scale) }
+        }
         Draw::Path(mut path) => {
             if scale != 1.0 {
                 std::rc::Rc::make_mut(&mut path.commands).for_each_pixel(|point| *point *= scale);
@@ -404,16 +398,9 @@ fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         Draw::Shadow { shadow: cast, radius, knockout } => {
             Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
         }
-        Draw::InsetShadow { shadow: cast, radius, widths } => Draw::InsetShadow {
-            shadow: shadow(cast),
-            radius: radius * scale,
-            widths: EdgeInsets {
-                top: widths.top * scale,
-                right: widths.right * scale,
-                bottom: widths.bottom * scale,
-                left: widths.left * scale,
-            },
-        },
+        Draw::InsetShadow { shadow: cast, radius, widths } => {
+            Draw::InsetShadow { shadow: shadow(cast), radius: radius * scale, widths: widths.scaled(scale) }
+        }
         Draw::Layer { effect, shader, silhouette, commands } => Draw::Layer {
             effect: node::Effect {
                 shadows: effect.shadows.into_iter().map(shadow).collect(),
@@ -742,8 +729,7 @@ fn blended(blend: Blend, command: DrawCmd) -> DrawCmd {
 
 /// Pushes a box's `fill`, its blended `layers` split out bottom-up: a run of normal layers stays
 /// one box, and each blended layer blends onto everything drawn under it.
-// ponytail: one offscreen, backdrop copy and blend pass per blended layer. Upgrade path: one pass
-// evaluating the whole stack's fills against one copy.
+// ponytail: one offscreen and blend pass per blended layer; upgrade: one pass over one copy.
 fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, Blend)]) {
     let DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } } = fill else {
         return out.push(fill);
@@ -1910,6 +1896,25 @@ mod tests {
             let drawn = layer(30, shadow).unwrap_or_else(|| panic!("padding reaches the clip ({shadow})"));
             assert!(drawn.clip.x1 <= 70, "inside the ancestor's clip: {:?}", drawn.clip);
         }
+    }
+
+    /// A backdrop shader's padding reaches back into an ancestor's clip from a box outside it.
+    #[test]
+    fn backdrop_shader_padding_decides_whether_a_clipped_out_box_is_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.frag");
+        std::fs::write(&path, "void main() {}").unwrap();
+        let drawn = |padding: u32| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = row {{ width = 30,
+                height = 20, clip = "box", children = {{ rect {{ width = 20, height = 20, margin = {{ left = 40 }},
+                effect = {{ shader = {{ source = "{}", input = "backdrop", padding = {padding} }} }} }} }} }} }}"##,
+                path.display()
+            );
+            effect_surface_src(&src).commands.iter().any(|cmd| matches!(cmd.draw, Draw::Backdrop { .. }))
+        };
+        assert!(!drawn(0), "no padding: nothing reaches the clip");
+        assert!(drawn(30), "padding reaches the clip");
     }
 
     /// Qt's `OpacityMask` covers the item, not only its children, so the node's own fill and border

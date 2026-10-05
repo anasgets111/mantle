@@ -159,6 +159,10 @@ the name is the identity, as for `hover`.
 | `pointer = pointer(name)` | Any node kind. A table while the pointer is over the node or any of its children (the same rule as `hover`), `nil` otherwise, including after it leaves the surface. Coordinates are in the node's own untransformed space and unclamped, like `on_click`'s `pointer`. Updated once per motion batch and when layout moves the node under a still pointer |
 | Cost | Motion writes it only while something reads it. A signal nothing reads costs the hit walk the pointer already does; a read one re-resolves only the instances that read it. One output's instance holds the position while the pointer is on it, as the name is one signal across outputs |
 
+A `pointer` read only inside a callback (`on_click`, `on_press`, `on_key`) is always `nil`: nothing
+read it, so motion never wrote it. Bind it to a node's `pointer`, or read it in a computed that a node
+reads.
+
 ```lua
 local at = pointer("canvas")
 
@@ -271,7 +275,7 @@ return panel {
 
 | Field | Meaning |
 | :--- | :--- |
-| `name` | The xkb keysym name for the key under the active layout: `"a"` (`"A"` with Shift), `"Return"`, `"Escape"`, `"space"`, `"Down"`, `"Page_Down"`, `"F5"`, `"KP_Enter"`. Case matters. These are the names `mantle input key` takes |
+| `name` | The xkb keysym name for the key under the active layout: `"a"` (`"A"` with Shift), `"Return"`, `"Escape"`, `"space"`, `"Down"`, `"Page_Down"`, `"F5"`, `"KP_Enter"`. `on_key` names are case-sensitive. `mantle input key` takes the same names in any case |
 | `text` | What the key types, `nil` when it types nothing: Return, arrows, F-keys and every Ctrl chord |
 | `modifiers` | Which of Ctrl, Shift, Alt and Super are held. `mantle input key` sets Ctrl and Shift only |
 | `repeat` | `true` for an auto-repeat while the key is held, `false` for the press |
@@ -289,7 +293,7 @@ what its descendants pass up. That is how a container sees the keys of the field
 A focused plain `textfield` takes the keys it edits with (characters, Backspace, Delete, Enter, caret
 motion, Ctrl+A/Z/Y, and Escape, unless `escape = "pass"` or there is nothing to clear and no `on_cancel`) and passes the rest up:
 Up, Down, paging, Tab with fewer than two controls, an arrow at the caret's edge, F-keys and other
-Ctrl chords. Tab moves control focus when it can, so
+Ctrl chords (Ctrl+C and Ctrl+V copy and paste while a field takes them, and reach `on_key` otherwise). Tab moves control focus when it can, so
 `on_key` hears Tab only where nothing moves. Repeats arrive with `repeat = true`.
 
 A key typed into a `secure_submit` field never reaches `on_key`, and while one is armed no `on_key` on

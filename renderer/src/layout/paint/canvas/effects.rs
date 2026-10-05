@@ -14,6 +14,14 @@ use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, 
 use super::shape::box_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush, offscreen, scratch};
 
+/// A shadow's gradient: its feather and its colour solid and at zero alpha. A ramp across 3 sigma
+/// is within 14/255 of the layer path's Gaussian; matching its slope instead, 22. The feather is
+/// floored at NanoVG's 1, since the gradient divides by it.
+fn shadow_gradient(shadow: node::Shadow) -> (f32, Color, Color) {
+    let Rgba { r, g, b, .. } = shadow.color;
+    ((1.5 * shadow.blur).max(1.0), Color::from(shadow.color), Color::rgbaf(r, g, b, 0.0))
+}
+
 /// A round box's shadow (ADR-0254), cut out under the box when `knockout` (ADR-0260): femtovg's
 /// box gradient fades from the colour to nothing across 3 sigma centred on the spread box's edge.
 pub(super) fn paint_shadow(
@@ -24,15 +32,11 @@ pub(super) fn paint_shadow(
     knockout: bool,
 ) {
     let LogicalRect { x, y, width, height } = shadow_rect(rect, rect, shadow);
-    let Rgba { r, g, b, .. } = shadow.color;
-    // A ramp across 3 sigma is within 14/255 of the layer path's Gaussian; matching its slope
-    // instead, 22. Floored at NanoVG's 1, since the gradient divides by it.
-    let feather = (1.5 * shadow.blur).max(1.0);
+    let (feather, color, clear) = shadow_gradient(shadow);
     // A signed distance past half the box is positive everywhere, so the gradient would paint nothing.
     // The gradient has one radius, so unequal corners cast the shadow of their mean.
     let radius = spread_radius(own.0.iter().sum::<f32>() / 4.0, shadow.spread).min(width.min(height) / 2.0);
-    let color = Color::from(shadow.color);
-    let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, Color::rgbaf(r, g, b, 0.0));
+    let paint = Paint::box_gradient(x, y, width, height, radius, feather, color, clear);
     let reach = grow(LogicalRect { x, y, width, height }, feather / 2.0);
     let path = if knockout { knocked_out(rect, own, reach) } else { box_path(reach, Radii::default()) };
     canvas.fill_path(&path, &paint);
@@ -78,18 +82,8 @@ pub(super) fn paint_inset_shadow(
     };
     let mean = inner.0.iter().map(|r| r.abs()).sum::<f32>() / 4.0;
     let radius = spread_radius(mean, -shadow.spread).min(hole.width.min(hole.height) / 2.0);
-    let feather = (1.5 * shadow.blur).max(1.0);
-    let Rgba { r, g, b, .. } = shadow.color;
-    let paint = Paint::box_gradient(
-        hole.x,
-        hole.y,
-        hole.width,
-        hole.height,
-        radius,
-        feather,
-        Color::rgbaf(r, g, b, 0.0),
-        Color::from(shadow.color),
-    );
+    let (feather, color, clear) = shadow_gradient(shadow);
+    let paint = Paint::box_gradient(hole.x, hole.y, hole.width, hole.height, radius, feather, clear, color);
     canvas.fill_path(&box_path(pad, inner), &paint);
 }
 
@@ -164,8 +158,7 @@ pub(super) fn draw_layer(
         }
     };
     // CSS paints the first shadow on top, so the last draws first.
-    // ponytail: a blended node's content shadows blend apart from its content, not as one group.
-    // Upgrade path: composite both into one scratch, then blend that once.
+    // ponytail: content shadows blend apart from the content; upgrade: composite both, blend once.
     for (shadow, &cast) in shadows.iter().zip(&casts).rev() {
         let at = shadow_rect(rect, area, *shadow);
         let blend = if shadow.blend == node::Blend::Normal { effect.blend } else { shadow.blend };
@@ -383,27 +376,32 @@ fn cast_shadow(
 }
 
 /// Blurs and recolours (sigma and tone) what the current target holds under the command's clip,
-/// the 3 sigma the blur reads, into the box (ADR-0256), then draws its `shader` over it, reading
-/// the copy and the filtered copy.
+/// the 3 sigma the blur reads, into the box (ADR-0256). A `shader` reads the copy and the filtered
+/// copy instead and its output replaces the whole area, so it must return the input to leave a pixel.
 pub(super) fn draw_backdrop(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, command: &DrawCmd) {
     let Draw::Backdrop { sigma, tone, radius, alpha, shader } = &command.draw else { return };
     let (rect, clip, alpha) = (command.rect, command.clip, *alpha);
     let Some(read) = read_target(painter, walk, clip) else { return };
     let frost = (*sigma > 0.0 || !tone.is_identity())
         .then(|| blurred(painter, walk, read.copy, read.size, (*sigma, *tone)).unwrap_or(read.copy));
-    if let Some(frost) = frost {
-        replace(painter.canvas_mut(), &box_path(rect, *radius), &read.paint(frost, alpha), alpha);
-    }
-    let Some(shader) = shader else { return };
-    let inputs = (read.copy, frost.unwrap_or(read.copy));
-    let Some(out) = shaded(painter, walk, inputs, read.size, rect, read.at, shader) else { return };
     let area = LogicalRect {
         x: clip.x0 as f32,
         y: clip.y0 as f32,
         width: (clip.x1 - clip.x0) as f32,
         height: (clip.y1 - clip.y0) as f32,
     };
-    painter.canvas_mut().fill_path(&box_path(area, Radii::default()), &read.paint(out, alpha));
+    let inputs = (read.copy, frost.unwrap_or(read.copy));
+    // A program that fails to build leaves the frost.
+    let out = shader.as_ref().and_then(|shader| shaded(painter, walk, inputs, read.size, rect, read.at, shader));
+    match (out, frost) {
+        (Some(out), _) => {
+            replace(painter.canvas_mut(), &box_path(area, Radii::default()), &read.paint(out, alpha), alpha)
+        }
+        (None, Some(frost)) => {
+            replace(painter.canvas_mut(), &box_path(rect, *radius), &read.paint(frost, alpha), alpha)
+        }
+        (None, None) => {}
+    }
 }
 
 /// A copy of the target's pixels under an area, and where it lies in the coordinates in force
@@ -630,8 +628,8 @@ mod tests {
     }
 
     /// `effect.shader` with `input = "backdrop"` reads what the surface painted under the node,
-    /// `padding` past its box, and the filtered copy as `u_input_blurred`; its output is drawn
-    /// over the ground before the node.
+    /// `padding` past its box, and the filtered copy as `u_input_blurred`; its output replaces the
+    /// ground before the node.
     #[test]
     fn a_backdrop_shader_reads_the_ground_under_the_node() {
         let dir = tempfile::tempdir().unwrap();
@@ -653,6 +651,39 @@ mod tests {
         assert!(near(px[0], (0, 255, 0)), "a box's width to the right, inside the padding: {px:?}");
         let Some(px) = run("grey.frag", "mantle_input_blurred(v_uv)", "backdrop = { saturate = 0 },") else { return };
         assert!(near(px[0], (54, 54, 54)), "the filtered copy: {px:?}");
+    }
+
+    /// The output replaces the ground, so a program returning its input leaves a translucent ground
+    /// as it was, inside the box and in the padding; source-over would add the ground to itself.
+    #[test]
+    fn an_identity_backdrop_shader_leaves_a_translucent_ground_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let frag = dir.path().join("same.frag");
+        std::fs::write(&frag, "void main() { fragColor = mantle_input(v_uv); }").unwrap();
+        let paint = |effect: String| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 64, height = 32, background = "#FF000080",
+                    child = rect {{ width = 32, height = 32, {effect} }} }}"##
+            );
+            paint_with_gl(&src, (64, 32), &[(16, 16), (48, 16)])
+        };
+        let shader =
+            format!(r#"effect = {{ shader = {{ source = "{}", input = "backdrop", padding = 16 }} }}"#, frag.display());
+        let (Some(bare), Some(shaded)) = (paint(String::new()), paint(shader)) else { return };
+        assert!(bare[0].3 < 200, "the ground is translucent: {bare:?}");
+        for (bare, shaded) in bare.iter().zip(&shaded) {
+            assert!(
+                [
+                    bare.0.abs_diff(shaded.0),
+                    bare.1.abs_diff(shaded.1),
+                    bare.2.abs_diff(shaded.2),
+                    bare.3.abs_diff(shaded.3)
+                ]
+                .iter()
+                .all(|d| *d <= 2),
+                "{bare:?} vs {shaded:?}"
+            );
+        }
     }
 
     /// ADR-0254's gradient path: an opaque box's shadow lands offset under it, sharp without a

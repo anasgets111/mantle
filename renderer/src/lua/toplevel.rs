@@ -2,6 +2,7 @@
 //! app's own title bar and frame.
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use mlua::{IntoLua, Lua, Value};
 use shared::warn;
@@ -114,13 +115,15 @@ struct States {
 
 impl States {
     fn entry(&mut self, lua: &Lua, id: &str) -> mlua::Result<&mut (Signal, LiveSignalHandle, ToplevelState)> {
-        if !self.windows.contains_key(id) {
-            let state = ToplevelState::default();
-            let dirty = self.dirty.clone().unwrap_or_default();
-            let (signal, handle) = Signal::new_live(state.clone().into_lua(lua)?, dirty);
-            self.windows.insert(id.to_string(), (signal, handle, state));
+        match self.windows.entry(id.to_string()) {
+            Entry::Occupied(entry) => Ok(entry.into_mut()),
+            Entry::Vacant(slot) => {
+                let state = ToplevelState::default();
+                let dirty = self.dirty.clone().unwrap_or_default();
+                let (signal, handle) = Signal::new_live(state.clone().into_lua(lua)?, dirty);
+                Ok(slot.insert((signal, handle, state)))
+            }
         }
-        Ok(self.windows.get_mut(id).expect("inserted above"))
     }
 }
 
