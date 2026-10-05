@@ -1384,6 +1384,29 @@ pub(crate) mod tests {
         assert_eq!(pixel_at(painter.canvas_mut(), 27, 27), (0, 255, 0, 255));
     }
 
+    /// `line_height` sets layout only: a descender below a tight line box is painted (CSS overflow
+    /// visible). The engine seats the baseline from the box top, so no ink rises above it here;
+    /// the build test covers the clip above.
+    #[test]
+    fn glyph_ink_paints_past_a_tight_line_box() {
+        let Some(instance) = init_headless_egl(80, 60) else { return };
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        let shaping = ShapingHandle::spawn_with(Some(config));
+        shaping.set_chain(&["Noto Sans".into()]);
+        let Some(mut painter) = text_painter(&instance, &shaping, 80, 60) else { return };
+        // Box rows 20..24; "Hgjpq" at 20px has ink below y = 24.
+        let root = resolved_surface(
+            &Lua::new(),
+            r##"return panel { id = "bar", width = 80, height = 60, padding = 20,
+                child = text { content = "Hgjpq", font_size = 20, line_height = 0.2, foreground = "#FFFFFFFF" } }"##,
+            LogicalSize { width: 80.0, height: 60.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+        let below = (25..45).flat_map(|y| (0..80).map(move |x| (x, y)));
+        let lit = below.filter(|&(x, y)| pixel_at(painter.canvas_mut(), x, y).3 > 0).count();
+        assert!(lit > 0, "no descender ink under the line box");
+    }
+
     #[test]
     fn text_foreground_colour_puts_non_background_pixels_inside_its_rect() {
         let Some(instance) = init_headless_egl(120, 40) else { return };

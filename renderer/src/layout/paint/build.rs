@@ -10,7 +10,7 @@ use crate::layout::node::{self, BorderColor, ClipShape, EdgeInsets, Fill, PaintS
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
-use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, shadow_rect};
+use super::{DisplayList, Draw, DrawCmd, UNCLIPPED, command_bounds, grow, grow_y, shadow_rect};
 
 /// Focused field and draw-safe content. Masked fields carry only destination and character count,
 /// never secret bytes (`shared::SecureBuffer::expose_secret`, ADR-0005). Plain fields use `NodeId`,
@@ -228,6 +228,14 @@ fn build_node(
         }
         None => {
             if let Some(draw) = draw {
+                // Glyph ink runs past a tight line box, so a text clips to its width and the ancestors' clip only.
+                // ponytail: one em of vertical room bounds any face's ascent and descent; upgrade path: the shaped ink extents.
+                let clip = match &draw {
+                    Draw::Text { font_size, .. } if !clip.is_empty() => {
+                        parent_clip.intersect(snap_to_physical(grow_y(rect, *font_size), scale))
+                    }
+                    _ => clip,
+                };
                 out.push(cmd(clip, draw));
             }
             for child in node.painted_children() {
@@ -1107,6 +1115,35 @@ mod tests {
         );
     }
 
+    /// A tight `line_height` leaves glyph ink outside the line box: the text's clip reaches past
+    /// the box vertically, stays at its width, and never leaves an ancestor's clip, so the repaint
+    /// bounds cover the ink too.
+    #[test]
+    fn a_texts_clip_reaches_past_a_tight_line_box_but_only_vertically() {
+        let src = |clip: &str| {
+            format!(
+                r##"return panel {{ id = "bar", width = 100, height = 60, padding = 20, clip = "{clip}",
+                    child = text {{ content = "Hg", width = 40, font_size = 20, line_height = 0.5 }} }}"##
+            )
+        };
+        let list =
+            build(&resolved_surface(&Lua::new(), &src("none"), LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+        let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+        assert_eq!((text.rect.y, text.rect.height), (20.0, 10.0));
+        assert_eq!((text.clip.x0, text.clip.x1), (20, 60), "width still bounds overflow");
+        assert!(text.clip.y0 <= 0 && text.clip.y1 >= 40, "the ink above and below the box: {:?}", text.clip);
+        let changed = |content: &str| {
+            let src = src("none").replace("Hg", content);
+            build(&resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 }), 1.0, None)
+        };
+        let damage = changed("Hy").damage_since(&list, true);
+        assert!(damage.iter().any(|r| r.y1 >= 40 && r.y0 <= 0), "damage covers the ink: {damage:?}");
+        let boxed =
+            build(&resolved_surface(&Lua::new(), &src("box"), LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
+        let text = boxed.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+        assert!(text.clip.y0 >= 0 && text.clip.y1 <= 60, "a clipping ancestor still cuts the ink: {:?}", text.clip);
+    }
+
     /// A child's clip is its own box intersected with its parent's, never wider. This is the
     /// invariant that lets [`execute`] call `scissor` outright instead of rebuilding an
     /// `intersect_scissor` nest.
@@ -1825,8 +1862,9 @@ mod tests {
             assert!(commands.iter().any(|cmd| matches!(cmd.draw, Draw::Text { .. })), "{child}");
             // The blur reaches 3 sigma, 6px, around the box, and the offset shifts its right edge 3.
             let node = snap_to_physical(layer.rect, 1.0);
-            assert_eq!((layer.clip.x0, layer.clip.y0), (node.x0 - 6, node.y0 - 6), "{child}");
-            assert_eq!((layer.clip.x1, layer.clip.y1), (node.x1 + 9, node.y1 + 6), "{child}");
+            // A text's glyph ink also reaches past its box vertically, so the layer may be taller.
+            assert_eq!((layer.clip.x0, layer.clip.x1), (node.x0 - 6, node.x1 + 9), "{child}");
+            assert!(layer.clip.y0 <= node.y0 - 6 && layer.clip.y1 >= node.y1 + 6, "{child}");
         }
     }
 

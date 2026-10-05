@@ -139,6 +139,9 @@ the width used for wrapping. `wrap` and `elide` need a box narrower than the tex
 `"fill"`, or a stretched cross axis (a text in a fixed-width `column` wraps at the column's width).
 In a content-sized `row`, the text measures one line and overflows instead.
 
+`line_height` sets layout only: glyph ink that runs past a tight line box, such as a descender, paints outside it. Only the
+node's width and an ancestor's `clip` cut it.
+
 Bind an [`elided(name)` signal](../guide/signals.md#elided-read-text-truncation) as `elided` to
 detect content removed by `elide` or `max_lines`. Wrapping alone keeps it `false`.
 Elision cuts at grapheme boundaries, preserving combining marks and emoji sequences.

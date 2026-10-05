@@ -460,6 +460,10 @@ pub(crate) fn transformed(matrix: node::Affine, rect: PhysicalRect) -> PhysicalR
     snap_to_physical(node::transformed_bounds(matrix, rect), 1.0)
 }
 
+fn grow_y(rect: LogicalRect, by: f32) -> LogicalRect {
+    LogicalRect { y: rect.y - by, height: rect.height + 2.0 * by, ..rect }
+}
+
 fn grow(rect: LogicalRect, by: f32) -> LogicalRect {
     LogicalRect { x: rect.x - by, y: rect.y - by, width: rect.width + 2.0 * by, height: rect.height + 2.0 * by }
 }
