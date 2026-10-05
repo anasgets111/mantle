@@ -62,13 +62,13 @@ return column { width = 320, padding = 16, spacing = 10, radius = 12,
 | :--- | :--- | :--- | :--- |
 | `content` | `string\|TextRun[]\|Bound` | `""` | A string, or an array of up to 10000 [runs](#runs), drawn as one paragraph |
 | `font` | `string\|Bound` | The `fonts` chain | Family placed before the `fonts` chain. `""` raises; an unknown family falls back to the chain |
-| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Text size in logical pixels |
+| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Text size in logical pixels. A `textfield` sizes its placeholder with it |
 | `line_height` | `number\|Bound`, `[0.1, 10]` | `1.2` | Line height as a multiple of `font_size` |
 | `letter_spacing` | `number\|Bound`, `[-100, 100]` | `0` | Extra space between characters in logical pixels. Negative values tighten text |
 | `font_weight` | `number\|Bound`, `[1, 1000]` | `400` | Font weight from 1 to 1000. A run with `bold = true` uses weight 700 |
 | `italic` | `boolean\|Bound` | `false` | Use the family's italic face when available. A run with `italic = true` stays italic |
-| `font_variations` | `table<string, number>\|Bound` | `{}` | OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](#variable-fonts) |
-| `foreground` | `Color\|Bound` | `"#FFFFFF"` | A [colour](../guide/paint.md#colours); a run's `color` overrides it |
+| `font_variations` | `table<string, number>\|Bound` | `{}` | OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](text.md#variable-fonts) |
+| `foreground` | `Color\|Bound` | `"#FFFFFF"` | A [colour](../guide/paint.md#colours); a run's `color` overrides it, and a `textfield`'s placeholder takes it unless `placeholder_color` is set |
 | `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction. Matters only when the box is wider than the text |
 | `wrap` | `"none"\|"word"\|Bound` | `"none"` | `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis) |
 | `max_lines` | `number\|Bound` | `0` | Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap` |

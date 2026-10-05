@@ -7974,3 +7974,17 @@ interactive move, resize and the window menu, and nothing more.
    size across all lines. Taffy's auto-fill gives one track when the size is indefinite, so this
    needs a main-axis bound; plain `wrap` without one is a single line, as CSS.
 3. **Refused with `scroll`,** whose extent assumes one main-axis line. A `list` takes neither.
+
+## 0340. A textfield shares `text`'s typeface rows, and `caret` is one table
+
+1. **Typeface parity.** `font`, `font_size`, `line_height`, `letter_spacing`, `font_weight`,
+   `italic`, `font_variations`, `foreground` and `text_align` form one `typeface` group for `text`
+   and `textfield`, so both kinds read one row each. A field's draft, placeholder, mask, caret
+   position, press and IME rectangle all use the same face.
+2. **`caret = { color, width, height, radius }`** replaces `caret_color`: `color` defaults to
+   `foreground`, `width` to a sixteenth of `font_size` (at least 1 px), `height` to the whole line,
+   `radius` to 0. A `height` of 1 or less is a fraction of the line height; the bar centres on the
+   line. Paint-only, it snaps under `animate`; the width also feeds the line's slide.
+
+Rejected: four `caret_*` properties, which crowd the field and leave `caret_color` beside them.
+Breaking, pre-1.0.

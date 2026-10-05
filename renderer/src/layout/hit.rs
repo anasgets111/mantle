@@ -3,6 +3,7 @@
 //! Pure: unlike the rest of the pointer path, this only decides what a click means. Other
 //! pointer-path work owns live `wl_pointer` and `wl_surface` objects.
 
+use crate::layout::node::FieldFace;
 use crate::layout::node::{
     Affine, IDENTITY_AFFINE, PaintStyle, TextAlign, apply_affine, compose_affine, fields, font_runs, invert_affine,
 };
@@ -117,41 +118,21 @@ pub fn caret_at(
     let depth = path.iter().rposition(|node| node.kind == "textfield")?;
     // A masked field has none: a position inside a secret is one nothing outside `SecureBuffer`
     // may hold (ADR-0064).
-    let Some(PaintStyle::TextField { target: None, font_size, align, .. }) = path[depth].paint.as_ref() else {
+    let Some(PaintStyle::TextField { target: None, face, align, caret: bar, .. }) = path[depth].paint.as_ref() else {
         return None;
     };
     let rect = absolute_rect(&path[..=depth])?;
-    let shaped = field_line(text, *font_size, shaping)?;
+    let shaped = field_line(text, face, shaping)?;
     let laid = shaped.shaped.first()?;
     // The same slide paint applies, or a scrolled draft answers every press with the wrong byte.
-    let left = field_line_left(
-        Some(laid),
-        *align,
-        rect.x,
-        rect.x + rect.width,
-        caret,
-        shaping::caret_thickness(*font_size),
-        1.0,
-    );
+    let left = field_line_left(Some(laid), *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
     let (x, _) = apply_affine(invert_affine(path_transform(&path[..=depth]))?, point.x, point.y);
     Some(shaping::caret_at(laid, x - left, text.len()))
 }
 
-pub(crate) fn field_line(text: &str, font_size: f32, shaping: &ShapingHandle) -> Option<ShapeResult> {
+pub(crate) fn field_line(text: &str, face: &FieldFace, shaping: &ShapingHandle) -> Option<ShapeResult> {
     shaping
-        .shape_lines(
-            text,
-            &[],
-            ShapingStyle {
-                font_size,
-                line_height: shaping::line_height(font_size),
-                letter_spacing: 0.0,
-                font_weight: 400.0,
-                italic: false,
-                variations: &Default::default(),
-            },
-            None,
-        )
+        .shape_lines(text, &[], face.shaping_style(), face.font.as_ref())
         .into_iter()
         .next()
         .map(|(_, shaped)| shaped)
@@ -189,7 +170,7 @@ pub fn cursor_under(path: &[&ResolvedNode], point: LogicalPoint, shaping: &Shapi
             }
             let over_link = || {
                 node.kind == "text"
-                    && fields::text::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some())
+                    && fields::text_flow::on_link.read(&node.properties).is_ok_and(|on_link| on_link.is_some())
                     && node_local(&path[..=depth], point)
                         .is_some_and(|local| link_under(node, local, shaping).is_some())
             };
@@ -532,23 +513,40 @@ mod tests {
 
     // ---- caret_at (ADR-0236) ----
 
+    fn face(font_size: f32, letter_spacing: f32) -> FieldFace {
+        FieldFace {
+            font_size,
+            line_height: shaping::line_height(font_size),
+            letter_spacing,
+            font_weight: 400.0,
+            italic: false,
+            variations: Default::default(),
+            font: None,
+        }
+    }
+
+    fn field_paint(placeholder: &str, face: FieldFace) -> PaintStyle {
+        let white = crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
+        PaintStyle::TextField {
+            target: None,
+            placeholder: placeholder.to_string(),
+            mask: "*".to_string(),
+            caret: crate::layout::node::CaretStyle::plain(face.font_size, white),
+            face,
+            color: white,
+            placeholder_color: white,
+            align: TextAlign::Start,
+            disabled: false,
+            max_length: None,
+        }
+    }
+
     #[test]
     fn a_press_puts_the_caret_on_the_boundary_nearest_it() {
         let shaping = ShapingHandle::spawn();
         let text = "hello";
         let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
-        field.paint = Some(PaintStyle::TextField {
-            target: None,
-            placeholder: String::new(),
-            mask: "*".to_string(),
-            font_size: 14.0,
-            color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            placeholder_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            caret_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            align: TextAlign::Start,
-            disabled: false,
-            max_length: None,
-        });
+        field.paint = Some(field_paint("", face(14.0, 0.0)));
         let path = [&field];
         // The node sits at x = 10, and `point` is surface-local, so every press is offset by it.
         let at = |x: f32| caret_at(&path, LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
@@ -580,24 +578,48 @@ mod tests {
         assert_eq!(caret_at(&[&field], LogicalPoint { x: 12.0, y: 5.0 }, text, 0, &shaping), None);
     }
 
+    /// The field shapes its draft as a `text` of the same properties would, so its caret and a press
+    /// follow letter spacing and weight rather than the default metrics.
+    #[test]
+    fn a_fields_typography_moves_its_glyph_boundaries_and_the_caret_press_follows() {
+        let shaping = ShapingHandle::spawn();
+        let text = "hello world";
+        let spaced = FieldFace { letter_spacing: 6.0, font_weight: 700.0, ..face(14.0, 0.0) };
+        let plain = field_line(text, &face(14.0, 0.0), &shaping).unwrap();
+        let line = field_line(text, &spaced, &shaping).unwrap();
+        let as_text = shaping.shape(ShapeRequest {
+            letter_spacing: 6.0,
+            font_weight: 700.0,
+            italic: false,
+            variations: Default::default(),
+            text: text.to_string(),
+            font_size: 14.0,
+            line_height: shaping::line_height(14.0),
+            max_width: None,
+            runs: Vec::new(),
+            font: None,
+        });
+        assert_eq!(line.width, as_text.width, "the same width a `text` with these properties measures");
+        assert!(line.width > plain.width + 6.0 * 10.0, "ten gaps of 6 px wider than the default");
+
+        let laid = &line.shaped[0];
+        assert!((shaping::caret_x(laid, 2) - laid.glyphs[2].x).abs() < 1e-3, "the caret sits on the glyph boundary");
+        let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 300.0, 28.0), Vec::new());
+        field.paint = Some(field_paint("", spaced));
+        let boundary = shaping::caret_x(laid, 4);
+        assert!(boundary > plain.shaped[0].glyphs[4].x + 20.0, "the default metrics would put it far left");
+        let press = |x: f32| caret_at(&[&field], LogicalPoint { x: 10.0 + x, y: 5.0 }, text, 0, &shaping);
+        assert_eq!(press(boundary + 1.0), Some(4), "just past the fourth boundary");
+        assert_eq!(press(boundary - 1.0), Some(4), "and just short of it");
+    }
+
     /// An empty draft measures to 0 like any other press, which is why `hit_under` hands this
     /// `None` rather than `""` for a field it does not hold: 0 is indistinguishable from an answer.
     #[test]
     fn an_empty_draft_still_answers_with_a_caret() {
         let shaping = ShapingHandle::spawn();
         let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, 28.0), Vec::new());
-        field.paint = Some(PaintStyle::TextField {
-            target: None,
-            placeholder: "reply".to_string(),
-            mask: "*".to_string(),
-            font_size: 14.0,
-            color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            placeholder_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            caret_color: crate::layout::node::Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 },
-            align: TextAlign::Start,
-            disabled: false,
-            max_length: None,
-        });
+        field.paint = Some(field_paint("reply", face(14.0, 0.0)));
         assert_eq!(caret_at(&[&field], LogicalPoint { x: 90.0, y: 5.0 }, "", 0, &shaping), Some(0));
     }
 

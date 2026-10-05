@@ -116,6 +116,14 @@
 ---@field kind? "text"|Bound A notification text span's, so one passes through.
 ---@field [string] "no such property"
 
+---A `textfield`'s caret bar.
+---@class Caret
+---@field color? Color|Bound Default: the field's `foreground`.
+---@field width? number|Bound Px, within `[0, 8192]`. Default: a sixteenth of `font_size`, rounded, at least `1`.
+---@field height? number|Bound Px, or a fraction of the line height when `1` or less; within `[0, 8192]`. Default: the whole line. Centred on the line.
+---@field radius? number|Bound Corner radius in px, within `[0, 8192]`. Default `0`.
+---@field [string] "no such property"
+
 ---`image.transition`. Unknown keys are refused.
 ---@class Transition
 ---@field duration number|Bound Required, ms `[1, 60000]`.
@@ -161,13 +169,13 @@
 ---@field animate? TextAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
 ---@field content? string|TextRun[]|Bound Default `""`. A string, or up to 10000 runs, drawn as one paragraph.
 ---@field font? string|Bound Default: the `fonts` chain. Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
----@field font_size? number|Bound `[1, 8192]`, default `12`. Text size in logical pixels.
+---@field font_size? number|Bound `[1, 8192]`, default `12`. Text size in logical pixels. A `textfield` sizes its placeholder with it.
 ---@field line_height? number|Bound `[0.1, 10]`, default `1.2`. Line height as a multiple of `font_size`.
 ---@field letter_spacing? number|Bound `[-100, 100]`, default `0`. Extra space between characters in logical pixels. Negative values tighten text.
 ---@field font_weight? number|Bound `[1, 1000]`, default `400`. Font weight from 1 to 1000. A run with `bold = true` uses weight 700.
 ---@field italic? boolean|Bound Default `false`. Use the family's italic face when available. A run with `italic = true` stays italic.
 ---@field font_variations? table<string, number>|Bound Default `{}`. OpenType variation axes by 4-character tag, as CSS `font-variation-settings`: `{ FILL = 1, GRAD = -25, opsz = 24 }`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; `animate` does not tween it.
----@field foreground? Color|Bound Default `"#FFFFFF"`. A run's `color` overrides it.
+---@field foreground? Color|Bound Default `"#FFFFFF"`. A run's `color` overrides it. A `textfield`'s placeholder takes it unless `placeholder_color` is set.
 ---@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
 ---@field wrap? "none"|"word"|Bound Default `"none"`. `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis).
 ---@field max_lines? number|Bound Default `0`. Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
@@ -222,16 +230,22 @@
 ---@field spacing? number|Bound Default `0`. Px between visible items along `direction`; negative values overlap them.
 ---@field scroll? Bound A `scroll(name)` signal; makes this a scrolling viewport along `direction`.
 
----@alias TextfieldAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, autofocus?: Animation, caret_color?: Animation, cursor?: Animation, disabled?: Animation, effect?: Animation, focus_ring?: Animation, focus_target?: Animation, focused?: Animation, font_size?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hittable?: Animation, hover?: Animation, id?: Animation, initial_text?: Animation, margin?: Animation, mask_character?: Animation, max_height?: Animation, max_length?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_cancel?: Animation, on_change?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_navigate?: Animation, on_press?: Animation, on_submit?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, placeholder?: Animation, placeholder_color?: Animation, rotate?: Animation, scale?: Animation, secure_submit?: Animation, shadows?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, move?: MoveAnimation, [string]: "no such property" }
+---@alias TextfieldAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, autofocus?: Animation, caret?: Animation, cursor?: Animation, disabled?: Animation, effect?: Animation, focus_ring?: Animation, focus_target?: Animation, focused?: Animation, font?: Animation, font_size?: Animation, font_variations?: Animation, font_weight?: Animation, foreground?: Animation, geometry?: Animation, height?: Animation, hittable?: Animation, hover?: Animation, id?: Animation, initial_text?: Animation, italic?: Animation, letter_spacing?: Animation, line_height?: Animation, margin?: Animation, mask_character?: Animation, max_height?: Animation, max_length?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_cancel?: Animation, on_change?: Animation, on_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_navigate?: Animation, on_press?: Animation, on_submit?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, placeholder?: Animation, placeholder_color?: Animation, rotate?: Animation, scale?: Animation, secure_submit?: Animation, shadows?: Animation, submit?: Animation, text_align?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, move?: MoveAnimation, [string]: "no such property" }
 ---@class TextfieldProps: NodeBase, PlacedBase
 ---@field animate? TextfieldAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
+---@field font? string|Bound Default: the `fonts` chain. Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
+---@field font_size? number|Bound `[1, 8192]`, default `12`. Text size in logical pixels. A `textfield` sizes its placeholder with it.
+---@field line_height? number|Bound `[0.1, 10]`, default `1.2`. Line height as a multiple of `font_size`.
+---@field letter_spacing? number|Bound `[-100, 100]`, default `0`. Extra space between characters in logical pixels. Negative values tighten text.
+---@field font_weight? number|Bound `[1, 1000]`, default `400`. Font weight from 1 to 1000. A run with `bold = true` uses weight 700.
+---@field italic? boolean|Bound Default `false`. Use the family's italic face when available. A run with `italic = true` stays italic.
+---@field font_variations? table<string, number>|Bound Default `{}`. OpenType variation axes by 4-character tag, as CSS `font-variation-settings`: `{ FILL = 1, GRAD = -25, opsz = 24 }`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; `animate` does not tween it.
+---@field foreground? Color|Bound Default `"#FFFFFF"`. A run's `color` overrides it. A `textfield`'s placeholder takes it unless `placeholder_color` is set.
+---@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
 ---@field focus_target? FocusHandle A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
 ---@field placeholder? string|Bound Default `""`. Shown while the field is empty, focused or not (ADR-0135). Never submitted.
 ---@field placeholder_color? Color|Bound Default: `foreground`. Colour of the placeholder.
----@field caret_color? Color|Bound Default: `foreground`. Colour of the caret; the selection highlight keeps `foreground`.
----@field font_size? number|Bound `[1, 8192]`, default `12`. Size of the text and placeholder.
----@field foreground? Color|Bound Default `"#FFFFFF"`. Colour of the text, and of the placeholder unless `placeholder_color` is set.
----@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns the text inside the field's box.
+---@field caret? Caret|Bound The caret bar: `{ color, width, height, radius }`. `color` defaults to `foreground`; the selection highlight keeps `foreground`. `width` is px, default a sixteenth of `font_size` rounded, at least `1`. `height` is px, or a fraction of the line height when `1` or less; default the whole line, centred on it. `radius` is px, default `0`. Each key takes a signal. Paint only: `animate` snaps it.
 ---@field disabled? boolean|Bound Default `false`. Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal.
 ---@field max_length? number|Bound Default `0`. Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.
 ---@field initial_text? string|Bound Default `""`. Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB.
@@ -304,7 +318,7 @@ function shader(props) end
 ---@return Node
 function list(props) end
 
----Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line of `font_size`; `width` has none, so set it.
+---Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line, `font_size` times `line_height`; `width` has none, so set it.
 ---[docs](https://anasgets111.github.io/mantle/nodes/textfield.html)
 ---@param props TextfieldProps
 ---@return Node

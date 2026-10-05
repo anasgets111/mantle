@@ -10,7 +10,7 @@ use mlua::Value;
 use crate::text::shaping::{FontRun, Variations};
 use crate::text::snap::LogicalRect;
 
-use super::prop::keywords;
+use super::prop::{keywords, within_range};
 use super::*;
 use crate::lua::luacats::lua_shape;
 
@@ -334,6 +334,53 @@ impl Prop for MaxLines {
     }
 }
 
+/// Each `caret` key's range, in px.
+const CARET_PX: (f32, f32) = (0.0, 8192.0);
+
+lua_shape! {
+    /// A `textfield`'s caret bar.
+    #[class = "Caret"]
+    #[derive(Default)]
+    pub(crate) struct CaretKeys {
+        /// Default: the field's `foreground`.
+        pub(crate) color: Option<Rgba>,
+        /// Px, within `[0, 8192]`. Default: a sixteenth of `font_size`, rounded, at least `1`.
+        pub(crate) width: Option<f32>,
+        /// Px, or a fraction of the line height when `1` or less; within `[0, 8192]`. Default: the whole line. Centred on the line.
+        pub(crate) height: Option<f32>,
+        /// Corner radius in px, within `[0, 8192]`. Default `0`.
+        pub(crate) radius: Option<f32>,
+    }
+}
+
+/// `textfield.caret`: `{ color, width, height, radius }`, absent keys unset.
+pub(crate) struct Caret;
+
+spelled!(Caret => CaretKeys::lua());
+
+impl Prop for Caret {
+    type Out = CaretKeys;
+    fn read(row: &Property, value: Option<&Value>) -> Result<CaretKeys, LayoutError> {
+        let table = match value {
+            None => return Ok(CaretKeys::default()),
+            Some(Value::Table(table)) => table,
+            Some(value) => {
+                return Err(invalid(row.name, format!("expected a table, got {}", preview_for_error(value))));
+            }
+        };
+        let keys = CaretKeys::read(row.name, table)?;
+        let within = |key: &str, n: Option<f32>| {
+            n.map(|n| within_range(&format!("{}.{key}", row.name), CARET_PX, n)).transpose()
+        };
+        Ok(CaretKeys {
+            color: keys.color,
+            width: within("width", keys.width)?,
+            height: within("height", keys.height)?,
+            radius: within("radius", keys.radius)?,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -646,7 +693,7 @@ mod tests {
         let table: mlua::Table = lua.load(r#"return { kind = "text", font_size = 1e300 }"#).eval().unwrap();
         let props = props_from_table(&table);
         assert!(matches!(
-            fields::text::font_size.read(&props).unwrap_err(),
+            fields::typeface::font_size.read(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "font_size"
         ));
     }
@@ -658,7 +705,7 @@ mod tests {
         for source in [r#"return { kind = "text", font_size = 0 }"#, r#"return { kind = "text", font_size = -0.0 }"#] {
             let table: mlua::Table = lua.load(source).eval().unwrap();
             assert!(matches!(
-                fields::text::font_size.read(&props_from_table(&table)).unwrap_err(),
+                fields::typeface::font_size.read(&props_from_table(&table)).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "font_size"
             ));
         }
@@ -667,14 +714,14 @@ mod tests {
     #[test]
     fn wrap_defaults_to_one_line_and_rejects_a_mode_that_does_not_exist() {
         let lua = mlua::Lua::new();
-        assert_eq!(fields::text::wrap.read(&PropMap::default()).unwrap(), Wrap::None);
+        assert_eq!(fields::text_flow::wrap.read(&PropMap::default()).unwrap(), Wrap::None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "word" }"#).eval().unwrap();
-        assert_eq!(fields::text::wrap.read(&props_from_table(&table)).unwrap(), Wrap::Word);
+        assert_eq!(fields::text_flow::wrap.read(&props_from_table(&table)).unwrap(), Wrap::Word);
 
         // "WordWrap" is the plausible typo.
         let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
-        let err = fields::text::wrap.read(&props_from_table(&table)).unwrap_err();
+        let err = fields::text_flow::wrap.read(&props_from_table(&table)).unwrap_err();
         assert!(format!("{err}").contains("word"), "the error should name the modes that do exist, got {err}");
     }
 
@@ -685,7 +732,7 @@ mod tests {
         let read = |source: &str| {
             let table: mlua::Table =
                 lua.load(format!("return {{ kind = \"text\", font_variations = {source} }}")).eval().unwrap();
-            fields::text::font_variations.read(&props_from_table(&table))
+            fields::typeface::font_variations.read(&props_from_table(&table))
         };
         assert!(read("nil").unwrap().is_empty());
         let axes = read("{ opsz = 24, FILL = 1, GRAD = -25 }").unwrap();
@@ -702,44 +749,44 @@ mod tests {
     #[test]
     fn max_lines_treats_absent_and_zero_alike_and_refuses_a_negative() {
         let lua = mlua::Lua::new();
-        assert_eq!(fields::text::max_lines.read(&PropMap::default()).unwrap(), None);
+        assert_eq!(fields::text_flow::max_lines.read(&PropMap::default()).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 0 }"#).eval().unwrap();
-        assert_eq!(fields::text::max_lines.read(&props_from_table(&table)).unwrap(), None);
+        assert_eq!(fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap(), None);
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 2 }"#).eval().unwrap();
-        assert_eq!(fields::text::max_lines.read(&props_from_table(&table)).unwrap(), Some(2));
+        assert_eq!(fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap(), Some(2));
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = -1 }"#).eval().unwrap();
         assert!(matches!(
-            fields::text::max_lines.read(&props_from_table(&table)).unwrap_err(),
+            fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "max_lines"
         ));
 
         let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = "two" }"#).eval().unwrap();
-        assert!(fields::text::max_lines.read(&props_from_table(&table)).is_err());
+        assert!(fields::text_flow::max_lines.read(&props_from_table(&table)).is_err());
     }
 
     #[test]
     fn font_size_absent_defaults_to_twelve() {
         let props = PropMap::default();
-        assert_eq!(fields::text::font_size.read(&props).unwrap(), 12.0);
+        assert_eq!(fields::typeface::font_size.read(&props).unwrap(), 12.0);
     }
 
     #[test]
     fn text_style_defaults_and_bounds_are_parsed_before_shaping() {
         let defaults = PropMap::default();
-        assert_eq!(fields::text::line_height.read(&defaults).unwrap(), 1.2);
-        assert_eq!(fields::text::letter_spacing.read(&defaults).unwrap(), 0.0);
-        assert_eq!(fields::text::font_weight.read(&defaults).unwrap(), 400.0);
-        assert!(!fields::text::italic.read(&defaults).unwrap());
+        assert_eq!(fields::typeface::line_height.read(&defaults).unwrap(), 1.2);
+        assert_eq!(fields::typeface::letter_spacing.read(&defaults).unwrap(), 0.0);
+        assert_eq!(fields::typeface::font_weight.read(&defaults).unwrap(), 400.0);
+        assert!(!fields::typeface::italic.read(&defaults).unwrap());
 
         let lua = mlua::Lua::new();
         let table: mlua::Table =
             lua.load(r#"return { kind = "text", line_height = 0, font_weight = 1001 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        assert!(fields::text::line_height.read(&props).is_err());
-        assert!(fields::text::font_weight.read(&props).is_err());
+        assert!(fields::typeface::line_height.read(&props).is_err());
+        assert!(fields::typeface::font_weight.read(&props).is_err());
     }
 
     #[test]
@@ -751,7 +798,7 @@ mod tests {
         table.set("font_size", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert_eq!(
-            fields::text::font_size.read(&resolve_declared(node.properties, "text", false, &lua).unwrap()).unwrap(),
+            fields::typeface::font_size.read(&resolve_declared(node.properties, "text", false, &lua).unwrap()).unwrap(),
             18.0
         );
     }
@@ -820,7 +867,7 @@ mod tests {
     #[test]
     fn foreground_absent_defaults_to_white() {
         let props = PropMap::default();
-        assert_eq!(fields::text::foreground.read(&props).unwrap(), Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }));
+        assert_eq!(fields::typeface::foreground.read(&props).unwrap(), Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }));
     }
 
     #[test]
@@ -829,7 +876,7 @@ mod tests {
         let table: mlua::Table = lua.load(r##"return { kind = "text", foreground = "#00ff0080" }"##).eval().unwrap();
         let props = props_from_table(&table);
         assert_eq!(
-            fields::text::foreground.read(&props).unwrap(),
+            fields::typeface::foreground.read(&props).unwrap(),
             Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 })
         );
     }
@@ -839,7 +886,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load(r#"return { kind = "text", foreground = 5 }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let err = fields::text::foreground.read(&props).unwrap_err();
+        let err = fields::typeface::foreground.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "foreground" && detail.contains("expected a string")),
             "{err}"

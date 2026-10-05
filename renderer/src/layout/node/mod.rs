@@ -36,11 +36,13 @@ pub use animate::{
     Dissolve, MoveSpec, ShaderParam, TransitionSpec, Tween, advance, depart, is_paint_only, retarget,
     retarget_measured, retarget_scroll, scroll_spec, scroll_target,
 };
-pub(crate) use content::{Content, Font, FontVariations, Live, MaxLines, Region};
+#[cfg(test)]
+pub(crate) use content::CaretKeys;
+pub(crate) use content::{Caret, Content, Font, FontVariations, Live, MaxLines, Region};
 pub use content::{Elide, StyleRun, TextAlign, Wrap, font_runs};
 #[cfg(test)]
 pub(crate) use content::{SpanKind, TextRun};
-pub use paint_style::{CaptureTarget, PaintStyle, paint_style};
+pub use paint_style::{CaptureTarget, CaretStyle, FieldFace, PaintStyle, paint_style};
 pub(crate) use spec::{Children, Items, Limit, Root};
 pub use spec::{ItemPass, ListMemo, SecureSubmitTarget, SurfaceSpec, list_children, lock_spec};
 #[cfg(test)]
@@ -889,7 +891,7 @@ mod tests {
         );
         assert!(fields::common::visible.read(&props_with_nil_signal(&lua, "rect", "visible")).unwrap());
         assert_eq!(fields::flow::spacing.read(&props_with_nil_signal(&lua, "row", "spacing")).unwrap(), 0.0);
-        assert_eq!(fields::text::font_size.read(&props_with_nil_signal(&lua, "text", "font_size")).unwrap(), 12.0);
+        assert_eq!(fields::typeface::font_size.read(&props_with_nil_signal(&lua, "text", "font_size")).unwrap(), 12.0);
         assert!(fields::root::child.read(&props_with_nil_signal(&lua, "panel", "child")).unwrap().is_none());
         assert!(fields::stack::children.read(&props_with_nil_signal(&lua, "row", "children")).unwrap().is_empty());
         assert_eq!(fields::text::content.read(&props_with_nil_signal(&lua, "text", "content")).unwrap().0, "");

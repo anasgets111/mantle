@@ -15,7 +15,7 @@ use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, Color, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
 use shared::debug;
 
-use crate::layout::node::{Rgba, StyleRun, TextAlign, font_runs};
+use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, font_runs};
 use crate::layout::paint::DrawCmd;
 use crate::text::shaping::{
     FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, ShapingStyle, Variations, caret_thickness, caret_x,
@@ -135,7 +135,7 @@ pub struct TextDraw<'a> {
     pub caret: Option<(usize, usize)>,
     /// The blink's phase: off drops the bar and keeps the selection and scroll.
     pub caret_on: bool,
-    pub caret_color: Rgba,
+    pub caret_style: CaretStyle,
 }
 
 /// Registers every face of `font_chain` femtovg does not hold yet, and maps each face's shaping id
@@ -362,11 +362,12 @@ impl TextPainter {
             align,
             caret,
             caret_on,
-            caret_color,
+            caret_style,
         } = line;
         let physical = snap_to_physical(rect, 1.0);
         let step = line_height * scale;
         let thickness = caret_thickness(font_size) * scale;
+        let bar_width = caret_style.width * scale;
 
         let runs_key = font_runs(runs);
         let font_size_bits = font_size.to_bits();
@@ -438,7 +439,7 @@ impl TextPainter {
                         physical.x0 as f32,
                         physical.x1 as f32,
                         at,
-                        thickness,
+                        caret_style.width,
                         scale,
                     ),
                     None => align.line_left(laid.rtl, physical.x0 as f32, physical.x1 as f32, laid.width * scale),
@@ -465,7 +466,15 @@ impl TextPainter {
                 }
                 // Over them, so a glyph's side bearing cannot swallow it.
                 if let Some((.., at)) = selection.filter(|_| caret_on) {
-                    self.fill(left + caret_x(laid, at) * scale, top, thickness, step, caret_color);
+                    let height = caret_style.bar_height(line_height) * scale;
+                    self.fill_rounded(
+                        left + caret_x(laid, at) * scale,
+                        top + (step - height) / 2.0,
+                        bar_width,
+                        height,
+                        caret_style.radius * scale,
+                        caret_style.color,
+                    );
                 }
 
                 for run in runs.iter().filter(|run| run.underline) {
@@ -486,8 +495,16 @@ impl TextPainter {
 
     /// One filled rectangle: an underline, a caret, or the highlight behind a selection.
     fn fill(&mut self, x: f32, y: f32, width: f32, height: f32, color: Rgba) {
+        self.fill_rounded(x, y, width, height, 0.0, color);
+    }
+
+    fn fill_rounded(&mut self, x: f32, y: f32, width: f32, height: f32, radius: f32, color: Rgba) {
         let mut path = Path::new();
-        path.rect(x, y, width, height);
+        if radius > 0.0 {
+            path.rounded_rect(x, y, width, height, radius);
+        } else {
+            path.rect(x, y, width, height);
+        }
         self.canvas.fill_path(&path, &Paint::color(Color::rgbaf(color.r, color.g, color.b, color.a)));
     }
 

@@ -245,7 +245,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 centered,
                 caret,
                 caret_on,
-                caret_color,
+                caret_style,
             } => {
                 let t0 = timing.then(Instant::now);
                 let mut rect = rect;
@@ -267,7 +267,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         align: *align,
                         caret: *caret,
                         caret_on: *caret_on,
-                        caret_color: *caret_color,
+                        caret_style: *caret_style,
                     },
                     rect,
                     scale,
@@ -1382,6 +1382,46 @@ pub(crate) mod tests {
 
         assert_eq!(pixel_at(painter.canvas_mut(), 10, 10), (0, 0, 255, 255));
         assert_eq!(pixel_at(painter.canvas_mut(), 27, 27), (0, 255, 0, 255));
+    }
+
+    /// The focused empty field's caret bar at 1x: `caret` sets its colour, width, height (a
+    /// fraction of the 24 px line) and corner radius, centred on the line.
+    #[test]
+    fn the_caret_draws_the_width_height_radius_and_colour_the_caret_table_sets() {
+        use super::super::FieldFocus;
+        let Some(instance) = init_headless_egl(80, 60) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 80, 60) else { return };
+        // The field's line is rows 20..44; a 0.5 height bar is rows 26..38, starting at x = 20.
+        let root = resolved_surface(
+            &Lua::new(),
+            r##"return panel { id = "bar", width = 80, height = 60, padding = 20,
+                child = textfield { width = 40, font_size = 20, on_change = function(text) end,
+                    caret = { color = "#FF0000FF", width = 6, height = 0.5, radius = 3 } } }"##,
+            LogicalSize { width: 80.0, height: 60.0 },
+        );
+        let focus = FieldFocus::Plain { id: root.children[0].id, text: "", caret: Some((0, 0)), caret_on: true };
+        let whole = PhysicalRect { x0: 0, y0: 0, x1: 80, y1: 60 };
+        let mut captures = CaptureCache::default();
+        let list = build(&root, 1.0, Some(&focus));
+        let _ = execute(
+            "test",
+            &mut painter,
+            &mut ImageCache::new(),
+            &mut captures,
+            &list,
+            1.0,
+            (80.0, 60.0),
+            &[whole],
+            None,
+        );
+
+        let mut red = |x, y| pixel_at(painter.canvas_mut(), x, y) == (255, 0, 0, 255);
+        assert!(red(22, 32), "the bar's body is the caret colour");
+        assert!(!red(27, 32), "past `width` = 6");
+        assert!(!red(22, 24), "above the half-height bar");
+        assert!(!red(22, 40), "below it");
+        assert!(!red(20, 26), "the corner is rounded off by `radius`");
     }
 
     /// `line_height` sets layout only: a descender below a tight line box is painted (CSS overflow

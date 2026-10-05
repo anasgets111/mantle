@@ -70,13 +70,19 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
+| `font` | `string\|Bound` | The `fonts` chain | Family placed before the `fonts` chain. `""` raises; an unknown family falls back to the chain |
+| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Text size in logical pixels. A `textfield` sizes its placeholder with it |
+| `line_height` | `number\|Bound`, `[0.1, 10]` | `1.2` | Line height as a multiple of `font_size` |
+| `letter_spacing` | `number\|Bound`, `[-100, 100]` | `0` | Extra space between characters in logical pixels. Negative values tighten text |
+| `font_weight` | `number\|Bound`, `[1, 1000]` | `400` | Font weight from 1 to 1000. A run with `bold = true` uses weight 700 |
+| `italic` | `boolean\|Bound` | `false` | Use the family's italic face when available. A run with `italic = true` stays italic |
+| `font_variations` | `table<string, number>\|Bound` | `{}` | OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](text.md#variable-fonts) |
+| `foreground` | `Color\|Bound` | `"#FFFFFF"` | A [colour](../guide/paint.md#colours); a run's `color` overrides it, and a `textfield`'s placeholder takes it unless `placeholder_color` is set |
+| `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction. Matters only when the box is wider than the text |
 | `focus_target` | `FocusHandle` | None | A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass |
 | `placeholder` | `string\|Bound` | `""` | Shown while the field is empty, focused or not. Never submitted |
 | `placeholder_color` | `Color\|Bound` | `foreground` | Colour of the placeholder |
-| `caret_color` | `Color\|Bound` | `foreground` | Colour of the caret; the selection highlight keeps `foreground` |
-| `font_size` | `number\|Bound`, `[1, 8192]` | `12` | Size of the text and placeholder |
-| `foreground` | `Color\|Bound` | `"#FFFFFF"` | Colour of the text, and of the placeholder unless `placeholder_color` is set |
-| `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns the text inside the field's box |
+| `caret` | `Caret\|Bound` | None | The caret bar: `{ color, width, height, radius }`. `color` defaults to `foreground`; the selection highlight keeps `foreground`. `width` is px, default a sixteenth of `font_size` rounded, at least `1`. `height` is px, or a fraction of the line height when `1` or less; default the whole line, centred on it. `radius` is px, default `0`. Each key takes a signal. Paint only: `animate` snaps it |
 | `disabled` | `boolean\|Bound` | `false` | Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal |
 | `max_length` | `number\|Bound` | `0` | Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it |
 | `initial_text` | `string\|Bound` | `""` | Plain fields only: seeds the draft once, when the field enters the tree (a new node: a changed `id` or `key` counts as new), with the value at that moment, read without subscribing: writing the signal alone does not re-resolve the field. Later changes are ignored and an emptied field stays empty; `set_text` pushes new text. Like `set_text`: cut at `max_length`, caret at the end, no undo history, no `on_change`; hidden and disabled fields are seeded too. Refused with `secure_submit`, control characters and over 64 KiB |
@@ -89,9 +95,10 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
 <!-- End of the generated table. -->
 
-The field has no intrinsic width, so give it `width`; without `height` it is one line of
-`font_size` tall (1.2 times the size). It draws one line of text and a caret, vertically centred,
-in the [`fonts`](../guide/scripting.md#fonts) chain; there is no `font` property. Plain fields use
+The field has no intrinsic width, so give it `width`; without `height` it is one line
+tall (`font_size` times `line_height`). It draws one line of text and a caret, vertically centred,
+with the same typography properties as [`text`](text.md), the draft, placeholder and mask alike, in the
+[`fonts`](../guide/scripting.md#fonts) chain unless `font` names a family. Plain fields use
 `zwp_text_input_v3` for composition when the compositor offers it and text-input enters the field's
 own surface. Raw keys stay active between compositions and are suppressed during pending or active
 composition. Preedit text is underlined; commits and surrounding deletions call `on_change`. Secure

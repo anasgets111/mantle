@@ -159,21 +159,22 @@ fn cursor_rect(
     let path = layout::hit::path_to_node(root, id)?;
     let node = *path.last()?;
     let rect = layout::hit::absolute_rect(&path)?;
-    let node::PaintStyle::TextField { target: None, font_size, align, .. } = node.paint.as_ref()? else { return None };
-    let line_height = shaping::line_height(*font_size);
-    let shaped = layout::hit::field_line(text, *font_size, shaping);
+    let node::PaintStyle::TextField { target: None, face, align, caret: bar, .. } = node.paint.as_ref()? else {
+        return None;
+    };
+    let shaped = layout::hit::field_line(text, face, shaping);
     let line = shaped.as_ref().and_then(|shaped| shaped.shaped.first());
-    let thickness = shaping::caret_thickness(*font_size);
-    let left = layout::hit::field_line_left(line, *align, rect.x, rect.x + rect.width, caret, thickness, 1.0);
+    let left = layout::hit::field_line_left(line, *align, rect.x, rect.x + rect.width, caret, bar.width, 1.0);
+    let bar_height = bar.bar_height(face.line_height);
     let cx = line.map_or(0.0, |line| shaping::caret_x(line, caret));
     let matrix = layout::hit::path_transform(&path);
     let bounds = node::transformed_bounds(
         matrix,
         LogicalRect {
             x: left + cx,
-            y: rect.y + ((rect.height - line_height) / 2.0).max(0.0),
-            width: thickness,
-            height: line_height,
+            y: rect.y + ((rect.height - face.line_height) / 2.0).max(0.0) + (face.line_height - bar_height) / 2.0,
+            width: bar.width,
+            height: bar_height,
         },
     );
     Some((

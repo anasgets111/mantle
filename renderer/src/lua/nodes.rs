@@ -701,6 +701,7 @@ mod meta_stub_tests {
             // `shader.source` refuses a relative path; `image.source` takes either.
             ("source", "string") => return Some("\"/x\"".to_string()),
             ("effect", _) => return Some("{ blur = 2.5, saturate = 2 }".to_string()),
+            ("caret", _) => return Some("{ color = \"#112233\", width = 2, height = 0.5, radius = 1 }".to_string()),
             ("shadows", _) => {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }

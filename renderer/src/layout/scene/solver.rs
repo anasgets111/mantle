@@ -497,10 +497,10 @@ pub(super) fn measure_for(
         }
         "icon" => Some(Measure::Square(node::fields::icon::size.read(properties)?)),
         "textfield" => {
-            let Some(PaintStyle::TextField { font_size, .. }) = paint else {
+            let Some(PaintStyle::TextField { face, .. }) = paint else {
                 unreachable!("paint_style produces PaintStyle::TextField for textfield nodes");
             };
-            Some(Measure::Line(shaping::line_height(*font_size)))
+            Some(Measure::Line(face.line_height))
         }
         // `image` has no intrinsic size, unlike `icon`: knowing a file's own dimensions means
         // decoding it, and this pass has no canvas to decode against and runs on every

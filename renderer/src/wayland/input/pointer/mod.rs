@@ -163,7 +163,7 @@ fn clickable(
         if node.kind != "text" {
             return None;
         }
-        let on_link = node::fields::text::on_link.read(&node.properties).ok().flatten()?;
+        let on_link = node::fields::text_flow::on_link.read(&node.properties).ok().flatten()?;
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         let local = layout::hit::node_local(&path[..=depth], point)?;
         let href = layout::hit::link_under(node, local, shaping)?;

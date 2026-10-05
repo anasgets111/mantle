@@ -10,10 +10,11 @@
 use std::sync::Arc;
 
 use crate::image::{Fit, Load};
+use crate::text::shaping::{ShapingStyle, Variations};
 use crate::text::snap::LogicalRect;
 
 use super::*;
-use fields::{capture, icon, image, paint, path, shader, text, textfield};
+use fields::{capture, icon, image, paint, path, shader, text, text_flow, textfield, typeface};
 
 /// Exactly one capture source. Window IDs stay opaque outside their compositor adapter.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -32,6 +33,60 @@ impl CaptureTarget {
     /// Outputs are opaque and outlive their session; windows keep alpha and close.
     pub fn is_output(&self) -> bool {
         matches!(self, Self::Output(_))
+    }
+}
+
+/// A `textfield`'s typography: the draft, the placeholder and the mask share it, and so do their
+/// measure, paint, caret and press hit-test.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FieldFace {
+    pub font_size: f32,
+    /// Px, `font_size` times the `line_height` ratio.
+    pub line_height: f32,
+    pub letter_spacing: f32,
+    pub font_weight: f32,
+    pub italic: bool,
+    pub variations: Variations,
+    pub font: Option<Arc<str>>,
+}
+
+impl FieldFace {
+    pub fn shaping_style(&self) -> ShapingStyle<'_> {
+        ShapingStyle {
+            font_size: self.font_size,
+            line_height: self.line_height,
+            letter_spacing: self.letter_spacing,
+            font_weight: self.font_weight,
+            italic: self.italic,
+            variations: &self.variations,
+        }
+    }
+}
+
+/// A `textfield`'s caret bar, resolved against its font.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CaretStyle {
+    pub color: Rgba,
+    /// Logical px.
+    pub width: f32,
+    /// Logical px, or a fraction of the line height when `1` or less; `None` is the whole line.
+    pub height: Option<f32>,
+    pub radius: f32,
+}
+
+impl CaretStyle {
+    /// The bar a field draws when `caret` says nothing.
+    pub fn plain(font_size: f32, color: Rgba) -> Self {
+        Self { color, width: crate::text::shaping::caret_thickness(font_size), height: None, radius: 0.0 }
+    }
+
+    /// The bar's height in a line `line_height` tall.
+    pub fn bar_height(&self, line_height: f32) -> f32 {
+        match self.height {
+            None => line_height,
+            Some(h) if h <= 1.0 => h * line_height,
+            Some(h) => h,
+        }
     }
 }
 
@@ -123,12 +178,11 @@ pub enum PaintStyle {
         target: Option<SecureSubmitTarget>,
         placeholder: String,
         mask: String,
-        font_size: f32,
+        face: FieldFace,
         color: Rgba,
         /// `color` unless `placeholder_color` is set.
         placeholder_color: Rgba,
-        /// `color` unless `caret_color` is set.
-        caret_color: Rgba,
+        caret: CaretStyle,
         align: TextAlign,
         disabled: bool,
         /// Grapheme-cluster cap on the draft; `None` is unlimited.
@@ -161,22 +215,22 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         }),
         "text" => {
             let (content, runs) = text::content.read(properties)?;
-            let font_size = text::font_size.read(properties)?;
+            let font_size = typeface::font_size.read(properties)?;
             PaintStyle::Text {
                 content: content.into(),
                 runs,
                 font_size,
-                line_height: font_size * text::line_height.read(properties)?,
-                letter_spacing: text::letter_spacing.read(properties)?,
-                font_weight: text::font_weight.read(properties)?,
-                italic: text::italic.read(properties)?,
-                variations: text::font_variations.read(properties)?,
-                font: text::font.read(properties)?,
-                color: text::foreground.read(properties)?.expect("`foreground` has a default"),
-                align: text::text_align.read(properties)?,
-                elide: text::elide.read(properties)?,
-                wrap: text::wrap.read(properties)?,
-                max_lines: text::max_lines.read(properties)?,
+                line_height: font_size * typeface::line_height.read(properties)?,
+                letter_spacing: typeface::letter_spacing.read(properties)?,
+                font_weight: typeface::font_weight.read(properties)?,
+                italic: typeface::italic.read(properties)?,
+                variations: typeface::font_variations.read(properties)?,
+                font: typeface::font.read(properties)?,
+                color: typeface::foreground.read(properties)?.expect("`foreground` has a default"),
+                align: typeface::text_align.read(properties)?,
+                elide: text_flow::elide.read(properties)?,
+                wrap: text_flow::wrap.read(properties)?,
+                max_lines: text_flow::max_lines.read(properties)?,
                 elided: false,
             }
         }
@@ -221,7 +275,15 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         "textfield" => {
             // Only a click reads `focus_target`; read here too so a value that is not a handle fails the pass.
             textfield::focus_target.read(properties)?;
-            let color = textfield::foreground.read(properties)?.expect("`foreground` has a default");
+            let color = typeface::foreground.read(properties)?.expect("`foreground` has a default");
+            let font_size = typeface::font_size.read(properties)?;
+            let keys = textfield::caret.read(properties)?;
+            let caret = CaretStyle {
+                color: keys.color.unwrap_or(color),
+                width: keys.width.unwrap_or(crate::text::shaping::caret_thickness(font_size)),
+                height: keys.height,
+                radius: keys.radius.unwrap_or(0.0),
+            };
             let target = textfield::secure_submit.read(properties)?;
             if target.is_some() && !textfield::initial_text.read(properties)?.is_empty() {
                 return Err(LayoutError::InvalidProperty {
@@ -234,11 +296,19 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 placeholder: textfield::placeholder.read(properties)?,
                 // Drawn once per typed character: `""` draws nothing, a longer string its first one.
                 mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
-                font_size: textfield::font_size.read(properties)?,
+                face: FieldFace {
+                    font_size,
+                    line_height: font_size * typeface::line_height.read(properties)?,
+                    letter_spacing: typeface::letter_spacing.read(properties)?,
+                    font_weight: typeface::font_weight.read(properties)?,
+                    italic: typeface::italic.read(properties)?,
+                    variations: typeface::font_variations.read(properties)?,
+                    font: typeface::font.read(properties)?,
+                },
                 color,
                 placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),
-                caret_color: textfield::caret_color.read(properties)?.unwrap_or(color),
-                align: textfield::text_align.read(properties)?,
+                caret,
+                align: typeface::text_align.read(properties)?,
                 disabled: textfield::disabled.read(properties)?,
                 max_length: textfield::max_length.read(properties)?,
             }
@@ -347,6 +417,58 @@ mod tests {
             "0 is unlimited, as max_lines"
         );
         assert!(style(&lua, "return { kind = 'textfield', max_length = -1 }").is_err());
+    }
+
+    /// A field reads the typography rows `text` does: same keys, ranges and defaults.
+    #[test]
+    fn a_textfield_takes_text_typography_with_text_defaults_and_ranges() {
+        let lua = Lua::new();
+        let face = |src| match style(&lua, src).unwrap() {
+            Some(PaintStyle::TextField { face, .. }) => face,
+            _ => unreachable!(),
+        };
+        let given = face(
+            "return { kind = 'textfield', font = 'Mono', font_size = 20, line_height = 2, letter_spacing = 3, \
+             font_weight = 700, italic = true, font_variations = { wght = 650 } }",
+        );
+        assert_eq!((given.font_size, given.line_height, given.letter_spacing), (20.0, 40.0, 3.0));
+        assert_eq!((given.font_weight, given.italic, given.font.as_deref()), (700.0, true, Some("Mono")));
+        assert_eq!(&*given.variations, &[(*b"wght", 650.0_f32.to_bits())]);
+
+        let default = face("return { kind = 'textfield' }");
+        assert_eq!((default.font_size, default.line_height), (12.0, 12.0 * 1.2));
+        assert_eq!((default.letter_spacing, default.font_weight, default.italic), (0.0, 400.0, false));
+        assert!(default.font.is_none() && default.variations.is_empty());
+        for bad in ["font_weight = 0", "letter_spacing = 101", "line_height = 0", "font = ''"] {
+            assert!(style(&lua, &format!("return {{ kind = 'textfield', {bad} }}")).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_textfield_caret_table_reads_its_keys_and_defaults_to_the_foreground_line() {
+        let lua = Lua::new();
+        let caret = |src| match style(&lua, src).unwrap() {
+            Some(PaintStyle::TextField { caret, .. }) => caret,
+            _ => unreachable!(),
+        };
+        let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
+        let plain = caret("return { kind = 'textfield', font_size = 32, foreground = '#FF0000' }");
+        assert_eq!(plain, CaretStyle { color: red, width: 2.0, height: None, radius: 0.0 });
+        let set = caret(
+            "return { kind = 'textfield', foreground = '#FF0000', \
+             caret = { color = '#00FF00', width = 3, height = 0.5, radius = 1.5 } }",
+        );
+        assert_eq!(
+            set,
+            CaretStyle { color: Rgba { r: 0.0, g: 1.0, b: 0.0, a: 1.0 }, width: 3.0, height: Some(0.5), radius: 1.5 }
+        );
+        assert_eq!((set.bar_height(20.0), CaretStyle { height: Some(8.0), ..set }.bar_height(20.0)), (10.0, 8.0));
+        assert_eq!(caret("return { kind = 'textfield', caret = { width = 4 } }").width, 4.0);
+        for bad in ["{ colour = '#fff' }", "{ width = -1 }", "{ height = 8193 }", "{ radius = -0.5 }", "3"] {
+            assert!(style(&lua, &format!("return {{ kind = 'textfield', caret = {bad} }}")).is_err(), "{bad}");
+        }
+        let table: mlua::Table = lua.load("return { kind = 'textfield', caret_color = '#fff' }").eval().unwrap();
+        assert!(deserialize_lua_table(&table).is_err(), "`caret_color` is gone");
     }
 
     #[test]

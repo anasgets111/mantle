@@ -117,14 +117,12 @@ pub struct Glyph {
     pub rtl: bool,
 }
 
-/// The multiplier every measurement and every paint derives a line height from.
-///
-/// One constant rather than the four call sites that each spelled `font_size * 1.2`: paint has to
-/// advance a wrapped line by exactly the step the shaper measured with, and "exactly" is not
-/// something to maintain by hand in four places.
+/// The default `line_height` ratio, for tests that build a style by hand; nodes read the property.
+#[cfg(test)]
 pub const LINE_HEIGHT_RATIO: f32 = 1.2;
 
-/// [`LINE_HEIGHT_RATIO`] applied, for the callers that have a font size and want the step.
+/// [`LINE_HEIGHT_RATIO`] applied to `font_size`.
+#[cfg(test)]
 pub fn line_height(font_size: f32) -> f32 {
     font_size * LINE_HEIGHT_RATIO
 }

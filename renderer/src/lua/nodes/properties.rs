@@ -18,8 +18,8 @@ use crate::layout::node::prop::{
     Structural, Text,
 };
 use crate::layout::node::{
-    Align, Anchor, AnchorRect, Animations, Axes, Children, ClipShape, ColorOrEdges, ConstraintAdjustment, Content,
-    CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font, FontVariations, Items,
+    Align, Anchor, AnchorRect, Animations, Axes, Caret, Children, ClipShape, ColorOrEdges, ConstraintAdjustment,
+    Content, CornerShape, Cursor, Direction, Effects, Elide, Exclusive, Fill, Font, FontVariations, Items,
     KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines, NumberOrCorners, NumberOrEdges, Params,
     PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root, Scale, SecureSubmitTarget, ShadowMode, Shadows,
     SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign, TransitionSpec, TrimAxis, Wrap,
@@ -375,9 +375,11 @@ props! {
         ///
         /// Book: A string, or an array of up to 10000 [runs](#runs), drawn as one paragraph
         content: Bound<Content> = absent(Lua(r#""""#));
+    }
+    mod typeface(TEXT | TEXTFIELD) {
         /// Family placed before the `fonts` chain (ADR-0144). `""` raises; an unknown family falls back to the chain.
         font: Bound<Font> = absent(Prose("the `fonts` chain"));
-        /// Text size in logical pixels.
+        /// Text size in logical pixels. A `textfield` sizes its placeholder with it.
         font_size: Bound<Num> = range(1.0, 8192.0).absent(Number(12.0));
         /// Line height as a multiple of `font_size`.
         line_height: Bound<Num> = range(0.1, 10.0).absent(Number(1.2));
@@ -389,14 +391,16 @@ props! {
         italic: Bound<Flag> = absent(Bool(false));
         /// OpenType variation axes by 4-character tag, as CSS `font-variation-settings`: `{ FILL = 1, GRAD = -25, opsz = 24 }`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; `animate` does not tween it.
         ///
-        /// Book: OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](#variable-fonts)
+        /// Book: OpenType variation axes by 4-character tag (`{ FILL = 1, GRAD = -25, opsz = 24 }`), as CSS `font-variation-settings`. Values clamp to each face's range; axes a face lacks are ignored. An explicit `wght` overrides `font_weight` and bold runs. Changes snap; see [variable fonts](text.md#variable-fonts)
         font_variations: Bound<FontVariations> = absent(Lua("{}"));
-        /// A run's `color` overrides it.
+        /// A run's `color` overrides it. A `textfield`'s placeholder takes it unless `placeholder_color` is set.
         ///
-        /// Book: A [colour](../guide/paint.md#colours); a run's `color` overrides it
+        /// Book: A [colour](../guide/paint.md#colours); a run's `color` overrides it, and a `textfield`'s placeholder takes it unless `placeholder_color` is set
         foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
         /// Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
         text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
+    }
+    mod text_flow(TEXT) {
         /// `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis).
         wrap: Bound<OneOf<Wrap>> = absent(Choice("none"));
         /// Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
@@ -515,7 +519,7 @@ props! {
         /// Book: A `scroll(name)` signal; makes the list a scrolling viewport along `direction` ([scroll](../guide/input.md#scroll))
         scroll: Handle;
     }
-    /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line of `font_size`; `width` has none, so set it.
+    /// Single-line text input. Plain fields read `wl_keyboard` and compose through text-input-v3 when available on their keyboard-focused surface. With `secure_submit` it is masked: keys never reach Lua and go to the capability (ADR-0005, ADR-0092). Otherwise `on_change` or `on_submit` makes it plain; with neither it never takes focus. A press focuses it; the surface needs `keyboard_interactivity`. The draft lives as long as the node; losing focus keeps it (ADR-0108). Intrinsic height is one line, `font_size` times `line_height`; `width` has none, so set it.
     mod textfield(TEXTFIELD) {
         /// A `focus_target(name)` handle. An `on_click` can call `:request()` to return keys after its state change; the field must be visible on that click's keyboard-focused surface or a popup under it. Any other value fails the pass.
         focus_target: Focus;
@@ -523,14 +527,8 @@ props! {
         placeholder: Bound<Text> = absent(Lua(r#""""#));
         /// Colour of the placeholder.
         placeholder_color: Bound<Color> = absent(Prose("`foreground`"));
-        /// Colour of the caret; the selection highlight keeps `foreground`.
-        caret_color: Bound<Color> = absent(Prose("`foreground`"));
-        /// Size of the text and placeholder.
-        font_size: Bound<Num> = range(1.0, 8192.0).absent(Number(12.0));
-        /// Colour of the text, and of the placeholder unless `placeholder_color` is set.
-        foreground: Bound<Color> = absent(Lua(r##""#FFFFFF""##));
-        /// Aligns the text inside the field's box.
-        text_align: Bound<OneOf<TextAlign>> = absent(Choice("start"));
+        /// The caret bar: `{ color, width, height, radius }`. `color` defaults to `foreground`; the selection highlight keeps `foreground`. `width` is px, default a sixteenth of `font_size` rounded, at least `1`. `height` is px, or a fraction of the line height when `1` or less; default the whole line, centred on it. `radius` is px, default `0`. Each key takes a signal. Paint only: `animate` snaps it.
+        caret: Bound<Caret>;
         /// Renders like a field but takes no keyboard focus (Tab skips it, a press does not focus it, `focus_target` requests and `autofocus` pass over it) and draws no caret; `set_text` still reaches it. A focused field that becomes disabled loses focus and keeps its draft. Dim it yourself by binding colours to the same signal.
         disabled: Bound<Flag> = absent(Bool(false));
         /// Most grapheme clusters the field holds; `0` is unlimited and a negative value is refused. Typing, paste, IME commits and `focus_target(name):set_text(text)` cut what they insert at the limit, secure fields included. Lowering it below the current text keeps that text; edits can then only shorten it. The cut is silent, so a limit below a password's length truncates it.

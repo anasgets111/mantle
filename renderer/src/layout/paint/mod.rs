@@ -35,7 +35,7 @@ pub(crate) fn compose_preedit(
 }
 
 use crate::image::{self, Fit, Load};
-use crate::layout::node::{self, BorderPaint, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
+use crate::layout::node::{self, BorderPaint, CaretStyle, EdgeInsets, Fill, Radii, Rgba, StyleRun, TextAlign};
 use crate::layout::scene::NodeId;
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -68,8 +68,8 @@ pub enum Draw {
         caret: Option<(usize, usize)>,
         /// The blink's phase; see [`FieldFocus::Plain`].
         caret_on: bool,
-        /// The caret bar's colour; `color` for ordinary text.
-        caret_color: Rgba,
+        /// The caret bar, drawn only with `caret`.
+        caret_style: CaretStyle,
     },
     /// Theme name, resolved in [`execute`]. Icons carry alpha separately because `Paint::image`
     /// takes it as an argument.

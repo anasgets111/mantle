@@ -7,7 +7,7 @@
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
 use crate::layout::node::{
-    self, BorderColor, BorderPaint, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
+    self, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
 };
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
@@ -516,7 +516,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             centered: false,
             caret: None,
             caret_on: false,
-            caret_color: fade(*color, opacity),
+            caret_style: CaretStyle::plain(*font_size, fade(*color, opacity)),
         }),
 
         // Icons use `Contain` and the shorter edge: `size` is a bounding-box diameter.
@@ -576,15 +576,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // trigger `pam_faillock` and a ten-minute lockout. `retarget_secure_submit` zeroizes the
         // buffer on focus changes, so only the focused field can show typed state.
         PaintStyle::TextField {
-            target,
-            placeholder,
-            placeholder_color,
-            caret_color,
-            mask,
-            font_size,
-            color,
-            align,
-            ..
+            target, placeholder, placeholder_color, caret: bar, mask, face, color, align, ..
         } => {
             // The first entry for this node wins: the focused field, then any parked draft. Another
             // node's focus, masked or not, leaves this one to its parked draft or placeholder.
@@ -635,21 +627,19 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             (!content.is_empty() || caret.is_some()).then_some(Draw::Text {
                 content: content.into(),
                 runs,
-                font_size: *font_size,
-                line_height: crate::text::shaping::line_height(*font_size),
-                letter_spacing: 0.0,
-                font_weight: 400.0,
-                italic: false,
-                variations: Default::default(),
-                // A `textfield` draws its placeholder and its masked content in the declared
-                // chain; nothing lets one name a family.
-                font: None,
+                font_size: face.font_size,
+                line_height: face.line_height,
+                letter_spacing: face.letter_spacing,
+                font_weight: face.font_weight,
+                italic: face.italic,
+                variations: face.variations.clone(),
+                font: face.font.clone(),
                 color: fade(*color, opacity),
                 align: *align,
                 centered: true,
                 caret,
                 caret_on,
-                caret_color: fade(*caret_color, opacity),
+                caret_style: CaretStyle { color: fade(bar.color, opacity), ..*bar },
             })
         }
 
@@ -1362,7 +1352,7 @@ mod tests {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = textfield { width = "fill", height = 28, placeholder = "Reply", foreground = "#ff0000",
-                placeholder_color = "#00ff00", caret_color = "#0000ff", on_submit = function(text) end } }"##;
+                placeholder_color = "#00ff00", caret = { color = "#0000ff" }, on_submit = function(text) end } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let color = |list: &DisplayList| {
             list.commands.iter().find_map(|cmd| match &cmd.draw {
@@ -1375,10 +1365,34 @@ mod tests {
         let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
         assert_eq!(color(&typed), Some((1.0, 0.0)));
         let caret = typed.commands.iter().find_map(|cmd| match &cmd.draw {
-            Draw::Text { caret_color, .. } => Some((caret_color.r, caret_color.b)),
+            Draw::Text { caret_style, .. } => Some((caret_style.color.r, caret_style.color.b)),
             _ => None,
         });
         assert_eq!(caret, Some((0.0, 1.0)));
+    }
+
+    #[test]
+    fn a_fields_placeholder_and_draft_draw_in_its_typography() {
+        let lua = Lua::new();
+        let src = r##"return panel { id = "bar", width = 200, height = 60,
+            child = textfield { width = "fill", placeholder = "Reply", font = "Mono", font_size = 20, line_height = 2,
+                letter_spacing = 3, font_weight = 700, italic = true, font_variations = { wght = 650 },
+                on_submit = function(text) end } }"##;
+        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 60.0 });
+        assert_eq!(tree.children[0].rect.height, 40.0, "one line of `font_size * line_height`");
+        let id = tree.children[0].id;
+        let typed = build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "x", caret: Some((1, 1)), caret_on: true }));
+        for list in [build(&tree, 1.0, None), typed] {
+            let Some(Draw::Text {
+                font, font_size, line_height, letter_spacing, font_weight, italic, variations, ..
+            }) = list.commands.iter().find_map(|cmd| matches!(cmd.draw, Draw::Text { .. }).then(|| cmd.draw.clone()))
+            else {
+                panic!("the field draws text")
+            };
+            assert_eq!((font.as_deref(), font_size, line_height), (Some("Mono"), 20.0, 40.0));
+            assert_eq!((letter_spacing, font_weight, italic), (3.0, 700.0, true));
+            assert_eq!(&*variations, &[(*b"wght", 650.0_f32.to_bits())]);
+        }
     }
 
     #[test]
