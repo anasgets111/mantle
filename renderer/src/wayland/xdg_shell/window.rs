@@ -163,10 +163,38 @@ impl App {
                 Action::Move => window.move_(&seat, *serial),
                 Action::Resize(edge) => window.resize(&seat, *serial, resize_edge(edge)),
                 Action::Menu(at) => window.show_window_menu(&seat, *serial, at),
+                _ => continue, // `end_press` hands over only serial-bound requests
             }
             sent = true;
         }
         sent
+    }
+
+    /// Sends the maximize, minimize and fullscreen requests queued since the last turn. They need no
+    /// serial, but a window without its first configure is skipped. The result arrives by configure.
+    pub(in crate::wayland) fn send_toplevel_state_requests(&mut self) {
+        for Request { window: id, action } in crate::lua::toplevel::take_state_requests(self.client.lua()) {
+            let window = self.surfaces.iter().find_map(|tracked| match &tracked.role {
+                TrackedRole::Window { window: Some(window), .. }
+                    if tracked.surface_id == id && tracked.map_state == MapState::Mapped =>
+                {
+                    Some(window)
+                }
+                _ => None,
+            });
+            let Some(window) = window else {
+                debug!("toplevel({id:?}): names no configured window, so {action:?} was not sent");
+                continue;
+            };
+            match action {
+                Action::Maximize(true) => window.set_maximized(),
+                Action::Maximize(false) => window.unset_maximized(),
+                Action::Minimize => window.set_minimized(),
+                Action::Fullscreen(true) => window.set_fullscreen(None),
+                Action::Fullscreen(false) => window.unset_fullscreen(),
+                Action::Move | Action::Resize(_) | Action::Menu(_) => {}
+            }
+        }
     }
 
     /// [`App::create_surfaces`]'s `window` arm: always track it, but create `xdg_toplevel` only

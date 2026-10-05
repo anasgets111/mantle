@@ -143,7 +143,7 @@ function focus_target(name) end
 ---@field decoration "server"|"client" Who draws the frame: the mode the compositor chose, which is `"client"` without `zxdg_decoration_manager_v1`.
 
 ---@class ToplevelHandle
----A named `window` the app draws its own frame for. `move`, `resize` and `show_menu` ask the compositor to take over the pointer, and only work inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, they log a warning and do nothing.
+---A named `window` the app draws its own frame for. `move`, `resize` and `show_menu` ask the compositor to take over the pointer, and only work inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, they log a warning and do nothing. `set_maximized`, `set_minimized` and `set_fullscreen` work from any callback; the compositor decides, and the result arrives through `state()`.
 local ToplevelHandle = {}
 
 ---Start an interactive move of the window, as dragging a title bar does.
@@ -155,6 +155,17 @@ function ToplevelHandle:resize(edge) end
 
 ---Open the compositor's window menu at the pointer's press position.
 function ToplevelHandle:show_menu() end
+
+---Ask the compositor to maximize the window, or to restore it with `false`.
+---@param maximized boolean
+function ToplevelHandle:set_maximized(maximized) end
+
+---Ask the compositor to minimize the window; there is no request to undo it.
+function ToplevelHandle:set_minimized() end
+
+---Ask the compositor to make the window fullscreen on its current output, or to restore it with `false`.
+---@param fullscreen boolean
+function ToplevelHandle:set_fullscreen(fullscreen) end
 
 ---The window's configure state as a read-only signal, rewritten when the compositor changes it, so a frame can follow `activated`, `maximized`, `tiled` and the like. Reading it never requests a change.
 ---@return Signal<ToplevelState>

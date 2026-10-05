@@ -312,6 +312,7 @@ pub fn run(
         app.apply_seeds();
         app.apply_text_requests();
         app.apply_focus_request();
+        app.send_toplevel_state_requests();
         if re_resolved {
             app.prune_secure_focus_after_resolve();
             app.drop_unusable_text_field_focus();

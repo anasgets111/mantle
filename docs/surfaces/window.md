@@ -164,21 +164,26 @@ the opening size.
 ### Custom title bar
 
 An app that draws its own frame asks the compositor to run the pointer: `toplevel(id)` takes a
-`window`'s `id` and has three request methods, called from an [`on_press`](../guide/input.md) (or an
-`on_drag` `"start"`), and `:state()` ([window state](#window-state)).
+`window`'s `id` and has three pointer methods, called from an [`on_press`](../guide/input.md) (or an
+`on_drag` `"start"`), three state methods, and `:state()` ([window state](#window-state)).
 
 | Method | Does |
 | :--- | :--- |
 | `:move()` | Starts an interactive move, as dragging a title bar does |
 | `:resize(edge)` | Starts a resize from `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`; any other value raises |
 | `:show_menu()` | Opens the compositor's window menu at the press position |
+| `:set_maximized(on)` | Asks for maximize, or restore with `false`; `on` must be a boolean |
+| `:set_minimized()` | Asks for minimize; nothing asks it back |
+| `:set_fullscreen(on)` | Asks for fullscreen, or restore with `false`; `on` must be a boolean |
 
-Compositors honour these only for the serial of the press that started them, so a call from
+Compositors honour the pointer methods only for the serial of the press that started them, so a call from
 `on_click`, a timer or any other callback, on a hidden window, or on a press that landed on a
 different surface logs a warning and sends nothing. After a request the compositor owns the
 pointer and may send no release: the engine drops the drag and the armed click, so `on_drag` gets no
-`"end"` and `on_click` does not fire. There is no minimize, maximize or fullscreen request; the
-compositor's own bindings still do those.
+`"end"` and `on_click` does not fire.
+
+The state methods need no press and work from any callback. A request for a window that is not mapped
+yet is dropped; do not pair one with `move()` in the same press, as the move grab starts first.
 
 ```lua
 local frame = toplevel("main")
@@ -218,8 +223,8 @@ return {
 `toplevel(id):state()` is a read-only signal of what the compositor last configured the window to
 be, so the app's own frame can follow it. It is rewritten only when a configure changes a value.
 Before the first configure and after the window closes it holds the default: every flag `false`,
-no `bounds`, every capability `true`, `decoration = "client"`. The engine sends no request to change
-these; maximizing and fullscreen stay with the compositor's bindings.
+no `bounds`, every capability `true`, `decoration = "client"`. Reading it never requests a change;
+[`:set_maximized`, `:set_minimized` and `:set_fullscreen`](#custom-title-bar) do.
 
 | Key | Type | Meaning |
 | :--- | :--- | :--- |

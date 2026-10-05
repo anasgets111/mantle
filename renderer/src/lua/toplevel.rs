@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use mlua::{IntoLua, Lua, Value};
+use mlua::{FromLua, IntoLua, Lua, Value};
 use shared::warn;
 
 use super::luacats::{LuaType, SignalOf, lua_class, lua_fn, lua_shape};
@@ -152,6 +152,9 @@ pub(crate) enum Action {
     Resize(Edge),
     /// Surface-local position of the press.
     Menu((i32, i32)),
+    Maximize(bool),
+    Minimize,
+    Fullscreen(bool),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -165,6 +168,8 @@ struct Requests {
     /// The press position while a press-time callback runs; compositors honour these requests only for the press serial.
     press: Option<(i32, i32)>,
     queue: Vec<Request>,
+    /// Maximize, minimize and fullscreen carry no serial, so any callback may queue them.
+    state: Vec<Request>,
 }
 
 pub(crate) struct ToplevelHandle(String);
@@ -182,8 +187,26 @@ impl ToplevelHandle {
     }
 }
 
+/// A boolean argument that raises on anything else; mlua's own `bool` takes any value as truthy.
+struct Flag(bool);
+
+impl LuaType for Flag {
+    fn lua() -> String {
+        bool::lua()
+    }
+}
+
+impl FromLua for Flag {
+    fn from_lua(value: Value, _: &Lua) -> mlua::Result<Self> {
+        match value {
+            Value::Boolean(on) => Ok(Self(on)),
+            other => Err(mlua::Error::runtime(format!("expected a boolean, got {}", other.type_name()))),
+        }
+    }
+}
+
 lua_class! {
-    /// A named `window` the app draws its own frame for. `move`, `resize` and `show_menu` ask the compositor to take over the pointer, and only work inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, they log a warning and do nothing.
+    /// A named `window` the app draws its own frame for. `move`, `resize` and `show_menu` ask the compositor to take over the pointer, and only work inside an `on_press` or `on_drag` `"start"` callback; elsewhere, on a hidden window or on another surface's press, they log a warning and do nothing. `set_maximized`, `set_minimized` and `set_fullscreen` work from any callback; the compositor decides, and the result arrives through `state()`.
     impl ToplevelHandle {
         /// Start an interactive move of the window, as dragging a title bar does.
         fn r#move(lua, this) {
@@ -208,6 +231,24 @@ lua_class! {
         /// Open the compositor's window menu at the pointer's press position.
         fn show_menu(lua, this) {
             this.queue(lua, Action::Menu);
+            Ok(())
+        }
+
+        /// Ask the compositor to maximize the window, or to restore it with `false`.
+        fn set_maximized(lua, this, maximized: Flag) {
+            super::app_data_or_default::<Requests>(lua).state.push(Request { window: this.0.clone(), action: Action::Maximize(maximized.0) });
+            Ok(())
+        }
+
+        /// Ask the compositor to minimize the window; there is no request to undo it.
+        fn set_minimized(lua, this) {
+            super::app_data_or_default::<Requests>(lua).state.push(Request { window: this.0.clone(), action: Action::Minimize });
+            Ok(())
+        }
+
+        /// Ask the compositor to make the window fullscreen on its current output, or to restore it with `false`.
+        fn set_fullscreen(lua, this, fullscreen: Flag) {
+            super::app_data_or_default::<Requests>(lua).state.push(Request { window: this.0.clone(), action: Action::Fullscreen(fullscreen.0) });
             Ok(())
         }
 
@@ -250,6 +291,11 @@ pub(crate) fn end_press(lua: &Lua) -> Vec<Request> {
     std::mem::take(&mut requests.queue)
 }
 
+/// Takes the state requests (maximize, minimize, fullscreen) queued since the last turn.
+pub(crate) fn take_state_requests(lua: &Lua) -> Vec<Request> {
+    std::mem::take(&mut super::app_data_or_default::<Requests>(lua).state)
+}
+
 #[cfg(test)]
 mod tests {
     use mlua::AnyUserData;
@@ -278,6 +324,25 @@ mod tests {
             vec![request(Action::Move), request(Action::Resize(Edge::BottomLeft)), request(Action::Menu((12, 3)))]
         );
         assert!(end_press(&lua).is_empty());
+    }
+
+    #[test]
+    fn state_requests_queue_anywhere_and_leave_the_press_queue_alone() {
+        let lua = lua();
+        lua.load("frame:set_maximized(true) frame:set_minimized() frame:set_fullscreen(false)").exec().unwrap();
+        begin_press(&lua, (1.0, 1.0));
+        lua.load("frame:move() frame:set_maximized(false)").exec().unwrap();
+        assert_eq!(end_press(&lua), vec![request(Action::Move)]);
+        assert_eq!(
+            take_state_requests(&lua),
+            vec![
+                request(Action::Maximize(true)),
+                request(Action::Minimize),
+                request(Action::Fullscreen(false)),
+                request(Action::Maximize(false)),
+            ]
+        );
+        assert!(take_state_requests(&lua).is_empty());
     }
 
     #[test]
@@ -331,6 +396,10 @@ mod tests {
         begin_press(&lua, (0.0, 0.0));
         for edge in ["'middle'", "'TOP'", "''", "nil"] {
             assert!(lua.load(format!("frame:resize({edge})")).exec().is_err(), "{edge}");
+        }
+        for flag in ["", "nil", "0", "'true'"] {
+            assert!(lua.load(format!("frame:set_maximized({flag})")).exec().is_err(), "{flag}");
+            assert!(lua.load(format!("frame:set_fullscreen({flag})")).exec().is_err(), "{flag}");
         }
         assert!(lua.load("toplevel('')").exec().is_err());
         assert!(end_press(&lua).is_empty());
