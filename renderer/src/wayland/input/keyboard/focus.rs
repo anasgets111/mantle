@@ -1,7 +1,7 @@
 //! Keyboard focus for named controls, using the retained scene's node identity.
 
 use super::*;
-use crate::layout::node::fields::pointer;
+use crate::layout::node::fields::{common, pointer};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::wayland) struct FocusedControl {
@@ -257,7 +257,7 @@ impl App {
             && saved.0 != self.focused_control
         {
             self.set_control_focus(saved.0);
-            self.focus_visible = visible;
+            self.set_focus_visible(visible);
         }
         let text_state = |f: &FocusedTextField| (f.surface_id.clone(), f.id, f.selection, f.typing, f.buffer.len());
         if taken(saved.1.as_ref().map(|f| &*f.surface_id), self.focused_text_field.as_ref().map(|f| &*f.surface_id))
@@ -307,10 +307,11 @@ impl App {
         if let Some(surface_id) = self.focused_control.as_ref().map(|focus| focus.surface_id.clone()) {
             self.mark_field_input_changed(&surface_id);
         }
+        self.sync_focused();
     }
 
-    /// Writes every `focused` signal from the current control focus; values that did not move
-    /// dirty nothing.
+    /// Writes every `focused` and `focus_visible` signal from the current control focus, the latter
+    /// from the node the engine outlines; values that did not move dirty nothing.
     pub(in crate::wayland) fn sync_focused(&self) {
         if !crate::lua::signal::any_focused_registered(self.client.lua()) {
             return;
@@ -318,9 +319,18 @@ impl App {
         for surface in &self.surfaces {
             let Some(tree) = self.client.scene().surface(&surface.surface_id) else { continue };
             let focus = self.focused_control.as_ref().filter(|focus| focus.surface_id == surface.surface_id);
-            for (signal, focused) in layout::hover::focused_writes(tree, focus.map(|focus| focus.id)) {
+            let outlined = self.outline_control(&surface.surface_id);
+            let writes = [
+                layout::hover::focused_writes(tree, focus.map(|focus| focus.id), |node| {
+                    common::focused.read(&node.properties).ok().flatten()
+                }),
+                layout::hover::focused_writes(tree, outlined, |node| {
+                    common::focus_visible.read(&node.properties).ok().flatten()
+                }),
+            ];
+            for (signal, on) in writes.into_iter().flatten() {
                 if let Some(handle) = signal.focused_handle() {
-                    handle.set_changed(Value::Boolean(focused));
+                    handle.set_changed(Value::Boolean(on));
                 }
             }
         }

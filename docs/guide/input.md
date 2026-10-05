@@ -332,6 +332,12 @@ Bind it to a node's `focused` and the engine sets it `true` while that node or a
 holds control focus, however focus got there. Like `hover(name)`, the name is the identity and
 survives reloads. It is not `focus_target(name)`, the handle a click uses to focus a textfield.
 
+`focus_visible(name)` is the same signal under the rule the engine's outline follows (CSS
+`:focus-visible`): `true` only while the bound node or one inside it holds control focus that Tab,
+Shift+Tab or an assistive-technology action moved there, and `false` after a press, `autofocus` or
+`focus_target(name):request()`, while `focused(name)` stays `true`. It ignores `focus_ring`. Bind it to
+a node's `focus_visible`, and draw a ring that shows for keyboard users only:
+
 ```lua
 local search = focused("search")
 
@@ -353,6 +359,33 @@ return panel {
                 focus_ring = false,
                 accessible_name = "Search",
                 on_change = function(text) end,
+            },
+        },
+    },
+}
+```
+
+```lua
+local ring = focus_visible("save")
+
+return panel {
+    id = "dialog",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = rect {
+        padding = 4,
+        radius = 8,
+        border_width = 2,
+        focus_visible = ring,
+        border_color = ring:map(function(on) return on and "#89b4fa" or "#00000000" end),
+        children = {
+            rect {
+                padding = 6,
+                background = "#45475a",
+                accessible_name = "Save",
+                focus_ring = false,
+                on_click = function() end,
+                children = { text { content = "Save" } },
             },
         },
     },
@@ -558,7 +591,7 @@ return lock {
 | Close a dialog or menu on Escape | `on_escape` on the surface ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
 | Reach a button by keyboard or screen reader | Give the node with `on_click` or `submit` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
-| Hide or restyle the focus outline | `focus_ring = false` on the control, and style a wrapper from `focused(name)` ([keyboard controls](#keyboard-controls-and-accessibility)) |
+| Hide or restyle the focus outline | `focus_ring = false` on the control, and style a wrapper from `focus_visible(name)`, or `focused(name)` to track any focus ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Show a tooltip on hover | [Tooltip](../surfaces/popup.md), with `hover_rect` as the anchor |
 | Open a menu on right click | Below |
 | Reorder a list by dragging | Below |
@@ -690,7 +723,7 @@ return panel {
 | A field in a panel shows no caret and takes no keys | Set the panel's `keyboard_interactivity` to `"on_demand"` (or `"exclusive"` for a modal) |
 | A field with only `on_key`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
 | Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"none"` |
-| A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focused(name)` for a style that tracks any focus |
+| A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focus_visible(name)` to draw your own ring by the same rule, or `focused(name)` for a style that tracks any focus |
 | Tab stopped reaching `on_key` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_key` only when the field is the sole control |
 | The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |
 | A `scroll` container never scrolls | Bound its size on the scroll axis; content-sized means nothing overflows |

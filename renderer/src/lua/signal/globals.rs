@@ -125,9 +125,11 @@ pub fn any_hover_registered(lua: &Lua) -> bool {
     lua.app_data_ref::<HoverRegistry>().is_some_and(|registry| !registry.0.is_empty())
 }
 
-/// Whether config called `focused(name)`, so configs without one skip the focus-within walk.
+/// Whether config called `focused(name)` or `focus_visible(name)`, so configs without one skip the
+/// focus-within walk.
 pub fn any_focused_registered(lua: &Lua) -> bool {
     lua.app_data_ref::<FocusedRegistry>().is_some_and(|registry| !registry.0.is_empty())
+        || lua.app_data_ref::<FocusVisibleRegistry>().is_some_and(|registry| !registry.0.is_empty())
 }
 
 /// Whether config called `pointer(name)`, so configs without one skip the pointer walk.
@@ -163,6 +165,10 @@ struct HoverRegistry(HashMap<String, (Signal, Signal)>);
 /// Name-keyed `focused(name)` registry, kept across reloads like [`HoverRegistry`].
 #[derive(Default)]
 struct FocusedRegistry(HashMap<String, Signal>);
+
+/// Name-keyed `focus_visible(name)` registry; a separate map so `focused("x")` and `focus_visible("x")` differ.
+#[derive(Default)]
+struct FocusVisibleRegistry(HashMap<String, Signal>);
 
 /// Name-keyed `pointer(name)` registry, kept across reloads like [`HoverRegistry`].
 #[derive(Default)]
@@ -223,6 +229,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let focused_dirty = dirty.clone();
+    let focus_visible_dirty = dirty.clone();
     let pointer_dirty = dirty.clone();
     let scroll_dirty = dirty.clone();
     lua_fn!(
@@ -367,6 +374,19 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         fn focused(lua, name: String) -> SignalOf<bool> {
             let mut registry = crate::lua::app_data_or_default::<FocusedRegistry>(lua);
             let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focused_dirty.clone()));
+            Ok(SignalOf::new(signal.clone()))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Whether the node whose `focus_visible` is bound to this signal, or a node inside it, holds control
+        /// focus that the engine draws its outline for (CSS `:focus-visible`): moved by Tab, Shift+Tab or an
+        /// assistive-technology action, hidden by a press. Still true with `focus_ring = false`. One name, one
+        /// signal, across reloads. Read-only.
+        /// [docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
+        fn focus_visible(lua, name: String) -> SignalOf<bool> {
+            let mut registry = crate::lua::app_data_or_default::<FocusVisibleRegistry>(lua);
+            let signal = registry.0.entry(name).or_insert_with(|| Signal::new_focused(focus_visible_dirty.clone()));
             Ok(SignalOf::new(signal.clone()))
         }
     )?;
@@ -572,6 +592,18 @@ mod tests {
         assert!(!lua.load("return second:get()").eval::<bool>().unwrap());
         first.focused_handle().unwrap().set(Value::Boolean(true));
         assert!(lua.load("return second:get()").eval::<bool>().unwrap(), "one name is one slot");
+    }
+
+    #[test]
+    fn focus_visible_is_its_own_slot_per_name_that_starts_false() {
+        let (lua, _dirty) = lua_with_state();
+        lua.load(r#"a = focus_visible("x") b = focus_visible("x") c = focused("x")"#).exec().unwrap();
+        assert!(any_focused_registered(&lua));
+        let a: mlua::AnyUserData = lua.globals().get("a").unwrap();
+        from_userdata(&a).unwrap().focused_handle().unwrap().set(Value::Boolean(true));
+        assert!(lua.load("return b:get()").eval::<bool>().unwrap(), "one name is one slot");
+        assert!(!lua.load("return c:get()").eval::<bool>().unwrap(), "not shared with focused");
+        assert!(lua.load(r#"focus_visible("x"):set(true)"#).exec().is_err(), "config cannot write it");
     }
 
     #[test]

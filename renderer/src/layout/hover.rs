@@ -80,17 +80,27 @@ fn collect(node: &ResolvedNode, path: &[&ResolvedNode], writes: &mut Vec<HoverWr
     }
 }
 
-/// Every `focused` signal in `tree`, paired with whether `focus` is its node or inside it. Walks
-/// the whole tree like [`hover_writes`], so a node that lost focus is turned off.
-pub fn focused_writes(tree: &ResolvedNode, focus: Option<NodeId>) -> Vec<(Signal, bool)> {
-    fn collect(node: &ResolvedNode, focus: Option<NodeId>, writes: &mut Vec<(Signal, bool)>) -> bool {
-        let slot = common::focused.read(&node.properties).ok().flatten().map(|signal| {
+/// Every signal `bound` finds in `tree` (a node's `focused` or `focus_visible`), paired with whether
+/// `focus` is its node or inside it. Walks the whole tree like [`hover_writes`], so a node that lost
+/// focus is turned off.
+pub fn focused_writes(
+    tree: &ResolvedNode,
+    focus: Option<NodeId>,
+    bound: fn(&ResolvedNode) -> Option<Signal>,
+) -> Vec<(Signal, bool)> {
+    fn collect(
+        node: &ResolvedNode,
+        focus: Option<NodeId>,
+        bound: fn(&ResolvedNode) -> Option<Signal>,
+        writes: &mut Vec<(Signal, bool)>,
+    ) -> bool {
+        let slot = bound(node).map(|signal| {
             writes.push((signal, false));
             writes.len() - 1
         });
         let mut within = focus == Some(node.id);
         for child in &node.children {
-            within |= collect(child, focus, writes);
+            within |= collect(child, focus, bound, writes);
         }
         if let Some(slot) = slot {
             writes[slot].1 = within;
@@ -98,7 +108,7 @@ pub fn focused_writes(tree: &ResolvedNode, focus: Option<NodeId>) -> Vec<(Signal
         within
     }
     let mut writes = Vec::new();
-    collect(tree, focus, &mut writes);
+    collect(tree, focus, bound, &mut writes);
     writes
 }
 
@@ -303,7 +313,12 @@ mod tests {
         let mut wrapper = node((0.0, 0.0, 100.0, 20.0), None, vec![field, sibling]);
         slot(&mut wrapper);
         let id = wrapper.children[0].id;
-        let answers = |focus| focused_writes(&wrapper, focus).into_iter().map(|(_, on)| on).collect::<Vec<_>>();
+        let answers = |focus| {
+            focused_writes(&wrapper, focus, |node| common::focused.read(&node.properties).ok().flatten())
+                .into_iter()
+                .map(|(_, on)| on)
+                .collect::<Vec<_>>()
+        };
         assert_eq!(answers(Some(id)), vec![true, true, false], "wrapper, field, sibling");
         assert_eq!(answers(None), vec![false, false, false]);
     }

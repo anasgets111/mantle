@@ -197,6 +197,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click`, `submit` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
 | `focus_ring` | `boolean\|Bound` | `true` | `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node |
 | `focused` | `Bound` | None | A `focused(name)` signal the engine sets while this node or its children hold [control focus](../guide/input.md#keyboard-controls-and-accessibility) |
+| `focus_visible` | `Bound` | None | A `focus_visible(name)` signal the engine sets while the [focus outline](../guide/input.md#keyboard-controls-and-accessibility) would show on this node or its children, even with `focus_ring = false` |
 | `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
 | `pointer` | `Bound` | None | A `pointer(name)` signal the engine sets to the pointer's node-local `{ x, y }` while it is over this node or its children ([pointer position](../guide/input.md#pointer-position)) |
 | `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |

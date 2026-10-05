@@ -722,6 +722,7 @@ mod meta_stub_tests {
             ("geometry", _) => return Some("geometry(\"probe\")".to_string()),
             ("pointer", _) => return Some("pointer(\"probe\")".to_string()),
             ("focused", _) => return Some("focused(\"probe\")".to_string()),
+            ("focus_visible", _) => return Some("focus_visible(\"probe\")".to_string()),
             ("elided", _) => return Some("elided(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
             ("focus_target", _) => return Some("focus_target(\"probe\")".to_string()),

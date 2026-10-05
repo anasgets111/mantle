@@ -279,6 +279,10 @@ props! {
         ///
         /// Book: A `focused(name)` signal the engine sets while this node or its children hold [control focus](../guide/input.md#keyboard-controls-and-accessibility)
         focused: Handle;
+        /// A `focus_visible(name)` signal; true while this node or a node inside it holds keyboard control focus that Tab or an assistive-technology action moved there, the focus the engine outlines.
+        ///
+        /// Book: A `focus_visible(name)` signal the engine sets while the [focus outline](../guide/input.md#keyboard-controls-and-accessibility) would show on this node or its children, even with `focus_ring = false`
+        focus_visible: Handle;
         /// A `hover(name)` signal; this node's box is its region.
         ///
         /// Book: A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover))

@@ -239,6 +239,7 @@ impl KeyboardHandler for App {
         // compositor sent it (`visible` flip or output change); `None` is not an error.
         self.keyboard_focus = self.surface_id_for(surface).map(str::to_string);
         self.prune_control_focus();
+        self.sync_focused();
         // Redraw the caret of a field whose keyboard returned (ADR-0108; see `leave`).
         self.mark_focused_text_field_changed();
         // Include shown child popups, where a panel password prompt lives
@@ -538,6 +539,8 @@ impl App {
         (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = (ctrl, shift, false, false);
         let result = self.keeping_foreign_focus(surface_id, deliver);
         self.keyboard_focus = focus;
+        // The scope moved back, and `focus_visible` follows it.
+        self.sync_focused();
         (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = held;
         Ok(result)
     }

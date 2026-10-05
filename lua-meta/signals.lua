@@ -82,6 +82,15 @@ function hover(name) end
 ---@return Signal<boolean>
 function focused(name) end
 
+---Whether the node whose `focus_visible` is bound to this signal, or a node inside it, holds control
+---focus that the engine draws its outline for (CSS `:focus-visible`): moved by Tab, Shift+Tab or an
+---assistive-technology action, hidden by a press. Still true with `focus_ring = false`. One name, one
+---signal, across reloads. Read-only.
+---[docs](https://anasgets111.github.io/mantle/guide/input.html#keyboard-controls-and-accessibility)
+---@param name string
+---@return Signal<boolean>
+function focus_visible(name) end
+
 ---Where the pointer is on the node whose `pointer` is bound to this signal: `{ x, y }` in logical pixels
 ---from its top-left corner while the pointer is over the node or its children, `nil` otherwise. The
 ---engine writes it on pointer motion, and only while something reads it. One name, one signal, across reloads. Read-only.
