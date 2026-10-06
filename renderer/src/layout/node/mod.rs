@@ -15,7 +15,9 @@ mod vector_path;
 pub use outline::Outline;
 #[cfg(test)]
 pub(crate) use vector_path::PathCommand;
-pub(crate) use vector_path::{PathCommands, PathData, PathOp, StrokeCap, StrokeJoin, TrimAxis, VectorPath, tweened};
+pub(crate) use vector_path::{
+    PathCommands, PathData, PathOp, Segment, StrokeCap, StrokeJoin, TrimAxis, VectorPath, tweened,
+};
 pub(crate) mod prop;
 mod spec;
 mod style;
@@ -54,7 +56,7 @@ pub(crate) use style::{BackdropKeys, GradientStop, ShaderKeys, ShadowLayer};
 pub use spec::LockSpec;
 pub use style::{
     Affine, Blend, BorderColor, BorderPaint, ClipShape, Effect, EffectShader, Fill, Gradient, GradientShape,
-    IDENTITY_AFFINE, Mask, MaskSource, Shadow, Tone, Transform, apply_affine, compose_affine, invert_affine,
+    IDENTITY_AFFINE, Mask, MaskSource, Ring, Shadow, Tone, Transform, apply_affine, compose_affine, invert_affine,
     parse_effect, parse_transform, transformed_bounds,
 };
 pub(crate) use style::{

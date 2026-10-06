@@ -21,9 +21,9 @@ use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
     ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
-    NumberOrCorners, NumberOrEdges, Outline, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Root,
-    Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin, TextAlign,
-    TransitionSpec, TrimAxis, Wrap,
+    NumberOrCorners, NumberOrEdges, Outline, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Ring,
+    Root, Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin,
+    TextAlign, TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Modifiers, Spelling, fun, spelling};
@@ -360,6 +360,10 @@ props! {
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
         border_width: Bound<NumberOrEdges> = range(0.0, 8192.0).absent(Number(0.0));
+        /// A stroke of `width` px and `color` around the box, `offset` px outside its edge (default `0`, inside when negative) with the gap left clear: Material's focus ring, CSS `outline` with `outline-offset`. Follows `radius`, `corner_smoothing` and `outline`. Paints over the children and takes no layout space; a clipping ancestor cuts it. `width = 0` draws nothing.
+        ///
+        /// Book: A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring)
+        ring: Bound<Ring>;
         /// Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
         ///
         /// Book: Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background

@@ -64,7 +64,7 @@ or, with none close, listing them all.
 | Properties | Taken by |
 | :--- | :--- |
 | `shadows`, `effect`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `outline`, `border_color`, `border_width`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
+| `background`, `radius`, `corner_shape`, `outline`, `border_color`, `border_width`, `ring`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
 | `effect.backdrop` | Box kinds only; the key is refused elsewhere, naming it |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
@@ -93,6 +93,7 @@ colours and no short `#RGB` form.
 | `outline` | `Outline\|Bound` | None | The box's shape as one closed contour, in place of `radius`; see [Outline](#outline) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
+| `ring` | `Ring\|Bound` | None | A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring) |
 | `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
 | `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` on a surface or a `scroll` viewport, else `"none"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip) |
@@ -400,6 +401,36 @@ rect {
 The mask child contributes to `Content` sizing and flow spacing like other children.
 Use a stacking `rect` with explicit dimensions when the mask must not size the content.
 Mask alpha does not change the content's input or desktop blur region.
+
+## Ring
+
+`ring = { width, color, offset }` strokes the box `width` px thick in `color`, `offset` px (default
+`0`, inside when negative) from its edge with a clear gap between: Material's focus indicator (3 px,
+2 px offset) and CSS `outline` with `outline-offset`. `width = 0`, a clear `color` or an inset past
+the box's middle draws nothing. The gap stays `offset` all round, so a rounded corner's ring has
+radius `radius + offset + width` outside and follows `corner_smoothing` and `outline` too. It is
+paint only: no layout space or hit area, drawn over the children. The node's own `clip` does not cut
+it, a clipping ancestor does as it does a shadow, and `animate.ring` tweens all three numbers.
+
+```lua
+local ring = focus_visible("save")
+
+return panel {
+    id = "dialog",
+    layer = "top",
+    keyboard_interactivity = "on_demand",
+    child = rect {
+        width = 80,
+        height = 32,
+        radius = 8,
+        accessible_name = "Save",
+        focus_ring = false,
+        focus_visible = ring,
+        ring = ring:map(function(on) return { width = on and 3 or 0, color = "#89b4fa", offset = 2 } end),
+        on_click = function() end,
+    },
+}
+```
 
 ## Shadows
 

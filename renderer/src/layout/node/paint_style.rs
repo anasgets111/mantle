@@ -162,6 +162,8 @@ pub enum PaintStyle {
         widths: EdgeInsets,
         clip: ClipShape,
         mask: Option<Mask>,
+        /// Paint only: drawn outside the box, over its children (`ring`).
+        ring: Option<Ring>,
     },
     /// Text before/after `layout::scene::pass::finish` rewrites it to an ellipsized prefix under `elide` or
     /// wrapped lines joined by `\n`; display-list paint may therefore receive `\n`-joined lines.
@@ -276,6 +278,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 widths,
                 clip: ClipShape::of(kind, properties)?,
                 mask: paint::mask.read(properties)?,
+                ring: paint::ring.read(properties)?,
             }
         }
         "path" => PaintStyle::Path(VectorPath {

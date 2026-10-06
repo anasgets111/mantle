@@ -346,7 +346,7 @@ return panel {
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or
 `focus_target(name):request()` from a click draws none, and a press hides an outline Tab drew. `focus_ring = false`
-keeps the outline off a node.
+keeps the outline off a node. The outline follows the node's `radius`, `corner_smoothing` and `outline`.
 
 `focused(name)` returns a read-only boolean signal, `false` until the bound node first holds focus.
 Bind it to a node's `focused` and the engine sets it `true` while that node or any node inside it

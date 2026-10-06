@@ -13,13 +13,13 @@ use crate::layout::node::prop::Keyword;
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BackdropKeys, Blend, BorderColor, CaretKeys, CornersInput,
     Easing, EdgesInput, EffectKeys, ExitBlock, Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand,
-    PopupAnchor, SelectionKeys, ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
+    PopupAnchor, Ring, SelectionKeys, ShaderKeys, ShadowLayer, SpringConstants, TextRun, TransitionInput,
 };
 use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 25] = [
+const NODE_SHAPES: [fn(String) -> String; 26] = [
     fill::<PathCommand>,
     fill::<AnchorInput>,
     fill::<OutlineCommand>,
@@ -32,6 +32,7 @@ const NODE_SHAPES: [fn(String) -> String; 25] = [
     fill::<EffectKeys>,
     fill::<ShaderKeys>,
     fill::<ShadowLayer>,
+    fill::<Ring>,
     fill::<CaretKeys>,
     fill::<SelectionKeys>,
     fill::<KeyframeInput>,
@@ -338,6 +339,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Effect {Effect}
 ---@alias EffectShader {EffectShader}
 ---@alias ShadowLayer {ShadowLayer}
+---@alias Ring {Ring}
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
 ---@alias OutlineAnchor {OutlineAnchor}

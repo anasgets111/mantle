@@ -140,6 +140,7 @@ impl ResolvedNode {
                     widths: Default::default(),
                     clip: shape,
                     mask: None,
+                    ring: None,
                 })
             }
         }

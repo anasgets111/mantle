@@ -217,6 +217,8 @@ pub(super) fn paint_border(
         let (box_y, box_height) = snap_border_band(rect.y, rect.height, scale);
         let (_, width) = snap_border_band(rect.x, widths.top, scale);
         let inset = width / 2.0;
+        // The centre line is half a band in, so its radius is the outer one less half a band: concentric with the fill.
+        let centre = Radii(radius.0.map(|r| (r - inset).max(0.0)), radius.1, None);
         let path = box_path(
             LogicalRect {
                 x: box_x + inset,
@@ -224,7 +226,7 @@ pub(super) fn paint_border(
                 width: (box_width - width).max(0.0),
                 height: (box_height - width).max(0.0),
             },
-            radius,
+            &centre,
         );
         paint.set_line_width(width);
         canvas.stroke_path(&path, &paint);
@@ -602,6 +604,28 @@ mod tests {
             let alpha = pixel_at(painter.canvas_mut(), x, y).3;
             assert!((126..=130).contains(&alpha), "({x}, {y}) is painted once, got alpha {alpha}");
         }
+    }
+
+    /// A rounded border's outer edge has the box's radius, so it hugs the fill: with `radius = 10` and a
+    /// 4 px band, (3, 3) is 0.8 px inside the outer arc, where an arc of `10 + 2` would leave it half out.
+    #[test]
+    fn a_rounded_borders_outer_edge_has_the_boxs_radius() {
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let lua = Lua::new();
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+
+        let root = resolved_surface(
+            &lua,
+            r##"return panel { id = "bar", width = 64, height = 64, child = rect {
+                width = 40, height = 40, radius = 10, border_width = 4, border_color = "#FF0000",
+            } }"##,
+            LogicalSize { width: 64.0, height: 64.0 },
+        );
+        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+
+        let alpha = pixel_at(painter.canvas_mut(), 3, 3).3;
+        assert!(alpha > 230, "(3, 3) is inside the outer arc, got alpha {alpha}");
     }
 
     /// A scoop cuts each corner out along a circle centred on the corner point, and a translucent

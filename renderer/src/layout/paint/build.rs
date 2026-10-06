@@ -6,9 +6,12 @@
 //! `ResolvedNode.rect` is parent-relative, so [`build_node`] accumulates an absolute origin as it
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
+use crate::layout::node::outline::inset;
 use crate::layout::node::{
-    self, Blend, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, Radii, Rgba, StyleRun,
+    self, Blend, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, PathData, PathOp,
+    Radii, Rgba, Ring, Segment, StyleRun,
 };
+
 use crate::layout::scene::{NodeId, ResolvedNode};
 use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
@@ -155,6 +158,13 @@ fn build_node(
     };
     // A gradient cannot draw a scoop or an outline, so their box shadow is their silhouette's.
     let casts = !effect.shadows.is_empty() && (boxed || (opaque && radius.analytic()));
+    // Like a shadow, a ring paints past the box: its own clip and the layer both reach out to it.
+    let ring = match &node.paint {
+        Some(PaintStyle::Box { ring: Some(ring), .. }) if ring.width > 0.0 && ring.color.a > 0.0 => Some(*ring),
+        _ => None,
+    };
+    let ring_pad = ring.map_or(0.0, |ring| (ring.offset + ring.width).max(0.0));
+    let ring_box = ring.map(|_| snap_to_physical(grow(bounds, ring_pad), scale));
     let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
     let own = layer_bounds(bounds, &layered, scale);
     let reach = if casts && radius.analytic() {
@@ -166,6 +176,7 @@ fn build_node(
     } else {
         child_clip
     };
+    let reach = ring_box.map_or(reach, |ring_box| reach.union(ring_box));
     // A box just scrolled out still casts the shadow reaching back in; one whose shadow is out still draws.
     if parent_clip.intersect(reach).is_empty() {
         return;
@@ -329,41 +340,21 @@ fn build_node(
             }
         }
     }
+    if let (Some(ring), Some(ring_box)) = (ring, ring_box) {
+        let ring = Ring { color: fade(ring.color, opacity), ..ring };
+        out.extend(ring_cmd(rect, &radius, ring, parent_clip.intersect(ring_box), scale));
+    }
     if control == Some(node.id)
         && node::fields::common::focus_ring.read(&node.properties).unwrap_or(true)
         && rect.width >= 4.0
         && rect.height >= 4.0
         && !clip.is_empty()
     {
+        // Two-tone so it shows on any background: white on the edge, black just inside it.
         let white = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
         let black = Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 };
-        let border = |color| {
-            BorderPaint::Edges(BorderColor {
-                top: Some(color),
-                right: Some(color),
-                bottom: Some(color),
-                left: Some(color),
-            })
-        };
-        let widths = EdgeInsets { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 };
-        out.push(cmd(
-            clip,
-            Draw::Box { background: Vec::new(), radius: Radii::default(), border: border(white), widths },
-        ));
-        let inner = LogicalRect {
-            x: px.x + 2.0 * scale,
-            y: px.y + 2.0 * scale,
-            width: px.width - 4.0 * scale,
-            height: px.height - 4.0 * scale,
-        };
-        out.push(DrawCmd {
-            rect: inner,
-            clip,
-            draw: in_buffer_pixels(
-                Draw::Box { background: Vec::new(), radius: Radii::default(), border: border(black), widths },
-                scale,
-            ),
-        });
+        out.extend(ring_cmd(rect, &radius, Ring { width: 2.0, color: white, offset: -2.0 }, clip, scale));
+        out.extend(ring_cmd(rect, &radius, Ring { width: 2.0, color: black, offset: -4.0 }, clip, scale));
     }
     if layered.layers() && out.len() > body {
         let commands: Vec<DrawCmd> = out.drain(body..).collect();
@@ -371,7 +362,7 @@ fn build_node(
         let bounds = commands.iter().map(command_bounds).filter(|r| !r.is_empty()).fold(own, PhysicalRect::union);
         // ponytail: a negative spread pulls in content from further out than this. Upgrade path:
         // invert `shadow_rect` about the box.
-        let pad = layered.shadows.iter().fold(0.0_f32, |pad, shadow| {
+        let pad = layered.shadows.iter().fold(ring_pad, |pad, shadow| {
             pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
         });
         let target = snap_to_physical(
@@ -386,6 +377,60 @@ fn build_node(
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
         out.push(cmd(outer, Draw::Transformed { matrix, commands }));
     }
+}
+
+/// `ring` around the box at `rect`, following its shape; `None` when its inner edge leaves no box.
+fn ring_cmd(rect: LogicalRect, radius: &Radii, ring: Ring, clip: PhysicalRect, scale: f32) -> Option<DrawCmd> {
+    let Ring { width, color, offset } = ring;
+    let by = offset + width;
+    if rect.width + 2.0 * offset <= 0.0 || rect.height + 2.0 * offset <= 0.0 {
+        return None;
+    }
+    let px =
+        LogicalRect { x: rect.x * scale, y: rect.y * scale, width: rect.width * scale, height: rect.height * scale };
+    let (px, draw) = if let Some(outline) = &radius.2 {
+        // The stroke's centre line is the contour moved out half a band; `inset` moves inward.
+        let polygon = outline.polygon(LogicalRect { x: 0.0, y: 0.0, ..rect }, 0.1);
+        if polygon.len() < 3 {
+            return None;
+        }
+        let (mut segments, mut points) = (Vec::new(), Vec::new());
+        for element in inset(&polygon, -f64::from(offset + width / 2.0)).elements() {
+            let (op, at) = match *element {
+                kurbo::PathEl::MoveTo(at) => (PathOp::M, Some(at)),
+                kurbo::PathEl::LineTo(at) => (PathOp::L, Some(at)),
+                _ => (PathOp::Z, None),
+            };
+            segments.push(Segment { op, hole: false, begins: op == PathOp::M });
+            points.extend(at.into_iter().flat_map(|at| [at.x as f32, at.y as f32]));
+        }
+        let path = node::VectorPath {
+            commands: std::rc::Rc::new(PathData { segments: segments.into(), points }),
+            fill: None,
+            stroke: Some(Fill::Color(color)),
+            stroke_width: width,
+            stroke_cap: node::StrokeCap::Butt,
+            stroke_join: node::StrokeJoin::Round,
+            trim: (0.0, 1.0),
+            trim_axis: node::TrimAxis::Length,
+            shift: (0.0, 0.0),
+        };
+        (px, Draw::Path(path))
+    } else {
+        // CSS grows each corner by the offset; a square one stays square, and a scoop is left alone.
+        let fitted = radius.fit(rect.width, rect.height);
+        let corners = fitted.0.map(|r| if r > 0.0 { (r + by).max(0.0) } else { r });
+        let edges = BorderPaint::Edges(BorderColor {
+            top: Some(color),
+            right: Some(color),
+            bottom: Some(color),
+            left: Some(color),
+        });
+        let widths = EdgeInsets { top: width, right: width, bottom: width, left: width };
+        let draw = Draw::Box { background: Vec::new(), radius: Radii(corners, fitted.1, None), border: edges, widths };
+        (grow(px, by * scale), draw)
+    };
+    Some(DrawCmd { rect: px, clip, draw: in_buffer_pixels(draw, scale) })
 }
 
 /// `draw`'s own geometry in buffer pixels; a group's subtree was converted as it was built.
@@ -536,7 +581,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // The shared paint of `rect`/`row`/`column` and all four surface roles: background
         // fill, then borders. `clip` is not read here: it decides what this node's *children* are
         // cut to, `build_node`'s question, not this one's.
-        PaintStyle::Box { background, radius, border, widths, clip: _, mask: _ } => Some(Draw::Box {
+        PaintStyle::Box { background, radius, border, widths, .. } => Some(Draw::Box {
             background: background.iter().map(|(fill, _)| fade_fill(fill, opacity)).collect(),
             radius: radius.clone(),
             border: fade_border(border, opacity),
@@ -1455,6 +1500,104 @@ mod tests {
         let mut ringless = tree.clone();
         std::rc::Rc::make_mut(&mut ringless.children[0].properties).insert("focus_ring", mlua::Value::Boolean(false));
         assert_eq!(build_with_control(&ringless, 1.0, &[], Some(id)).commands.len(), idle.commands.len());
+    }
+
+    /// The two-tone outline takes the node's radii: white on its edge, black two px in and two px tighter.
+    #[test]
+    fn the_focus_outline_follows_the_nodes_radius() {
+        let lua = Lua::new();
+        for scale in [1.0_f32, 2.0] {
+            let src = r##"return panel { id = "bar", width = 200, height = 100, padding = 40,
+                child = rect { width = 40, height = 20, radius = { top_left = 6, bottom_right = 6 } } }"##;
+            let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 100.0 });
+            let list = build_with_control(&tree, scale, &[], Some(tree.children[0].id));
+            let [white, black] = &list.commands[list.commands.len() - 2..] else { panic!("two boxes") };
+            for (cmd, corner, inset) in [(white, 6.0, 0.0), (black, 4.0, 2.0)] {
+                let Draw::Box { radius, .. } = &cmd.draw else { panic!("a box: {:?}", cmd.draw) };
+                assert_eq!(radius, &Radii([corner * scale, 0.0, corner * scale, 0.0], 0.0, None));
+                assert_eq!((cmd.rect.x, cmd.rect.width), ((40.0 + inset) * scale, (40.0 - 2.0 * inset) * scale));
+            }
+        }
+    }
+
+    #[test]
+    fn the_focus_outline_follows_an_outline() {
+        let lua = Lua::new();
+        let src = format!(
+            r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40,
+                child = rect {{ width = 40, height = 20, outline = {} }} }}"##,
+            node::outline::TAIL
+        );
+        let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 100.0 });
+        let list = build_with_control(&tree, 1.0, &[], Some(tree.children[0].id));
+        for cmd in &list.commands[list.commands.len() - 2..] {
+            assert!(matches!(&cmd.draw, Draw::Path(path) if !path.commands.points.is_empty()), "{:?}", cmd.draw);
+        }
+    }
+
+    /// `ring` strokes `width` px at `offset` px from the edge: each rounded corner grows with it, a
+    /// square one stays square, and its clip reaches out past the node's own `clip = "box"`.
+    #[test]
+    fn a_ring_sits_offset_px_outside_or_inside_the_box() {
+        for (offset, rect, corner, clip) in [
+            (2, (35.0, 35.0, 50.0, 30.0), 11.0, PhysicalRect { x0: 35, y0: 35, x1: 85, y1: 65 }),
+            (-4, (41.0, 41.0, 38.0, 18.0), 5.0, PhysicalRect { x0: 40, y0: 40, x1: 80, y1: 60 }),
+        ] {
+            let list = effect_surface(&format!(
+                r##"rect {{ width = 40, height = 20, clip = "box", radius = {{ top_left = 6 }},
+                    ring = {{ width = 3, color = "#89b4ff", offset = {offset} }} }}"##
+            ));
+            let ring = list.commands.last().unwrap();
+            let Draw::Box { background, radius, border, widths } = &ring.draw else { panic!("a box: {:?}", ring.draw) };
+            assert!(background.is_empty(), "a gap, not a fill");
+            assert_eq!(radius, &Radii([corner, 0.0, 0.0, 0.0], 0.0, None));
+            assert_eq!(*widths, EdgeInsets { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 });
+            assert!(matches!(border, BorderPaint::Edges(c) if c.top.is_some() && c.left == c.top));
+            let (x, y, width, height) = rect;
+            assert_eq!(ring.rect, LogicalRect { x, y, width, height });
+            assert_eq!(ring.clip, clip, "the node's own clip does not cut it");
+        }
+        // No width, no colour, or an inner edge inverted by an inset past the box: nothing.
+        let plain = effect_surface("rect { width = 40, height = 20 }").commands.len();
+        for ring in [
+            r##"{ width = 0, color = "#89b4ff", offset = 2 }"##,
+            r##"{ width = 3, color = "#89b4ff00" }"##,
+            r##"{ width = 3, color = "#89b4ff", offset = -12 }"##,
+        ] {
+            let list = effect_surface(&format!("rect {{ width = 40, height = 20, ring = {ring} }}"));
+            assert_eq!(list.commands.len(), plain, "{ring}");
+        }
+    }
+
+    /// On an `outline` the ring strokes the contour moved out by the offset plus half its width, in
+    /// buffer pixels, inward for a negative offset.
+    #[test]
+    fn a_ring_follows_an_outline() {
+        for (scale, offset) in [(1.0_f32, 2.0_f32), (2.0, -4.0)] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = rect {{ width = 40,
+                    height = 20, outline = {}, ring = {{ width = 3, color = "#89b4ff", offset = {offset} }} }} }}"##,
+                node::outline::TAIL
+            );
+            let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 });
+            let list = build(&tree, scale, None);
+            let Draw::Path(path) = &list.commands.last().unwrap().draw else { panic!("a path") };
+            assert_eq!((path.stroke_width, path.stroke_join), (3.0 * scale, node::StrokeJoin::Round));
+            let left = path.commands.points.iter().step_by(2).copied().fold(f32::MAX, f32::min);
+            let want = -(offset + 1.5) * scale;
+            assert!((left - want).abs() < 0.1 * scale, "the left edge's centre line is at {want}, got {left}");
+        }
+    }
+
+    /// A box scrolled just out of its parent still draws the ring that reaches back in.
+    #[test]
+    fn a_ring_reaches_into_the_clip_from_a_box_just_outside_it() {
+        let list = effect_surface(
+            r##"rect { width = 40, height = 20, clip = "box", children = { rect { width = 40, height = 20,
+                margin = { top = 24 }, ring = { width = 3, color = "#89b4ff", offset = 2 } } } }"##,
+        );
+        let ring = list.commands.last().unwrap();
+        assert_eq!((ring.rect.y, ring.clip.y0, ring.clip.y1), (59.0, 59, 60), "the part of it inside the parent");
     }
 
     /// The plain half of `textfield` (ADR-0092). Unfocused it is a placeholder like any other

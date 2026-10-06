@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Box nodes take `ring = { width, color, offset }`, a stroke `offset` px outside the box (inside when negative) with a clear gap, for Material-style focus rings; it follows `radius`, `corner_smoothing` and `outline`, takes no layout space and tweens under `animate`.
+- The engine's focus outline follows the node's `radius`, `corner_smoothing` and `outline`, and a rounded `border` now has the box's radius on its outer edge instead of half its width more.
 - Double-click in a plain `textfield` selects a word and triple-click a line; dragging or Shift+clicking afterwards extends by words or lines.
 - A right or middle press on a plain `textfield` calls the field's own `on_press` and, on release, its own `on_click`, never an ancestor's, for right-click menus. It focuses the field and keeps a selection it lands in. Left presses and `secure_submit` fields are unchanged; a card press released over a field inside it no longer clicks the card.
 - Ctrl+X cuts a field's selection, `focus_target(name)` gains `:cut()`, `:copy()`, `:paste()` and `:select_all()`, and `has_selection(name)` is a read-only signal for a field with text selected.

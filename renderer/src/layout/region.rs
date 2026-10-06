@@ -543,6 +543,7 @@ mod tests {
             border: node::BorderPaint::default(),
             widths: crate::layout::node::EdgeInsets::default(),
             clip: node::ClipShape::Box,
+            ring: None,
             mask: None,
         });
         // Only the top half is inside the list.

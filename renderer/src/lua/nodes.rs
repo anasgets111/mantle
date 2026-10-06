@@ -709,6 +709,7 @@ mod meta_stub_tests {
             ("shadows", _) => {
                 return Some("{ { color = \"#112233\", blur = 2.5, offset = { x = 1, y = 2 }, spread = 1 } }".into());
             }
+            ("ring", _) => return Some("{ width = 2.5, color = \"#112233\", offset = 1 }".to_string()),
             ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
             ("outline", "Outline") => {
                 return Some(

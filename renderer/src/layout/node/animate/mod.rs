@@ -16,7 +16,7 @@ use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
     Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, Outline, PathCommands,
-    PathData, PropMap, Rgba, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill,
+    PathData, PropMap, Rgba, Ring, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill,
     parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
@@ -166,6 +166,7 @@ pub enum Animatable {
     Path(Rc<PathData>),
     Outline(Rc<Outline>),
     Shadows(Vec<Shadow>),
+    Ring(Ring),
     Layers(Vec<Layer>),
     Effect([f32; 9], Option<Value>),
 }
@@ -182,7 +183,7 @@ pub enum Layer {
 const EFFECT_OFF: [f32; 9] = [0.0, 1.0, 1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 0.0];
 
 spelled!(Animatable => format!(
-    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
     f32::lua(),
     String::lua(),
     EdgeInsets::lua(),
@@ -192,6 +193,7 @@ spelled!(Animatable => format!(
     PathCommands::lua(),
     Outline::lua(),
     Shadows::lua(),
+    Ring::lua(),
     Vec::<BackgroundLayer>::lua()
 ));
 
@@ -208,6 +210,7 @@ impl Animatable {
             }
             Self::Fields { keys, .. } => Self::Fields { keys, values: [axis_default(property); 4] },
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
+            Self::Ring(ring) => Self::Ring(Ring { width: 0.0, color: clear(ring.color), ..ring }),
             Self::Layers(ref layers) => Self::Layers(layers.iter().map(faded_layer).collect()),
             Self::Effect(..) => Self::Effect(EFFECT_OFF, None),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
@@ -249,6 +252,9 @@ impl Animatable {
         }
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
+        }
+        if property == "ring" {
+            return Ok(<Ring as Prop>::read(&fields::paint::ring.row, Some(value))?.map(Self::Ring));
         }
         if property == "background" {
             // A lone colour or gradient is a one-layer list, so it mixes with a list on the other side.
@@ -397,6 +403,14 @@ impl Animatable {
                 });
                 Self::Shadows(layers.collect())
             }
+            (Self::Ring(a), Self::Ring(b)) => {
+                let lerp = |p: f32, q: f32| p + (q - p) * t;
+                Self::Ring(Ring {
+                    width: lerp(a.width, b.width).clamp(SHADOW_BLUR.0, SHADOW_BLUR.1),
+                    color: mix(a.color, b.color, t),
+                    offset: lerp(a.offset, b.offset).clamp(SHADOW_REACH.0, SHADOW_REACH.1),
+                })
+            }
             (Self::Layers(a), Self::Layers(b)) => {
                 let layers = (0..a.len().max(b.len())).filter_map(|i| match (a.get(i), b.get(i)) {
                     // The blend snaps to the target's.
@@ -465,6 +479,11 @@ impl Animatable {
                 }
                 Value::Table(list)
             }
+            Self::Ring(ring) => Value::Table(lua.create_table_from([
+                ("width", Value::Number(f64::from(ring.width))),
+                ("color", Value::String(lua.create_string(hex_of(ring.color))?)),
+                ("offset", Value::Number(f64::from(ring.offset))),
+            ])?),
             Self::Shadows(ref layers) => {
                 let list = lua.create_table_with_capacity(layers.len(), 0)?;
                 for shadow in layers {
@@ -765,6 +784,7 @@ const PAINT_ONLY: &[&str] = &[
     "corner_smoothing",
     "outline",
     "shadows",
+    "ring",
     "effect",
     "translate",
     "scale",
@@ -1365,6 +1385,25 @@ mod tests {
         );
         let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a list writes back as a table") };
         assert_eq!(Animatable::from_value("shadows", Some(&Value::Table(written))).unwrap(), Some(back));
+    }
+
+    /// Width, colour and offset tween together, a ring that appears grows from no width, and the
+    /// value writes back as the table the parser reads.
+    #[test]
+    fn a_ring_tweens_its_width_colour_and_offset_and_grows_from_nothing() {
+        let lua = Lua::new();
+        let ring = |src: &str| {
+            let value: Value = lua.load(src).eval().unwrap();
+            Animatable::from_value("ring", Some(&value)).unwrap().unwrap()
+        };
+        let from = ring(r##"return { width = 2, color = "#000000", offset = 0 }"##);
+        let to = ring(r##"return { width = 4, color = "#ff0000", offset = 4 }"##);
+        let Animatable::Ring(mid) = from.lerp(&to, 0.5, "ring") else { panic!("a ring") };
+        assert_eq!((mid.width, mid.offset, mid.color.r), (3.0, 2.0, 0.5));
+        let Animatable::Ring(unset) = to.identity("ring") else { panic!("a ring") };
+        assert_eq!((unset.width, unset.color.a, unset.offset), (0.0, 0.0, 4.0));
+        let Value::Table(written) = to.to_value(&lua).unwrap() else { panic!("a table") };
+        assert_eq!(Animatable::from_value("ring", Some(&Value::Table(written))).unwrap(), Some(to));
     }
 
     /// ADR-0331: an inset layer tweens against an inset layer, a pair that differs in `inset` shows

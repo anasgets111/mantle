@@ -112,7 +112,7 @@ Path coordinates stay within `[-8192, 8192]` and arc radii at 0 or more.
 
 | Tween on | Each frame |
 | :--- | :--- |
-| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `fill`, `stroke`, `stroke_width`, `shadows`, `effect` | Repaints; no layout pass |
+| `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `progress`, `commands`, `fill`, `stroke`, `stroke_width`, `shadows`, `ring`, `effect` | Repaints; no layout pass |
 | Anything else: `width`, `height`, `margin`, `padding`, `spacing`, `font_size`, … | Lays the surface out again |
 
 Slide with `translate` and grow on hover with `scale` when surrounding nodes should stay put.
@@ -446,7 +446,7 @@ exit = { duration = 150, easing = "in_quad", opacity = 0, translate = { y = 16 }
 | Checked | On every pass while the node is still in the tree, so a typo fails before the node leaves. A block with no targets is a legal no-op; one with targets needs `duration` or `spring` |
 | Start value | The value on screen. A property never set starts at its identity: `1` for `opacity` and `scale`, `0.5` for `origin`, `"0%"` for a percent, the target colour at alpha 0 for a colour, `0` otherwise |
 | Running tweens | Stop where they are. The exit block alone decides how long the node lives |
-| What moves | Everything painted: `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `shadows`, blurs, `progress`, and pixel `width`/`height`. `margin`, `padding` and `spacing` change nothing visible |
+| What moves | Everything painted: `opacity`, colours, `radius`, `translate`, `scale`, `rotate`, `origin`, `shadows`, `ring`, blurs, `progress`, and pixel `width`/`height`. `margin`, `padding` and `spacing` change nothing visible |
 | While leaving | Painted at its last rect and scroll offset, above live siblings of the same `z`. It takes no space in the flow (siblings close up at once), though a content-sized parent keeps room for its last rect until it is gone. It takes no pointer or keyboard input and no `geometry` writes. Its subtree is frozen: a resized box does not reflow its children, and text keeps the string it was fitted to |
 | Identity | A leaving node is never matched again. Returning the same `id` builds a new node beside it |
 | Scope | Only the dropped child runs its block; descendants leave with it and their own blocks never run |

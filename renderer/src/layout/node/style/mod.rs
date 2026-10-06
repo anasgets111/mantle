@@ -671,6 +671,55 @@ impl Prop for Shadows {
     }
 }
 
+lua_shape! {
+    /// A stroke around a box, `offset` px outside its edge (inside when negative), CSS `outline` with `outline-offset`.
+    #[alias = "Ring"]
+    struct RingInput {
+        width: f32,
+        color: Rgba,
+        offset: Option<f32>,
+    }
+}
+
+/// `ring`, `offset` defaulted.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ring {
+    pub width: f32,
+    pub color: Rgba,
+    pub offset: f32,
+}
+
+impl LuaType for Ring {
+    fn lua() -> String {
+        "Ring".into()
+    }
+    #[cfg(test)]
+    fn classes(out: &mut Vec<String>) {
+        RingInput::classes(out);
+    }
+}
+
+/// `ring`: `None` when absent.
+impl Prop for Ring {
+    type Out = Option<Ring>;
+    fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
+        let table = match value {
+            None => return Ok(None),
+            Some(Value::Table(table)) => table,
+            Some(value) => {
+                return Err(invalid(row.name, format!("expected a table, got {}", preview_for_error(value))));
+            }
+        };
+        let RingInput { width, color, offset } = RingInput::read(row.name, table)?;
+        let offset = offset.unwrap_or(0.0);
+        Ok(Some(Ring {
+            width: within_range(row.name, SHADOW_BLUR, width)?,
+            color,
+            offset: within_range(row.name, SHADOW_REACH, offset)?,
+        }))
+    }
+}
+
 /// `shadows` and `effect`, every kind, and a box's `shadow_mode`. Only layers that would draw are
 /// kept, so paint never opens an offscreen for one.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
