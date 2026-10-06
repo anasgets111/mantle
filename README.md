@@ -11,6 +11,9 @@ Version 0.x: a minor release can break the Lua API.
 
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
 [anasgets111/dotfiles](https://github.com/anasgets111/dotfiles) is a full shell built on it.
+[mantle-glass](https://github.com/anasgets111/mantle-glass) (Liquid Glass) and
+[mantle-material](https://github.com/anasgets111/mantle-material) (Material 3 Expressive) are
+[component libraries](https://anasgets111.github.io/mantle/libraries.html) for apps and shells.
 
 The demo builds a shell from the starter, one save at a time. Mantle itself
 [types and records it](demo/director).

@@ -21,6 +21,10 @@
   - [System tray with menu](cookbook/tray.md)
   - [Media player](cookbook/media-player.md)
 
+# Libraries
+
+- [Component libraries](libraries.md)
+
 # Concepts
 
 - [Runtime](guide/runtime.md)
