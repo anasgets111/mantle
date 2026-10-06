@@ -330,6 +330,8 @@ mod tests {
             selection: (5, 0),
             typing: true,
             selecting: false,
+            span: Default::default(),
+            click: None,
             goal_x: None,
             on_change: None,
             on_submit: None,

@@ -196,6 +196,8 @@ pub(super) fn requested_focus(
         history: EditHistory::default(),
         typing: true,
         selecting: false,
+        span: Default::default(),
+        click: None,
         goal_x: None,
         on_change,
         on_submit,
@@ -256,6 +258,73 @@ fn next_word(text: &str, at: usize) -> usize {
         .split_word_bound_indices()
         .find(|(_, word)| !word.trim().is_empty())
         .map_or(text.len(), |(start, word)| at + start + word.len())
+}
+
+/// How far a press selects: a series of left presses on one field grows it from click to word to line.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(in crate::wayland::input) enum Unit {
+    #[default]
+    Char,
+    Word,
+    Line,
+}
+
+impl Unit {
+    pub(in crate::wayland::input) fn next(self) -> Self {
+        match self {
+            Self::Char => Self::Word,
+            Self::Word => Self::Line,
+            Self::Line => Self::Char,
+        }
+    }
+}
+
+/// A unit, the span its press selected and the selection that left, which a drag or Shift+press keeps.
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::wayland::input) struct Span {
+    pub(in crate::wayland::input) unit: Unit,
+    pub(in crate::wayland::input) base: (usize, usize),
+    pub(in crate::wayland::input) produced: (usize, usize),
+}
+
+impl Span {
+    /// Self while `selection` is still what it produced in `text`, else per character from the live
+    /// anchor; checking the selection catches every edit and keyboard move without a reset at each.
+    pub(in crate::wayland::input) fn live(self, text: &str, selection: (usize, usize)) -> Self {
+        let valid = self.unit != Unit::Char
+            && selection == self.produced
+            && text.is_char_boundary(self.base.0)
+            && text.is_char_boundary(self.base.1);
+        if valid { self } else { Self { unit: Unit::Char, base: (selection.0, selection.0), produced: selection } }
+    }
+}
+
+/// The `unit` around `at`: a word is the segment Ctrl+Left/Right walk, preferring a word to the
+/// space or punctuation it touches; a line runs between newlines, so a single-line field's is all of it.
+pub(in crate::wayland::input) fn unit_range(text: &str, at: usize, unit: Unit) -> (usize, usize) {
+    match unit {
+        Unit::Char => (at, at),
+        Unit::Word => {
+            let mut segments = text.split_word_bound_indices();
+            let wordlike = |(_, word): &(usize, &str)| word.chars().any(char::is_alphanumeric);
+            // `at` is a nearest-boundary caret, so it can sit just past a word's last letter.
+            let (after, before) = (segments.clone().rfind(|(s, _)| *s <= at), segments.rfind(|(s, _)| *s < at));
+            after
+                .filter(wordlike)
+                .or(before.filter(wordlike))
+                .or(after)
+                .map_or((at, at), |(start, word)| (start, start + word.len()))
+        }
+        Unit::Line => {
+            (text[..at].rfind('\n').map_or(0, |i| i + 1), text[at..].find('\n').map_or(text.len(), |i| at + i))
+        }
+    }
+}
+
+/// `(anchor, head)` once the pointer reaches `at`: `base` stays selected and the unit there joins it.
+pub(in crate::wayland::input) fn extend_by_unit(text: &str, span: Span, at: usize) -> (usize, usize) {
+    let (start, end) = unit_range(text, at, span.unit);
+    if start < span.base.0 { (span.base.1, start) } else { (span.base.0, end.max(span.base.1)) }
 }
 
 /// Byte offset of the grapheme cluster boundary before `at`, or the start of `text`.
@@ -1567,6 +1636,8 @@ mod tests {
             history: EditHistory::default(),
             typing: false,
             selecting: false,
+            span: Default::default(),
+            click: None,
             goal_x: None,
             on_change: None,
             on_submit: None,
@@ -1756,5 +1827,48 @@ mod tests {
         assert!(plain_fields(&root, false, |_| true).next().is_none());
         assert!(autofocus_in_scope(&[("bar", &root)]).is_none());
         assert!(layout::secure_submit::typable_secure_submit_targets(&root).is_empty());
+    }
+
+    #[test]
+    fn a_unit_is_the_word_or_run_under_the_offset_or_the_line_between_newlines() {
+        let text = "one  two, three";
+        let word = |at| unit_range(text, at, Unit::Word);
+        assert_eq!((word(1), word(0)), ((0, 3), (0, 3)));
+        assert_eq!(word(3), (0, 3), "just past a word's last letter still takes the word, not the spaces");
+        assert_eq!(
+            (word(4), word(5)),
+            ((3, 5), (5, 8)),
+            "inside the spaces the run; at the next word's start that word"
+        );
+        assert_eq!(word(8), (5, 8), "after a word the comma gives way to it");
+        assert_eq!(word(15), (10, 15), "the end takes the last word");
+        assert_eq!(unit_range(" ,", 1, Unit::Word), (1, 2), "punctuation with no word beside it is itself");
+        assert_eq!(unit_range("", 0, Unit::Word), (0, 0));
+        assert_eq!(unit_range(text, 4, Unit::Line), (0, 15), "a single-line field's line is all of it");
+        let lines = "ab\ncd ef\n\ngh";
+        let line = |at| unit_range(lines, at, Unit::Line);
+        assert_eq!((line(1), line(4), line(9)), ((0, 2), (3, 8), (9, 9)), "newline to newline, no wrap rows");
+        assert_eq!(line(11), (10, 12));
+    }
+
+    #[test]
+    fn extending_by_a_unit_keeps_the_original_and_grows_either_way() {
+        let text = "one two three";
+        let span = Span { unit: Unit::Word, base: (4, 7), produced: (4, 7) };
+        assert_eq!(extend_by_unit(text, span, 5), (4, 7), "inside the original nothing changes");
+        assert_eq!(extend_by_unit(text, span, 10), (4, 13), "right grows to the whole word");
+        assert_eq!(extend_by_unit(text, span, 1), (7, 0), "left grows to the whole word and anchors on the far end");
+    }
+
+    #[test]
+    fn a_unit_lives_only_while_its_selection_does() {
+        let span = Span { unit: Unit::Word, base: (4, 7), produced: (4, 7) };
+        assert_eq!(span.live("one two three", (4, 7)).unit, Unit::Word);
+        let moved = span.live("one two three", (0, 13));
+        assert_eq!((moved.unit, moved.base), (Unit::Char, (0, 0)), "Ctrl+A leaves the word behind");
+        // A buffer replaced under a held drag: the stale base would sit inside a character.
+        let edited = span.live("\u{e9}\u{e9}\u{e9}\u{e9}", (4, 7));
+        assert_eq!(edited.unit, Unit::Char, "base off the new text's boundaries");
+        assert_eq!(extend_by_unit("\u{e9}\u{e9}\u{e9}\u{e9}", edited, 2), (4, 2));
     }
 }

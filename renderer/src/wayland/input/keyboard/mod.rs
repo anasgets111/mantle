@@ -15,7 +15,7 @@ mod rows;
 mod secure;
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
 pub(crate) use on_key::KeyPress;
-pub(in crate::wayland::input) use plain::EditHistory;
+pub(in crate::wayland::input) use plain::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 
 keywords! {
     /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
@@ -115,6 +115,10 @@ pub(in crate::wayland) struct FocusedTextField {
     pub(super) typing: bool,
     /// The pointer is down inside it, so motion extends the selection (ADR-0236).
     pub(super) selecting: bool,
+    /// What a drag or Shift+press grows by, and the span it keeps selected.
+    pub(super) span: Span,
+    /// The left press that last selected here, which the next may continue as a double or triple click.
+    pub(super) click: Option<(std::time::Instant, (f64, f64))>,
     /// The x a run of Up and Down in a `multiline` field keeps to, field-local.
     pub(super) goal_x: Option<f32>,
     pub(super) on_change: Option<Function>,
@@ -754,6 +758,8 @@ pub(in crate::wayland) mod tests {
             history: EditHistory::default(),
             typing: false,
             selecting: false,
+            span: Default::default(),
+            click: None,
             goal_x: None,
             on_change: None,
             on_submit: None,

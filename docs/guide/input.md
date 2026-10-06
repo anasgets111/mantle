@@ -471,9 +471,14 @@ a press.
 | Tab, Shift+Tab | Moves between controls when at least two are available; otherwise passes up to `on_key` (`"ISO_Left_Tab"` for Shift+Tab) | Moves between controls when at least two are available |
 | Any other Ctrl chord | Left to the compositor | Same |
 
-**Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. Paste accepts
-up to 64 KiB of valid UTF-8 without control characters (a multiline field also takes newlines;
-`\r\n` and `\r` become `\n`). A paste is dropped if the selection, field,
+**Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. A
+double-click selects the word under the pointer (a space run or a single punctuation mark when it
+lands on one), and a triple-click the line: newline to newline in a multiline field, all the text in
+a single-line one. Presses within 400 ms and 4 logical pixels of the last on the same field form a
+series, and a fourth starts over as a single click. Dragging or Shift+clicking after a double or
+triple click grows the selection by whole words or lines. Paste accepts up to 64 KiB of valid UTF-8
+without control characters (a multiline field also takes newlines; `\r\n` and `\r` become `\n`).
+A paste is dropped if the selection, field,
 or keyboard focus changes before the read ends. Copy and cut work only with a plain-field selection.
 `has_selection(name)` is a read-only boolean signal, `false` until the plain field whose `focus_target`
 is `name` holds the keyboard and has text selected. It survives reloads.

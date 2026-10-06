@@ -3,7 +3,7 @@
 
 use shared::warn;
 
-use super::keyboard::{FieldTarget, focused_field};
+use super::keyboard::{FieldTarget, Span, Unit, extend_by_unit, focused_field, unit_range};
 use super::*;
 use crate::layout::node::fields::pointer;
 use crate::layout::node::prop::{Keyword, keywords};
@@ -279,18 +279,32 @@ fn release_completes_click(
     })
 }
 
+/// A left press's time and position, which the next one may continue.
+type Click = (std::time::Instant, (f64, f64));
+// ponytail: fixed 400 ms and 4 px; upgrade by reading the desktop's double-click setting.
+const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
+const MULTI_CLICK_SLOP: f64 = 4.0;
+
+/// Whether `now` continues the series that `last` began.
+fn continues(last: Click, now: Click) -> bool {
+    now.0.saturating_duration_since(last.0) <= MULTI_CLICK_INTERVAL
+        && (last.1.0 - now.1.0).abs() <= MULTI_CLICK_SLOP
+        && (last.1.1 - now.1.1).abs() <= MULTI_CLICK_SLOP
+}
+
 /// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
 /// reply and password fields must displace each other. `caret` is the byte offset under the press
 /// point ([`layout::hit::caret_at`]), absent when nothing measured it; `extend` is Shift, which
 /// selects from where the caret already was instead of collapsing to the press (ADR-0236). A
 /// non-`primary` (right or middle) press focuses but leaves a selection it lands in, so a menu can
-/// act on it, and starts no drag.
+/// act on it, and starts no drag. `click` is a left (`primary`) press and `None` the others; a held field it continues
+/// selects the next unit (click, word, line, click), and Shift keeps the held unit instead.
 fn press_chooses_focus(
     hit_field: Option<FieldTarget>,
     instance_id: &str,
     caret: Option<usize>,
     extend: bool,
-    primary: bool,
+    click: Option<Click>,
     focused_secure_submit: Option<FocusedField>,
     focused_text_field: Option<FocusedTextField>,
 ) -> (Option<FocusedField>, Option<FocusedTextField>) {
@@ -302,15 +316,28 @@ fn press_chooses_focus(
         Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape }) => {
             let resumed = focused_text_field.filter(|field| field.id == id);
             let resumed_selection = resumed.as_ref().map(|field| field.selection);
-            let anchor = resumed_selection.map(|selection| selection.0);
+            let primary = click.is_some();
+            // `live` drops a unit that an edit or a keyboard selection has outdated.
+            let held = resumed.as_ref().map(|field| (field.span.live(&field.buffer, field.selection), field.click));
             let (buffer, mut history) = resumed.map(|field| (field.buffer, field.history)).unwrap_or_default();
             history.break_typing();
             // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
             let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
+            let span = match (held, click) {
+                (Some((held, _)), _) if extend => held,
+                (held, click) => {
+                    let unit = match (held, click) {
+                        (Some((held, Some(last))), Some(now)) if continues(last, now) => held.unit.next(),
+                        _ => Unit::Char,
+                    };
+                    Span { unit, base: unit_range(&buffer, caret, unit), produced: (0, 0) }
+                }
+            };
             let selection = match resumed_selection {
                 Some((a, b)) if !primary && (a.min(b)..=a.max(b)).contains(&caret) => (a, b),
-                _ => (anchor.filter(|_| extend).unwrap_or(caret), caret),
+                _ => extend_by_unit(&buffer, span, caret),
             };
+            let span = Span { produced: selection, ..span };
             (
                 None,
                 Some(FocusedTextField {
@@ -321,6 +348,8 @@ fn press_chooses_focus(
                     history,
                     typing: true,
                     selecting: primary,
+                    span,
+                    click: click.filter(|_| !extend),
                     goal_x: None,
                     on_change,
                     on_submit,
@@ -334,7 +363,7 @@ fn press_chooses_focus(
         // not discard a secret before `submit`.
         None => (
             focused_secure_submit,
-            focused_text_field.map(|field| FocusedTextField { typing: false, selecting: false, ..field }),
+            focused_text_field.map(|field| FocusedTextField { typing: false, selecting: false, click: None, ..field }),
         ),
     }
 }
@@ -511,7 +540,7 @@ impl App {
                     &instance_id,
                     hit.caret,
                     self.shift_held,
-                    button == BTN_LEFT,
+                    (button == BTN_LEFT).then(|| (std::time::Instant::now(), position)),
                     self.focused_secure_submit.clone(),
                     self.focused_text_field.clone(),
                 );
@@ -711,8 +740,12 @@ impl App {
         let Some(caret) = selecting.then(|| self.hit_under(index, position).caret).flatten() else {
             return;
         };
-        if let Some(field) = self.focused_text_field.as_mut().filter(|field| field.selection.1 != caret) {
-            (field.selection.1, field.goal_x) = (caret, None);
+        if let Some(field) = self.focused_text_field.as_mut()
+            && let span = field.span.live(&field.buffer, field.selection)
+            && let selection = extend_by_unit(&field.buffer, span, caret)
+            && selection != field.selection
+        {
+            (field.selection, field.span, field.goal_x) = (selection, Span { produced: selection, ..span }, None);
             field.history.break_typing();
             self.text_input.note_other_change();
             self.mark_field_input_changed(instance_id);
@@ -857,6 +890,10 @@ mod tests {
         draft, plain_textfield, secure_submit_table, textfield, with_property,
     };
     use mlua::Table;
+
+    fn left() -> Option<Click> {
+        Some((std::time::Instant::now(), (0.0, 0.0)))
+    }
 
     fn pt(x: f32, y: f32) -> layout::hit::LogicalPoint {
         layout::hit::LogicalPoint { x, y }
@@ -1324,7 +1361,7 @@ mod tests {
             "notification_area@eDP-1",
             Some(7),
             false,
-            true,
+            left(),
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1349,7 +1386,7 @@ mod tests {
             "notification_area@eDP-1",
             None,
             false,
-            true,
+            left(),
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1370,7 +1407,7 @@ mod tests {
             "notification_area@eDP-1",
             Some(4),
             true,
-            true,
+            left(),
             None,
             Some(held),
         );
@@ -1384,7 +1421,7 @@ mod tests {
             "notification_area@eDP-1",
             Some(4),
             false,
-            true,
+            left(),
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1399,7 +1436,7 @@ mod tests {
             target: secure_target(),
         };
         let (masked, plain) =
-            press_chooses_focus(None, "bar@eDP-1", None, false, true, Some(held.clone()), Some(draft(7, "kept")));
+            press_chooses_focus(None, "bar@eDP-1", None, false, left(), Some(held.clone()), Some(draft(7, "kept")));
         let plain = plain.expect("the draft survives a press elsewhere");
         assert_eq!(plain.buffer, "kept");
         assert!(!plain.typing, "no caret without focus");
@@ -1414,7 +1451,7 @@ mod tests {
             "lock@eDP-1",
             None,
             false,
-            true,
+            left(),
             None,
             Some(draft(7, "half a sentence")),
         );
@@ -1481,13 +1518,13 @@ mod tests {
     fn a_right_press_keeps_a_selection_it_lands_in_and_starts_no_drag() {
         let lua = Lua::new();
         let held = || FocusedTextField { selection: (2, 9), ..draft(7, "half a sentence") };
-        let press = |caret, primary| {
+        let press = |caret, primary: bool| {
             let (_, plain) = press_chooses_focus(
                 Some(plain_field(&lua, 7)),
                 "bar@eDP-1",
                 Some(caret),
                 false,
-                primary,
+                if primary { left() } else { None },
                 None,
                 Some(held()),
             );
@@ -1499,5 +1536,55 @@ mod tests {
         assert_eq!((outside.selection, outside.selecting), ((12, 12), false), "outside it places the caret");
         let left = press(5, true);
         assert_eq!((left.selection, left.selecting), ((5, 5), true), "a left press still collapses and drags");
+    }
+
+    #[test]
+    fn presses_continue_a_series_by_time_and_distance_and_a_right_press_or_blur_ends_it() {
+        use std::time::{Duration, Instant};
+        let (lua, t0) = (Lua::new(), Instant::now());
+        let press = |held: Option<FocusedTextField>, id, at, extend, button: Option<Click>| {
+            let click = button.map(|(_, p)| (t0 + Duration::from_millis(at), p));
+            press_chooses_focus(Some(plain_field(&lua, id)), "bar@eDP-1", Some(5), extend, click, None, held).1
+        };
+        let at = |x| Some((t0, (x, 10.0)));
+        let first = press(Some(draft(7, "one two three")), 7, 0, false, at(10.0)).unwrap();
+        let second = press(Some(first.clone()), 7, 300, false, at(12.0)).unwrap();
+        let third = press(Some(second.clone()), 7, 600, false, at(12.0)).unwrap();
+        let fourth = press(Some(third.clone()), 7, 900, false, at(12.0)).unwrap();
+        let units = [first.span.unit, second.span.unit, third.span.unit, fourth.span.unit];
+        assert_eq!(units, [Unit::Char, Unit::Word, Unit::Line, Unit::Char]);
+        assert_eq!((second.selection, third.selection), ((4, 7), (0, 13)));
+        let unit =
+            |held: &FocusedTextField, id, ms, x| press(Some(held.clone()), id, ms, false, at(x)).unwrap().span.unit;
+        assert_eq!(unit(&first, 7, 401, 10.0), Unit::Char, "too slow");
+        assert_eq!(unit(&first, 7, 100, 15.0), Unit::Char, "too far");
+        assert_eq!(unit(&first, 8, 100, 10.0), Unit::Char, "another field starts its own series");
+        let right = press(Some(second.clone()), 7, 100, false, None).unwrap();
+        assert_eq!(unit(&right, 7, 150, 12.0), Unit::Char, "a right press ended the series");
+        let blurred = press_chooses_focus(None, "bar@eDP-1", None, false, None, None, Some(second)).1.unwrap();
+        assert_eq!(unit(&blurred, 7, 100, 12.0), Unit::Char, "a press elsewhere ended it");
+    }
+
+    #[test]
+    fn shift_press_keeps_the_unit_and_an_edit_or_select_all_drops_it() {
+        let lua = Lua::new();
+        let shift = |caret, held| {
+            press_chooses_focus(Some(plain_field(&lua, 7)), "bar@eDP-1", Some(caret), true, left(), None, Some(held))
+                .1
+                .expect("focused")
+        };
+        let word = FocusedTextField {
+            selection: (4, 7),
+            span: Span { unit: Unit::Word, base: (4, 7), produced: (4, 7) },
+            ..draft(7, "one two three")
+        };
+        assert_eq!(shift(10, word.clone()).selection, (4, 13), "Shift grows by the held word");
+        assert_eq!(shift(1, word.clone()).selection, (7, 0));
+        let all = FocusedTextField { selection: (0, 13), ..word.clone() };
+        assert_eq!(shift(10, all).selection, (0, 10), "after Ctrl+A the anchor is the live one, not the old word");
+        // A first press on a not-yet-focused field has an empty buffer; its drag must still anchor at the live selection.
+        let swapped = FocusedTextField { selection: (3, 3), ..draft(7, "one two three") };
+        let span = swapped.span.live(&swapped.buffer, swapped.selection);
+        assert_eq!(extend_by_unit(&swapped.buffer, span, 9), (3, 9));
     }
 }
