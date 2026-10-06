@@ -14,8 +14,10 @@ To use one, copy or symlink its module folder (`glass/` or `m3/`) into your conf
 
 ## mantle-glass
 
-A Liquid Glass component library: window chrome (traffic lights, toolbars,
-sidebar, inspector, tabs), controls, text fields, pickers, tables and outlines, menus, popovers,
+![mantle-glass demo: a glass menu bar with an open menu and the Dock](https://raw.githubusercontent.com/anasgets111/mantle-glass/main/docs/screenshot.png)
+
+A Liquid Glass component library: window chrome (traffic lights, toolbars, sidebar, inspector,
+tabs), controls, text fields, pickers, tables and outlines, menus, popovers,
 alerts, sheets, a menu bar and a Dock. Its glass materials refract and follow the desktop's dark
 mode, accent, contrast and reduced-motion settings.
 
@@ -34,6 +36,8 @@ return {
 ```
 
 ## mantle-material
+
+![mantle-material demo: badges, progress indicators, loading indicator and the Expressive shapes](https://raw.githubusercontent.com/anasgets111/mantle-material/main/docs/screenshot.png)
 
 A Material 3 Expressive component library: the full M3 catalogue (actions, communication,
 containment, navigation, selection and text inputs), dynamic colour from one seed, the Expressive
