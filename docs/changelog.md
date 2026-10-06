@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-06
+
 - Box nodes take `ring = { width, color, offset }`, a stroke `offset` px outside the box (inside when negative) with a clear gap, for Material-style focus rings; it follows `radius`, `corner_smoothing` and `outline`, takes no layout space and tweens under `animate`.
 - The engine's focus outline follows the node's `radius`, `corner_smoothing` and `outline`, and a rounded `border` now has the box's radius on its outer edge instead of half its width more.
 - Double-click in a plain `textfield` selects a word and triple-click a line; dragging or Shift+clicking afterwards extends by words or lines.
