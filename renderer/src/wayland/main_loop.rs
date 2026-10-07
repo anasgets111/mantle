@@ -500,9 +500,9 @@ pub fn run(
             });
             let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
+            let waker_ready = woke && fds[1].any().unwrap_or(false);
             if let Some(profile) = profile.as_mut() {
-                profile
-                    .wake(idle_profile::Wake { wayland: wayland_ready, waker: woke && fds[1].any().unwrap_or(false) });
+                profile.wake(idle_profile::Wake { wayland: wayland_ready, waker: waker_ready });
             }
             if woke {
                 if wayland_ready {
@@ -518,7 +518,9 @@ pub fn run(
                     }
                 }
                 // Drain before the turn; a wake arriving during the turn remains counted.
-                waker.drain();
+                if waker_ready {
+                    waker.drain();
+                }
             }
             // The guard drops here; an unread guard yields no events next iteration.
         }
