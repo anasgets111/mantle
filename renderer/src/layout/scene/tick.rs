@@ -183,7 +183,7 @@ pub(super) fn prepare_retained(
         node.movement.take_if(|movement| !movement.advance(now));
     }
     let changed = node.tweens.iter().any(|tween| !tween.resting);
-    node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
+    node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     // A tick keeps the size its running tween pins; a pass measures again.
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
@@ -362,16 +362,15 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
     // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
-    let advanced =
-        node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua).and_then(|()| {
-            let properties = &node.properties;
-            Ok((
-                node::fields::common::opacity.read(properties)?,
-                node::parse_transform(properties)?,
-                node::parse_effect(properties)?,
-                node::paint_style(node.kind, properties)?,
-            ))
-        });
+    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
+        let properties = &node.properties;
+        Ok((
+            node::fields::common::opacity.read(properties)?,
+            node::parse_transform(properties)?,
+            node::parse_effect(properties)?,
+            node::paint_style(node.kind, properties)?,
+        ))
+    });
     match advanced {
         Ok((opacity, transform, effect, fresh)) => {
             let style = std::rc::Rc::make_mut(&mut node.layout_style);
@@ -404,7 +403,7 @@ pub(super) fn advance_leaving(
     now: Instant,
     lua: &Lua,
 ) -> Result<Option<ResolvedNode>, LayoutError> {
-    node::advance(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), now, lua)?;
+    node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     node.dissolve = advanced_dissolve(node.dissolve.take(), now);
     if node.tweens.is_empty() {
         return Ok(None);

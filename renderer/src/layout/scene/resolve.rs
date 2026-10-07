@@ -83,10 +83,7 @@ pub(super) fn resolve(
         // A resting tween moves nothing, so what the last pass or tick parsed still holds. A `text`
         // parses again: `finish` fitted its kept paint to last pass's box.
         let moving = tweens.iter().any(|tween| !tween.resting);
-        // Only a moving tween writes the map, so a still node keeps sharing it with the rollback.
-        if moving {
-            node::advance(&mut tweens, Rc::make_mut(&mut properties), now, lua)?;
-        }
+        node::advance(&mut tweens, &mut properties, now, lua)?;
         let injected = drop_injected_sizes(&mut properties, &memo.raw);
         let style =
             if moving || injected { LayoutStyle::parse(&properties)? } else { LayoutStyle::clone(&r.layout_style) };

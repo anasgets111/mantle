@@ -800,15 +800,22 @@ pub fn is_paint_only(property: &str) -> bool {
 /// Advances every tween in `tweens` to `now`, writing the displayed values into `properties` and
 /// dropping the ones that have arrived. A sequence that has played out is kept instead, resting on
 /// its last frame, because the list alone is what a pass has to tell a finished run from one it
-/// has never started (ADR-0152).
-pub fn advance(tweens: &mut Vec<Tween>, properties: &mut PropMap, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
+/// has never started (ADR-0152). A shared map is copied only when a tween writes it, so a still
+/// node keeps sharing it with a tick's rollback clone.
+pub fn advance(
+    tweens: &mut Vec<Tween>,
+    properties: &mut Rc<PropMap>,
+    now: Instant,
+    lua: &Lua,
+) -> Result<(), LayoutError> {
     for tween in tweens.iter_mut() {
         // `layout::scene::Scene::advance_scrolls` writes a scroll's offset into its signal.
         if tween.resting || tween.property == "scroll" {
             continue;
         }
         // A content-sized axis's run holds no key between layouts, so this may insert.
-        properties.insert(tween.property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
+        Rc::make_mut(properties)
+            .insert(tween.property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
     }
     tweens.retain(|tween| {
