@@ -8,7 +8,7 @@ use std::marker::PhantomData;
 use mlua::{Function, Value};
 
 use super::{
-    LayoutError, PropMap, Rgba, checked_string, invalid, parse_hex_color, preview_for_error,
+    LayoutError, PropMap, Rgba, checked_string, invalid, lua_hex_color, parse_hex_color, preview_for_error,
     reject_signal_in_structural_field, value_as_f32,
 };
 use crate::lua::luacats::{LuaType, spelled};
@@ -340,7 +340,7 @@ impl Prop for Color {
         let Value::String(s) = value else {
             return Err(invalid(row.name, format!("expected a string, got {}", preview_for_error(value))));
         };
-        parse_hex_color(row.name, &checked_string(row.name, s)?).map(Some)
+        lua_hex_color(row.name, s).map(Some)
     }
 }
 

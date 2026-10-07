@@ -477,6 +477,13 @@ fn checked_string(property: &str, s: &mlua::LuaString) -> Result<String, LayoutE
     Ok(s)
 }
 
+/// [`parse_hex_color`] of a Lua string, borrowed rather than copied when it is UTF-8.
+fn lua_hex_color(property: &str, s: &mlua::LuaString) -> Result<Rgba, LayoutError> {
+    let text = s.to_str().map_err(|_| invalid(property, "hex colour is not valid UTF-8"))?;
+    marshal::check_string(&text).map_err(|e| invalid(property, e.to_string()))?;
+    parse_hex_color(property, &text)
+}
+
 /// Strict `#RRGGBB` / `#RRGGBBAA` hex colour parsing (`rect.background`, `border_color`,
 /// `text.foreground`). No 3-digit shorthand, no named colours, no bare digits without `#`: none
 /// of them is specified.

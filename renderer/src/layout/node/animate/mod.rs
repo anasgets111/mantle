@@ -16,7 +16,7 @@ use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
     Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, Outline, PathCommands,
-    PathData, PropMap, Rgba, Ring, Shadow, Shadows, checked_string, fields, input, invalid, is_layer_list, layer_fill,
+    PathData, PropMap, Rgba, Ring, Shadow, Shadows, fields, input, invalid, is_layer_list, layer_fill, lua_hex_color,
     parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
@@ -260,7 +260,7 @@ impl Animatable {
             // A lone colour or gradient is a one-layer list, so it mixes with a list on the other side.
             let lone = match value {
                 Value::String(s) if s.as_bytes().starts_with(b"#") => {
-                    Some(Layer::Color(parse_hex_color(property, &checked_string(property, s)?)?, Blend::Normal))
+                    Some(Layer::Color(lua_hex_color(property, s)?, Blend::Normal))
                 }
                 Value::Table(table) if !is_layer_list(table) => Some(Layer::Snap(value.clone())),
                 _ => None,
@@ -282,7 +282,7 @@ impl Animatable {
                 };
                 match &fill {
                     Value::String(s) if s.as_bytes().starts_with(b"#") => {
-                        Ok(Layer::Color(parse_hex_color(&name, &checked_string(&name, s)?)?, blend))
+                        Ok(Layer::Color(lua_hex_color(&name, s)?, blend))
                     }
                     _ => Ok(Layer::Snap(layer)),
                 }

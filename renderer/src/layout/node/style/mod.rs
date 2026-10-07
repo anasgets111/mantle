@@ -323,7 +323,7 @@ impl Prop for ColorOrEdges {
             return Ok(BorderPaint::default());
         };
         if let Value::String(s) = value {
-            let color = Some(parse_hex_color(property, &checked_string(property, s)?)?);
+            let color = Some(lua_hex_color(property, s)?);
             return Ok(BorderPaint::Edges(BorderColor { top: color, right: color, bottom: color, left: color }));
         }
         let Value::Table(table) = value else {

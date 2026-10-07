@@ -4,9 +4,7 @@ use mlua::Value;
 
 use super::Blend;
 use crate::layout::node::prop::{Prop, keywords};
-use crate::layout::node::{
-    LayoutError, Property, Rgba, checked_string, input, invalid, only_keys, parse_hex_color, preview_for_error,
-};
+use crate::layout::node::{LayoutError, Property, Rgba, input, invalid, lua_hex_color, only_keys, preview_for_error};
 use crate::lua::luacats::{LuaType, lua_shape, spelled};
 
 /// A box's fill: one colour, or a gradient across its box (ADR-0255).
@@ -119,7 +117,7 @@ spelled!(Fill => "Color|Gradient");
 /// A colour or gradient as `fill`, `stroke` and a `background` layer take it.
 fn fill_of(property: &str, value: &Value) -> Result<Fill, LayoutError> {
     match value {
-        Value::String(s) => Ok(Fill::Color(parse_hex_color(property, &checked_string(property, s)?)?)),
+        Value::String(s) => Ok(Fill::Color(lua_hex_color(property, s)?)),
         Value::Table(table) => Ok(Fill::Gradient(Gradient::read(property, table)?)),
         _ => Err(invalid(
             property,
