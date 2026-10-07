@@ -674,12 +674,12 @@ fn finish(
 
         // ADR-0069 decision 4.
         let scrolled = match main_axis_of(kind, &properties)? {
-            Some(axis) => {
+            Some(axis) if properties.contains_key("scroll") => {
                 ease_request(kind, &properties, &style, size, axis, &children, &mut tweens, now)?;
                 scroll_children(&properties, &style, size, axis, &mut children, 0.0)
             }
             None if kind == "textfield" => kept_scroll,
-            None => 0.0,
+            _ => 0.0,
         };
 
         // After sizing, because the width it fits into is this node's own, and before the node is
