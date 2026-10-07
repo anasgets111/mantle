@@ -1,8 +1,8 @@
 //! Where config code is, as errors print it: chunks named relative to the config directory, the
 //! construction site a node or derived signal records, and tracebacks without the engine's frames.
 
+use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::Path;
 
 use mlua::{IntoLuaMulti, Lua, Table, Value};
