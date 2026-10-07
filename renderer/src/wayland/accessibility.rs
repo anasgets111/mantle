@@ -222,12 +222,12 @@ impl App {
                     .as_ref()
                     .filter(|field| &field.surface_id == id)
                     .map(|field| (field.id, field.buffer.as_str()));
-                Some((id.clone(), tree_update(root, focus, plain), focused, stamp))
+                Some((id.clone(), (root, focus, plain), focused, stamp))
             })
             .collect();
         self.accessibility.adapters.retain(|id, _| live.contains(id));
         self.accessibility.sent.retain(|id, _| live.contains(id));
-        for (id, update, focused, stamp) in active {
+        for (id, (root, focus, plain), focused, stamp) in active {
             let adapter = self.accessibility.adapters.entry(id.clone()).or_insert_with(|| {
                 Adapter::new(
                     Activate(self.accessibility.wake.clone(), self.accessibility.activation.clone()),
@@ -240,7 +240,8 @@ impl App {
                 )
             });
             adapter.update_window_focus_state(focused);
-            adapter.update_if_active(|| update);
+            // Built only for an adapter an assistive client activated.
+            adapter.update_if_active(|| tree_update(root, focus, plain));
             self.accessibility.sent.insert(id, stamp);
         }
     }
