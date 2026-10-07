@@ -185,6 +185,7 @@ pub(super) fn prepare_retained(
     let changed = node.tweens.iter().any(|tween| !tween.resting);
     // Paint-only motion leaves the box as it was: the geometry parse and the solver node stand.
     let paint_only = node.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property));
+    let mut moved = moved_parts(&node.tweens);
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     // A tick keeps the size its running tween pins; a pass measures again.
     let injected = move_on_solve
@@ -197,7 +198,8 @@ pub(super) fn prepare_retained(
         let mut style = std::rc::Rc::clone(&node.layout_style);
         if changed {
             let style = std::rc::Rc::make_mut(&mut style);
-            (style.opacity, style.transform, style.effect) = paint_only_style(&node.properties)?;
+            moved[3] &= node.kind != "text"; // A text's paint is read fresh below.
+            reread(style, &mut node.paint, node.kind, &node.properties, moved)?;
         }
         style
     };
@@ -220,7 +222,7 @@ pub(super) fn prepare_retained(
         resolve_memo,
         ..
     } = node;
-    let paint = if changed || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
+    let paint = if relayout || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(taffy_id) => {
             if relayout {
@@ -320,13 +322,43 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
     }
 }
 
-/// The `LayoutStyle` fields a paint-only tween can move.
-fn paint_only_style(properties: &node::PropMap) -> Result<(f32, node::Transform, node::Effect), LayoutError> {
-    Ok((
-        node::fields::common::opacity.read(properties)?,
-        node::parse_transform(properties)?,
-        node::parse_effect(properties)?,
-    ))
+/// Which of a node's opacity, transform, effect and paint its moving tweens change. Taken before
+/// `node::advance`, which drops the tweens that land.
+fn moved_parts(tweens: &[node::Tween]) -> [bool; 4] {
+    let mut moved = [false; 4];
+    for tween in tweens.iter().filter(|tween| !tween.resting) {
+        moved[match tween.property {
+            "opacity" => 0,
+            "translate" | "scale" | "rotate" | "origin" => 1,
+            "shadows" | "effect" => 2,
+            _ => 3,
+        }] = true;
+    }
+    moved
+}
+
+/// The parts `moved` names re-read into `style` and `paint`. Every read runs before anything is
+/// assigned, so a refusal leaves both as they were.
+fn reread(
+    style: &mut LayoutStyle,
+    paint: &mut Option<PaintStyle>,
+    kind: &str,
+    properties: &node::PropMap,
+    [opacity, transform, effect, painted]: [bool; 4],
+) -> Result<(), LayoutError> {
+    let opacity = opacity.then(|| node::fields::common::opacity.read(properties)).transpose()?;
+    let transform = transform.then(|| node::parse_transform(properties)).transpose()?;
+    let effect = effect.then(|| node::parse_effect(properties)).transpose()?;
+    let fresh = painted.then(|| node::paint_style(kind, properties)).transpose()?;
+    style.opacity = opacity.unwrap_or(style.opacity);
+    style.transform = transform.unwrap_or(style.transform);
+    if let Some(effect) = effect {
+        style.effect = effect;
+    }
+    if let Some(fresh) = fresh {
+        *paint = repainted_keeping_fitted_text(paint.take(), fresh);
+    }
+    Ok(())
 }
 
 /// One frame of a tree whose every running tween is paint-only, advanced where it stands.
@@ -382,17 +414,15 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
     // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
-    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua)
-        .and_then(|()| Ok((paint_only_style(&node.properties)?, node::paint_style(node.kind, &node.properties)?)));
+    let moved = moved_parts(&node.tweens);
+    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
+        let style = std::rc::Rc::make_mut(&mut node.layout_style);
+        reread(style, &mut node.paint, node.kind, &node.properties, moved)
+    });
     match advanced {
-        Ok(((opacity, transform, effect), fresh)) => {
-            let style = std::rc::Rc::make_mut(&mut node.layout_style);
-            style.opacity = opacity;
-            style.transform = transform;
-            style.effect = effect;
-            node.opacity = opacity;
-            node.transform = transform;
-            node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
+        Ok(()) => {
+            node.opacity = node.layout_style.opacity;
+            node.transform = node.layout_style.transform;
             Ok(())
         }
         Err(err) => {
