@@ -7,7 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
-- An `effect` under `animate` keeps its `backdrop.mask` while it tweens; the mask was dropped from the first frame.
+- Fixed: an `effect` under `animate` keeps its `backdrop.mask` while it tweens; it was dropped from the first frame on.
 
 ## 0.5.0 - 2026-10-06
 
