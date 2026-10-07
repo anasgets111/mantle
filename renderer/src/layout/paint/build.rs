@@ -438,6 +438,9 @@ fn ring_cmd(rect: LogicalRect, radius: &Radii, ring: Ring, clip: PhysicalRect, s
 /// [`draw_for`] rounds itself, and text shapes at its logical size for `canvas::execute` to rasterize at
 /// the buffer scale.
 fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
+    if scale == 1.0 {
+        return draw;
+    }
     let shadow = |shadow: node::Shadow| node::Shadow {
         blur: shadow.blur * scale,
         offset: (shadow.offset.0 * scale, shadow.offset.1 * scale),
