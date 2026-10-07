@@ -5079,6 +5079,10 @@ above, not the signatures.
 Amendment (ADR-0219): built. `accepts` is gone; the match returns the static, and decision 1's
 accept-everything arm for an unrecognised kind is a refusal.
 
+Amendment (2026-10-07): the 10 ns was the first row's price. A scan of the ~130 property rows cost
+3.4 ns for the first row and 116 ns for the last; `rows_named` indexes them by name, 2.9% fewer
+instructions on the headless bench.
+
 ## 0219. A property key is the vocabulary's own `&'static str`, not a copy of what the config wrote
 
 ADR-0218's `ponytail:`, built. A `String` per property per node per pass went into

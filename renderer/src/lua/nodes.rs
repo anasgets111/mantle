@@ -16,7 +16,7 @@ pub(crate) mod properties;
 mod stubs;
 
 pub(crate) use properties::range;
-use properties::{KINDS, Property, kind_bit, properties};
+use properties::{KINDS, Property, kind_bit, properties, rows_named};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
@@ -29,10 +29,9 @@ fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
     Some((KINDS[bit.trailing_zeros() as usize], bit))
 }
 
-/// The row for `property`, whose `&'static str` name is what a [`PropMap`] keys by. A scan of
-/// the ~130 rows: ADR-0219 priced the per-property lookup at 10 ns against a 2.65 ms pass.
+/// The row for `property`, whose `&'static str` name is what a [`PropMap`] keys by.
 fn row_in(bit: u16, property: &str) -> Option<&'static Property> {
-    properties().find(|row| row.kinds & bit != 0 && row.name == property)
+    rows_named(property).iter().copied().find(|row| row.kinds & bit != 0)
 }
 
 /// [`row_in`] for a caller holding only the kind.
@@ -43,7 +42,7 @@ pub(crate) fn accepted(kind: &str, property: &str) -> Option<&'static Property> 
 /// Whether `kind` declares `property` only to refuse it, as a `lock` does `width`.
 pub(crate) fn refused(kind: &str, property: &str) -> bool {
     let bit = kind_bit(kind).unwrap_or(0);
-    properties().any(|row| row.refused && row.kinds & bit != 0 && row.name == property)
+    rows_named(property).iter().any(|row| row.refused && row.kinds & bit != 0)
 }
 
 /// Accepted properties, sorted for errors.

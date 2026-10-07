@@ -151,8 +151,9 @@ fn drop_refused_values(
         {
             continue;
         }
-        let rows = crate::lua::nodes::properties::properties()
-            .filter(|row| row.kinds & bit != 0 && row.name == name && !row.raw && !row.refused);
+        let rows = crate::lua::nodes::properties::rows_named(name)
+            .iter()
+            .filter(|row| row.kinds & bit != 0 && !row.raw && !row.refused);
         // Every row: a root's own row and the common one both parse its `width`.
         for row in rows {
             if let Err(err) = (row.check)(row, value) {

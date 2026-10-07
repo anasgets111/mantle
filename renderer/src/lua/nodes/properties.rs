@@ -743,9 +743,22 @@ pub(crate) fn kind_of(kinds: u16) -> &'static str {
     KINDS[kinds.trailing_zeros() as usize]
 }
 
+/// The rows named `property`, in [`properties`] order. A hash probe: every property read, pass
+/// and tween frame looks rows up, and a scan of the ~130 rows cost up to 116 ns each.
+pub(crate) fn rows_named(property: &str) -> &'static [&'static Property] {
+    static INDEX: std::sync::OnceLock<rustc_hash::FxHashMap<&'static str, Vec<&'static Property>>> =
+        std::sync::OnceLock::new();
+    let index = INDEX.get_or_init(|| {
+        let mut index = rustc_hash::FxHashMap::<_, Vec<_>>::default();
+        properties().for_each(|row| index.entry(row.name).or_default().push(row));
+        index
+    });
+    index.get(property).map_or(&[], Vec::as_slice)
+}
+
 /// `property`'s closed range, if it has one: the first row of that name with one.
 pub(crate) fn range(property: &str) -> Option<(f32, f32)> {
-    properties().find(|row| row.name == property && row.range.is_some())?.range
+    rows_named(property).iter().find_map(|row| row.range)
 }
 
 #[cfg(test)]
@@ -768,6 +781,22 @@ mod tests {
                 assert!(a.kinds & b.kinds == 0 || a.kinds == ALL || b.kinds == ALL, "`{}` twice for one kind", a.name);
             }
         }
+    }
+
+    /// The index is the scan it replaced: the same rows in the same order, so the first row of a
+    /// name, which a parser reads, and the first with a range are unchanged.
+    #[test]
+    fn rows_named_is_the_scan_by_name_in_order() {
+        for name in properties().map(|row| row.name) {
+            let scan: Vec<&Property> = properties().filter(|row| row.name == name).collect();
+            let indexed = rows_named(name);
+            assert!(
+                scan.len() == indexed.len() && scan.iter().zip(indexed).all(|(a, b)| std::ptr::eq(*a, *b)),
+                "{name}"
+            );
+            assert_eq!(range(name), scan.iter().find_map(|row| row.range), "{name}");
+        }
+        assert!(rows_named("no_such_property").is_empty());
     }
 
     /// A choice default names a choice, so `OneOf` finds its index.
