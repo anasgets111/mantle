@@ -183,15 +183,23 @@ pub(super) fn prepare_retained(
         node.movement.take_if(|movement| !movement.advance(now));
     }
     let changed = node.tweens.iter().any(|tween| !tween.resting);
+    // Paint-only motion leaves the box as it was: the geometry parse and the solver node stand.
+    let paint_only = node.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property));
     node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
     // A tick keeps the size its running tween pins; a pass measures again.
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
+    let relayout = injected || (changed && !paint_only);
     let changed = changed || injected;
-    let style = if changed {
+    let style = if relayout {
         std::rc::Rc::new(LayoutStyle::parse(&node.properties)?)
     } else {
-        std::rc::Rc::clone(&node.layout_style)
+        let mut style = std::rc::Rc::clone(&node.layout_style);
+        if changed {
+            let style = std::rc::Rc::make_mut(&mut style);
+            (style.opacity, style.transform, style.effect) = paint_only_style(&node.properties)?;
+        }
+        style
     };
     let ResolvedNode {
         id,
@@ -215,7 +223,7 @@ pub(super) fn prepare_retained(
     let paint = if changed || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(taffy_id) => {
-            if changed {
+            if relayout {
                 let measure = measure_for(id, kind, paint.as_ref(), &properties, &style)?;
                 update_solver_node(tree, taffy_id, kind, &properties, &style, parent_axis, measure)?;
             }
@@ -312,6 +320,15 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
     }
 }
 
+/// The `LayoutStyle` fields a paint-only tween can move.
+fn paint_only_style(properties: &node::PropMap) -> Result<(f32, node::Transform, node::Effect), LayoutError> {
+    Ok((
+        node::fields::common::opacity.read(properties)?,
+        node::parse_transform(properties)?,
+        node::parse_effect(properties)?,
+    ))
+}
+
 /// One frame of a tree whose every running tween is paint-only, advanced where it stands.
 ///
 /// [`relayout_retained`] answers one question -- what size is everything now -- and
@@ -365,17 +382,10 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
     // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
-    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
-        let properties = &node.properties;
-        Ok((
-            node::fields::common::opacity.read(properties)?,
-            node::parse_transform(properties)?,
-            node::parse_effect(properties)?,
-            node::paint_style(node.kind, properties)?,
-        ))
-    });
+    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua)
+        .and_then(|()| Ok((paint_only_style(&node.properties)?, node::paint_style(node.kind, &node.properties)?)));
     match advanced {
-        Ok((opacity, transform, effect, fresh)) => {
+        Ok(((opacity, transform, effect), fresh)) => {
             let style = std::rc::Rc::make_mut(&mut node.layout_style);
             style.opacity = opacity;
             style.transform = transform;
@@ -1484,10 +1494,15 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r##"local wide = state("wide", false)
-            return panel { id = "bar", child = row { width = 100, height = 20, children = {
+            return panel { id = "bar", child = row { width = 100, height = 20, spacing = 0, children = {
               rect { height = 10, background = "#ffffff",
                      width = wide:map(function(w) return w and 40 or 10 end),
-                     animate = { width = { duration = 100, easing = "linear" } } } } } }"##,
+                     animate = { width = { duration = 100, easing = "linear" } } },
+              rect { width = 10, height = 10,
+                     background = wide:map(function(w) return w and "#ffffff" or "#000000" end),
+                     opacity = wide:map(function(w) return w and 1 or 0.2 end),
+                     animate = { background = { duration = 100, easing = "linear" },
+                                 opacity = { duration = 100, easing = "linear" } } } } } }"##,
         );
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("wide", false):set(true)"#).exec().unwrap();
@@ -1498,8 +1513,19 @@ mod tests {
         let started = root.children[0].children[0].tweens[0].started;
         let instances = [instance_at(&surface, full())];
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let block = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        let (block, beside) = (&row.children[0], &row.children[1]);
         assert!((block.rect.width - 25.0).abs() < 0.5, "halfway from 10 to 40, got {}", block.rect.width);
+        // The sibling's tweens are paint-only: they move on the relayout tick, and it is still placed.
+        assert!(
+            (beside.rect.x - block.rect.x - block.rect.width).abs() < 0.5,
+            "placed after the block: {:?}",
+            beside.rect
+        );
+        assert!((beside.opacity - 0.6).abs() < 0.01, "halfway from 0.2 to 1, got {}", beside.opacity);
+        let Some(PaintStyle::Box { background, .. }) = &beside.paint else { panic!("a box, got {:?}", beside.paint) };
+        let [(node::Fill::Color(background), _)] = background.as_slice() else { panic!("one colour: {background:?}") };
+        assert!((background.r - 0.5).abs() < 0.02, "halfway from black to white, got {}", background.r);
     }
 
     #[test]
