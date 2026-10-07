@@ -405,6 +405,7 @@ mod tests {
             spec: spec.clone(),
             reversal: None,
             resting: false,
+            shown: None,
         };
         assert_eq!(tween.at(started), Animatable::Number(40.0), "the lead-in holds the first frame");
         assert_eq!(tween.at(started + Duration::from_millis(999)), Animatable::Number(40.0), "for all of it");
@@ -456,6 +457,7 @@ mod tests {
             spec: specs["opacity"].clone(),
             reversal: None,
             resting: false,
+            shown: None,
         };
         let at = |ms| match tween.at(started + Duration::from_millis(ms)) {
             Animatable::Number(n) => n,

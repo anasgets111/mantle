@@ -67,7 +67,7 @@ impl Scene {
                     .and_then(|()| if budget.exceeded() { Err(LayoutError::PassBudgetExceeded) } else { Ok(()) });
                 if let Err(err) = advanced {
                     debug!("{key}: advancing a paint-only tween failed, stopping it: {err}");
-                    strip_tweens(retained);
+                    strip_tweens(retained, lua);
                 }
                 continue;
             }
@@ -105,7 +105,7 @@ impl Scene {
                 }
                 Err(err) => {
                     debug!("{key}: relaying out a tween failed, snapping it: {err}");
-                    strip_tweens(retained);
+                    strip_tweens(retained, lua);
                 }
             }
         }
@@ -128,9 +128,21 @@ fn note_settled_geometry(node: &ResolvedNode, lua: &Lua) {
     node.children.iter().for_each(|child| note_settled_geometry(child, lua));
 }
 
-fn strip_tweens(node: &mut ResolvedNode) {
+fn strip_tweens(node: &mut ResolvedNode, lua: &Lua) {
+    // What a typed tween left on screen goes into the map before the tween, its only record, is dropped.
+    if let Err(err) = sync_shown(node, lua) {
+        debug!("tween strip: {err}");
+    }
     node.tweens.clear();
-    node.children.iter_mut().for_each(strip_tweens);
+    node.children.iter_mut().for_each(|child| strip_tweens(child, lua));
+}
+
+/// [`node::sync`] for a node's own map, copied only when a typed tween is ahead of it.
+fn sync_shown(node: &mut ResolvedNode, lua: &Lua) -> Result<(), LayoutError> {
+    if node.tweens.iter().all(|tween| tween.shown.is_none()) {
+        return Ok(());
+    }
+    node::sync(&mut node.tweens, std::rc::Rc::make_mut(&mut node.properties), lua)
 }
 
 /// One instance laid out again from what it retained, its tweens advanced to `now`. The Lua-free
@@ -185,8 +197,8 @@ pub(super) fn prepare_retained(
     let changed = node.tweens.iter().any(|tween| !tween.resting);
     // Paint-only motion leaves the box as it was: the geometry parse and the solver node stand.
     let paint_only = node.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property));
-    let mut moved = moved_parts(&node.tweens);
-    node::advance(&mut node.tweens, &mut node.properties, now, lua)?;
+    let painted = paints(&node.tweens);
+    let samples = node::step(&mut node.tweens, &mut node.properties, now, lua, paint_only)?;
     // A tick keeps the size its running tween pins; a pass measures again.
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
@@ -198,14 +210,17 @@ pub(super) fn prepare_retained(
     );
     let changed = changed || injected;
     let style = if relayout {
+        // The parse reads the map, which a typed sample has to reach first.
+        node::commit(&mut node.tweens, &mut node.properties, samples, now, lua)?;
+        sync_shown(&mut node, lua)?;
         std::rc::Rc::new(LayoutStyle::parse(&node.properties)?)
     } else {
         let mut style = std::rc::Rc::clone(&node.layout_style);
         if changed {
             let style = std::rc::Rc::make_mut(&mut style);
-            moved[3] &= !refit;
-            reread(style, &mut node.paint, node.kind, &node.properties, moved)?;
+            reread(style, &mut node.paint, node.kind, &node.properties, painted && !refit, &samples)?;
         }
+        node::commit(&mut node.tweens, &mut node.properties, samples, now, lua)?;
         style
     };
     let ResolvedNode {
@@ -327,42 +342,57 @@ fn repainted_keeping_fitted_text(old: Option<PaintStyle>, fresh: Option<PaintSty
     }
 }
 
-/// Which of a node's opacity, transform, effect and paint its moving tweens change. Taken before
-/// `node::advance`, which drops the tweens that land.
-fn moved_parts(tweens: &[node::Tween]) -> [bool; 4] {
-    let mut moved = [false; 4];
-    for tween in tweens.iter().filter(|tween| !tween.resting) {
-        moved[match tween.property {
-            "opacity" => 0,
-            "translate" | "scale" | "rotate" | "origin" => 1,
-            "shadows" | "effect" => 2,
-            _ => 3,
-        }] = true;
-    }
-    moved
+/// Whether a moving tween changes the paint through the map; the [`node::TYPED`] ones do not.
+/// Taken before `node::step`, which updates the `resting` flags.
+fn paints(tweens: &[node::Tween]) -> bool {
+    tweens.iter().any(|tween| !tween.resting && !node::TYPED.contains(&tween.property))
 }
 
-/// The parts `moved` names re-read into `style` and `paint`. Every read runs before anything is
-/// assigned, so a refusal leaves both as they were.
+/// `paint` re-read into `style` and `paint` when `painted`, then the typed `samples` written over
+/// `style`. Every read runs before anything is assigned, so a refusal leaves both as they were.
 fn reread(
     style: &mut LayoutStyle,
     paint: &mut Option<PaintStyle>,
     kind: &str,
     properties: &node::PropMap,
-    [opacity, transform, effect, painted]: [bool; 4],
+    painted: bool,
+    samples: &[(&str, node::Animatable)],
 ) -> Result<(), LayoutError> {
-    let opacity = opacity.then(|| node::fields::common::opacity.read(properties)).transpose()?;
-    let transform = transform.then(|| node::parse_transform(properties)).transpose()?;
-    let effect = effect.then(|| node::parse_effect(properties)).transpose()?;
     let fresh = painted.then(|| node::paint_style(kind, properties)).transpose()?;
-    style.opacity = opacity.unwrap_or(style.opacity);
-    style.transform = transform.unwrap_or(style.transform);
-    if let Some(effect) = effect {
-        style.effect = effect;
-    }
+    overlaid(style, samples)?;
     if let Some(fresh) = fresh {
         *paint = repainted_keeping_fitted_text(paint.take(), fresh);
     }
+    Ok(())
+}
+
+/// `samples` in the parsed style, which is what its parser would read from the map once `to_value`
+/// wrote them there. A sample of a shape the parser refuses (a keyframe list that mixes shapes)
+/// is refused the same way, with nothing assigned.
+fn overlaid(style: &mut LayoutStyle, samples: &[(&str, node::Animatable)]) -> Result<(), LayoutError> {
+    use node::Animatable::{Effect, Fields, Number, Shadows};
+    let (mut opacity, mut transform) = (style.opacity, style.transform);
+    let (mut layers, mut levels) = (None, None);
+    for (property, sample) in samples {
+        match (*property, sample) {
+            ("opacity", &Number(n)) => opacity = n,
+            ("rotate", &Number(n)) => transform.rotate = n,
+            ("scale", &Number(n)) => transform.scale = (n, n),
+            ("scale", &Fields { values: [x, y, ..], .. }) => transform.scale = (x, y),
+            ("translate", &Fields { values: [x, y, ..], .. }) => transform.translate = (x, y),
+            ("origin", &Fields { values: [x, y, ..], .. }) => transform.origin = (x, y),
+            ("shadows", Shadows(list)) => layers = Some(list),
+            ("effect", Effect(list, _)) => levels = Some(list),
+            _ => return Err(node::invalid(property, "a value of this shape cannot be tweened here")),
+        }
+    }
+    if let Some(list) = layers {
+        style.effect.set_shadows(list)?;
+    }
+    if let Some(list) = levels {
+        style.effect.set_levels(list);
+    }
+    (style.opacity, style.transform) = (opacity, transform);
     Ok(())
 }
 
@@ -408,21 +438,23 @@ pub(super) fn advanced_dissolve(dissolve: Option<Box<Dissolve>>, now: Instant) -
 /// clamping it (ADR-0068). A refused value left in the map would fail the next pass's re-read too,
 /// turning one refused frame into a scene that stops updating. So the values about to move are
 /// kept and put back on refusal, bounded by this node's tweens rather than its subtree's
-/// properties.
+/// properties. A typed tween writes nothing until the re-read has succeeded (`node::commit`), so a
+/// refusal leaves its `shown` and the map on the last frame, which the strip then writes back.
 fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> Result<(), LayoutError> {
     let restore: Vec<(&'static str, Value)> = node
         .tweens
         .iter()
-        .filter(|tween| !tween.resting)
+        .filter(|tween| !tween.resting && !node::TYPED.contains(&tween.property))
         .filter_map(|tween| node.properties.get_key_value(tween.property))
         .map(|(property, value)| (*property, value.clone()))
         .collect();
     // Nothing is assigned to the node until every step has succeeded, so a refusal leaves its
     // `opacity`, `transform`, `effect` and `paint` describing the same frame its properties do.
-    let moved = moved_parts(&node.tweens);
-    let advanced = node::advance(&mut node.tweens, &mut node.properties, now, lua).and_then(|()| {
+    let painted = paints(&node.tweens);
+    let advanced = node::step(&mut node.tweens, &mut node.properties, now, lua, true).and_then(|samples| {
         let style = std::rc::Rc::make_mut(&mut node.layout_style);
-        reread(style, &mut node.paint, node.kind, &node.properties, moved)
+        reread(style, &mut node.paint, node.kind, &node.properties, painted, &samples)?;
+        node::commit(&mut node.tweens, &mut node.properties, samples, now, lua)
     });
     match advanced {
         Ok(()) => {
@@ -2000,5 +2032,278 @@ mod tests {
         // Tick after completion: memo is locked in and text retains the final shaped width.
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(200));
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].rect.width, width_36);
+    }
+
+    /// Ticks leave a typed tween's map entry behind. The pass after them reads what the tick
+    /// displayed, a dropped tween's strip writes it back, and a settled tween leaves the target.
+    #[test]
+    fn a_pass_and_a_strip_after_typed_ticks_see_what_the_tick_displayed() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = rect { width = 10, height = 10, opacity = state("o", 0.2),
+                animate = { opacity = { duration = 100, easing = "linear" } } } }"#,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let rect = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].clone();
+        apply(&mut scene);
+        lua.load(r#"state("o", 0.2):set(1)"#).exec().unwrap();
+        apply(&mut scene);
+        let started = rect(&scene).tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(50));
+
+        let node = rect(&scene);
+        assert!((node.opacity - 0.6).abs() < 1e-6, "halfway, got {}", node.opacity);
+        assert_eq!(node.tweens[0].shown, Some(node::Animatable::Number(node.opacity)), "the tick's sample");
+        assert_ne!(node.properties.get("opacity"), None, "the map holds an older value");
+        let behind = node::Animatable::from_value("opacity", node.properties.get("opacity")).unwrap();
+        assert_ne!(behind, Some(node::Animatable::Number(node.opacity)), "and it is not the displayed one");
+
+        // Not back to 0.2, which would be a reversal timed by the pass's own clock.
+        lua.load(r#"state("o", 0.2):set(0.5)"#).exec().unwrap();
+        apply(&mut scene);
+        let again = rect(&scene);
+        assert_eq!(again.tweens[0].from, node::Animatable::Number(node.opacity), "a pass starts from the tick's value");
+        assert_eq!(again.tweens[0].shown, None, "a pass writes the map itself");
+
+        scene.tick(&instances, &shaping, &lua, again.tweens[0].started + Duration::from_millis(20));
+        let mut stripped = rect(&scene);
+        let shown = stripped.tweens[0].shown.clone();
+        strip_tweens(&mut stripped, &lua);
+        let held = node::Animatable::from_value("opacity", stripped.properties.get("opacity")).unwrap();
+        assert!(
+            stripped.tweens.is_empty() && held == shown,
+            "a strip writes the sample back before it drops the tween"
+        );
+        scene.tick(&instances, &shaping, &lua, again.tweens[0].started + Duration::from_millis(200));
+        assert_eq!(rect(&scene).opacity, 0.5, "a settled tween shows its target");
+        let settled = rect(&scene);
+        assert_eq!(
+            node::Animatable::from_value("opacity", settled.properties.get("opacity")).unwrap(),
+            Some(node::Animatable::Number(0.5))
+        );
+    }
+
+    /// A typed tween leaves the map behind and writes its sample into the style. It has to land
+    /// where the map route's parse does, at the start, mid-flight and at the end, for every kind
+    /// the typed route covers, eased, sequenced or sprung; a retarget mid-flight has to start from
+    /// the same value either way; and a `sync` has to bring the map to what the map route holds.
+    #[test]
+    fn a_typed_tween_lands_in_the_style_as_the_map_route_parses_it_and_retargets_from_it() {
+        let lua = mlua::Lua::new();
+        let now = Instant::now();
+        let ms = Duration::from_millis;
+        let eased = |from: &str| format!(r#"{{ duration = 100, easing = "linear", from = {from} }}"#);
+        let sprung = |from: &str| format!("{{ spring = {{ stiffness = 200, damping = 8 }}, from = {from} }}");
+        let shadows = r##"{ { color = "#336699cc", blur = 12, offset = { x = 1.5, y = 2.5 } }, { color = "#12345680", blur = 3 } }"##;
+        let shadow_from = r##"{ { color = "#33669900", blur = 0 } }"##;
+        // The property, its target, how it animates and the target a retarget moves to.
+        let cases = [
+            ("opacity", "1", eased("0.2"), "0.5"),
+            ("rotate", "90", eased("0"), "-30"),
+            ("scale", "2", eased("1"), "0.5"),
+            ("scale", "{ x = 2, y = 0.5 }", eased("{ x = 1 }"), "{ y = 3 }"),
+            ("translate", "{ x = 20, y = -8 }", eased("{ x = 0 }"), "{ x = 3, y = 3 }"),
+            ("origin", "{ x = 0, y = 1 }", eased("{ x = 0.5, y = 0.5 }"), "{ x = 1 }"),
+            ("shadows", shadows, eased(shadow_from), r##"{ { color = "#ff0000", blur = 6 } }"##),
+            ("effect", "{ blur = 6, saturate = 1.5, backdrop = { blur = 3 } }", eased("{ blur = 0 }"), "{ blur = 2 }"),
+            (
+                "effect",
+                r#"{ blur = 6, backdrop = { blur = 3, mask = { source = "/tmp/m.svg" } } }"#,
+                eased("{ blur = 0 }"),
+                "{ blur = 2 }",
+            ),
+            (
+                "effect",
+                "{ blur = 2, shader = { source = \"/tmp/x.frag\", progress = 1 } }",
+                eased("{ blur = 0 }"),
+                "{ blur = 3 }",
+            ),
+            (
+                "effect",
+                "{ blur = 2, shader = { source = \"/tmp/x.frag\", input = \"backdrop\", progress = 1 } }",
+                eased("{ blur = 0 }"),
+                "{ blur = 3 }",
+            ),
+            ("opacity", "1", "{ duration = 100, keyframes = { 0.2, 1, 0.5 } }".into(), "0.5"),
+            (
+                "translate",
+                "{ x = 1 }",
+                "{ duration = 100, keyframes = { { x = 0 }, { x = 10, y = 4 }, { x = -5 } } }".into(),
+                "{ x = 3 }",
+            ),
+            (
+                "effect",
+                "{ blur = 6 }",
+                "{ duration = 100, keyframes = { { blur = 0 }, { blur = 6 } } }".into(),
+                "{ blur = 2 }",
+            ),
+            ("opacity", "1", sprung("0.2"), "0.5"),
+            ("scale", "{ x = 2, y = 0.5 }", sprung("{ x = 1 }"), "{ y = 3 }"),
+        ];
+        let parsed = |map: &node::PropMap| {
+            let style = LayoutStyle::parse(map).unwrap();
+            (style.opacity, style.transform, style.effect)
+        };
+        for (property, to, entry, next) in &cases {
+            let source = |to: &str| format!("return {{ {property} = {to}, animate = {{ {property} = {entry} }} }}");
+            let mut props = node::rect_props(&lua, &source(to));
+            let tweens = node::retarget("rect", None, &mut props, now, &lua).unwrap().0;
+            assert_eq!(tweens.len(), 1, "{property} starts a tween");
+            let next_props = node::rect_props(&lua, &source(next));
+            for at in [0, 37, 100, 5000] {
+                let when = now + ms(at);
+                let [old, typed] = [false, true].map(|typed| {
+                    let (mut tweens, mut map) = (tweens.clone(), std::rc::Rc::new(props.clone()));
+                    let samples = node::step(&mut tweens, &mut map, when, &lua, typed).unwrap();
+                    let mut style = LayoutStyle::parse(&props).unwrap();
+                    overlaid(&mut style, &samples).unwrap();
+                    node::commit(&mut tweens, &mut map, samples, when, &lua).unwrap();
+                    (tweens, map, (style.opacity, style.transform, style.effect))
+                });
+                let expected = parsed(&old.1);
+                assert_eq!(typed.2, expected, "{property} at {at}ms");
+                assert_eq!(old.0.len(), typed.0.len(), "{property} at {at}ms: the same tweens arrive");
+                let mut synced = typed.0.clone();
+                let mut map = (*typed.1).clone();
+                node::sync(&mut synced, &mut map, &lua).unwrap();
+                assert_eq!(parsed(&map), expected, "{property} at {at}ms: a sync catches the map up");
+                if typed.0.iter().any(|tween| tween.shown.is_some()) {
+                    assert_eq!(
+                        typed.1.get(property),
+                        props.get(property),
+                        "{property} at {at}ms: the map stays behind"
+                    );
+                }
+                if at == 37 {
+                    // Compared as text: an effect's carried shader is a table each route holds its own copy of.
+                    let retarget = |tweens: &[node::Tween], map: &node::PropMap| {
+                        let mut props = next_props.clone();
+                        let tweens =
+                            node::retarget("rect", Some((tweens, map)), &mut props, when + ms(3), &lua).unwrap().0;
+                        let mut text = format!("{tweens:?}");
+                        while let Some(at) = text.find("Ref(0x") {
+                            let end = at + text[at..].find(')').unwrap();
+                            text.replace_range(at..=end, "Ref");
+                        }
+                        text
+                    };
+                    assert_eq!(
+                        retarget(&typed.0, &typed.1),
+                        retarget(&old.0, &old.1),
+                        "{property}: a retarget starts from the same value"
+                    );
+                }
+            }
+        }
+        let mut named: Vec<_> = cases.iter().map(|case| case.0).collect();
+        named.sort_unstable();
+        named.dedup();
+        let mut typed = node::TYPED.to_vec();
+        typed.sort_unstable();
+        assert_eq!(named, typed, "every typed property is covered here, and this covers no other");
+        let mut style = LayoutStyle::parse(&node::rect_props(&lua, "return {}")).unwrap();
+        for sample in [("background", node::Animatable::Number(1.0)), ("translate", node::Animatable::Number(1.0))] {
+            assert!(overlaid(&mut style, &[sample]).is_err(), "a sample the style cannot take is refused");
+        }
+    }
+
+    /// An animated `effect` still carries what it does not tween: `backdrop.mask` survives the
+    /// pass that starts the tween, a typed tick, a relayout tick beside a `width` tween, and the
+    /// settle.
+    #[test]
+    fn an_animated_effect_keeps_its_backdrop_mask() {
+        for width in ["", r#"width = lit:map(function(o) return o and 30 or 10 end),"#] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let (lua, surface) = surface_from(&format!(
+                r#"local lit = state("lit", false)
+                return panel {{ id = "bar", child = rect {{ height = 10, {width}
+                    effect = lit:map(function(o)
+                        return {{ backdrop = {{ blur = o and 8 or 0, mask = {{ source = "/tmp/m.svg" }} }} }}
+                    end),
+                    animate = {{ effect = {{ duration = 100, easing = "linear" }},
+                                width = {{ duration = 100, easing = "linear" }} }} }} }}"#
+            ));
+            let apply = |scene: &mut Scene| {
+                apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            };
+            let masked = |scene: &Scene| {
+                let node = &scene.surface("bar@TEST").unwrap().children[0];
+                (node.layout_style.effect.backdrop_mask.is_some(), node.layout_style.effect.backdrop)
+            };
+            apply(&mut scene);
+            assert_eq!(masked(&scene), (true, 0.0), "declared");
+            lua.load(r#"state("lit", false):set(true)"#).exec().unwrap();
+            apply(&mut scene);
+            assert!(masked(&scene).0, "the pass that starts the tween ({width:?})");
+            let started = scene.surface("bar@TEST").unwrap().children[0].tweens[0].started;
+            let instances = [instance_at(&surface, full())];
+            scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(50));
+            assert_eq!(masked(&scene), (true, 4.0), "mid-tween ({width:?})");
+            scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(200));
+            assert_eq!(masked(&scene), (true, 8.0), "settled ({width:?})");
+        }
+    }
+
+    /// The exit starts from what the typed ticks displayed, not from the map they left behind.
+    #[test]
+    fn an_exit_starts_from_the_sample_a_typed_tick_displayed() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r##"local a = rect { id = "a", width = 10, height = 10, opacity = state("o", 0.2),
+                   animate = { opacity = { duration = 100, easing = "linear" },
+                               exit = { duration = 100, easing = "linear", opacity = 0 } } }
+               return panel { id = "bar", child = row { children = state("kids", { a }) } }"##,
+        );
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        lua.load(r#"state("o", 0.2):set(1)"#).exec().unwrap();
+        apply(&mut scene);
+        let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + Duration::from_millis(50));
+        let shown = scene.surface("bar@TEST").unwrap().children[0].children[0].opacity;
+        assert!((shown - 0.6).abs() < 1e-6, "halfway, got {shown}");
+
+        lua.load(r#"state("kids", {}):set({})"#).exec().unwrap();
+        apply(&mut scene);
+        let leaver = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert!(leaver.leaving, "the exit block keeps it");
+        assert_eq!(leaver.tweens[0].from, node::Animatable::Number(shown), "the exit leaves from the sample");
+    }
+
+    /// A refusal on the frame that ends a typed tween leaves the frame before it, in the style and
+    /// in the map the strip writes back, not the target the refused frame was bound for.
+    #[test]
+    fn a_refusal_on_a_typed_tweens_last_frame_leaves_the_frame_before_it() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        // The last keyframe is a number where a `translate` takes a table, which the style refuses.
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = rect { width = 10, height = 10,
+                animate = { translate = { duration = 100, keyframes = { { x = 0 }, { x = 10 }, 5 } } } } }"#,
+        );
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let rect = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].clone();
+        let started = rect(&scene).tweens[0].started;
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(30));
+        let before = rect(&scene);
+        let shown = before.tweens[0].shown.clone();
+        assert!(shown.is_some() && before.transform.translate.0 > 0.0, "a typed frame on screen");
+
+        scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(10_000));
+        let after = rect(&scene);
+        assert!(after.tweens.is_empty(), "the refusal stops the tween");
+        assert_eq!(after.transform, before.transform, "the style stays on the frame before");
+        assert_eq!(
+            node::Animatable::from_value("translate", after.properties.get("translate")).unwrap(),
+            shown,
+            "and the map is written back to it"
+        );
     }
 }

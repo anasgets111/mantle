@@ -370,6 +370,7 @@ mod tests {
             spec: sprung.clone(),
             reversal: None,
             resting: false,
+            shown: None,
         };
         let midway = started + Duration::from_millis(50);
         let displayed = running.at(midway);
@@ -408,6 +409,7 @@ mod tests {
             spec: AnimationSpec { motion: Motion::Spring(spring), delay: Duration::ZERO, from: None },
             reversal: None,
             resting: false,
+            shown: None,
         };
         // 220 ms in, an underdamped spring of these constants is past its target and coming back,
         // so the displacement left has the opposite sign to the one it started with.
@@ -439,6 +441,7 @@ mod tests {
             spec: AnimationSpec { motion: Motion::Spring(carried), delay: Duration::ZERO, from: None },
             reversal: None,
             resting: false,
+            shown: None,
         }];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(120.0))]);
 

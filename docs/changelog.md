@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- An `effect` under `animate` keeps its `backdrop.mask` while it tweens; the mask was dropped from the first frame.
+
 ## 0.5.0 - 2026-10-06
 
 - Box nodes take `ring = { width, color, offset }`, a stroke `offset` px outside the box (inside when negative) with a clear gap, for Material-style focus rings; it follows `radius`, `corner_smoothing` and `outline`, takes no layout space and tweens under `animate`.

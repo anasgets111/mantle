@@ -3758,6 +3758,13 @@ repaint every mapped surface after any resolved turn, rebuilding display lists o
 as equal. The tick records touched trees before advancing them, because the frame ending a tween
 shows its target even though the tree is no longer `animating`.
 
+Amendment (2026-10-07): a paint-only tick writes opacity, transform, shadow and effect samples
+straight into the parsed style (`animate/typed.rs`) instead of the map, which saved a Lua table and
+a parse per tween per frame: 13% fewer instructions on an effects-heavy bench. The map lags while
+`Tween::shown` holds a sample; a retarget eases from `shown`, and any other reader gets the map
+synced first. A sample is committed only after the style accepts it, so a refused one leaves the
+previous frame in both.
+
 **A mid-tween surface whose list is unchanged commits without drawing.** The commit makes the frame
 request effective, but identical pixels need no redraw. A hold, lead-in `delay`, or step easing on
 one value costs a commit instead of make-current, clear, draw calls, and swap.

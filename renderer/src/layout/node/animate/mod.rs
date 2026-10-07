@@ -29,6 +29,7 @@ mod sequence;
 pub(crate) use sequence::KeyframeInput;
 mod spring;
 mod transition;
+mod typed;
 pub(crate) use easing::Easing;
 pub(crate) use move_tween::MoveTween;
 pub(crate) use parse::Animations;
@@ -39,6 +40,7 @@ pub(crate) use parse::animatable_name;
 #[cfg(test)]
 use parse::parse_animate;
 use parse::parse_exit;
+pub use typed::{TYPED, commit, step, sync};
 
 /// The named easings, the `EasingName` alias's members.
 #[cfg(test)]
@@ -57,8 +59,12 @@ pub(super) use transition::{parse_shader_images, parse_shader_params};
 
 /// The one thing a hex colour has to look like to reach `parse_hex_color` again next pass.
 fn hex_of(color: Rgba) -> String {
-    let byte = |channel: f32| (channel.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!("#{:02x}{:02x}{:02x}{:02x}", byte(color.r), byte(color.g), byte(color.b), byte(color.a))
+}
+
+/// A channel as the byte a hex colour holds.
+fn byte(channel: f32) -> u8 {
+    (channel.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 
 /// `a` to `b` at `t`, each channel kept in `[0, 1]`.
@@ -133,12 +139,21 @@ pub fn depart(
     // Everything already in flight stops here, at the value it had reached. The exit owns the
     // node's motion from now on, so its lifetime is the block's duration and not that plus
     // whatever an interrupted entry animation had left to run.
+    sync(tweens, properties, lua)?;
     tweens.clear();
     for (property, target) in targets {
         let from =
             Animatable::from_value(property, properties.get(property))?.unwrap_or_else(|| target.identity(property));
-        let tween =
-            Tween { property, from, to: target, started: now, spec: spec.clone(), reversal: None, resting: false };
+        let tween = Tween {
+            property,
+            from,
+            to: target,
+            started: now,
+            spec: spec.clone(),
+            reversal: None,
+            resting: false,
+            shown: None,
+        };
         properties.insert(property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
         tweens.push(tween);
     }
@@ -154,7 +169,7 @@ pub fn depart(
 /// list: colour layers mix, any other layer snaps to the target's, and a layer one side lacks fades. `Effect` is an `effect`'s
 /// `[blur, saturate, brightness, contrast]`, the same four of its `backdrop` and its `shader.progress`,
 /// a missing key reading as off: `0` for a blur, `1` for a colour filter; the rest of its `shader`
-/// table is carried as the target has it and never tweened (ADR-0336). Two different shapes
+/// table and its `backdrop.mask` are carried as the target has them and never tweened (ADR-0336). Two different shapes
 /// snap, so a fill that switches between `"45%"` and `"fill"` or a margin that switches between a
 /// number and a table takes the new value at once.
 #[derive(Debug, Clone, PartialEq)]
@@ -168,7 +183,21 @@ pub enum Animatable {
     Shadows(Vec<Shadow>),
     Ring(Ring),
     Layers(Vec<Layer>),
-    Effect([f32; 9], Option<Value>),
+    Effect([f32; 9], Kept),
+}
+
+/// What an `effect` holds that no tween moves. Equal when the shaders are: a mask table the config
+/// builds anew each pass must not restart the tween.
+#[derive(Debug, Clone, Default)]
+pub struct Kept {
+    shader: Option<Value>,
+    mask: Option<Value>,
+}
+
+impl PartialEq for Kept {
+    fn eq(&self, other: &Self) -> bool {
+        self.shader == other.shader
+    }
 }
 
 /// One `background` layer in a tween: a colour and its blend (which snaps), or a gradient carried
@@ -212,7 +241,7 @@ impl Animatable {
             Self::Shadows(ref layers) => Self::Shadows(layers.iter().map(faded).collect()),
             Self::Ring(ring) => Self::Ring(Ring { width: 0.0, color: clear(ring.color), ..ring }),
             Self::Layers(ref layers) => Self::Layers(layers.iter().map(faded_layer).collect()),
-            Self::Effect(..) => Self::Effect(EFFECT_OFF, None),
+            Self::Effect(..) => Self::Effect(EFFECT_OFF, Kept::default()),
             // An unset size is nothing, and an unset colour paints nothing, which is that colour
             // at zero alpha rather than a second hue to cross on the way out.
             Self::Percent(_) => Self::Percent(0.0),
@@ -247,8 +276,15 @@ impl Animatable {
                 b.contrast,
                 keys.shader.as_ref().and_then(|shader| shader.progress),
             ];
-            let shader = value.as_table().and_then(|table| table.get::<Value>("shader").ok()).filter(|v| !v.is_nil());
-            return Ok(Some(Self::Effect(std::array::from_fn(|i| given[i].unwrap_or(EFFECT_OFF[i])), shader)));
+            let get = |table: &mlua::Table, key| table.get::<Value>(key).ok().filter(|v| !v.is_nil());
+            let table = value.as_table();
+            let kept = Kept {
+                shader: table.and_then(|table| get(table, "shader")),
+                mask: table
+                    .and_then(|table| get(table, "backdrop"))
+                    .and_then(|backdrop| backdrop.as_table().and_then(|table| get(table, "mask"))),
+            };
+            return Ok(Some(Self::Effect(std::array::from_fn(|i| given[i].unwrap_or(EFFECT_OFF[i])), kept)));
         }
         if property == "shadows" {
             return Ok(Shadows::read(&fields::common::shadows.row, Some(value))?.map(Self::Shadows));
@@ -366,7 +402,7 @@ impl Animatable {
                 }
                 Self::Fields { keys, values }
             }
-            (Self::Effect(a, _), Self::Effect(b, shader)) => Self::Effect(
+            (Self::Effect(a, _), Self::Effect(b, kept)) => Self::Effect(
                 std::array::from_fn(|i| {
                     let (lo, hi) = match i {
                         8 => range_of("progress"),
@@ -375,7 +411,7 @@ impl Animatable {
                     };
                     (a[i] + (b[i] - a[i]) * t).clamp(lo, hi)
                 }),
-                shader.clone(),
+                kept.clone(),
             ),
             (Self::Color(a), Self::Color(b)) => Self::Color(mix(*a, *b, t)),
             // The shorter list pads with the other's layers faded out, as `identity` fades them.
@@ -449,15 +485,19 @@ impl Animatable {
             }
             Self::Path(ref path) => tweened(lua, path)?,
             Self::Outline(ref outline) => tweened(lua, outline)?,
-            Self::Effect(values, ref shader) => {
+            Self::Effect(values, ref kept) => {
                 let level = |values: &[f32]| {
                     lua.create_table_from(
                         ["blur", "saturate", "brightness", "contrast"].into_iter().zip(values.iter().copied()),
                     )
                 };
                 let table = level(&values[..4])?;
-                table.set("backdrop", level(&values[4..8])?)?;
-                if let Some(Value::Table(shader)) = shader {
+                let backdrop = level(&values[4..8])?;
+                if let Some(mask) = &kept.mask {
+                    backdrop.set("mask", mask.clone())?;
+                }
+                table.set("backdrop", backdrop)?;
+                if let Some(Value::Table(shader)) = &kept.shader {
                     // A copy: the config's own table is not ours to write.
                     let tweened =
                         lua.create_table_from(shader.pairs::<Value, Value>().collect::<mlua::Result<Vec<_>>>()?)?;
@@ -522,6 +562,9 @@ pub struct Tween {
     /// start it over, holding the property at its last frame, but it no longer asks for frames.
     /// Always false for a plain tween, which is dropped the moment it arrives.
     pub resting: bool,
+    /// The last sample of a [`TYPED`] tween, when the property map is behind it: a paint-only tick
+    /// writes samples into the parsed style and leaves the map to [`sync`].
+    pub shown: Option<Animatable>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -610,7 +653,7 @@ pub fn retarget(
         if let Motion::Sequence(sequence) = &spec.motion {
             let carried = running.filter(|prior| prior.spec.motion == spec.motion);
             let mut tween = match carried {
-                Some(prior) => Tween { spec, ..prior.clone() },
+                Some(prior) => Tween { spec, shown: None, ..prior.clone() },
                 None => Tween {
                     property,
                     from: sequence.frames[0].value.clone(),
@@ -619,6 +662,7 @@ pub fn retarget(
                     spec,
                     reversal: None,
                     resting: false,
+                    shown: None,
                 },
             };
             // Against `now`, not against what the carried run was resting on: `advance` is the only
@@ -640,9 +684,10 @@ pub fn retarget(
             }
             continue;
         };
-        let displayed = match shown {
-            Some(shown) => Animatable::from_value(property, shown.get(property))?,
-            None => None,
+        let displayed = match (running.and_then(|tween| tween.shown.clone()), shown) {
+            (Some(sample), _) => Some(sample),
+            (None, Some(shown)) => Animatable::from_value(property, shown.get(property))?,
+            (None, None) => None,
         };
         let Some(displayed) = displayed.or_else(|| spec.from.clone()) else { continue };
         let retained_target = running.map_or(&displayed, |tween| &tween.to);
@@ -682,7 +727,16 @@ pub fn retarget(
                     None
                 };
                 let spec = handed_over(spec, running, &displayed, &target, now);
-                Tween { property, from: displayed, to: target, started: now, spec, reversal, resting: false }
+                Tween {
+                    property,
+                    from: displayed,
+                    to: target,
+                    started: now,
+                    spec,
+                    reversal,
+                    resting: false,
+                    shown: None,
+                }
             }
             Some(running) if !running.done(now) => {
                 // A spring's `velocity` is the rate the last retarget handed it, not a number the
@@ -703,7 +757,7 @@ pub fn retarget(
                 {
                     spec.motion = Motion::Spring(*prior);
                 }
-                Tween { spec, ..running.clone() }
+                Tween { spec, shown: None, ..running.clone() }
             }
             _ => continue,
         };
@@ -746,6 +800,7 @@ pub fn retarget_measured(
             spec,
             reversal: Some(Reversal { origin: Animatable::Number(shown), factor: 1.0 }),
             resting: false,
+            shown: None,
         },
     };
     let Animatable::Number(size) = tween.at(now) else { unreachable!("a size tween holds numbers") };
@@ -798,30 +853,15 @@ pub fn is_paint_only(property: &str) -> bool {
 }
 
 /// Advances every tween in `tweens` to `now`, writing the displayed values into `properties` and
-/// dropping the ones that have arrived. A sequence that has played out is kept instead, resting on
-/// its last frame, because the list alone is what a pass has to tell a finished run from one it
-/// has never started (ADR-0152). A shared map is copied only when a tween writes it, so a still
-/// node keeps sharing it with a tick's rollback clone.
+/// dropping the ones that have arrived (see [`typed`] for a tick that keeps some out of the map).
 pub fn advance(
     tweens: &mut Vec<Tween>,
     properties: &mut Rc<PropMap>,
     now: Instant,
     lua: &Lua,
 ) -> Result<(), LayoutError> {
-    for tween in tweens.iter_mut() {
-        // `layout::scene::Scene::advance_scrolls` writes a scroll's offset into its signal.
-        if tween.resting || tween.property == "scroll" {
-            continue;
-        }
-        // A content-sized axis's run holds no key between layouts, so this may insert.
-        Rc::make_mut(properties)
-            .insert(tween.property, tween.at(now).to_value(lua).map_err(|e| invalid("animate", e.to_string()))?);
-        tween.resting = matches!(tween.spec.motion, Motion::Sequence(_)) && tween.done(now);
-    }
-    tweens.retain(|tween| {
-        tween.property == "scroll" || matches!(tween.spec.motion, Motion::Sequence(_)) || !tween.done(now)
-    });
-    Ok(())
+    let samples = step(tweens, properties, now, lua, false)?;
+    commit(tweens, properties, samples, now, lua)
 }
 
 /// `spec` for a run from `from` to `to` replacing `running`: a moving spring hands over its rate,
@@ -852,7 +892,16 @@ pub fn retarget_scroll(spec: AnimationSpec, tweens: &mut Vec<Tween>, shown: f32,
     let (from, to) = (Animatable::Number(shown), Animatable::Number(target));
     let spec = handed_over(spec, running.as_ref(), &from, &to, now);
     if shown != target {
-        tweens.push(Tween { property: "scroll", from, to, started: now, spec, reversal: None, resting: false });
+        tweens.push(Tween {
+            property: "scroll",
+            from,
+            to,
+            started: now,
+            spec,
+            reversal: None,
+            resting: false,
+            shown: None,
+        });
     }
 }
 
@@ -1198,6 +1247,7 @@ mod tests {
             },
             reversal: None,
             resting: false,
+            shown: None,
         }];
         assert!(depart("rect", &mut tweens, &mut properties, now, &lua).unwrap());
         let properties: Vec<&str> = tweens.iter().map(|t| t.property).collect();
@@ -1532,6 +1582,7 @@ mod tests {
             spec,
             reversal: None,
             resting: false,
+            shown: None,
         };
         assert_eq!(tween.at(started), Animatable::Number(0.0), "it starts where it starts");
         assert_eq!(tween.at(started + Duration::from_millis(100)), Animatable::Number(100.0), "and lands on target");
@@ -1571,6 +1622,7 @@ mod tests {
                 spec: spec(&lua, src),
                 reversal: None,
                 resting: false,
+                shown: None,
             };
             let settled = started + Duration::from_secs(60);
             assert!(tween.done(settled), "{src}");
@@ -1593,6 +1645,7 @@ mod tests {
             },
             reversal: None,
             resting: false,
+            shown: None,
         };
         assert_eq!(tween.at(started), Animatable::Number(0.0));
         assert_eq!(
@@ -1623,6 +1676,7 @@ mod tests {
             },
             reversal: None,
             resting: false,
+            shown: None,
         }];
         let shown: PropMap = PropMap::from_iter([("width", Value::Number(50.0))]);
         let mut properties =
@@ -1736,6 +1790,7 @@ mod tests {
             },
             reversal: None,
             resting: false,
+            shown: None,
         };
         assert_eq!(tween.at(started), Animatable::Number(40.0));
         assert_eq!(tween.at(started + Duration::from_millis(50)), Animatable::Number(65.0));

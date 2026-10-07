@@ -404,6 +404,29 @@ pub struct Effect {
 }
 
 impl Effect {
+    /// The `shadows` list as an effect keeps it: the layers that show, inset ones apart.
+    pub fn set_shadows(&mut self, layers: &[Shadow]) -> Result<(), LayoutError> {
+        let (inset, shadows): (Vec<_>, Vec<_>) =
+            layers.iter().copied().filter(Shadow::shows).partition(|shadow| shadow.inset);
+        if self.content_shadow && !inset.is_empty() {
+            return Err(invalid("shadows", "an `inset` layer needs `shadow_mode = \"box\"`"));
+        }
+        (self.inset, self.shadows) = (inset, shadows);
+        Ok(())
+    }
+
+    /// An animated `effect`'s `[blur, saturate, brightness, contrast]` for the content and the
+    /// backdrop, then `shader.progress`, in place of what `parse_effect` read from the map.
+    pub fn set_levels(&mut self, levels: &[f32; 9]) {
+        self.blur = levels[0];
+        self.tone = Tone::from([levels[1], levels[2], levels[3]]);
+        self.backdrop = levels[4];
+        self.backdrop_tone = Tone::from([levels[5], levels[6], levels[7]]);
+        for shader in [&mut self.shader, &mut self.backdrop_shader].into_iter().flatten() {
+            shader.progress = levels[8];
+        }
+    }
+
     /// Whether the node's own output needs an offscreen: a shadow, a shader, a blur, a colour filter or a blend.
     pub fn layers(&self) -> bool {
         !self.shadows.is_empty()
@@ -475,6 +498,12 @@ pub struct Tone {
     pub saturate: f32,
     pub brightness: f32,
     pub contrast: f32,
+}
+
+impl From<[f32; 3]> for Tone {
+    fn from([saturate, brightness, contrast]: [f32; 3]) -> Self {
+        Self { saturate, brightness, contrast }
+    }
 }
 
 impl Default for Tone {
@@ -724,18 +753,11 @@ impl Prop for Ring {
 /// kept, so paint never opens an offscreen for one.
 pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
     use fields::{common, paint};
-    let mut shadows = common::shadows.read(properties)?.unwrap_or_default();
-    shadows.retain(Shadow::shows);
+    let layers = common::shadows.read(properties)?.unwrap_or_default();
     let content_shadow = paint::shadow_mode.read(properties)? == ShadowMode::Content;
-    let (inset, shadows): (Vec<_>, Vec<_>) = shadows.into_iter().partition(|shadow| shadow.inset);
-    if content_shadow && !inset.is_empty() {
-        return Err(invalid("shadows", "an `inset` layer needs `shadow_mode = \"box\"`"));
-    }
     let filters = common::effect.read(properties)?;
-    let tone = |saturate: Option<f32>, brightness: Option<f32>, contrast: Option<f32>| Tone {
-        saturate: saturate.unwrap_or(1.0),
-        brightness: brightness.unwrap_or(1.0),
-        contrast: contrast.unwrap_or(1.0),
+    let tone = |saturate: Option<f32>, brightness: Option<f32>, contrast: Option<f32>| {
+        Tone::from([saturate.unwrap_or(1.0), brightness.unwrap_or(1.0), contrast.unwrap_or(1.0)])
     };
     let backdrop = filters.backdrop.unwrap_or_default();
     let (mut shader, mut backdrop_shader) = (None, None);
@@ -752,9 +774,9 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
             ShaderInput::Backdrop => backdrop_shader = Some(program),
         }
     }
-    Ok(Effect {
-        shadows,
-        inset,
+    let mut effect = Effect {
+        shadows: Vec::new(),
+        inset: Vec::new(),
         shader,
         backdrop_shader,
         blur: filters.blur.unwrap_or(0.0),
@@ -764,7 +786,9 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         backdrop_mask: backdrop.mask,
         content_shadow,
         blend: common::blend.read(properties)?,
-    })
+    };
+    effect.set_shadows(&layers)?;
+    Ok(effect)
 }
 
 /// `cursor`: CSS names such as `"pointer"`, `"text"`, `"grab"`, and resize edges, or `None`
