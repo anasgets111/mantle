@@ -976,6 +976,11 @@ mod tests {
         let first = line.glyphs.iter().find(|glyph| glyph.start == 0).expect("a glyph for the first letter");
         assert!(line.glyphs.iter().all(|glyph| glyph.x <= first.x), "and that letter is drawn rightmost");
         assert!(!handle.shape(req("one اول", 20.0)).shaped[0].rtl);
+        let ascii = handle.shape(req("one\n", 20.0)).shaped;
+        assert!(
+            ascii.len() == 2 && ascii.iter().all(|line| !line.rtl),
+            "ASCII with a trailing newline is LTR, empty line too"
+        );
     }
 
     /// ADR-0211: femtovg dropped `خامس`'s last letter and overlapped glyphs at a direction change.

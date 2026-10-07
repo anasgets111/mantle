@@ -205,7 +205,8 @@ pub(super) fn shape(
     let mut shaped = Vec::new();
     let mut coords: Vec<Box<[i16]>> = Vec::new();
     let mut missing = Vec::new();
-    let bidi = unicode_bidi::BidiInfo::new(&request.text, None);
+    // ASCII holds no right-to-left character, so every paragraph of it is LTR.
+    let bidi = (!request.text.is_ascii()).then(|| unicode_bidi::BidiInfo::new(&request.text, None));
     for line in layout.lines() {
         let mut source_range = line.text_range();
         source_range.end = source_range.end.min(request.text.len());
@@ -252,11 +253,16 @@ pub(super) fn shape(
                 }
             }
         }
-        let rtl = bidi
-            .paragraphs
-            .iter()
-            .find(|paragraph| paragraph.range.contains(&source_range.start))
-            .map_or_else(|| layout.is_rtl(), |paragraph| paragraph.level.is_rtl());
+        let rtl = match &bidi {
+            Some(bidi) => bidi
+                .paragraphs
+                .iter()
+                .find(|paragraph| paragraph.range.contains(&source_range.start))
+                .map_or_else(|| layout.is_rtl(), |paragraph| paragraph.level.is_rtl()),
+            // ASCII: only the empty line after a trailing newline lies outside a paragraph, and it
+            // takes the layout's direction as the bidi arm's fallback does.
+            None => source_range.start >= request.text.len() && layout.is_rtl(),
+        };
         shaped.push(ShapedLine {
             rtl,
             width: line_width,
