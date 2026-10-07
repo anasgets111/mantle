@@ -167,9 +167,10 @@ pub(super) fn shape(
 
     // Fontique has no system fallback when discovery is disabled. Give Parley the same loaded
     // chain, with the requested family first; a newly rescued face joins on the next shape.
-    let mut family_names = vec![primary_family];
-    family_names.extend(fonts.family_names.iter().map(String::as_str));
-    let family_list: Vec<_> = family_names.into_iter().map(FontFamilyName::named).collect();
+    let family_list: Vec<_> = std::iter::once(primary_family)
+        .chain(fonts.family_names.iter().map(String::as_str))
+        .map(FontFamilyName::named)
+        .collect();
     let mut builder = fonts.layout_context.ranged_builder(&mut fonts.font_context, &request.text, 1.0, false);
     builder.push_default(StyleProperty::FontFamily(family_list.as_slice().into()));
     builder.push_default(StyleProperty::FontSize(request.font_size));
