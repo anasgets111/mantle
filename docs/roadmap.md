@@ -28,7 +28,6 @@ Wanted, but each needs a consumer or a decision first.
 | Process control | Start, stream and signal exist. No child stdin, cwd or env | 0175, 0188 |
 | Text field editing | The caret has no stop inside a ligature, and IME needs the field's surface focused, so a parent-focused popup gets none. The secure field keeps end-only editing and no IME, so an input method never sees the draft | 0236, 0312 |
 | Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
-| Localization | No translation API; desktop entry `Name`, `GenericName` and `Keywords` are read unlocalized | 0112 |
 | Wayland and input extras | No shortcut inhibition, per-surface idle inhibition, touch gestures, cross-app drag and drop, pointer buttons past left, right and middle, or a click position inside the clicked node. logind and ScreenSaver inhibition work | — |
 | Window capture backends | `capture.window` accepts Hyprland `windows` IDs. Niri needs a toplevel capture source; wlr needs an exact bridge from its connection-local IDs | 0247, 0248 |
 | Native I/O | No HTTP, sockets or watched file contents; JSON storage and folder watching exist. Native only for a measured latency or volume need | — |
