@@ -327,10 +327,6 @@ pub(super) fn prepare(
     depth: u32,
 ) -> Result<PreparedNode, LayoutError> {
     let (parent_axis, _) = parent_flow;
-    // Already run by whoever resolved `properties` (that is the ordering `ensure_node_admissible`
-    // exists to enforce), repeated here so this function holds its own preconditions rather than
-    // trusting a call site, notably `children_of`'s `unreachable!` arm.
-    ensure_node_admissible(kind, depth)?;
     // Removed while hidden means removed off screen: no exit plays anywhere under a thaw.
     let thawing = thawing || retained.as_ref().is_some_and(|r| !r.visible);
 
@@ -426,8 +422,8 @@ pub(super) fn prepare(
 
         // Before this child's own getters run, not after: resolving its property map calls back
         // into Lua, and a child the walk is about to refuse must not execute anything on the way
-        // to being refused. `depth + 1` is the level this child would occupy, so the error is the
-        // same variant, kind and level the recursive call raises (see `ensure_node_admissible`).
+        // to being refused. `depth + 1` is the level this child would occupy. `prepare` does not
+        // check again, so every caller checks before it resolves (see `ensure_node_admissible`).
         ensure_node_admissible(child_kind, depth + 1)?;
 
         let mut reusable = reusable_for(&mut matched_candidates[index], child_kind, &mut unclaimed);
