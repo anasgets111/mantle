@@ -538,12 +538,15 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
                 budget.check_not_exceeded()?;
                 Ok(value)
             });
-            let value = match (value, Site::from_lua(&ud.nth_user_value(SITE_SLOT)?)) {
-                (Err(err), Some(site)) => {
-                    let err = super::describe(&err);
-                    return Err(mlua::Error::runtime(format!("signal created at {site}: {err}")));
-                }
-                (value, _) => value?,
+            let value = match value {
+                Err(err) => match Site::from_lua(&ud.nth_user_value(SITE_SLOT)?) {
+                    Some(site) => {
+                        let err = super::describe(&err);
+                        return Err(mlua::Error::runtime(format!("signal created at {site}: {err}")));
+                    }
+                    None => return Err(err),
+                },
+                Ok(value) => value,
             };
             out.settle(lua, &value, at, evaluation.finish());
             EvaluationMemo::insert(lua, out.cell, &value);
