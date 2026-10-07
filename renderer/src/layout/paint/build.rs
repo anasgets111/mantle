@@ -131,7 +131,7 @@ fn build_node(
     let clip = parent_clip.intersect(snap_to_physical(bounds, scale));
     let child_clip =
         if node.clips_children() { parent_clip.intersect(snap_to_physical(rect, scale)) } else { parent_clip };
-    let effect = &node.effect;
+    let effect = &node.layout_style.effect;
     let read =
         snap_to_physical(grow(bounds, reach(effect.backdrop).max(shader_padding(&effect.backdrop_shader))), scale);
     let opacity = inherited_opacity * node.opacity;

@@ -719,7 +719,6 @@ fn finish(
         z: style.z,
         transform: style.transform,
         behind_blur: style.behind_blur,
-        effect: style.effect.clone(),
         layout_style: style,
         properties,
         paint,

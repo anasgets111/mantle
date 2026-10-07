@@ -111,7 +111,6 @@ impl ResolvedNode {
             z: 0.0,
             transform: node::Transform::default(),
             behind_blur: false,
-            effect: node::Effect::default(),
             properties: std::rc::Rc::default(),
             paint: None,
             mask_target: None,
@@ -175,7 +174,8 @@ pub(crate) struct LayoutStyle {
     z: f32,
     transform: node::Transform,
     behind_blur: bool,
-    effect: node::Effect,
+    /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
+    pub(crate) effect: node::Effect,
 }
 
 impl LayoutStyle {
@@ -272,8 +272,6 @@ pub struct ResolvedNode {
     /// compositor is given; nothing else reads it, and a compositor without the protocol ignores the
     /// lot.
     pub behind_blur: bool,
-    /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
-    pub effect: node::Effect,
     /// Shared with the rollback copy until a tween writes it.
     pub properties: std::rc::Rc<PropMap>,
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame

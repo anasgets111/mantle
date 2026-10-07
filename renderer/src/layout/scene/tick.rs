@@ -379,10 +379,9 @@ fn advance_paint_only_node(node: &mut ResolvedNode, now: Instant, lua: &Lua) -> 
             let style = std::rc::Rc::make_mut(&mut node.layout_style);
             style.opacity = opacity;
             style.transform = transform;
-            style.effect = effect.clone();
+            style.effect = effect;
             node.opacity = opacity;
             node.transform = transform;
-            node.effect = effect;
             node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
             Ok(())
         }
@@ -416,7 +415,7 @@ pub(super) fn advance_leaving(
     node.paint = repainted_keeping_fitted_text(node.paint.take(), fresh);
     node.opacity = style.opacity;
     node.transform = style.transform;
-    node.effect = style.effect;
+    std::rc::Rc::make_mut(&mut node.layout_style).effect = style.effect;
     node.margin = style.margin;
     if let SizeMode::Pixels(width) = style.width_mode {
         node.rect.width = width;
@@ -1470,7 +1469,7 @@ mod tests {
         assert!(root.tick_is_paint_only(), "an effect asks the solver nothing");
         let started = root.children[0].tweens[0].started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let effect = &scene.surface("bar@TEST").unwrap().children[0].effect;
+        let effect = &scene.surface("bar@TEST").unwrap().children[0].layout_style.effect;
         let shadow = effect.shadows.first().expect("halfway, the shadow shows");
         assert!((shadow.blur - 4.0).abs() < 0.01 && (shadow.offset.1 - 2.0).abs() < 0.01, "got {shadow:?}");
         assert!((effect.blur - 1.0).abs() < 0.01, "got {}", effect.blur);
@@ -1716,12 +1715,12 @@ mod tests {
         let instances = [instance_at(&surface, full())];
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(25));
         let root = scene.surface("bar@TEST").unwrap();
-        let shader = root.children[0].effect.shader.as_ref().expect("the shader is carried");
+        let shader = root.children[0].layout_style.effect.shader.as_ref().expect("the shader is carried");
         assert!((shader.progress - 0.25).abs() < 0.01, "a quarter along, got {}", shader.progress);
         assert_eq!((shader.padding, shader.source.to_str()), (3.0, Some("/s.frag")));
         assert_ne!(crate::layout::paint::build(root, 1.0, None), before, "the layer repaints");
         scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(125));
-        let shader = scene.surface("bar@TEST").unwrap().children[0].effect.shader.clone().unwrap();
+        let shader = scene.surface("bar@TEST").unwrap().children[0].layout_style.effect.shader.clone().unwrap();
         assert!((shader.progress - 0.25).abs() < 0.01, "and wraps, got {}", shader.progress);
     }
 
