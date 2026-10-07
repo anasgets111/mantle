@@ -35,8 +35,7 @@ pub(super) unsafe fn quad_pass(
         gl.use_program(Some(program));
         gl.bind_vertex_array(Some(vao));
         gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-        let bytes: Vec<u8> = corners.iter().flat_map(|value| value.to_ne_bytes()).collect();
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, corners.map(f32::to_ne_bytes).as_flattened(), glow::STREAM_DRAW);
         for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
             gl.disable(slot);
         }
