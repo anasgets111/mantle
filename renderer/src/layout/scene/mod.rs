@@ -924,7 +924,7 @@ struct PreparedNode {
     id: NodeId,
     kind: &'static str,
     allocated_axes: (bool, bool),
-    style: LayoutStyle,
+    style: std::rc::Rc<LayoutStyle>,
     properties: std::rc::Rc<PropMap>,
     paint: Option<PaintStyle>,
     /// Carried across the pass untouched; see [`ResolvedNode::displayed_source`].

@@ -202,10 +202,11 @@ fn measure_content_sizes(
         };
         Rc::make_mut(&mut node.properties).insert(property, Value::Number(f64::from(size)));
         let mut style = tree.style(node.taffy).map_err(taffy_failed)?.clone();
+        let own = Rc::make_mut(&mut node.style);
         let (dimension, size_mode) = if property == "width" {
-            (&mut style.size.width, &mut node.style.width_mode)
+            (&mut style.size.width, &mut own.width_mode)
         } else {
-            (&mut style.size.height, &mut node.style.height_mode)
+            (&mut style.size.height, &mut own.height_mode)
         };
         *dimension = taffy::Dimension::length(size);
         *size_mode = SizeMode::Pixels(size);
@@ -724,7 +725,7 @@ fn finish(
         transform: style.transform,
         behind_blur: style.behind_blur,
         effect: style.effect.clone(),
-        layout_style: std::rc::Rc::new(style),
+        layout_style: style,
         properties,
         paint,
         displayed_source,

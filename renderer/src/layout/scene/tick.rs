@@ -188,7 +188,11 @@ pub(super) fn prepare_retained(
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
     let changed = changed || injected;
-    let style = if changed { LayoutStyle::parse(&node.properties)? } else { LayoutStyle::clone(&node.layout_style) };
+    let style = if changed {
+        std::rc::Rc::new(LayoutStyle::parse(&node.properties)?)
+    } else {
+        std::rc::Rc::clone(&node.layout_style)
+    };
     let ResolvedNode {
         id,
         layout_style: _,

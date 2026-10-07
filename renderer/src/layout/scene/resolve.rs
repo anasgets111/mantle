@@ -36,7 +36,7 @@ pub struct ResolveMemo {
 /// came from.
 pub(super) struct Resolved {
     pub properties: Rc<PropMap>,
-    pub style: LayoutStyle,
+    pub style: Rc<LayoutStyle>,
     pub paint: Option<PaintStyle>,
     pub tweens: Vec<Tween>,
     pub movement: Option<Box<node::MoveSpec>>,
@@ -86,7 +86,7 @@ pub(super) fn resolve(
         node::advance(&mut tweens, &mut properties, now, lua)?;
         let injected = drop_injected_sizes(&mut properties, &memo.raw);
         let style =
-            if moving || injected { LayoutStyle::parse(&properties)? } else { LayoutStyle::clone(&r.layout_style) };
+            if moving || injected { Rc::new(LayoutStyle::parse(&properties)?) } else { Rc::clone(&r.layout_style) };
         let paint = if moving || kind == "text" { node::paint_style(kind, &properties)? } else { r.paint.take() };
         return Ok(Resolved { properties, style, paint, tweens, movement: r.move_spec.take(), memo });
     }
@@ -98,7 +98,7 @@ pub(super) fn resolve(
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain });
     let paint = node::paint_style(kind, &properties)?;
-    let style = LayoutStyle::parse(&properties)?;
+    let style = Rc::new(LayoutStyle::parse(&properties)?);
     Ok(Resolved { properties, style, paint, tweens, movement: movement.map(Box::new), memo })
 }
 
