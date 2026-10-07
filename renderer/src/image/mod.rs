@@ -45,7 +45,8 @@ use texture::{Animation, upload_or_log};
 
 use crate::layout::node::Rgba;
 use crate::text::shaping::{FontDatabase, ShapingHandle};
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
 use std::sync::{Arc, Mutex};
@@ -272,6 +273,8 @@ pub struct ImageCache {
     /// whose round trip queues behind shaping work.
     font_generation: u64,
     fonts: FontDatabase,
+    // ponytail: Fx hashing, and keys can carry text a window title chooses (icon names, SVG text),
+    // so collisions can be forced; CACHE_CAPACITY bounds the damage. Upgrade: a keyed hasher.
     entries: HashMap<CacheKey, Entry>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
@@ -351,7 +354,7 @@ impl ImageCache {
             shaping: None,
             font_generation: 0,
             fonts: FontDatabase::default(),
-            entries: HashMap::new(),
+            entries: HashMap::default(),
             evicted: Vec::new(),
             evicted_total: 0,
             freed: false,

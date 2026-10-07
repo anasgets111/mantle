@@ -1,7 +1,8 @@
 //! Off-thread Parley shaping. Fontconfig selects the declared chain, and the worker registers
 //! only those mapped files with Fontique. FemtoVG draws the faces Parley chose (ADR-0211).
 
-use std::collections::{HashMap, HashSet};
+use rustc_hash::FxHashMap as HashMap;
+use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -231,6 +232,8 @@ struct ShapeKey {
 #[derive(Clone)]
 pub struct ShapingHandle {
     requests: mpsc::Sender<Request>,
+    // ponytail: Fx hashing, and keys carry text a window title can choose, so collisions can be
+    // forced; the SHAPE_CACHE_CAPACITY cap bounds the damage. Upgrade: a keyed hasher.
     cache: Arc<Mutex<HashMap<ShapeKey, ShapeResult>>>,
     /// See [`ShapingHandle::font_generation`].
     generation: Arc<AtomicU64>,
@@ -326,7 +329,7 @@ impl ShapingHandle {
                 }
             })
             .expect("failed to spawn mantle-text-shaping thread");
-        Self { requests: tx, cache: Arc::new(Mutex::new(HashMap::new())), generation: handle_generation, ensured }
+        Self { requests: tx, cache: Arc::new(Mutex::new(HashMap::default())), generation: handle_generation, ensured }
     }
 
     /// Measures `request`, from [`SHAPE_CACHE_CAPACITY`]'s memo when asked before and from the

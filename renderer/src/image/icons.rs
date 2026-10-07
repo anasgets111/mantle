@@ -7,7 +7,7 @@
 //! `app_id` -> `.desktop` -> `Icon=` remains deferred with no caller, and no Lua `find_icon`
 //! exists (ADR-0054 decision 5): `name` resolution leaves it nothing to do.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -92,7 +92,7 @@ fn memoized(name: &str, size: u16, lookup: impl FnOnce() -> Option<PathBuf>) -> 
 /// on every hit, which is work on the path the memo exists to make cheap.
 fn memo() -> &'static Mutex<Memo> {
     static MEMO: OnceLock<Mutex<Memo>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(Memo::new()))
+    MEMO.get_or_init(|| Mutex::new(Memo::default()))
 }
 
 /// Names remembered per size. Sized like `text::shaping`'s cache: far past any real working set (a

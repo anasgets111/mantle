@@ -6,7 +6,7 @@
 //! What it draws is Parley's (ADR-0211): `fill_glyph_run` takes glyphs another shaper placed,
 //! so femtovg rasterizes and packs, and shapes nothing.
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::error::Error;
 use std::ffi::c_void;
 use std::sync::Arc;
@@ -148,7 +148,7 @@ fn register(
     registered: &mut HashMap<(usize, u32), FontId>,
     font_chain: Vec<FontFace>,
 ) -> HashMap<fontdb::ID, FontId> {
-    let mut faces = HashMap::with_capacity(font_chain.len());
+    let mut faces = HashMap::with_capacity_and_hasher(font_chain.len(), Default::default());
     for face in font_chain {
         let key = (face.data.addr(), face.index);
         let id = match registered.get(&key) {
@@ -211,7 +211,7 @@ impl TextPainter {
         let text_context = TextContext::default();
         let mut canvas = Canvas::new_with_text_context(renderer, text_context.clone())?;
         canvas.set_size(width, height, 1.0);
-        let mut registered = HashMap::new();
+        let mut registered = HashMap::default();
         // Generation before faces: a face loaded between the two reads leaves this behind, not ahead.
         let generation = shaping.font_generation();
         let faces = register(&text_context, &mut registered, shaping.font_chain_data());
@@ -225,10 +225,10 @@ impl TextPainter {
             text_context,
             registered,
             shaping,
-            scratch: HashMap::new(),
+            scratch: HashMap::default(),
             paints: 0,
             layers: Vec::new(),
-            lines_cache: HashMap::new(),
+            lines_cache: HashMap::default(),
             lines_cache_len: 0,
         })
     }
@@ -580,7 +580,7 @@ mod tests {
     fn a_pool_over_its_bytes_deletes_the_stalest_sizes_first() {
         let free = |count: usize| vec![(); count];
         // 3440x1440 is 19.8 MB: four pooled is 79 MB, over the 64 MiB cap.
-        let pool = HashMap::from([
+        let pool = HashMap::from_iter([
             ((String::new(), (3440, 1440)), (1, free(2))),
             ((String::new(), (1720, 720)), (2, free(1))),
             ((String::new(), (3440, 1441)), (3, free(2))),

@@ -34,7 +34,7 @@ mod state;
 pub use blend::BlendPass;
 pub use blur::BlurPass;
 
-use std::collections::HashMap;
+use rustc_hash::FxHashMap as HashMap;
 use std::path::{Path, PathBuf};
 
 use femtovg::renderer::OpenGl;
@@ -491,7 +491,7 @@ impl ShaderStage {
         unsafe {
             let program = self.link(gl, path, &assemble(source, variant, images))?;
             let named = |name: &str| gl.get_uniform_location(program, name);
-            let mut params = HashMap::new();
+            let mut params = HashMap::default();
             for index in 0..gl.get_active_uniforms(program) {
                 let Some(uniform) = gl.get_active_uniform(program, index) else { continue };
                 if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
