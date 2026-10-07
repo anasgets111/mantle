@@ -564,7 +564,7 @@ fn children_this_pass(
         let res = node::list_children(&node.properties, lua);
         close(&mut at, &mut scene.resolve_split.list);
         let (fresh, memo) = res?;
-        node.list_memo = Some(memo);
+        node.list_memo = Some(Box::new(memo));
         fresh
     } else {
         children_kept(node.kind, &node.properties, &mut node.child_table, lua)?

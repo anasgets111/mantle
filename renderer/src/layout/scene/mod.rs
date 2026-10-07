@@ -304,7 +304,7 @@ pub struct ResolvedNode {
     /// siblings until the last tween ends, when the next pass drops it.
     pub leaving: bool,
     /// What a `list` built its items from, so a pass that finds it unchanged keeps them.
-    pub list_memo: Option<node::ListMemo>,
+    pub list_memo: Option<Box<node::ListMemo>>,
     /// What its `children` or `child` table last read as, so a pass holding the same table skips
     /// reading it again.
     pub child_table: Option<pass::ChildTable>,
@@ -944,7 +944,7 @@ struct PreparedNode {
     /// Children on their way out (ADR-0150), already advanced this pass. Not in the solver.
     leaving: Vec<ResolvedNode>,
     /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].
-    list_memo: Option<node::ListMemo>,
+    list_memo: Option<Box<node::ListMemo>>,
     /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
     child_table: Option<pass::ChildTable>,
     resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
