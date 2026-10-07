@@ -191,6 +191,11 @@ pub(super) fn prepare_retained(
     let injected = move_on_solve
         && node.resolve_memo.as_ref().is_some_and(|memo| drop_injected_sizes(&mut node.properties, memo.raw()));
     let relayout = injected || (changed && !paint_only);
+    // `fit_text_to_box` rewrites a text's content only to wrap or cut it; such a paint is read fresh below.
+    let refit = matches!(
+        &node.paint,
+        Some(PaintStyle::Text { wrap: node::Wrap::Word, .. } | PaintStyle::Text { elided: true, .. })
+    );
     let changed = changed || injected;
     let style = if relayout {
         std::rc::Rc::new(LayoutStyle::parse(&node.properties)?)
@@ -198,7 +203,7 @@ pub(super) fn prepare_retained(
         let mut style = std::rc::Rc::clone(&node.layout_style);
         if changed {
             let style = std::rc::Rc::make_mut(&mut style);
-            moved[3] &= node.kind != "text"; // A text's paint is read fresh below.
+            moved[3] &= !refit;
             reread(style, &mut node.paint, node.kind, &node.properties, moved)?;
         }
         style
@@ -222,7 +227,7 @@ pub(super) fn prepare_retained(
         resolve_memo,
         ..
     } = node;
-    let paint = if relayout || kind == "text" { node::paint_style(kind, &properties)? } else { old_paint };
+    let paint = if relayout || refit { node::paint_style(kind, &properties)? } else { old_paint };
     let taffy_id = match old_taffy {
         Some(taffy_id) => {
             if relayout {
