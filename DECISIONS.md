@@ -6945,6 +6945,12 @@ Tightens the per-evaluation Lua CPU cap from 5ms to 2.5ms and hands the evaluati
 1. **Memo handover across re-resolution.** `re_resolve_if_dirty` enters `EvaluationMemo` before taking the dirty scope and retains it through `Scene::apply_locked`. Computeds rerun during `take_scope` populate the memo table and are served directly during the layout pass instead of computing twice. Clean invalidations, empty filtered instances, or failed layout passes drop the memo and clear the table.
 2. **2.5ms CPU budget.** 5ms exceeds a 240Hz frame window (4.16ms) and consumes over 70% of a 144Hz window (6.94ms). Reducing `CPU_CAP` to 2500 µs bounds evaluation time to fit high-refresh display deadlines while preserving headroom for Lua signal chains.
 
+Amendment (2026-10-07): a failed evaluation is memoized for the pass too. Under CPU contention a
+computed overran its cap and every reader ran it again, 2.5ms each: resolve went from 135 to
+740 ms/s, and the load fed itself. The failure is kept only while a pass is open and only when the
+computed's own budget started fresh, so the frame's dry run cannot fail the pass and an overrun of
+a reader's spent budget is not served to other readers. The next pass runs it again.
+
 ## 0282. Sysinfo capability: disk, GPU, and network throughput telemetry
 
 Extends `mantle.sysinfo` with `disks`, `gpu`, and network throughput telemetry (`net_rx_bytes_sec`, `net_tx_bytes_sec`), configurable via `disk_interval`, `gpu_interval`, and `net_interval` (ADR-0035).

@@ -123,6 +123,8 @@ const LAYOUT_PASS_CAP_EXCEEDED: &str = "the layout pass exceeded its 2s CPU budg
 /// scanning up to 32 entries per hook.
 pub(crate) struct CpuBudget<'lua> {
     lua: &'lua Lua,
+    /// No outer evaluation had started its CPU clock, so an overrun is this evaluation's own.
+    pub(super) fresh: bool,
 }
 
 /// Installs the instruction hook for the life of the VM, once, before any config code runs.
@@ -212,9 +214,10 @@ impl<'lua> CpuBudget<'lua> {
                 "signal nesting exceeded its maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels -- a computed/map chain recursing into itself, or a dependency chain that long?"
             )));
         }
+        let fresh = stack.first().is_none_or(|outer| outer.cpu.get().is_none());
         let deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(CPU_CAP));
         stack.push(deadline);
-        Ok(Self { lua })
+        Ok(Self { lua, fresh })
     }
 
     /// Calls `f` under its own budget, erroring when the call raised or ran past the cap: the one

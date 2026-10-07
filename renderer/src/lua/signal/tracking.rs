@@ -165,7 +165,7 @@ pub(super) fn outputs_written_since(stamp: u64) -> Vec<CellId> {
 /// Values already produced during the current outermost [`Signal::get_value`](super::Signal::get_value).
 #[derive(Default)]
 pub(crate) struct MemoTable {
-    pub(crate) map: FxHashMap<CellId, Value>,
+    pub(crate) map: FxHashMap<CellId, mlua::Result<Value>>,
     pub(crate) depth: usize,
     pub(super) eval_stack: Vec<Vec<CellId>>,
     /// The write clock when the open pass began, the oldest write a value it serves can predate.
@@ -507,15 +507,21 @@ impl<'lua> EvaluationMemo<'lua> {
     /// A value already produced, with its cells noted as read by the active instance and the
     /// enclosing frame. `None` outside an evaluation, which is the outermost `Computed`'s own
     /// first look.
-    pub(super) fn get(lua: &Lua, key: CellId) -> Option<Value> {
+    pub(super) fn get(lua: &Lua, key: CellId) -> Option<mlua::Result<Value>> {
         let value = lua.app_data_ref::<MemoTable>()?.map.get(&key)?.clone();
-        note_reads(lua, &[key]);
+        if value.is_ok() {
+            note_reads(lua, &[key]);
+        }
         Some(value)
     }
 
-    pub(super) fn insert(lua: &Lua, key: CellId, value: &Value) {
+    pub(super) fn insert(lua: &Lua, key: CellId, value: mlua::Result<Value>) {
         if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
-            table.map.insert(key, value.clone());
+            // Outside a pass a failure is `take_scope`'s dry run, and the pass runs it again: a
+            // one-off overrun (GC step, cold cache) there is not the pass's answer.
+            if value.is_ok() || table.pass_opened.is_some() {
+                table.map.insert(key, value);
+            }
         }
     }
 
@@ -641,6 +647,96 @@ mod tests {
             lua.globals().get("runs").unwrap()
         };
         assert_eq!(runs, 1, "four outermost reads inside one pass are one evaluation");
+    }
+
+    /// A computed that failed gives every reader in the pass its error, an overrun or a Lua error
+    /// alike. Re-running it per reader spent the 2.5ms cap again each time: under load, resolve
+    /// went from 135 to 740 ms/s. The answer is the pass's, so the next pass reads the fixed state.
+    #[test]
+    fn a_computed_that_failed_runs_once_per_pass_and_recovers_on_the_next() {
+        let (lua, _dirty) = lua_with_state();
+        lua.load(
+            r#"
+            runs = { slow = 0, bad = 0 }
+            n = state("n", 1)
+            slow = computed({ n }, function(v)
+                runs.slow = runs.slow + 1
+                if v == 1 then while true do end end
+                return v
+            end)
+            bad = computed({ n }, function(v)
+                runs.bad = runs.bad + 1
+                if v == 1 then error("boom") end
+                return v
+            end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let runs = |name: &str| -> i64 { lua.load(format!("runs.{name}")).eval().unwrap() };
+        {
+            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            for _ in 0..4 {
+                assert!(lua.load("slow:get()").exec().is_err(), "every reader sees the overrun");
+                assert!(lua.load("bad:get()").exec().unwrap_err().to_string().contains("boom"));
+            }
+            assert_eq!((runs("slow"), runs("bad")), (1, 1), "four readers of a failed computed are one evaluation");
+        }
+        lua.load("n:set(2)").exec().unwrap();
+        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        for _ in 0..2 {
+            let both: (i64, i64) = lua.load("return slow:get(), bad:get()").eval().unwrap();
+            assert_eq!(both, (2, 2), "the failure was the last pass's, not this one's");
+        }
+        assert_eq!((runs("slow"), runs("bad")), (2, 2), "one evaluation each for the two readers");
+    }
+
+    /// `take_scope`'s dry run reads a computed outside the pass, which runs it again: the dry run's
+    /// failure is not kept, or one transient overrun there would fail the whole pass.
+    #[test]
+    fn a_failure_outside_a_pass_is_not_kept_for_the_pass() {
+        let (lua, _dirty) = lua_with_state();
+        lua.load(
+            r#"
+            runs = 0
+            local n = state("n", 1)
+            slow = computed({ n }, function() runs = runs + 1 while true do end end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let _memo = EvaluationMemo::enter(&lua);
+        assert!(lua.load("slow:get()").exec().is_err());
+        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        for _ in 0..2 {
+            assert!(lua.load("slow:get()").exec().is_err());
+        }
+        let runs: i64 = lua.globals().get("runs").unwrap();
+        assert_eq!(runs, 2, "one dry run, then one evaluation for both readers in the pass");
+    }
+
+    /// An overrun of a reader's budget is not the computed's answer: under a clock of its own the
+    /// next reader evaluates it again.
+    #[test]
+    fn a_computed_failed_by_its_readers_spent_budget_is_evaluated_again() {
+        let (lua, _dirty) = lua_with_state();
+        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        let late: i64 = lua
+            .load(
+                r#"
+                local n = state("n", 1)
+                local cheap = computed({ n }, function(v) return v end)
+                local hog = computed({ n }, function()
+                    pcall(function() while true do end end)
+                    return cheap:get()
+                end)
+                assert(not pcall(function() return hog:get() end), "the hog spent its budget")
+                return cheap:get()
+                "#,
+            )
+            .eval()
+            .unwrap();
+        assert_eq!(late, 1);
     }
 
     /// The pass is the scope, not a cache across passes: the next pass has to see a `state` written

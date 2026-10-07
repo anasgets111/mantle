@@ -515,7 +515,7 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
             // hits alone.
             if let Some(value) = EvaluationMemo::get(lua, out.cell) {
-                return Ok(value);
+                return value;
             }
 
             // Enter before dependency resolution, not only `func.call`, so nesting depth also
@@ -539,17 +539,23 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
                 Ok(value)
             });
             let value = match value {
-                Err(err) => match Site::from_lua(&ud.nth_user_value(SITE_SLOT)?) {
-                    Some(site) => {
-                        let err = super::describe(&err);
-                        return Err(mlua::Error::runtime(format!("signal created at {site}: {err}")));
-                    }
-                    None => return Err(err),
-                },
                 Ok(value) => value,
+                Err(err) => {
+                    let err = match Site::from_lua(&ud.nth_user_value(SITE_SLOT)?) {
+                        Some(site) => {
+                            mlua::Error::runtime(format!("signal created at {site}: {}", super::describe(&err)))
+                        }
+                        None => err,
+                    };
+                    // Every reader this pass would run it into the same failure, 2.5ms each.
+                    if budget.fresh {
+                        EvaluationMemo::insert(lua, out.cell, Err(err.clone()));
+                    }
+                    return Err(err);
+                }
             };
             out.settle(lua, &value, at, evaluation.finish());
-            EvaluationMemo::insert(lua, out.cell, &value);
+            EvaluationMemo::insert(lua, out.cell, Ok(value.clone()));
             note_reads(lua, &[out.cell]);
             Ok(value)
         }
