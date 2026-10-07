@@ -290,8 +290,7 @@ fn prepare_retained_children(
             .map_err(taffy_failed)?;
     }
     hold_leavers(tree, node.taffy, &node.style, node.allocated_axes, &node.leaving)?;
-    let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-    set_solver_children(tree, node.taffy, &child_ids)?;
+    set_solver_children(tree, node.taffy, &node.children)?;
     Ok(node)
 }
 

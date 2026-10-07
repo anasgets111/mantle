@@ -457,8 +457,7 @@ pub(super) fn prepare(
     }
 
     finish_leavers(tree, &mut node, leaving, unclaimed, old_mask_target, thawing, lua, now)?;
-    let child_ids: Vec<taffy::NodeId> = node.children.iter().map(|child| child.taffy).collect();
-    set_solver_children(tree, taffy_id, &child_ids)?;
+    set_solver_children(tree, taffy_id, &node.children)?;
     Ok(node)
 }
 

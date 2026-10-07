@@ -383,10 +383,11 @@ pub(super) fn update_solver_node(
 pub(super) fn set_solver_children(
     tree: &mut taffy::TaffyTree<Measure>,
     parent: taffy::NodeId,
-    children: &[taffy::NodeId],
+    children: &[super::PreparedNode],
 ) -> Result<(), LayoutError> {
-    if !tree.child_ids(parent).eq(children.iter().copied()) {
-        tree.set_children(parent, children).map_err(taffy_failed)?;
+    let ids = || children.iter().map(|child| child.taffy);
+    if !tree.child_ids(parent).eq(ids()) {
+        tree.set_children(parent, &ids().collect::<Vec<_>>()).map_err(taffy_failed)?;
     }
     Ok(())
 }
