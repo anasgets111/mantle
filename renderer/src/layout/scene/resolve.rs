@@ -20,7 +20,7 @@ use crate::lua::signal::{self, CellId, ComputedFrame};
 pub struct ResolveMemo {
     /// Kept to keep its values alive: tables, functions and signals compare by address, so a
     /// collected one cannot hand its address to a new one.
-    raw: PropMap,
+    raw: Rc<PropMap>,
     /// Checked first: a value of a dropped VM panics on any read. A scene outlives its VM only in
     /// tests.
     lua: WeakLua,
@@ -49,7 +49,7 @@ pub(super) struct Resolved {
 /// pass's reads so the next write to one still dirties the surface.
 pub(super) fn resolve(
     kind: &'static str,
-    raw: PropMap,
+    raw: Rc<PropMap>,
     mut retained: Option<&mut ResolvedNode>,
     now: Instant,
     lua: &Lua,
@@ -63,7 +63,7 @@ pub(super) fn resolve(
     let same = retained
         .as_deref()
         .and_then(|r| r.resolve_memo.as_deref())
-        .filter(|memo| memo.lua == lua.weak() && same_declaration(&memo.raw, &raw));
+        .filter(|memo| memo.lua == lua.weak() && (Rc::ptr_eq(&memo.raw, &raw) || same_declaration(&memo.raw, &raw)));
     let tables_plain = same.map_or_else(|| node::tables_plain(&raw), |memo| memo.tables_plain);
     let keep = if let Some(memo) = same.filter(|memo| !memo.dropped) {
         if signal::written_since(memo.stamp, &memo.cells) {
@@ -92,7 +92,7 @@ pub(super) fn resolve(
     }
     let stamp = signal::write_clock(lua);
     let frame = ComputedFrame::enter(lua);
-    let mut properties = build(node::resolve_declared(raw.clone(), kind, tables_plain, lua)?)?;
+    let mut properties = build(node::resolve_declared(&raw, kind, tables_plain, lua)?)?;
     let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
     let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
     let properties = Rc::new(properties);
@@ -206,7 +206,7 @@ fn same_declaration(kept: &PropMap, fresh: &PropMap) -> bool {
 
 impl ResolveMemo {
     /// The declaration this resolve read.
-    pub(super) fn raw(&self) -> &PropMap {
+    pub(super) fn raw(&self) -> &Rc<PropMap> {
         &self.raw
     }
 

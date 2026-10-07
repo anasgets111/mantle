@@ -923,7 +923,7 @@ mod tests {
             ),
         ] {
             let props = rect_props(&lua, &format!("return {{ animate = {{ {bound} }} }}"));
-            let resolved = crate::layout::node::resolve_declared(props, "rect", false, &lua).unwrap();
+            let resolved = crate::layout::node::resolve_declared(&props, "rect", false, &lua).unwrap();
             let plain =
                 parse_animate("rect", &rect_props(&lua, &format!("return {{ animate = {{ {plain} }} }}"))).unwrap();
             assert_eq!(parse_animate("rect", &resolved).unwrap(), plain, "{bound}");
@@ -938,7 +938,7 @@ mod tests {
             &lua,
             "return { animate = state(\"on\", 0):map(function() return { width = state(\"w\", 200) } end) }",
         );
-        let resolved = crate::layout::node::resolve_declared(props, "rect", false, &lua).unwrap();
+        let resolved = crate::layout::node::resolve_declared(&props, "rect", false, &lua).unwrap();
         let err = parse_animate("rect", &resolved).unwrap_err();
         assert!(matches!(err, LayoutError::UnsupportedSignalProperty(ref path) if path == "animate.width"), "{err:?}");
     }

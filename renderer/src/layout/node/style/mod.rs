@@ -945,7 +945,7 @@ mod tests {
         table.set("kind", "rect").unwrap();
         table.set("visible", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
-        let resolved = resolve_declared(node.properties, "rect", false, &lua).unwrap();
+        let resolved = resolve_declared(&node.properties, "rect", false, &lua).unwrap();
         assert!(
             !fields::common::visible.read(&resolved).unwrap(),
             "must read the signal's current value, not error on the handle"
@@ -1361,14 +1361,14 @@ mod tests {
     fn a_signal_nested_in_a_margin_edge_table_resolves_and_a_raising_one_names_the_edge() {
         let lua = signal_lua();
         let props = rect_props(&lua, "return { margin = { top = state('top', 4), left = 2 } }");
-        let resolved = crate::layout::node::resolve_declared(props, "rect", false, &lua).unwrap();
+        let resolved = crate::layout::node::resolve_declared(&props, "rect", false, &lua).unwrap();
         assert_eq!(
             fields::common::margin.read(&resolved).unwrap(),
             fields::common::margin.read(&rect_props(&lua, "return { margin = { top = 4, left = 2 } }")).unwrap()
         );
         let props =
             rect_props(&lua, "return { margin = { top = state('boom', 0):map(function() error('boom') end) } }");
-        let err = crate::layout::node::resolve_declared(props, "rect", false, &lua).unwrap_err();
+        let err = crate::layout::node::resolve_declared(&props, "rect", false, &lua).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "margin.top"), "{err:?}");
     }
 
@@ -1468,7 +1468,7 @@ mod tests {
     fn a_signal_nested_in_a_border_color_edge_table_resolves() {
         let lua = signal_lua();
         let props = rect_props(&lua, r##"return { border_color = { top = state("red", "#ff0000") } }"##);
-        let resolved = crate::layout::node::resolve_declared(props, "rect", false, &lua).unwrap();
+        let resolved = crate::layout::node::resolve_declared(&props, "rect", false, &lua).unwrap();
         let plain = rect_props(&lua, r##"return { border_color = { top = "#ff0000" } }"##);
         assert_eq!(
             fields::paint::border_color.read(&resolved).unwrap(),

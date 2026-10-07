@@ -60,7 +60,8 @@ fn accepted_properties(kind: &str) -> Vec<&'static str> {
 #[derive(Debug, Clone)]
 pub struct VirtualNode {
     pub kind: &'static str,
-    pub properties: PropMap,
+    /// Shared: the kept child table, each instance and the resolve memo hold one copy.
+    pub properties: std::rc::Rc<PropMap>,
     /// Where its constructor ran, for layout errors to name.
     pub site: Option<Site>,
 }
@@ -168,7 +169,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
         properties.insert(name, value);
     }
 
-    Ok(VirtualNode { kind, properties, site })
+    Ok(VirtualNode { kind, properties: properties.into(), site })
 }
 
 #[cfg(test)]

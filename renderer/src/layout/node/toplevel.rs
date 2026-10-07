@@ -576,7 +576,7 @@ mod tests {
         .0;
         lua.globals().set("t", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "w", title = t }"#).eval().unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "window", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "window", false, &lua).unwrap();
         assert_eq!(window_spec(&resolved).unwrap().title, "Now Playing");
     }
 
@@ -590,7 +590,7 @@ mod tests {
         .0;
         lua.globals().set("a", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = "w", app_id = a }"#).eval().unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "window", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "window", false, &lua).unwrap();
         assert_eq!(window_spec(&resolved).unwrap().app_id, "mantle.later");
     }
 
@@ -604,7 +604,7 @@ mod tests {
         .0;
         lua.globals().set("i", signal).unwrap();
         let table: mlua::Table = lua.load(r#"return { kind = "window", id = i }"#).eval().unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "window", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "window", false, &lua).unwrap();
         assert!(matches!(
             window_spec(&resolved).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "id"
@@ -931,7 +931,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "popup", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "popup", false, &lua).unwrap();
         assert_eq!(
             popup_spec(&resolved).unwrap().anchor_rect,
             LogicalRect { x: 4.0, y: 8.0, width: 16.0, height: 24.0 }

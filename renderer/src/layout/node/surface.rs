@@ -280,7 +280,7 @@ mod tests {
         let table: mlua::Table =
             lua.load(r#"return { kind = "panel", id = "bar", layer = "top", namespace = ns }"#).eval().unwrap();
         let props = props_from_table(&table);
-        let resolved = resolve_declared(props, "panel", false, &lua).unwrap();
+        let resolved = resolve_declared(&props, "panel", false, &lua).unwrap();
         assert!(
             matches!(fields::panel::namespace.read_with_id(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
         );
@@ -317,7 +317,7 @@ mod tests {
             .eval()
             .unwrap();
         let props = props_from_table(&table);
-        let resolved = resolve_declared(props, "panel", false, &lua).unwrap();
+        let resolved = resolve_declared(&props, "panel", false, &lua).unwrap();
         assert_eq!(fields::panel::keyboard_interactivity.read(&resolved).unwrap(), KeyboardInteractivity::Exclusive);
     }
 
@@ -507,7 +507,7 @@ mod tests {
         table.set("layer", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_declared(node.properties, "panel", false, &lua).unwrap();
+        let resolved = resolve_declared(&node.properties, "panel", false, &lua).unwrap();
 
         assert!(
             matches!(resolved.get("layer"), Some(Value::UserData(_))),

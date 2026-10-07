@@ -362,7 +362,7 @@ impl ItemMemo {
         let frame = ComputedFrame::enter(lua);
         let mut node = build_item(&itemfn, &self.element)?;
         if let Some(key) = &self.key {
-            node.properties.insert("id", Value::String(key.clone()));
+            std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key.clone()));
         }
         let memo = ItemMemo {
             element: self.element.clone(),
@@ -477,7 +477,7 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
                 }
                 seen_keys.insert(key_text);
                 // List identity wins over any `id` the item function supplied.
-                node.properties.insert("id", Value::String(key_str.clone()));
+                std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key_str.clone()));
                 memo.key = Some(key_str);
             }
             Ok((node, memo))
@@ -858,7 +858,7 @@ mod tests {
         let lua = signal_lua();
         let table: mlua::Table =
             lua.load(r#"return { kind = "lock", id = state("i", "screen-lock") }"#).eval().unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "lock", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "lock", false, &lua).unwrap();
         assert!(matches!(
             lock_spec(&resolved).unwrap_err(),
             LayoutError::UnsupportedSignalProperty(p) if p == "id"

@@ -372,7 +372,7 @@ mod tests {
             )
         };
         let bound = crate::layout::node::resolve_declared(
-            eval_props(&lua, &src(r##"state("white", "#ffffff")"##)),
+            &eval_props(&lua, &src(r##"state("white", "#ffffff")"##)),
             "rect",
             false,
             &lua,

@@ -549,11 +549,12 @@ pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
 /// table, resolution completes in place with no allocations or sorting. `tables_plain` (see
 /// [`tables_plain`]) vouches that the walked tables hold no signal, so they are not scanned again.
 pub(crate) fn resolve_declared(
-    mut properties: PropMap,
+    properties: &PropMap,
     kind: &str,
     tables_plain: bool,
     lua: &Lua,
 ) -> Result<PropMap, LayoutError> {
+    let mut properties = properties.clone();
     if holds_signals(&properties, tables_plain) {
         // Sorted, and the sort is the point: unsorted, two failing properties on one node name
         // whichever bucket the hasher put first. `renderer/src/socket/client/resolve.rs` puts this message in the
@@ -848,7 +849,7 @@ fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<()
 /// what matches a key to the `&'static str` a [`PropMap`] holds.
 #[cfg(test)]
 pub(crate) fn props_from_table(table: &mlua::Table) -> PropMap {
-    crate::lua::nodes::deserialize_lua_table(table).unwrap().properties
+    std::rc::Rc::unwrap_or_clone(crate::lua::nodes::deserialize_lua_table(table).unwrap().properties)
 }
 
 /// [`props_from_table`] for a table with no `kind`. `rect` accepts every property these parsers
@@ -895,7 +896,7 @@ mod tests {
         table.set("font_size", outer).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
         assert!(matches!(
-            resolve_declared(node.properties, "text", false, &lua).unwrap_err(),
+            resolve_declared(&node.properties, "text", false, &lua).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "font_size"
         ));
     }
@@ -913,7 +914,7 @@ mod tests {
         let table = lua.create_table().unwrap();
         table.set("kind", kind).unwrap();
         table.set(property, signal).unwrap();
-        resolve_declared(props_from_table(&table), kind, false, lua).unwrap()
+        resolve_declared(&props_from_table(&table), kind, false, lua).unwrap()
     }
 
     #[test]
@@ -956,7 +957,7 @@ mod tests {
         table.set("id", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_declared(node.properties, "rect", false, &lua).unwrap();
+        let resolved = resolve_declared(&node.properties, "rect", false, &lua).unwrap();
 
         assert!(matches!(resolved.get("id"), Some(Value::UserData(_))), "id must survive the resolve step unresolved");
         assert!(
@@ -975,14 +976,14 @@ mod tests {
         ] {
             let table: mlua::Table = lua.load(format!(r#"return {{ kind = "{kind}", {src} }}"#)).eval().unwrap();
             let declared = props_from_table(&table);
-            let resolved = resolve_declared(declared.clone(), kind, false, &lua).unwrap();
+            let resolved = resolve_declared(&declared, kind, false, &lua).unwrap();
             assert!(same_lua_value(&declared[property], &resolved[property]), "{property}");
         }
         let table: mlua::Table = lua
             .load(r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = state("a", true) } }"#)
             .eval()
             .unwrap();
-        let resolved = resolve_declared(props_from_table(&table), "panel", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&table), "panel", false, &lua).unwrap();
         assert!(fields::panel::anchor.read(&resolved).unwrap_err().to_string().contains("`top`"));
     }
 
@@ -992,22 +993,22 @@ mod tests {
         let lua = signal_lua();
         let src = "return { effect = { blur = state('blur', 2), backdrop = { blur = state('b', 4) } } }";
         for kind in ["rect", "row", "panel"] {
-            let resolved = resolve_declared(rect_props(&lua, src), kind, false, &lua).unwrap();
+            let resolved = resolve_declared(&rect_props(&lua, src), kind, false, &lua).unwrap();
             let Value::Table(effect) = &resolved["effect"] else { panic!() };
             assert_eq!(effect.raw_get::<i64>("blur").unwrap(), 2, "a nested signal resolves");
         }
         for kind in ["text", "image", "list"] {
-            let err = resolve_declared(rect_props(&lua, src), kind, false, &lua).unwrap_err();
+            let err = resolve_declared(&rect_props(&lua, src), kind, false, &lua).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.backdrop"),
                 "{kind}: {err:?}"
             );
         }
         let blur_only = rect_props(&lua, "return { effect = { blur = 2 } }");
-        assert!(resolve_declared(blur_only, "text", false, &lua).is_ok(), "`blur` is every kind's");
+        assert!(resolve_declared(&blur_only, "text", false, &lua).is_ok(), "`blur` is every kind's");
         let reads = |input: &str| {
             let src = format!("return {{ effect = {{ shader = {{ source = '/s.frag', input = '{input}' }} }} }}");
-            resolve_declared(rect_props(&lua, &src), "text", false, &lua)
+            resolve_declared(&rect_props(&lua, &src), "text", false, &lua)
         };
         let err = reads("backdrop").unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.shader.input"));
@@ -1020,7 +1021,7 @@ mod tests {
         let lua = signal_lua();
         let props =
             rect_props(&lua, "local m = { top = state('top', 4) } for i = 1, 20 do m[i] = m end return { margin = m }");
-        let Value::Table(margin) = &resolve_declared(props, "rect", false, &lua).unwrap()["margin"] else { panic!() };
+        let Value::Table(margin) = &resolve_declared(&props, "rect", false, &lua).unwrap()["margin"] else { panic!() };
         assert_eq!(margin.raw_get::<i64>("top").unwrap(), 4);
         // A back-reference keeps the original table, signal and all, for the parser to refuse.
         assert!(
@@ -1030,7 +1031,7 @@ mod tests {
             .load(r#"local t = { x = state("x", 1) } for _ = 1, 9 do t = { t } end return { kind = "shader", params = t }"#)
             .eval()
             .unwrap();
-        let mut table = resolve_declared(props_from_table(&shader), "shader", false, &lua).unwrap()["params"].clone();
+        let mut table = resolve_declared(&props_from_table(&shader), "shader", false, &lua).unwrap()["params"].clone();
         while let Value::Table(inner) = table {
             table = inner.raw_get(1).unwrap_or(Value::Nil);
             if table.is_nil() {
@@ -1053,7 +1054,7 @@ mod tests {
             )
             .eval()
             .unwrap();
-        let resolved = resolve_declared(props_from_table(&shader), "shader", false, &lua).unwrap();
+        let resolved = resolve_declared(&props_from_table(&shader), "shader", false, &lua).unwrap();
         let x: Value = lua
             .load("return function(p) return p[2][1].x end")
             .eval::<mlua::Function>()
@@ -1071,7 +1072,7 @@ mod tests {
             &lua,
             r##"return { background = { gradient = "linear", stops = { { 0, "#ffffff" }, { 1, state("hole") } } } }"##,
         );
-        let err = resolve_declared(props, "rect", false, &lua).unwrap_err();
+        let err = resolve_declared(&props, "rect", false, &lua).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background.stops[2][2]"),
             "{err:?}"
@@ -1089,7 +1090,7 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        assert!(matches!(resolve_declared(node.properties, "rect", false, &lua).unwrap_err(),
+        assert!(matches!(resolve_declared(&node.properties, "rect", false, &lua).unwrap_err(),
                 LayoutError::InvalidProperty { property, .. } if property == "on_hover"));
     }
 
@@ -1102,7 +1103,7 @@ mod tests {
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got String(\"yes\")"),
         ] {
             let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
-            let err = resolve_declared(props_from_table(&table), "rect", false, &lua).unwrap_err();
+            let err = resolve_declared(&props_from_table(&table), "rect", false, &lua).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property: p, detail } if p == property && detail == expected),
                 "{source}: {err}"
@@ -1120,7 +1121,7 @@ mod tests {
         table.set("on_hover", lua.create_function(|_, ()| Ok(())).unwrap()).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
 
-        let resolved = resolve_declared(node.properties, "rect", false, &lua).unwrap();
+        let resolved = resolve_declared(&node.properties, "rect", false, &lua).unwrap();
         assert!(matches!(resolved.get("on_hover"), Some(Value::Function(_))), "a Function is not a Signal to resolve");
         assert!(matches!(resolved.get("hover"), Some(Value::UserData(_))), "the slot stays the handle it was");
     }
@@ -1148,7 +1149,7 @@ mod tests {
         let unsorted: Vec<&str> = props.keys().copied().collect();
         assert_eq!(unsorted, ["opacity", "background"], "the fixture must not already be in sorted order");
 
-        let err = resolve_declared(props, "rect", false, &lua).unwrap_err();
+        let err = resolve_declared(&props, "rect", false, &lua).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "background"),
             "a broken config must name the property its own text names first, got: {err}"
