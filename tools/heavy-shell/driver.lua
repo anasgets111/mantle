@@ -2,11 +2,12 @@
 -- no driver wakes of its own.
 local QUERIES = { "", "a", "al", "alp", "ec", "echo", "o 1", "tango", "", "mi", "mike 0", "zz" }
 
-return function(mode, cal_hidden, listwin, gallery, theme)
+return function(mode, cal_hidden, listwin, gallery, theme, fx)
     local flip = state("hs_flip", false)
     local day = state("hs_cal_day", 1)
     local tick = 0
-    local busy_armed, flip_armed = false, false
+    local busy_armed, flip_armed, fx_armed = false, false, false
+    local fx_tick = 0
 
     -- Re-armed before the work, so a raise in the work (a blown CPU budget) cannot end the chain.
     -- Never reads `listwin.results`: that would run the fuzzy filter inside this callback's budget.
@@ -46,6 +47,19 @@ return function(mode, cal_hidden, listwin, gallery, theme)
         timer(3000, flipper)
     end
 
+    -- Every 200 ms one phase flips, so each card's state changes every 400 ms. The strip scrolls on phase a.
+    local function fx_flip()
+        if not fx.on:get() then
+            fx_armed = false
+            return
+        end
+        timer(200, fx_flip)
+        fx_tick = fx_tick + 1
+        local phase = fx.phase[fx_tick % 2 + 1]
+        phase:set(not phase:get())
+        if fx_tick % 2 == 1 then fx.strip:scroll_to(fx_tick % 4 == 1 and 300 or 0) end
+    end
+
     local function arm()
         if mode:get() == "busy" and not busy_armed then
             busy_armed = true
@@ -55,9 +69,14 @@ return function(mode, cal_hidden, listwin, gallery, theme)
             flip_armed = true
             timer(3000, flipper)
         end
+        if fx.on:get() and not fx_armed then
+            fx_armed = true
+            timer(200, fx_flip)
+        end
     end
     mode:on_change(arm)
     flip:on_change(arm)
+    fx.on:on_change(arm)
     arm()
 
     local function report()
