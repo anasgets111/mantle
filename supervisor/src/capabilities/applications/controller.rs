@@ -102,9 +102,12 @@ impl ApplicationsController {
         let state = Arc::new(Mutex::new(ApplicationsState::default()));
         let launch_targets = Arc::new(Mutex::new(HashMap::new()));
         let dirs = Arc::new(dirs);
+        // One scan at a time, so state and launch map always come from the same scan.
+        let scanning = Mutex::new(());
         let rescan: Arc<dyn Fn() + Send + Sync> = {
             let (state, launch_targets, dirs) = (Arc::clone(&state), Arc::clone(&launch_targets), Arc::clone(&dirs));
             Arc::new(move || {
+                let _scanning = scanning.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 let result = scan(&dirs);
                 let next = ApplicationsState { entries: result.entries, by_app_id: result.by_app_id };
                 *launch_targets.lock().expect("applications launch map mutex poisoned") = result.launch;
