@@ -11,7 +11,8 @@ Defects or missing pieces a config cannot work around.
 
 | Item | Why / what's left | ADR |
 | :--- | :--- | :--- |
-| Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused | 0241 |
+| Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused. Left: relay each prompt, info and error line to Lua for both lock and polkit (`polkit-agent-helper-1` already emits them); answer secret prompts through `secure_submit`, visible ones as typed text. Fingerprint on the lock screen: run a fingerprint-only PAM service beside the password one and kill the loser's worker, since one stack runs `pam_fprintd` before `pam_unix` and blocks typing until the scan times out; polkit cannot do this and shows the scan prompt first | 0028, 0241 |
+| Polkit identity choice | `first_unix_user_uid` answers for the first identity; with several admin accounts the user should pick one, restarting the helper for it | 0028 |
 
 ## Later
 
