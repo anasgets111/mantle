@@ -151,6 +151,14 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 continue;
                             }
 
+                            if event.mask.contains(EventMask::Q_OVERFLOW) {
+                                // Events were lost, so any edit or new directory may have been missed.
+                                hashes.clear();
+                                let _ = watch_tree(&mut watches, &mut wd_to_dir, &root);
+                                deadline = Some(tokio::time::Instant::now() + debounce);
+                                continue;
+                            }
+
                             let Some(parent) = wd_to_dir.get(&event.wd) else {
                                 continue; // watch already cleaned up above: ignore stragglers.
                             };
@@ -308,6 +316,25 @@ mod tests {
 
         std::fs::write(dir.path().join("shell.lua"), "return {}").unwrap();
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "the rest of the tree still has to be watched");
+    }
+
+    /// The watcher task cannot run while this synchronous burst fills the kernel queue (the
+    /// `max_queued_events` limit), so the `.lua` write that follows the filler is lost and only the overflow marker remains.
+    #[tokio::test]
+    async fn a_kernel_queue_overflow_still_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
+        let Some(queue) = std::fs::read_to_string("/proc/sys/fs/inotify/max_queued_events")
+            .ok()
+            .and_then(|limit| limit.trim().parse::<usize>().ok())
+        else {
+            return eprintln!("skipped: the inotify queue limit is unreadable");
+        };
+        for i in 0..queue + 1_000 {
+            std::fs::write(dir.path().join(format!("{i}.txt")), "").unwrap();
+        }
+        std::fs::write(dir.path().join("shell.lua"), "return {}").unwrap();
+        assert!(recv_within(&mut rx, Duration::from_secs(5)).await.is_some());
     }
 
     async fn recv_within(rx: &mut mpsc::UnboundedReceiver<()>, timeout: Duration) -> Option<()> {
