@@ -71,6 +71,12 @@ const MAX_INBOUND_FRAMES: usize = 1024;
 /// handles "this generation did not take the frame".
 const MAX_OUTBOUND_FRAMES: usize = 1024;
 
+/// Queue slots `process.run` output leaves free for control frames (lock, reload, snapshots).
+const OUTPUT_RESERVE: usize = 256;
+
+/// How long a wedged Renderer gets to exit after its connection is hung up before its group is killed.
+const WEDGED_KILL_AFTER: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 5 });
+
 /// Decoded frame tagged with its sending generation.
 #[derive(Debug)]
 pub struct InboundFrame {
@@ -133,9 +139,43 @@ impl GenerationRegistry {
                 // it exits (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), which is
                 // the departure this Supervisor already knows how to respawn from.
                 entry.hangup.notify_one();
+                // A wedged Renderer never sees the EOF, so `child.wait()` would never fire. The
+                // expectation is dropped once the departure is observed, which keeps this off a reused pid.
+                let registry = self.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(WEDGED_KILL_AFTER).await;
+                    let pid = registry.expected_pids.lock().expect("mutex poisoned").get(&generation_id).copied();
+                    if let Some(pid) = pid {
+                        warn!("generation {generation_id} (pid {pid}) is still running after the hangup; killing it");
+                        let _ = crate::process::signal_group_best_effort(
+                            nix::unistd::Pid::from_raw(pid as i32),
+                            nix::sys::signal::Signal::SIGKILL,
+                        );
+                    }
+                });
                 false
             }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => false,
+        }
+    }
+
+    /// Queues `process.run` output once the peer's queue has [`OUTPUT_RESERVE`] free slots, waiting
+    /// otherwise so a chatty child backs up its own pipe instead of tripping the wedged-peer hangup
+    /// that [`Self::send_to`] applies to control frames. Gone peers drop the line.
+    // ponytail: polls at 100 Hz per waiting child. Upgrade: a Semaphore sized MAX_OUTBOUND_FRAMES - OUTPUT_RESERVE.
+    pub async fn send_output(&self, generation_id: u32, mut payload: Vec<u8>) {
+        let tx = self.connections.lock().expect("mutex poisoned").get(&generation_id).map(|entry| entry.tx.clone());
+        let Some(tx) = tx else { return };
+        loop {
+            if tx.capacity() > OUTPUT_RESERVE {
+                match tx.try_send(payload) {
+                    Err(mpsc::error::TrySendError::Full(back)) => payload = back,
+                    _ => return,
+                }
+            } else if tx.is_closed() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     }
 
@@ -452,19 +492,20 @@ fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame)
 
 /// Sends `frame`, logging rather than propagating failure. `NoConnection` is expected before boot
 /// Renderer registration; `connected.recv()` replays `last_snapshots`, so no early push is lost.
-pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u32, frame: &SupervisorFrame) {
-    let payload = match serde_json::to_vec(frame) {
-        Ok(payload) => payload,
-        Err(err) => return debug!("failed to serialize {frame:?} for generation {generation_id}: {err}"),
-    };
-    if registry.send_to(generation_id, payload) {
-        return;
+/// Returns whether the frame was queued.
+pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u32, frame: &SupervisorFrame) -> bool {
+    let queued = serde_json::to_vec(frame)
+        .inspect_err(|err| debug!("failed to serialize {frame:?} for generation {generation_id}: {err}"))
+        .is_ok_and(|payload| registry.send_to(generation_id, payload));
+    if queued {
+        return true;
     }
     // Silent for snapshots: the replay delivers them, and a respawn cooldown logged one line per
     // snapshot for 30s.
     if !matches!(frame, SupervisorFrame::StateSnapshot(_)) {
         debug!("failed to push {frame:?} to generation {generation_id}: no connection registered");
     }
+    false
 }
 
 #[cfg(test)]
@@ -568,6 +609,21 @@ mod tests {
         tokio::time::timeout(std::time::Duration::from_millis(50), hangup.notified())
             .await
             .expect("the connection task must be told to close, or its writer sits blocked");
+    }
+
+    #[tokio::test]
+    async fn a_hung_up_renderer_that_ignores_the_eof_is_killed() {
+        let registry = GenerationRegistry::default();
+        let mut child =
+            crate::process::spawn_group_leader("sh", &["-c".into(), "trap '' HUP TERM; sleep 30".into()], &[]).unwrap();
+        registry.expect_generation(5, child.id().unwrap());
+        let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
+        registry.register(5, tx, Arc::new(tokio::sync::Notify::new()));
+        for _ in 0..=MAX_OUTBOUND_FRAMES {
+            registry.send_to(5, b"x".to_vec());
+        }
+        let status = tokio::time::timeout(Duration::from_secs(5), child.wait()).await.expect("killed").unwrap();
+        assert_eq!(std::os::unix::process::ExitStatusExt::signal(&status), Some(9));
     }
 
     #[tokio::test]

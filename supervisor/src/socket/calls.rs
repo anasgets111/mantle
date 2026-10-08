@@ -84,6 +84,12 @@ impl CallRoutes {
         entry.reply.try_send(payload).map_err(|err| format!("the caller of call {} is gone: {err}", result.id))
     }
 
+    /// Answers the caller with a failure instead of a generation's result, for a call that never left.
+    pub fn fail(&self, id: u64, generation_id: u32, reason: &str) {
+        let result = shared::CallResult { id, outcome: shared::CallOutcome::Failed(reason.to_string()) };
+        let _ = self.answer(generation_id, &result);
+    }
+
     /// Whether this id still has a caller waiting, so a connection can forget the ones answered.
     pub fn is_pending(&self, id: u64) -> bool {
         self.0.lock().expect("call routes mutex poisoned").waiting.contains_key(&id)
@@ -106,6 +112,21 @@ mod tests {
 
     fn result(id: u64) -> shared::CallResult {
         shared::CallResult { id, outcome: shared::CallOutcome::Returned(serde_json::json!("recording")) }
+    }
+
+    #[tokio::test]
+    async fn a_failed_dispatch_answers_the_caller_at_once() {
+        let routes = CallRoutes::default();
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
+        let id = routes.open(tx).unwrap();
+
+        routes.dispatched(id, 7);
+        routes.fail(id, 7, "no shell");
+
+        let frame: SupervisorFrame = serde_json::from_slice(&rx.try_recv().unwrap()).unwrap();
+        assert!(matches!(frame, SupervisorFrame::CallResult(r) if r.id == id
+            && matches!(r.outcome, shared::CallOutcome::Failed(ref why) if why == "no shell")));
+        assert!(!routes.is_pending(id));
     }
 
     #[tokio::test]

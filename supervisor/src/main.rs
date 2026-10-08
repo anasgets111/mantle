@@ -56,7 +56,9 @@ fn frame_may_dispatch(frame: &RendererFrame, generation_id: u32, authoritative_g
 fn send_to_authoritative(supervisor: &Supervisor, call_routes: &socket::CallRoutes, id: u64, frame: SupervisorFrame) {
     let generation_id = supervisor.authoritative.generation_id;
     call_routes.dispatched(id, generation_id);
-    send_frame_logged(&supervisor.registry, generation_id, &frame);
+    if !send_frame_logged(&supervisor.registry, generation_id, &frame) {
+        call_routes.fail(id, generation_id, "the shell is not connected right now; try again in a moment");
+    }
 }
 
 /// Logs a command for a controller never built (ADR-0070). A config cannot reach this: reading

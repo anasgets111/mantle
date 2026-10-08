@@ -25,17 +25,19 @@ pub(crate) fn process_run_args(arguments: &[serde_json::Value]) -> Option<(Strin
 }
 
 /// Dispatches `process.run`/`process.kill` (ADR-0037), including parse and spawn. `async` because
-/// kill must reap before sending `ProcessExited`.
-pub(crate) async fn dispatch(
+/// kill reaps in `reaps` before sending `ProcessExited`.
+pub(crate) fn dispatch(
     processes: &mut LiveProcesses,
     registry: &socket::GenerationRegistry,
     process_done_tx: &tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
+    reaps: &mut tokio::task::JoinSet<()>,
     envelope: &shared::CommandEnvelope,
 ) {
     let generation_id = envelope.params.generation_id;
     let id = envelope.id;
-    let exited =
-        |code| send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
+    let exited = |code| {
+        send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
+    };
     match envelope.params.action.as_str() {
         "run" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => match spawn_and_register_process(processes, generation_id, id, &cmd, &args) {
@@ -45,6 +47,8 @@ pub(crate) async fn dispatch(
                     let task_done_tx = process_done_tx.clone();
                     tokio::spawn(async move {
                         stream_process_output(&task_registry, generation_id, id, stdout, stderr).await;
+                        // Pipes close an instant before the exit status lands; let it, so `on_exit` is not rechecked 100 ms later.
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                         let _ = task_done_tx.send((generation_id, id));
                     });
                 }
@@ -74,9 +78,18 @@ pub(crate) async fn dispatch(
                 envelope.params.arguments
             ),
         },
+        // Reaped off the loop: SIGTERM, grace and group poll take 100 ms, 2 s for a TERM-ignoring child.
         "kill" => {
-            if let Some(code) = kill_registered_process(processes, generation_id, id).await {
-                exited(code);
+            if let Some(child) = processes.remove(&(generation_id, id)) {
+                let registry = registry.clone();
+                reaps.spawn(async move {
+                    let code = kill_registered_process(child, generation_id, id).await;
+                    send_frame_logged(
+                        &registry,
+                        generation_id,
+                        &SupervisorFrame::ProcessExited(ProcessExited { id, code }),
+                    );
+                });
             }
         }
         _ => debug!("unknown action {:?} from generation {generation_id}", envelope.params.action),
@@ -217,17 +230,17 @@ pub(crate) async fn stream_process_output(
     while !stdout_done || !stderr_done {
         tokio::select! {
             line = stdout_lines.next_line(), if !stdout_done => {
-                stdout_done = report_process_output_line(registry, generation_id, id, ProcessStream::Stdout, line);
+                stdout_done = report_process_output_line(registry, generation_id, id, ProcessStream::Stdout, line).await;
             }
             line = stderr_lines.next_line(), if !stderr_done => {
-                stderr_done = report_process_output_line(registry, generation_id, id, ProcessStream::Stderr, line);
+                stderr_done = report_process_output_line(registry, generation_id, id, ProcessStream::Stderr, line).await;
             }
         }
     }
 }
 
 /// Handles one stream poll: sends a frame for a line, logs read errors, and reports EOF/error done.
-fn report_process_output_line(
+async fn report_process_output_line(
     registry: &socket::GenerationRegistry,
     generation_id: u32,
     id: u64,
@@ -236,11 +249,11 @@ fn report_process_output_line(
 ) -> bool {
     match line {
         Ok(Some(line)) => {
-            send_frame_logged(
-                registry,
-                generation_id,
-                &SupervisorFrame::ProcessOutput(ProcessOutputLine { id, stream, line }),
-            );
+            let frame = SupervisorFrame::ProcessOutput(ProcessOutputLine { id, stream, line });
+            match serde_json::to_vec(&frame) {
+                Ok(payload) => registry.send_output(generation_id, payload).await,
+                Err(err) => debug!("failed to serialize {frame:?}: {err}"),
+            }
             false
         }
         Ok(None) => true,
@@ -251,55 +264,62 @@ fn report_process_output_line(
     }
 }
 
-/// Removes `(generation_id, id)` and reaps its group via `super::reap_process_group` (ADR-0018).
-/// `None` means no entry: already reaped via completion, or Lua never received a handle. Otherwise
-/// the code for `on_exit`: usually `None` for a SIGTERM/SIGKILL death, and `None` when the reap
-/// failed (logged here) so `id`'s `on_exit` is still answered.
-pub(crate) async fn kill_registered_process(
-    processes: &mut LiveProcesses,
-    generation_id: u32,
-    id: u64,
-) -> Option<Option<i32>> {
-    let mut child = processes.remove(&(generation_id, id))?;
+/// Reaps a removed child's group via `super::reap_process_group` (ADR-0018). The code for
+/// `on_exit`: usually `None` for a SIGTERM/SIGKILL death, and `None` when the reap failed (logged
+/// here) so `id`'s `on_exit` is still answered.
+pub(crate) async fn kill_registered_process(mut child: Child, generation_id: u32, id: u64) -> Option<i32> {
     match super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await {
-        Ok(status) => Some(status.code()),
+        Ok(status) => status.code(),
         Err(err) => {
             warn!("failed to reap process {id} (generation {generation_id}) on kill: {err}");
-            Some(None)
+            None
         }
     }
 }
 
-/// Slow `process_done` half: waits for the real exit and reports it to Lua. The caller has already
-/// taken the `Child` out of `LiveProcesses`; this owns it from here. Detach it, never await
-/// inline in `main()`'s `select!`: streams can close while a daemonizing child keeps running after
-/// redirecting them to `/dev/null`.
-pub(crate) async fn wait_and_report_exit(
-    registry: socket::GenerationRegistry,
+/// Once `(generation_id, id)`'s output has closed: reports the exit and forgets the child if it has
+/// exited, else keeps it tracked and rechecks on `done_tx` after a beat. A child that closed its
+/// streams but runs on (daemonized) stays reapable with its generation or at shutdown.
+// ponytail: rechecks every 100 ms while such a child lives. Upgrade: a pidfd readiness wait.
+pub(crate) fn report_if_exited(
+    processes: &mut LiveProcesses,
+    registry: &socket::GenerationRegistry,
+    done_tx: &tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
     generation_id: u32,
     id: u64,
-    mut child: Child,
 ) {
-    let code = match child.wait().await {
-        Ok(status) => status.code(),
+    let Some(child) = processes.get_mut(&(generation_id, id)) else { return };
+    let code = match child.try_wait() {
+        Ok(Some(status)) => status.code(),
+        Ok(None) => {
+            let done_tx = done_tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let _ = done_tx.send((generation_id, id));
+            });
+            return;
+        }
+        // `None` as for a failed kill reap: `id`'s `on_exit` is waiting and nothing else answers it.
         Err(err) => {
             warn!("failed to wait on exited process {id} (generation {generation_id}): {err}");
-            // `None` for the same reason as a failed kill reap: `id`'s `on_exit` is waiting
-            // and no other path will answer it.
             None
         }
     };
-    send_frame_logged(&registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
+    processes.remove(&(generation_id, id));
+    send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
 }
 
-/// Reaps `generation_id`'s processes, or every tracked one at shutdown when `None`, concurrently so
-/// the sweep costs one grace rather than one per child. Sends no `ProcessExited`: the generation's
-/// connection is already gone. Includes every Lua-spawned child, not only the Renderer.
-pub(crate) async fn reap_processes(processes: &mut LiveProcesses, generation_id: Option<u32>) {
-    let keys: Vec<(u32, u64)> =
-        processes.keys().filter(|(entry, _)| generation_id.is_none_or(|g| g == *entry)).copied().collect();
-    let children = keys.into_iter().filter_map(|key| processes.remove(&key).map(|child| (key, child)));
-    futures_util::future::join_all(children.map(|(key, mut child)| async move {
+/// Moves `generation_id`'s children out of `processes`, for a reap off the loop.
+pub(crate) fn take_generation(processes: &mut LiveProcesses, generation_id: u32) -> LiveProcesses {
+    processes.extract_if(|(entry, _), _| *entry == generation_id).collect()
+}
+
+/// Reaps every tracked process concurrently so the sweep costs one grace rather than one per child.
+/// Sends no `ProcessExited`: the generation's connection is already gone. Includes every Lua-spawned
+/// child, not only the Renderer.
+pub(crate) async fn reap_processes(processes: &mut LiveProcesses) {
+    let children = std::mem::take(processes);
+    futures_util::future::join_all(children.into_iter().map(|(key, mut child)| async move {
         if let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await {
             warn!("failed to reap process {key:?}: {err}");
         }
@@ -444,7 +464,7 @@ mod tests {
         generation_id: u32,
     ) -> (socket::GenerationRegistry, tokio::sync::mpsc::Receiver<Vec<u8>>) {
         let registry = socket::GenerationRegistry::default();
-        let (tx, rx) = tokio::sync::mpsc::channel(16);
+        let (tx, rx) = tokio::sync::mpsc::channel(1024);
         registry.register(generation_id, tx, std::sync::Arc::new(tokio::sync::Notify::new()));
         (registry, rx)
     }
@@ -503,42 +523,94 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn wait_and_report_exit_sends_the_real_exit_code_back_to_the_generation_that_spawned_it() {
+    async fn a_finished_child_is_reported_with_its_real_exit_code_and_forgotten() {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args("exit 7"));
-        let child = processes.remove(&(1, 9)).unwrap();
+        processes.get_mut(&(1, 9)).unwrap().wait().await.unwrap();
         let (registry, mut rx) = registry_with_connection(1);
+        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        wait_and_report_exit(registry, 1, 9, child).await;
+        report_if_exited(&mut processes, &registry, &done_tx, 1, 9);
 
-        let payload = rx.try_recv().expect("a ProcessExited frame must have been sent");
-        match serde_json::from_slice::<SupervisorFrame>(&payload).unwrap() {
-            SupervisorFrame::ProcessExited(ProcessExited { id, code }) => {
-                assert_eq!(id, 9);
-                assert_eq!(code, Some(7));
-            }
+        assert!(processes.is_empty());
+        match serde_json::from_slice::<SupervisorFrame>(&rx.try_recv().unwrap()).unwrap() {
+            SupervisorFrame::ProcessExited(ProcessExited { id: 9, code: Some(7) }) => {}
             other => panic!("unexpected frame: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_child_that_closed_its_output_but_still_runs_stays_tracked_and_reapable() {
+        let mut processes: LiveProcesses = HashMap::new();
+        let (stdout, stderr) =
+            spawn_and_register_process(&mut processes, 1, 4, "sh", &sh_args("exec >&- 2>&-; sleep 30")).unwrap();
+        let pid = processes[&(1, 4)].id().unwrap();
+        let (registry, mut rx) = registry_with_connection(1);
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+        stream_process_output(&registry, 1, 4, stdout, stderr).await;
+
+        report_if_exited(&mut processes, &registry, &done_tx, 1, 4);
+
+        assert!(processes.contains_key(&(1, 4)), "still running, so a Renderer replacement must still find it");
+        assert!(rx.try_recv().is_err(), "no exit to report yet");
+        assert_eq!(done_rx.recv().await, Some((1, 4)), "and it is rechecked later");
+        reap_processes(&mut take_generation(&mut processes, 1)).await;
+        assert!(crate::process::exited(&[pid]).await);
+    }
+
+    #[tokio::test]
+    async fn a_chatty_child_backs_up_its_pipe_rather_than_the_connection() {
+        let mut processes: LiveProcesses = HashMap::new();
+        let (stdout, stderr) =
+            spawn_and_register_process(&mut processes, 1, 2, "seq", &["1".into(), "5000".into()]).unwrap();
+        let registry = socket::GenerationRegistry::default();
+        // Never read: a Renderer slower than the child.
+        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
+        registry.register(1, tx, std::sync::Arc::new(tokio::sync::Notify::new()));
+
+        let flood = stream_process_output(&registry, 1, 2, stdout, stderr);
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), flood).await.is_err(), "it must wait");
+
+        assert!(registry.send_to(1, b"lock".to_vec()), "a control frame still fits and the peer was not hung up on");
+    }
+
+    #[tokio::test]
+    async fn killing_a_term_ignoring_child_does_not_hold_the_caller() {
+        let mut processes: LiveProcesses = HashMap::new();
+        spawn_and_register_process(&mut processes, 1, 5, "sh", &sh_args("trap '' TERM; sleep 30"));
+        let (registry, mut rx) = registry_with_connection(1);
+        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let started = std::time::Instant::now();
+        let kill = shared::CommandEnvelope {
+            id: 5,
+            params: shared::CommandParams {
+                generation_id: 1,
+                capability: "process".to_string(),
+                action: "kill".to_string(),
+                arguments: vec![],
+                legacy_expected_revision: 0,
+            },
+        };
+        let mut reaps = tokio::task::JoinSet::new();
+        dispatch(&mut processes, &registry, &done_tx, &mut reaps, &kill);
+        assert!(started.elapsed() < std::time::Duration::from_millis(50));
+        assert!(processes.is_empty());
+
+        let payload = tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<SupervisorFrame>(&payload).unwrap(),
+            SupervisorFrame::ProcessExited(ProcessExited { id: 5, code: None })
+        ));
     }
 
     #[tokio::test]
     async fn kill_registered_process_reaps_and_reports_a_signal_death() {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 3, "sh", &sh_args("sleep 5"));
-        assert!(processes.contains_key(&(1, 3)));
+        let child = processes.remove(&(1, 3)).unwrap();
 
-        assert_eq!(
-            kill_registered_process(&mut processes, 1, 3).await,
-            Some(None),
-            "a SIGTERM/SIGKILL death has no exit code"
-        );
-        assert!(!processes.contains_key(&(1, 3)));
-    }
-
-    #[tokio::test]
-    async fn kill_registered_process_on_an_unregistered_id_is_a_silent_no_op() {
-        let mut processes: LiveProcesses = HashMap::new();
-        assert_eq!(kill_registered_process(&mut processes, 1, 99).await, None);
+        assert_eq!(kill_registered_process(child, 1, 3).await, None, "a SIGTERM/SIGKILL death has no exit code");
     }
 
     #[tokio::test]
@@ -548,13 +620,13 @@ mod tests {
         spawn_and_register_process(&mut processes, 2, 1, "sh", &sh_args("sleep 30"));
         let pid = processes[&(1, 1)].id().expect("freshly spawned child has a pid");
 
-        reap_processes(&mut processes, Some(1)).await;
+        reap_processes(&mut take_generation(&mut processes, 1)).await;
 
         assert!(!processes.contains_key(&(1, 1)), "generation 1's process must be reaped and removed");
         assert!(crate::process::exited(&[pid]).await, "process {pid} must be dead, not just removed from the registry");
         assert!(processes.contains_key(&(2, 1)), "generation 2's process must be untouched");
 
-        kill_registered_process(&mut processes, 2, 1).await;
+        reap_processes(&mut processes).await;
     }
 
     #[tokio::test]
@@ -565,7 +637,7 @@ mod tests {
         let pids: Vec<u32> =
             processes.values().map(|child| child.id().expect("freshly spawned child has a pid")).collect();
 
-        reap_processes(&mut processes, None).await;
+        reap_processes(&mut processes).await;
 
         assert!(processes.is_empty(), "shutdown must reap every tracked process, not just one generation's");
         assert!(crate::process::exited(&pids).await, "every process must be dead, not just removed from the registry");

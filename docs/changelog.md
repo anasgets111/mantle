@@ -7,6 +7,9 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: `mantle call`, `set` and `input` fail at once when no shell is connected, instead of waiting 5 s.
+- Fixed: a `process.run` child printing faster than the shell reads no longer gets the shell restarted; the child waits on its pipe.
+
 ## 0.5.1 - 2026-10-07
 
 - Fixed: an `effect` under `animate` keeps its `backdrop.mask` while it tweens; it was dropped from the first frame on.

@@ -20,7 +20,7 @@ use crate::generation::{
 use crate::memory;
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
-use crate::process::registry::{LiveProcesses, reap_processes, wait_and_report_exit};
+use crate::process::registry::{LiveProcesses, reap_processes, report_if_exited, take_generation};
 use crate::snapshot::{Published, push_snapshot, send_owned};
 use crate::socket;
 use crate::{process, send_frame_logged};
@@ -94,6 +94,10 @@ pub(crate) struct Supervisor {
     /// Tracked `process.run` children (ADR-0026).
     processes: LiveProcesses,
     process_done_tx: tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
+    /// `process.kill` and departed-generation reaps, off the loop; [`Supervisor::reap`] drains them.
+    reaps: tokio::task::JoinSet<()>,
+    /// Fires when the departed generation's children are gone; see [`Supervisor::dispatch_process_command`].
+    departed_reaped: Option<tokio::sync::oneshot::Receiver<()>>,
 }
 
 impl Supervisor {
@@ -139,6 +143,8 @@ impl Supervisor {
             relock_in_flight: None,
             processes: HashMap::new(),
             process_done_tx,
+            reaps: tokio::task::JoinSet::new(),
+            departed_reaped: None,
         }
     }
 
@@ -281,6 +287,8 @@ impl Supervisor {
         let was_locked = self.lock.snapshot().active;
         warn!("{}", departure_report(departure, self.authoritative.generation_id, was_locked));
         self.renderer_departed = true;
+        // At departure rather than respawn: from here the pid is reaped and must not be signalled.
+        self.registry.forget_generation(self.authoritative.generation_id);
 
         // Before the brake: the session ended under the whole shell, so every replacement would
         // find the same missing compositor. Stop the way a SIGTERM does, because it means the same thing.
@@ -312,7 +320,6 @@ impl Supervisor {
                 }
                 // The departed generation's id must not stay claimable by whatever inherits its pid.
                 let departed = self.authoritative.generation_id;
-                self.registry.forget_generation(departed);
                 self.authoritative = Authoritative { generation_id: replacement_generation_id, child };
                 self.renderer_departed = false;
                 notice!("spawned generation {replacement_generation_id} to replace it");
@@ -322,7 +329,13 @@ impl Supervisor {
                 if let Some(idle) = self.capabilities.idle() {
                     idle.reset_registrations(departed).await;
                 }
-                reap_processes(&mut self.processes, Some(departed)).await;
+                let mut gone = take_generation(&mut self.processes, departed);
+                let (reaped_tx, reaped_rx) = tokio::sync::oneshot::channel();
+                self.departed_reaped = Some(reaped_rx);
+                self.reaps.spawn(async move {
+                    reap_processes(&mut gone).await;
+                    let _ = reaped_tx.send(());
+                });
                 // Registration replays every `last_snapshots` entry via `hydrate`.
                 if was_locked {
                     // ADR-0058 decision 4: the lock object died; `active` is stale. `RendererLost`
@@ -336,8 +349,12 @@ impl Supervisor {
                 false
             }
             Err(err) => {
-                error!("could not spawn a replacement renderer: {err}");
-                true
+                // A package upgrade or `just swap` can leave the binary briefly unexecutable.
+                // ponytail: retries forever; a binary that never becomes executable leaves a headless
+                // session. Upgrade: give up after a bounded count and stop the loop.
+                error!("could not spawn a replacement renderer: {err}; retrying in {RESTART_COOLDOWN:?}");
+                self.respawn_at = Some(std::time::Instant::now() + RESTART_COOLDOWN);
+                false
             }
         }
     }
@@ -419,15 +436,23 @@ impl Supervisor {
 
     /// Routes a `process` command (ADR-0026).
     pub(crate) async fn dispatch_process_command(&mut self, envelope: &shared::CommandEnvelope) {
-        process::registry::dispatch(&mut self.processes, &self.registry, &self.process_done_tx, envelope).await;
+        // The old generation's children must be gone first, or the new one can start a single-instance
+        // daemon that the old copy still holds. ponytail: holds the loop up to ~2 s, only while that reap runs.
+        if let Some(reaped) = self.departed_reaped.take() {
+            let _ = reaped.await;
+        }
+        process::registry::dispatch(
+            &mut self.processes,
+            &self.registry,
+            &self.process_done_tx,
+            &mut self.reaps,
+            envelope,
+        );
     }
 
-    /// Removes one finished `process.run` child inline; `wait` stays off `select!` (see
-    /// `wait_and_report_exit`).
+    /// Reports one `process.run` child whose output closed, once it has exited.
     pub(crate) fn reap_exited_process(&mut self, generation_id: u32, id: u64) {
-        if let Some(child) = self.processes.remove(&(generation_id, id)) {
-            tokio::spawn(wait_and_report_exit(self.registry.clone(), generation_id, id, child));
-        }
+        report_if_exited(&mut self.processes, &self.registry, &self.process_done_tx, generation_id, id);
     }
 
     /// Reaps authoritative Renderer and live `process.run` children with SIGTERM/SIGKILL and
@@ -443,7 +468,9 @@ impl Supervisor {
                 self.authoritative.generation_id
             );
         }
-        reap_processes(&mut self.processes, None).await;
+        reap_processes(&mut self.processes).await;
+        // Kills and reaps still inside their SIGTERM grace would otherwise die with the runtime, unkilled.
+        while self.reaps.join_next().await.is_some() {}
         // Session processes are not in `self.processes`: they outlive generations by design, so
         // the per-generation sweep never sees them and this is their only reap.
         self.capabilities.reap_sessions().await;
