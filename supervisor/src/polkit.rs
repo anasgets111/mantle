@@ -18,6 +18,7 @@ use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
 use zbus::interface;
+use zbus::message::Header;
 use zbus::zvariant::{OwnedValue, Value};
 pub use zbus_polkit::policykit1::{AuthorityProxy, Subject};
 
@@ -27,6 +28,15 @@ pub use zbus_polkit::policykit1::{AuthorityProxy, Subject};
 #[zbus(prefix = "org.freedesktop.PolicyKit1.Error")]
 pub enum AgentError {
     Cancelled,
+    PermissionDenied(String),
+}
+
+/// Any local process can call an exported agent; only polkitd may.
+async fn from_polkitd(bus: &zbus::Connection, header: &Header<'_>) -> Result<(), AgentError> {
+    if crate::capabilities::sent_by_owner(bus, header, "org.freedesktop.PolicyKit1").await {
+        return Ok(());
+    }
+    Err(AgentError::PermissionDenied("only polkitd may call the authentication agent".into()))
 }
 
 /// polkitd request forwarded to `main.rs`, which owns the answer.
@@ -107,8 +117,11 @@ impl AuthenticationAgent {
 
 #[interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl AuthenticationAgent {
+    #[allow(clippy::too_many_arguments)]
     async fn begin_authentication(
         &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
         action_id: String,
         message: String,
         icon_name: String,
@@ -116,6 +129,7 @@ impl AuthenticationAgent {
         cookie: String,
         identities: Vec<(String, HashMap<String, OwnedValue>)>,
     ) -> Result<(), AgentError> {
+        from_polkitd(bus, &header).await?;
         let (reply, answer) = oneshot::channel();
         let call = BeginAuthenticationCall { action_id, message, icon_name, details, cookie, identities };
         // A dropped receiver means nobody is listening (mid-shutdown); the sender below is gone
@@ -124,8 +138,15 @@ impl AuthenticationAgent {
         answer.await.unwrap_or(Err(AgentError::Cancelled))
     }
 
-    async fn cancel_authentication(&self, cookie: String) {
+    async fn cancel_authentication(
+        &self,
+        #[zbus(header)] header: Header<'_>,
+        #[zbus(connection)] bus: &zbus::Connection,
+        cookie: String,
+    ) -> Result<(), AgentError> {
+        from_polkitd(bus, &header).await?;
         let _ = self.requests.send(AgentRequest::Cancel { cookie: Some(cookie) });
+        Ok(())
     }
 }
 
@@ -272,7 +293,7 @@ mod tests {
         );
         assert_eq!((locale.as_str(), object_path.as_str()), ("en_US.UTF-8", AGENT_OBJECT_PATH));
         let identities: Vec<(String, HashMap<String, OwnedValue>)> = vec![];
-        let caller = bus.connection().await;
+        let caller = first.clone();
         let agent_name = agent_side.unique_name().unwrap().to_owned();
         let begin = tokio::spawn(async move {
             caller
@@ -289,6 +310,9 @@ mod tests {
             panic!("BeginAuthentication was not forwarded");
         };
 
+        // The caller is polkitd's own connection; release the name it holds.
+        begin.abort();
+        let _ = begin.await;
         drop(first);
         assert!(
             matches!(within(requests.recv()).await, Some(AgentRequest::Cancel { cookie: None })),
@@ -296,7 +320,6 @@ mod tests {
         );
         let _second = authority(calls_tx).await.unwrap();
         within(calls_rx.recv()).await.expect("the new polkitd must get RegisterAuthenticationAgent");
-        begin.abort();
     }
 
     /// Tests [`session_subject`] rather than `$XDG_SESSION_ID`, which parallel tests would race on.
@@ -310,22 +333,39 @@ mod tests {
         );
     }
 
+    /// Agent served on a private bus; the returned connection owns polkitd's name.
+    async fn agent_on_bus(
+        bus: &crate::capabilities::test_support::PrivateBus,
+        tx: mpsc::UnboundedSender<AgentRequest>,
+    ) -> (zbus::Connection, zbus::Connection) {
+        let agent =
+            bus.builder().serve_at(AGENT_OBJECT_PATH, AuthenticationAgent::new(tx)).unwrap().build().await.unwrap();
+        let polkitd = bus.builder().name("org.freedesktop.PolicyKit1").unwrap().build().await.unwrap();
+        (polkitd, agent)
+    }
+
+    async fn call(
+        from: &zbus::Connection,
+        to: &zbus::Connection,
+        method: &str,
+        body: &(impl serde::Serialize + zbus::zvariant::DynamicType),
+    ) -> zbus::Result<zbus::Message> {
+        let to = to.unique_name().unwrap().to_owned();
+        from.call_method(
+            Some(to),
+            AGENT_OBJECT_PATH,
+            Some("org.freedesktop.PolicyKit1.AuthenticationAgent"),
+            method,
+            body,
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn begin_authentication_forwards_the_parsed_challenge_and_returns_only_once_answered() {
+        let bus = private_bus().await;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (caller_side, _agent_side) =
-            p2p_pair_serving(|peer| peer.serve_at(AGENT_OBJECT_PATH, AuthenticationAgent::new(tx))).await;
-
-        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&caller_side)
-            .destination("org.mantle.Supervisor")
-            .expect("valid destination bus name")
-            .path(AGENT_OBJECT_PATH)
-            .expect("valid object path")
-            .interface("org.freedesktop.PolicyKit1.AuthenticationAgent")
-            .expect("valid interface name")
-            .build()
-            .await
-            .expect("failed to build a p2p proxy to the agent");
+        let (polkitd, agent) = agent_on_bus(&bus, tx).await;
 
         let details: HashMap<String, String> =
             HashMap::from([("polkit.gettext_domain".to_string(), "polkit".to_string())]);
@@ -333,22 +373,18 @@ mod tests {
             HashMap::from([("uid".to_string(), OwnedValue::try_from(Value::from(1000u32)).unwrap())]);
         let identities: Vec<(String, HashMap<String, OwnedValue>)> = vec![("unix-user".to_string(), identity_details)];
         let call = tokio::spawn(async move {
-            proxy
-                .call_method(
-                    "BeginAuthentication",
-                    &(
-                        "org.mantle.test.action",
-                        "Authenticate to do the thing",
-                        "dialog-password",
-                        details,
-                        "cookie-123",
-                        identities,
-                    ),
-                )
-                .await
+            let body = (
+                "org.mantle.test.action",
+                "Authenticate to do the thing",
+                "dialog-password",
+                details,
+                "cookie-123",
+                identities,
+            );
+            self::call(&polkitd, &agent, "BeginAuthentication", &body).await
         });
 
-        let Some(AgentRequest::Begin { call: received, reply }) = rx.recv().await else {
+        let Some(AgentRequest::Begin { call: received, reply }) = within(rx.recv()).await else {
             panic!("BeginAuthentication was never forwarded over the channel");
         };
         assert!(!call.is_finished(), "the D-Bus call must stay open until the flow answers it");
@@ -370,28 +406,35 @@ mod tests {
 
     #[tokio::test]
     async fn cancel_authentication_forwards_the_cookie() {
+        let bus = private_bus().await;
         let (tx, mut rx) = mpsc::unbounded_channel();
-        let (caller_side, _agent_side) =
-            p2p_pair_serving(|peer| peer.serve_at(AGENT_OBJECT_PATH, AuthenticationAgent::new(tx))).await;
+        let (polkitd, agent) = agent_on_bus(&bus, tx).await;
 
-        let proxy: zbus::Proxy<'_> = zbus::proxy::Builder::new(&caller_side)
-            .destination("org.mantle.Supervisor")
-            .expect("valid destination bus name")
-            .path(AGENT_OBJECT_PATH)
-            .expect("valid object path")
-            .interface("org.freedesktop.PolicyKit1.AuthenticationAgent")
-            .expect("valid interface name")
-            .build()
-            .await
-            .expect("failed to build a p2p proxy to the agent");
-
-        proxy
-            .call_method("CancelAuthentication", &("cookie-123",))
+        call(&polkitd, &agent, "CancelAuthentication", &("cookie-123",))
             .await
             .expect("CancelAuthentication call should succeed");
         assert!(
-            matches!(rx.recv().await, Some(AgentRequest::Cancel { cookie: Some(cookie) }) if cookie == "cookie-123")
+            matches!(within(rx.recv()).await, Some(AgentRequest::Cancel { cookie: Some(cookie) }) if cookie == "cookie-123")
         );
+    }
+
+    #[tokio::test]
+    async fn only_polkitd_reaches_the_agent() {
+        let bus = private_bus().await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (_polkitd, agent) = agent_on_bus(&bus, tx).await;
+        let rogue = bus.connection().await;
+        let identities: Vec<(String, HashMap<String, OwnedValue>)> = vec![];
+
+        let begin = ("a", "m", "i", HashMap::<String, String>::new(), "cookie", identities);
+        for result in [
+            call(&rogue, &agent, "BeginAuthentication", &begin).await,
+            call(&rogue, &agent, "CancelAuthentication", &("cookie",)).await,
+        ] {
+            let Err(zbus::Error::MethodError(name, ..)) = result else { panic!("a non-polkitd caller was answered") };
+            assert_eq!(name.as_str(), "org.freedesktop.PolicyKit1.Error.PermissionDenied");
+        }
+        assert!(rx.try_recv().is_err(), "a refused call must not reach the flow");
     }
 
     fn unix_user_identity(uid: u32) -> (String, HashMap<String, OwnedValue>) {
