@@ -69,11 +69,19 @@ struct ThreadState {
     handles: Arc<Mutex<HashMap<String, ZwlrForeignToplevelHandleV1>>>,
     next_id: u64,
     publisher: StatePublisher,
+    /// `false` once a publish found no listener, ending the dispatch thread.
+    listening: bool,
 }
 
 impl ThreadState {
     fn publish(&mut self) {
-        self.publisher.publish(self.rows.values().cloned().collect());
+        self.listening = self.publisher.publish(self.rows.values().cloned().collect());
+    }
+
+    /// Dispatch ended: drop the windows no compositor will update again.
+    fn retire(&mut self) {
+        self.rows.clear();
+        self.publish();
     }
 }
 
@@ -241,6 +249,7 @@ fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>
         handles: Arc::clone(&handles),
         next_id: 0,
         publisher: StatePublisher::new(state, events, "wlr_foreign_toplevel"),
+        listening: true,
     };
     // Output names arrive before any toplevel does, so the first `output_enter` can resolve one.
     event_queue.roundtrip(&mut thread_state).ok()?;
@@ -248,8 +257,9 @@ fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>
     let handle = Arc::new(Wlr { connection, seat, handles });
     std::thread::spawn(move || {
         loop {
-            if event_queue.blocking_dispatch(&mut thread_state).is_err() {
+            if event_queue.blocking_dispatch(&mut thread_state).is_err() || !thread_state.listening {
                 debug!("zwlr_foreign_toplevel_manager_v1 dispatch thread exiting");
+                thread_state.retire();
                 break;
             }
         }
@@ -292,4 +302,48 @@ pub fn set_maximized(handle: &Handle, id: &str, maximized: bool) {
     with_handle(handle, id, "set_maximized", |toplevel| {
         if maximized { toplevel.set_maximized() } else { toplevel.unset_maximized() }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn thread_state(state: Arc<Mutex<WindowsState>>, events: UnboundedSender<()>) -> ThreadState {
+        ThreadState {
+            outputs: HashMap::new(),
+            rows: std::collections::BTreeMap::new(),
+            entered_outputs: HashMap::new(),
+            handle_ids: HashMap::new(),
+            handles: Arc::new(Mutex::new(HashMap::new())),
+            next_id: 0,
+            publisher: StatePublisher::new(state, events, "wlr_foreign_toplevel"),
+            listening: true,
+        }
+    }
+
+    #[test]
+    fn retire_publishes_an_empty_list() {
+        let state = Arc::new(Mutex::new(WindowsState::default()));
+        let (events, _kept) = tokio::sync::mpsc::unbounded_channel();
+        let mut thread_state = thread_state(Arc::clone(&state), events);
+        thread_state.rows.insert(0, WindowEntry { id: "0".into(), ..Default::default() });
+        thread_state.publish();
+        assert_eq!(state.lock().unwrap().windows.len(), 1);
+
+        thread_state.retire();
+
+        assert!(state.lock().unwrap().windows.is_empty());
+    }
+
+    #[test]
+    fn publishing_to_nobody_ends_the_dispatch_loop() {
+        let (events, gone) = tokio::sync::mpsc::unbounded_channel();
+        drop(gone);
+        let mut thread_state = thread_state(Arc::default(), events);
+        thread_state.rows.insert(0, WindowEntry { id: "0".into(), ..Default::default() });
+
+        thread_state.publish();
+
+        assert!(!thread_state.listening);
+    }
 }

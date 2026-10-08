@@ -14,7 +14,7 @@ pub struct WindowsState {
 }
 
 /// One toplevel window. `nil` optional fields are ones the backend does not report.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WindowEntry {
     /// Opaque, backend-shaped id for the `windows` actions; compare it, never parse it.
