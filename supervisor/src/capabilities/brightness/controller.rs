@@ -82,6 +82,13 @@ pub struct BrightnessController {
     state: Arc<Mutex<BrightnessState>>,
     device: Arc<Mutex<Option<BacklightDevice>>>,
     system_bus: zbus::Connection,
+    pub(super) writes: super::super::LatestWrites,
+}
+
+impl super::super::Writer for BrightnessController {
+    async fn write(&self, value: f64) {
+        self.set(value).await
+    }
 }
 
 impl BrightnessController {
@@ -89,7 +96,7 @@ impl BrightnessController {
     /// the Supervisor's existing connection used by [`Login1SessionProxy`]. Until a usable device
     /// exists nothing is published (see `brightness/mod.rs`); the watch picks up one added later.
     pub fn new(backlight_root: PathBuf, system_bus: zbus::Connection, events: UnboundedSender<()>) -> Self {
-        let controller = Self { state: Arc::default(), device: Arc::default(), system_bus };
+        let controller = Self { state: Arc::default(), device: Arc::default(), system_bus, writes: Default::default() };
         tokio::spawn(run_brightness_task(backlight_root, controller.clone(), events));
         controller
     }

@@ -35,6 +35,13 @@ pub struct KeyboardController {
     layout: Arc<Option<Box<dyn CompositorLink>>>,
     system_bus: zbus::Connection,
     events: UnboundedSender<()>,
+    pub(super) writes: super::super::LatestWrites,
+}
+
+impl super::super::Writer for KeyboardController {
+    async fn write(&self, value: f64) {
+        self.set_backlight(value).await
+    }
 }
 
 impl KeyboardController {
@@ -71,7 +78,14 @@ impl KeyboardController {
                 None
             }
         };
-        Self { state, backlight: Arc::new(backlight), layout: Arc::new(layout), system_bus, events: events_tx }
+        Self {
+            state,
+            backlight: Arc::new(backlight),
+            layout: Arc::new(layout),
+            system_bus,
+            events: events_tx,
+            writes: Default::default(),
+        }
     }
 
     /// `keyboard:set_backlight(pct)`. Logs and returns without keyboard-backlight hardware.

@@ -16,6 +16,7 @@ use std::sync::Mutex;
 
 use tokio::sync::mpsc::UnboundedSender;
 
+pub use latest_writes::{LatestWrites, Writer};
 pub use lifecycle::Capabilities;
 pub use signals::Signal;
 
@@ -42,6 +43,7 @@ pub mod brightness;
 pub mod files;
 pub mod idle;
 pub mod keyboard;
+mod latest_writes;
 mod lifecycle;
 pub mod lock;
 pub mod mpris;

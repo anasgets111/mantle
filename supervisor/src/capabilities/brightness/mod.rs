@@ -16,8 +16,7 @@ pub fn dispatch(controller: &BrightnessController, envelope: &shared::CommandEnv
     let Some(action) = crate::parse_action::<BrightnessAction>(&envelope.params) else { return };
     match action {
         BrightnessAction::Set { percent } => {
-            let controller = controller.clone();
-            tokio::spawn(async move { controller.set(percent).await });
+            controller.writes.submit(controller, percent);
         }
     }
 }

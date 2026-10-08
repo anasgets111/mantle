@@ -14,8 +14,7 @@ pub fn dispatch(controller: &KeyboardController, envelope: &shared::CommandEnvel
     let Some(action) = crate::parse_action::<KeyboardAction>(&envelope.params) else { return };
     match action {
         KeyboardAction::SetBacklight { percent } => {
-            let controller = controller.clone();
-            tokio::spawn(async move { controller.set_backlight(percent).await });
+            controller.writes.submit(controller, percent);
         }
         KeyboardAction::SwitchLayout { index } => controller.switch_layout(index),
     }
