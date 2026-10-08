@@ -131,7 +131,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
 
         // Absolute deadline, not a relative sleep re-armed by irrelevant events, which could delay
         // the trigger forever under unrelated activity.
-        let mut deadline: Option<tokio::time::Instant> = None;
+        let mut deadline = crate::debounce::Burst::default();
         // Armed when the last watch dies with the config tree.
         let mut rewatch_at: Option<tokio::time::Instant> = None;
         loop {
@@ -155,7 +155,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 // Events were lost, so any edit or new directory may have been missed.
                                 hashes.clear();
                                 let _ = watch_tree(&mut watches, &mut wd_to_dir, &root);
-                                deadline = Some(tokio::time::Instant::now() + debounce);
+                                deadline.bump(debounce);
                                 continue;
                             }
 
@@ -177,7 +177,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 } else if event.mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM)
                                     && forget_subtree(&mut watches, &mut wd_to_dir, &mut hashes, &path)
                                 {
-                                    deadline = Some(tokio::time::Instant::now() + debounce);
+                                    deadline.bump(debounce);
                                 }
                                 continue; // a directory itself is never a config file.
                             }
@@ -190,7 +190,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             if event.mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM) {
                                 // No bytes to hash; deletion always changes state.
                                 hashes.remove(&path);
-                                deadline = Some(tokio::time::Instant::now() + debounce);
+                                deadline.bump(debounce);
                                 continue;
                             }
 
@@ -198,7 +198,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 Some(hash) if hashes.get(&path) == Some(&hash) => {} // unchanged.
                                 Some(hash) => {
                                     hashes.insert(path, hash);
-                                    deadline = Some(tokio::time::Instant::now() + debounce);
+                                    deadline.bump(debounce);
                                 }
                                 None => {} // delete/move won the read race.
                             }
@@ -209,8 +209,8 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                         None => break, // the inotify fd closed: nothing left to watch.
                     }
                 }
-                _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
-                    deadline = None;
+                _ = tokio::time::sleep_until(deadline.at().unwrap_or_else(tokio::time::Instant::now)), if deadline.at().is_some() => {
+                    deadline.clear();
                     debug!("config changed; asking the Renderer to reload it");
                     if tx.send(()).is_err() {
                         break; // receiver dropped: nobody's listening any more.
@@ -224,7 +224,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                         Ok(()) => {
                             rewatch_at = None;
                             // Whatever happened while nothing was watching counts as a change.
-                            deadline = Some(tokio::time::Instant::now() + debounce);
+                            deadline.bump(debounce);
                         }
                         Err(_) => rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY),
                     }

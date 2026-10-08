@@ -13,6 +13,17 @@ use super::scan::walk;
 /// Rescan 250 ms after the last event: one package install writes a burst of entries.
 const DEBOUNCE: Duration = Duration::from_millis(250);
 
+/// Returns once `events` is quiet for [`DEBOUNCE`], or [`crate::debounce::MAX_WAIT`] after the first.
+async fn settle<S: futures_util::Stream + Unpin>(mut events: S) {
+    let mut burst = crate::debounce::Burst::default();
+    burst.bump(DEBOUNCE);
+    while let Some(at) = burst.at()
+        && let Ok(Some(_)) = tokio::time::timeout_at(at, events.next()).await
+    {
+        burst.bump(DEBOUNCE);
+    }
+}
+
 /// Watches `dirs`, scans, and repeats after each settled burst of changes, until aborted.
 ///
 /// Watching comes before scanning, so a change made during the scan triggers another. A failed
@@ -43,7 +54,7 @@ pub(super) async fn run(dirs: Arc<Vec<PathBuf>>, rescan: Arc<dyn Fn() + Send + S
         if stream.next().await.is_none() {
             return;
         }
-        while let Ok(Some(_)) = tokio::time::timeout(DEBOUNCE, stream.next()).await {}
+        settle(&mut stream).await;
     }
 }
 
@@ -73,4 +84,20 @@ fn watch(dirs: &[PathBuf]) -> std::io::Result<Inotify> {
         }
     }
     Ok(inotify)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_steady_trickle_still_settles_within_the_max_wait() {
+        let trickle = Box::pin(futures_util::stream::unfold((), |()| async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            Some(((), ()))
+        }));
+        let start = tokio::time::Instant::now();
+        settle(trickle).await;
+        assert!(start.elapsed() <= Duration::from_secs(2));
+    }
 }

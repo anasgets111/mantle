@@ -6,6 +6,7 @@ mod capabilities;
 mod cli;
 mod compositor;
 mod control_client;
+mod debounce;
 mod generation;
 mod instance;
 mod log;

@@ -195,12 +195,13 @@ async fn follow_folder(
     state: Arc<Mutex<FilesState>>,
     events: UnboundedSender<()>,
 ) {
-    relist(&dir, &key, &extensions, &state, &events).await;
-
-    let mut stream = match Inotify::init().and_then(|inotify| {
+    // Watching comes before listing, so a file created in between is in one or the other.
+    let stream = Inotify::init().and_then(|inotify| {
         inotify.watches().add(&dir, watch_mask())?;
         inotify.into_event_stream(vec![0u8; 4096])
-    }) {
+    });
+    relist(&dir, &key, &extensions, &state, &events).await;
+    let mut stream = match stream {
         Ok(stream) => stream,
         Err(err) => {
             warn!("cannot watch {}: {err}; its listing will not follow changes", dir.display());
@@ -208,7 +209,7 @@ async fn follow_folder(
         }
     };
 
-    let mut deadline: Option<tokio::time::Instant> = None;
+    let mut burst = crate::debounce::Burst::default();
     loop {
         tokio::select! {
             event = stream.next() => {
@@ -219,14 +220,17 @@ async fn follow_folder(
                             relist(&dir, &key, &extensions, &state, &events).await;
                             return;
                         }
-                        deadline = Some(tokio::time::Instant::now() + RELIST_DEBOUNCE);
+                        burst.bump(RELIST_DEBOUNCE);
                     }
-                    Some(Err(err)) => warn!("inotify read on {} failed: {err}", dir.display()),
+                    Some(Err(err)) => {
+                        warn!("inotify read on {} failed: {err}", dir.display());
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
                     None => return,
                 }
             }
-            _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
-                deadline = None;
+            _ = tokio::time::sleep_until(burst.at().unwrap_or_else(tokio::time::Instant::now)), if burst.at().is_some() => {
+                burst.clear();
                 relist(&dir, &key, &extensions, &state, &events).await;
             }
         }
@@ -239,6 +243,29 @@ mod tests {
 
     fn touch(dir: &Path, name: &str) {
         std::fs::write(dir.join(name), b"x").unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_constant_stream_of_writes_still_relists_within_the_max_wait() {
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FilesController::new(tx);
+        let key = dir.path().to_string_lossy().into_owned();
+        controller.watch(&key, vec![]);
+        rx.recv().await.unwrap();
+        rx.recv().await.unwrap();
+
+        let start = tokio::time::Instant::now();
+        let mut checked = false;
+        for n in 0.. {
+            touch(dir.path(), &format!("f{n}"));
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if start.elapsed() > crate::debounce::MAX_WAIT + Duration::from_secs(1) {
+                checked = !controller.snapshot().folders[&key].entries.is_empty();
+                break;
+            }
+        }
+        assert!(checked, "writes every 50ms held the relist off past the max wait");
     }
 
     #[test]
