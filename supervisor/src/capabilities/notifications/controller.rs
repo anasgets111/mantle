@@ -39,6 +39,8 @@ struct NotificationsQueueState {
     quiet: bool,
     sound_registry: HashMap<Urgency, PathBuf>,
     muted_apps: HashSet<String>,
+    /// Expiry task per live notification, with its incarnation; aborted on replace, removal and eviction.
+    timers: HashMap<u32, (u64, tokio::task::AbortHandle)>,
 }
 
 impl NotificationsQueueState {
@@ -51,7 +53,21 @@ impl NotificationsQueueState {
             quiet: false,
             sound_registry: HashMap::new(),
             muted_apps: HashSet::new(),
+            timers: HashMap::new(),
         }
+    }
+
+    /// Aborts `id`'s expiry task, if any.
+    fn cancel_timer(&mut self, id: u32) {
+        if let Some((_, handle)) = self.timers.remove(&id) {
+            handle.abort();
+        }
+    }
+
+    /// [`remove_by_id`] plus the removed entry's timer.
+    fn remove(&mut self, id: u32) -> Option<Notification> {
+        self.cancel_timer(id);
+        remove_by_id(&mut self.queue, id)
     }
 }
 
@@ -189,6 +205,10 @@ impl NotificationsController {
     async fn expire(&self, id: u32, incarnation: u64) {
         let outcome = {
             let mut state = self.state.lock().expect("mutex poisoned");
+            // This task is finishing: drop its own entry, never a replacement's.
+            if state.timers.get(&id).is_some_and(|timer| timer.0 == incarnation) {
+                state.timers.remove(&id);
+            }
             expire_entry(&mut state.queue, id, incarnation)
         };
         let Some(outcome) = outcome else { return };
@@ -204,7 +224,7 @@ impl NotificationsController {
     pub async fn dismiss(&self, id: u32) {
         let removed = {
             let mut state = self.state.lock().expect("mutex poisoned");
-            remove_by_id(&mut state.queue, id)
+            state.remove(id)
         };
         let Some(removed) = removed else {
             debug!("dismiss({id}) ignored: no notification with that id is currently queued");
@@ -233,7 +253,7 @@ impl NotificationsController {
                     None
                 }
                 Some(index) if state.queue[index].resident => Some(None),
-                Some(_) => Some(remove_by_id(&mut state.queue, id)),
+                Some(_) => Some(state.remove(id)),
                 None => {
                     debug!("reply({id}, ...) ignored: no notification with that id is currently queued");
                     None
@@ -264,7 +284,7 @@ impl NotificationsController {
                     None
                 }
                 Some(index) if state.queue[index].resident => Some(None),
-                Some(_) => Some(remove_by_id(&mut state.queue, id)),
+                Some(_) => Some(state.remove(id)),
                 None => {
                     debug!("invoke_action({id}, {key:?}) ignored: no notification with that id is currently queued");
                     None
@@ -497,28 +517,30 @@ impl NotificationsController {
                 }
                 // A FIFO eviction past NOTIFICATION_QUEUE_CAP is a real close, not just an
                 // icon-file cleanup -- the evicted id is gone from the queue for good.
+                self.state.lock().expect("mutex poisoned").cancel_timer(evicted_id);
                 self.emit_notification_closed(evicted_id, CloseReason::Evicted).await;
             }
             None => {}
         }
         let _ = self.events.send(());
 
-        if let Some(duration) = resolve_expiry(urgency, expire_timeout) {
-            // ponytail: replacing or dismissing a notification leaves this task sleeping rather
-            // than aborting it; the `(id, incarnation)` recheck in `expire_entry` is what makes
-            // that correct, and the queue stays the only authority on what is live. Ceiling: an
-            // obsolete task holds a controller `Arc` and a hold subscription until its own
-            // captured duration elapses, which `expire_timeout` can set to 24.9 days and
-            // `hold_expiry` can extend further. Upgrade path is to re-check `find_expiring_entry`
-            // on an interval inside `sleep_past_holds`, not a second registry of abort handles
-            // that has to agree with the incarnation check forever.
+        let timer = resolve_expiry(urgency, expire_timeout).map(|duration| {
             let controller = self.clone();
             let holds = self.expiry_hold.subscribe();
-            tokio::spawn(async move {
+            let task = tokio::spawn(async move {
                 sleep_past_holds(holds, duration).await;
                 controller.expire(id, incarnation).await;
             });
+            (incarnation, task.abort_handle())
+        });
+        // ponytail: a long `expire_timeout` task lives until its notification is replaced, removed
+        // or evicted, so tasks stay at the queue cap; a burst of fresh ids can reach it at once.
+        let mut state = self.state.lock().expect("mutex poisoned");
+        state.cancel_timer(id);
+        if let Some(timer) = timer {
+            state.timers.insert(id, timer);
         }
+        drop(state);
 
         let (silenced, tier_default_sound) = {
             let state = self.state.lock().expect("mutex poisoned");
@@ -545,7 +567,7 @@ impl NotificationsController {
     async fn close_notification(&self, id: u32) {
         let removed = {
             let mut state = self.state.lock().expect("mutex poisoned");
-            remove_by_id(&mut state.queue, id)
+            state.remove(id)
         };
         if let Some(removed) = removed {
             if let Some(path) = removed.image_path {
@@ -599,6 +621,39 @@ mod tests {
     use super::*;
     use crate::capabilities::test_support::{p2p_pair_serving, within};
     use futures_util::StreamExt;
+
+    #[tokio::test]
+    async fn expiry_timers_do_not_outlive_replace_or_dismiss() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let controller = NotificationsController::inert(events, sound_tx);
+        let notify = |replaces: u32| {
+            controller.notify(
+                "app".into(),
+                replaces,
+                String::new(),
+                "s".into(),
+                String::new(),
+                vec![],
+                Hints::default(),
+                600_000,
+            )
+        };
+        let handle = |id: u32| controller.state.lock().unwrap().timers[&id].1.clone();
+        let first = notify(0).await;
+        let replaced = handle(first);
+        assert_eq!(notify(first).await, first);
+        tokio::task::yield_now().await;
+        assert!(replaced.is_finished(), "a replaced notification's timer must be aborted");
+        assert!(!handle(first).is_finished());
+
+        let second = notify(0).await;
+        let dismissed = handle(second);
+        controller.dismiss(second).await;
+        tokio::task::yield_now().await;
+        assert!(dismissed.is_finished(), "a dismissed notification's timer must be aborted");
+        assert_eq!(controller.state.lock().unwrap().timers.len(), 1);
+    }
 
     #[tokio::test]
     async fn notify_and_close_notification_exchange_methods_and_signals_over_dbus() {
