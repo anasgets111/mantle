@@ -92,6 +92,10 @@ async fn run_clock_task(
         Err(err) => return error!("cannot poll the clock timer: {err}; mantle.system keeps its first reading"),
     };
     let mut interval = *interval_rx.borrow_and_update();
+    // `new` seeded the state; announce it instead of waiting for the first boundary.
+    if signal_tx.send(()).is_err() {
+        return;
+    }
     loop {
         if interval == 0 {
             if interval_rx.changed().await.is_err() {
@@ -169,7 +173,7 @@ mod tests {
         use tokio::time::timeout;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = SystemController::new(tx);
-        tokio::task::yield_now().await; // let the clock task arm first
+        assert!(timeout(Duration::from_millis(100), rx.recv()).await.is_ok(), "the seed is announced at once");
 
         controller.configure(SystemConfigure { interval: Some(0) });
         assert!(timeout(Duration::from_millis(100), rx.recv()).await.is_ok(), "a reconfigure pushes at once");

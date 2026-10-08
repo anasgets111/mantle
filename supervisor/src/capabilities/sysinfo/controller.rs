@@ -131,16 +131,22 @@ fn replace_if_sampled<T: PartialEq>(slot: &mut T, sample: Option<T>) -> bool {
 /// are cumulative since boot, so a delta across a dormant spell is bogus.
 async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: impl FnMut(&mut Option<T>)) {
     let mut previous = None;
+    let mut fresh = true;
     loop {
         let interval = *interval_rx.borrow_and_update();
         match poll_mode(interval) {
             PollMode::Dormant => {
                 previous = None;
+                fresh = true;
                 if interval_rx.changed().await.is_err() {
                     return; // every SysinfoController that could reconfigure this task is gone
                 }
             }
             PollMode::Ticking(duration) => {
+                // One sample on entry, not on every reconfigure: a reload would re-sample and blip cpu.
+                if std::mem::take(&mut fresh) {
+                    tick(&mut previous);
+                }
                 // On the clock's second, so a whole-second interval lands in `system`'s push turn.
                 let mut ticker = tokio::time::interval_at(
                     crate::capabilities::system::controller::next_wall_clock_second(),
@@ -168,15 +174,20 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = ()>,
 {
+    let mut fresh = true;
     loop {
         let interval = *interval_rx.borrow_and_update();
         match poll_mode(interval) {
             PollMode::Dormant => {
+                fresh = true;
                 if interval_rx.changed().await.is_err() {
                     return;
                 }
             }
             PollMode::Ticking(duration) => {
+                if std::mem::take(&mut fresh) {
+                    tick().await;
+                }
                 let mut ticker = tokio::time::interval_at(
                     crate::capabilities::system::controller::next_wall_clock_second(),
                     duration,
@@ -331,6 +342,21 @@ async fn run_net_task(
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test(start_paused = true)]
+    async fn the_first_sample_is_immediate_and_a_reconfigure_does_not_resample() {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let (tx, rx) = tokio::sync::watch::channel(std::time::Duration::from_secs(60));
+        let seen = count.clone();
+        tokio::spawn(super::run_ticker(rx, move |_: &mut Option<()>| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }));
+        tokio::task::yield_now().await;
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        tx.send(std::time::Duration::from_secs(60)).unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn poll_mode_is_dormant_at_zero_and_ticking_otherwise() {
         assert_eq!(super::poll_mode(std::time::Duration::ZERO), super::PollMode::Dormant);
