@@ -51,10 +51,10 @@ pub fn run(
 }
 
 /// ponytail: polls 1 s doubling to 30 s; a watch on the socket in `$XDG_RUNTIME_DIR` would reconnect at once.
-const RETRY_FIRST: Duration = Duration::from_secs(1);
-const RETRY_MAX: Duration = Duration::from_secs(30);
+pub(crate) const RETRY_FIRST: Duration = Duration::from_secs(1);
+pub(crate) const RETRY_MAX: Duration = Duration::from_secs(30);
 /// A connection that lasted this long resets the backoff; a daemon crashing sooner keeps backing off.
-const STABLE: Duration = Duration::from_secs(10);
+pub(crate) const STABLE: Duration = Duration::from_secs(10);
 
 /// [`run`]'s loop; `remote` names a socket other than the default, for tests.
 fn reconnect(
@@ -270,8 +270,10 @@ fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
 }
 
 fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) {
-    let Some((profile_device, route)) = master::extract_route_target(value) else { return };
     let mut current = state.borrow_mut();
+    let Some((profile_device, route)) = master::extract_route_target(value, &current.device_routes, device_id) else {
+        return;
+    };
     let previous = current.device_routes.insert((device_id, profile_device), route.clone());
     if previous.as_ref() == Some(&route) {
         return;
@@ -383,10 +385,11 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
             let Some(value) = decode(param) else { return };
             // As for master sinks, a node can advertise multiple Props objects; missing
             // channelVolumes means this is not a mixer update, not zero volume.
-            let Some(raw) = master::extract_sink_props(&value) else {
+            let mut state_mut = state_for_param.borrow_mut();
+            let muted = state_mut.app_props.get(&node_id).is_some_and(|props| props.mute);
+            let Some(raw) = master::extract_sink_props(&value, muted) else {
                 return;
             };
-            let mut state_mut = state_for_param.borrow_mut();
             if state_mut.app_props.insert(node_id, raw.clone()) != Some(raw) {
                 state_mut.publish_audio();
             }
@@ -433,7 +436,8 @@ fn bind_device_node(
                 return;
             }
             let Some(value) = decode(param) else { return };
-            let Some(raw) = master::extract_sink_props(&value) else {
+            let muted = state_for_param.borrow().device_props(kind, node_id).is_some_and(|props| props.mute);
+            let Some(raw) = master::extract_sink_props(&value, muted) else {
                 return;
             };
             if !record_node_props(&state_for_param, kind, node_id, raw) {

@@ -4,10 +4,12 @@
 //! of `WorkspaceRow`/`FocusedWindow`; this maps niri types and drives the loop.
 
 use std::collections::HashMap;
+use std::time::Duration;
 
 use shared::{debug, error, warn};
 
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::audio::mixer::{RETRY_FIRST, RETRY_MAX, STABLE};
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 
@@ -86,70 +88,161 @@ fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWin
     })
 }
 
-/// Connects, requests the event stream, and folds events into niri's three state parts on an OS
-/// thread (`std::net::UnixStream`). `EventStreamStatePart::apply` returns ignored events, so one
-/// `let` chain passes each event down the parts that did not want it.
-///
-/// ponytail: `niri_ipc::state` panics on `WindowClosed` or `WindowLayoutsChanged` for an unknown
-/// window (`.expect`). The reader feeds one ordered stream from the full replay, so it cannot
-/// violate those invariants externally. If one fires, only this thread dies; workspaces stop for
-/// the run and stderr gets the backtrace. Upgrade with `catch_unwind` around `apply`, resetting
-/// both parts and re-requesting the stream; no instance has been observed and this code cannot
-/// trigger the case.
-///
-/// Also drives `mantle.windows` and `keyboard`'s layout from the same stream, rather than a second
-/// connection.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
-    let Some(socket) = crate::compositor::niri_event_stream("workspaces", "workspace and window reporting") else {
-        return;
-    };
+/// niri's three state parts, reset together.
+#[derive(Default)]
+struct Parts {
+    workspaces: niri_ipc::state::WorkspacesState,
+    windows: niri_ipc::state::WindowsState,
+    overview: niri_ipc::state::OverviewState,
+}
 
-    std::thread::spawn(move || {
+impl Parts {
+    /// Whether `niri_ipc::state` would `.expect`-panic on `event`: it names a workspace or window
+    /// these parts never saw. Release builds abort on panic, so this is checked, not caught.
+    ///
+    /// ponytail: matches the `.expect` sites of niri_ipc 26.4.0; re-audit `niri_ipc::state` on upgrade.
+    fn desynced(&self, event: &niri_ipc::Event) -> bool {
+        use niri_ipc::Event::*;
+        match event {
+            WorkspaceActivated { id, .. } => !self.workspaces.workspaces.contains_key(id),
+            WorkspaceActiveWindowChanged { workspace_id, .. } => !self.workspaces.workspaces.contains_key(workspace_id),
+            WindowClosed { id } => !self.windows.windows.contains_key(id),
+            WindowLayoutsChanged { changes } => changes.iter().any(|(id, _)| !self.windows.windows.contains_key(id)),
+            _ => false,
+        }
+    }
+
+    /// `EventStreamStatePart::apply` returns ignored events, so one `let` chain passes each event
+    /// down the parts that did not want it. `false` leaves the parts untouched when
+    /// [`Self::desynced`]; the caller starts over on a fresh stream.
+    fn apply(&mut self, event: niri_ipc::Event) -> bool {
         use niri_ipc::state::EventStreamStatePart;
+        if self.desynced(&event) {
+            return false;
+        }
+        if let Some(event) = self.workspaces.apply(event)
+            && let Some(event) = self.windows.apply(event)
+        {
+            self.overview.apply(event);
+        }
+        true
+    }
+}
 
-        let mut read_event = socket.read_events();
-        let mut niri_workspaces = niri_ipc::state::WorkspacesState::default();
-        let mut niri_windows = niri_ipc::state::WindowsState::default();
-        let mut niri_overview = niri_ipc::state::OverviewState::default();
-        let mut layout_names = Vec::new();
-        loop {
-            let event = match read_event() {
-                Ok(event) => event,
-                Err(err) if undecodable(&err) => {
-                    warn!("skipped a niri event this niri-ipc cannot decode: {err}");
-                    continue;
-                }
-                Err(err) => {
-                    error!("niri event stream ended; workspaces and windows will no longer update: {err}");
-                    return;
-                }
-            };
-            if keyboard.apply_niri(&mut layout_names, &event) {
+/// Why [`follow`] stopped.
+#[derive(Debug, PartialEq)]
+enum End {
+    /// The stream ended or its state desynced; the published state is cleared and a fresh stream's
+    /// replay rebuilds every part.
+    Lost,
+    /// Nobody listens to either publisher.
+    Unwanted,
+}
+
+/// Folds one event stream into the published state.
+fn follow(
+    socket: niri_ipc::socket::Socket,
+    publisher: &mut StatePublisher,
+    windows_publisher: &mut WindowsPublisher,
+    keyboard: &LayoutSink,
+) -> End {
+    let mut read_event = socket.read_events();
+    let mut parts = Parts::default();
+    let mut layout_names = Vec::new();
+    let lost = |publisher: &mut StatePublisher, windows_publisher: &mut WindowsPublisher| {
+        let workspaces_alive = publisher.publish(&[], None, None, Some(false));
+        let windows_alive = windows_publisher.publish(Vec::new());
+        if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
+    };
+    loop {
+        let event = match read_event() {
+            Ok(event) => event,
+            Err(err) if undecodable(&err) => {
+                warn!("skipped a niri event this niri-ipc cannot decode: {err}");
                 continue;
             }
-            // No published row reads layouts or focus timestamps.
-            let moves_rows = !matches!(
-                event,
-                niri_ipc::Event::WindowLayoutsChanged { .. } | niri_ipc::Event::WindowFocusTimestampChanged { .. }
-            );
-            if let Some(event) = niri_workspaces.apply(event)
-                && let Some(event) = niri_windows.apply(event)
-            {
-                niri_overview.apply(event);
+            Err(err) => {
+                warn!("niri event stream ended: {err}");
+                return lost(publisher, windows_publisher);
             }
-            if !moves_rows {
-                continue;
-            }
+        };
+        if keyboard.apply_niri(&mut layout_names, &event) {
+            continue;
+        }
+        // No published row reads layouts or focus timestamps.
+        let moves_rows = !matches!(
+            event,
+            niri_ipc::Event::WindowLayoutsChanged { .. } | niri_ipc::Event::WindowFocusTimestampChanged { .. }
+        );
+        if !parts.apply(event) {
+            warn!("niri event state went out of sync; restarting the event stream");
+            return lost(publisher, windows_publisher);
+        }
+        if !moves_rows {
+            continue;
+        }
 
-            let rows = workspace_rows(&niri_workspaces.workspaces, &niri_windows.windows);
-            let focused = focused_window(&niri_windows.windows);
-            let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, Some(niri_overview.is_open));
-            let windows_alive =
-                windows_publisher.publish(window_rows(&niri_windows.windows, &niri_workspaces.workspaces));
-            if !workspaces_alive && !windows_alive {
+        let rows = workspace_rows(&parts.workspaces.workspaces, &parts.windows.windows);
+        let focused = focused_window(&parts.windows.windows);
+        let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, Some(parts.overview.is_open));
+        let windows_alive =
+            windows_publisher.publish(window_rows(&parts.windows.windows, &parts.workspaces.workspaces));
+        if !workspaces_alive && !windows_alive {
+            return End::Unwanted;
+        }
+    }
+}
+
+/// Runs `follow` on `stream`, then on each reconnect with [`RETRY_FIRST`] doubling to
+/// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. `first_delay` is a
+/// parameter for tests.
+fn keep_following<S>(
+    first_delay: Duration,
+    mut stream: S,
+    mut connect: impl FnMut() -> std::io::Result<S>,
+    mut follow: impl FnMut(S) -> End,
+) {
+    let mut delay = first_delay;
+    loop {
+        let started = std::time::Instant::now();
+        if follow(stream) == End::Unwanted {
+            return;
+        }
+        if started.elapsed() >= STABLE {
+            delay = first_delay;
+        }
+        let mut failures = 0;
+        stream = loop {
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(RETRY_MAX);
+            match connect() {
+                Ok(next) => break next,
+                Err(err) if failures == 0 => warn!("cannot reach niri ({err}); retrying"),
+                Err(err) => debug!("cannot reach niri ({err}); retrying in {delay:?}"),
+            }
+            failures += 1;
+        };
+    }
+}
+
+/// On an OS thread, connects, requests the event stream and runs [`keep_following`], so a stalled
+/// niri blocks the reader and not the caller. Also drives `mantle.windows` and `keyboard`'s layout
+/// from the same stream, rather than a second connection.
+///
+/// ponytail: a first connect failure disables the readers for the run; only a stream that was up
+/// is re-established. Upgrade is retrying the first connect too.
+pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
+    std::thread::spawn(move || {
+        let socket = match crate::compositor::niri_event_stream() {
+            Ok(socket) => socket,
+            Err(err) => {
+                error!("{err}; workspace and window reporting disabled for this run");
                 return;
             }
-        }
+        };
+        keep_following(RETRY_FIRST, socket, crate::compositor::niri_event_stream, |socket| {
+            follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
+        });
     });
 }
 
@@ -393,6 +486,33 @@ mod tests {
         let focused = focused_window(&map(vec![(2, bare)])).expect("a titleless window is still focused");
 
         assert_eq!((focused.title.as_str(), focused.app_id.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn an_event_naming_an_unseen_window_is_refused_not_applied() {
+        let mut parts = Parts::default();
+        let closed: niri_ipc::Event = serde_json::from_str(r#"{"WindowClosed":{"id":9}}"#).unwrap();
+
+        assert!(!parts.apply(closed), "niri-ipc would panic on a window it never saw");
+    }
+
+    #[test]
+    fn a_lost_stream_reconnects_until_nobody_listens() {
+        let (mut connects, mut follows) = (0, 0);
+        keep_following(
+            Duration::ZERO,
+            0,
+            || {
+                connects += 1;
+                Ok(connects)
+            },
+            |_| {
+                follows += 1;
+                if follows < 3 { End::Lost } else { End::Unwanted }
+            },
+        );
+
+        assert_eq!((follows, connects), (3, 2));
     }
 
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an

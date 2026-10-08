@@ -8251,3 +8251,14 @@ Notes, comment boxes and chat input need a field that wraps and takes newlines.
 
 Ceilings: the whole draft re-wraps per key; a height change lands one pass after the edit; End at
 a mid-word soft wrap lands on the next row until the caret carries an affinity.
+
+## 0352. Compositor write actions run in order on one thread
+
+Each write action (focus, move, close, workspace switch) opened its own request and raced the
+others, so two quick actions could land in either order.
+
+1. **One ordered thread.** Every niri and Hyprland write goes through one dispatch thread, in
+   arrival order. Each request opens its own socket with a 2 s read/write timeout; Hyprland's
+   named-workspace dispatch makes two requests, so up to 4 s.
+2. **Cost.** A stalled compositor delays every later action by up to its timeout. Ordering was
+   chosen over concurrency because actions on one window or workspace depend on the ones before.

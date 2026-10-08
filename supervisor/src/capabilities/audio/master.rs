@@ -42,11 +42,11 @@ pub struct RawSinkProps {
 /// live): `index=0` has mixer keys; `index=1` has unrelated ALSA `device`/`deviceName`/`cardName`/
 /// `params`. A real bug treated the latter's missing
 /// `channelVolumes` as empty and overwrote the value just set by `index=0`; absence now returns
-/// `None`.
-pub fn extract_sink_props(value: &Value) -> Option<RawSinkProps> {
+/// `None`. A `Props` without a `mute` key (a volume-only update) keeps `previous_mute`.
+pub fn extract_sink_props(value: &Value, previous_mute: bool) -> Option<RawSinkProps> {
     let Value::Object(object) = value else { return None };
 
-    let mut mute = false;
+    let mut mute = previous_mute;
     let mut channel_volumes = None;
     let mut channel_map = Vec::new();
     for property in &object.properties {
@@ -297,14 +297,20 @@ pub struct ActiveRoute {
 /// Pulls `(card.profile.device, active route)` from a published `Route`. Cards advertise several
 /// routes, and the wrong index writes nowhere. `None` skips objects missing either field, including
 /// `EnumRoute`-shaped or otherwise unrelated params.
-pub fn extract_route_target(value: &Value) -> Option<(i32, ActiveRoute)> {
+///
+/// A Route whose Props lack `mute` keeps the mute `routes` holds for `(device_id, card.profile.device)`.
+pub fn extract_route_target(
+    value: &Value,
+    routes: &std::collections::HashMap<(u32, i32), ActiveRoute>,
+    device_id: u32,
+) -> Option<(i32, ActiveRoute)> {
     let Value::Object(object) = value else { return None };
-    let (mut index, mut profile_device, mut port, mut props) = (None, None, None, None);
+    let (mut index, mut profile_device, mut port, mut props_value) = (None, None, None, None);
     for property in &object.properties {
         match (property.key, &property.value) {
             (spa_sys::SPA_PARAM_ROUTE_index, Value::Int(value)) => index = Some(*value),
             (spa_sys::SPA_PARAM_ROUTE_device, Value::Int(value)) => profile_device = Some(*value),
-            (spa_sys::SPA_PARAM_ROUTE_props, value) => props = extract_sink_props(value),
+            (spa_sys::SPA_PARAM_ROUTE_props, value) => props_value = Some(value),
             // `[count, key, value, key, value, ...]`
             (spa_sys::SPA_PARAM_ROUTE_info, Value::Struct(info)) => {
                 for pair in info.get(1..).unwrap_or_default().chunks(2) {
@@ -318,7 +324,11 @@ pub fn extract_route_target(value: &Value) -> Option<(i32, ActiveRoute)> {
             _ => {}
         }
     }
-    Some((profile_device?, ActiveRoute { index: index?, port, props }))
+    let profile_device = profile_device?;
+    let previous_mute =
+        routes.get(&(device_id, profile_device)).and_then(|route| route.props.as_ref()).is_some_and(|props| props.mute);
+    let props = props_value.and_then(|value| extract_sink_props(value, previous_mute));
+    Some((profile_device, ActiveRoute { index: index?, port, props }))
 }
 
 /// One BlueZ card profile from `EnumProfile` or `Profile`, e.g. index 2, `a2dp-sink-aac`, described
@@ -434,7 +444,7 @@ mod tests {
 
     #[test]
     fn extract_sink_props_reads_mute_and_channel_volumes_from_a_real_props_object() {
-        let extracted = extract_sink_props(&sample_props_object()).expect("should parse as sink props");
+        let extracted = extract_sink_props(&sample_props_object(), false).expect("should parse as sink props");
         assert!(!extracted.mute);
         assert_eq!(extracted.channel_volumes, vec![0.027004944, 0.027004944]);
     }
@@ -442,17 +452,17 @@ mod tests {
     #[test]
     fn extract_sink_props_ignores_the_unused_scalar_volume_key() {
         // SPA_PROP_volume (Float(1.0) above) is PipeWire's default, not what pactl/wpctl show.
-        let extracted = extract_sink_props(&sample_props_object()).unwrap();
+        let extracted = extract_sink_props(&sample_props_object(), false).unwrap();
         assert_eq!(extracted.channel_volumes.len(), 2, "the scalar volume key must not leak into channel_volumes");
     }
 
     #[test]
     fn extract_sink_props_rejects_a_non_object_pod() {
-        assert_eq!(extract_sink_props(&Value::Float(1.0)), None);
+        assert_eq!(extract_sink_props(&Value::Float(1.0), false), None);
     }
 
     #[test]
-    fn extract_sink_props_defaults_mute_when_the_key_is_absent() {
+    fn extract_sink_props_keeps_the_previous_mute_when_the_key_is_absent() {
         let value = Value::Object(pipewire::spa::pod::Object {
             type_: 262146,
             id: 2,
@@ -461,8 +471,8 @@ mod tests {
                 Value::ValueArray(pipewire::spa::pod::ValueArray::Float(vec![1.0])),
             )],
         });
-        let extracted = extract_sink_props(&value).unwrap();
-        assert!(!extracted.mute);
+        assert!(extract_sink_props(&value, true).unwrap().mute);
+        assert!(!extract_sink_props(&value, false).unwrap().mute);
     }
 
     /// Regression test: `wpctl get-volume` said 0.45, but the next `mantle.audio` push reported
@@ -488,7 +498,7 @@ mod tests {
             ],
         });
         assert_eq!(
-            extract_sink_props(&device_settings_object),
+            extract_sink_props(&device_settings_object, false),
             None,
             "a Props object with no channelVolumes key is not a mixer update and must not report a fabricated zero volume"
         );
@@ -629,10 +639,21 @@ mod tests {
     }
 
     #[test]
+    fn a_route_without_mute_keeps_the_stored_mute() {
+        let stored = ActiveRoute { index: 2, port: None, props: Some(RawSinkProps { mute: true, ..raw(&[0.1], &[]) }) };
+        let routes = std::collections::HashMap::from([((5, 7), stored)]);
+        let object = route_object(2, 7, Some(vec![0.027]), None);
+
+        let (_, route) = extract_route_target(&object, &routes, 5).unwrap();
+
+        assert!(route.props.unwrap().mute);
+    }
+
+    #[test]
     fn a_route_object_round_trips_back_to_the_target_it_names() {
         let object = route_object(2, 7, Some(vec![0.027, 0.027]), Some(true));
         assert_eq!(
-            extract_route_target(&object),
+            extract_route_target(&object, &Default::default(), 0),
             Some((
                 7,
                 ActiveRoute {
@@ -666,7 +687,7 @@ mod tests {
             ],
         });
         let expected = ActiveRoute { index: 3, port: Some("headphones".to_string()), props: None };
-        assert_eq!(extract_route_target(&route), Some((4, expected)));
+        assert_eq!(extract_route_target(&route, &Default::default(), 0), Some((4, expected)));
     }
 
     #[test]
@@ -695,7 +716,7 @@ mod tests {
             .iter()
             .find(|property| property.key == spa_sys::SPA_PARAM_ROUTE_props)
             .expect("a Route must carry props");
-        let extracted = extract_sink_props(&nested.value).expect("the nested object must parse as sink props");
+        let extracted = extract_sink_props(&nested.value, false).expect("the nested object must parse as sink props");
         assert!(extracted.mute);
         assert_eq!(extracted.channel_volumes, vec![0.125, 0.125]);
     }
@@ -720,8 +741,8 @@ mod tests {
             id: spa_sys::SPA_PARAM_Route,
             properties: vec![Property::new(spa_sys::SPA_PARAM_ROUTE_index, Value::Int(2))],
         });
-        assert_eq!(extract_route_target(&index_only), None);
-        assert_eq!(extract_route_target(&Value::Bool(true)), None);
+        assert_eq!(extract_route_target(&index_only, &Default::default(), 0), None);
+        assert_eq!(extract_route_target(&Value::Bool(true), &Default::default(), 0), None);
     }
 
     #[test]
@@ -792,7 +813,7 @@ mod tests {
             .expect("a Props object must serialize");
         let (_, value) = pipewire::spa::pod::deserialize::PodDeserializer::deserialize_from::<Value>(&bytes)
             .expect("the bytes must read back as a pod");
-        let extracted = extract_sink_props(&value).expect("the round trip must still parse as sink props");
+        let extracted = extract_sink_props(&value, false).expect("the round trip must still parse as sink props");
         assert!(extracted.mute);
         assert_eq!(extracted.channel_volumes, vec![0.027, 0.027]);
     }

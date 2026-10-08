@@ -13,7 +13,7 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
-use shared::{debug, error};
+use shared::debug;
 
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
 /// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056
@@ -91,10 +91,14 @@ fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> Pa
     PathBuf::from(runtime_dir).join("hypr").join(signature).join(name)
 }
 
+const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
 /// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
 pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket_path)?;
+    // A stalled Hyprland must not wedge the reader or the shared action thread.
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.write_all(command.as_bytes())?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
@@ -114,46 +118,53 @@ pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     }
 }
 
-/// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. `None` has logged why;
-/// `feature` names what the caller disables for the run.
-pub fn niri_event_stream(capability: &str, feature: &str) -> Option<niri_ipc::socket::Socket> {
-    let mut socket = match niri_ipc::socket::Socket::connect() {
-        Ok(socket) => socket,
-        Err(err) => {
-            error!("{capability}: failed to connect to the niri IPC socket; {feature} disabled for this run: {err}");
-            return None;
-        }
-    };
-    match socket.send(niri_ipc::Request::EventStream) {
-        Ok(Ok(niri_ipc::Response::Handled)) => Some(socket),
-        Ok(Ok(_)) => {
-            error!("{capability}: unexpected reply to the niri EventStream request; {feature} disabled for this run");
-            None
-        }
-        Ok(Err(msg)) => {
-            error!("{capability}: niri EventStream request failed: {msg}");
-            None
-        }
-        Err(err) => {
-            error!("{capability}: failed to send the niri EventStream request: {err}");
-            None
-        }
+/// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. Blocks on niri's
+/// reply, so callers run it off the main task.
+pub fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
+    let mut socket = niri_ipc::socket::Socket::connect()?;
+    match socket.send(niri_ipc::Request::EventStream)? {
+        Ok(niri_ipc::Response::Handled) => Ok(socket),
+        Ok(other) => Err(std::io::Error::other(format!("unexpected reply to the niri EventStream request: {other:?}"))),
+        Err(msg) => Err(std::io::Error::other(format!("niri refused the EventStream request: {msg}"))),
     }
 }
 
-/// One niri action, fire-and-forget on its own thread. A fresh connection each time: `read_events`
-/// shuts down the event-stream socket's write half.
+/// Runs `job` after every earlier one on a single shared thread, so rapid write actions reach the
+/// compositor in the order they were sent. Each job blocks for at most one IPC round trip.
+pub fn run_in_order(job: impl FnOnce() + Send + 'static) {
+    type Job = Box<dyn FnOnce() + Send>;
+    static QUEUE: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (queue, jobs) = std::sync::mpsc::channel::<Job>();
+        std::thread::spawn(move || jobs.into_iter().for_each(|job| job()));
+        queue
+    });
+    let _ = queue.send(Box::new(job));
+}
+
+/// One niri request on a fresh connection (`read_events` shuts down the event-stream socket's
+/// write half), bounded by [`REQUEST_TIMEOUT`]: `niri_ipc::socket::Socket` has no timeout API, so a
+/// stalled niri would wedge [`run_in_order`]'s thread. The connect itself cannot stall on a unix
+/// socket short of a full backlog.
+fn niri_request(path: &Path, request: &niri_ipc::Request) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut String::new())?;
+    Ok(())
+}
+
+/// One niri action, fire-and-forget through [`run_in_order`].
 pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
-    std::thread::spawn(move || {
+    run_in_order(move || {
         let label = format!("{action:?}");
-        let mut socket = match niri_ipc::socket::Socket::connect() {
-            Ok(socket) => socket,
-            Err(err) => {
-                debug!("{capability}: failed to connect to the niri IPC socket for {label}: {err}");
-                return;
-            }
+        let Some(path) = std::env::var_os(niri_ipc::socket::SOCKET_PATH_ENV) else {
+            return debug!("{capability}: {} is unset; {label} ignored", niri_ipc::socket::SOCKET_PATH_ENV);
         };
-        if let Err(err) = socket.send(niri_ipc::Request::Action(action)) {
+        if let Err(err) = niri_request(Path::new(&path), &niri_ipc::Request::Action(action)) {
             debug!("{capability}: niri {label} request failed: {err}");
         }
     });
@@ -188,6 +199,47 @@ mod tests {
             assert_eq!(PROBES.iter().find(|(probe, _)| *probe == kind).map(|(_, v)| *v), Some(var), "{kind:?}");
         }
         assert_eq!(PROBES.len(), 2, "a PROBES entry for a kind the loop above does not list");
+    }
+
+    #[test]
+    fn hyprland_request_gives_up_on_a_socket_that_never_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".socket.sock");
+        let _silent = std::os::unix::net::UnixListener::bind(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let err = hyprland_request(&path, "j/clients").unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
+    #[test]
+    fn run_in_order_keeps_send_order_when_the_first_job_is_slow() {
+        let (seen, arrived) = std::sync::mpsc::channel();
+        let first = seen.clone();
+        run_in_order(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            first.send(1).unwrap();
+        });
+        run_in_order(move || seen.send(2).unwrap());
+
+        let wait = std::time::Duration::from_secs(5);
+        let order = [arrived.recv_timeout(wait), arrived.recv_timeout(wait)];
+        assert_eq!(order, [Ok(1), Ok(2)]);
+    }
+
+    #[test]
+    fn niri_request_gives_up_on_a_socket_that_never_answers() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("niri.sock");
+        let _silent = std::os::unix::net::UnixListener::bind(&path).unwrap();
+
+        let started = std::time::Instant::now();
+        let err = niri_request(&path, &niri_ipc::Request::Version).unwrap_err();
+
+        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
     }
 
     #[test]

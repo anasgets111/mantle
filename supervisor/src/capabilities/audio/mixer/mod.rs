@@ -33,6 +33,7 @@
 
 mod devices;
 mod registry;
+pub(crate) use registry::{RETRY_FIRST, RETRY_MAX, STABLE};
 mod state;
 mod streams;
 mod write;

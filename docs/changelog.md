@@ -11,6 +11,7 @@ version is 0.x, a minor release can break the Lua API.
 - Fixed: a `process.run` child printing faster than the shell reads no longer gets the shell restarted; the child waits on its pipe.
 - Fixed: `mantle.bluetooth` device names are BlueZ's `Alias`: a rename shows, and a nameless device shows its address-style alias instead of an empty name. A `Class` change also refreshes the category.
 - Fixed: `mantle.privacy` sees a camera plugged in after start or replugged; `mantle.appearance` keeps its last value when the portal call fails.
+- Fixed: `workspaces` and `windows` recover after niri restarts; they stayed frozen at the last value.
 
 ## 0.5.1 - 2026-10-07
 

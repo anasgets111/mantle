@@ -138,12 +138,9 @@ impl HyprlandLink {
 
 impl CompositorLink for HyprlandLink {
     /// `main` is also Hyprland's device target for that keyboard, so no device name is tracked here.
-    ///
-    /// ponytail: one OS thread per switch, for one blocking round trip, unbounded if a config calls
-    /// this in a loop. A shared worker is the upgrade. `workspaces`' dispatch has the same shape.
     fn switch_layout(&self, index: usize) {
         let socket_path = self.command_path.clone();
-        std::thread::spawn(move || {
+        crate::compositor::run_in_order(move || {
             hyprland_command(&socket_path, &format!("switchxkblayout main {index}"), "keyboard");
         });
     }

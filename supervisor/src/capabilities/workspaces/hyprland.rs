@@ -479,14 +479,14 @@ pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: Window
     });
 }
 
-/// One `dispatch` on its own thread. Hyprland answers `ok` or a reason; anything else is printed
+/// One `dispatch` on the shared action thread. Hyprland answers `ok` or a reason; anything else is printed
 /// with the command. `capability` tags the log line for whichever capability asked.
 fn dispatch(what: String, capability: &'static str) {
     let Some(signature) = hyprland_signature() else {
         debug!("`dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
-    std::thread::spawn(move || {
+    crate::compositor::run_in_order(move || {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
         hyprland_command(&socket_path, &format!("dispatch {what}"), capability);
     });
@@ -515,7 +515,7 @@ fn dispatch_to_workspace(id: &str, capability: &'static str, build: impl FnOnce(
         debug!("workspace {id} requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
-    std::thread::spawn(move || {
+    crate::compositor::run_in_order(move || {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
         let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(&socket_path, "workspaces") else { return };
         let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == parsed) else {
