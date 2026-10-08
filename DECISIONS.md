@@ -8262,3 +8262,15 @@ others, so two quick actions could land in either order.
    named-workspace dispatch makes two requests, so up to 4 s.
 2. **Cost.** A stalled compositor delays every later action by up to its timeout. Ordering was
    chosen over concurrency because actions on one window or workspace depend on the ones before.
+
+## 0353. The polkit helper answers echo-on prompts with an empty line
+
+Amends ADR-0028 decision 3 for polkit. The polkit agent fed `polkit-agent-helper-1` the one
+captured password for every prompt, `PAM_PROMPT_ECHO_ON` included, so a stack asking a visible
+question (a username, an OTP code) received the password.
+
+1. **Echo-off gets the password; echo-on gets an empty line,** which fails the stack with
+   AuthFailed. The lock's PAM worker already refuses echo-on prompts (ADR-0241); this matches it:
+   the password goes only where the stack asked for a secret.
+2. **Cost.** A polkit stack that needs a visible answer fails until the roadmap's multi-prompt
+   relay lands.

@@ -236,9 +236,10 @@ async fn authenticate_via_helper(uid: u32, cookie: &str, secret: &[u8]) -> Resul
     }
 }
 
-/// libpolkit-agent's `polkitagentsession.c` protocol: username and cookie lines first; answer every
-/// `PAM_PROMPT_ECHO_OFF`/`PAM_PROMPT_ECHO_ON` with the one password (ADR-0028); log
-/// `PAM_ERROR_MSG`/`PAM_TEXT_INFO`; `SUCCESS`/`FAILURE` end it. Verified against polkit 127.
+/// libpolkit-agent's `polkitagentsession.c` protocol: username and cookie lines first; answer
+/// `PAM_PROMPT_ECHO_OFF` with the password and `PAM_PROMPT_ECHO_ON` with an empty line (a visible
+/// answer is loggable, ADR-0241); log `PAM_ERROR_MSG`/`PAM_TEXT_INFO`; `SUCCESS`/`FAILURE` end it.
+/// Verified against polkit 127.
 async fn drive_helper(
     reader: impl tokio::io::AsyncRead + Unpin,
     mut writer: impl tokio::io::AsyncWrite + Unpin,
@@ -253,8 +254,10 @@ async fn drive_helper(
     }
     let mut lines = tokio::io::BufReader::new(reader).lines();
     while let Some(line) = lines.next_line().await? {
-        if line.starts_with("PAM_PROMPT_ECHO_OFF") || line.starts_with("PAM_PROMPT_ECHO_ON") {
+        if line.starts_with("PAM_PROMPT_ECHO_OFF") {
             writer.write_all(secret).await?;
+            writer.write_all(b"\n").await?;
+        } else if line.starts_with("PAM_PROMPT_ECHO_ON") {
             writer.write_all(b"\n").await?;
         } else if line == "SUCCESS" {
             return Ok(shared::PamOutcome::Success);
@@ -414,8 +417,9 @@ fn post_mortem(reaped: &std::io::Result<std::process::ExitStatus>) -> String {
 }
 
 /// Answers every `Prompt` with `secret` until `Outcome` ends the conversation (ADR-0241): the
-/// lock's only caller today has one password, so every prompt -- echo-on or off -- gets the same
-/// answer. A `Response` arriving from the worker is a protocol violation, not a valid frame.
+/// lock's only caller today has one password. The worker only ever sends echo-off prompts
+/// (`prompt` refuses echo-on), so every prompt that arrives gets the same answer. A `Response`
+/// arriving from the worker is a protocol violation, not a valid frame.
 async fn exchange_messages(
     mut reader: impl tokio::io::AsyncRead + Unpin,
     mut writer: impl tokio::io::AsyncWrite + Unpin,
@@ -764,6 +768,28 @@ mod tests {
 
         assert_eq!(outcome, shared::PamOutcome::Success);
         assert_eq!(helper.await.unwrap(), ["alice", "cookie-1", "hunter2"]);
+    }
+
+    #[tokio::test]
+    async fn drive_helper_answers_an_echo_on_prompt_with_an_empty_line_not_the_password() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+        let (ours, theirs) = tokio::io::duplex(256);
+        let helper = tokio::spawn(async move {
+            let (reader, mut writer) = tokio::io::split(theirs);
+            let mut lines = tokio::io::BufReader::new(reader).lines();
+            lines.next_line().await.unwrap();
+            lines.next_line().await.unwrap();
+            writer.write_all(b"PAM_PROMPT_ECHO_ON Code: \n").await.unwrap();
+            let answer = lines.next_line().await.unwrap().unwrap();
+            writer.write_all(b"FAILURE\n").await.unwrap();
+            answer
+        });
+
+        let (reader, writer) = tokio::io::split(ours);
+        let outcome = drive_helper(reader, writer, "alice", "cookie-1", b"hunter2").await.unwrap();
+
+        assert_eq!(outcome, shared::PamOutcome::AuthFailed);
+        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), helper).await.unwrap().unwrap(), "");
     }
 
     #[test]

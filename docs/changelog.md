@@ -12,6 +12,7 @@ version is 0.x, a minor release can break the Lua API.
 - Fixed: `mantle.bluetooth` device names are BlueZ's `Alias`: a rename shows, and a nameless device shows its address-style alias instead of an empty name. A `Class` change also refreshes the category.
 - Fixed: `mantle.privacy` sees a camera plugged in after start or replugged; `mantle.appearance` keeps its last value when the portal call fails.
 - Fixed: `workspaces` and `windows` recover after niri restarts; they stayed frozen at the last value.
+- Fixed: a polkit prompt that asks a visible question (OTP, username) now fails instead of receiving the password.
 
 ## 0.5.1 - 2026-10-07
 
