@@ -60,36 +60,55 @@ fn take<T: TryFrom<OwnedValue>>(all: &mut HashMap<String, OwnedValue>, name: &st
     all.remove(name).and_then(|value| T::try_from(value).ok())
 }
 
-/// Every SNI property in one `GetAll` round trip. An item that refuses it reads as all defaults.
-async fn get_all(item: &StatusNotifierItemProxy<'static>) -> HashMap<String, OwnedValue> {
+/// The properties a title, tooltip or status signal can change; `Get`ting just these skips the icon pixmaps.
+const TEXT_PROPS: &[&str] = &["Id", "Title", "Status", "ToolTip"];
+
+/// Every SNI property in one `GetAll` round trip, or with `text_only` the [`TEXT_PROPS`] as concurrent `Get`s
+/// (a failed one is left out). An item that refuses reads as all defaults.
+async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> HashMap<String, OwnedValue> {
     let proxy = item.inner();
     let reply = async {
-        zbus::fdo::PropertiesProxy::builder(proxy.connection())
+        let props = zbus::fdo::PropertiesProxy::builder(proxy.connection())
             .destination(proxy.destination().clone())?
             .path(proxy.path().clone())?
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
-            .await?
-            .get_all(proxy.interface().clone())
-            .await
-            .map_err(zbus::Error::from)
+            .await?;
+        if !text_only {
+            return props.get_all(proxy.interface().clone()).await.map_err(zbus::Error::from);
+        }
+        let props = &props;
+        let gets = TEXT_PROPS.iter().map(|&name| async move {
+            match props.get(proxy.interface().clone(), name).await {
+                Ok(value) => Some((name.to_string(), value)),
+                Err(err) => {
+                    debug!("Get {name} failed for {}: {err}", proxy.destination());
+                    None
+                }
+            }
+        });
+        Ok(futures_util::future::join_all(gets).await.into_iter().flatten().collect())
     };
     reply.await.unwrap_or_else(|err| {
-        debug!("GetAll failed for {}: {err}", proxy.destination());
+        debug!("property read failed for {}: {err}", proxy.destination());
         HashMap::new()
     })
 }
 
 /// Reads every property `tray.items` needs except `menu`, which uses the caller's bound proxy via
 /// [`super::menu::fetch_menu_via`]. A missing property falls back to its empty/default value. `previous` is the
-/// item this refresh replaces; pixels it already spooled are not encoded again.
+/// item this refresh replaces; pixels it already spooled are not encoded again. With `text_only` it reads just
+/// the text properties and keeps the rest of `previous`, including any text property whose read failed.
 pub(super) async fn fetch_tray_item_base(
     item: &StatusNotifierItemProxy<'static>,
     unique_name: &OwnedUniqueName,
     object_path: &OwnedObjectPath,
     previous: &TrayItem,
+    text_only: bool,
 ) -> TrayItem {
-    let mut all = get_all(item).await;
+    let mut all = get_props(item, text_only).await;
+    let got = |key: &str| all.contains_key(key);
+    let (got_name, got_status, got_tooltip) = (got("Id") && got("Title"), got("Status"), got("ToolTip"));
     // Every string below is whatever application owns this item; cap each on the way in
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
     let id_prop = capped(take(&mut all, "Id").unwrap_or_default());
@@ -102,11 +121,24 @@ pub(super) async fn fetch_tray_item_base(
     // `theme_path_file` bounds it at `PATH_MAX` where it is used instead.
     let theme_path: String = take(&mut all, "IconThemePath").unwrap_or_default();
 
-    let id = item_id(unique_name.as_str(), object_path.as_str());
-    let stem = icon_filename_stem(&id);
     let name = resolve_display_name(&title, &id_prop);
     let tooltip_flat =
         tooltip.and_then(|(_, _, tt_title, tt_text)| flatten_tooltip(&capped(tt_title), &capped(tt_text)));
+    if text_only {
+        let mut kept = TrayItem { menu: None, ..previous.clone() };
+        if got_name {
+            kept.name = name;
+        }
+        if got_status {
+            kept.status = status;
+        }
+        if got_tooltip {
+            kept.tooltip = tooltip_flat;
+        }
+        return kept;
+    }
+    let id = item_id(unique_name.as_str(), object_path.as_str());
+    let stem = icon_filename_stem(&id);
 
     let previous_paths = [&previous.icon_path, &previous.attention_icon_path, &previous.overlay_icon_path];
     let mut pixmap_digests = [None; 3];
@@ -239,5 +271,34 @@ mod tests {
     #[test]
     fn flatten_tooltip_joins_title_and_text() {
         assert_eq!(flatten_tooltip("Battery", "80% charged"), Some("Battery\n80% charged".to_string()));
+    }
+
+    /// A title/tooltip/status signal reads four properties and keeps the icon fields, so no pixmap is decoded.
+    #[tokio::test]
+    async fn a_text_refetch_keeps_the_icons_and_drops_the_menu() {
+        use super::super::proxies::bind_item;
+        use super::super::watcher::tests::StubStatusNotifierItem;
+        use crate::capabilities::test_support::p2p_pair_serving;
+
+        let (connection, _peer) =
+            p2p_pair_serving(|peer| peer.serve_at("/StatusNotifierItem", StubStatusNotifierItem)).await;
+        let destination = zbus::names::OwnedBusName::try_from(":1.5").unwrap();
+        let path = OwnedObjectPath::try_from("/StatusNotifierItem").unwrap();
+        let item = bind_item(&connection, &destination, &path).await.unwrap();
+        let unique_name = OwnedUniqueName::try_from(":1.5").unwrap();
+        let previous = TrayItem {
+            icon_name: Some("kept".to_string()),
+            icon_path: Some("/kept.png".to_string()),
+            menu: Some(Vec::new()),
+            ..TrayItem::default()
+        };
+
+        let next = fetch_tray_item_base(&item, &unique_name, &path, &previous, true).await;
+
+        assert_eq!(
+            (next.name.as_str(), next.icon_name.as_deref(), next.icon_path.as_deref()),
+            ("Stub Item", Some("kept"), Some("/kept.png"))
+        );
+        assert_eq!(next.menu, None);
     }
 }

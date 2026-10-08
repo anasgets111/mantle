@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
@@ -67,7 +67,7 @@ pub(super) async fn register_item(
         return Err(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
     }
 
-    let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default()).await;
+    let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default(), false).await;
 
     let menu_path = item.menu().await.ok();
     let menu = match &menu_path {
@@ -161,8 +161,18 @@ fn keep_menu_across(entry: &mut ItemEntry, mut refreshed: TrayItem) -> bool {
     changed
 }
 
-/// Re-fetches the [`TrayItem`] properties on every `NewX` signal and updates the entry in place
-/// without debounce or per-property patching. One task per item; its handle lives in
+/// Waits for a signal, then drains the ones already queued (an app sends NewIcon+NewToolTip+NewTitle together).
+/// `true` when any was an icon signal, which needs the full fetch.
+async fn next_burst(signals: &mut (impl futures_util::Stream<Item = bool> + Unpin)) -> Option<bool> {
+    let mut icon = signals.next().await?;
+    while let Some(next) = signals.next().now_or_never().flatten() {
+        icon |= next;
+    }
+    Some(icon)
+}
+
+/// Re-fetches the [`TrayItem`] properties on every burst of `NewX` signals (all of them for an icon signal,
+/// else just the text ones) and updates the entry in place without debounce. One task per item; its handle lives in
 /// [`ItemEntry`] and is aborted on unregistration.
 ///
 /// The menu is carried across rather than refetched: `spawn_menu_signal_forwarder` refreshes it on
@@ -176,46 +186,35 @@ fn spawn_item_signal_forwarder(
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let Ok(mut new_title) = item.receive_new_title().await else { return };
-        let Ok(mut new_icon) = item.receive_new_icon().await else { return };
-        let Ok(mut new_attention_icon) = item.receive_new_attention_icon().await else { return };
-        let Ok(mut new_overlay_icon) = item.receive_new_overlay_icon().await else { return };
-        let Ok(mut new_tool_tip) = item.receive_new_tool_tip().await else { return };
-        let Ok(mut new_status) = item.receive_new_status().await else { return };
+        let Ok(new_title) = item.receive_new_title().await else { return };
+        let Ok(new_icon) = item.receive_new_icon().await else { return };
+        let Ok(new_attention_icon) = item.receive_new_attention_icon().await else { return };
+        let Ok(new_overlay_icon) = item.receive_new_overlay_icon().await else { return };
+        let Ok(new_tool_tip) = item.receive_new_tool_tip().await else { return };
+        let Ok(new_status) = item.receive_new_status().await else { return };
+        let mut signals = futures_util::stream::select_all([
+            new_title.map(|_| false).boxed(),
+            new_icon.map(|_| true).boxed(),
+            new_attention_icon.map(|_| true).boxed(),
+            new_overlay_icon.map(|_| true).boxed(),
+            new_tool_tip.map(|_| false).boxed(),
+            new_status.map(|_| false).boxed(),
+        ]);
 
-        loop {
-            enum ItemEvent {
-                Property,
-                Closed,
-            }
-            let event = tokio::select! {
-                Some(_) = new_title.next() => ItemEvent::Property,
-                Some(_) = new_icon.next() => ItemEvent::Property,
-                Some(_) = new_attention_icon.next() => ItemEvent::Property,
-                Some(_) = new_overlay_icon.next() => ItemEvent::Property,
-                Some(_) = new_tool_tip.next() => ItemEvent::Property,
-                Some(_) = new_status.next() => ItemEvent::Property,
-                else => ItemEvent::Closed,
+        while let Some(icon) = next_burst(&mut signals).await {
+            let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
+            else {
+                break;
             };
-            match event {
-                ItemEvent::Closed => break,
-                ItemEvent::Property => {
-                    let Some(previous) =
-                        registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
-                    else {
-                        break;
-                    };
-                    let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous).await;
+            let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous, !icon).await;
 
-                    let mut guard = registry.lock().expect("mutex poisoned");
-                    let Some(entry) = guard.get_mut(&key) else { break };
-                    let changed = keep_menu_across(entry, refreshed);
-                    drop(guard);
+            let mut guard = registry.lock().expect("mutex poisoned");
+            let Some(entry) = guard.get_mut(&key) else { break };
+            let changed = keep_menu_across(entry, refreshed);
+            drop(guard);
 
-                    if changed && events.send(()).is_err() {
-                        break;
-                    }
-                }
+            if changed && events.send(()).is_err() {
+                break;
             }
         }
     })
@@ -379,6 +378,16 @@ mod tests {
             properties_forwarder: tokio::spawn(std::future::ready(())),
             menu_forwarder: None,
         }
+    }
+
+    #[tokio::test]
+    async fn queued_text_signals_are_one_text_fetch_and_an_icon_signal_forces_the_full_one() {
+        use futures_util::stream::{self, StreamExt};
+        let mut text = stream::iter([false, false, false]).chain(stream::pending());
+        assert_eq!(next_burst(&mut text).await, Some(false));
+        let mut mixed = stream::iter([false, true, false]).chain(stream::pending());
+        assert_eq!(next_burst(&mut mixed).await, Some(true));
+        assert_eq!(next_burst(&mut stream::empty()).await, None);
     }
 
     fn key(unique: &str) -> ItemKey {
