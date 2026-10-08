@@ -35,16 +35,20 @@ pub fn find_device_openers(proc_root: &Path, devices: &[PathBuf]) -> Vec<u32> {
     let Ok(proc_entries) = std::fs::read_dir(proc_root) else { return pids };
     for proc_entry in proc_entries.flatten() {
         let Ok(pid) = proc_entry.file_name().to_string_lossy().parse::<u32>() else { continue };
-        let Ok(fd_entries) = std::fs::read_dir(proc_entry.path().join("fd")) else { continue };
-        let has_device_open = fd_entries
-            .flatten()
-            .any(|fd_entry| std::fs::read_link(fd_entry.path()).is_ok_and(|target| devices.contains(&target)));
-        if has_device_open {
+        if holds_device(proc_root, pid, devices) {
             pids.push(pid);
         }
     }
     pids.sort_unstable();
     pids
+}
+
+/// Whether `pid` has one of `devices` open: one pid's fds, not a `/proc` walk.
+pub fn holds_device(proc_root: &Path, pid: u32, devices: &[PathBuf]) -> bool {
+    let Ok(fd_entries) = std::fs::read_dir(proc_root.join(pid.to_string()).join("fd")) else { return false };
+    fd_entries
+        .flatten()
+        .any(|fd_entry| std::fs::read_link(fd_entry.path()).is_ok_and(|target| devices.contains(&target)))
 }
 
 /// Reads `<proc_root>/<pid>/comm`, the fallback for raw V4L2 users without a matching PipeWire
@@ -120,6 +124,17 @@ mod tests {
         write_fd_symlink(root.path(), 1234, 5, "/dev/null");
 
         assert!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]).is_empty());
+    }
+
+    #[test]
+    fn holds_device_checks_one_pid_only() {
+        let root = tempfile::tempdir().unwrap();
+        write_fd_symlink(root.path(), 1, 3, "/dev/video0");
+        write_fd_symlink(root.path(), 2, 3, "/dev/null");
+        let devices = [PathBuf::from("/dev/video0")];
+        assert!(holds_device(root.path(), 1, &devices));
+        assert!(!holds_device(root.path(), 2, &devices));
+        assert!(!holds_device(root.path(), 3, &devices));
     }
 
     #[test]

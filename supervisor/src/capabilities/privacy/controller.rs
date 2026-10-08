@@ -15,7 +15,7 @@ use tokio::sync::watch;
 
 use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceApp};
 
-use super::video::{enumerate_video_devices, find_device_openers, is_video_name, read_comm};
+use super::video::{enumerate_video_devices, find_device_openers, holds_device, is_video_name, read_comm};
 
 /// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
 /// PipeWire `app_name` wins, then `/proc/{pid}/comm`, then `pid {n}`; no opener is dropped. Pure
@@ -128,6 +128,8 @@ async fn run_privacy_task(
                             opener_pids = pids;
                         }
                     }
+                    // A close only removes pids: recheck the known openers instead of walking `/proc`.
+                    DeviceEvent::Closed => opener_pids.retain(|&pid| holds_device(&proc_root, pid, &devices)),
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
                         continue;
@@ -216,6 +218,7 @@ struct VideoWatch {
 /// Camera watch event. The enum names cases and lets [`next_device_event`] flatten a missing watch.
 enum DeviceEvent {
     Opened,
+    Closed,
     Failed(std::io::Error),
     Ended,
 }
@@ -228,9 +231,10 @@ async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<Pat
     loop {
         match watch.events.next().await {
             Some(events) if events.iter().any(Result::is_ok) => {
-                let mut relevant = false;
+                let (mut relevant, mut opened) = (false, false);
                 for event in events.iter().flatten() {
                     if event.wd != watch.dir {
+                        opened |= event.mask.contains(EventMask::OPEN);
                         relevant |=
                             event.mask.intersects(EventMask::OPEN | EventMask::CLOSE_WRITE | EventMask::CLOSE_NOWRITE);
                         continue;
@@ -244,9 +248,13 @@ async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<Pat
                         devices.push(path);
                     }
                     relevant = true;
+                    opened = true;
+                }
+                if opened {
+                    return DeviceEvent::Opened;
                 }
                 if relevant {
-                    return DeviceEvent::Opened;
+                    return DeviceEvent::Closed;
                 }
             }
             Some(mut events) => return DeviceEvent::Failed(events.swap_remove(0).unwrap_err()),
@@ -403,6 +411,47 @@ mod tests {
             tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream, &mut devices))
                 .await;
         assert!(second.is_err(), "five queued events must cost one scan, not five");
+    }
+
+    #[tokio::test]
+    async fn a_close_alone_is_not_an_open_so_it_skips_the_proc_walk() {
+        let dev = tempfile::tempdir().unwrap();
+        let node = dev.path().join("video0");
+        drop(std::fs::File::create(&node).unwrap());
+        let mut devices = vec![node.clone()];
+        let mut stream = watch_video_devices(dev.path(), &devices);
+        let file = std::fs::File::open(&node).unwrap();
+        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened));
+        drop(file);
+        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Closed));
+    }
+
+    #[tokio::test]
+    async fn a_close_drops_the_pid_that_no_longer_holds_the_device() {
+        let (dev, proc_root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let node = dev.path().join("video0");
+        std::fs::write(&node, "").unwrap();
+        let fd_dir = proc_root.path().join("1234/fd");
+        std::fs::create_dir_all(&fd_dir).unwrap();
+        std::os::unix::fs::symlink(&node, fd_dir.join("5")).unwrap();
+        let held = std::fs::File::open(&node).unwrap();
+        let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(PrivacyState::default()));
+        tokio::spawn(run_privacy_task(
+            proc_root.path().to_path_buf(),
+            dev.path().to_path_buf(),
+            Arc::clone(&state),
+            sources,
+            events_tx,
+        ));
+        assert_eq!(within(events_rx.recv()).await, Some(()), "the seed lists the holder");
+        assert_eq!(state.lock().unwrap().camera_users.len(), 1);
+
+        std::fs::remove_dir_all(proc_root.path().join("1234")).unwrap();
+        drop(held);
+        assert_eq!(within(events_rx.recv()).await, Some(()));
+        assert!(state.lock().unwrap().camera_users.is_empty());
     }
 
     /// A webcam plugged in after start, or an unplugged and replugged node (a new inode), must
