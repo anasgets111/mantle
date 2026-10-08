@@ -3,8 +3,12 @@
 //! Separates `controller.rs` scheduling/state from package-manager execution, parsing, and reboot
 //! requirements.
 
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
+use std::time::Duration;
 
 use shared::action::UpdateCandidate;
 use shared::warn;
@@ -81,15 +85,41 @@ pub fn detect() -> Option<Box<dyn Backend>> {
     None
 }
 
+/// Longest one package-manager command may run. A hung mirror or stuck db lock gets its whole
+/// process group killed instead of leaving a blocked thread and child behind.
+const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+
 /// Stdout of `command` in the C locale with no stdin. `failed` judges the exit code against
 /// stderr; the stderr of a success is logged as warnings.
 pub(super) fn run(command: &mut Command, failed: fn(Option<i32>, &str) -> bool) -> Result<String, String> {
+    run_for(command, failed, RUN_TIMEOUT)
+}
+
+fn run_for(command: &mut Command, failed: fn(Option<i32>, &str) -> bool, limit: Duration) -> Result<String, String> {
     let program = command.get_program().to_string_lossy().into_owned();
-    let output = command
+    let child = command
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0)
+        .spawn()
         .map_err(|err| format!("failed to run {program}: {err}"))?;
+    let group = nix::unistd::Pid::from_raw(child.id() as i32);
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let (finished, watchdog) = mpsc::channel::<()>();
+    let flag = Arc::clone(&timed_out);
+    std::thread::spawn(move || {
+        if watchdog.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
+            flag.store(true, Ordering::Release);
+            let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
+        }
+    });
+    let output = child.wait_with_output().map_err(|err| format!("failed to run {program}: {err}"))?;
+    drop(finished);
+    if timed_out.load(Ordering::Acquire) {
+        return Err(format!("{program} timed out after {}s", limit.as_secs()));
+    }
     let stderr = String::from_utf8_lossy(&output.stderr);
     if failed(output.status.code(), &stderr) {
         let detail = stderr.trim();
@@ -124,6 +154,14 @@ pub(super) fn program_is_in(path: &std::ffi::OsStr, program: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hung_command_and_its_children_are_killed_at_the_limit() {
+        let start = std::time::Instant::now();
+        let result = run_for(Command::new("sh").args(["-c", "sleep 30 & wait"]), nonzero, Duration::from_millis(200));
+        assert!(result.unwrap_err().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_secs(10));
+    }
 
     #[test]
     fn a_program_is_found_in_a_directory_that_path_names() {

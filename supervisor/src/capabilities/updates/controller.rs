@@ -23,6 +23,10 @@ use shared::action::UpdatesConfigure;
 /// 2,000-package run belongs in a file, not a state payload reserialized on every progress line.
 const LOG_TAIL_LINES: usize = 200;
 
+/// A check that hangs (stuck db lock, dead mirror) must not wedge the scheduler. The blocking
+/// thread leaks; the capability recovers.
+const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Cloneable so `main.rs` can hand an `Arc`-backed copy to the spawned install task.
 #[derive(Clone)]
 pub struct UpdatesController {
@@ -212,11 +216,14 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
     let _ = events.send(());
 
     let backend = Arc::clone(backend);
-    let result = tokio::task::spawn_blocking(move || backend.check()).await;
+    let result = match tokio::time::timeout(CHECK_TIMEOUT, tokio::task::spawn_blocking(move || backend.check())).await {
+        Ok(joined) => joined.map_err(|join_err| format!("check task panicked: {join_err}")),
+        Err(_) => Ok(Err(format!("check timed out after {}s", CHECK_TIMEOUT.as_secs()))),
+    };
 
     let mut guard = state.lock().expect("mutex poisoned");
     guard.checking = false;
-    match result.map_err(|join_err| format!("check task panicked: {join_err}")) {
+    match result {
         Ok(Ok(report)) => {
             guard.packages = report.packages;
             guard.aur_error = report.aur_error;
@@ -436,6 +443,42 @@ mod tests {
         let controller = UpdatesController::with_backend(Some(Arc::new(StubBackend)), no_marker(), events_tx);
         assert_eq!(events_rx.recv().await, Some(()), "construction pushes the backend's name");
         (controller, events_rx)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_check_that_never_returns_times_out_and_the_next_one_still_runs() {
+        struct Hung(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+        impl Backend for Hung {
+            fn name(&self) -> &'static str {
+                "hung"
+            }
+            fn check(&self) -> Result<CheckReport, String> {
+                let _ = self.0.lock().unwrap().recv();
+                Err("released".into())
+            }
+            fn install_command(&self) -> InstallCommand {
+                StubBackend.install_command()
+            }
+            fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
+                None
+            }
+        }
+        let (release, hold) = std::sync::mpsc::channel();
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = UpdatesController::with_backend(Some(Arc::new(Hung(hold.into()))), no_marker(), events_tx);
+        events_rx.recv().await.unwrap();
+
+        controller.check_now();
+        events_rx.recv().await.unwrap();
+        // Paused time does not auto-advance while a blocking task is outstanding.
+        tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
+        events_rx.recv().await.unwrap();
+        let snapshot = controller.snapshot();
+        assert!(!snapshot.checking);
+        assert!(snapshot.check_error.unwrap().contains("timed out"));
+        controller.check_now();
+        events_rx.recv().await.expect("the scheduler must accept a new check after a timeout");
+        drop(release);
     }
 
     /// The two pushes one check makes: `checking` up, then the answer.
