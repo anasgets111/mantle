@@ -226,8 +226,33 @@ fn spawn_item_signal_forwarder(
 /// from pushing the whole tray. Menus carry no pixmaps, so equal means nothing to redraw.
 pub(super) fn store_menu(entry: &mut ItemEntry, items: Vec<MenuItem>) -> bool {
     let changed = entry.last_known.menu.as_ref() != Some(&items);
-    entry.last_known.menu = Some(items);
+    if let Some(old) = entry.last_known.menu.replace(items) {
+        reap_menu_icons(&entry.last_known.id, &old, entry.last_known.menu.as_deref().unwrap_or_default());
+    }
     changed
+}
+
+/// Deletes the item's own `{stem}_menu_{id}.png` files that `old` names and `kept` no longer does;
+/// an app-supplied `icon_name` cannot reap another item's file.
+fn reap_menu_icons(item_id: &str, old: &[MenuItem], kept: &[MenuItem]) {
+    let prefix = format!("{}_menu_", icon_filename_stem(item_id));
+    let own = |path: &str| {
+        let name = std::path::Path::new(path).file_name().and_then(|name| name.to_str());
+        name.and_then(|name| name.strip_prefix(&prefix)?.strip_suffix(".png"))
+            .is_some_and(|id| id.parse::<i32>().is_ok())
+    };
+    fn paths<'a>(items: &'a [MenuItem], out: &mut Vec<&'a str>) {
+        for item in items {
+            out.extend(item.icon_name.as_deref());
+            paths(&item.children, out);
+        }
+    }
+    let (mut gone, mut live) = (Vec::new(), Vec::new());
+    paths(old, &mut gone);
+    paths(kept, &mut live);
+    for path in gone.into_iter().filter(|path| own(path) && !live.contains(path)) {
+        shm_icons::remove_png(SPOOL_SUBDIR, path);
+    }
 }
 
 /// Refetch 100 ms after the last menu signal: apps send one per changed submenu, and each refetch
@@ -317,6 +342,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
                 {
                     shm_icons::remove_png(SPOOL_SUBDIR, path);
                 }
+                reap_menu_icons(&entry.last_known.id, entry.last_known.menu.as_deref().unwrap_or_default(), &[]);
             }
             if events.send(()).is_err() {
                 break;
@@ -515,6 +541,30 @@ mod tests {
         let toggled = vec![MenuItem { toggle_state: Some(1), ..quit[0].clone() }];
         assert!(store_menu(&mut entry, toggled.clone()));
         assert_eq!(entry.last_known.menu, Some(toggled));
+    }
+
+    #[tokio::test]
+    async fn menu_icon_files_are_deleted_when_a_refetch_drops_the_node() {
+        let temp = tempfile::tempdir().unwrap();
+        if crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf()).is_ok() {
+            std::mem::forget(temp);
+        }
+        let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
+        let (kept, dropped, nested) = (spool("reap_menu_1.png"), spool("reap_menu_2.png"), spool("reap_menu_3.png"));
+        let foreign = spool("other_menu_4.png");
+        let node = |icon: &str, children| MenuItem { icon_name: Some(icon.into()), children, ..MenuItem::default() };
+        let (connection, _peer) = p2p_pair().await;
+        let mut entry = entry(&connection, "reap", 0).await;
+        let child = node(&nested, vec![]);
+        store_menu(&mut entry, vec![node(&kept, vec![]), node(&dropped, vec![child]), node(&foreign, vec![])]);
+
+        store_menu(&mut entry, vec![node(&kept, vec![]), node("folder", vec![])]);
+        assert!(std::path::Path::new(&kept).exists(), "a node that survives keeps its file");
+        assert!(!std::path::Path::new(&dropped).exists() && !std::path::Path::new(&nested).exists());
+        assert!(std::path::Path::new(&foreign).exists(), "another item's file is not this menu's to delete");
+
+        reap_menu_icons("reap", entry.last_known.menu.as_deref().unwrap(), &[]);
+        assert!(!std::path::Path::new(&kept).exists(), "departure removes the rest");
     }
 
     /// In-place updates must not move an item.
