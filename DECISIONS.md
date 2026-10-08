@@ -8274,3 +8274,18 @@ question (a username, an OTP code) received the password.
    the password goes only where the stack asked for a secret.
 2. **Cost.** A polkit stack that needs a visible answer fails until the roadmap's multi-prompt
    relay lands.
+
+## 0354. The Supervisor runs on one malloc arena and trims every 30 s
+
+Reverses ADR-0127's rejection of arena limiting. That measured about 380 KiB on its own, which the
+2026 sprint rig confirmed (-2.6 to -7.5% settled PSS); the gain comes from pairing it with a trim.
+Freed chunks from tray pixmaps, app scans and audio rebuilds stayed in the arenas: settled PSS after
+those scenarios was 15.8 to 16.8 MB, against 14.2 MB idle.
+
+1. **`M_ARENA_MAX=1`, set first in `main()`.** Tokio's two workers otherwise each keep an arena of
+   freed chunks that one trim per arena would have to reach.
+2. **`malloc_trim(0)` every 30 s on a worker.** Settled PSS after the heavy scenarios: 13.5 to
+   14.4 MB. Trimming every 5 s or 2 s after the last publish saved 0.1 to 0.4 MB more; the system
+   capability publishes at 1 Hz, so the debounced trim fired about 22 times a minute, and both added
+   5 to 10% idle wakeups.
+3. **Cost.** A trim holds the one arena's lock, so other threads' allocations wait for it.

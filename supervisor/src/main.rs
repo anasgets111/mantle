@@ -126,6 +126,12 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    // One arena: the workers otherwise keep ~2 MiB of freed chunks each.
+    // SAFETY: plain FFI, before any thread (log tee included) exists.
+    #[cfg(target_env = "gnu")]
+    unsafe {
+        libc::mallopt(libc::M_ARENA_MAX, 1);
+    }
     if std::env::var_os(pam_worker::WORKER_ENV).is_some() {
         return pam_worker::run_worker();
     }
@@ -234,6 +240,17 @@ async fn run_supervisor(
     verbose: u8,
 ) -> Result<(), Box<dyn Error>> {
     let connection = capabilities::with_call_timeout(zbus::connection::Builder::system()).await?;
+
+    // Hand freed chunks back; PSS, not peak, is what stays.
+    #[cfg(target_env = "gnu")]
+    tokio::spawn(async {
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        loop {
+            tick.tick().await;
+            // SAFETY: plain FFI.
+            unsafe { libc::malloc_trim(0) };
+        }
+    });
 
     let (tx, mut agent_requests) = tokio::sync::mpsc::unbounded_channel();
     let mut polkit_agent = PolkitAgent::new(tx);
