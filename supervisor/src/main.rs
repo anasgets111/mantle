@@ -72,6 +72,23 @@ pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
     );
 }
 
+/// Starts `command`'s child in its own session with every inherited fd above stderr closed on exec.
+/// A launcher's stray fds (a held `flock`, say) would otherwise live as long as the shell and its Renderer.
+fn new_session_without_inherited_fds(command: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: runs in the forked child where only this thread exists; `setsid` and `close_range` are
+    // async-signal-safe and touch no Rust state. An old kernel without `close_range` just keeps the fds.
+    unsafe {
+        command.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            libc::syscall(libc::SYS_close_range, 3u32, u32::MAX, libc::CLOSE_RANGE_CLOEXEC);
+            Ok(())
+        })
+    };
+}
+
 /// `mantle -d`: re-exec in a new session and return once it holds its instance, so the terminal
 /// gets its prompt back and `mantle log -f` finds it.
 ///
@@ -80,7 +97,6 @@ pub(crate) fn log_unstarted(envelope: &shared::CommandEnvelope) {
 /// leaves `log::capture` a descriptor with nothing to preserve, so a detached shell writes its log
 /// without a drain thread behind it (ADR-0199).
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
-    use std::os::unix::process::CommandExt;
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
         // `--detached` in `-d`'s place, so the child's `started` line shows it was asked for.
@@ -92,9 +108,7 @@ fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
-    // SAFETY: runs in the forked child where only this thread exists; `setsid` is
-    // async-signal-safe and touches no Rust state.
-    unsafe { command.pre_exec(|| if libc::setsid() == -1 { Err(std::io::Error::last_os_error()) } else { Ok(()) }) };
+    new_session_without_inherited_fds(&mut command);
     let mut child = command.spawn()?;
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
     // The log too: it lands after the lock, and until then `mantle log` would pick another shell.
@@ -508,5 +522,23 @@ mod tests {
         assert!(!frame_may_dispatch(&start, 0, 1));
         assert!(frame_may_dispatch(&start, 1, 1));
         assert!(frame_may_dispatch(&start, shared::CONTROL_CLIENT_GENERATION, 1));
+    }
+
+    #[test]
+    fn a_detached_child_does_not_inherit_a_leaked_fd() {
+        use std::os::fd::AsRawFd;
+        let leaked = std::fs::OpenOptions::new().write(true).open("/dev/null").unwrap();
+        let fd = leaked.as_raw_fd();
+        nix::fcntl::fcntl(&leaked, nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::empty())).unwrap();
+        let writes_to_leaked = |detach: bool| {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", &format!("echo x >&{fd}")]).stderr(std::process::Stdio::null());
+            if detach {
+                new_session_without_inherited_fds(&mut command);
+            }
+            command.status().unwrap().success()
+        };
+        assert!(writes_to_leaked(false), "the fd must leak without the fix, or this proves nothing");
+        assert!(!writes_to_leaked(true));
     }
 }
