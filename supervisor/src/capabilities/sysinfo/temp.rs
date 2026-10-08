@@ -79,7 +79,7 @@ const GENERIC_TEMP_FALLBACK: &str = "acpitz";
 const GPU_TEMP_PREFERENCE: &[&str] = &["amdgpu", "nouveau", "nvidia", "i915", "xe"];
 
 /// `temp_cores` inputs: a CPU chip's per-core sensors, else its primary one, else `acpitz`'s
-/// (ADR-0035). Resolved once; onboard sensors do not hotplug.
+/// (ADR-0035). Resolved at startup and again by [`sample_temp_cores`] after a failed read.
 pub fn resolve_temp_cores_inputs(hwmon_root: &Path) -> Vec<PathBuf> {
     if let Some(chip_dir) = resolve_chip(hwmon_root, CPU_TEMP_PREFERENCE) {
         let cores = core_inputs(&chip_dir);
@@ -97,7 +97,27 @@ pub fn read_temp_cores(inputs: &[PathBuf]) -> Vec<i64> {
     inputs.iter().filter_map(|input| read_celsius(input)).collect()
 }
 
-/// `temp_gpu`'s input, resolved once (ADR-0035).
+/// [`read_temp_cores`], resolving again when no input is known or one failed: a driver reload
+/// renumbers `hwmonN`, and a late-loading chip appears after startup.
+pub fn sample_temp_cores(inputs: &mut Vec<PathBuf>, hwmon_root: &Path) -> Vec<i64> {
+    let temps = read_temp_cores(inputs);
+    if !inputs.is_empty() && temps.len() == inputs.len() {
+        return temps;
+    }
+    *inputs = resolve_temp_cores_inputs(hwmon_root);
+    read_temp_cores(inputs)
+}
+
+/// [`read_temp_gpu`], resolving again when the input is unknown or unreadable.
+pub fn sample_temp_gpu(input: &mut Option<PathBuf>, hwmon_root: &Path) -> Option<i64> {
+    if let Some(temp) = read_temp_gpu(input.as_deref()) {
+        return Some(temp);
+    }
+    *input = resolve_gpu_input(hwmon_root);
+    read_temp_gpu(input.as_deref())
+}
+
+/// `temp_gpu`'s input (ADR-0035); [`sample_temp_gpu`] resolves it again after a failed read.
 pub fn resolve_gpu_input(hwmon_root: &Path) -> Option<PathBuf> {
     resolve_chip(hwmon_root, GPU_TEMP_PREFERENCE).and_then(|chip_dir| primary_input(&chip_dir))
 }
@@ -134,6 +154,27 @@ mod tests {
     fn write_sensor(chip_dir: &Path, n: u32, label: &str, milli_c: i64) {
         std::fs::write(chip_dir.join(format!("temp{n}_input")), format!("{milli_c}\n")).unwrap();
         std::fs::write(chip_dir.join(format!("temp{n}_label")), format!("{label}\n")).unwrap();
+    }
+
+    #[test]
+    fn sampling_finds_a_chip_that_loads_late_and_follows_a_renumbered_one() {
+        let root = tempfile::tempdir().unwrap();
+        let (mut gpu, mut cores) = (None, Vec::new());
+        assert_eq!(sample_temp_gpu(&mut gpu, root.path()), None);
+
+        write_chip(root.path(), "hwmon3", "amdgpu");
+        write_sensor(&root.path().join("hwmon3"), 1, "edge", 51_000);
+        write_chip(root.path(), "hwmon1", "coretemp");
+        write_sensor(&root.path().join("hwmon1"), 2, "Core 0", 40_000);
+        assert_eq!(sample_temp_gpu(&mut gpu, root.path()), Some(51));
+        assert_eq!(sample_temp_cores(&mut cores, root.path()), [40]);
+
+        std::fs::rename(root.path().join("hwmon3"), root.path().join("hwmon4")).unwrap();
+        std::fs::rename(root.path().join("hwmon1"), root.path().join("hwmon2")).unwrap();
+        assert_eq!(sample_temp_gpu(&mut gpu, root.path()), Some(51));
+        assert_eq!(sample_temp_cores(&mut cores, root.path()), [40]);
+        assert_eq!(gpu, Some(root.path().join("hwmon4/temp1_input")));
+        assert_eq!(cores, [root.path().join("hwmon2/temp2_input")]);
     }
 
     #[test]

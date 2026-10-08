@@ -3,8 +3,14 @@
 pub use shared::state::sysinfo::GpuTelemetry;
 
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
 
 use super::super::{read_attr, read_parsed};
+use super::run_limited;
+
+static NVTOP_BUSY: AtomicBool = AtomicBool::new(false);
+static NVIDIA_SMI_BUSY: AtomicBool = AtomicBool::new(false);
 
 #[derive(serde::Deserialize)]
 struct NvtopDevice {
@@ -34,10 +40,11 @@ fn parse_json_i64(val: Option<&serde_json::Value>) -> Option<i64> {
     }
 }
 
-/// Parses the first GPU entry from `nvtop -s` JSON output.
+/// Parses `nvtop -s` JSON output. With several devices the first reporting VRAM use wins (a
+/// discrete card; an iGPU has none), else the first.
 pub fn parse_nvtop(json_text: &str) -> Option<GpuTelemetry> {
     let list: Vec<NvtopDevice> = serde_json::from_str(json_text).ok()?;
-    let first = list.into_iter().next()?;
+    let first = list.into_iter().min_by_key(|d| parse_json_u64(d.mem_used.as_ref()).is_none_or(|b| b == 0))?;
     let name = first.device_name.unwrap_or_else(|| "GPU".to_string());
 
     let util_percent = match first.gpu_util.as_ref() {
@@ -102,32 +109,18 @@ fn find_amd_sysfs(drm_root: &Path) -> Option<GpuTelemetry> {
 /// Samples GPU metrics using available backend tools or sysfs.
 pub async fn sample_gpu(drm_root: &Path, fallback_temp: Option<i64>) -> Option<GpuTelemetry> {
     // 1. Try nvtop -s: unifies AMD, Intel and NVIDIA.
-    if let Ok(Ok(output)) = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        tokio::process::Command::new("nvtop").arg("-s").kill_on_drop(true).output(),
-    )
-    .await
-        && output.status.success()
-        && let Some(mut gpu) = parse_nvtop(&String::from_utf8_lossy(&output.stdout))
+    if let Some(stdout) = run_limited("nvtop", &["-s"], Duration::from_secs(3), &NVTOP_BUSY).await
+        && let Some(mut gpu) = parse_nvtop(&String::from_utf8_lossy(&stdout))
     {
         gpu.temp = gpu.temp.or(fallback_temp);
         return Some(gpu);
     }
 
     // 2. Try nvidia-smi if nvtop is absent.
-    if let Ok(Ok(output)) = tokio::time::timeout(
-        std::time::Duration::from_secs(3),
-        tokio::process::Command::new("nvidia-smi")
-            .args([
-                "--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ])
-            .kill_on_drop(true)
-            .output(),
-    )
-    .await
-        && output.status.success()
-        && let Some(gpu) = parse_nvidia_smi(&String::from_utf8_lossy(&output.stdout))
+    let query =
+        ["--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"];
+    if let Some(stdout) = run_limited("nvidia-smi", &query, Duration::from_secs(3), &NVIDIA_SMI_BUSY).await
+        && let Some(gpu) = parse_nvidia_smi(&String::from_utf8_lossy(&stdout))
     {
         return Some(gpu);
     }
@@ -158,6 +151,12 @@ mod tests {
         assert_eq!(gpu.temp, None);
         assert_eq!(gpu.mem_used, None);
         assert_eq!(gpu.mem_total, None);
+    }
+
+    #[test]
+    fn parse_nvtop_prefers_the_discrete_card_over_a_leading_igpu() {
+        let both = format!("[{},{}]", &INTEL_NVTOP[1..INTEL_NVTOP.len() - 1], &NVIDIA_NVTOP[1..NVIDIA_NVTOP.len() - 1]);
+        assert_eq!(parse_nvtop(&both).unwrap().name, "NVIDIA GeForce RTX 3060");
     }
 
     #[test]

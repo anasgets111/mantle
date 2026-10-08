@@ -36,8 +36,8 @@ pub struct SysinfoController {
 
 impl SysinfoController {
     /// Spawns dormant tasks (`Duration::ZERO`) until Lua calls `configure`. They share
-    /// `signal_tx` and signal only after real-tick state updates. Resolve temp inputs once here;
-    /// `hwmon_root` is not threaded into the task.
+    /// `signal_tx` and signal only after real-tick state updates. Temp inputs resolve on the first
+    /// tick and again whenever a read fails.
     pub fn new(
         proc_root: std::path::PathBuf,
         hwmon_root: std::path::PathBuf,
@@ -52,32 +52,11 @@ impl SysinfoController {
         let (gpu_interval, gpu_rx) = tokio::sync::watch::channel(Duration::ZERO);
         let (net_interval, net_rx) = tokio::sync::watch::channel(Duration::ZERO);
 
-        let core_inputs = super::temp::resolve_temp_cores_inputs(&hwmon_root);
-        if core_inputs.is_empty() {
-            debug!("no CPU temperature sensor found under {}; temp_cores will stay empty", hwmon_root.display());
-        }
-        let gpu_input = super::temp::resolve_gpu_input(&hwmon_root);
-        if gpu_input.is_none() {
-            debug!("no GPU temperature sensor found under {}; temp_gpu will stay nil", hwmon_root.display());
-        }
-
         tokio::spawn(run_cpu_task(proc_root.clone(), cpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
         tokio::spawn(run_ram_task(proc_root.clone(), ram_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
-        tokio::spawn(run_temp_task(
-            core_inputs,
-            gpu_input.clone(),
-            temp_rx,
-            std::sync::Arc::clone(&state),
-            signal_tx.clone(),
-        ));
+        tokio::spawn(run_temp_task(hwmon_root.clone(), temp_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
         tokio::spawn(run_disk_task(disk_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
-        tokio::spawn(run_gpu_task(
-            hwmon_root.parent().unwrap_or(&hwmon_root).join("drm"),
-            gpu_input,
-            gpu_rx,
-            std::sync::Arc::clone(&state),
-            signal_tx.clone(),
-        ));
+        tokio::spawn(run_gpu_task(hwmon_root, gpu_rx, std::sync::Arc::clone(&state), signal_tx.clone()));
         tokio::spawn(run_net_task(proc_root, net_rx, std::sync::Arc::clone(&state), signal_tx));
 
         Self { state, cpu_interval, ram_interval, temp_interval, disk_interval, gpu_interval, net_interval }
@@ -138,6 +117,12 @@ fn publish_if_changed(
     if changed {
         let _ = signal_tx.send(());
     }
+}
+
+/// Stores `sample` and reports a change; a failed sample (`None`) keeps the last good value rather
+/// than blanking it for a whole interval.
+fn replace_if_sampled<T: PartialEq>(slot: &mut T, sample: Option<T>) -> bool {
+    sample.is_some_and(|sample| std::mem::replace(slot, sample) != *slot)
 }
 
 /// One metric's poll loop: parked while its interval is zero, otherwise `tick` at the next
@@ -257,18 +242,18 @@ async fn run_ram_task(
     .await
 }
 
-/// `temp_cores`/`temp_gpu` task. Each tick reads only the inputs `new` resolved; `temp_gpu` rides
+/// `temp_cores`/`temp_gpu` task. Each tick reads the inputs resolved so far; `temp_gpu` rides
 /// `temp_interval`.
 async fn run_temp_task(
-    core_inputs: Vec<std::path::PathBuf>,
-    gpu_input: Option<std::path::PathBuf>,
+    hwmon_root: std::path::PathBuf,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
+    let (mut core_inputs, mut gpu_input) = (Vec::new(), None);
     run_ticker(interval_rx, |_: &mut Option<()>| {
-        let temp_cores = super::temp::read_temp_cores(&core_inputs);
-        let temp_gpu = super::temp::read_temp_gpu(gpu_input.as_deref());
+        let temp_cores = super::temp::sample_temp_cores(&mut core_inputs, &hwmon_root);
+        let temp_gpu = super::temp::sample_temp_gpu(&mut gpu_input, &hwmon_root);
         publish_if_changed(&state, &signal_tx, |state| {
             let changed = state.temp_cores != temp_cores || state.temp_gpu != temp_gpu;
             state.temp_cores = temp_cores;
@@ -287,33 +272,28 @@ async fn run_disk_task(
 ) {
     run_async_ticker(interval_rx, || async {
         let disks = super::disk::read_disks().await;
-        publish_if_changed(&state, &signal_tx, |state| {
-            let changed = state.disks != disks;
-            state.disks = disks;
-            changed
-        });
+        publish_if_changed(&state, &signal_tx, |state| replace_if_sampled(&mut state.disks, disks));
     })
     .await
 }
 
 /// `gpu` telemetry task. Each tick samples GPU load, VRAM, and temperature via `gpu::sample_gpu`.
 async fn run_gpu_task(
-    drm_root: std::path::PathBuf,
-    gpu_input: Option<std::path::PathBuf>,
+    hwmon_root: std::path::PathBuf,
     interval_rx: tokio::sync::watch::Receiver<Duration>,
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
+    let drm_root = hwmon_root.parent().unwrap_or(&hwmon_root).join("drm");
+    let mut gpu_input = None;
     run_async_ticker(interval_rx, || {
-        let temp_gpu = super::temp::read_temp_gpu(gpu_input.as_deref());
+        let temp_gpu = super::temp::sample_temp_gpu(&mut gpu_input, &hwmon_root);
         let (drm_root, state, signal_tx) = (&drm_root, &state, &signal_tx);
         async move {
+            // ponytail: a failed or timed-out sample keeps the last reading, so an unplugged eGPU
+            // stays until restart. Upgrade: drop it after N consecutive misses.
             let gpu = super::gpu::sample_gpu(drm_root, temp_gpu).await;
-            publish_if_changed(state, signal_tx, |state| {
-                let changed = state.gpu != gpu;
-                state.gpu = gpu;
-                changed
-            });
+            publish_if_changed(state, signal_tx, |state| replace_if_sampled(&mut state.gpu, gpu.map(Some)));
         }
     })
     .await
@@ -369,6 +349,16 @@ mod tests {
     ) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         (std::sync::Arc::new(std::sync::Mutex::new(super::SysinfoState::default())), tx, rx)
+    }
+
+    #[test]
+    fn a_failed_sample_keeps_the_last_good_value() {
+        let mut disks = vec![1];
+        assert!(!super::replace_if_sampled(&mut disks, None));
+        assert_eq!(disks, [1]);
+        assert!(!super::replace_if_sampled(&mut disks, Some(vec![1])));
+        assert!(super::replace_if_sampled(&mut disks, Some(vec![2])));
+        assert_eq!(disks, [2]);
     }
 
     #[test]

@@ -2,6 +2,11 @@
 
 pub use shared::state::sysinfo::{DiskDevice, DiskPartition};
 
+use std::sync::atomic::AtomicBool;
+use std::time::Duration;
+
+use super::run_limited;
+
 #[derive(serde::Deserialize)]
 struct LsblkResponse {
     #[serde(default)]
@@ -93,19 +98,16 @@ pub fn parse_lsblk(json_text: &str) -> Vec<DiskDevice> {
     disks
 }
 
-/// Reads storage topology by invoking `lsblk`.
-pub async fn read_disks() -> Vec<DiskDevice> {
-    let output = tokio::process::Command::new("lsblk")
-        .args(["--json", "--bytes", "--output", "NAME,TYPE,MOUNTPOINTS,FSUSED,FSSIZE"])
-        .kill_on_drop(true)
-        .output();
-    let Ok(Ok(output)) = tokio::time::timeout(std::time::Duration::from_secs(3), output).await else {
-        return Vec::new();
-    };
-    if !output.status.success() {
-        return Vec::new();
-    }
-    parse_lsblk(&String::from_utf8_lossy(&output.stdout))
+/// Set while an `lsblk` child is alive. One stuck in D-state (hung network mount) survives
+/// `kill_on_drop`, so a later tick must not pile another on top.
+static LSBLK_BUSY: AtomicBool = AtomicBool::new(false);
+
+/// Reads storage topology by invoking `lsblk`. `None` on any failure, so the caller keeps the last
+/// good list instead of publishing an empty one.
+pub async fn read_disks() -> Option<Vec<DiskDevice>> {
+    let args = ["--json", "--bytes", "--output", "NAME,TYPE,MOUNTPOINTS,FSUSED,FSSIZE"];
+    let stdout = run_limited("lsblk", &args, Duration::from_secs(3), &LSBLK_BUSY).await?;
+    Some(parse_lsblk(&String::from_utf8_lossy(&stdout)))
 }
 
 #[cfg(test)]
