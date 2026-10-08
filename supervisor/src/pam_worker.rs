@@ -119,14 +119,17 @@ fn write_frame(mut writer: impl std::io::Write, message: &shared::PamMessage) ->
 /// `shared::framing::read_frame`: only a `Response` ever carries a secret, but every frame is
 /// scrubbed alike rather than teaching this function which ones do.
 fn read_frame(mut reader: impl std::io::Read) -> std::io::Result<shared::PamMessage> {
+    use std::io::Read as _;
     let mut len = [0u8; 4];
     reader.read_exact(&mut len)?;
     let len = u32::from_be_bytes(len) as usize;
     if len > shared::framing::MAX_FRAME_LEN {
         return Err(std::io::Error::other(format!("frame length {len} exceeds the limit")));
     }
-    let mut payload = shared::Zeroizing::new(vec![0u8; len]);
-    reader.read_exact(&mut payload)?;
+    let mut payload = shared::Zeroizing::new(Vec::new());
+    if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
+        return Err(std::io::ErrorKind::UnexpectedEof.into());
+    }
     serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 

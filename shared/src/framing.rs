@@ -54,8 +54,12 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
     if len > MAX_FRAME_LEN {
         return Err(FramingError::FrameTooLarge { len });
     }
-    let mut payload = Zeroizing::new(vec![0u8; len]);
-    reader.read_exact(payload.as_mut_slice()).await?;
+    // Grown as bytes arrive, so a peer declaring 16 MiB and sending nothing costs nothing.
+    // ponytail: growth frees unscrubbed blocks; secrets are far smaller than the first allocation.
+    let mut payload = Zeroizing::new(Vec::new());
+    if (&mut *reader).take(len as u64).read_to_end(&mut payload).await? < len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
     // Moving the allocation out leaves an empty `Vec` to drop; the bytes travel on to the caller.
     Ok(std::mem::take(&mut *payload))
 }
@@ -114,6 +118,15 @@ mod tests {
         write_frame(&mut a, b"hello").await.unwrap();
         let payload = read_frame(&mut b).await.unwrap();
         assert_eq!(payload, b"hello");
+    }
+
+    #[tokio::test]
+    async fn a_frame_declared_at_the_limit_but_cut_short_is_an_error() {
+        let (mut a, mut b) = tokio::io::duplex(64);
+        a.write_all(&(MAX_FRAME_LEN as u32).to_be_bytes()).await.unwrap();
+        a.write_all(&[7u8; 10]).await.unwrap();
+        drop(a);
+        assert!(matches!(read_frame(&mut b).await, Err(FramingError::Io(_))));
     }
 
     #[tokio::test]
