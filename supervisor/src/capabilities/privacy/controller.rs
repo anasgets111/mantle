@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use futures_util::StreamExt;
-use inotify::{Inotify, WatchMask};
-use shared::{debug, warn};
+use inotify::{EventMask, Inotify, WatchDescriptor, WatchMask, Watches};
+use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
@@ -15,7 +15,7 @@ use tokio::sync::watch;
 
 use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceApp};
 
-use super::video::{find_device_openers, read_comm};
+use super::video::{enumerate_video_devices, find_device_openers, is_video_name, read_comm};
 
 /// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
 /// PipeWire `app_name` wins, then `/proc/{pid}/comm`, then `pid {n}`; no opener is dropped. Pure
@@ -69,18 +69,17 @@ pub struct PrivacyController {
 }
 
 impl PrivacyController {
-    /// `proc_root`/`video4linux_root` (defaults `/proc`/`/sys/class/video4linux`) are injected per
-    /// the sysfs/procfs test convention. `sources` is the PipeWire connection shared with
+    /// `proc_root`/`dev_root` (defaults `/proc`/`/dev`) are injected per the sysfs/procfs test
+    /// convention. `sources` is the PipeWire connection shared with
     /// `mantle.audio` (ADR-0034). Returns immediately.
     pub fn new(
         proc_root: PathBuf,
-        video4linux_root: &Path,
+        dev_root: &Path,
         sources: watch::Receiver<PrivacySources>,
         events: UnboundedSender<()>,
     ) -> Self {
         let state = Arc::new(Mutex::new(PrivacyState::default()));
-        let devices = super::video::enumerate_video_devices(video4linux_root);
-        tokio::spawn(run_privacy_task(proc_root, devices, Arc::clone(&state), sources, events));
+        tokio::spawn(run_privacy_task(proc_root, dev_root.to_path_buf(), Arc::clone(&state), sources, events));
         Self { state }
     }
 
@@ -89,7 +88,7 @@ impl PrivacyController {
     }
 }
 
-/// Watches resolved video devices for live-reliable `OPEN`/`CLOSE` (see `privacy::video`) and
+/// Watches `dev_root` and its video devices for live-reliable `OPEN`/`CLOSE` (see `privacy::video`) and
 /// drains `sources`. Either triggers a full rebuild of all three lists; only a device event pays for
 /// the `/proc` scan, once per burst of ready events.
 ///
@@ -98,12 +97,13 @@ impl PrivacyController {
 /// failures ended the task, which was correct when camera was the only answer.
 async fn run_privacy_task(
     proc_root: PathBuf,
-    devices: Vec<PathBuf>,
+    dev_root: PathBuf,
     state: Arc<Mutex<PrivacyState>>,
     mut sources: watch::Receiver<PrivacySources>,
     events: UnboundedSender<()>,
 ) {
-    let mut inotify_stream = watch_video_devices(&devices);
+    let mut devices = enumerate_video_devices(&dev_root);
+    let mut inotify_stream = watch_video_devices(&dev_root, &devices);
     // Whatever the mixer last published, not an empty seed: this capability starts on first config
     // read, which can be long after the mixer hydrated.
     let mut pipewire = sources.borrow_and_update().clone();
@@ -118,7 +118,7 @@ async fn run_privacy_task(
     let mut mixer_alive = true;
     loop {
         tokio::select! {
-            event = next_device_event(&mut inotify_stream) => {
+            event = next_device_event(&mut inotify_stream, &mut devices) => {
                 match event {
                     // Only a device open/close can change who holds it; this arm pays for the scan,
                     // a readlink of every fd in `/proc`, so it runs off the two async workers.
@@ -166,13 +166,9 @@ fn rebuild(proc_root: &Path, opener_pids: &[u32], pipewire: &PrivacySources) -> 
     }
 }
 
-/// Inotify stream for `/dev/videoN`, or `None` when no device exists or setup failed. Failure costs
-/// only `camera_users` and is logged.
-fn watch_video_devices(devices: &[PathBuf]) -> Option<DeviceEvents> {
-    if devices.is_empty() {
-        debug!("no /dev/videoN devices found; camera_users will stay empty");
-        return None;
-    }
+/// Inotify on `dev_root`, so a hot-plugged node is seen, and on each current `videoN`. Failure
+/// costs only `camera_users` and is logged.
+fn watch_video_devices(dev_root: &Path, devices: &[PathBuf]) -> Option<VideoWatch> {
     let inotify = match Inotify::init() {
         Ok(inotify) => inotify,
         Err(err) => {
@@ -180,14 +176,20 @@ fn watch_video_devices(devices: &[PathBuf]) -> Option<DeviceEvents> {
             return None;
         }
     };
-    for device in devices {
-        if let Err(err) = inotify.watches().add(device, WatchMask::OPEN | WatchMask::CLOSE) {
-            warn!("failed to watch {}; camera opens on it won't be detected: {err}", device.display());
+    let mut watches = inotify.watches();
+    let dir = match watches.add(dev_root, WatchMask::CREATE | WatchMask::DELETE) {
+        Ok(dir) => dir,
+        Err(err) => {
+            warn!("failed to watch {}; cameras plugged in later won't be detected: {err}", dev_root.display());
+            return None;
         }
+    };
+    for device in devices {
+        watch_device(&mut watches, device);
     }
     match inotify.into_event_stream(vec![0u8; 4096]) {
         // An app probing every node opens and closes each; one scan answers the whole burst.
-        Ok(stream) => Some(stream.ready_chunks(64)),
+        Ok(stream) => Some(VideoWatch { events: stream.ready_chunks(64), watches, root: dev_root.to_path_buf(), dir }),
         Err(err) => {
             warn!("failed to start the inotify event stream; camera detection disabled for this run: {err}");
             None
@@ -195,7 +197,21 @@ fn watch_video_devices(devices: &[PathBuf]) -> Option<DeviceEvents> {
     }
 }
 
+fn watch_device(watches: &mut Watches, device: &Path) {
+    if let Err(err) = watches.add(device, WatchMask::OPEN | WatchMask::CLOSE) {
+        warn!("failed to watch {}; camera opens on it won't be detected: {err}", device.display());
+    }
+}
+
 type DeviceEvents = futures_util::stream::ReadyChunks<inotify::EventStream<Vec<u8>>>;
+
+struct VideoWatch {
+    events: DeviceEvents,
+    watches: Watches,
+    root: PathBuf,
+    /// The `dev_root` watch, whose create/delete events add and drop device watches.
+    dir: WatchDescriptor,
+}
 
 /// Camera watch event. The enum names cases and lets [`next_device_event`] flatten a missing watch.
 enum DeviceEvent {
@@ -204,14 +220,38 @@ enum DeviceEvent {
     Ended,
 }
 
-/// Next device open/close, or a never-completing future without a camera. `select!` still needs an
-/// arm future in that case.
-async fn next_device_event(stream: &mut Option<DeviceEvents>) -> DeviceEvent {
-    let Some(stream) = stream.as_mut() else { return std::future::pending().await };
-    match stream.next().await {
-        Some(events) if events.iter().any(Result::is_ok) => DeviceEvent::Opened,
-        Some(mut events) => DeviceEvent::Failed(events.swap_remove(0).unwrap_err()),
-        None => DeviceEvent::Ended,
+/// Next device open/close or node create/delete, or a never-completing future without a watch.
+/// `select!` still needs an arm future in that case. A node that appears or goes keeps `devices`
+/// and its watch current; a replugged node is a new inode, so the old watch is gone with it.
+async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<PathBuf>) -> DeviceEvent {
+    let Some(watch) = watch.as_mut() else { return std::future::pending().await };
+    loop {
+        match watch.events.next().await {
+            Some(events) if events.iter().any(Result::is_ok) => {
+                let mut relevant = false;
+                for event in events.iter().flatten() {
+                    if event.wd != watch.dir {
+                        relevant |=
+                            event.mask.intersects(EventMask::OPEN | EventMask::CLOSE_WRITE | EventMask::CLOSE_NOWRITE);
+                        continue;
+                    }
+                    let name = event.name.as_deref().and_then(|name| name.to_str()).filter(|n| is_video_name(n));
+                    let Some(name) = name else { continue };
+                    let path = watch.root.join(name);
+                    devices.retain(|device| *device != path);
+                    if event.mask.contains(EventMask::CREATE) {
+                        watch_device(&mut watch.watches, &path);
+                        devices.push(path);
+                    }
+                    relevant = true;
+                }
+                if relevant {
+                    return DeviceEvent::Opened;
+                }
+            }
+            Some(mut events) => return DeviceEvent::Failed(events.swap_remove(0).unwrap_err()),
+            None => return DeviceEvent::Ended,
+        }
     }
 }
 
@@ -352,25 +392,86 @@ mod tests {
     async fn a_burst_of_device_opens_is_one_event() {
         // Five devices, since inotify merges identical queued events on one watch. Held open: closes
         // of dropped files landed after the read in loaded full-suite runs and split the burst.
-        let devices: Vec<_> = (0..5).map(|_| tempfile::NamedTempFile::new().unwrap()).collect();
-        let paths: Vec<_> = devices.iter().map(|device| device.path().to_path_buf()).collect();
-        let mut stream = watch_video_devices(&paths);
-        let _opened: Vec<_> = paths.iter().map(|path| std::fs::File::open(path).unwrap()).collect();
+        let dev = tempfile::tempdir().unwrap();
+        let mut devices: Vec<_> = (0..5).map(|n| dev.path().join(format!("video{n}"))).collect();
+        devices.iter().for_each(|path| drop(std::fs::File::create(path).unwrap()));
+        let mut stream = watch_video_devices(dev.path(), &devices);
+        let _opened: Vec<_> = devices.iter().map(|path| std::fs::File::open(path).unwrap()).collect();
 
-        assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
-        let second = tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream)).await;
+        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened));
+        let second =
+            tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream, &mut devices))
+                .await;
         assert!(second.is_err(), "five queued events must cost one scan, not five");
+    }
+
+    /// A webcam plugged in after start, or an unplugged and replugged node (a new inode), must
+    /// still be watched, or `camera_users` stays empty while it is live.
+    #[tokio::test]
+    async fn a_camera_plugged_in_after_start_is_watched() {
+        let dev = tempfile::tempdir().unwrap();
+        let proc_root = tempfile::tempdir().unwrap();
+        let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(PrivacyState::default()));
+        tokio::spawn(run_privacy_task(
+            proc_root.path().to_path_buf(),
+            dev.path().to_path_buf(),
+            Arc::clone(&state),
+            sources,
+            events_tx,
+        ));
+        assert_eq!(within(events_rx.recv()).await, Some(()), "the empty seed");
+
+        let node = dev.path().join("video0");
+        // Opens the node until `camera_users.is_empty()` equals `want_empty`; a node is unwatched
+        // until its create event is handled, so one open may be missed.
+        let settle = |want_empty: bool| {
+            let (state, node) = (Arc::clone(&state), node.clone());
+            within(async move {
+                while state.lock().unwrap().camera_users.is_empty() != want_empty {
+                    drop(std::fs::File::open(&node).unwrap());
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            })
+        };
+        for _ in 0..2 {
+            std::fs::write(&node, "").unwrap();
+            let fd_dir = proc_root.path().join("1234/fd");
+            std::fs::create_dir_all(&fd_dir).unwrap();
+            let _ = std::fs::remove_file(fd_dir.join("5"));
+            std::os::unix::fs::symlink(&node, fd_dir.join("5")).unwrap();
+            settle(false).await;
+            std::fs::remove_dir_all(proc_root.path().join("1234")).unwrap();
+            settle(true).await;
+            std::fs::remove_file(&node).unwrap();
+        }
+    }
+
+    /// Nodes that are not cameras churn in `/dev`; none may pay for a `/proc` scan.
+    #[tokio::test]
+    async fn a_non_camera_node_in_dev_is_not_an_event() {
+        let dev = tempfile::tempdir().unwrap();
+        let mut devices = Vec::new();
+        let mut watch = watch_video_devices(dev.path(), &devices);
+        std::fs::write(dev.path().join("loop0"), "").unwrap();
+        std::fs::remove_file(dev.path().join("loop0")).unwrap();
+        let quiet =
+            tokio::time::timeout(std::time::Duration::from_millis(200), next_device_event(&mut watch, &mut devices))
+                .await;
+        assert!(quiet.is_err());
+        std::fs::write(dev.path().join("video0"), "").unwrap();
+        assert!(matches!(within(next_device_event(&mut watch, &mut devices)).await, DeviceEvent::Opened));
     }
 
     #[tokio::test]
     async fn no_video_devices_still_sends_one_signal_so_the_empty_state_gets_announced() {
-        let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
+        let dev_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
         let proc_root = tempfile::tempdir().unwrap();
         let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let controller =
-            PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev_root.path(), sources, events_tx);
 
         assert_eq!(
             within(events_rx.recv()).await,
@@ -382,21 +483,29 @@ mod tests {
 
     #[tokio::test]
     async fn the_mixer_exiting_leaves_the_camera_watched() {
-        let device = tempfile::NamedTempFile::new().unwrap();
+        let dev = tempfile::tempdir().unwrap();
+        let device = dev.path().join("video0");
+        std::fs::write(&device, "").unwrap();
         let proc_root = tempfile::tempdir().unwrap();
         let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let state = Arc::new(Mutex::new(PrivacyState::default()));
-        let devices = vec![device.path().to_path_buf()];
-        tokio::spawn(run_privacy_task(proc_root.path().to_path_buf(), devices, Arc::clone(&state), sources, events_tx));
+        let dev_root = dev.path().to_path_buf();
+        tokio::spawn(run_privacy_task(
+            proc_root.path().to_path_buf(),
+            dev_root,
+            Arc::clone(&state),
+            sources,
+            events_tx,
+        ));
         assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
 
         drop(privacy_tx);
         tokio::task::yield_now().await;
         let fd_dir = proc_root.path().join("1234/fd");
         std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink(device.path(), fd_dir.join("5")).unwrap();
-        std::fs::File::open(device.path()).unwrap();
+        std::os::unix::fs::symlink(&device, fd_dir.join("5")).unwrap();
+        std::fs::File::open(&device).unwrap();
 
         assert_eq!(within(events_rx.recv()).await, Some(()));
         assert_eq!(state.lock().unwrap().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
@@ -405,13 +514,12 @@ mod tests {
     /// ADR-0137 regression: no webcam used to end the task, taking microphone and screencast down.
     #[tokio::test]
     async fn a_machine_with_no_camera_still_reports_a_microphone() {
-        let video4linux_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
+        let dev_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
         let proc_root = tempfile::tempdir().unwrap();
         let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
-        let controller =
-            PrivacyController::new(proc_root.path().to_path_buf(), video4linux_root.path(), sources, events_tx);
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev_root.path(), sources, events_tx);
         assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
 
         privacy_tx

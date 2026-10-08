@@ -41,7 +41,7 @@ pub use controller::BluetoothController;
 pub enum BluetoothSignal {
     /// The adapter's own `Powered`, `Discovering` or `Discoverable` property changed.
     AdapterChanged,
-    /// A device was added/removed, or its `Connected`/`Paired`/`Name`/`Blocked`/
+    /// A device was added/removed, or its `Connected`/`Paired`/`Alias`/`Class`/`Blocked`/
     /// `Battery1.Percentage` changed.
     DeviceRegistryChanged,
     /// Sent by [`BluetoothController::clear_discovered`], not a forwarder, when

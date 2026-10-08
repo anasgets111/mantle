@@ -9,21 +9,19 @@
 
 use std::path::{Path, PathBuf};
 
-/// Every advertised `/dev/videoN` device, resolved once. Cameras rarely hotplug, so a USB webcam
-/// added after boot is not picked up.
-pub fn enumerate_video_devices(video4linux_root: &Path) -> Vec<PathBuf> {
-    let mut devices = Vec::new();
-    let Ok(entries) = std::fs::read_dir(video4linux_root) else { return devices };
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        if let Some(index) = name.strip_prefix("video")
-            && !index.is_empty()
-            && index.chars().all(|c| c.is_ascii_digit())
-        {
-            devices.push(PathBuf::from(format!("/dev/{name}")));
-        }
-    }
+/// Whether `name` is a capture node name, `video` and digits.
+pub fn is_video_name(name: &str) -> bool {
+    name.strip_prefix("video").is_some_and(|index| !index.is_empty() && index.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Every `videoN` under `dev_root` at start; the controller follows later plug and unplug.
+pub fn enumerate_video_devices(dev_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dev_root) else { return Vec::new() };
+    let mut devices: Vec<_> = entries
+        .flatten()
+        .filter(|entry| is_video_name(&entry.file_name().to_string_lossy()))
+        .map(|entry| entry.path())
+        .collect();
     devices.sort();
     devices
 }
@@ -72,10 +70,7 @@ mod tests {
         write_video_device_dir(root.path(), "video0");
         write_video_device_dir(root.path(), "video1");
 
-        assert_eq!(
-            enumerate_video_devices(root.path()),
-            vec![PathBuf::from("/dev/video0"), PathBuf::from("/dev/video1")]
-        );
+        assert_eq!(enumerate_video_devices(root.path()), vec![root.path().join("video0"), root.path().join("video1")]);
     }
 
     #[test]
@@ -84,7 +79,7 @@ mod tests {
         write_video_device_dir(root.path(), "video0");
         write_video_device_dir(root.path(), "vbi0"); // a real video4linux sibling class, not a capture device.
 
-        assert_eq!(enumerate_video_devices(root.path()), vec![PathBuf::from("/dev/video0")]);
+        assert_eq!(enumerate_video_devices(root.path()), vec![root.path().join("video0")]);
     }
 
     #[test]

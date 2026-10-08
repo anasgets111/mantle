@@ -219,7 +219,7 @@ impl BluetoothAgent {
             _ => true,
         };
         let name = match (allowed, proxy) {
-            (true, Some(proxy)) => proxy.name().await.unwrap_or_default(),
+            (true, Some(proxy)) => proxy.alias().await.unwrap_or_default(),
             _ => String::new(),
         };
         let mut slot = self.prompts.lock().expect("mutex poisoned");
@@ -631,7 +631,7 @@ mod tests {
     #[zbus::interface(name = "org.bluez.Device1")]
     impl SlowName {
         #[zbus(property)]
-        async fn name(&self) -> String {
+        async fn alias(&self) -> String {
             self.started.notify_one();
             self.resume.notified().await;
             "Late name".to_string()

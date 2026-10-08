@@ -366,7 +366,7 @@ impl Capabilities {
                     self.ensure_mixer_thread();
                     self.privacy = Some(PrivacyController::new(
                         PathBuf::from("/proc"),
-                        &PathBuf::from("/sys/class/video4linux"),
+                        Path::new("/dev"),
                         self.privacy_sources.clone(),
                         self.senders.privacy.clone(),
                     ));

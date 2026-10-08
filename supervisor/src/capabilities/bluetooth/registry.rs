@@ -151,7 +151,7 @@ async fn track_interfaces(
     true
 }
 
-/// Forwards `Connected`/`Paired`/`Name`/`Blocked` and, when present, `Battery1.Percentage` changes as
+/// Forwards `Connected`/`Paired`/`Alias`/`Class`/`Blocked` and, when present, `Battery1.Percentage` changes as
 /// [`BluetoothSignal::DeviceRegistryChanged`] until the connection drops. One per device,
 /// aborted on `InterfacesRemoved`.
 ///
@@ -170,7 +170,8 @@ fn spawn_device_signal_forwarder(
         let mut changes = stream_select!(
             device.receive_connected_changed().await.map(drop).fuse(),
             device.receive_paired_changed().await.map(drop).fuse(),
-            device.receive_name_changed().await.map(drop).fuse(),
+            device.receive_alias_changed().await.map(drop).fuse(),
+            device.receive_class_changed().await.map(drop).fuse(),
             device.receive_blocked_changed().await.map(drop).fuse(),
             stream::iter(percentage).flatten().fuse()
         );

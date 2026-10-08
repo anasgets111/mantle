@@ -85,15 +85,14 @@ fn parse(settings: &Settings) -> AppearanceState {
     }
 }
 
-/// Defaults when the portal is absent or the call fails.
-async fn read(proxy: &PortalSettingsProxy<'_>) -> AppearanceState {
-    match proxy.read_all(&[NAMESPACE]).await {
-        Ok(settings) => parse(&settings),
-        Err(err) => {
-            debug!("portal settings unavailable, using defaults: {err}");
-            AppearanceState::default()
-        }
-    }
+/// `None` when the portal is absent or the call fails, so the caller keeps the last state.
+async fn read(proxy: &PortalSettingsProxy<'_>) -> Option<AppearanceState> {
+    proxy
+        .read_all(&[NAMESPACE])
+        .await
+        .inspect_err(|err| debug!("portal settings unavailable, keeping state: {err}"))
+        .ok()
+        .map(|settings| parse(&settings))
 }
 
 /// Subscribes before the first read so a change during the round trip is not lost, then re-reads
@@ -101,9 +100,7 @@ async fn read(proxy: &PortalSettingsProxy<'_>) -> AppearanceState {
 async fn run(bus: zbus::Connection, state: Arc<Mutex<AppearanceState>>, events: UnboundedSender<()>) {
     let subscribed = async {
         let proxy = PortalSettingsProxy::builder(&bus).cache_properties(CacheProperties::No).build().await?;
-        let changed = proxy.receive_setting_changed().await?.filter_map(|signal| {
-            std::future::ready(signal.args().ok().filter(|args| args.namespace == NAMESPACE).map(drop))
-        });
+        let changed = proxy.receive_setting_changed_with_args(&[(0, NAMESPACE)]).await?.map(drop);
         let owner = proxy.inner().receive_owner_changed().await?.map(drop);
         zbus::Result::Ok((proxy, stream_select!(changed.fuse(), owner.fuse())))
     };
@@ -113,12 +110,16 @@ async fn run(bus: zbus::Connection, state: Arc<Mutex<AppearanceState>>, events: 
     };
     let mut changes = std::pin::pin!(changes);
 
-    *state.lock().expect("appearance state mutex poisoned") = read(&proxy).await;
+    if let Some(first) = read(&proxy).await {
+        *state.lock().expect("appearance state mutex poisoned") = first;
+    }
     if events.send(()).is_err() {
         return;
     }
     while changes.next().await.is_some() {
-        if !publish(&state, &events, read(&proxy).await) {
+        if let Some(next) = read(&proxy).await
+            && !publish(&state, &events, next)
+        {
             return;
         }
     }
@@ -229,6 +230,20 @@ mod tests {
         let state = appearance.snapshot();
         assert_eq!(state.color_scheme, ColorScheme::Light);
         assert_eq!((state.accent, state.contrast, state.reduced_motion), (None, Contrast::Normal, false));
+    }
+
+    #[tokio::test]
+    async fn a_failed_read_keeps_the_last_state() {
+        let bus = private_bus().await;
+        let portal = serve(&bus, all_four((1.0, 0.0, 0.5))).await;
+        let (events, mut changed) = mpsc::unbounded_channel();
+        let appearance = AppearanceController::new(Some(bus.connection().await), events);
+        within(changed.recv()).await;
+
+        drop(portal);
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), changed.recv()).await;
+        assert!(quiet.is_err(), "a portal that vanished is no change");
+        assert_eq!(appearance.snapshot().color_scheme, ColorScheme::Dark);
     }
 
     #[test]

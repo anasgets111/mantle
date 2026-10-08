@@ -42,7 +42,7 @@ pub(super) trait Device1 {
     fn address(&self) -> zbus::Result<String>;
 
     #[zbus(property)]
-    fn name(&self) -> zbus::Result<String>;
+    fn alias(&self) -> zbus::Result<String>;
 
     #[zbus(property)]
     fn class(&self) -> zbus::Result<u32>;

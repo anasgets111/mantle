@@ -193,7 +193,8 @@ impl BluetoothController {
         for (mac, device, battery) in snapshot {
             let paired = device.paired().await.unwrap_or(false);
             let is_connected = device.connected().await.unwrap_or(false);
-            let name = device.name().await.unwrap_or_default();
+            // `Alias` is always set and shows a user rename; `Name` is absent on many BLE devices.
+            let name = device.alias().await.unwrap_or_default();
             let busy = running.get(&mac).copied();
             if !paired {
                 let blocked = device.blocked().await.unwrap_or(false);
@@ -635,8 +636,8 @@ mod tests {
             self.mac.to_string()
         }
         #[zbus(property)]
-        fn name(&self) -> String {
-            String::new()
+        fn alias(&self) -> String {
+            format!("alias {}", self.mac)
         }
         #[zbus(property)]
         fn class(&self) -> u32 {
@@ -746,6 +747,19 @@ mod tests {
         let _second = serve_bluez(&bus, &[("CC:CC:CC:CC:CC:CC", true)], registered, false).await;
         until(&controller, &mut signals, |state| state.available && macs(state) == ["CC:CC:CC:CC:CC:CC"]).await;
         assert_eq!(within(registrations.recv()).await.as_deref(), Some("KeyboardDisplay"));
+    }
+
+    /// BlueZ omits `Name` on many devices and always sets `Alias`, which also carries a rename.
+    #[tokio::test]
+    async fn a_device_is_labelled_by_its_alias() {
+        let bus = private_bus().await;
+        let (registered, _registrations) = tokio::sync::mpsc::unbounded_channel();
+        let _bluez = serve_bluez(&bus, &[("BB:BB:BB:BB:BB:BB", false)], registered, false).await;
+        let (events, _signals) = tokio::sync::mpsc::unbounded_channel();
+        let controller = BluetoothController::new(bus.connection().await, events).await;
+
+        let state = controller.state.lock().unwrap().clone();
+        assert_eq!(state.discovered_devices[0].name, "alias BB:BB:BB:BB:BB:BB");
     }
 
     #[tokio::test]
