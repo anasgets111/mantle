@@ -4,7 +4,18 @@ fonts {
     "Noto Sans Arabic",
 }
 
-local launcher_open = state("launcher_open", false)
+-- Catppuccin Mocha for now; `fade` appends an alpha.
+local theme = {
+    crust = "#11111b",
+    base = "#1e1e2e",
+    surface = "#313244",
+    muted = "#6c7086",
+    text = "#cdd6f4",
+    accent = "#89b4fa",
+}
+function theme.fade(role, alpha) return theme[role] .. alpha end
+
+require("targets")
 
 local workspaces = list {
     direction = "horizontal",
@@ -25,7 +36,7 @@ local workspaces = list {
             width = w.active and 68 or 40,
             height = 40,
             radius = 20,
-            background = w.active and "#89b4fa" or "#313244",
+            background = w.active and theme.accent or theme.surface,
             animate = { width = { spring = { stiffness = 400, damping = 18 } }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
@@ -34,61 +45,14 @@ local workspaces = list {
                     align_h = "center",
                     align_v = "center",
                     font_size = 20,
-                    foreground = w.active and "#11111b" or "#cdd6f4",
+                    foreground = w.active and theme.crust or theme.text,
                 },
             },
         }
     end,
 }
 
-local PINNED = {
-    "kitty", "dev.zed.Zed", "org.gnome.Nautilus", "helium",
-    "org.telegram.desktop", "vesktop", "steam",
-}
-
-local apps = mantle.applications:map(function(a)
-    local out = {}
-    for _, id in ipairs(PINNED) do
-        local index = a and a.by_app_id[id]
-        if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
-    end
-    return out
-end)
-
-local launcher = panel {
-    id = "launcher",
-    layer = "overlay",
-    anchor = { top = true, left = true },
-    margin = { top = 12, left = 12 },
-    visible = launcher_open,
-    width = 560,
-    background = "#31324470",
-    radius = 24,
-    behind_blur = true,
-    child = list {
-        width = "fill",
-        padding = 10,
-        spacing = 2,
-        source = apps,
-        key = function(app) return app.id end,
-        itemfn = function(app)
-            return row {
-                width = "fill",
-                padding = 12,
-                radius = 12,
-                on_click = function() mantle.applications:launch(app.id) end,
-                spacing = 14,
-                children = {
-                    icon { name = app.icon or "application-x-executable", size = 52 },
-                    text { content = app.name, align_v = "center", font_size = 26 },
-                },
-            }
-        end,
-    },
-}
-
 return {
-    launcher,
     panel {
         id = "bar",
         layer = "top",
@@ -96,7 +60,7 @@ return {
         exclusive_zone = true,
         width = "fill",
         height = 56,
-        background = "#11111be6",
+        background = theme.fade("crust", "e6"),
         child = row {
             width = "fill",
             height = "fill",
@@ -110,7 +74,7 @@ return {
                     end),
                     align_v = "center",
                     font_size = 22,
-                    foreground = "#cdd6f4ff",
+                    foreground = theme.text,
                 },
             },
         },

@@ -49,7 +49,7 @@ demo out="":
     MANTLE_DEMO_OUT="{{out}}" demo/director/tools/run.sh
 
 # Like `demo`, it stops your shells for the take and restores them after.
-[doc('Play the demo from one edit (`11-media`, `typo`, ...) to the end, without recording.')]
+[doc('Play the demo from one edit (`09-media`, `typo`, ...) to the end, without recording.')]
 preview from:
     cargo build --workspace --profile swap
     MANTLE_DEMO_FROM="{{from}}" demo/director/tools/run.sh

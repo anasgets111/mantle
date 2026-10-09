@@ -4,8 +4,17 @@ fonts {
     "Noto Sans Arabic",
 }
 
-local launcher_open = state("launcher_open", false)
-local query = state("launcher_query", "")
+-- Catppuccin Mocha for now; `fade` appends an alpha.
+local theme = {
+    crust = "#11111b",
+    base = "#1e1e2e",
+    surface = "#313244",
+    muted = "#6c7086",
+    text = "#cdd6f4",
+    accent = "#89b4fa",
+}
+function theme.fade(role, alpha) return theme[role] .. alpha end
+
 require("targets")
 
 local workspaces = list {
@@ -27,7 +36,7 @@ local workspaces = list {
             width = w.active and 68 or 40,
             height = 40,
             radius = 20,
-            background = w.active and "#89b4fa" or "#313244",
+            background = w.active and theme.accent or theme.surface,
             animate = { width = { spring = { stiffness = 400, damping = 18 } }, background = 300 },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
@@ -36,12 +45,15 @@ local workspaces = list {
                     align_h = "center",
                     align_v = "center",
                     font_size = 20,
-                    foreground = w.active and "#11111b" or "#cdd6f4",
+                    foreground = w.active and theme.crust or theme.text,
                 },
             },
         }
     end,
 }
+
+local open = state("launcher_open", false)
+local query = state("launcher_query", "")
 
 local PINNED = {
     "kitty", "dev.zed.Zed", "org.gnome.Nautilus", "helium",
@@ -49,23 +61,25 @@ local PINNED = {
 }
 
 -- Pinned apps until you type, then the best fuzzy matches.
-local apps = computed({ mantle.applications, query }, function(a, needle)
+local apps = computed({ mantle.applications, query }, function(a, q)
     local out = {}
-    if needle == "" then
+    if q == "" then
         for _, id in ipairs(PINNED) do
             local index = a and a.by_app_id[id]
             if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
         end
         return out
     end
-    for _, entry in ipairs(a and a.entries or {}) do
-        local score = fuzzy(entry.name, needle)
-        if not entry.no_display and score then out[#out + 1] = { entry = entry, score = score } end
+    for _, app in ipairs(a and a.entries or {}) do
+        local score = fuzzy(app.name, q)
+        if not app.no_display and score then out[#out + 1] = { app = app, score = score } end
     end
-    table.sort(out, function(l, r) return l.score > r.score or (l.score == r.score and l.entry.id < r.entry.id) end)
+    table.sort(out, function(l, r)
+        return l.score > r.score or (l.score == r.score and l.app.id < r.app.id)
+    end)
     local best = {}
     for k = 1, math.min(#out, 6) do
-        best[k] = out[k].entry
+        best[k] = out[k].app
     end
     return best
 end)
@@ -75,10 +89,10 @@ local launcher = panel {
     layer = "overlay",
     anchor = { top = true, left = true },
     margin = { top = 12, left = 12 },
-    visible = launcher_open,
+    visible = open,
     keyboard_interactivity = "on_demand",
     width = 560,
-    background = "#31324470",
+    background = theme.fade("surface", "70"),
     radius = 24,
     behind_blur = true,
     child = column {
@@ -91,10 +105,10 @@ local launcher = panel {
                 width = "fill",
                 margin = 12,
                 font_size = 26,
-                foreground = "#cdd6f4",
                 placeholder = "Search apps",
-                placeholder_color = "#6c7086",
-                caret = { color = "#89b4fa" },
+                foreground = theme.text,
+                placeholder_color = theme.muted,
+                caret = { color = theme.accent },
                 autofocus = true,
                 on_change = function(q) query:set(q) end,
             },
@@ -123,27 +137,49 @@ local launcher = panel {
     },
 }
 
-local aurora = panel {
-    id = "aurora",
-    layer = "background",
-    anchor = { top = true, bottom = true, left = true, right = true },
-    width = "fill",
-    height = "fill",
-    exclusive_zone = "ignore",
-    child = shader {
-        width = "fill",
-        height = "fill",
-        source = mantle.config_dir .. "/aurora.frag",
-        params = { tint_a = { 0.54, 0.71, 0.98 }, tint_b = { 0.80, 0.65, 0.97 } },
-        progress = 0,
-        animate = {
-            progress = { duration = 16000, easing = "linear", keyframes = { 0, 1 }, loops = "infinite" },
-        },
-    },
-}
+-- Opaque at the bottom edge, clear 40% up: the frost fades out.
+local FADE = { gradient = "linear", angle = 0, stops = { { 0, "#ffffffff" }, { 0.4, "#ffffff00" } } }
 
 return {
-    aurora,
+    panel {
+        id = "aurora",
+        layer = "background",
+        anchor = { top = true, bottom = true, left = true, right = true },
+        width = "fill",
+        height = "fill",
+        exclusive_zone = "ignore",
+        child = rect {
+            width = "fill",
+            height = "fill",
+            children = {
+                shader {
+                    width = "fill",
+                    height = "fill",
+                    params = { tint_a = { 0.54, 0.71, 0.98 }, tint_b = { 0.80, 0.65, 0.97 } },
+                    progress = 0,
+                    animate = {
+                        progress = {
+                            duration = 16000,
+                            easing = "linear",
+                            keyframes = { 0, 1 },
+                            loops = "infinite",
+                        },
+                    },
+                    source = mantle.config_dir .. "/aurora.frag",
+                },
+                rect {
+                    width = "fill",
+                    height = "fill",
+                    effect = {
+                        backdrop = {
+                            blur = 30,
+                            mask = FADE,
+                        },
+                    },
+                },
+            },
+        },
+    },
     launcher,
     panel {
         id = "bar",
@@ -152,7 +188,7 @@ return {
         exclusive_zone = true,
         width = "fill",
         height = 56,
-        background = "#11111be6",
+        background = theme.fade("crust", "e6"),
         child = row {
             width = "fill",
             height = "fill",
@@ -166,7 +202,7 @@ return {
                     end),
                     align_v = "center",
                     font_size = 22,
-                    foreground = "#cdd6f4ff",
+                    foreground = theme.text,
                 },
             },
         },

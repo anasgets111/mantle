@@ -4,6 +4,7 @@ fonts {
     "Noto Sans Arabic",
 }
 
+
 return {
     panel {
         id = "bar",
@@ -16,8 +17,8 @@ return {
         child = row {
             width = "fill",
             height = "fill",
-            align_h = "end",
             padding = { left = 12, right = 12 },
+            align_h = "end",
             children = {
                 text {
                     content = mantle.system:map(function(s)

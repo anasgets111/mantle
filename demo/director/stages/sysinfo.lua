@@ -37,7 +37,13 @@ local function chip(label, value)
         spacing = 8,
         align_v = "center",
         children = {
-            text { content = label, align_v = "center", font_size = 16, font_weight = 700, foreground = theme.muted },
+            text {
+                content = label,
+                align_v = "center",
+                font_size = 16,
+                font_weight = 700,
+                foreground = theme.muted,
+            },
             text { content = value, align_v = "center", font_size = 18, foreground = theme.text },
         },
     }

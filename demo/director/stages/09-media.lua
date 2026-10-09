@@ -4,14 +4,13 @@ fonts {
     "Noto Sans Arabic",
 }
 
-local launcher_open = state("launcher_open", false)
-local query = state("launcher_query", "")
 require("targets")
 local theme = require("theme")
 local wallpaper = require("wallpaper")
 local taskbar = require("taskbar")
 local overview = require("overview")
-local osd = require("osd")
+local media = require("media")
+local tray = require("tray")
 
 local workspaces = list {
     direction = "horizontal",
@@ -48,29 +47,34 @@ local workspaces = list {
     end,
 }
 
+local open = state("launcher_open", false)
+local query = state("launcher_query", "")
+
 local PINNED = {
     "kitty", "dev.zed.Zed", "org.gnome.Nautilus", "helium",
     "org.telegram.desktop", "vesktop", "steam",
 }
 
 -- Pinned apps until you type, then the best fuzzy matches.
-local apps = computed({ mantle.applications, query }, function(a, needle)
+local apps = computed({ mantle.applications, query }, function(a, q)
     local out = {}
-    if needle == "" then
+    if q == "" then
         for _, id in ipairs(PINNED) do
             local index = a and a.by_app_id[id]
             if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
         end
         return out
     end
-    for _, entry in ipairs(a and a.entries or {}) do
-        local score = fuzzy(entry.name, needle)
-        if not entry.no_display and score then out[#out + 1] = { entry = entry, score = score } end
+    for _, app in ipairs(a and a.entries or {}) do
+        local score = fuzzy(app.name, q)
+        if not app.no_display and score then out[#out + 1] = { app = app, score = score } end
     end
-    table.sort(out, function(l, r) return l.score > r.score or (l.score == r.score and l.entry.id < r.entry.id) end)
+    table.sort(out, function(l, r)
+        return l.score > r.score or (l.score == r.score and l.app.id < r.app.id)
+    end)
     local best = {}
     for k = 1, math.min(#out, 6) do
-        best[k] = out[k].entry
+        best[k] = out[k].app
     end
     return best
 end)
@@ -80,7 +84,7 @@ local launcher = panel {
     layer = "overlay",
     anchor = { top = true, left = true },
     margin = { top = 12, left = 12 },
-    visible = launcher_open,
+    visible = open,
     keyboard_interactivity = "on_demand",
     width = 560,
     background = theme.fade("surface", "70"),
@@ -96,8 +100,8 @@ local launcher = panel {
                 width = "fill",
                 margin = 12,
                 font_size = 26,
-                foreground = theme.text,
                 placeholder = "Search apps",
+                foreground = theme.text,
                 placeholder_color = theme.muted,
                 caret = { color = theme.accent },
                 autofocus = true,
@@ -128,37 +132,53 @@ local launcher = panel {
     },
 }
 
-local aurora = panel {
-    id = "aurora",
-    layer = "background",
-    anchor = { top = true, bottom = true, left = true, right = true },
-    width = "fill",
-    height = "fill",
-    exclusive_zone = "ignore",
-    child = rect {
+-- Opaque at the bottom edge, clear 40% up: the frost fades out.
+local FADE = { gradient = "linear", angle = 0, stops = { { 0, "#ffffffff" }, { 0.4, "#ffffff00" } } }
+
+return {
+    panel {
+        id = "aurora",
+        layer = "background",
+        anchor = { top = true, bottom = true, left = true, right = true },
         width = "fill",
         height = "fill",
-        children = {
-            wallpaper.image,
-            shader {
-                width = "fill",
-                height = "fill",
-                source = mantle.config_dir .. "/aurora.frag",
-                params = theme.tints,
-                progress = 0,
-                animate = {
-                    progress = { duration = 16000, easing = "linear", keyframes = { 0, 1 }, loops = "infinite" },
+        exclusive_zone = "ignore",
+        child = rect {
+            width = "fill",
+            height = "fill",
+            children = {
+                wallpaper.image,
+                shader {
+                    width = "fill",
+                    height = "fill",
+                    params = theme.tints,
+                    progress = 0,
+                    animate = {
+                        progress = {
+                            duration = 16000,
+                            easing = "linear",
+                            keyframes = { 0, 1 },
+                            loops = "infinite",
+                        },
+                    },
+                    source = mantle.config_dir .. "/aurora.frag",
+                },
+                rect {
+                    width = "fill",
+                    height = "fill",
+                    effect = {
+                        backdrop = {
+                            blur = 30,
+                            mask = FADE,
+                        },
+                    },
                 },
             },
         },
     },
-}
-
-return {
-    aurora,
     wallpaper.picker,
     overview,
-    osd,
+    media.card,
     launcher,
     panel {
         id = "bar",
@@ -176,6 +196,8 @@ return {
                 workspaces,
                 taskbar.bar,
                 rect { width = "fill" },
+                media.chip,
+                tray,
                 text {
                     content = mantle.system:map(function(s)
                         return os.date("%a %d %b   %H:%M", s and s.time)

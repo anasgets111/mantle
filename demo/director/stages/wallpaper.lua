@@ -41,7 +41,9 @@ local function thumbnail(entry)
         padding = 4,
         radius = 18,
         border_width = 3,
-        border_color = computed({ chosen, theme.accent }, function(on, color) return on and color or "#00000000" end),
+        border_color = computed({ chosen, theme.accent }, function(on, color)
+            return on and color or "#00000000"
+        end),
         scale = chosen:map(function(on) return on and 1 or 0.92 end),
         animate = { border_color = 250, scale = { spring = { stiffness = 320, damping = 16 } } },
         on_click = function() choose(entry.name) end,

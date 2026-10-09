@@ -93,13 +93,27 @@ local function tile(spec)
         on_click = spec.persisted and function() flip(spec.key) end or nil,
         spacing = 16,
         children = {
-            icon { name = spec.glyph, size = 30, align_v = "center", foreground = pick(theme.crust, theme.text) },
+            icon {
+                name = spec.glyph,
+                size = 30,
+                align_v = "center",
+                foreground = pick(theme.crust, theme.text),
+            },
             column {
                 align_v = "center",
                 spacing = 2,
                 children = {
-                    text { content = spec.title, font_size = 20, font_weight = 700, foreground = pick(theme.crust, theme.text) },
-                    text { content = spec.detail, font_size = 16, foreground = pick(theme.base, theme.subtext) },
+                    text {
+                        content = spec.title,
+                        font_size = 20,
+                        font_weight = 700,
+                        foreground = pick(theme.crust, theme.text),
+                    },
+                    text {
+                        content = spec.detail,
+                        font_size = 16,
+                        foreground = pick(theme.base, theme.subtext),
+                    },
                 },
             },
         },

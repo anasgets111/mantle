@@ -22,7 +22,12 @@ local indicator = rect {
             height = "fill",
             spacing = 10,
             children = {
-                icon { name = "view-reveal-symbolic", size = 24, align_v = "center", foreground = theme.crust },
+                icon {
+                    name = "view-reveal-symbolic",
+                    size = 24,
+                    align_v = "center",
+                    foreground = theme.crust,
+                },
                 text {
                     content = idle:map(function(i)
                         local holder = i.inhibitors[1]

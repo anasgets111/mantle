@@ -1532,15 +1532,17 @@ local script = {
     say("This is the whole shell.", "One Lua file. Mantle ships no shell of its own: you write it."),
     wait(2600),
     say("Save, and it's live.", "No restart. The file reloads in place."),
-    edit("01-style"),
+    edit("01-size"),
+    wait(1800),
+    edit("02-color"),
     wait(1800),
     say("Live system state.", "Workspaces from the compositor, as signals the bar redraws from."),
-    edit("02-workspaces"),
+    edit("03-workspaces"),
     wait(1200),
     tour,
     wait(800),
     say("State a keybind can drive.", 'state("launcher_open") is writable from any compositor bind.'),
-    edit("03-launcher"),
+    edit("04-launcher"),
     wait(600),
     press("Super+A", "launcher_open"),
     function(next)
@@ -1548,10 +1550,9 @@ local script = {
         next()
     end,
     say("Reloads keep state.", "The launcher stays open while you restyle it, and behind_blur = true asks for glass."),
-    edit("04-restyle"),
+    edit("05-restyle"),
     wait(2200),
     say("Fuzzy search, built in.", "fuzzy() scores each app as fzf does; the ranking stays in Lua."),
-    edit("05-search"),
     wait(400),
     type_call("search", "tele"),
     wait(1600),
@@ -1587,7 +1588,7 @@ local script = {
     wait(900),
 
     say("Every window, as a list.", "mantle.windows: app, title and focus from the compositor; a click focuses."),
-    edit("08-taskbar"),
+    edit("08-windows"),
     wait(500),
     launch,
     wait(350),
@@ -1609,7 +1610,6 @@ local script = {
     wait(900),
 
     say("An overview from a screen capture.", "capture draws any output through screencopy, the code pane included."),
-    edit("09-overview"),
     wait(600),
     press("Super+Tab", "overview_open"),
     select_window("0xa2"),
@@ -1633,15 +1633,10 @@ local script = {
     open_app(""),
     wait(500),
 
-    say("React to the system.", 'require("osd"): a volume OSD that follows every change, from any app.'),
-    edit("10-osd"),
-    wait(900),
-    nudge_volume,
-    wait(1400),
-
     say("Now playing, from MPRIS.", "mantle.mpris: title, artist and cover art from any player. The card is yours."),
-    edit("11-media"),
+    edit("09-media"),
     wait(500),
+    edit("09-motion"),
     play_track(1, 61, 1),
     point("media", "bar"),
     toggle("media_open"),
@@ -1663,7 +1658,7 @@ local script = {
     feed("mock_tray", tray_items(3)),
 
     say("Quick settings.", "mantle.network, mantle.bluetooth and mantle.brightness, drawn as tiles."),
-    edit("12-control"),
+    edit("10-control"),
     wait(500),
     press("Super+C", "control_open"),
     function(next)
@@ -1693,9 +1688,15 @@ local script = {
     toggle("control_open"),
     wait(500),
 
+    say("React to the system.", 'require("osd"): a volume OSD that follows every change, from any app.'),
+    wait(900),
+    nudge_volume,
+    wait(1400),
+
     say("Your notification server.", "Mantle serves org.freedesktop.Notifications. The popup is yours to draw."),
-    edit("13-notifications"),
+    edit("11-notifications"),
     wait(600),
+    edit("11-links"),
     notify {
         id = 1,
         from = "Sarah",
@@ -1730,7 +1731,7 @@ local script = {
     wait(400),
 
     say("Know who's watching and listening.", "mantle.privacy: every app on the camera, the mic or a screen share."),
-    edit("14-privacy"),
+    edit("12-indicators"),
     wait(500),
     open_app("call"),
     wait(700),
@@ -1749,7 +1750,6 @@ local script = {
     wait(800),
 
     say("Idle, on your terms.", "mantle.idle names whoever keeps the screen awake."),
-    edit("15-idle"),
     wait(500),
     function(next)
         mockups.playing:set(true)
@@ -1768,7 +1768,7 @@ local script = {
 
     say("Updates, through your polkit agent.",
         "mantle.updates checks pacman, dnf or apt. The password prompt is Lua too."),
-    edit("16-updates"),
+    edit("13-updates"),
     wait(500),
     feed("mock_updates", updates_state()),
     spotlight("updates", "bar"),
@@ -1793,9 +1793,14 @@ local script = {
     toggle("updates_open"),
     wait(500),
 
+    say("Real numbers, no polling code.",
+        "mantle.sysinfo reads /proc for you: live CPU and memory, drawn as a path that eases to each reading."),
+    edit("14-sysinfo"),
+    wait(3000),
+
     say("A lock screen, drawn in Lua.",
         "The real one holds the session through ext-session-lock and PAM. This take mocks it."),
-    edit("17-lock"),
+    edit("15-lock"),
     wait(500),
     feed("mock_lock", lock_state()),
     wait(1500),
@@ -1812,15 +1817,6 @@ local script = {
     feed("mock_lock", lock_state({ active = false })),
     wait(700),
 
-    say("Real numbers, no polling code.",
-        "mantle.sysinfo reads /proc for you: live CPU and memory, drawn as a path that eases to each reading."),
-    edit("18-sysinfo"),
-    wait(3000),
-
-
-    say("Draw your own error banner.", "mantle.rescue holds the error of the last failed reload."),
-    edit("19-banner"),
-    wait(900),
     say("Now break it.", "A typo never takes the desktop down, and the error says what it meant."),
     edit("typo"),
     wait(4400),

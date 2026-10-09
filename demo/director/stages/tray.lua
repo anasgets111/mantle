@@ -35,7 +35,9 @@ return list {
                     margin = { top = 4, right = 4 },
                     background = theme.danger,
                     opacity = 1,
-                    animate = { opacity = { duration = 900, keyframes = { 1, 0.3, 1 }, loops = "infinite" } },
+                    animate = {
+                        opacity = { duration = 900, keyframes = { 1, 0.3, 1 }, loops = "infinite" },
+                    },
                 },
             },
         }

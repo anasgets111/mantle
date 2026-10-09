@@ -31,7 +31,12 @@ return rect {
         local children, names, seen = {}, {}, {}
         for _, kind in ipairs(KINDS) do
             if #p[kind.field] > 0 then
-                children[#children + 1] = icon { name = kind.icon, size = 24, align_v = "center", foreground = theme.crust }
+                children[#children + 1] = icon {
+                    name = kind.icon,
+                    size = 24,
+                    align_v = "center",
+                    foreground = theme.crust,
+                }
             end
             for _, user in ipairs(p[kind.field]) do
                 if not seen[user.app_name] then
