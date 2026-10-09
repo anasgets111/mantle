@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.5.4 - 2026-10-09
+
 - Fixed: `padding` on a `text` or `textfield` now insets its glyphs, caret, links and IME cursor; they drew from the box's corner, so padded labels sat off-centre.
 - Added: `mantle.mpris` players carry `art_url`, the cover URL as the player sent it, so a config can fetch remote artwork such as Spotify's.
 
