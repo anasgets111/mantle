@@ -414,10 +414,12 @@ mod tests {
         let _opened: Vec<_> = devices.iter().map(|path| std::fs::File::open(path).unwrap()).collect();
 
         assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened));
-        let second =
-            tokio::time::timeout(std::time::Duration::from_millis(100), next_device_event(&mut stream, &mut devices))
-                .await;
-        assert!(second.is_err(), "five queued events must cost one scan, not five");
+        // Only a second Opened splits the burst: a child forked by a parallel test holds copies of
+        // these fds, and its exec closes them later as a stray Closed.
+        let another_open =
+            async { while !matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened) {} };
+        let second = tokio::time::timeout(std::time::Duration::from_millis(100), another_open).await;
+        assert!(second.is_err(), "five queued opens must cost one scan, not five");
     }
 
     #[tokio::test]
