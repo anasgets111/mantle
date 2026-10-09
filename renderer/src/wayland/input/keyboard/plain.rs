@@ -215,6 +215,11 @@ fn caret_phase(
     (flips.is_multiple_of(2), next)
 }
 
+/// The `focus_target` name a node is bound to.
+fn focus_name(node: &layout::ResolvedNode) -> Option<String> {
+    node::fields::common::focus_target.read(&node.properties).ok().flatten()
+}
+
 impl App {
     /// A pointer press already stopped typing. Apply the callback's `:request()` after its state has
     /// resolved, before autofocus and repaint, so a newly shown field or control can receive the next key.
@@ -231,10 +236,11 @@ impl App {
             return;
         }
         let Some(tree) = self.client.scene().surface(&surface_id) else { return };
-        let named = |node: &layout::ResolvedNode| {
-            node::fields::common::focus_target.read(&node.properties).ok().flatten().as_deref() == Some(&*name)
+        let Some(control) =
+            super::focus::first_focusable(&surface_id, tree, |node| focus_name(node).as_deref() == Some(&*name))
+        else {
+            return;
         };
-        let Some(control) = super::focus::first_focusable(&surface_id, tree, named) else { return };
         self.focus_control(Some(control));
         self.set_focus_visible(ring);
     }
@@ -243,9 +249,7 @@ impl App {
     /// focused one is rewritten in place, any other has its parked draft replaced (or dropped for `""`).
     pub(in crate::wayland) fn apply_text_requests(&mut self) {
         for (name, text) in crate::lua::focus::take_texts(self.client.lua()) {
-            let named = |node: &layout::ResolvedNode| {
-                node::fields::common::focus_target.read(&node.properties).ok().flatten().as_deref() == Some(&*name)
-            };
+            let named = |node: &layout::ResolvedNode| focus_name(node).as_deref() == Some(&*name);
             let hits: Vec<_> = self
                 .client
                 .scene()
@@ -270,7 +274,7 @@ impl App {
     /// The `focus_target` name of the textfield `field` is.
     fn field_focus_name(&self, field: &FocusedTextField) -> Option<String> {
         let path = layout::hit::path_to_node(self.client.scene().surface(&field.surface_id)?, field.id)?;
-        node::fields::common::focus_target.read(&path.last()?.properties).ok().flatten()
+        focus_name(path.last()?)
     }
 
     fn holder(&self, need_selection: bool) -> Option<String> {

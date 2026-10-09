@@ -162,10 +162,10 @@ impl App {
     pub(super) fn field_the_scope_declares(
         &self,
         scope: &[String],
-        current: Option<FocusedField>,
+        current: Option<&FocusedField>,
     ) -> Option<FocusedField> {
         let trees = self.scoped_trees(scope);
-        focus_on_enter(&trees, current.as_ref())
+        focus_on_enter(&trees, current)
     }
 
     /// Arm a newly visible sole `secure_submit` when the tree changes under existing focus. Enter

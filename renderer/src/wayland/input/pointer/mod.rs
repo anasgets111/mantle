@@ -305,8 +305,8 @@ fn press_chooses_focus(
     caret: Option<usize>,
     extend: bool,
     click: Option<Click>,
-    focused_secure_submit: Option<FocusedField>,
-    focused_text_field: Option<FocusedTextField>,
+    focused_secure_submit: Option<&FocusedField>,
+    focused_text_field: Option<&FocusedTextField>,
 ) -> (Option<FocusedField>, Option<FocusedTextField>) {
     match hit_field {
         Some(FieldTarget::Masked { id, target }) => {
@@ -319,7 +319,8 @@ fn press_chooses_focus(
             let primary = click.is_some();
             // `live` drops a unit that an edit or a keyboard selection has outdated.
             let held = resumed.as_ref().map(|field| (field.span.live(&field.buffer, field.selection), field.click));
-            let (buffer, mut history) = resumed.map(|field| (field.buffer, field.history)).unwrap_or_default();
+            let (buffer, mut history) =
+                resumed.map(|field| (field.buffer.clone(), field.history.clone())).unwrap_or_default();
             history.break_typing();
             // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
             let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
@@ -362,8 +363,13 @@ fn press_chooses_focus(
         // another field takes it (ADR-0114 decision 8), so scrim, card, and Authenticate clicks do
         // not discard a secret before `submit`.
         None => (
-            focused_secure_submit,
-            focused_text_field.map(|field| FocusedTextField { typing: false, selecting: false, click: None, ..field }),
+            focused_secure_submit.cloned(),
+            focused_text_field.cloned().map(|field| FocusedTextField {
+                typing: false,
+                selecting: false,
+                click: None,
+                ..field
+            }),
         ),
     }
 }
@@ -533,7 +539,7 @@ impl App {
                     Some(FieldTarget::Masked { .. }) => super::keyboard::ControlKind::Masked,
                     None => super::keyboard::ControlKind::Button,
                 };
-                // Clones, not takes: the seams below compare what arrives against the focus
+                // Borrowed, not taken: the seams below compare what arrives against the focus
                 // still held to decide whether to zeroize and what to repaint.
                 let (masked, plain) = press_chooses_focus(
                     hit.field,
@@ -541,8 +547,8 @@ impl App {
                     hit.caret,
                     self.shift_held,
                     (button == BTN_LEFT).then(|| (std::time::Instant::now(), position)),
-                    self.focused_secure_submit.clone(),
-                    self.focused_text_field.clone(),
+                    self.focused_secure_submit.as_ref(),
+                    self.focused_text_field.as_ref(),
                 );
                 // Reassign through the zeroizing transition seam.
                 self.focus_secure_submit(masked);
@@ -1363,7 +1369,7 @@ mod tests {
             false,
             left(),
             None,
-            Some(draft(7, "half a sentence")),
+            Some(&draft(7, "half a sentence")),
         );
         let plain = plain.expect("the press focused the field it hit");
         assert_eq!(plain.buffer, "half a sentence");
@@ -1388,7 +1394,7 @@ mod tests {
             false,
             left(),
             None,
-            Some(draft(7, "half a sentence")),
+            Some(&draft(7, "half a sentence")),
         );
         let plain = plain.expect("the press focused the field it hit");
         assert_eq!(plain.buffer, "");
@@ -1409,7 +1415,7 @@ mod tests {
             true,
             left(),
             None,
-            Some(held),
+            Some(&held),
         );
         let plain = plain.expect("the press focused the field it hit");
         assert_eq!(plain.selection, (anchor, 4), "the anchor stays put and the press moves the head");
@@ -1423,7 +1429,7 @@ mod tests {
             false,
             left(),
             None,
-            Some(draft(7, "half a sentence")),
+            Some(&draft(7, "half a sentence")),
         );
         assert_eq!(plain.expect("focused").selection, (4, 4));
     }
@@ -1436,7 +1442,7 @@ mod tests {
             target: secure_target(),
         };
         let (masked, plain) =
-            press_chooses_focus(None, "bar@eDP-1", None, false, left(), Some(held.clone()), Some(draft(7, "kept")));
+            press_chooses_focus(None, "bar@eDP-1", None, false, left(), Some(&held), Some(&draft(7, "kept")));
         let plain = plain.expect("the draft survives a press elsewhere");
         assert_eq!(plain.buffer, "kept");
         assert!(!plain.typing, "no caret without focus");
@@ -1453,7 +1459,7 @@ mod tests {
             false,
             left(),
             None,
-            Some(draft(7, "half a sentence")),
+            Some(&draft(7, "half a sentence")),
         );
         assert_eq!(
             masked,
@@ -1526,7 +1532,7 @@ mod tests {
                 false,
                 if primary { left() } else { None },
                 None,
-                Some(held()),
+                Some(&held()),
             );
             plain.expect("focused")
         };
@@ -1544,7 +1550,7 @@ mod tests {
         let (lua, t0) = (Lua::new(), Instant::now());
         let press = |held: Option<FocusedTextField>, id, at, extend, button: Option<Click>| {
             let click = button.map(|(_, p)| (t0 + Duration::from_millis(at), p));
-            press_chooses_focus(Some(plain_field(&lua, id)), "bar@eDP-1", Some(5), extend, click, None, held).1
+            press_chooses_focus(Some(plain_field(&lua, id)), "bar@eDP-1", Some(5), extend, click, None, held.as_ref()).1
         };
         let at = |x| Some((t0, (x, 10.0)));
         let first = press(Some(draft(7, "one two three")), 7, 0, false, at(10.0)).unwrap();
@@ -1561,7 +1567,7 @@ mod tests {
         assert_eq!(unit(&first, 8, 100, 10.0), Unit::Char, "another field starts its own series");
         let right = press(Some(second.clone()), 7, 100, false, None).unwrap();
         assert_eq!(unit(&right, 7, 150, 12.0), Unit::Char, "a right press ended the series");
-        let blurred = press_chooses_focus(None, "bar@eDP-1", None, false, None, None, Some(second)).1.unwrap();
+        let blurred = press_chooses_focus(None, "bar@eDP-1", None, false, None, None, Some(&second)).1.unwrap();
         assert_eq!(unit(&blurred, 7, 100, 12.0), Unit::Char, "a press elsewhere ended it");
     }
 
@@ -1569,7 +1575,7 @@ mod tests {
     fn shift_press_keeps_the_unit_and_an_edit_or_select_all_drops_it() {
         let lua = Lua::new();
         let shift = |caret, held| {
-            press_chooses_focus(Some(plain_field(&lua, 7)), "bar@eDP-1", Some(caret), true, left(), None, Some(held))
+            press_chooses_focus(Some(plain_field(&lua, 7)), "bar@eDP-1", Some(caret), true, left(), None, Some(&held))
                 .1
                 .expect("focused")
         };

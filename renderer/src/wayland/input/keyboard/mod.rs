@@ -283,7 +283,7 @@ impl KeyboardHandler for App {
         // (see [`App::keyboard_focus_scope`]).
         let scope = self.keyboard_focus_scope();
         // A scope with exactly one `secure_submit` becomes typable without a click.
-        let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.clone());
+        let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.as_ref());
         match (&self.keyboard_focus, &next) {
             (None, _) => debug!(2; "keyboard focus entered an untracked surface; not tracking it"),
             (Some(id), Some(field)) => debug!(
