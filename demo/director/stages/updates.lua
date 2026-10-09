@@ -1,6 +1,4 @@
--- Demo: the director feeds `mock_updates` in `mantle.updates`' shape with `mantle set`, so the take
--- installs nothing. A real shell reads `mantle.updates` and calls `mantle.updates:install()`, which
--- asks polkit, and so the shell's own agent, for the password.
+-- Demo: fed `mock_updates` in `mantle.updates`' shape, so the take installs nothing.
 local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")

@@ -112,15 +112,10 @@ mantle.screens:on_change(function() reveal(caret.line) end)
 
 -- Code pane ---------------------------------------------------------------------------------
 
--- Syntax tokens per line text, warmed in chunks behind the title card: tokenizing a whole file in
--- one recompute overruns the 2.5 ms budget. Coloured and dimmed runs per line, dropped with the theme.
-local tokens, highlighted, dimmed, highlighted_for = {}, {}, {}, nil
-
-local function tokenize(line)
-    local runs = tokens[line] or syntax.highlight(line)
-    tokens[line] = runs
-    return runs
-end
+-- `syntax.highlight` caches per line text and is warmed in chunks behind the title card: tokenizing a
+-- whole file in one recompute overruns the 2.5 ms budget. Coloured and dimmed runs per line, dropped
+-- with the theme.
+local highlighted, dimmed, highlighted_for = {}, {}, nil
 
 local code = computed({ version, theme.state }, function(_, t)
     if t ~= highlighted_for then highlighted, dimmed, highlighted_for = {}, {}, t end
@@ -133,7 +128,7 @@ local code = computed({ version, theme.state }, function(_, t)
         local colored = cache[line]
         if not colored then
             colored = {}
-            for _, run in ipairs(tokenize(line)) do
+            for _, run in ipairs(syntax.highlight(line)) do
                 local color = t[syntax.roles[run.kind]]
                 colored[#colored + 1] = { text = run.text, color = dim and color .. "b3" or color }
             end
@@ -469,10 +464,6 @@ local function set_text(text)
     bump()
 end
 
-local function pause_after(op)
-    return edits.pause(op, math.random(0, 26))
-end
-
 local function play(ops, done)
     local k = 0
     local step
@@ -483,7 +474,7 @@ local function play(ops, done)
         if op.kind == "paste_block" then flash:set({ line = op.line, count = #op.lines, serial = progress }) end
         reveal(caret.line)
         bump()
-        timer(pause_after(op), step)
+        timer(edits.pause(op, math.random(0, 26)), step)
     end
     step = function()
         k = k + 1
@@ -553,7 +544,7 @@ end
 
 -- Tokenizes every line the take shows, 40 a callback.
 local function warm(done)
-    local shown, pending = { texts[takes.starter] }, {}
+    local shown, pending = { takes.prune(texts[takes.template], {}) }, {}
     for _, plan in pairs(plans) do
         shown[#shown + 1] = plan.after
     end
@@ -564,7 +555,7 @@ local function warm(done)
     local function at(k)
         if k > #pending then return done() end
         for i = k, math.min(k + 39, #pending) do
-            tokenize(pending[i])
+            syntax.highlight(pending[i])
         end
         timer(1, function() at(k + 40) end)
     end
@@ -739,29 +730,19 @@ local function type_dots(name, count)
     end
 end
 
-local TRACKS = {
-    {
-        title = "Night Signals",
-        artist = "Low Orbit",
-        album = "Chevrons",
-        art = "night-signals.svg",
-        length = 214,
-    },
-    { title = "Warm Reload", artist = "Save State", album = "Hot Path", art = "warm-reload.svg", length = 187 },
-}
+local TRACK = { title = "Night Signals", artist = "Low Orbit", album = "Chevrons", length = 214 }
 
-local function player(k, at, play_state)
-    local track = TRACKS[k]
+local function player(at, play_state)
     return {
         players = {
             {
                 id = "spotify",
                 identity = "Spotify",
-                title = track.title,
-                artist = track.artist,
-                album = track.album,
-                album_art_path = DEMO_DIR .. "/covers/" .. track.art,
-                length = track.length * 1000000,
+                title = TRACK.title,
+                artist = TRACK.artist,
+                album = TRACK.album,
+                album_art_path = DEMO_DIR .. "/covers/night-signals.svg",
+                length = TRACK.length * 1000000,
                 position = at * 1000000,
                 play_state = play_state,
             },
@@ -1189,12 +1170,10 @@ local function replay_mocks(next)
     for name in pairs(last_fed) do
         names[#names + 1] = name
     end
-    local function at(k)
-        if names[k] then return feed(names[k], last_fed[names[k]])(function() at(k + 1) end) end
+    session.each(names, function(name, done) feed(name, last_fed[name])(done) end, function()
         if not picked then return next() end
         demo({ "call", "wallpaper", picked }, function() next() end)
-    end
-    at(1)
+    end)
 end
 
 -- `kill -9` on the demo shell's renderer, captioned with the real pid, then with the real time the
@@ -1356,12 +1335,8 @@ local function tour(next)
         mantle.workspaces:focus(stage_ws[1])
         timer(500, function()
             close_tour()
-            local why = exposed()
-            if why then
-                log.error("ending the take:", why)
-                return finish()
-            end
-            next()
+            guard()
+            if not finished then next() end
         end)
     end)
 end
@@ -1518,18 +1493,17 @@ end
 local function start_shell(text, played, settle, next)
     file_shown:set("shell.lua")
     set_text(text)
-    local function at(k)
-        local name = takes.modules[k]
-        if name then
-            return session.write(DEMO_DIR .. "/" .. name, takes.prune(texts[name], played), function() at(k + 1) end)
-        end
+    local function write_modules(name, written)
+        session.write(DEMO_DIR .. "/" .. name, takes.prune(texts[name], played), written)
+    end
+    local function start()
         session.write(DEMO_DIR .. "/shell.lua", text, function()
             session.demo_shell:start("mantle", { "-c", DEMO_DIR })
             timer(settle, next)
         end)
     end
     -- The last take's saved switches would start this one with them on.
-    session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function() at(1) end)
+    session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function() session.each(takes.modules, write_modules, start) end)
 end
 
 -- The cold open's shell: the last stage with every module block in, beside fresh frags, theme,
@@ -1544,7 +1518,7 @@ local function stage_final(next)
     session.run("mkdir", { "-p", DEMO_DIR .. "/wallpapers/thumbs" }, function()
         session.run("cp", { "-r", COVERS, DEMO_DIR .. "/" }, function()
             session.run("cp", sources, function()
-                render_wallpapers(function() start_shell(texts[takes.stages[#takes.stages]], nil, 2500, next) end)
+                render_wallpapers(function() start_shell(takes.prune(texts[takes.template]), nil, 2500, next) end)
             end)
         end)
     end)
@@ -1584,7 +1558,7 @@ local function restart_starter(next)
         last_fed, picked = {}, nil
         windows.count, windows.focused, windows.page = 0, "0xa1", ""
         reset_scene()
-        start_shell(texts[takes.starter], {}, 2000, function() hide_card(next) end)
+        start_shell(takes.prune(texts[takes.template], {}), {}, 2000, function() hide_card(next) end)
     end)
 end
 
@@ -1626,16 +1600,11 @@ local function clear_keys(next)
     next()
 end
 
-
 -- Runs `steps` in order as one step.
 local function chain(...)
     local steps = { ... }
     return function(next)
-        local function at(k)
-            if k > #steps then return next() end
-            steps[k](function() at(k + 1) end)
-        end
-        at(1)
+        session.each(steps, function(step, done) step(done) end, next)
     end
 end
 
@@ -1674,7 +1643,6 @@ local SARAH = {
     placeholder = "Reply to Sarah",
     read = "Mark as read",
 }
-local NO_NOTIFICATIONS = { dnd = false, feed = {} }
 
 local script = {
     setup,
@@ -1690,7 +1658,7 @@ local script = {
     toggle("picker_open"),
     notify(SARAH),
     wait(1600),
-    feed("mock_notifications", NO_NOTIFICATIONS),
+    feed("mock_notifications", { dnd = false, feed = {} }),
     overview(1000),
     show_card("title"),
     restart_starter,
@@ -1778,15 +1746,15 @@ local script = {
     edit("09-media"),
     edit("09-motion"),
     feed("mock_tray", TRAY),
-    feed("mock_media", player(1, 61, "playing")),
+    feed("mock_media", player(61, "playing")),
     full_stage,
     toggle("media_open"),
     wait(400),
     point("media:play", "media"),
-    feed("mock_media", player(1, 62, "paused")),
+    feed("mock_media", player(62, "paused")),
     wait(900),
     point("media:play", "media"),
-    feed("mock_media", player(1, 62, "playing")),
+    feed("mock_media", player(62, "playing")),
     wait(700),
     hide_pointer,
     toggle("media_open"),
@@ -1945,25 +1913,15 @@ local function watchdog(seen)
     end)
 end
 
--- Stage files by name, then modules by file name.
-local SOURCES = {}
-for _, name in ipairs(takes.stages) do
-    SOURCES[#SOURCES + 1] = { name, name .. ".lua" }
-end
-for _, file in ipairs(takes.modules) do
-    SOURCES[#SOURCES + 1] = { file, file }
-end
-
 -- One at a time: each output line is a frame, and all files at once overflow the Supervisor's
 -- 1024-frame queue, which then drops this Renderer as wedged.
-local function load_stages(done, k)
-    k = k or 1
-    local source = SOURCES[k]
-    if not source then return done() end
-    session.run("cat", { STAGES .. source[2] }, function(code, out)
-        if code == 0 then texts[source[1]] = table.concat(out, "\n") .. "\n" end
-        load_stages(done, k + 1)
-    end)
+local function load_sources(done)
+    session.each(takes.sources, function(name, next_source)
+        session.run("cat", { STAGES .. name }, function(code, out)
+            if code == 0 then texts[name] = table.concat(out, "\n") .. "\n" end
+            next_source()
+        end)
+    end, done)
 end
 
 -- A reload restarts the take from the top, so it first clears what the last one left running.
@@ -1980,10 +1938,10 @@ timer(1, function()
     session.demo_shell:stop()
     session.wait_for(function() return stopped(session.recorder)() and stopped(session.demo_shell)() end, 8000,
         function()
-            load_stages(function()
-                for _, source in ipairs(SOURCES) do
-                    if not texts[source[1]] then
-                        log.error("could not read stage", source[2])
+            load_sources(function()
+                for _, name in ipairs(takes.sources) do
+                    if not texts[name] then
+                        log.error("could not read stage", name)
                         return finish()
                     end
                 end

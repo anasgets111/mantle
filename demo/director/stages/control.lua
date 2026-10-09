@@ -1,6 +1,4 @@
--- Quick settings. Demo: the director feeds `mock_network`, `mock_bluetooth` and `mock_brightness` in
--- the shapes of `mantle.network`, `mantle.bluetooth` and `mantle.brightness`, so the take touches no
--- radio of yours. The switches are real: a `persistent_table` keeps them on disk across restarts.
+-- Quick settings; the director feeds `mock_network`, `mock_bluetooth`, `mock_brightness` (no real radio).
 local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")

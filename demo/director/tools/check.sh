@@ -10,7 +10,7 @@ MAX_COLS=108
 
 columns() {
     awk -v max="$MAX_COLS" 'length($0) > max { print FILENAME ":" FNR ": " length($0) " columns" }' \
-        demo/director/stages/*.lua
+        demo/director/stages/*
 }
 
 lua=$(command -v lua5.4 || command -v lua) || { echo "demo-check needs lua or lua5.4" >&2; exit 2; }
@@ -25,6 +25,10 @@ fail=0
 
 "$lua" demo/director/tools/test.lua || fail=$((fail + 1))
 "$lua" demo/director/tools/checkpoints.lua "$out" || exit 2
+# The template is not Lua, so each pruned snapshot must parse and be formatted. `typo` is meant to fail
+# the engine, not the parser.
+find "$out" -name '*.lua' -print0 | xargs -0 -n1 luac -p || fail=$((fail + 1))
+python3 tools/luafmt.py --check "$out" || fail=$((fail + 1))
 for dir in "$out"/*/; do
     name=$(basename "$dir")
     for screen in 1920x1080 1920x1200 3440x1440; do
@@ -48,8 +52,9 @@ echo "check: $fail failure(s) so far"
 
 "$lua" demo/director/tools/layout_fit.lua || fail=$((fail + 1))
 "$lua" demo/director/tools/timing.lua || fail=$((fail + 1))
-columns >&2
-long=$(columns | wc -l)
+long_lines=$(columns)
+[ -n "$long_lines" ] && echo "$long_lines" >&2
+long=$(printf "%s" "$long_lines" | grep -c .)
 echo "lines over $MAX_COLS columns: $long"
 [ "$long" -eq 0 ] || fail=$((fail + 1))
 exit $((fail > 0))

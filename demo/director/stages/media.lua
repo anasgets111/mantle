@@ -1,5 +1,4 @@
--- Demo: the director feeds `mock_media` in `mantle.mpris`' shape with `mantle set`, so the take plays
--- nothing of yours. A real shell reads `mantle.mpris` and calls `mantle.mpris:next(id)` and friends.
+-- Demo: fed `mock_media` in `mantle.mpris`' shape, so the take plays nothing of yours.
 local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")

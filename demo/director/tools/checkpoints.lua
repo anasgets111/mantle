@@ -12,25 +12,13 @@ end
 local function sh(cmd)
     assert(os.execute(cmd), cmd)
 end
-local function read(path)
-    local f = assert(io.open(path, "rb"))
-    local text = f:read("a")
-    f:close()
-    return text
-end
 local function write(path, text)
     local f = assert(io.open(path, "wb"))
     f:write(text)
     f:close()
 end
 
-local texts = {}
-for _, name in ipairs(takes.stages) do
-    texts[name] = read(dir .. "stages/" .. name .. ".lua")
-end
-for _, file in ipairs(takes.modules) do
-    texts[file] = read(dir .. "stages/" .. file)
-end
+local texts = takes.load(dir)
 
 -- Rendered once and copied; the check lays out at its own size, so 300 px is enough.
 local assets = out .. "/_assets"
@@ -59,7 +47,7 @@ local function checkpoint(name, shell, played)
     write(to .. "/shell.lua", shell)
 end
 
-local shell, count = texts[takes.starter], 1
+local shell, count = takes.prune(texts[takes.template], {}), 1
 checkpoint(takes.starter, shell, {})
 for _, step in ipairs(takes.timeline(texts)) do
     if step.file == "shell.lua" then shell = step.after end

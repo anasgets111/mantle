@@ -4,24 +4,73 @@ fonts {
     "Noto Sans Arabic",
 }
 
+--@ 07-wallpaper
+--@ 03-workspaces
+-- Catppuccin Mocha for now; `fade` appends an alpha.
+local theme = {
+    crust = "#11111b",
+    base = "#1e1e2e",
+    surface = "#313244",
+    muted = "#6c7086",
+    text = "#cdd6f4",
+    accent = "#89b4fa",
+}
+function theme.fade(role, alpha) return theme[role] .. alpha end
+
+--@ else
+
+--@ end
+--@ 03-workspaces
 require("targets")
+--@ end
+--@ 07-wallpaper
 local theme = require("theme")
 local wallpaper = require("wallpaper")
+--@ end
+--@ 08-windows
 local taskbar = require("taskbar")
 local overview = require("overview")
+--@ end
+--@ 09-media
 local media = require("media")
 local tray = require("tray")
+--@ end
+--@ 10-control
 local control = require("control")
 local osd = require("osd")
+--@ end
+--@ 11-notifications
 local notifications = require("notifications")
+--@ end
+--@ 12-indicators
 local privacy = require("privacy")
 local idle = require("idle")
+--@ end
+--@ 13-updates
 local updates = require("updates")
 local polkit = require("polkit")
+--@ end
+--@ 14-sysinfo
 local sysinfo = require("sysinfo")
 local banner = require("banner")
+--@ end
+--@ 15-lock
 local lock = require("lock")
+--@ end
+--@ 03-workspaces
 
+--@ end
+--@ 16-agent
+-- Focus mode: dims the desktop. An agent finds `focus` with `mantle call` and flips it.
+local focus_on = state("focus_on", false)
+action("focus", function()
+    focus_on:set(not focus_on:get())
+    log.info("focus", focus_on:get() and "on" or "off")
+    return focus_on:get()
+end)
+
+--@ end
+--@ 03-workspaces
 local workspaces = list {
     direction = "horizontal",
     spacing = 6,
@@ -64,6 +113,8 @@ local workspaces = list {
     end,
 }
 
+--@ end
+--@ 04-launcher
 local open = state("launcher_open", false)
 local query = state("launcher_query", "")
 
@@ -104,9 +155,16 @@ local launcher = panel {
     visible = open,
     keyboard_interactivity = "on_demand",
     width = 560,
+    --@ end
+    --@ 05-restyle
     background = theme.fade("surface", "70"),
     radius = 24,
     behind_blur = true,
+    --@ 04-launcher
+    background = theme.fade("base", "f2"),
+    radius = 16,
+    --@ end
+    --@ 04-launcher
     child = column {
         width = "fill",
         padding = 10,
@@ -149,6 +207,8 @@ local launcher = panel {
     },
 }
 
+--@ end
+--@ 06-shader
 -- Whole over the bottom third, clear 60% up: the frost fades out.
 local FADE = {
     gradient = "linear",
@@ -156,7 +216,9 @@ local FADE = {
     stops = { { 0, "#ffffffff" }, { 0.3, "#ffffffff" }, { 0.6, "#ffffff00" } },
 }
 
+--@ end
 return {
+    --@ 06-shader
     panel {
         id = "aurora",
         layer = "background",
@@ -168,11 +230,29 @@ return {
             width = "fill",
             height = "fill",
             children = {
+                --@ end
+                --@ 07-wallpaper
                 wallpaper.image,
+                --@ 06-shader
+                -- The frost blurs only this surface, so the art it frosts is drawn here too.
+                image {
+                    source = mantle.config_dir .. "/wallpapers/mantle.png",
+                    width = "fill",
+                    height = "fill",
+                    fit = "cover",
+                },
+                --@ end
+                --@ 06-shader
                 shader {
                     width = "fill",
                     height = "fill",
+                    --@ end
+                    --@ 07-wallpaper
                     params = theme.tints,
+                    --@ 06-shader
+                    params = { tint_a = { 0.54, 0.71, 0.98 }, tint_b = { 0.80, 0.65, 0.97 } },
+                    --@ end
+                    --@ 06-shader
                     progress = 0,
                     -- Two passes, then still: a desktop need not redraw forever, nor restart.
                     animate = state("aurora_settled", false):map(function(settled)
@@ -191,50 +271,143 @@ return {
                         },
                     },
                 },
+                --@ end
+                --@ 16-agent
+                rect {
+                    width = "fill",
+                    height = "fill",
+                    background = theme.crust,
+                    opacity = focus_on:map(function(on) return on and 0.7 or 0 end),
+                    animate = { opacity = 400 },
+                },
+                --@ end
+                --@ 06-shader
             },
         },
     },
+    --@ end
+    --@ 07-wallpaper
     wallpaper.picker,
+    --@ end
+    --@ 08-windows
     overview,
+    --@ end
+    --@ 09-media
     media.card,
+    --@ end
+    --@ 10-control
     control.panel,
     osd,
+    --@ end
+    --@ 11-notifications
     notifications,
+    --@ end
+    --@ 13-updates
     updates.popover,
     polkit,
+    --@ end
+    --@ 14-sysinfo
     banner,
+    --@ end
+    --@ 15-lock
     lock,
+    --@ end
+    --@ 04-launcher
     launcher,
+    --@ end
     panel {
         id = "bar",
         layer = "top",
         anchor = { top = true, left = true, right = true },
         exclusive_zone = true,
         width = "fill",
+        --@ 01-size
         height = 56,
+        --@ else
+        height = 34,
+        --@ end
+        --@ 03-workspaces
         background = theme.fade("crust", "e6"),
+        --@ 02-color
+        background = "#11111be6",
+        --@ else
+        background = "#1e1e2e80",
+        --@ end
         child = row {
             width = "fill",
             height = "fill",
             padding = { left = 12, right = 12 },
+            --@ 03-workspaces
+            --@ else
+            align_h = "end",
+            --@ end
             children = {
+                --@ 03-workspaces
                 workspaces,
+                --@ end
+                --@ 08-windows
                 taskbar.bar,
+                --@ end
+                --@ 03-workspaces
                 rect { width = "fill" },
+                --@ end
+                --@ 09-media
                 media.chip,
                 tray,
+                --@ end
+                --@ 10-control
                 control.status,
+                --@ end
+                --@ 12-indicators
                 privacy,
                 idle.indicator,
+                --@ end
+                --@ 13-updates
                 updates.badge,
+                --@ end
+                --@ 14-sysinfo
                 sysinfo,
+                --@ end
+                --@ 16-agent
+                rect {
+                    geometry = require("targets")("focus"),
+                    visible = focus_on,
+                    margin = { right = 14 },
+                    height = 40,
+                    align_v = "center",
+                    padding = { left = 16, right = 16 },
+                    radius = 20,
+                    background = theme.accent,
+                    on_click = function() focus_on:set(false) end,
+                    children = {
+                        text {
+                            content = "Focus",
+                            align_v = "center",
+                            font_size = 18,
+                            foreground = theme.crust,
+                        },
+                    },
+                },
+                --@ end
                 text {
                     content = mantle.system:map(function(s)
+                        --@ 02-color
                         return os.date("%a %d %b   %H:%M", s and s.time)
+                        --@ else
+                        return os.date("%H:%M", s and s.time)
+                        --@ end
                     end),
                     align_v = "center",
+                    --@ 01-size
                     font_size = 22,
+                    --@ else
+                    font_size = 13,
+                    --@ end
+                    --@ 03-workspaces
                     foreground = theme.text,
+                    --@ else
+                    foreground = "#cdd6f4ff",
+                    --@ end
                 },
             },
         },

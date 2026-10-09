@@ -1,13 +1,14 @@
 -- The take's edits in order, and the files the demo shell loads beside them. Pure Lua: the
 -- director requires it, and tools load it with plain `lua`.
 --
--- An edit names a stage file in `stages/` and is saved as the demo's shell.lua, unless `file`
--- names a module: then it plays that module's `--@ <name>` blocks. `type` lists plain substrings;
--- changed lines holding one are typed and the rest pasted (see `edits.plan`). `derived` edits have
--- no stage file: `derive` builds them from the last stage.
+-- Every edit saves a snapshot of the demo's shell.lua, pruned from `stages/take.tpl` to the edits
+-- played so far, unless `file` names a module: then it plays that module's `--@ <name>` blocks.
+-- `type` lists plain substrings; changed lines holding one are typed and the rest pasted (see
+-- `edits.plan`). `derived` edits have no source: `derive` builds them from the last snapshot.
 
 local M = {
     starter = "00-starter",
+    template = "take.tpl",
     -- Written beside shell.lua, pruned to the edits played so far.
     modules = {
         "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "wallpaper.lua",
@@ -47,11 +48,20 @@ local M = {
     },
 }
 
--- The stage files: the starter, then every shell.lua edit with one.
-M.stages = { M.starter }
+M.sources = { M.template, table.unpack(M.modules) }
 for _, take in ipairs(M.edits) do
     take.file = take.file or "shell.lua"
-    if take.file == "shell.lua" and not take.derived then M.stages[#M.stages + 1] = take.name end
+end
+
+-- Every source file under `dir`/stages, keyed by name: the template, then the modules.
+function M.load(dir)
+    local texts = {}
+    for _, name in ipairs(M.sources) do
+        local file = assert(io.open(dir .. "stages/" .. name, "rb"))
+        texts[name] = file:read("a")
+        file:close()
+    end
+    return texts
 end
 
 -- A derived edit's text from the last stage's `good` one: `typo` misspells the clock's `align_v`,
@@ -63,17 +73,16 @@ function M.derive(name, good)
 end
 
 -- Every edit in order as { take, file, before, after, played }: the file's text either side of it
--- and the edits played so far. `texts` maps each stage name and module file to its source.
+-- and the edits played so far. `texts` maps each source file to its text, as `load` returns it.
 function M.timeline(texts)
-    local last = texts[M.stages[#M.stages]]
-    local from, played, out = { ["shell.lua"] = texts[M.starter] }, {}, {}
+    local last = M.prune(texts[M.template])
+    local from, played, out = {}, {}, {}
     for _, take in ipairs(M.edits) do
         local name, file = take.name, take.file
+        local source = texts[file == "shell.lua" and M.template or file]
         played[name] = true
-        from[file] = from[file] or M.prune(texts[file], {})
-        local after = take.derived and M.derive(name, last)
-            or file == "shell.lua" and texts[name]
-            or M.prune(texts[file], played)
+        from[file] = from[file] or M.prune(source, {})
+        local after = take.derived and M.derive(name, last) or M.prune(source, played)
         local so_far = {}
         for k in pairs(played) do
             so_far[k] = true
@@ -84,23 +93,26 @@ function M.timeline(texts)
     return out
 end
 
--- A module as it stands once the edits in `played` (name -> true; nil means all) have played.
--- `--@ <edit>` A `--@ else` B `--@ end` keeps A once <edit> played and B before; markers go.
+-- A source as it stands once the edits in `played` (name -> true; nil means all) have played.
+-- `--@ <edit>` A `--@ else` B `--@ end` keeps A once <edit> played and B before; markers go. Further
+-- `--@ <edit>` lines add branches: the first one played wins, so list the latest edit first.
 -- Blocks are flat: a nested, stray or unterminated marker raises.
 function M.prune(text, played)
-    local out, open, in_else, keep, n = {}, nil, false, true, 0
+    local out, open, in_else, keep, taken, n = {}, nil, false, true, false, 0
     for line in (text .. "\n"):gmatch("(.-)\n") do
         n = n + 1
         local tag = line:match("^%s*%-%-@%s+(%S+)%s*$")
-        if tag == "else" then
-            if not open or in_else then error("line " .. n .. ": stray --@ else") end
-            in_else, keep = true, not keep
-        elseif tag == "end" then
+        if tag == "end" then
             if not open then error("line " .. n .. ": stray --@ end") end
             open, in_else, keep = nil, false, true
+        elseif tag == "else" then
+            if not open or in_else then error("line " .. n .. ": stray --@ else") end
+            in_else, keep = true, not taken
         elseif tag then
-            if open then error("line " .. n .. ": --@ " .. tag .. " inside --@ " .. open) end
-            open, keep = tag, not played or played[tag] == true
+            if in_else then error("line " .. n .. ": --@ " .. tag .. " after --@ else") end
+            if not open then open, taken = tag, false end
+            keep = not taken and (not played or played[tag] == true)
+            taken = taken or keep
         elseif keep then
             out[#out + 1] = line
         end

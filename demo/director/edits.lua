@@ -1,14 +1,12 @@
 -- The keystrokes that turn one file into the next: a line diff, then per changed line the
--- backspaces and characters between their common prefix and suffix. Typing a whole hunk would
--- outlast the shot, so a hunk adding more than PASTE_LINES lines streams in line by line, and a
--- changed line needing more than RETYPE_KEYS keystrokes is replaced whole.
+-- backspaces and characters between their common prefix and suffix. A changed line needing more
+-- than RETYPE_KEYS keystrokes is replaced whole.
 --
 -- With `opts.type`, a list of plain substrings, the plan types only the changed lines holding one;
 -- each run of other added lines lands as one `paste_block` and each run of other removed lines goes
--- as one `remove_line` with a `count`, so the camera dwells on the lines that matter. Every op carries `focus`,
--- its hunk's lines in the new file.
+-- as one `remove_line` with a `count`, so the camera dwells on the lines that matter. Without it
+-- every changed line is typed. Every op carries `focus`, its hunk's lines in the new file.
 
-local PASTE_LINES = 3
 local RETYPE_KEYS = 16
 
 local function split(text)
@@ -104,29 +102,6 @@ local function change(ops, line, old, new)
     end
 end
 
-local function plan_hunk(ops, hunk)
-    local line = hunk.at
-    if #hunk.added > PASTE_LINES then
-        for _ = 1, #hunk.removed do
-            ops[#ops + 1] = { kind = "remove_line", line = line }
-        end
-        for k, text in ipairs(hunk.added) do
-            ops[#ops + 1] = { kind = "paste_line", line = line + k - 1, text = text }
-        end
-        return
-    end
-    local paired = math.min(#hunk.removed, #hunk.added)
-    for k = 1, paired do
-        change(ops, line + k - 1, hunk.removed[k], hunk.added[k])
-    end
-    for _ = paired + 1, #hunk.removed do
-        ops[#ops + 1] = { kind = "remove_line", line = line + paired }
-    end
-    for k = paired + 1, #hunk.added do
-        type_line(ops, line + k - 1, hunk.added[k])
-    end
-end
-
 -- A typed added line retypes the removed line at its index, if any. The other removed lines go
 -- first, bottom run up, so the kept ones close up in order; then the added lines fill in from the
 -- top, so each lands where it ends.
@@ -170,11 +145,7 @@ local function plan(old_text, new_text, opts)
     local ops = {}
     for _, hunk in ipairs(hunks(split(old_text), split(new_text))) do
         local first = #ops + 1
-        if opts and opts.type then
-            plan_typed(ops, hunk, opts.type)
-        else
-            plan_hunk(ops, hunk)
-        end
+        plan_typed(ops, hunk, opts and opts.type or { "" })
         local focus = { first = hunk.at, last = math.max(hunk.at, hunk.at + #hunk.added - 1) }
         for k = first, #ops do
             ops[k].focus = focus

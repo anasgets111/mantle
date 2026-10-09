@@ -1,6 +1,4 @@
--- Demo: a lock screen's look, fed `mock_lock` in `mantle.lock`'s shape and the typed length in
--- `lock_typed` with `mantle set`, so the take needs no password. A real one is a `lock` surface:
--- ext-session-lock holds the screen and PAM checks what its secure field hands `mantle.lock`.
+-- Demo: a lock screen fed `mock_lock` and `lock_typed`; a real one is a `lock` surface.
 local theme = require("theme")
 
 local lock = state("mock_lock", { active = false, attempts = 0, error = "", unlocking = false })

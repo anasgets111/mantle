@@ -1,6 +1,4 @@
--- Demo: the director feeds `mock_notifications` in `mantle.notifications`' shape and types the
--- reply with `mantle call reply`, so no real notification of yours reaches the take. A real shell
--- reads `mantle.notifications` and answers with `mantle.notifications:reply(id, text)`.
+-- Demo: fed `mock_notifications` in `mantle.notifications`' shape; replies typed via `mantle call reply`.
 local theme = require("theme")
 local layout = require("layout")
 local target = require("targets")

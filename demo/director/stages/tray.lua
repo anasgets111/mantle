@@ -1,5 +1,4 @@
--- Demo: the director feeds `mock_tray` in `mantle.tray`'s shape with `mantle set`, so no app of yours
--- shows in the take. A real shell reads `mantle.tray` and calls `mantle.tray:activate(id, x, y)`.
+-- Demo: fed `mock_tray` in `mantle.tray`'s shape, so no app of yours shows.
 local theme = require("theme")
 local tray = state("mock_tray", { items = {} })
 

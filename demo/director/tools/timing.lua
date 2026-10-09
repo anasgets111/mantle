@@ -6,13 +6,7 @@ package.path = dir .. "?.lua;" .. package.path
 local takes, edits = require("takes"), require("edits")
 local MAX_CHARS, MAX_SECONDS, JUMP_MS = 120, 5, 380
 
-local texts = {}
-for _, name in ipairs(takes.stages) do
-    texts[name] = assert(io.open(dir .. "stages/" .. name .. ".lua")):read("a")
-end
-for _, file in ipairs(takes.modules) do
-    texts[file] = assert(io.open(dir .. "stages/" .. file)):read("a")
-end
+local texts = takes.load(dir)
 
 local over = 0
 print(("%-18s %6s %7s %7s %8s"):format("edit", "typed", "pasted", "removed", "seconds"))

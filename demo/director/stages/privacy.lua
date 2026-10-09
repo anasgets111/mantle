@@ -1,5 +1,4 @@
--- Demo: the director feeds `mock_privacy` in `mantle.privacy`'s shape with `mantle set`, so the
--- take opens no real camera or microphone. A real shell reads `mantle.privacy` itself.
+-- Demo: fed `mock_privacy` in `mantle.privacy`'s shape, so no real camera or microphone opens.
 local theme = require("theme")
 local target = require("targets")
 local privacy = state("mock_privacy", { camera_users = {}, microphone_users = {}, screencast_users = {} })

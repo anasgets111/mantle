@@ -107,6 +107,7 @@ end
 return {
     run = run,
     wait_for = wait_for,
+    each = each,
     stop_others = stop_others,
     restore_shells = restore_shells,
     write = write,

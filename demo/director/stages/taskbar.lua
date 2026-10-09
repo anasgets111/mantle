@@ -1,5 +1,4 @@
--- Demo: the director feeds `mock_windows` in `mantle.windows`' shape with `mantle set`, so none of
--- your window titles reach the take. A real shell reads `mantle.windows` itself.
+-- Demo: fed `mock_windows` in `mantle.windows`' shape, so none of your window titles show.
 local theme = require("theme")
 local target = require("targets")
 local windows = state("mock_windows", { source = "hyprland", windows = {} })

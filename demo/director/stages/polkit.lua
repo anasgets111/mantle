@@ -1,6 +1,4 @@
--- Demo: the director feeds `mock_polkit` in `mantle.polkit`'s shape and the typed length in
--- `polkit_typed` with `mantle set`, so no password of yours is typed. A real agent draws a secure
--- field that hands its text to `mantle.polkit:authenticate`.
+-- Demo: fed `mock_polkit` and `polkit_typed`, so no password of yours is typed.
 local theme = require("theme")
 local layout = require("layout")
 
