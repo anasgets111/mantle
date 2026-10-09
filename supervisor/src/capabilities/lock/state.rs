@@ -60,6 +60,8 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
         LockEvent::Reported(shared::LockOutcome::Refused(reason)) => {
             state.requested = false;
             state.authenticating = false;
+            // A refusal after Success (renderer never granted the lock) leaves nothing to exit.
+            state.unlocking = false;
             state.error = reason;
         }
         // `Finished` after `Locked` is teardown, not failure; Renderer sets `mantle.rescue` after
@@ -80,7 +82,7 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             state.authenticating = false;
             // The screen that was animating out is gone with its Renderer. Left true this survives
             // into the replacement's first push, and a config that reads it draws a lock screen
-            // permanently mid-exit; `LockRequested` and `Refused` do not clear it either, so
+            // permanently mid-exit; `LockRequested` does not clear it either, so
             // nothing short of a *successful* reacquisition would.
             state.unlocking = false;
         }
@@ -117,9 +119,10 @@ pub fn compositor_lock_change(outcome: &shared::LockOutcome) -> SessionLock {
 
 /// Whether `secure_submit(lock, authenticate)` may start PAM. Without `active`, any config
 /// textfield gets an unbounded password oracle; without `!authenticating`, held Enter spawns one
-/// re-exec'd worker per keypress, each retaining a plaintext secret and paying `pam_unix`'s delay.
+/// re-exec'd worker per keypress, each retaining a plaintext secret and paying `pam_unix`'s delay; without `!unlocking`, a submit
+/// mid-exit restarts PAM.
 pub fn may_authenticate(state: &LockState) -> bool {
-    state.active && !state.authenticating
+    state.active && !state.authenticating && !state.unlocking
 }
 
 /// Whether `acquisition` from `LockController::try_begin_authentication` still names the lock on
@@ -271,6 +274,10 @@ mod tests {
             !may_authenticate(&LockState { active: true, authenticating: true, ..LockState::default() }),
             "a held-down Enter key must not spawn one PAM worker per keypress"
         );
+        assert!(
+            !may_authenticate(&LockState { active: true, unlocking: true, ..LockState::default() }),
+            "a submit during the out-animation after Success must not start PAM again"
+        );
     }
 
     #[test]
@@ -392,6 +399,13 @@ mod tests {
         apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::Success));
         apply(&mut state, LockEvent::Reported(shared::LockOutcome::Locked));
         assert!(!state.unlocking, "a fresh lock is not a lock being left");
+
+        // A refusal after Success ends the exit window, or authentication stays refused forever.
+        let mut state = locked_with_one_failure();
+        apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::Success));
+        assert!(!may_authenticate(&state));
+        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Refused("never granted".to_string())));
+        assert!(may_authenticate(&state));
 
         // A wrong password does not open it.
         let mut state = locked_with_one_failure();

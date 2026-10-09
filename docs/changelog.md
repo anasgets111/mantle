@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: the lock screen ignores a second password submitted during the unlock animation, instead of re-running PAM and flashing an error.
+
 ## 0.5.2 - 2026-10-09
 
 - Fixed: `mantle call`, `set` and `input` fail at once when no shell is connected, instead of waiting 5 s.
