@@ -271,7 +271,12 @@ pub(crate) fn sampler(period: Option<Duration>) -> Option<tokio::time::Interval>
 /// out, not reported as zero.
 pub(crate) fn log_sample(label: &str, generation_id: u32, child: &tokio::process::Child, snapshots: Vec<SnapshotStat>) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
-        Ok(sample) => info!("{}", report_line(label, &sample)),
+        // A count that climbs between samples is a task leak.
+        Ok(sample) => info!(
+            "{}; tasks {}",
+            report_line(label, &sample),
+            tokio::runtime::Handle::current().metrics().num_alive_tasks()
+        ),
         Err(err) => debug!("{label} sample failed: {err}"),
     }
 }
