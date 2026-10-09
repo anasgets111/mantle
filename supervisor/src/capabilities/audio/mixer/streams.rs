@@ -143,11 +143,14 @@ pub(super) fn apply_info_event(
         return false;
     }
     let parsed = props.and_then(|props| parse_stream_props(proc_root, node_id, props, apps.get(&node_id)));
-    let previous = match parsed.clone() {
-        Some(app) => apps.insert(node_id, app),
-        None => apps.remove(&node_id),
-    };
-    previous != parsed
+    match parsed {
+        Some(app) if apps.get(&node_id) == Some(&app) => false,
+        Some(app) => {
+            apps.insert(node_id, app);
+            true
+        }
+        None => apps.remove(&node_id).is_some(),
+    }
 }
 
 /// `Video/Source` data for `mantle.privacy` name enrichment (ADR-0034): `pid` matches a
@@ -181,11 +184,14 @@ pub(super) fn apply_video_info_event(
         return false;
     }
     let parsed = props.and_then(|props| parse_video_source_props(node_id, props));
-    let previous = match parsed.clone() {
-        Some(source) => sources.insert(node_id, source),
-        None => sources.remove(&node_id),
-    };
-    previous != parsed
+    match parsed {
+        Some(source) if sources.get(&node_id) == Some(&source) => false,
+        Some(source) => {
+            sources.insert(node_id, source);
+            true
+        }
+        None => sources.remove(&node_id).is_some(),
+    }
 }
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
@@ -233,18 +239,27 @@ pub(super) fn apply_capture_info_event(
     props: Option<&impl PropsLookup>,
     running: bool,
 ) -> bool {
-    let previous = apps.get(&node_id).cloned();
     if has_props_change {
-        match props.and_then(|props| parse_capture_props(node_id, kind, props)) {
-            Some(app) => apps.insert(node_id, app),
-            None => apps.remove(&node_id),
+        return match props.and_then(|props| parse_capture_props(node_id, kind, props)) {
+            Some(mut app) => {
+                app.running = running;
+                if apps.get(&node_id) == Some(&app) {
+                    return false;
+                }
+                apps.insert(node_id, app);
+                true
+            }
+            None => apps.remove(&node_id).is_some(),
         };
     }
     // An unknown node stays unknown: a state event must not resurrect a rejected monitor capture.
-    if let Some(app) = apps.get_mut(&node_id) {
-        app.running = running;
+    match apps.get_mut(&node_id) {
+        Some(app) if app.running != running => {
+            app.running = running;
+            true
+        }
+        _ => false,
     }
-    apps.get(&node_id) != previous.as_ref()
 }
 
 /// Running entries only. Idle streams stay tracked so a later `Running` needs no re-parse.
@@ -620,6 +635,7 @@ mod tests {
             apps.values().cloned().collect::<Vec<_>>(),
             vec![parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None).unwrap()]
         );
+        assert!(!apply_info_event(proc.path(), &mut apps, 1, true, Some(&zen_browser_stream_props())));
     }
 
     #[test]

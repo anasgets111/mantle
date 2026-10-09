@@ -60,7 +60,7 @@ pub(crate) fn push_snapshot(
             let snapshot = send_owned(
                 registry,
                 generation_id,
-                shared::StateSnapshot { capability: capability.to_string(), revision, payload },
+                shared::StateSnapshot { capability: capability.as_str().to_owned(), revision, payload },
             );
             last_snapshots.insert(capability, Published { snapshot, deduped });
         }
