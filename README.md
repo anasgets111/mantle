@@ -15,8 +15,8 @@ Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-cloc
 [mantle-material](https://github.com/anasgets111/mantle-material) (Material 3 Expressive) are
 [component libraries](https://anasgets111.github.io/mantle/libraries.html) for apps and shells.
 
-The demo builds a shell from the starter, one save at a time. Mantle itself
-[types and records it](demo/director).
+The demo opens on a finished shell, then rebuilds it from the starter one save at a time. Mantle
+itself [types and records it](demo/director).
 
 https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5
 

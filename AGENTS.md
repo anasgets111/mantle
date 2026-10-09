@@ -15,7 +15,7 @@ cited only as the why behind behavior the code confirms.
 | `renderer/` | `mantle-renderer`: Wayland, Lua VM, layout, paint, text |
 | `shared/` | Wire types, capability payloads and actions, paths, log macros |
 | `lua-meta/` | LuaLS stubs for config authors (generated) |
-| `demo/director/` | Demo shell: `stages/` holds the files it types, `mockups.lua` the prop windows, `layout.lua` the stage geometry shared with the shell it drives |
+| `demo/director/` | Demo shell: `shell.lua` the storyboard, `takes.lua` the edits, `stages/take.tpl` the marked shell it types, `stages/*.lua` its modules, `layout.lua` the geometry both shells share. Guide: `docs/development/demo.md` |
 | `share/starter/` | Minimal `shell.lua`, embedded in the engine; used by `just run` and `just types` |
 | `packaging/` | Package definitions, PAM stack, pacman polkit rule |
 | `tools/` | Lua formatter, mdBook preprocessor, `heavy-shell/` benchmark config |

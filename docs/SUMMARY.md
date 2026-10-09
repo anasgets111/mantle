@@ -98,3 +98,4 @@
 - [Changelog](changelog.md)
 - [Roadmap](roadmap.md)
 - [Documenting](development/documenting.md)
+- [The demo](development/demo.md)
