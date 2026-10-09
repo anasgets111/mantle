@@ -1,14 +1,16 @@
 //! Plain-field text editing with no window state: the undo history, one key edit on a buffer, grapheme
 //! and word boundaries, `max_length` fitting and input-method offsets (ADR-0092, ADR-0236).
 
+use std::collections::VecDeque;
+
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::*;
 
 #[derive(Debug, Clone, Default)]
 pub(in crate::wayland::input) struct EditHistory {
-    pub(super) undo: Vec<(String, (usize, usize))>,
-    pub(super) redo: Vec<(String, (usize, usize))>,
+    pub(super) undo: VecDeque<(String, (usize, usize))>,
+    pub(super) redo: VecDeque<(String, (usize, usize))>,
     typing_end: Option<usize>,
 }
 
@@ -26,14 +28,10 @@ impl EditHistory {
     }
 
     pub(super) fn trim(&mut self) {
-        while self.undo.len() + self.redo.len() > 100
-            || self.undo.iter().chain(&self.redo).map(|(text, _)| text.len()).sum::<usize>() > Self::LIMIT
-        {
-            if !self.undo.is_empty() {
-                self.undo.remove(0);
-            } else {
-                self.redo.remove(0);
-            }
+        let mut bytes: usize = self.undo.iter().chain(&self.redo).map(|(text, _)| text.len()).sum();
+        while self.undo.len() + self.redo.len() > 100 || bytes > Self::LIMIT {
+            let Some((text, _)) = self.undo.pop_front().or_else(|| self.redo.pop_front()) else { break };
+            bytes -= text.len();
         }
     }
 
@@ -50,20 +48,20 @@ impl EditHistory {
             self.typing_end = None;
             return;
         }
-        self.undo.push(snapshot);
+        self.undo.push_back(snapshot);
         self.trim();
     }
 
     pub(super) fn restore(&mut self, text: &mut String, selection: &mut (usize, usize), redo: bool) -> bool {
         self.typing_end = None;
         let (from, to) = if redo { (&mut self.redo, &mut self.undo) } else { (&mut self.undo, &mut self.redo) };
-        let Some((previous, previous_selection)) = from.pop() else { return false };
+        let Some((previous, previous_selection)) = from.pop_back() else { return false };
         let current = (std::mem::replace(text, previous), std::mem::replace(selection, previous_selection));
         if current.0.len() > Self::LIMIT {
             self.clear();
             return true;
         }
-        to.push(current);
+        to.push_back(current);
         self.trim();
         true
     }
@@ -425,6 +423,19 @@ mod tests {
     }
 
     #[test]
+    fn trim_keeps_100_entries_and_drops_the_oldest_undo_first() {
+        let entry = |tag: &str, n: usize| (format!("{tag}{n}"), (0, 0));
+        let mut history = EditHistory {
+            undo: (0..60).map(|n| entry("u", n)).collect(),
+            redo: (0..60).map(|n| entry("r", n)).collect(),
+            ..EditHistory::default()
+        };
+        history.trim();
+        assert_eq!((history.undo.len(), history.redo.len()), (40, 60));
+        assert_eq!(history.undo[0].0, "u20", "the oldest undo entries went first");
+    }
+
+    #[test]
     fn undo_and_redo_share_the_byte_ceiling() {
         let mut history = EditHistory::default();
         let mut text = "c".repeat(650_000);
@@ -445,7 +456,7 @@ mod tests {
         assert!(bytes <= EditHistory::LIMIT);
 
         let mut history = EditHistory {
-            redo: vec![("a".repeat(450_000), selection), ("b".repeat(450_000), selection)],
+            redo: [("a".repeat(450_000), selection), ("b".repeat(450_000), selection)].into(),
             ..EditHistory::default()
         };
         let mut text = "c".repeat(650_000);
