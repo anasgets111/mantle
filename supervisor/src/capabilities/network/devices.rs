@@ -1,7 +1,9 @@
 //! NetworkManager devices for `mantle.network`: resolving the Wi-Fi and wired devices, and the
 //! forwarder tasks that turn their signals, and the manager's, into [`NetworkSignal`]s.
 
-use futures_util::{Stream, StreamExt, stream, stream_select};
+use std::time::Duration;
+
+use futures_util::{FutureExt, Stream, StreamExt, stream, stream_select};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::OwnedObjectPath;
 
@@ -194,9 +196,35 @@ fn strength_forwarder(
                 return;
             }
         };
-        let mut strength_changed = access_point.receive_strength_changed().await;
-        while strength_changed.next().await.is_some() && events.send(NetworkSignal::Changed).is_ok() {}
+        forward_throttled(access_point.receive_strength_changed().await, &events, STRENGTH_INTERVAL).await;
     })
+}
+
+/// Longest a burst of signal-strength changes holds off a rebuild; each one costs per-device D-Bus reads.
+const STRENGTH_INTERVAL: Duration = Duration::from_secs(3);
+
+/// Sends [`NetworkSignal::Changed`] for the first item, then at most once per `interval`, with a
+/// trailing send when items arrived meanwhile, so the last value always lands.
+async fn forward_throttled<T>(
+    mut items: impl Stream<Item = T> + Unpin,
+    events: &UnboundedSender<NetworkSignal>,
+    interval: Duration,
+) {
+    while items.next().await.is_some() {
+        loop {
+            if events.send(NetworkSignal::Changed).is_err() {
+                return;
+            }
+            tokio::time::sleep(interval).await;
+            let mut more = false;
+            while items.next().now_or_never().flatten().is_some() {
+                more = true;
+            }
+            if !more {
+                break;
+            }
+        }
+    }
 }
 
 /// Forwards each device's `State` as [`NetworkSignal::Changed`]. Per-device tasks cover
@@ -278,5 +306,31 @@ impl NetworkController {
         for watcher in previous.watchers {
             watcher.abort();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_burst_of_strength_changes_rebuilds_twice_and_the_last_one_lands() {
+        let (items, rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
+        let (events, mut rebuilds) = tokio::sync::mpsc::unbounded_channel();
+        let stream = stream::unfold(rx, |mut rx| async { rx.recv().await.map(|item| (item, rx)) }).boxed();
+        let task = tokio::spawn(async move { forward_throttled(stream, &events, Duration::from_secs(3)).await });
+        items.send(0).unwrap();
+        tokio::time::sleep(Duration::from_millis(1)).await;
+        for strength in 1..50 {
+            items.send(strength).unwrap();
+        }
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        drop(items);
+        task.await.unwrap();
+        let mut count = 0;
+        while rebuilds.try_recv().is_ok() {
+            count += 1;
+        }
+        assert_eq!(count, 2, "one leading rebuild and one trailing rebuild for the whole burst");
     }
 }
