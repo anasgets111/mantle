@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.5.3 - 2026-10-09
+
 - Changed: an image file rewritten in place may take up to 0.5 s to show, because each path is checked for edits at most twice a second.
 - Fixed: the lock screen ignores a second password submitted during the unlock animation, instead of re-running PAM and flashing an error.
 
