@@ -83,7 +83,12 @@ pub(super) fn classify(props: &impl PropsLookup) -> Option<NodeKind> {
 /// `None` also covers a node PipeWire has not finished populating (see [`apply_info_event`]), a
 /// monitor capture, a peak meter (`stream.monitor`), and a notification sound, which pipewire-pulse
 /// maps the `event` role to.
-fn parse_stream_props(proc_root: &Path, node_id: u32, props: &impl PropsLookup) -> Option<AppStream> {
+fn parse_stream_props(
+    proc_root: &Path,
+    node_id: u32,
+    props: &impl PropsLookup,
+    known: Option<&AppStream>,
+) -> Option<AppStream> {
     let recording = match classify(props)? {
         NodeKind::Audio => false,
         NodeKind::Microphone => true,
@@ -102,7 +107,11 @@ fn parse_stream_props(proc_root: &Path, node_id: u32, props: &impl PropsLookup) 
         id: node_id,
         pid,
         name: prop(*keys::APP_NAME),
-        process_name: resolve_process_name(proc_root, pid),
+        // The node's earlier name stands until it is removed; its `comm` is not reread on every PROPS event.
+        process_name: known
+            .filter(|app| app.pid == pid)
+            .and_then(|app| app.process_name.clone())
+            .or_else(|| resolve_process_name(proc_root, pid)),
         binary: prop(*keys::APP_PROCESS_BINARY),
         icon: prop(*keys::APP_ICON_NAME).or_else(|| prop(*keys::MEDIA_ICON_NAME)),
         recording,
@@ -133,7 +142,7 @@ pub(super) fn apply_info_event(
     if !has_props_change {
         return false;
     }
-    let parsed = props.and_then(|props| parse_stream_props(proc_root, node_id, props));
+    let parsed = props.and_then(|props| parse_stream_props(proc_root, node_id, props, apps.get(&node_id)));
     let previous = match parsed.clone() {
         Some(app) => apps.insert(node_id, app),
         None => apps.remove(&node_id),
@@ -498,8 +507,8 @@ mod tests {
     #[test]
     fn parse_stream_props_matches_a_real_stream_output_audio_node() {
         let proc = tempfile::tempdir().unwrap();
-        let parsed =
-            parse_stream_props(proc.path(), 1, &zen_browser_stream_props()).expect("should parse as an audio stream");
+        let parsed = parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None)
+            .expect("should parse as an audio stream");
         assert_eq!(parsed.pid, 1538319);
         assert_eq!(parsed.name, Some("Zen".to_string()));
         assert_eq!(parsed.binary, Some("zen-bin".to_string()));
@@ -509,8 +518,8 @@ mod tests {
     #[test]
     fn parse_stream_props_marks_an_input_stream_as_recording() {
         let proc = tempfile::tempdir().unwrap();
-        let parsed =
-            parse_stream_props(proc.path(), 1, &capture_props("Stream/Input/Audio")).expect("a call's mic parses");
+        let parsed = parse_stream_props(proc.path(), 1, &capture_props("Stream/Input/Audio"), None)
+            .expect("a call's mic parses");
         assert!(parsed.recording);
     }
 
@@ -519,11 +528,11 @@ mod tests {
         let proc = tempfile::tempdir().unwrap();
         let mut meter = capture_props("Stream/Input/Audio");
         meter.insert("stream.monitor".to_string(), "true".to_string());
-        assert!(parse_stream_props(proc.path(), 1, &meter).is_none(), "a level meter is not a mixer row");
+        assert!(parse_stream_props(proc.path(), 1, &meter, None).is_none(), "a level meter is not a mixer row");
 
         let mut notification = zen_browser_stream_props();
         notification.insert("media.role".to_string(), "Notification".to_string());
-        assert!(parse_stream_props(proc.path(), 1, &notification).is_none());
+        assert!(parse_stream_props(proc.path(), 1, &notification, None).is_none());
     }
 
     #[test]
@@ -533,14 +542,14 @@ mod tests {
             ("media.class".to_string(), "Audio/Sink".to_string()),
             ("application.process.id".to_string(), "1234".to_string()),
         ]);
-        assert!(parse_stream_props(proc.path(), 1, &props).is_none());
+        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
     }
 
     #[test]
     fn parse_stream_props_rejects_a_stream_missing_the_pid() {
         let proc = tempfile::tempdir().unwrap();
         let props = HashMap::from([("media.class".to_string(), "Stream/Output/Audio".to_string())]);
-        assert!(parse_stream_props(proc.path(), 1, &props).is_none());
+        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
     }
 
     #[test]
@@ -550,7 +559,7 @@ mod tests {
             ("media.class".to_string(), "Stream/Output/Audio".to_string()),
             ("application.process.id".to_string(), "not-a-pid".to_string()),
         ]);
-        assert!(parse_stream_props(proc.path(), 1, &props).is_none());
+        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
     }
 
     #[test]
@@ -560,7 +569,7 @@ mod tests {
             ("media.class".to_string(), "Stream/Output/Audio".to_string()),
             ("application.process.id".to_string(), "1234".to_string()),
         ]);
-        let parsed = parse_stream_props(proc.path(), 1, &props).expect("pid alone is enough to parse");
+        let parsed = parse_stream_props(proc.path(), 1, &props, None).expect("pid alone is enough to parse");
         assert_eq!(parsed.name, None);
     }
 
@@ -577,7 +586,7 @@ mod tests {
             ("application.name".to_string(), "Test App".to_string()),
         ]);
 
-        let app = parse_stream_props(proc.path(), 42, &props).expect("should build an AppStream");
+        let app = parse_stream_props(proc.path(), 42, &props, None).expect("should build an AppStream");
         assert_eq!(app.id, 42);
         assert_eq!(app.pid, pid);
         assert_eq!(app.name, Some("Test App".to_string()));
@@ -609,7 +618,7 @@ mod tests {
         apply_info_event(proc.path(), &mut apps, 1, true, Some(&zen_browser_stream_props()));
         assert_eq!(
             apps.values().cloned().collect::<Vec<_>>(),
-            vec![parse_stream_props(proc.path(), 1, &zen_browser_stream_props()).unwrap()]
+            vec![parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None).unwrap()]
         );
     }
 
@@ -624,5 +633,19 @@ mod tests {
         apply_info_event(proc.path(), &mut apps, 1, true, Some(&non_stream_props));
 
         assert!(apps.is_empty(), "a PROPS-bearing event that no longer parses as a stream should remove it");
+    }
+
+    #[test]
+    fn a_second_props_event_reuses_the_tracked_process_name() {
+        let proc = tempfile::tempdir().unwrap();
+        let props = zen_browser_stream_props();
+        let pid = props["application.process.id"].clone();
+        std::fs::create_dir(proc.path().join(&pid)).unwrap();
+        std::fs::write(proc.path().join(&pid).join("comm"), "first\n").unwrap();
+        let mut apps = BTreeMap::new();
+        apply_info_event(proc.path(), &mut apps, 1, true, Some(&props));
+        std::fs::write(proc.path().join(&pid).join("comm"), "second\n").unwrap();
+        apply_info_event(proc.path(), &mut apps, 1, true, Some(&props));
+        assert_eq!(apps[&1].process_name.as_deref(), Some("first"));
     }
 }
