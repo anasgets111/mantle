@@ -8,6 +8,7 @@ local session = require("session")
 local mockups = require("mockups")
 local theme = require("theme")
 local layout = require("layout")
+local takes = require("takes")
 
 fonts {
     "CaskaydiaCove Nerd Font Propo",
@@ -43,25 +44,16 @@ end
 
 local DEMO_DIR = env("MANTLE_DEMO_DIR", env("XDG_RUNTIME_DIR", "/tmp") .. "/mantle-demo")
 local OUT = env("MANTLE_DEMO_OUT", env("HOME", "") .. "/Videos/mantle-demo.mp4")
--- A preview: start at this edit, with the code before it already saved, and record nothing.
+-- A preview records nothing: it plays every step before edit FROM at once behind the title card,
+-- stops at the edit after TO, and with SHOTS set saves a screenshot after each save and each beat.
 local FROM = env("MANTLE_DEMO_FROM", nil)
+local TO = env("MANTLE_DEMO_TO", nil)
+local SHOTS = env("MANTLE_DEMO_SHOTS", nil)
 local STAGES = mantle.config_dir .. "/stages/"
 local WORDMARK = mantle.config_dir .. "/../../docs/theme/m.png"
 local WALLPAPER = mantle.config_dir .. "/wallpaper.svg"
 local POINTER = mantle.config_dir .. "/pointer.svg"
 local COVERS = mantle.config_dir .. "/covers"
-local STAGE_NAMES = {
-    "00-starter", "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-search", "06-shader",
-    "07-wallpaper", "08-taskbar", "09-overview", "10-osd", "11-media", "12-control", "13-notifications",
-    "14-privacy", "15-idle", "16-updates", "17-lock", "18-sysinfo", "19-banner",
-}
--- Copied beside the demo's shell.lua at setup, for the stages that require or read them.
-local MODULES = {
-    "banner.lua", "osd.lua", "notifications.lua", "privacy.lua", "idle.lua", "wallpaper.lua",
-    "taskbar.lua", "overview.lua", "targets.lua", "media.lua", "tray.lua", "control.lua", "updates.lua",
-    "polkit.lua", "lock.lua", "sysinfo.lua",
-    "aurora.frag", "chevron.frag",
-}
 -- Rendered to PNG in the demo's `wallpapers/` at setup: `palette.quantize` reads no SVG. `mantle`
 -- is the logo art the take opens on, so the last pick comes back to it.
 local WALLPAPERS = {
@@ -75,7 +67,8 @@ local WALLPAPER_ASPECT = 3440 / 1440
 -- The buffer lives in these locals; `version` is the signal that says it changed.
 local lines = {}
 local caret = { line = 1, col = 1 }
-local current = ""
+-- Lines outside the playing hunk dim until the next caption.
+local focus
 local texts = {}
 -- Bumped by every script step and keystroke; the watchdog ends a take that stops moving.
 local progress, step_at, finished = 0, 0, false
@@ -91,7 +84,10 @@ local card = state("demo_card", "title")
 local card_shown = state("demo_card_shown", true)
 local char_box = geometry("demo_char_box")
 local meter = state("demo_meter", "")
-local meter_hot = state("demo_meter_hot", false)
+local file_shown = state("demo_file", "shell.lua")
+local pane_shown = state("demo_pane_shown", true)
+-- The last paste, for the flash over its lines.
+local flash = state("demo_flash", false)
 -- The picked wallpaper, for the cards and the browser mockup; the logo art until the first pick.
 local backdrop = state("demo_backdrop", WALLPAPER)
 
@@ -116,21 +112,32 @@ mantle.screens:on_change(function() reveal(caret.line) end)
 
 -- Code pane ---------------------------------------------------------------------------------
 
--- Highlighted runs per line text, so a keystroke re-highlights one line; a new theme drops them.
-local highlighted, highlighted_for = {}, nil
+-- Syntax tokens per line text, warmed in chunks behind the title card: tokenizing a whole file in
+-- one recompute overruns the 2.5 ms budget. Coloured and dimmed runs per line, dropped with the theme.
+local tokens, highlighted, dimmed, highlighted_for = {}, {}, {}, nil
+
+local function tokenize(line)
+    local runs = tokens[line] or syntax.highlight(line)
+    tokens[line] = runs
+    return runs
+end
 
 local code = computed({ version, theme.state }, function(_, t)
-    if t ~= highlighted_for then highlighted, highlighted_for = {}, t end
+    if t ~= highlighted_for then highlighted, dimmed, highlighted_for = {}, {}, t end
     local runs = {}
     for n, line in ipairs(lines) do
         runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and t.subtext or t.overlay }
-        local colored = highlighted[line]
+        -- Outside the focus, the same colours at 55% alpha.
+        local dim = focus and (n < focus.first or n > focus.last)
+        local cache = dim and dimmed or highlighted
+        local colored = cache[line]
         if not colored then
             colored = {}
-            for _, run in ipairs(syntax.highlight(line)) do
-                colored[#colored + 1] = { text = run.text, color = t[syntax.roles[run.kind]] }
+            for _, run in ipairs(tokenize(line)) do
+                local color = t[syntax.roles[run.kind]]
+                colored[#colored + 1] = { text = run.text, color = dim and color .. "8c" or color }
             end
-            highlighted[line] = colored
+            cache[line] = colored
         end
         table.move(colored, 1, #colored, #runs + 1, runs)
         runs[#runs + 1] = { text = "\n" }
@@ -153,11 +160,16 @@ local code_pane = panel {
     margin = { top = 16, right = 16, bottom = 16 },
     width = pane_width,
     height = "fill",
-    background = theme.fade("crust", "f2"),
-    radius = 18,
+    -- Hidden, the pane slides off the right edge; the demo shell never lays out again.
     child = column {
         width = "fill",
         height = "fill",
+        background = theme.fade("crust", "f2"),
+        radius = 18,
+        translate = computed({ pane_shown, frame }, function(shown, m)
+            return { x = shown and 0 or m.pane + 32, y = 0 }
+        end),
+        animate = { translate = { duration = 450, easing = "in_out_cubic" } },
         children = {
             row {
                 width = "fill",
@@ -165,7 +177,7 @@ local code_pane = panel {
                 padding = { left = 24, right = 24 },
                 spacing = 12,
                 children = {
-                    text { content = "shell.lua", align_v = "center", font = MONO, font_size = 20, foreground = theme.text },
+                    text { content = file_shown, align_v = "center", font = MONO, font_size = 20, foreground = theme.text },
                     rect { width = "fill" },
                     rect {
                         visible = meter:map(function(m) return m ~= "" end),
@@ -174,27 +186,15 @@ local code_pane = panel {
                         padding = { left = 16, right = 16 },
                         radius = 12,
                         clip = "box",
-                        background = computed({ meter_hot, theme.success, theme.base }, function(hot, on, off)
-                            return hot and
-                                on or off
-                        end),
-                        scale = meter_hot:map(function(hot) return hot and 1.08 or 1 end),
-                        animate = {
-                            background = 300,
-                            scale = { duration = 400, easing = "out_back" },
-                            width = { duration = 200, easing = "out_cubic" },
-                        },
+                        background = theme.base,
+                        animate = { width = { duration = 200, easing = "out_cubic" } },
                         children = {
                             text {
                                 content = meter,
                                 align_v = "center",
                                 font = MONO,
                                 font_size = 18,
-                                foreground = computed({ meter_hot, theme.crust, theme.subtext }, function(hot, on, off)
-                                    return
-                                        hot and on or off
-                                end),
-                                animate = { foreground = 300 },
+                                foreground = theme.subtext,
                             },
                         },
                     },
@@ -245,6 +245,21 @@ local code_pane = panel {
                                         background = theme.fade("text", "0a"),
                                         translate = caret_row:map(function(y) return { x = 0, y = y } end),
                                         animate = { translate = 80 },
+                                    },
+                                    rect {
+                                        width = "fill",
+                                        children = computed({ flash, line_px }, function(f, line)
+                                            if not f then return {} end
+                                            return { rect {
+                                                id = "flash:" .. f.serial,
+                                                width = "fill",
+                                                height = f.count * line,
+                                                background = theme.fade("accent", "40"),
+                                                translate = { x = 0, y = (f.line - 1) * line },
+                                                opacity = 0,
+                                                animate = { opacity = { duration = 600, from = 1 } },
+                                            } }
+                                        end),
                                     },
                                     text {
                                         content = code,
@@ -364,59 +379,18 @@ local function line_of(content, size, color, font)
     return text { content = content, align_h = "center", font = font, font_size = size, foreground = color }
 end
 
--- What the take showed, two rows of six so a 1920 px screen fits them.
-local FEATURES = {
-    "Signals", "Shaders", "Wallpapers", "Screen capture", "Notifications", "MPRIS",
-    "Tray", "Network", "Bluetooth", "Updates", "Lock screen", "Sysinfo",
-}
-
--- Each chip holds invisible for its turn, then fades up: a stagger without a timer per chip.
-local function feature_chip(index, label)
-    local wait_ms = 250 + index * 60
-    return rect {
-        padding = { left = 20, right = 20, top = 10, bottom = 10 },
-        radius = 22,
-        background = theme.fade("surface", "cc"),
-        border_width = 1,
-        border_color = theme.overlay,
-        opacity = 1,
-        translate = { x = 0, y = 0 },
-        animate = {
-            opacity = { duration = 350, keyframes = { 0, { value = 0, duration = wait_ms }, 1 } },
-            translate = {
-                duration = 450,
-                easing = "out_cubic",
-                keyframes = {
-                    { value = { x = 0, y = 18 } },
-                    { value = { x = 0, y = 18 }, duration = wait_ms },
-                    { value = { x = 0, y = 0 },  duration = 850,    spring = { stiffness = 260, damping = 17 } },
-                },
-            },
-        },
-        children = { text { content = label, font_size = 24, foreground = theme.text } },
-    }
-end
-
-local chips = {}
-for index, label in ipairs(FEATURES) do
-    chips[index] = feature_chip(index, label)
-end
-
 local card_lines = {
     title = {
         image { source = WORDMARK, width = 191, height = 160, fit = "contain", align_h = "center" },
         line_of("Mantle", 132, theme.text),
         line_of("Desktop shells in Lua, on Wayland.", 44, theme.subtext),
-        line_of("Save the file. The shell changes.", 30, theme.muted),
     },
     ["end"] = {
         image { source = WORDMARK, width = 143, height = 120, fit = "contain", align_h = "center" },
         line_of("Write your shell in Lua.", 64, theme.text),
-        row { align_h = "center", margin = { top = 12 }, spacing = 12, children = { table.unpack(chips, 1, 6) } },
-        row { align_h = "center", margin = { bottom = 12 }, spacing = 12, children = { table.unpack(chips, 7, 12) } },
         line_of("anasgets111.github.io/mantle", 34, theme.accent, MONO),
-        line_of("AUR: mantle-git", 30, theme.subtext, MONO),
-        line_of("Typed, reloaded, captioned and recorded by a Mantle shell.", 24, theme.muted),
+        line_of("github.com/anasgets111/mantle", 30, theme.subtext, MONO),
+        line_of("This video is a Mantle shell too.", 24, theme.muted),
     },
 }
 
@@ -461,10 +435,19 @@ local card_pane = panel {
 
 -- Script ------------------------------------------------------------------------------------
 
+-- Set while a preview plays the steps before its FROM edit behind the title card: waits,
+-- keystrokes and glides complete at once, so mock state still matches a full take.
+local fast = false
+
+-- `timer`, except fast-forwarding takes 1 ms: a fresh callback, so long chains never nest.
+local function later(ms, fn)
+    timer(fast and 1 or ms, fn)
+end
+
 local function set_text(text)
-    current = text
     lines = edits.split(text)
     caret.line, caret.col = 1, 1
+    focus = nil
     scroll_top(0)
     bump()
 end
@@ -476,6 +459,8 @@ local function pause_after(op)
         return 32
     elseif op.kind == "paste_line" then
         return 55
+    elseif op.kind == "paste_block" then
+        return 350
     end
     return 140
 end
@@ -485,7 +470,9 @@ local function play(ops, done)
     local step
     local function apply(op)
         progress = progress + 1
+        focus = op.focus
         caret.line, caret.col = edits.apply(lines, op)
+        if op.kind == "paste_block" then flash:set({ line = op.line, count = #op.lines, serial = progress }) end
         reveal(caret.line)
         bump()
         timer(pause_after(op), step)
@@ -507,64 +494,108 @@ local function play(ops, done)
 end
 
 local function wait(ms)
-    return function(next) timer(ms, next) end
+    return function(next) later(ms, next) end
 end
+
+-- With MANTLE_DEMO_SHOTS, captures the screen as `name`.png, then calls `done`.
+local function shot(name, done)
+    done = done or function() end
+    if not SHOTS or fast then return done() end
+    local screen = mantle.screens:get()[1]
+    local args = { SHOTS .. "/" .. name .. ".png" }
+    if screen and screen.name ~= "" then args = { "-o", screen.name, args[1] } end
+    session.run("grim", args, function(code)
+        if code ~= 0 then log.warn("grim could not save", args[#args]) end
+        done()
+    end)
+end
+
+-- Names each caption's shot: the last edit saved, and a count, as one edit spans several beats.
+local last_edit, beats = takes.starter, 0
 
 local function say(title, text)
     return function(next)
-        caption:set(title)
-        detail:set(text or "")
-        next()
+        if fast then return next() end
+        beats = beats + 1
+        shot(string.format("%s-end-%02d", last_edit, beats), function()
+            log.info("beat", title)
+            focus = nil
+            bump()
+            caption:set(title)
+            detail:set(text or "")
+            next()
+        end)
     end
 end
 
--- Each edit in take order, planned in `prepare` from a process callback: a diff overruns the
--- 2.5 ms budget a timer callback gets.
-local EDITS = {
-    "01-style", "02-workspaces", "03-launcher", "04-restyle", "05-search", "06-shader", "07-wallpaper",
-    "08-taskbar", "09-overview", "10-osd", "11-media", "12-control", "13-notifications", "14-privacy",
-    "15-idle", "16-updates", "17-lock", "18-sysinfo", "19-banner", "typo", "fix",
-}
-local planned = {}
+-- Each edit's file, texts and keystrokes, planned in `prepare` from a process callback: a diff
+-- overruns the 2.5 ms budget a timer callback gets.
+local plans = {}
 -- The edit each `edit()` step plays, so a preview can find where to start.
 local edit_steps = {}
 
 local function prepare()
-    local good = texts["19-banner"]
-    -- The clock's `align_v`, misspelt: the rescue banner shows the engine's "did you mean".
-    local clock = good:find('return os.date("%a', 1, true)
-    local at = good:find("align_v", clock, true)
-    texts.typo = good:sub(1, at - 1) .. "aling_v" .. good:sub(at + #"align_v")
-    texts.fix = good
-    local from = texts["00-starter"]
-    for _, name in ipairs(EDITS) do
-        planned[name] = edits.plan(from, texts[name])
-        from = texts[name]
+    local last = texts[takes.stages[#takes.stages]]
+    local from, played = { ["shell.lua"] = texts[takes.starter] }, {}
+    for _, take in ipairs(takes.edits) do
+        local name, file = take.name, take.file
+        played[name] = true
+        from[file] = from[file] or takes.prune(texts[file], {})
+        local after = take.derived and takes.derive(name, last)
+            or file == "shell.lua" and texts[name]
+            or takes.prune(texts[file], played)
+        plans[name] = { file = file, before = from[file], after = after, ops = edits.plan(from[file], after, take) }
+        from[file] = after
     end
 end
 
+-- Tokenizes every line the take shows, 40 a callback.
+local function warm(done)
+    local shown, pending = { texts[takes.starter] }, {}
+    for _, plan in pairs(plans) do
+        shown[#shown + 1] = plan.after
+    end
+    for _, text in ipairs(shown) do
+        local split = edits.split(text)
+        table.move(split, 1, #split, #pending + 1, pending)
+    end
+    local function at(k)
+        if k > #pending then return done() end
+        for i = k, math.min(k + 39, #pending) do
+            tokenize(pending[i])
+        end
+        timer(1, function() at(k + 40) end)
+    end
+    at(1)
+end
+
+-- Plays edit `name` in its file's buffer, switching the pane to that file first, then saves it.
+-- Fast-forwarding, it waits for the reload, so later toggles and feeds land as in a full take.
 local function edit(name)
     local function step(next)
-        status:set("unsaved")
-        play(planned[name], function()
-            current = texts[name]
-            timer(450, function()
-                session.write(DEMO_DIR .. "/shell.lua", current, function()
-                    status:set("saved")
-                    next()
-                end)
+        local plan = plans[name]
+        if file_shown:get() ~= plan.file then
+            file_shown:set(plan.file)
+            set_text(plan.before)
+        end
+        local function save()
+            last_edit = name
+            session.write(DEMO_DIR .. "/" .. plan.file, plan.after, function()
+                status:set("saved")
+                if fast then return timer(500, next) end
+                if SHOTS then timer(900, function() shot(name .. "-saved") end) end
+                next()
             end)
-        end)
+        end
+        if fast then
+            set_text(plan.after)
+            return save()
+        end
+        status:set("unsaved")
+        play(plan.ops, function() timer(450, save) end)
     end
     edit_steps[step] = name
     return step
-end
-
--- The code saved before `name` plays: the previous edit's, or the starter's before the first.
-local function before(name)
-    for k, other in ipairs(EDITS) do
-        if other == name then return texts[EDITS[k - 1] or "00-starter"] end
-    end
 end
 
 local function toggle(name)
@@ -573,10 +604,15 @@ local function toggle(name)
     end
 end
 
+-- What the demo shell was last fed and the wallpaper last picked: a renderer killed on camera
+-- comes back with neither, and `replay_mocks` pushes them again.
+local last_fed, picked = {}, nil
+
 -- Picks a wallpaper as a keybind would, and captions the command that did it. The director
 -- quantizes the same thumbnail the demo shell does, so its own panes re-theme in step.
 local function pick(file)
     return function(next)
+        picked = file
         detail:set("click, or: mantle call wallpaper " .. file)
         backdrop:set(DEMO_DIR .. "/wallpapers/" .. file)
         theme.choose(DEMO_DIR .. "/wallpapers/thumbs/" .. file)
@@ -587,7 +623,10 @@ end
 -- Mock feeds -------------------------------------------------------------------------------
 
 local function feed(name, value)
-    return function(next) session.set_state(DEMO_DIR, name, value, function() next() end) end
+    return function(next)
+        last_fed[name] = value
+        session.set_state(DEMO_DIR, name, value, function() next() end)
+    end
 end
 
 -- The take's windows in `mantle.windows`' shape: a terminal and an editor, then the mock apps. The
@@ -663,6 +702,7 @@ end
 -- Types `text` one character at a time through `mantle call name`, as a field `set_text` fills.
 local function type_call(name, text)
     return function(next)
+        if fast then return session.run("mantle", { "-c", DEMO_DIR, "call", name, text }, function() next() end) end
         local chars = {}
         for c in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
             chars[#chars + 1] = c
@@ -686,12 +726,12 @@ end
 local function deliver(who, rtl, theirs, mine)
     return function(next)
         feed("reply_sent", true)(function()
-            timer(400, function()
+            later(400, function()
                 feed("mock_notifications", { dnd = false, feed = {} })(function()
                     feed("reply_sent", false)(function()
                         mockups.chat:set({ name = who, rtl = rtl, messages = { { mine = false, text = theirs } } })
                         open_app("chat")(function()
-                            timer(900, function()
+                            later(900, function()
                                 mockups.chat:set({
                                     name = who,
                                     rtl = rtl,
@@ -710,6 +750,7 @@ end
 -- A password's length only, one key at a time: the mocks draw dots, never text.
 local function type_dots(name, count)
     return function(next)
+        if fast then return feed(name, count)(next) end
         local function at(k)
             progress = progress + 1
             if k > count then return next() end
@@ -738,6 +779,7 @@ local function play_track(k, from, seconds)
         local function at(t)
             progress = progress + 1
             if t > seconds then return next() end
+            if fast and t < seconds then return at(seconds) end
             feed("mock_media", {
                 players = {
                     {
@@ -752,7 +794,7 @@ local function play_track(k, from, seconds)
                         play_state = "playing",
                     },
                 },
-            })(function() timer(1000, function() at(t + 1) end) end)
+            })(function() later(1000, function() at(t + 1) end) end)
         end
         at(0)
     end
@@ -801,7 +843,7 @@ local function install(next)
         progress = progress + 1
         feed("mock_updates", updates_state(step))(function()
             if step > #PACKAGES then return next() end
-            timer(700, function() at(step + 1) end)
+            later(700, function() at(step + 1) end)
         end)
     end
     at(1)
@@ -842,6 +884,7 @@ local pointer = state("demo_pointer", { x = 0, y = 0, shown = false })
 local pointer_clicks = state("demo_pointer_clicks", 0)
 local pressed = pulse(pointer_clicks, 320)
 local pointer_at = pointer:map(function(p) return { x = p.x, y = p.y } end)
+local spot = state("demo_spot", false)
 
 local pointer_pane = panel {
     id = "pointer",
@@ -850,11 +893,27 @@ local pointer_pane = panel {
     width = "fill",
     height = "fill",
     exclusive_zone = "ignore",
-    visible = pointer:map(function(p) return p.shown end),
+    visible = computed({ pointer, spot }, function(p, s) return p.shown or s ~= false end),
     child = rect {
         width = "fill",
         height = "fill",
         children = {
+            rect {
+                children = spot:map(function(s)
+                    if not s then return {} end
+                    return { rect {
+                        id = "spot:" .. s.serial,
+                        width = s.width + 16,
+                        height = s.height + 16,
+                        radius = 14,
+                        border_width = 3,
+                        border_color = theme.accent,
+                        translate = { x = s.x - 8, y = s.y - 8 },
+                        opacity = 0,
+                        animate = { opacity = { duration = 400, keyframes = { 1, { value = 1, duration = 1600 }, 0 } } },
+                    } }
+                end),
+            },
             rect {
                 width = 44,
                 height = 44,
@@ -906,18 +965,37 @@ local function origin_of(surface)
     return { x = box.left, y = BAR + box.top }
 end
 
+-- Hands `found` the demo shell's node `name` on `surface` as a box on screen, or calls `next`.
+local function locate(name, surface, next, found)
+    if fast then return next() end
+    session.run("mantle", { "-c", DEMO_DIR, "call", "where", name }, function(code, out)
+        local ok, box = pcall(json.decode, table.concat(out or {}, "\n"))
+        if code ~= 0 or not ok or type(box) ~= "table" or not box.width then
+            log.warn("no pointer target", name)
+            return next()
+        end
+        local o = origin_of(surface)
+        found({ x = o.x + box.x, y = o.y + box.y, width = box.width, height = box.height })
+    end)
+end
+
+-- Rings node `name` on `surface` for a moment, to draw the eye to a payoff that is small.
+local function spotlight(name, surface)
+    return function(next)
+        locate(name, surface, next, function(box)
+            box.serial = progress
+            spot:set(box)
+            next()
+        end)
+    end
+end
+
 -- Glides the pointer onto the demo shell's node `name` on `surface`, then clicks. It maps again
 -- first: a surface mapped later stacks above it, and the demo's popups open after it shows.
 local function point(name, surface)
     return function(next)
-        session.run("mantle", { "-c", DEMO_DIR, "call", "where", name }, function(code, out)
-            local ok, box = pcall(json.decode, table.concat(out or {}, "\n"))
-            if code ~= 0 or not ok or type(box) ~= "table" or not box.width then
-                log.warn("no pointer target", name)
-                return next()
-            end
-            local o = origin_of(surface)
-            local x, y = o.x + box.x + box.width / 2, o.y + box.y + box.height / 2
+        locate(name, surface, next, function(box)
+            local x, y = box.x + box.width / 2, box.y + box.height / 2
             local last = pointer:get()
             local from = last.x ~= 0 and last or { x = x + 180, y = y + 240 }
             pointer:set({ x = from.x, y = from.y, shown = false })
@@ -936,120 +1014,263 @@ local function point(name, surface)
 end
 
 local function hide_pointer(next)
+    spot:set(false)
     local p = pointer:get()
     pointer:set({ x = p.x, y = p.y, shown = false })
     next()
 end
 
+local finish
+
 -- Cost meter -------------------------------------------------------------------------------
 
--- Real, unlike the mocks: proportional memory and CPU of a shell's Supervisor and its Renderer,
--- from /proc. Only the `mantle-renderer` child counts: the director's other children are the demo
--- shell and the recorder.
-local METER_SCRIPT = [[
+-- A shell's Supervisor, `$1`, and its `mantle-renderer` child in `$r`: the director's other
+-- children are the demo shell and the recorder.
+local RENDERER_SCRIPT = [[
 cd /proc || exit 1
 kids=$(cat "$1"/task/*/children 2>/dev/null)
-set -- "$1" $(for c in $kids; do [ "$(cat "$c/comm" 2>/dev/null)" = mantle-renderer ] && echo "$c"; done)
+r=$(for c in $kids; do [ "$(cat "$c/comm" 2>/dev/null)" = mantle-renderer ] && echo "$c"; done)
+]]
+-- Real, unlike the mocks: proportional memory and CPU of the demo shell's two processes, from
+-- /proc, then the renderer's pid: a respawned one restarts its tick count.
+local METER_SCRIPT = RENDERER_SCRIPT .. [[
+set -- "$1" $r
 for p; do cat "$p/smaps_rollup"; done 2>/dev/null | awk '/^Pss:/ { s += $2 } END { print s + 0 }'
 for p; do cat "$p/stat"; done 2>/dev/null | awk '{ t += $14 + $15 } END { print t + 0 }'
+echo "$r"
 ]]
 local METER_MS = 2000
 local CLK_TCK = 100
-local usage = {}
+-- The last reading, and a step waiting for the next one with a CPU figure.
+local usage, on_sample
 
-local function measure(key, pid, done)
+local function sample()
+    local pid = session.demo_shell.pid:get()
+    if not (pid and session.demo_shell.running:get()) then return end
     session.run("sh", { "-c", METER_SCRIPT, "sh", tostring(pid) }, function(_, out)
-        local kb, ticks = tonumber(out[1]), tonumber(out[2])
-        local last = usage[key]
-        if kb and kb > 0 and ticks then
-            local cpu = (last and last.pid == pid) and (ticks - last.ticks) * 100000 / (CLK_TCK * METER_MS) or 0
-            usage[key] = { pid = pid, mb = kb / 1024, ticks = ticks, cpu = math.max(cpu, 0) }
+        local kb, ticks, renderer = tonumber(out[1]), tonumber(out[2]), out[3]
+        if not (kb and kb > 0 and ticks) then return end
+        local same = usage and usage.pid == pid and usage.renderer == renderer
+        local cpu = same and (ticks - usage.ticks) * 100000 / (CLK_TCK * METER_MS) or nil
+        usage = { pid = pid, renderer = renderer, mb = kb / 1024, ticks = ticks, cpu = cpu }
+        if not cpu then return end
+        meter:set(string.format("demo shell  %d MB  ·  %.1f%% CPU", math.floor(usage.mb + 0.5), cpu))
+        local waiting = on_sample
+        on_sample = nil
+        if waiting then waiting(usage) end
+    end)
+end
+
+-- Crash beat --------------------------------------------------------------------------------
+
+local function renderer_pid(done)
+    local script = RENDERER_SCRIPT .. 'echo "$r"'
+    session.run("sh", { "-c", script, "sh", tostring(session.demo_shell.pid:get()) }, function(_, out)
+        done(tonumber(out[1]))
+    end)
+end
+
+-- Pushes every mock again, the wallpaper last: a respawned renderer starts with no named state.
+local function replay_mocks(next)
+    local names = {}
+    for name in pairs(last_fed) do
+        names[#names + 1] = name
+    end
+    local function at(k)
+        if names[k] then return feed(names[k], last_fed[names[k]])(function() at(k + 1) end) end
+        if not picked then return next() end
+        session.run("mantle", { "-c", DEMO_DIR, "call", "wallpaper", picked }, function() next() end)
+    end
+    at(1)
+end
+
+-- `kill -9` on the demo shell's renderer, captioned with the real pid. The Supervisor respawns it;
+-- once a new one answers `mantle call`, the mocks go back in. No respawn in 5 s ends the take.
+local function kill_renderer(next)
+    if fast then return next() end
+    renderer_pid(function(shown)
+        if not shown then
+            log.warn("no demo renderer to kill")
+            return next()
+        end
+        key_command:set("kill -9 " .. shown)
+        timer(900, function()
+            renderer_pid(function(old)
+                if not old then return finish() end
+                key_command:set("kill -9 " .. old)
+                session.run("kill", { "-9", tostring(old) }, function()
+                    local function poll(ms)
+                        if ms <= 0 then
+                            log.error("the demo renderer did not come back; ending the take")
+                            return finish()
+                        end
+                        local function retry() timer(100, function() poll(ms - 100) end) end
+                        renderer_pid(function(pid)
+                            if not pid or pid == old then return retry() end
+                            session.run("mantle", { "-c", DEMO_DIR, "call", "where", "bar" }, function(code)
+                                if code ~= 0 then return retry() end
+                                replay_mocks(next)
+                            end)
+                        end)
+                    end
+                    poll(5000)
+                end)
+            end)
+        end)
+    end)
+end
+
+-- The output the recorder captures.
+local function monitor_name()
+    local screen = mantle.screens:get()[1]
+    return env("MANTLE_DEMO_MONITOR", screen and screen.name or "screen")
+end
+
+-- The recorded output's workspaces, from the compositor.
+local function stage_output()
+    local ws, name = mantle.workspaces:get(), monitor_name()
+    for _, output in ipairs(ws and ws.outputs or {}) do
+        if output.name == name then return output, ws.compositor end
+    end
+end
+
+-- The take runs on `stage_ws[1]`, where none of your windows are: on Hyprland two numbers no
+-- workspace has yet, which focus creates; on niri the empty workspace it keeps last.
+local stage_ws, origin_ws = {}, nil
+
+local function pick_workspaces()
+    local output, compositor = stage_output()
+    stage_ws = {}
+    if not output then return end
+    origin_ws = origin_ws or output.active_workspace
+    if compositor == "niri" then
+        for _, w in ipairs(output.workspaces) do
+            if not w.populated then stage_ws[1] = w.id end
+        end
+        return
+    end
+    -- Hyprland's ids are global: a number on any output is taken.
+    local exists = {}
+    for _, other in ipairs(mantle.workspaces:get().outputs) do
+        for _, w in ipairs(other.workspaces) do
+            exists[w.id] = true
+        end
+    end
+    for number = 6, 99 do
+        if not exists[tostring(number)] and #stage_ws < 2 then
+            stage_ws[#stage_ws + 1] = tostring(number)
+        end
+    end
+end
+
+-- The tour's window: a terminal of its own app_id, opened on an empty workspace before recording
+-- and closed after its hop, so no window of yours is ever in the shot.
+-- ponytail: the take depends on kitty and fastfetch; another app needs its own `--class`-style id.
+local TOUR_ID = "mantle-demo-tour"
+local TOUR = { "kitty", "--class", TOUR_ID, "-e", "sh", "-c", "fastfetch --pipe false; exec sleep 600" }
+local tour_ws
+
+local function tour_windows()
+    local out = {}
+    for _, w in ipairs((mantle.windows:get() or { windows = {} }).windows) do
+        if w.app_id == TOUR_ID then out[#out + 1] = w end
+    end
+    return out
+end
+
+local function close_tour()
+    for _, w in ipairs(tour_windows()) do
+        mantle.windows:close(w.id)
+    end
+end
+
+-- Opens TOUR on niri's empty workspace or Hyprland's spare number, moving it there if it maps
+-- elsewhere. Without it on that workspace in time, the take has no tour.
+local function open_tour(done)
+    tour_ws = stage_ws[2] or stage_ws[1]
+    mantle.workspaces:focus(tour_ws)
+    process.detach(TOUR[1], { table.unpack(TOUR, 2) })
+    local moved
+    local function placed()
+        local w = tour_windows()[1]
+        if w and w.workspace_id ~= tour_ws and moved ~= w.id then
+            moved = w.id
+            mantle.windows:move_to_workspace(w.id, tour_ws)
+        end
+        return w ~= nil and w.workspace_id == tour_ws
+    end
+    session.wait_for(placed, 8000, function(ok)
+        if not ok then
+            log.warn("no tour window on workspace", tour_ws, "; the take has no tour")
+            close_tour()
+            tour_ws = nil
         end
         done()
     end)
 end
 
-local function sample()
-    local pid = session.demo_shell.pid:get()
-    measure("director", mantle.pid, function()
-        local function show()
-            local demo = usage.demo
-            if demo and session.demo_shell.running:get() then
-                meter:set(string.format("demo shell  %d MB  ·  %.1f%% CPU", math.floor(demo.mb + 0.5), demo.cpu))
-            end
+-- Why the recorded output must not be on camera, or nil: it shows a stage workspace holding no
+-- window but the tour's.
+local function exposed()
+    local output = stage_output()
+    if not output then return "no workspaces for " .. monitor_name() end
+    local active = output.active_workspace
+    if active ~= stage_ws[1] and active ~= tour_ws then return "workspace " .. active .. " is not a stage one" end
+    local windows = mantle.windows:get()
+    if not windows then
+        for _, w in ipairs(output.workspaces) do
+            if w.id == active and w.populated and active ~= tour_ws then return "a window is on the stage" end
         end
-        if pid and session.demo_shell.running:get() then return measure("demo", pid, show) end
-        show()
+        return nil
+    end
+    for _, w in ipairs(windows.windows) do
+        if w.workspace_id == active and w.app_id ~= TOUR_ID then return "window " .. w.id .. " is on the stage" end
+    end
+end
+
+-- Set from just before the recorder starts until `finish`: any compositor change that exposes
+-- one of your windows ends the take there and then.
+local guarding = false
+
+local function guard()
+    local why = guarding and exposed()
+    if not why then return end
+    log.error("ending the take:", why)
+    finish()
+end
+
+mantle.workspaces:on_change(guard)
+mantle.windows:on_change(guard)
+
+local function tour(next)
+    if fast or not tour_ws then
+        close_tour()
+        return next()
+    end
+    mantle.workspaces:focus(tour_ws)
+    timer(1200, function()
+        mantle.workspaces:focus(stage_ws[1])
+        timer(500, function()
+            close_tour()
+            local why = exposed()
+            if why then
+                log.error("ending the take:", why)
+                return finish()
+            end
+            next()
+        end)
     end)
 end
 
-local function say_cost(title)
-    return function(next)
-        local demo = usage.demo or { mb = 0, cpu = 0 }
-        caption:set(title)
-        detail:set(string.format(
-            "The demo shell right now: %d MB of memory and %.1f%% of one core, read live from /proc.",
-            math.floor(demo.mb + 0.5),
-            demo.cpu
-        ))
-        meter_hot:set(true)
-        timer(3400, function()
-            meter_hot:set(false)
-            next()
-        end)
-    end
-end
-
-local function say_made_with()
-    return function(next)
-        local director = usage.director or { mb = 0 }
-        caption:set("One more thing: this video is a Mantle shell too.")
-        detail:set(string.format(
-            "The code pane, the mock apps, these captions and the recorder: demo/director, in Lua, %d MB.",
-            math.floor(director.mb + 0.5)
-        ))
-        next()
-    end
-end
-
--- The tour's first stop: the workspace this app's window is on, so the switch shows a real window.
-local TOUR_APP = "org.gnome.Nautilus"
-
--- The take runs on `stage_ws[1]`, a number no workspace has yet, so nothing else of yours is in the
--- shot. Hyprland creates a missing number; niri ignores it and the take stays put.
-local stage_ws, tour_ws, origin_ws = {}, nil, nil
-
-local function pick_workspaces()
-    local ws = mantle.workspaces:get()
-    local exists = {}
-    stage_ws, tour_ws = {}, nil
-    if not ws then return log.warn("no workspaces from the compositor; the take stays put") end
-    for _, output in ipairs(ws.outputs) do
-        for _, w in ipairs(output.workspaces) do
-            exists[w.id] = true
-            if w.app_id == TOUR_APP then tour_ws = w.id end
-        end
-    end
-    origin_ws = ws.outputs[1] and ws.outputs[1].active_workspace
-    for number = 6, 99 do
-        if not exists[tostring(number)] and #stage_ws < 2 then stage_ws[#stage_ws + 1] = tostring(number) end
-    end
-end
-
-local function tour(next)
-    local stops = { tour_ws or stage_ws[2], stage_ws[1] }
-    local function hop(k)
-        if not stops[k] then return next() end
-        mantle.workspaces:focus(stops[k])
-        timer(1600, function() hop(k + 1) end)
-    end
-    hop(1)
-end
-
+-- Ends at the first edit after MANTLE_DEMO_TO's.
 local function sequence(steps, done)
+    local past_to = false
     local function at(k)
+        if finished then return end
         progress, step_at = progress + 1, k
-        if k > #steps then return done() end
+        local name = edit_steps[steps[k]]
+        if k > #steps or (name and past_to) then return done() end
+        past_to = past_to or (TO ~= nil and name == TO)
         steps[k](function() at(k + 1) end)
     end
     at(1)
@@ -1065,6 +1286,7 @@ end
 -- The default output three steps and back, for the OSD beat, through `wpctl` like any other app;
 -- `finish` puts it back if a take ends mid-nudge.
 local function nudge_volume(next)
+    if fast then return next() end
     session.run("wpctl", { "get-volume", "@DEFAULT_AUDIO_SINK@" }, function(_, out)
         volume_before = tonumber((out[1] or ""):match("Volume:%s*([%d%.]+)"))
         if not volume_before then return next() end
@@ -1087,15 +1309,22 @@ local function stopped(handle)
     return function() return handle.running:get() ~= true end
 end
 
-local function finish()
+function finish()
     if finished then return end
-    finished = true
-    if volume_before then set_volume(volume_before) end
+    finished, guarding = true, false
     session.recorder:stop()
+    if volume_before then set_volume(volume_before) end
+    close_tour()
     session.wait_for(stopped(session.recorder), 10000, function()
         session.demo_shell:stop()
         session.wait_for(stopped(session.demo_shell), 8000, function()
             if origin_ws then mantle.workspaces:focus(origin_ws) end
+            session.wait_for(function()
+                local output = stage_output()
+                return not origin_ws or (output ~= nil and output.active_workspace == origin_ws)
+            end, 2000, function(back)
+                if not back then log.warn("could not return to workspace", origin_ws) end
+            end)
             session.restore_shells(restore)
             log.info("demo written to", OUT)
             -- The restore list saves 1 s after its last write.
@@ -1104,9 +1333,16 @@ local function finish()
     end)
 end
 
+-- Starts the recorder, and the guard, only while the stage shows nothing of yours.
 local function record(next)
-    local screen = mantle.screens:get()[1]
-    local monitor = env("MANTLE_DEMO_MONITOR", screen and screen.name or "screen")
+    local why = exposed()
+    if why then
+        log.error("not recording:", why)
+        return finish()
+    end
+    guarding = true
+    if FROM then return next() end
+    local monitor = monitor_name()
     local folder = OUT:match("^(.*)/[^/]*$") or "."
     session.run("mkdir", { "-p", folder }, function()
         session.recorder:start("gpu-screen-recorder", {
@@ -1127,8 +1363,26 @@ local function setup(next)
         restore = shells
         session.wait_for(function() return mantle.workspaces:get() ~= nil end, 3000, function()
             pick_workspaces()
-            if stage_ws[1] then mantle.workspaces:focus(stage_ws[1]) end
-            next()
+            if not stage_ws[1] then return finish() end
+            open_tour(function()
+                -- niri's tour window took its empty workspace, so the stage is the new last one.
+                session.wait_for(function()
+                    pick_workspaces()
+                    return stage_ws[1] ~= nil and stage_ws[1] ~= tour_ws
+                end, 3000, function()
+                    if stage_ws[1] then mantle.workspaces:focus(stage_ws[1]) end
+                    -- Your windows must never reach the recording: no empty workspace, no take.
+                    session.wait_for(function()
+                        local output = stage_output()
+                        return stage_ws[1] ~= nil and stage_ws[1] ~= tour_ws and output ~= nil
+                            and output.active_workspace == stage_ws[1]
+                    end, 3000, function(ok)
+                        if ok then return next() end
+                        log.error("could not focus an empty workspace; ending the take")
+                        finish()
+                    end)
+                end)
+            end)
         end)
     end)
 end
@@ -1155,35 +1409,81 @@ local function render_wallpapers(done)
     end
 end
 
-local function stage(next)
+-- Shows `text` as shell.lua and writes it with every module pruned to `played`, then starts the
+-- demo shell on fresh state and gives it `settle` ms.
+local function start_shell(text, played, settle, next)
+    file_shown:set("shell.lua")
+    set_text(text)
+    local function at(k)
+        local name = takes.modules[k]
+        if name then
+            return session.write(DEMO_DIR .. "/" .. name, takes.prune(texts[name], played), function() at(k + 1) end)
+        end
+        session.write(DEMO_DIR .. "/shell.lua", text, function()
+            session.demo_shell:start("mantle", { "-c", DEMO_DIR })
+            timer(settle, next)
+        end)
+    end
+    -- The last take's saved switches would start this one with them on.
+    session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function() at(1) end)
+end
+
+-- The cold open's shell: the last stage with every module block in, beside fresh frags, theme,
+-- layout, covers and wallpapers.
+local function stage_final(next)
     local sources = { mantle.config_dir .. "/theme.lua", mantle.config_dir .. "/layout.lua" }
-    for _, name in ipairs(MODULES) do
+    for _, name in ipairs(takes.frags) do
         sources[#sources + 1] = STAGES .. name
     end
     sources[#sources + 1] = DEMO_DIR .. "/"
-    -- The last take's saved switches would start this one with them on.
-    session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function()
-        session.run("mkdir", { "-p", DEMO_DIR .. "/wallpapers/thumbs" }, function()
-            session.run("cp", { "-r", COVERS, DEMO_DIR .. "/" }, function()
-                session.run("cp", sources, function()
-                    render_wallpapers(function()
-                        set_text(FROM and before(FROM) or texts["00-starter"])
-                        session.write(DEMO_DIR .. "/shell.lua", current, function()
-                            session.demo_shell:start("mantle", { "-c", DEMO_DIR })
-                            timer(2500, next)
-                        end)
-                    end)
-                end)
+    if SHOTS then session.run("mkdir", { "-p", SHOTS }) end
+    session.run("mkdir", { "-p", DEMO_DIR .. "/wallpapers/thumbs" }, function()
+        session.run("cp", { "-r", COVERS, DEMO_DIR .. "/" }, function()
+            session.run("cp", sources, function()
+                render_wallpapers(function() start_shell(texts[takes.stages[#takes.stages]], nil, 2500, next) end)
             end)
         end)
     end)
 end
 
 local function hide_card(next)
+    if fast then return next() end
     card_shown:set(false)
     timer(800, function()
         card:set("")
         next()
+    end)
+end
+
+-- Clears what a take leaves on screen: keys, pointer, mock apps, pane, backdrop and theme.
+local function reset_scene()
+    keys:set("")
+    key_command:set("")
+    pointer:set({ x = 0, y = 0, shown = false })
+    spot:set(false)
+    flash:set(false)
+    pane_shown:set(true)
+    mockups.app:set("")
+    mockups.chat:set({ name = "", rtl = false, messages = {} })
+    mockups.sharing:set(false)
+    mockups.playing:set(true)
+    backdrop:set(WALLPAPER)
+    theme.choose(DEMO_DIR .. "/wallpapers/thumbs/mantle.png")
+end
+
+-- Behind the title card: the demo shell starts over on the starter, and the director's scene and
+-- mock records go back to where a take begins.
+local function restart_starter(next)
+    session.demo_shell:stop()
+    session.wait_for(stopped(session.demo_shell), 8000, function(ok)
+        if not ok then
+            log.error("the demo shell did not stop; ending the take")
+            return finish()
+        end
+        last_fed, picked = {}, nil
+        windows.count, windows.focused, windows.page = 0, "0xa1", ""
+        reset_scene()
+        start_shell(texts[takes.starter], {}, 1500, function() hide_card(next) end)
     end)
 end
 
@@ -1198,20 +1498,52 @@ end
 
 local function press(combo, name)
     return function(next)
-        keys:set(combo)
-        key_command:set("mantle toggle " .. name)
-        timer(700, function()
-            toggle(name)(function() timer(1200, next) end)
+        if not fast then
+            keys:set(combo)
+            key_command:set("mantle toggle " .. name)
+        end
+        later(700, function()
+            toggle(name)(function() later(1200, next) end)
         end)
     end
 end
 
+-- Slides the code pane off for `ms` while the script plays on, so a payoff gets the frame.
+local function focus_stage(ms)
+    return function(next)
+        pane_shown:set(false)
+        later(ms, function() pane_shown:set(true) end)
+        next()
+    end
+end
+
+local function clear_keys(next)
+    keys:set("")
+    key_command:set("")
+    next()
+end
+
 local script = {
     setup,
-    stage,
+    stage_final,
     record,
     wait(600),
     hide_card,
+    say("Every pixel is Lua."),
+    press("Super+A", "launcher_open"),
+    clear_keys,
+    type_call("search", "fi"),
+    wait(1400),
+    toggle("launcher_open"),
+    toggle("picker_open"),
+    wait(700),
+    point("thumb:ember.png", "picker"),
+    pick("ember.png"),
+    wait(1400),
+    hide_pointer,
+    toggle("picker_open"),
+    show_card("title"),
+    restart_starter,
     say("This is the whole shell.", "One Lua file. Mantle ships no shell of its own: you write it."),
     wait(2600),
     say("Save, and it's live.", "No restart. The file reloads in place."),
@@ -1454,6 +1786,7 @@ local script = {
     edit("16-updates"),
     wait(500),
     feed("mock_updates", updates_state()),
+    spotlight("updates", "bar"),
     wait(700),
     point("updates", "bar"),
     toggle("updates_open"),
@@ -1499,8 +1832,6 @@ local script = {
     edit("18-sysinfo"),
     wait(3000),
 
-    say_cost("Light by design."),
-    wait(600),
 
     say("Draw your own error banner.", "mantle.rescue holds the error of the last failed reload."),
     edit("19-banner"),
@@ -1511,8 +1842,19 @@ local script = {
     say("Fix it, and it's back.", "The next good save clears the error."),
     edit("fix"),
     wait(2000),
-    say_made_with(),
-    wait(3800),
+    say("Kill it. It comes back.", "kill -9 the renderer; the supervisor respawns it."),
+    kill_renderer,
+    wait(1500),
+    clear_keys,
+    focus_stage(3500),
+    function(next)
+        if fast then return next() end
+        on_sample = function(u)
+            say(string.format("Everything you saw: %d MB.", math.floor(u.mb + 0.5)),
+                string.format("%.1f%% of one core, read live from /proc.", u.cpu))(next)
+        end
+    end,
+    wait(4000),
     show_card("end"),
     wait(5000),
 }
@@ -1530,14 +1872,23 @@ local function watchdog(seen)
     end)
 end
 
--- One at a time: each output line is a frame, and all stages at once overflow the Supervisor's
+-- Stage files by name, then modules by file name.
+local SOURCES = {}
+for _, name in ipairs(takes.stages) do
+    SOURCES[#SOURCES + 1] = { name, name .. ".lua" }
+end
+for _, file in ipairs(takes.modules) do
+    SOURCES[#SOURCES + 1] = { file, file }
+end
+
+-- One at a time: each output line is a frame, and all files at once overflow the Supervisor's
 -- 1024-frame queue, which then drops this Renderer as wedged.
 local function load_stages(done, k)
     k = k or 1
-    local name = STAGE_NAMES[k]
-    if not name then return done() end
-    session.run("cat", { STAGES .. name .. ".lua" }, function(code, out)
-        if code == 0 then texts[name] = table.concat(out, "\n") .. "\n" end
+    local source = SOURCES[k]
+    if not source then return done() end
+    session.run("cat", { STAGES .. source[2] }, function(code, out)
+        if code == 0 then texts[source[1]] = table.concat(out, "\n") .. "\n" end
         load_stages(done, k + 1)
     end)
 end
@@ -1545,49 +1896,52 @@ end
 -- A reload restarts the take from the top, so it first clears what the last one left running.
 math.randomseed(7)
 caption:set("")
-keys:set("")
-key_command:set("")
-pointer:set({ x = 0, y = 0, shown = false })
+reset_scene()
 status:set("saved")
 card:set("title")
 card_shown:set(true)
 meter:set("")
-meter_hot:set(false)
-mockups.app:set("")
+file_shown:set("shell.lua")
 timer(1, function()
     session.recorder:stop()
     session.demo_shell:stop()
     session.wait_for(function() return stopped(session.recorder)() and stopped(session.demo_shell)() end, 8000,
         function()
             load_stages(function()
-                for _, name in ipairs(STAGE_NAMES) do
-                    if not texts[name] then
-                        log.error("could not read stage", name)
+                for _, source in ipairs(SOURCES) do
+                    if not texts[source[1]] then
+                        log.error("could not read stage", source[2])
                         return finish()
                     end
                 end
-                prepare()
+                local ok, err = pcall(prepare)
+                if not ok then
+                    log.error("could not plan the take:", err)
+                    return finish()
+                end
+                -- Fast up to the edit before FROM, or the restart before the first edit, so its
+                -- caption and setup play at speed.
+                local at, first, to_at
+                for k, step in ipairs(script) do
+                    if edit_steps[step] == FROM then at = at or k end
+                    if edit_steps[step] == TO then to_at = k end
+                    if not at and (edit_steps[step] or step == restart_starter) then first = k end
+                end
+                if (FROM and not at) or (TO and (not to_at or to_at < (at or 0))) then
+                    log.error("MANTLE_DEMO_FROM or MANTLE_DEMO_TO names no edit, or TO plays before FROM")
+                    return finish()
+                end
                 if FROM then
-                    -- From the step after the edit before FROM, so its caption and setup play too.
-                    local at, first
-                    for k, step in ipairs(script) do
-                        if step == hide_card then first = k end
-                        if edit_steps[step] == FROM then
-                            at = k
-                            break
-                        end
-                        if edit_steps[step] then first = k end
-                    end
-                    if not at then
-                        log.error("MANTLE_DEMO_FROM names no edit:", FROM)
-                        return finish()
-                    end
-                    script = { setup, stage, hide_card, table.unpack(script, first + 1) }
+                    fast = true
+                    table.insert(script, first + 1, function(next)
+                        fast = false
+                        hide_card(next)
+                    end)
                 end
-                sequence(script, finish)
                 watchdog(progress)
                 sample()
                 interval(METER_MS, sample)
+                warm(function() sequence(script, finish) end)
             end)
         end)
 end)
