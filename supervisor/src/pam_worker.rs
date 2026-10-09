@@ -127,7 +127,10 @@ fn read_frame(mut reader: impl std::io::Read) -> std::io::Result<shared::PamMess
         return Err(std::io::Error::other(format!("frame length {len} exceeds the limit")));
     }
     let mut payload = shared::Zeroizing::new(Vec::new());
-    if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
+    if len <= shared::framing::SMALL_FRAME_LEN {
+        payload.resize(len, 0);
+        reader.read_exact(&mut payload)?;
+    } else if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
         return Err(std::io::ErrorKind::UnexpectedEof.into());
     }
     serde_json::from_slice(&payload).map_err(std::io::Error::other)

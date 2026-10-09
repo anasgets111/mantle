@@ -19,6 +19,9 @@ use zeroize::Zeroizing;
 /// force an allocation of up to 4 GiB; this socket carries secure textfield submissions (ADR-0005).
 pub const MAX_FRAME_LEN: usize = 16 * 1024 * 1024;
 
+/// Frames up to this size are read into one up-front allocation; larger ones grow as bytes arrive.
+pub const SMALL_FRAME_LEN: usize = 64 * 1024;
+
 #[derive(Debug, Error)]
 pub enum FramingError {
     #[error("i/o error: {0}")]
@@ -54,10 +57,12 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
     if len > MAX_FRAME_LEN {
         return Err(FramingError::FrameTooLarge { len });
     }
-    // Grown as bytes arrive, so a peer declaring 16 MiB and sending nothing costs nothing.
-    // ponytail: growth frees unscrubbed blocks; secrets are far smaller than the first allocation.
+    // ponytail: above SMALL_FRAME_LEN growth frees unscrubbed blocks; no secret is that large.
     let mut payload = Zeroizing::new(Vec::new());
-    if (&mut *reader).take(len as u64).read_to_end(&mut payload).await? < len {
+    if len <= SMALL_FRAME_LEN {
+        payload.resize(len, 0);
+        reader.read_exact(&mut payload).await?;
+    } else if (&mut *reader).take(len as u64).read_to_end(&mut payload).await? < len {
         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
     // Moving the allocation out leaves an empty `Vec` to drop; the bytes travel on to the caller.
@@ -121,12 +126,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_frame_declared_at_the_limit_but_cut_short_is_an_error() {
-        let (mut a, mut b) = tokio::io::duplex(64);
-        a.write_all(&(MAX_FRAME_LEN as u32).to_be_bytes()).await.unwrap();
-        a.write_all(&[7u8; 10]).await.unwrap();
-        drop(a);
-        assert!(matches!(read_frame(&mut b).await, Err(FramingError::Io(_))));
+    async fn a_frame_cut_short_is_an_error_at_the_limit_and_below_the_small_size() {
+        for declared in [MAX_FRAME_LEN as u32, 50] {
+            let (mut a, mut b) = tokio::io::duplex(64);
+            a.write_all(&declared.to_be_bytes()).await.unwrap();
+            a.write_all(&[7u8; 10]).await.unwrap();
+            drop(a);
+            assert!(matches!(read_frame(&mut b).await, Err(FramingError::Io(_))));
+        }
     }
 
     #[tokio::test]
