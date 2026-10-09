@@ -119,17 +119,17 @@ async fn run_privacy_task(
     loop {
         tokio::select! {
             event = next_device_event(&mut inotify_stream, &mut devices) => {
-                match event {
-                    // Only a device open/close can change who holds it; this arm pays for the scan,
-                    // a readlink of every fd in `/proc`, so it runs off the two async workers.
-                    DeviceEvent::Opened => {
-                        let (root, watched) = (proc_root.clone(), devices.clone());
-                        if let Ok(pids) = tokio::task::spawn_blocking(move || find_device_openers(&root, &watched)).await {
-                            opener_pids = pids;
-                        }
-                    }
+                // An open or an emptied set pays for the scan, a readlink of every fd in `/proc`, so
+                // it runs off the two async workers.
+                let rescan = match event {
+                    DeviceEvent::Opened => true,
                     // A close only removes pids: recheck the known openers instead of walking `/proc`.
-                    DeviceEvent::Closed => opener_pids.retain(|&pid| holds_device(&proc_root, pid, &devices)),
+                    // A pid that dropped out may have passed the fd to a child no open announced: walk.
+                    DeviceEvent::Closed => {
+                        let known = opener_pids.len();
+                        opener_pids.retain(|&pid| holds_device(&proc_root, pid, &devices));
+                        opener_pids.len() < known
+                    }
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
                         continue;
@@ -138,6 +138,12 @@ async fn run_privacy_task(
                     DeviceEvent::Ended => {
                         inotify_stream = None;
                         continue;
+                    }
+                };
+                if rescan {
+                    let (root, watched) = (proc_root.clone(), devices.clone());
+                    if let Ok(pids) = tokio::task::spawn_blocking(move || find_device_openers(&root, &watched)).await {
+                        opener_pids = pids;
                     }
                 }
             }
@@ -266,6 +272,7 @@ async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<Pat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::privacy::video::write_fd_symlink;
     use crate::capabilities::test_support::within;
 
     fn video_source(pid: i32, app_name: &str) -> VideoSourceApp {
@@ -426,32 +433,27 @@ mod tests {
         assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Closed));
     }
 
+    /// Pids 1111 and 3333 opened the camera; pid 2222 got 1111's fd by fork, so no open event named it.
     #[tokio::test]
-    async fn a_close_drops_the_pid_that_no_longer_holds_the_device() {
+    async fn a_close_by_the_opener_keeps_a_holder_that_inherited_the_fd() {
         let (dev, proc_root) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         let node = dev.path().join("video0");
         std::fs::write(&node, "").unwrap();
-        let fd_dir = proc_root.path().join("1234/fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink(&node, fd_dir.join("5")).unwrap();
+        write_fd_symlink(proc_root.path(), 1111, 5, &node);
+        write_fd_symlink(proc_root.path(), 3333, 5, &node);
         let held = std::fs::File::open(&node).unwrap();
         let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let state = Arc::new(Mutex::new(PrivacyState::default()));
-        tokio::spawn(run_privacy_task(
-            proc_root.path().to_path_buf(),
-            dev.path().to_path_buf(),
-            Arc::clone(&state),
-            sources,
-            events_tx,
-        ));
-        assert_eq!(within(events_rx.recv()).await, Some(()), "the seed lists the holder");
-        assert_eq!(state.lock().unwrap().camera_users.len(), 1);
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev.path(), sources, events_tx);
+        assert_eq!(within(events_rx.recv()).await, Some(()), "the seed lists both openers");
+        let user = |pid: u32| PrivacyUser { app_name: format!("pid {pid}") };
+        assert_eq!(controller.snapshot().camera_users, vec![user(1111), user(3333)]);
 
-        std::fs::remove_dir_all(proc_root.path().join("1234")).unwrap();
+        write_fd_symlink(proc_root.path(), 2222, 5, &node);
+        std::fs::remove_dir_all(proc_root.path().join("1111")).unwrap();
         drop(held);
         assert_eq!(within(events_rx.recv()).await, Some(()));
-        assert!(state.lock().unwrap().camera_users.is_empty());
+        assert_eq!(controller.snapshot().camera_users, vec![user(2222), user(3333)]);
     }
 
     /// A webcam plugged in after start, or an unplugged and replugged node (a new inode), must

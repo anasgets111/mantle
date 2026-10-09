@@ -57,10 +57,17 @@ pub fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
     std::fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok().map(|text| text.trim_end().to_string())
 }
 
+/// Test fixture: `<proc_root>/<pid>/fd/<fd>` pointing at `target`.
+#[cfg(test)]
+pub(super) fn write_fd_symlink(proc_root: &Path, pid: u32, fd: u32, target: impl AsRef<Path>) {
+    let fd_dir = proc_root.join(pid.to_string()).join("fd");
+    std::fs::create_dir_all(&fd_dir).unwrap();
+    std::os::unix::fs::symlink(target, fd_dir.join(fd.to_string())).unwrap();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::fs::symlink;
 
     fn write_video_device_dir(video4linux_root: &Path, name: &str) {
         std::fs::create_dir(video4linux_root.join(name)).unwrap();
@@ -93,12 +100,6 @@ mod tests {
     }
 
     // ---- find_device_openers ----
-
-    fn write_fd_symlink(proc_root: &Path, pid: u32, fd: u32, target: &str) {
-        let fd_dir = proc_root.join(pid.to_string()).join("fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        symlink(target, fd_dir.join(fd.to_string())).unwrap();
-    }
 
     #[test]
     fn find_device_openers_finds_a_pid_with_the_device_open() {
