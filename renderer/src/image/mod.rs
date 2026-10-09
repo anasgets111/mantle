@@ -276,6 +276,8 @@ pub struct ImageCache {
     // ponytail: Fx hashing, and keys can carry text a window title chooses (icon names, SVG text),
     // so collisions can be forced; CACHE_CAPACITY bounds the damage. Upgrade: a keyed hasher.
     entries: HashMap<CacheKey, Entry>,
+    /// Recent stats of the paths in `entries`, so a draw does not stat its file.
+    versions: file::VersionCache,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
     /// Textures released, textures uploaded and slots that failed to decode, over the cache's
@@ -355,6 +357,7 @@ impl ImageCache {
             font_generation: 0,
             fonts: FontDatabase::default(),
             entries: HashMap::default(),
+            versions: Default::default(),
             evicted: Vec::new(),
             evicted_total: 0,
             freed: false,
@@ -639,13 +642,18 @@ impl ImageCache {
         }
     }
 
-    fn key_for(&self, &ImageRequest { path, box_px, tint, fit, blur_px }: &ImageRequest) -> CacheKey {
+    fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px }: &ImageRequest) -> CacheKey {
         let vector = is_vector(path);
+        let (version, recheck) = self.versions.read(path, Instant::now());
+        // The repaint that sees a rewrite made inside the window.
+        if let Some(due) = recheck {
+            self.deferred = Some(self.deferred.map_or(due, |owed| owed.min(due)));
+        }
         CacheKey {
             font_generation: if vector { self.font_generation } else { 0 },
             path: path.to_path_buf(),
             box_px: cache_box(path, box_px),
-            version: FileVersion::read(path),
+            version,
             // Only vectors carry `currentColor`; drop PNG tint instead of splitting unused slots.
             tint: if vector { tint.map(packed_rgb) } else { None },
             // An SVG rasterizes straight to its box, so there is never overflow to crop.
@@ -1160,6 +1168,22 @@ mod tests {
         // Consuming one frees exactly one.
         cache.unwant(&key(1));
         assert_eq!(cache.pool.wanted.lock().unwrap().len(), MAX_INFLIGHT_DECODES - 1);
+    }
+
+    #[test]
+    fn a_remembered_version_owes_a_repaint_by_the_end_of_its_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("tray.png");
+        std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
+        let mut cache = ImageCache::new();
+        let request = ImageRequest { path: &png, box_px: (8, 8), tint: None, fit: Fit::Contain, blur_px: 0 };
+        let start = Instant::now();
+        cache.key_for(&request);
+        assert!(cache.take_deferred().is_none(), "a fresh stat owes nothing");
+        cache.key_for(&request);
+        let due = cache.take_deferred().expect("a remembered version owes a recheck");
+        assert!(due <= Instant::now() + Duration::from_millis(500), "no later than the window end");
+        assert!(due > start, "and not before the stat it trusts");
     }
 
     /// ADR-0185. The refusal records no slot, so asking again is the whole retry -- and only a
