@@ -16,6 +16,13 @@ local M = {
     },
     -- Copied as they are.
     frags = { "aurora.frag", "chevron.frag" },
+    -- Art for `wallpaper.lua`'s picker, as SVG paths from the director's directory.
+    wallpapers = {
+        dusk = "wallpapers/dusk.svg",
+        ember = "wallpapers/ember.svg",
+        tide = "wallpapers/tide.svg",
+        mantle = "wallpaper.svg",
+    },
     edits = {
         { name = "01-style" },
         { name = "02-workspaces",   type = { "workspaces,", 'rect { width = "fill" }' } },
@@ -54,6 +61,28 @@ function M.derive(name, good)
     if name == "fix" then return good end
     local at = good:find("align_v", good:find('return os.date("%a', 1, true), true)
     return good:sub(1, at - 1) .. "aling_v" .. good:sub(at + #"align_v")
+end
+
+-- Every edit in order as { take, file, before, after, played }: the file's text either side of it
+-- and the edits played so far. `texts` maps each stage name and module file to its source.
+function M.timeline(texts)
+    local last = texts[M.stages[#M.stages]]
+    local from, played, out = { ["shell.lua"] = texts[M.starter] }, {}, {}
+    for _, take in ipairs(M.edits) do
+        local name, file = take.name, take.file
+        played[name] = true
+        from[file] = from[file] or M.prune(texts[file], {})
+        local after = take.derived and M.derive(name, last)
+            or file == "shell.lua" and texts[name]
+            or M.prune(texts[file], played)
+        local so_far = {}
+        for k in pairs(played) do
+            so_far[k] = true
+        end
+        out[#out + 1] = { take = take, file = file, before = from[file], after = after, played = so_far }
+        from[file] = after
+    end
+    return out
 end
 
 -- A module as it stands once the edits in `played` (name -> true; nil means all) have played.

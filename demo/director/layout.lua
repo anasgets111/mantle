@@ -14,7 +14,11 @@ local COLUMNS = 114
 local EM = 0.6
 
 local function metrics(screen)
-    screen = screen or { width = 1920, height = 1080, name = "" }
+    if not screen then
+        -- `mantle check` hands no screens; the validation recipes size it here.
+        local w, h = (os.getenv("MANTLE_DEMO_SCREEN") or ""):match("^(%d+)x(%d+)$")
+        screen = { width = tonumber(w) or 1920, height = tonumber(h) or 1080, name = "" }
+    end
     local w, h = screen.width, screen.height
     local natural = math.floor(w * 0.44)
     local min_pane = math.ceil(COLUMNS * MIN_FONT * EM)

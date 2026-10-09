@@ -56,12 +56,10 @@ local POINTER = mantle.config_dir .. "/pointer.svg"
 local COVERS = mantle.config_dir .. "/covers"
 -- Rendered to PNG in the demo's `wallpapers/` at setup: `palette.quantize` reads no SVG. `mantle`
 -- is the logo art the take opens on, so the last pick comes back to it.
-local WALLPAPERS = {
-    dusk = mantle.config_dir .. "/wallpapers/dusk.svg",
-    ember = mantle.config_dir .. "/wallpapers/ember.svg",
-    tide = mantle.config_dir .. "/wallpapers/tide.svg",
-    mantle = WALLPAPER,
-}
+local WALLPAPERS = {}
+for name, svg in pairs(takes.wallpapers) do
+    WALLPAPERS[name] = mantle.config_dir .. "/" .. svg
+end
 local WALLPAPER_ASPECT = 3440 / 1440
 
 -- The buffer lives in these locals; `version` is the signal that says it changed.
@@ -453,16 +451,7 @@ local function set_text(text)
 end
 
 local function pause_after(op)
-    if op.kind == "type" then
-        return 24 + math.random(0, 26) + (op.text == " " and 14 or 0)
-    elseif op.kind == "erase" then
-        return 32
-    elseif op.kind == "paste_line" then
-        return 55
-    elseif op.kind == "paste_block" then
-        return 350
-    end
-    return 140
+    return edits.pause(op, math.random(0, 26))
 end
 
 local function play(ops, done)
@@ -535,17 +524,13 @@ local plans = {}
 local edit_steps = {}
 
 local function prepare()
-    local last = texts[takes.stages[#takes.stages]]
-    local from, played = { ["shell.lua"] = texts[takes.starter] }, {}
-    for _, take in ipairs(takes.edits) do
-        local name, file = take.name, take.file
-        played[name] = true
-        from[file] = from[file] or takes.prune(texts[file], {})
-        local after = take.derived and takes.derive(name, last)
-            or file == "shell.lua" and texts[name]
-            or takes.prune(texts[file], played)
-        plans[name] = { file = file, before = from[file], after = after, ops = edits.plan(from[file], after, take) }
-        from[file] = after
+    for _, step in ipairs(takes.timeline(texts)) do
+        plans[step.take.name] = {
+            file = step.file,
+            before = step.before,
+            after = step.after,
+            ops = edits.plan(step.before, step.after, step.take),
+        }
     end
 end
 

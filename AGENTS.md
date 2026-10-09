@@ -38,6 +38,8 @@ cited only as the why behind behavior the code confirms.
 | `just swap [args]` | Build the `swap` profile, replace the installed pair in `$CARGO_HOME/bin` (default `~/.cargo/bin`), restart detached |
 | `just demo [out]` | Record the demo video; stops every running shell for the take, then restarts it |
 | `just preview <edit>` | Play the demo from one edit (`11-media`) to the end without recording |
+| `just preview-beat <from> <to>` | Play the demo from one edit to another, with screenshots in `sup-targets/shots/<from>` |
+| `just demo-check` | Headless demo validation: planner tests, every edit's checkpoint through `mantle check` at three screens, layout fit, typing budget, line length |
 | `just heaptrack [renderer\|supervisor] [secs]` | Dev build under heaptrack for `secs` (default 900), then restore the installed shell |
 | `just tag-release X.Y.Z` | Set the version, run `just stubs check`, date the changelog's `Unreleased`, commit and tag `vX.Y.Z`. Pushing the tag publishes the release |
 | `just hooks` | Install pre-commit checks chosen by staged paths; stale generated files are rewritten and the commit refused |
@@ -52,6 +54,7 @@ Run the rows that match the change; combine rows across categories. Always run `
 | Prose outside `docs/` (README, AGENTS) | Review wording; verify changed links, paths and commands |
 | Book prose, links, navigation, theme | `just book` |
 | Lua examples, screenshot fixtures, images in `docs/` | `just book` and `cargo test -p renderer every_lua_block_in_the_docs` |
+| `demo/director` edits | `just lua demo-check` |
 | Lua configs | `just lua types` (needs `lua-language-server`). Types covers only the starter and stubs; check other runnable configs with `mantle -c DIR check` |
 | Rust, Cargo files, compiled fixtures, embedded files | `just check` |
 | Generated files or their sources | `just stubs`, then the checks for the changed sources and outputs |

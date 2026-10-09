@@ -209,4 +209,19 @@ local function apply(lines, op)
     end
 end
 
-return { split = split, plan = plan, apply = apply }
+-- Milliseconds the director waits after `op`. `jitter` is a keystroke's random 0..26 ms; the mean
+-- by default, which is what the timing estimate uses.
+local function pause(op, jitter)
+    if op.kind == "type" then
+        return 24 + (jitter or 13) + (op.text == " " and 14 or 0)
+    elseif op.kind == "erase" then
+        return 32
+    elseif op.kind == "paste_line" then
+        return 55
+    elseif op.kind == "paste_block" then
+        return 350
+    end
+    return 140
+end
+
+return { split = split, plan = plan, apply = apply, pause = pause }

@@ -35,17 +35,37 @@ run config="share/starter": build
     target/debug/mantle -c {{config}}
 
 # Records the demo video to `out` (default ~/Videos/mantle-demo.mp4). `demo/director` stops every
-# running shell for the take, drives a scratch one on camera, then restarts yours. `PATH` puts this
-# build first, so the demo shell it starts and the `mantle` commands it runs are this build too.
+# running shell for the take, drives a scratch one on camera, then restarts yours. The swap build
+# leads `PATH`, so the demo shell and the `mantle` commands it runs are this build too.
+# Env, read by the director (tools/run.sh holds the one-demo-at-a-time lock):
+#   MANTLE_DEMO_OUT     video path (`out` sets it)
+#   MANTLE_DEMO_FROM    edit to start at, with the code before it already saved (no recording)
+#   MANTLE_DEMO_TO      edit after which the take ends
+#   MANTLE_DEMO_SHOTS   absolute directory for a screenshot per save and per beat
+#   MANTLE_DEMO_MONITOR output the screenshots and recording capture (default: the shell's screen)
+#   MANTLE_DEMO_DIR     scratch config directory (default $XDG_RUNTIME_DIR/mantle-demo)
 demo out="":
     cargo build --workspace --profile swap
-    PATH="$PWD/target/swap:$PATH" MANTLE_DEMO_OUT="{{out}}" target/swap/mantle -c demo/director
+    MANTLE_DEMO_OUT="{{out}}" demo/director/tools/run.sh
 
 # Like `demo`, it stops your shells for the take and restores them after.
 [doc('Play the demo from one edit (`11-media`, `typo`, ...) to the end, without recording.')]
 preview from:
     cargo build --workspace --profile swap
-    PATH="$PWD/target/swap:$PATH" MANTLE_DEMO_FROM="{{from}}" target/swap/mantle -c demo/director
+    MANTLE_DEMO_FROM="{{from}}" demo/director/tools/run.sh
+
+# Plays edits `from` to `to` with screenshots in `sup-targets/shots/<from>`. Stops your shells.
+[doc('Play the demo from edit `from` to edit `to` and screenshot each beat.')]
+preview-beat from to:
+    cargo build --workspace --profile swap
+    MANTLE_DEMO_FROM="{{from}}" MANTLE_DEMO_TO="{{to}}" MANTLE_DEMO_SHOTS="$PWD/sup-targets/shots/{{from}}" \
+        demo/director/tools/run.sh
+
+# Headless, stops no shell: planner tests, every checkpoint through `mantle check` at three screens,
+# layout fit, typing budget and line length. See `demo/director/tools/check.sh`.
+[doc('Validate every demo checkpoint at three screens, layout fit, typing time and line length.')]
+demo-check:
+    demo/director/tools/check.sh
 
 # Everything a change has to pass before it is done, on what would be committed.
 check:

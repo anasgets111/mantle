@@ -4,6 +4,8 @@
 -- calls no `on_change`, so it sets the query too.
 local boxes = {}
 
+if os.getenv("MANTLE_DEMO_MOCKS") then require("mocks_sample") end
+
 action("where", function(name)
     local box = boxes[name]
     return box and box:get() or nil
