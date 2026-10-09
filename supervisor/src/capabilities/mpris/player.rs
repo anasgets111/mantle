@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use futures_util::StreamExt;
+use futures_util::{FutureExt, StreamExt};
 use shared::debug;
 use tokio::task::JoinHandle;
 
@@ -88,11 +88,12 @@ fn resolved_player_identity(read: zbus::Result<String>, previous: Option<&Player
 }
 
 /// `resync`'s fallback fields: the three cached values relevant to degradation, not
-/// `player`/`forwarder`, which it never changes.
-struct Previous<'a> {
-    state: &'a PlayerState,
-    identity: &'a TrackIdentity,
-    trackid: &'a Option<String>,
+/// `player`/`forwarder`, which it never changes. Owned, so a fallback moves rather than clones.
+#[derive(Default)]
+struct Previous {
+    state: PlayerState,
+    identity: TrackIdentity,
+    trackid: Option<String>,
 }
 
 /// The `Position` to publish, and the `CLOCK_MONOTONIC` moment it was read.
@@ -119,13 +120,13 @@ struct Previous<'a> {
 /// restamps: extrapolation restarts from the moment playback resumed.
 fn resolve_position(
     read: zbus::Result<i64>,
-    previous: Option<&Previous<'_>>,
+    previous: Option<&PlayerState>,
     same_track: bool,
     play_state: PlayState,
     bus_name: &str,
 ) -> (Option<i64>, i64) {
-    let last = previous.map(|p| (p.state.position, p.state.position_updated_at));
-    let settled = previous.is_some_and(|p| p.state.play_state == play_state);
+    let last = previous.map(|p| (p.position, p.position_updated_at));
+    let settled = previous.is_some_and(|p| p.play_state == play_state);
     match read {
         Ok(0) if same_track && matches!(last, Some((Some(position), _)) if position > 0) => last.unwrap_or((None, 0)),
         Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == Some(position)) => {
@@ -150,70 +151,101 @@ async fn resync(
     bus_name: &str,
     player: &MprisPlayerProxy<'static>,
     root: &MprisRootProxy<'static>,
-    previous: Option<Previous<'_>>,
+    previous: Option<Previous>,
 ) -> Resynced {
-    let read = player.playback_status().await;
-    let play_state = match read.as_deref().map(parse_play_state) {
+    // Concurrent: zbus answers most from its property cache, so the uncached ones (`Position`, any
+    // property the player lacks) cost one round trip together rather than one each.
+    let (
+        status,
+        can_go_next,
+        can_go_previous,
+        can_seek,
+        can_play,
+        can_pause,
+        can_raise,
+        can_quit,
+        volume,
+        loop_status,
+        shuffle,
+        rate,
+        minimum_rate,
+        maximum_rate,
+        player_identity,
+        desktop_entry,
+        raw_position,
+        metadata,
+    ) = tokio::join!(
+        player.playback_status(),
+        player.can_go_next(),
+        player.can_go_previous(),
+        player.can_seek(),
+        player.can_play(),
+        player.can_pause(),
+        root.can_raise(),
+        root.can_quit(),
+        player.volume(),
+        player.loop_status(),
+        player.shuffle(),
+        player.rate(),
+        player.minimum_rate(),
+        player.maximum_rate(),
+        root.identity(),
+        root.desktop_entry(),
+        player.position(),
+        player.metadata(),
+    );
+    let previous_state = previous.as_ref().map(|p| &p.state);
+    let play_state = match status.as_deref().map(parse_play_state) {
         Ok(Some(status)) => status,
         _ => {
-            debug!("PlaybackStatus for {bus_name} is unreadable or unknown, {read:?}; keeping the last known value");
-            previous.as_ref().map(|p| p.state.play_state).unwrap_or_default()
+            debug!("PlaybackStatus for {bus_name} is unreadable or unknown, {status:?}; keeping the last known value");
+            previous_state.map(|s| s.play_state).unwrap_or_default()
         }
     };
-    let previous_state = previous.as_ref().map(|p| &p.state);
-    let can_go_next = player.can_go_next().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_next));
-    let can_go_previous =
-        player.can_go_previous().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_previous));
-    let can_seek = player.can_seek().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_seek));
-    let can_play = player.can_play().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_play));
-    let can_pause = player.can_pause().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_pause));
-    let can_raise = root.can_raise().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_raise));
-    let can_quit = root.can_quit().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_quit));
-    let volume = player
-        .volume()
-        .await
+    let can_go_next = can_go_next.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_next));
+    let can_go_previous = can_go_previous.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_go_previous));
+    let can_seek = can_seek.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_seek));
+    let can_play = can_play.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_play));
+    let can_pause = can_pause.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_pause));
+    let can_raise = can_raise.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_raise));
+    let can_quit = can_quit.unwrap_or_else(|_| previous_state.is_some_and(|s| s.can_quit));
+    let volume = volume
         .ok()
         .filter(|value| value.is_finite() && *value >= 0.0)
         .map(percent_from_fraction)
         .unwrap_or_else(|| previous_state.map_or(100.0, |s| s.volume));
-    let loop_status = match player.loop_status().await {
+    let loop_status = match loop_status {
         Ok(status) => parse_loop_status(&status),
         Err(_) => previous_state.and_then(|s| s.loop_status),
     };
-    let shuffle = player.shuffle().await.unwrap_or_else(|_| previous_state.is_some_and(|s| s.shuffle));
-    let rate = player
-        .rate()
-        .await
+    let shuffle = shuffle.unwrap_or_else(|_| previous_state.is_some_and(|s| s.shuffle));
+    let rate = rate
         .ok()
         .filter(|value| value.is_finite() && *value > 0.0)
         .unwrap_or_else(|| previous_state.map_or(1.0, |s| s.rate));
-    let minimum_rate = player
-        .minimum_rate()
-        .await
+    let minimum_rate = minimum_rate
         .ok()
         .filter(|value| value.is_finite())
         .unwrap_or_else(|| previous_state.map_or(0.0, |s| s.minimum_rate));
-    let maximum_rate = player
-        .maximum_rate()
-        .await
+    let maximum_rate = maximum_rate
         .ok()
         .filter(|value| value.is_finite())
         .unwrap_or_else(|| previous_state.map_or(0.0, |s| s.maximum_rate));
     // `player_identity` is MediaPlayer2.Identity, not the TrackIdentity key below.
-    let player_identity = resolved_player_identity(root.identity().await, previous.as_ref().map(|p| p.state), bus_name);
+    let player_identity = resolved_player_identity(player_identity, previous_state, bus_name);
     // Optional and absent on several players: an error means "I have none", not a stale value.
-    let desktop_entry = root.desktop_entry().await.unwrap_or_default();
-    let raw_position = player.position().await;
+    let desktop_entry = desktop_entry.unwrap_or_default();
 
     // A full Metadata read failure keeps metadata-derived fields instead of resetting them and
     // causing a spurious track change.
-    let Ok(metadata) = player.metadata().await else {
+    let Ok(metadata) = metadata else {
         debug!(
             "Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round"
         );
         // Keeping the previous track's fields is by definition the same-track case.
         let (position, position_updated_at) =
-            resolve_position(raw_position, previous.as_ref(), true, play_state, bus_name);
+            resolve_position(raw_position, previous_state, true, play_state, bus_name);
+        let Previous { state: kept, identity, trackid } = previous.unwrap_or_default();
         let state = PlayerState {
             id: player_id(bus_name).to_string(),
             identity: player_identity,
@@ -231,45 +263,34 @@ async fn resync(
             rate,
             minimum_rate,
             maximum_rate,
-            title: previous.as_ref().map(|p| p.state.title.clone()).unwrap_or_default(),
-            artist: previous.as_ref().map(|p| p.state.artist.clone()).unwrap_or_default(),
-            album: previous.as_ref().map(|p| p.state.album.clone()).unwrap_or_default(),
-            album_artist: previous.as_ref().map(|p| p.state.album_artist.clone()).unwrap_or_default(),
-            genre: previous.as_ref().map(|p| p.state.genre.clone()).unwrap_or_default(),
-            album_art_path: previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default(),
             position,
             position_updated_at,
-            length: previous.as_ref().and_then(|p| p.state.length),
-            url: previous.as_ref().map(|p| p.state.url.clone()).unwrap_or_default(),
             desktop_entry,
-            track_list: previous.as_ref().map(|p| p.state.track_list.clone()).unwrap_or_default(),
-            playlists: previous.as_ref().map(|p| p.state.playlists.clone()).unwrap_or_default(),
+            ..kept
         };
-        let identity = previous.as_ref().map(|p| p.identity.clone()).unwrap_or_default();
-        let trackid = previous.as_ref().and_then(|p| p.trackid.clone());
         return Resynced { state, identity, trackid };
     };
     let parsed = parse_metadata(&metadata);
 
     let new_identity = parsed.track_identity();
-    let same_track = previous.as_ref().is_some_and(|p| *p.identity == new_identity);
+    let same_track = previous.as_ref().is_some_and(|p| p.identity == new_identity);
+    let (position, position_updated_at) =
+        resolve_position(raw_position, previous_state, same_track, play_state, bus_name);
+    let kept = previous.map(|p| p.state).unwrap_or_default();
 
     let local_art_path = resolve_album_art_path(parsed.art_url.as_deref());
     let album_art_path = if !local_art_path.is_empty() {
         local_art_path
     } else if same_track {
-        previous.as_ref().map(|p| p.state.album_art_path.clone()).unwrap_or_default()
+        kept.album_art_path
     } else {
         String::new()
     };
     let length = match parsed.length_us {
         Some(length) if length >= 0 => Some(length),
-        _ if same_track => previous.as_ref().and_then(|p| p.state.length),
+        _ if same_track => kept.length,
         _ => None,
     };
-
-    let (position, position_updated_at) =
-        resolve_position(raw_position, previous.as_ref(), same_track, play_state, bus_name);
 
     let trackid = parsed.trackid.clone();
     let state = PlayerState {
@@ -302,12 +323,12 @@ async fn resync(
         // description.
         url: match parsed.url {
             Some(url) => url,
-            None if same_track => previous.as_ref().map(|p| p.state.url.clone()).unwrap_or_default(),
+            None if same_track => kept.url,
             None => String::new(),
         },
         desktop_entry,
-        track_list: previous.as_ref().map(|p| p.state.track_list.clone()).unwrap_or_default(),
-        playlists: previous.as_ref().map(|p| p.state.playlists.clone()).unwrap_or_default(),
+        track_list: kept.track_list,
+        playlists: kept.playlists,
     };
     Resynced { state, identity: new_identity, trackid }
 }
@@ -419,9 +440,9 @@ pub(super) async fn register_player(
     let _ = events.send(());
 }
 
-/// Re-runs [`resync`] on each `PlaybackStatus`/`Metadata` change or `Seeked`, updating the entry in
-/// place with no debounce or incremental patching. `Position` is excluded from
-/// `PropertiesChanged` as too high-frequency, so only `Seeked` signals position changes.
+/// Re-runs [`resync`] on each burst of property changes or `Seeked`, updating the entry in place
+/// with no debounce or incremental patching. `Position` is excluded from `PropertiesChanged` as too
+/// high-frequency, so only `Seeked` signals position changes.
 fn spawn_player_forwarder(
     bus_name: String,
     player: MprisPlayerProxy<'static>,
@@ -431,8 +452,6 @@ fn spawn_player_forwarder(
     collections_refresh: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut playback_status = player.receive_playback_status_changed().await;
-        let mut metadata = player.receive_metadata_changed().await;
         let mut seeked = match player.receive_seeked().await {
             Ok(stream) => Some(stream),
             Err(err) => {
@@ -441,17 +460,22 @@ fn spawn_player_forwarder(
             }
         };
         let mut retry_seeked_at = seeked.is_none().then(tokio::time::Instant::now);
-        let mut volume = player.receive_volume_changed().await;
-        let mut loop_status = player.receive_loop_status_changed().await;
-        let mut shuffle = player.receive_shuffle_changed().await;
-        let mut rate = player.receive_rate_changed().await;
-        let mut can_go_next = player.receive_can_go_next_changed().await;
-        let mut can_go_previous = player.receive_can_go_previous_changed().await;
-        let mut can_seek = player.receive_can_seek_changed().await;
-        let mut can_play = player.receive_can_play_changed().await;
-        let mut can_pause = player.receive_can_pause_changed().await;
-        let mut can_raise = root.receive_can_raise_changed().await;
-        let mut can_quit = root.receive_can_quit_changed().await;
+        // `true` for `PlaybackStatus`, which arms the position recheck.
+        let mut properties = futures_util::stream::select_all([
+            player.receive_playback_status_changed().await.map(|_| true).boxed(),
+            player.receive_metadata_changed().await.map(|_| false).boxed(),
+            player.receive_volume_changed().await.map(|_| false).boxed(),
+            player.receive_loop_status_changed().await.map(|_| false).boxed(),
+            player.receive_shuffle_changed().await.map(|_| false).boxed(),
+            player.receive_rate_changed().await.map(|_| false).boxed(),
+            player.receive_can_go_next_changed().await.map(|_| false).boxed(),
+            player.receive_can_go_previous_changed().await.map(|_| false).boxed(),
+            player.receive_can_seek_changed().await.map(|_| false).boxed(),
+            player.receive_can_play_changed().await.map(|_| false).boxed(),
+            player.receive_can_pause_changed().await.map(|_| false).boxed(),
+            root.receive_can_raise_changed().await.map(|_| false).boxed(),
+            root.receive_can_quit_changed().await.map(|_| false).boxed(),
+        ]);
 
         // Several players update `Position` at an indeterminate time *after* `PlaybackStatus`, so
         // the read taken while handling that signal answers with whatever the player held
@@ -460,43 +484,13 @@ fn spawn_player_forwarder(
         let mut recheck_at: Option<tokio::time::Instant> = None;
 
         loop {
-            #[derive(Clone, Copy)]
-            enum Wake {
-                PlaybackStatus,
-                Property,
-                Seeked(i64),
-                Recheck,
-                RetrySeeked,
-            }
             let deadline = recheck_at;
             let retry_deadline = retry_seeked_at;
             let fired = tokio::select! {
-                Some(_) = playback_status.next() => Some(Wake::PlaybackStatus),
-                Some(_) = metadata.next() => Some(Wake::Property),
+                Some(status) = properties.next() => Some(Wake::Property { status }),
                 signal = async { match seeked.as_mut() { Some(stream) => stream.next().await, None => std::future::pending().await } } => {
-                    match signal {
-                        Some(message) => match message.args() {
-                            Ok(args) => Some(Wake::Seeked(args.position_us)),
-                            Err(_) => Some(Wake::Property),
-                        },
-                        None => {
-                            seeked = None;
-                            retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
-                            Some(Wake::Property)
-                        }
-                    }
+                    Some(seeked_wake(signal, &mut seeked, &mut retry_seeked_at))
                 },
-                Some(_) = volume.next() => Some(Wake::Property),
-                Some(_) = loop_status.next() => Some(Wake::Property),
-                Some(_) = shuffle.next() => Some(Wake::Property),
-                Some(_) = rate.next() => Some(Wake::Property),
-                Some(_) = can_go_next.next() => Some(Wake::Property),
-                Some(_) = can_go_previous.next() => Some(Wake::Property),
-                Some(_) = can_seek.next() => Some(Wake::Property),
-                Some(_) = can_play.next() => Some(Wake::Property),
-                Some(_) = can_pause.next() => Some(Wake::Property),
-                Some(_) = can_raise.next() => Some(Wake::Property),
-                Some(_) = can_quit.next() => Some(Wake::Property),
                 () = async move {
                     match deadline {
                         Some(deadline) => tokio::time::sleep_until(deadline).await,
@@ -514,19 +508,6 @@ fn spawn_player_forwarder(
             let Some(fired) = fired else {
                 break;
             };
-            // Only a status change arms it, and only the timer firing disarms it. Clearing on any
-            // event let a `Metadata` change 20ms later cancel the correction, which is the one
-            // case the delay exists for -- the player publishes the new state first and the
-            // position that goes with it some indeterminate time after.
-            let seeked_position = match fired {
-                Wake::Seeked(position) => Some(position),
-                _ => None,
-            };
-            if matches!(fired, Wake::PlaybackStatus) {
-                recheck_at = Some(tokio::time::Instant::now() + POSITION_RECHECK_DELAY);
-            } else if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now()) {
-                recheck_at = None;
-            }
             if matches!(fired, Wake::RetrySeeked) {
                 match player.receive_seeked().await {
                     Ok(stream) => {
@@ -542,22 +523,45 @@ fn spawn_player_forwarder(
                 }
                 continue;
             }
-
-            let previous =
-                {
-                    registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| {
-                        (entry.last_known.clone(), entry.track_identity.clone(), entry.cached_trackid.clone())
-                    })
-                };
-            let previous_ctx =
-                previous.as_ref().map(|(state, identity, trackid)| Previous { state, identity, trackid });
-            let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, previous_ctx).await;
-            if let Some(position) = seeked_position {
-                publish_seeked_position(&mut state, position);
+            let mut status_changed = matches!(fired, Wake::Property { status: true });
+            let mut seeked_position = match fired {
+                Wake::Seeked(position) => Some(position),
+                _ => None,
+            };
+            // One resync for every queued wake: a `PropertiesChanged` wakes one stream per property.
+            while let Some(Some(status)) = properties.next().now_or_never() {
+                status_changed |= status;
             }
+            while let Some(signal) = seeked.as_mut().and_then(|stream| stream.next().now_or_never()) {
+                if let Wake::Seeked(position) = seeked_wake(signal, &mut seeked, &mut retry_seeked_at) {
+                    seeked_position = Some(position);
+                }
+            }
+            // Only a status change arms it, and only the timer firing disarms it. Clearing on any
+            // event let a `Metadata` change 20ms later cancel the correction, which is the one
+            // case the delay exists for -- the player publishes the new state first and the
+            // position that goes with it some indeterminate time after.
+            if status_changed {
+                recheck_at = Some(tokio::time::Instant::now() + POSITION_RECHECK_DELAY);
+            } else if deadline.is_some_and(|deadline| deadline <= tokio::time::Instant::now()) {
+                recheck_at = None;
+            }
+
+            let previous = registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| Previous {
+                state: entry.last_known.clone(),
+                identity: entry.track_identity.clone(),
+                trackid: entry.cached_trackid.clone(),
+            });
+            let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, previous).await;
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&bus_name) else { break };
+            // A `Seeked` batched with a track change belongs to the old track.
+            if let Some(position) = seeked_position
+                && entry.track_identity == identity
+            {
+                publish_seeked_position(&mut state, position);
+            }
             let track_changed = entry.cached_trackid != trackid;
             state.track_list = if track_changed {
                 TrackListState { current_track: trackid.clone().unwrap_or_default(), ..TrackListState::default() }
@@ -585,6 +589,36 @@ fn spawn_player_forwarder(
             }
         }
     })
+}
+
+#[derive(Clone, Copy)]
+enum Wake {
+    /// `status` when `PlaybackStatus` was among the changes.
+    Property {
+        status: bool,
+    },
+    Seeked(i64),
+    Recheck,
+    RetrySeeked,
+}
+
+/// A `Seeked` stream's item as a [`Wake`]. The stream ending drops it and schedules a resubscribe.
+fn seeked_wake(
+    signal: Option<super::proxies::Seeked>,
+    seeked: &mut Option<super::proxies::SeekedStream>,
+    retry_seeked_at: &mut Option<tokio::time::Instant>,
+) -> Wake {
+    match signal {
+        Some(message) => match message.args() {
+            Ok(args) => Wake::Seeked(args.position_us),
+            Err(_) => Wake::Property { status: false },
+        },
+        None => {
+            *seeked = None;
+            *retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+            Wake::Property { status: false }
+        }
+    }
 }
 
 /// `None` for a spelling outside the MPRIS spec.
@@ -631,18 +665,12 @@ mod position_tests {
         PlayerState { position: Some(position), position_updated_at: 42, ..PlayerState::default() }
     }
 
-    fn previous_ctx<'a>(state: &'a PlayerState, identity: &'a TrackIdentity) -> Previous<'a> {
-        Previous { state, identity, trackid: &None }
-    }
-
     #[test]
     fn a_zero_mid_track_keeps_the_last_reading_and_its_timestamp() {
         // Firefox answers `0` for several seconds after a seek while playing on from the target.
         // Believing it restarts every progress bar at the beginning of the track.
         let state = previous_at(340_000_000);
-        let identity = TrackIdentity::default();
-        let previous = previous_ctx(&state, &identity);
-        assert_eq!(resolve_position(Ok(0), Some(&previous), true, PlayState::Stopped, "test"), (Some(340_000_000), 42));
+        assert_eq!(resolve_position(Ok(0), Some(&state), true, PlayState::Stopped, "test"), (Some(340_000_000), 42));
     }
 
     #[test]
@@ -650,9 +678,7 @@ mod position_tests {
         // A track we were not already inside legitimately begins at zero, so the same reading is
         // the truth rather than a player that has not caught up.
         let state = previous_at(340_000_000);
-        let identity = TrackIdentity::default();
-        let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) = resolve_position(Ok(0), Some(&previous), false, PlayState::Stopped, "test");
+        let (position, updated_at) = resolve_position(Ok(0), Some(&state), false, PlayState::Stopped, "test");
         assert_eq!(position, Some(0));
         assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
     }
@@ -660,10 +686,7 @@ mod position_tests {
     #[test]
     fn a_real_reading_always_wins() {
         let state = previous_at(340_000_000);
-        let identity = TrackIdentity::default();
-        let previous = previous_ctx(&state, &identity);
-        let (position, updated_at) =
-            resolve_position(Ok(363_000_000), Some(&previous), true, PlayState::Stopped, "test");
+        let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&state), true, PlayState::Stopped, "test");
         assert_eq!(position, Some(363_000_000));
         assert_ne!(updated_at, 42);
     }
@@ -671,13 +694,11 @@ mod position_tests {
     #[test]
     fn an_unchanged_reading_keeps_its_stamp_until_the_play_state_moves() {
         let state = PlayerState { play_state: PlayState::Paused, ..previous_at(340_000_000) };
-        let identity = TrackIdentity::default();
-        let previous = previous_ctx(&state, &identity);
         assert_eq!(
-            resolve_position(Ok(340_000_000), Some(&previous), true, PlayState::Paused, "test"),
+            resolve_position(Ok(340_000_000), Some(&state), true, PlayState::Paused, "test"),
             (Some(340_000_000), 42)
         );
-        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&previous), true, PlayState::Playing, "test");
+        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&state), true, PlayState::Playing, "test");
         assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
     }
 
@@ -737,6 +758,201 @@ mod identity_tests {
 
         let previous = PlayerState { identity: "Player name".to_string(), ..PlayerState::default() };
         assert_eq!(resolved_player_identity(read, Some(&previous), "test"), "Player name");
+
+        // No Player interface: a failed Metadata read moves the whole previous track across.
+        let player = bind_player(&connection, "org.mpris.MediaPlayer2.test").await.unwrap();
+        let state = PlayerState {
+            id: "test".into(),
+            title: "Song".into(),
+            album_art_path: "/art.png".into(),
+            length: Some(9),
+            position: Some(5),
+            position_updated_at: 42,
+            track_list: TrackListState { current_track: "/t/1".into(), ..TrackListState::default() },
+            ..previous
+        };
+        let identity = parse_metadata(&crate::capabilities::test_support::properties(&[(
+            "xesam:title",
+            zbus::zvariant::Value::from("Song"),
+        )]))
+        .track_identity();
+        let previous = Previous { state: state.clone(), identity: identity.clone(), trackid: Some("/t/1".into()) };
+        let after = resync("org.mpris.MediaPlayer2.test", &player, &root, Some(previous)).await;
+        assert_eq!((after.state, after.identity, after.trackid.as_deref()), (state, identity, Some("/t/1")));
+    }
+}
+
+#[cfg(test)]
+mod resync_tests {
+    use super::*;
+    use crate::capabilities::test_support::{p2p_pair_serving, properties, within};
+    use std::sync::atomic::AtomicUsize;
+    use std::time::Duration;
+    use zbus::zvariant::{ObjectPath, OwnedValue, Value};
+
+    const NAME: &str = "org.mpris.MediaPlayer2.fixture";
+    const PATH: &str = "/org/mpris/MediaPlayer2";
+    const PLAYER: &str = "org.mpris.MediaPlayer2.Player";
+
+    /// Every flag differs from its default, so a read landing in another field shows.
+    #[derive(Clone, Default)]
+    struct Player {
+        position_reads: Arc<AtomicUsize>,
+        /// Held by a test to stall `Position` reads, and with them the resync awaiting one.
+        gate: Arc<tokio::sync::Mutex<()>>,
+    }
+
+    fn track(trackid: &str, title: &str) -> HashMap<String, OwnedValue> {
+        properties(&[
+            ("mpris:trackid", Value::from(ObjectPath::try_from(trackid.to_string()).unwrap())),
+            ("xesam:title", Value::from(title.to_string())),
+            ("xesam:artist", Value::from(vec!["Artist"])),
+            ("mpris:length", Value::from(240_000_000_i64)),
+        ])
+    }
+
+    #[rustfmt::skip]
+    #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+    impl Player {
+        #[zbus(property)] fn playback_status(&self) -> String { "Paused".into() }
+        #[zbus(property)] fn metadata(&self) -> HashMap<String, OwnedValue> { track("/t/1", "Song") }
+        /// A new reading per call, so every resync changes the state and wakes `events`.
+        #[zbus(property)]
+        async fn position(&self) -> i64 {
+            let _open = self.gate.lock().await;
+            1_000 * i64::try_from(self.position_reads.fetch_add(1, Ordering::Relaxed)).unwrap()
+        }
+        #[zbus(property)] fn can_control(&self) -> bool { true }
+        #[zbus(property)] fn can_go_next(&self) -> bool { true }
+        #[zbus(property)] fn can_go_previous(&self) -> bool { false }
+        #[zbus(property)] fn can_seek(&self) -> bool { true }
+        #[zbus(property)] fn can_play(&self) -> bool { false }
+        #[zbus(property)] fn can_pause(&self) -> bool { true }
+        #[zbus(property)] fn volume(&self) -> f64 { 0.5 }
+        #[zbus(property)] fn loop_status(&self) -> String { "Track".into() }
+        #[zbus(property)] fn shuffle(&self) -> bool { true }
+        #[zbus(property)] fn rate(&self) -> f64 { 1.5 }
+        #[zbus(property)] fn minimum_rate(&self) -> f64 { 0.25 }
+        #[zbus(property)] fn maximum_rate(&self) -> f64 { 2.0 }
+    }
+
+    struct Root;
+
+    #[rustfmt::skip]
+    #[zbus::interface(name = "org.mpris.MediaPlayer2")]
+    impl Root {
+        #[zbus(property)] fn identity(&self) -> String { "Fixture".into() }
+        #[zbus(property)] fn desktop_entry(&self) -> String { "fixture".into() }
+        #[zbus(property)] fn can_raise(&self) -> bool { false }
+        #[zbus(property)] fn can_quit(&self) -> bool { true }
+    }
+
+    /// `(connection, peer, the peer's player)`.
+    async fn serve() -> (zbus::Connection, zbus::Connection, Player) {
+        let player = Player::default();
+        let served = player.clone();
+        let (connection, peer) = p2p_pair_serving(|builder| builder.serve_at(PATH, served)?.serve_at(PATH, Root)).await;
+        (connection, peer, player)
+    }
+
+    /// Long enough for queued wakes, their resyncs and the 100 ms recheck to finish.
+    async fn settle() {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+
+    async fn properties_changed(peer: &zbus::Connection, changed: HashMap<&str, Value<'_>>) {
+        let emitter = zbus::object_server::SignalEmitter::new(peer, PATH).unwrap();
+        let interface = zbus::names::InterfaceName::from_static_str_unchecked(PLAYER);
+        zbus::fdo::Properties::properties_changed(&emitter, interface, changed, (&[][..]).into()).await.unwrap();
+    }
+
+    async fn seeked(peer: &zbus::Connection, position: i64) {
+        peer.emit_signal(None::<&str>, PATH, PLAYER, "Seeked", &(position,)).await.unwrap();
+    }
+
+    fn last_known(registry: &PlayerRegistry) -> PlayerState {
+        registry.lock().unwrap().get(NAME).map(|entry| entry.last_known.clone()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_concurrent_read_lands_in_its_own_field() {
+        let (connection, _peer, _) = serve().await;
+        let player = bind_player(&connection, NAME).await.unwrap();
+        let root = bind_root(&connection, NAME).await.unwrap();
+        let Resynced { state, trackid, .. } = resync(NAME, &player, &root, None).await;
+        let expected = PlayerState {
+            id: "fixture".into(),
+            identity: "Fixture".into(),
+            play_state: PlayState::Paused,
+            can_go_next: true,
+            can_go_previous: false,
+            can_seek: true,
+            can_play: false,
+            can_pause: true,
+            can_raise: false,
+            can_quit: true,
+            volume: 50.0,
+            loop_status: Some(LoopStatus::Track),
+            shuffle: true,
+            rate: 1.5,
+            minimum_rate: 0.25,
+            maximum_rate: 2.0,
+            title: "Song".into(),
+            artist: "Artist".into(),
+            position: state.position,
+            position_updated_at: state.position_updated_at,
+            length: Some(240_000_000),
+            desktop_entry: "fixture".into(),
+            ..PlayerState::default()
+        };
+        assert_eq!(state, expected);
+        assert_eq!(trackid.as_deref(), Some("/t/1"));
+    }
+
+    #[tokio::test]
+    async fn queued_wakes_fold_into_one_resync() {
+        let (connection, peer, player) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, mut woken) = tokio::sync::mpsc::unbounded_channel();
+        register_player(&connection, &registry, &events, NAME.to_string()).await;
+        let reads = || player.position_reads.load(Ordering::Relaxed);
+        let before = reads();
+        within(woken.recv()).await;
+        settle().await;
+        // zbus replays all 13 cached properties as the forwarder subscribes, 13 resyncs undrained;
+        // a second batch is legitimate on a multi-thread runtime. Plus the replayed status's recheck.
+        assert!(reads() - before <= 3, "{} resyncs for the subscription replay", reads() - before);
+
+        let before = reads();
+        let changed =
+            [("Volume", 0.25.into()), ("Rate", 1.25.into()), ("Shuffle", false.into()), ("LoopStatus", "None".into())];
+        properties_changed(&peer, HashMap::from(changed)).await;
+        seeked(&peer, 5_000_000).await;
+        settle().await;
+        assert!(reads() - before <= 3, "{} resyncs for one signal of 4 properties and a Seeked", reads() - before);
+        let state = last_known(&registry);
+        assert_eq!((state.position, state.volume, state.shuffle), (Some(5_000_000), 25.0, false));
+    }
+
+    #[tokio::test]
+    async fn a_seeked_batched_with_a_track_change_leaves_the_new_track_live_position() {
+        let (connection, peer, player) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        register_player(&connection, &registry, &events, NAME.to_string()).await;
+        settle().await;
+        let stalled = player.gate.lock().await;
+        // A resync stuck on `Position` while the next batch queues up behind it.
+        properties_changed(&peer, HashMap::from([("Volume", 0.75.into())])).await;
+        settle().await;
+        seeked(&peer, 300_000_000).await;
+        properties_changed(&peer, HashMap::from([("Metadata", Value::from(track("/t/2", "Next")))])).await;
+        settle().await;
+        drop(stalled);
+        settle().await;
+        let state = last_known(&registry);
+        assert_eq!(state.title, "Next");
+        assert_ne!(state.position, Some(300_000_000), "the old track's seek target");
     }
 }
 

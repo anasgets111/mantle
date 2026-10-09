@@ -11,7 +11,6 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use super::collections::{PlaylistsState, read_playlists};
 use super::metadata::clamp_seek_target;
-use super::player::PlayerState;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
 use shared::action::{LoopStatus, PlayerCommand};
@@ -239,10 +238,7 @@ impl MprisController {
         }
     }
     pub async fn set_rate(&self, id: &str, value: f64) {
-        let state = self.find_state(id);
-        let within_limits = state.as_ref().is_none_or(|s| {
-            let minimum = s.minimum_rate;
-            let maximum = s.maximum_rate;
+        let within_limits = self.find_rate_limits(id).is_none_or(|(minimum, maximum)| {
             (minimum <= 0.0 || value >= minimum) && (maximum <= 0.0 || value <= maximum)
         });
         if !value.is_finite() || value <= 0.0 || !within_limits {
@@ -367,9 +363,11 @@ impl MprisController {
         self.registry.lock().expect("mutex poisoned").get(&bus_name).and_then(|entry| entry.last_known.position)
     }
 
-    fn find_state(&self, id: &str) -> Option<PlayerState> {
+    /// `(MinimumRate, MaximumRate)` as last read.
+    fn find_rate_limits(&self, id: &str) -> Option<(f64, f64)> {
         let bus_name = service_name_for_id(id);
-        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.last_known.clone())
+        let guard = self.registry.lock().expect("mutex poisoned");
+        guard.get(&bus_name).map(|entry| (entry.last_known.minimum_rate, entry.last_known.maximum_rate))
     }
 
     fn find_seek_context(&self, id: &str) -> Option<SeekContext> {
