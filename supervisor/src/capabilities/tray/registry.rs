@@ -171,7 +171,7 @@ async fn next_burst(signals: &mut (impl futures_util::Stream<Item = bool> + Unpi
     Some(icon)
 }
 
-/// Re-fetches the [`TrayItem`] properties on every burst of `NewX` signals (all of them for an icon signal,
+/// Re-fetches the [`TrayItem`] properties on every burst of `NewX` signals (all of them for an icon or status signal,
 /// else just the text ones) and updates the entry in place without debounce. One task per item; its handle lives in
 /// [`ItemEntry`] and is aborted on unregistration.
 ///
@@ -198,7 +198,7 @@ fn spawn_item_signal_forwarder(
             new_attention_icon.map(|_| true).boxed(),
             new_overlay_icon.map(|_| true).boxed(),
             new_tool_tip.map(|_| false).boxed(),
-            new_status.map(|_| false).boxed(),
+            new_status.map(|_| true).boxed(),
         ]);
 
         while let Some(icon) = next_burst(&mut signals).await {
