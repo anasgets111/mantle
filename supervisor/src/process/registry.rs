@@ -24,8 +24,7 @@ pub(crate) fn process_run_args(arguments: &[serde_json::Value]) -> Option<(Strin
     Some((cmd, args))
 }
 
-/// Dispatches `process.run`/`process.kill` (ADR-0037), including parse and spawn. `async` because
-/// kill reaps in `reaps` before sending `ProcessExited`.
+/// Dispatches `process.run`/`process.kill` (ADR-0037), including parse and spawn.
 pub(crate) fn dispatch(
     processes: &mut LiveProcesses,
     registry: &socket::GenerationRegistry,
@@ -81,6 +80,7 @@ pub(crate) fn dispatch(
         // Reaped off the loop: SIGTERM, grace and group poll take 100 ms, 2 s for a TERM-ignoring child.
         "kill" => {
             if let Some(child) = processes.remove(&(generation_id, id)) {
+                while reaps.try_join_next().is_some() {}
                 let registry = registry.clone();
                 reaps.spawn(async move {
                     let code = kill_registered_process(child, generation_id, id).await;
@@ -563,10 +563,8 @@ mod tests {
         let mut processes: LiveProcesses = HashMap::new();
         let (stdout, stderr) =
             spawn_and_register_process(&mut processes, 1, 2, "seq", &["1".into(), "5000".into()]).unwrap();
-        let registry = socket::GenerationRegistry::default();
         // Never read: a Renderer slower than the child.
-        let (tx, _rx) = tokio::sync::mpsc::channel(1024);
-        registry.register(1, tx, std::sync::Arc::new(tokio::sync::Notify::new()));
+        let (registry, _rx) = registry_with_connection(1);
 
         let flood = stream_process_output(&registry, 1, 2, stdout, stderr);
         assert!(tokio::time::timeout(std::time::Duration::from_millis(300), flood).await.is_err(), "it must wait");
@@ -602,15 +600,15 @@ mod tests {
             serde_json::from_slice::<SupervisorFrame>(&payload).unwrap(),
             SupervisorFrame::ProcessExited(ProcessExited { id: 5, code: None })
         ));
-    }
 
-    #[tokio::test]
-    async fn kill_registered_process_reaps_and_reports_a_signal_death() {
-        let mut processes: LiveProcesses = HashMap::new();
-        spawn_and_register_process(&mut processes, 1, 3, "sh", &sh_args("sleep 5"));
-        let child = processes.remove(&(1, 3)).unwrap();
-
-        assert_eq!(kill_registered_process(child, 1, 3).await, None, "a SIGTERM/SIGKILL death has no exit code");
+        // Finished kill tasks are drained as new ones spawn, not kept until shutdown.
+        for id in 6..9 {
+            spawn_and_register_process(&mut processes, 1, id, "sh", &sh_args("sleep 30"));
+            let kill = shared::CommandEnvelope { id, ..kill.clone() };
+            dispatch(&mut processes, &registry, &done_tx, &mut reaps, &kill);
+            tokio::time::timeout(std::time::Duration::from_secs(5), rx.recv()).await.unwrap().unwrap();
+        }
+        assert!(reaps.len() <= 1, "{} finished kills left in the set", reaps.len());
     }
 
     #[tokio::test]

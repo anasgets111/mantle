@@ -332,6 +332,7 @@ impl Supervisor {
                 let mut gone = take_generation(&mut self.processes, departed);
                 let (reaped_tx, reaped_rx) = tokio::sync::oneshot::channel();
                 self.departed_reaped = Some(reaped_rx);
+                while self.reaps.try_join_next().is_some() {}
                 self.reaps.spawn(async move {
                     reap_processes(&mut gone).await;
                     let _ = reaped_tx.send(());
