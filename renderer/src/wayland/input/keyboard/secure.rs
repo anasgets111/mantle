@@ -106,7 +106,7 @@ fn focus_on_enter(scope: &[(&str, &layout::ResolvedNode)], current: Option<&Focu
 
 /// Appends `text` to `buffer` up to `max` grapheme clusters in all.
 fn push_limited(buffer: &mut shared::SecureBuffer, text: &str, max: Option<usize>) {
-    buffer.push_str(super::plain::fit_to_limit(text, max, buffer.grapheme_count()));
+    buffer.push_str(super::edit::fit_to_limit(text, max, buffer.grapheme_count()));
 }
 
 /// A field is armed only if its surface is in the current key scope and still has a live

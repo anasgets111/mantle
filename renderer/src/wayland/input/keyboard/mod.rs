@@ -8,14 +8,15 @@ use super::*;
 use crate::layout::node::prop::keywords;
 use crate::lua::call_logged;
 
+mod edit;
 mod focus;
 mod on_key;
 mod plain;
 mod rows;
 mod secure;
+pub(in crate::wayland::input) use edit::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
 pub(crate) use on_key::KeyPress;
-pub(in crate::wayland::input) use plain::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 
 keywords! {
     /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
