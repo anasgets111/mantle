@@ -25,12 +25,20 @@
 <path d="M-1720 -275 L960 1480 L3640 -275" stroke-width="1.6" stroke-opacity=".035"/>
 <path d="M-1980 -386 L960 1540 L3900 -386" stroke-width="1.6" stroke-opacity=".03"/>
 </g>
-<g transform="translate(622 330) scale(1.3)" stroke-linejoin="round">
-<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="url(#mark)" stroke="#fab387" stroke-opacity=".26" stroke-width="3"/>
-<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="url(#mark)" stroke="#fab387" stroke-opacity=".26" stroke-width="3" transform="translate(520 0) scale(-1 1)"/>
-<path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z" fill="#fab387" fill-opacity=".7"/>
-<path d="M150 314 L260 386 L370 314 L370 344 L260 416 L150 344 Z" fill="#f38ba8" fill-opacity=".55"/>
-<path d="M150 366 L260 438 L370 366 L370 396 L260 468 L150 396 Z" fill="#f38ba8" fill-opacity=".35"/>
+<g transform="translate(622 330) scale(1.3)" stroke="#fab387" stroke-opacity=".26" stroke-width="3" stroke-linejoin="round">
+<g id="half">
+<path d="M30 137.8 V96 Q30 20 100 11 L260 128 V285 Z" fill="#fab387" fill-opacity=".26"/>
+<path d="M30 137.8 L124 198 V468 H30 Z" fill="url(#mark)"/>
+<path d="M0 468 V95 Q0 2 100 11 Q30 20 30 96 V468 Z" fill="#0c080b" fill-opacity=".5"/>
+<path d="M30 137.8 L124 198 V242 L30 181.8 Z" fill="#0c080b" fill-opacity=".3" stroke="none"/>
+<path d="M152 226 L260 295.1 V331.1 L152 262 Z" fill="#fab387" fill-opacity=".7" stroke="none"/>
+<path d="M152 262 L260 331.1 V344.1 L152 275 Z" fill="#fab387" fill-opacity=".3" stroke="none"/>
+<path d="M158 284.8 L260 350.1 V386.1 L158 320.8 Z" fill="#f38ba8" fill-opacity=".55" stroke="none"/>
+<path d="M158 320.8 L260 386.1 V399.1 L158 333.8 Z" fill="#f38ba8" fill-opacity=".24" stroke="none"/>
+<path d="M164 343.7 L260 405.1 V441.1 L164 379.7 Z" fill="#f38ba8" fill-opacity=".35" stroke="none"/>
+<path d="M164 379.7 L260 441.1 V454.1 L164 392.7 Z" fill="#f38ba8" fill-opacity=".15" stroke="none"/>
+</g>
+<use href="#half" transform="translate(520 0) scale(-1 1)"/>
 </g>
 <rect width="3440" height="1440" filter="url(#grain)"/>
 </svg>

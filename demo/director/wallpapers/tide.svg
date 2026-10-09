@@ -22,12 +22,20 @@
 <path d="M0 1140 C700 1020 1300 1300 2000 1180 S3000 1060 3440 1160" stroke="#a6e3a1" stroke-opacity=".22" stroke-width="2"/>
 <path d="M0 1260 C500 1180 1400 1380 2100 1290 S3000 1220 3440 1300" stroke="#74c7ec" stroke-opacity=".26" stroke-width="2.4"/>
 </g>
-<g transform="translate(674 250) scale(1.1)" stroke-linejoin="round">
-<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#94e2d5" fill-opacity=".04" stroke="#94e2d5" stroke-opacity=".4" stroke-width="3"/>
-<path d="M0 420 V110 Q0 10 95 40 L260 175 V265 L125 150 V420 Z" fill="#94e2d5" fill-opacity=".04" stroke="#94e2d5" stroke-opacity=".4" stroke-width="3" transform="translate(520 0) scale(-1 1)"/>
-<path d="M150 262 L260 334 L370 262 L370 292 L260 364 L150 292 Z" fill="#94e2d5" fill-opacity=".3"/>
-<path d="M150 314 L260 386 L370 314 L370 344 L260 416 L150 344 Z" fill="#a6e3a1" fill-opacity=".22"/>
-<path d="M150 366 L260 438 L370 366 L370 396 L260 468 L150 396 Z" fill="#74c7ec" fill-opacity=".16"/>
+<g transform="translate(674 250) scale(1.1)" stroke="#94e2d5" stroke-opacity=".4" stroke-width="3" stroke-linejoin="round">
+<g id="half">
+<path d="M30 137.8 V96 Q30 20 100 11 L260 128 V285 Z" fill="#94e2d5" fill-opacity=".12"/>
+<path d="M30 137.8 L124 198 V468 H30 Z" fill="#94e2d5" fill-opacity=".04"/>
+<path d="M0 468 V95 Q0 2 100 11 Q30 20 30 96 V468 Z" fill="#071012" fill-opacity=".5"/>
+<path d="M30 137.8 L124 198 V242 L30 181.8 Z" fill="#071012" fill-opacity=".3" stroke="none"/>
+<path d="M152 226 L260 295.1 V331.1 L152 262 Z" fill="#94e2d5" fill-opacity=".3" stroke="none"/>
+<path d="M152 262 L260 331.1 V344.1 L152 275 Z" fill="#94e2d5" fill-opacity=".13" stroke="none"/>
+<path d="M158 284.8 L260 350.1 V386.1 L158 320.8 Z" fill="#a6e3a1" fill-opacity=".22" stroke="none"/>
+<path d="M158 320.8 L260 386.1 V399.1 L158 333.8 Z" fill="#a6e3a1" fill-opacity=".1" stroke="none"/>
+<path d="M164 343.7 L260 405.1 V441.1 L164 379.7 Z" fill="#74c7ec" fill-opacity=".16" stroke="none"/>
+<path d="M164 379.7 L260 441.1 V454.1 L164 392.7 Z" fill="#74c7ec" fill-opacity=".07" stroke="none"/>
+</g>
+<use href="#half" transform="translate(520 0) scale(-1 1)"/>
 </g>
 <rect width="3440" height="1440" filter="url(#grain)"/>
 </svg>
