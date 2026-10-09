@@ -6,6 +6,7 @@
 
 - [Installation](guide/installation.md)
 - [CLI](guide/cli.md)
+- [Working with coding agents](guide/agents.md)
 
 # Cookbook
 

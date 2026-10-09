@@ -25,6 +25,7 @@ https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5
 - [Signals](https://anasgets111.github.io/mantle/guide/signals.html) update widgets when values change.
 - `mantle check` catches Lua and layout errors before you run the shell.
 - `mantle init` sets up LuaLS completion and type checking for your config.
+- [Coding agents](https://anasgets111.github.io/mantle/guide/agents.html) can check, reload and drive a config from the command line.
 
 ## Install
 
