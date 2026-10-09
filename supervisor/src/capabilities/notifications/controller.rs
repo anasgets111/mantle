@@ -19,8 +19,8 @@ use super::icon::{
     validate_trusted_path, write_icon_png,
 };
 use super::queue::{
-    Expiry, QueueCleanup, expire_entry, feed_view, next_incarnation, remove_by_id, replace_or_push, resolve_expiry,
-    resolve_notification_id, resolve_sound_path, should_play_sound,
+    Expiry, QueueCleanup, expire_entry, feed_view, find_expiring_entry, next_incarnation, remove_by_id,
+    replace_or_push, resolve_expiry, resolve_notification_id, resolve_sound_path, should_play_sound,
 };
 use super::sound::{SoundSender, default_trusted_sound_roots, resolve_sound_name};
 use super::{
@@ -524,26 +524,23 @@ impl NotificationsController {
         }
         let _ = self.events.send(());
 
-        let timer = resolve_expiry(urgency, expire_timeout).map(|duration| {
-            let controller = self.clone();
-            let holds = self.expiry_hold.subscribe();
-            let task = tokio::spawn(async move {
-                sleep_past_holds(holds, duration).await;
-                controller.expire(id, incarnation).await;
-            });
-            (incarnation, task.abort_handle())
-        });
-        // ponytail: a long `expire_timeout` task lives until its notification is replaced, removed
-        // or evicted, so tasks stay at the queue cap; a burst of fresh ids can reach it at once.
-        let mut state = self.state.lock().expect("mutex poisoned");
-        state.cancel_timer(id);
-        if let Some(timer) = timer {
-            state.timers.insert(id, timer);
-        }
-        drop(state);
-
+        // One lock scope for spawn and insert, so a dismiss or an instant expiry cannot slip between.
+        // ponytail: an expiry task lives until its notification leaves the queue, so tasks stay at the queue cap.
         let (silenced, tier_default_sound) = {
-            let state = self.state.lock().expect("mutex poisoned");
+            let mut state = self.state.lock().expect("mutex poisoned");
+            // A concurrent replace may have superseded this incarnation; its timer is not ours to touch.
+            if find_expiring_entry(&state.queue, id, incarnation).is_some() {
+                state.cancel_timer(id);
+                if let Some(duration) = resolve_expiry(urgency, expire_timeout) {
+                    let controller = self.clone();
+                    let holds = self.expiry_hold.subscribe();
+                    let task = tokio::spawn(async move {
+                        sleep_past_holds(holds, duration).await;
+                        controller.expire(id, incarnation).await;
+                    });
+                    state.timers.insert(id, (incarnation, task.abort_handle()));
+                }
+            }
             (state.dnd || state.quiet, state.sound_registry.get(&urgency).cloned())
         };
         let client_sound_file =
