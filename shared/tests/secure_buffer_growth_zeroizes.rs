@@ -15,8 +15,8 @@
 //! up one secret.
 
 use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use shared::SecureBuffer;
 
@@ -28,6 +28,8 @@ const SECRET: &str = "Tr0ub4dor&3-zK9qLpXwRt-hunter2exposed-3F7dM1sQ";
 /// heap data becomes plausible; at and above it, only this test's own secret should match.
 const MIN_LEAK_LEN: usize = 6;
 
+/// The serialized `Response` payload, whose digits are a second form of the secret. Set before watching.
+static PAYLOAD: OnceLock<Vec<u8>> = OnceLock::new();
 static WATCHING: AtomicBool = AtomicBool::new(false);
 static LEAK_FOUND: AtomicBool = AtomicBool::new(false);
 /// One watch window at a time: the flags above are process-wide and tests run in parallel.
@@ -51,7 +53,9 @@ unsafe impl GlobalAlloc for LeakCheckingAllocator {
             // Safety: `ptr` is valid for `layout.size()` bytes until this call returns it
             // to the allocator -- this read happens before that handback completes.
             let freed = unsafe { std::slice::from_raw_parts(ptr, layout.size()) };
-            if contains_secret_prefix(freed) {
+            if contains_prefix(freed, SECRET.as_bytes())
+                || PAYLOAD.get().is_some_and(|payload| contains_prefix(freed, payload))
+            {
                 LEAK_FOUND.store(true, Ordering::SeqCst);
             }
         }
@@ -61,11 +65,10 @@ unsafe impl GlobalAlloc for LeakCheckingAllocator {
     }
 }
 
-/// True if `haystack` contains any prefix of `SECRET` at least `MIN_LEAK_LEN` bytes long.
+/// True if `haystack` contains any prefix of `secret` at least `MIN_LEAK_LEN` bytes long.
 /// `push_str` is called one character at a time below, so any leaked intermediate block
 /// would hold exactly a prefix of the secret, not an arbitrary substring.
-fn contains_secret_prefix(haystack: &[u8]) -> bool {
-    let secret = SECRET.as_bytes();
+fn contains_prefix(haystack: &[u8], secret: &[u8]) -> bool {
     (MIN_LEAK_LEN..=secret.len())
         .map(|len| &secret[..len])
         .any(|prefix| haystack.windows(prefix.len()).any(|window| window == prefix))
@@ -116,4 +119,25 @@ fn decoding_a_secret_never_leaks_plaintext_to_freed_memory() {
     assert_eq!(decoded, shared::PamMessage::Response { secret: SECRET.as_bytes().to_vec() });
     zeroize::Zeroize::zeroize(&mut decoded);
     assert!(!LEAK_FOUND.load(Ordering::SeqCst), "decoding freed a block holding a plaintext prefix");
+}
+
+/// `read_frame` reads a small frame into one up-front buffer; growing from empty would free blocks
+/// holding a prefix of the password frame.
+#[test]
+fn reading_a_secret_frame_never_leaks_plaintext_to_freed_memory() {
+    let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+    let _serial = SERIAL.lock().unwrap();
+    LEAK_FOUND.store(false, Ordering::SeqCst);
+    let message = shared::PamMessage::Response { secret: SECRET.as_bytes().to_vec() };
+    let payload = serde_json::to_vec(&message).unwrap();
+    let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
+    frame.extend_from_slice(&payload);
+    let _ = PAYLOAD.set(payload);
+
+    WATCHING.store(true, Ordering::SeqCst);
+    let mut read = runtime.block_on(shared::framing::read_frame(&mut &frame[..])).unwrap();
+    zeroize::Zeroize::zeroize(&mut read);
+    WATCHING.store(false, Ordering::SeqCst);
+
+    assert!(!LEAK_FOUND.load(Ordering::SeqCst), "read_frame freed a block holding a plaintext prefix of the frame");
 }
