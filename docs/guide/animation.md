@@ -11,7 +11,7 @@ Six knobs slide 200 px over 600 ms. Each uses a different easing; `"out_back"` p
 comes back:
 
 <!-- shot-alt: Six coloured knobs slide along their tracks under different easings; the out_back knob overshoots the end and settles back. -->
-<!-- shot: frames=0..900/30 -->
+<!-- shot: frames=0@600,30,60,90,120,150,180,210,240,270,300,330,360,390,420,450,480,510,540,570,600@1500 -->
 ```lua,shot
 local go = state("go", false)
 
@@ -127,7 +127,7 @@ display's refresh rate.
 A progress ring that fills forever, with no Lua per frame:
 
 <!-- shot-alt: A card reading "Syncing photos" beside a blue ring that fills clockwise over its grey track, then starts over. -->
-<!-- shot: frames=0..1140/60 -->
+<!-- shot: frames=0..1140/60@60 -->
 ```lua,shot
 local function ring(sweep)
     return { { op = "A", points = { 16, 16, 13, -90, sweep } } }
@@ -237,7 +237,7 @@ The same `translate` change on three springs of `stiffness = 400`, where critica
 The underdamped knob passes the others' resting point and swings back:
 
 <!-- shot-alt: Three knobs spring along their tracks: the underdamped one overshoots and rings, the critical one settles cleanly, the overdamped one crawls in. -->
-<!-- shot: frames=0..1500/50 -->
+<!-- shot: frames=0..1200/50 -->
 ```lua,shot
 local go = state("go", false)
 
@@ -299,7 +299,7 @@ To replay a finished run, take the entry away and put it back. [`pulse`](signals
 one expression: it reads `true` for a window after its source changes.
 
 <!-- shot-alt: A yellow star button swells, dips below its size, and settles in a short bounce. -->
-<!-- shot: frames=0..540/30 -->
+<!-- shot: frames=0@800,30,60,90,120,150,180,210,240,270,300,330,360@1000 -->
 ```lua,shot
 local taps = state("taps", 0)
 -- Three 120 ms segments: `duration` times each one, so the run takes 360 ms.
@@ -326,7 +326,7 @@ return panel {
 An endless spinner needs no signal. A hidden spinner stops requesting frames by itself:
 
 <!-- shot-alt: A pill reading "Checking for updates" with a blue refresh icon turning endlessly. -->
-<!-- shot: frames=0..950/50 -->
+<!-- shot: frames=0..950/50@50 -->
 ```lua,shot
 local busy = state("busy", true)
 local SPIN = { rotate = { duration = 1000, easing = "linear", keyframes = { 0, 360 }, loops = "infinite" } }
@@ -457,7 +457,7 @@ Hiding a surface skips the exit, so drop the child from `children` and hold the 
 fades in on show; the shot plays the hide, down and out over 150 ms:
 
 <!-- shot-alt: A volume card with a speaker icon, a level bar at 42% and its percentage slides down and fades away. -->
-<!-- shot: frames=0@900,30,60,90,120,150,180@250 -->
+<!-- shot: frames=0@900,30,60,90,120,150@400 -->
 ```lua,shot
 local shown = state("osd_shown", false)
 -- Keep the surface mapped 150 ms past `shown`, so the card's exit can play.
@@ -618,7 +618,7 @@ slides out in place and the others stay put. Remove the item from a keyed
 [`list`](../nodes/list.md) instead to have the rest close up at once.
 
 <!-- shot-alt: Of three notification cards, the middle one slides right and fades out, leaving its place empty while the other two stay put. -->
-<!-- shot: frames=0@900,30,60,90,120,150,180,210,240@1400 -->
+<!-- shot: frames=0@900,30,60,90,120,150,180,210@1400 -->
 ```lua,shot
 local dismissed = state("dismissed", {})
 local NOTES = {
@@ -644,7 +644,7 @@ local function card(note)
         border_width = 1,
         border_color = "#45475a",
         on_click = function() dismiss(note.title) end,
-        animate = { exit = { duration = 200, easing = "in_cubic", opacity = 0, translate = { x = 300 } } },
+        animate = { exit = { duration = 200, easing = "in_cubic", opacity = 0, translate = { x = 16 } } },
         children = {
             icon { name = note.icon, size = 20, foreground = note.color, align_v = "center" },
             column {

@@ -8,7 +8,7 @@ use an [image transition](image.md#transition); to run one over a node's painted
 A band that glows in over 400 ms when `pulse_on` turns true:
 
 <!-- shot-alt: A horizontal blue glow band brightens over 400 milliseconds. -->
-<!-- shot: frames=0..420/60 -->
+<!-- shot: frames=0@400,60,120,180,240,300,360,420@1200 -->
 ```lua,shot
 local pulse_on = state("pulse_on", false)
 

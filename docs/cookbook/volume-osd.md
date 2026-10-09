@@ -4,7 +4,7 @@ A card near the bottom of the focused monitor that shows the volume for a moment
 changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, then out.
 
 <!-- shot-alt: A volume card sliding in with a blue level meter and 42% label. -->
-<!-- shot: frames=0..210/30 -->
+<!-- shot: frames=0@600,30,60,90,120,150,180,210@1000 -->
 ```lua,shot
 -- The last change worth showing. `n` makes every write differ: `:set` skips a table equal to the held one.
 local osd = state("volume_osd", { volume = 0, muted = false, n = 0 })
@@ -41,7 +41,8 @@ return {
         layer = "overlay",
         output = "active",
         anchor = { bottom = true }, -- no left/right: centred, width measured
-        margin = { bottom = 80 },
+        margin = { bottom = 68 },
+        padding = { bottom = 12 }, -- room for the card's 12 px slide, which the surface would clip
         visible = mapped,
         child = row {
             width = 280,

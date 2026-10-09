@@ -504,7 +504,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
 
     /// The `frames=` of a `<!-- shot: frames=0..400/20 -->` or `frames=0@800,50,100` comment as
     /// `(time, hold)` in ms, or empty for a still. A frame holds until the next time, the last for a
-    /// second, or for its `@` hold.
+    /// second, or for its `@` hold; a range's `@` (`0..400/20@20`) holds its last frame.
     fn frames(above: &str) -> Result<Vec<(u64, u16)>, String> {
         let Some(spec) = above.trim().strip_prefix("<!-- shot:") else { return Ok(Vec::new()) };
         let bad = || {
@@ -515,7 +515,18 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         let listed: Vec<(u64, Option<u64>)> = match spec.split_once('/') {
             Some((range, step)) => {
                 let (first, last) = range.split_once("..").ok_or_else(bad)?;
-                (number(first)?..=number(last)?).step_by(number(step)?.max(1) as usize).map(|at| (at, None)).collect()
+                let (step, hold) = match step.split_once('@') {
+                    Some((step, hold)) => (step, Some(number(hold)?)),
+                    None => (step, None),
+                };
+                let mut listed: Vec<_> = (number(first)?..=number(last)?)
+                    .step_by(number(step)?.max(1) as usize)
+                    .map(|at| (at, None))
+                    .collect();
+                if let Some(end) = listed.last_mut() {
+                    end.1 = hold;
+                }
+                listed
             }
             None => spec
                 .split(',')
@@ -961,6 +972,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
     #[test]
     fn a_frame_holds_until_the_next_time_or_for_its_own_hold() {
         assert_eq!(frames("<!-- shot: frames=0..40/20 -->").unwrap(), [(0, 20), (20, 20), (40, 1000)]);
+        assert_eq!(frames("<!-- shot: frames=0..40/20@20 -->").unwrap(), [(0, 20), (20, 20), (40, 20)]);
         assert_eq!(frames("<!-- shot: frames=0@900,30,60@250 -->").unwrap(), [(0, 900), (30, 30), (60, 250)]);
         assert!(frames("<!-- shot: frames=0@0,30 -->").is_err(), "a frame held for no time never shows");
         assert!(frames("<!-- shot: frames=30,0 -->").is_err());

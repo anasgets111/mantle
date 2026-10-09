@@ -5,7 +5,7 @@ summary, the formatted body and the sender's action buttons; clicking it runs th
 the × dismisses it, and hovering the stack pauses every countdown.
 
 <!-- shot-alt: Two notification cards entering a corner stack, with actions on the first card. -->
-<!-- shot: frames=0..210/30 -->
+<!-- shot: frames=0@500,30,60,90,120,150,180,210@1500 -->
 ```lua,shot
 local MAX_CARDS = 4
 local stack_hover = hover("notification_stack")
@@ -80,10 +80,11 @@ local function card(item)
         border_width = 1,
         border_color = critical and "#f38ba8" or "#45475a",
         opacity = 1, -- `from` needs the property set
-        translate = { x = 0 },
+        scale = 1,
         animate = {
             opacity = { duration = 150, from = 0 },
-            translate = { duration = 200, easing = "out_cubic", from = { x = 40 } },
+            -- Grows in place: a slide would leave the surface and be clipped at its edge.
+            scale = { duration = 200, easing = "out_cubic", from = 0.95 },
             exit = { duration = 150, opacity = 0 },
         },
         on_click = function()
