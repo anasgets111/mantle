@@ -27,7 +27,11 @@ for _, step in ipairs(takes.timeline(texts)) do
     replays(step.before, step.after, nil, name)
     replays(step.before, step.after, step.take, name .. " typed")
 end
-assert(takes.derive("typo", last):find("aling_v", 1, true), "typo misspells nothing")
+-- The typo lands on the clock text's own `align_v`, a few lines past its `os.date`.
+local typo, clock = takes.derive("typo", last), last:find('return os.date("%a', 1, true)
+local at = typo:find("aling_v", 1, true)
+assert(at and at > clock and select(2, typo:sub(clock, at):gsub("\n", "")) <= 6, "typo misses the clock")
+assert(not pcall(takes.derive, "typo", "x\n"), "typo without its anchor did not raise")
 assert(takes.derive("fix", last) == last, "fix does not restore the last stage")
 
 -- Every module prunes with nothing and with everything played, leaving no marker.
@@ -71,6 +75,7 @@ for what, bad in pairs({
     late_branch = "--@ a\n--@ else\n--@ b\n--@ end\n",
     nested = "--@ a\n--@ b\n--@ end\n--@ end\n",
     unterminated = "--@ a\nx\n",
+    trailing_words = "--@ a\nx\n--@ end x\n",
 }) do
     assert(not pcall(takes.prune, bad, {}), what .. " did not raise")
 end

@@ -1,10 +1,10 @@
 -- Demo: fed `mock_notifications` in `mantle.notifications`' shape; replies typed via `mantle call reply`.
 local theme = require("theme")
 local layout = require("layout")
+local marks = require("marks")
 local target = require("targets")
 local feed = state("mock_notifications", { dnd = false, feed = {} })
 local draft = state("reply_draft", "")
-local sent = state("reply_sent", false)
 local reply_focus = focus_target("reply")
 -- The swipe: `{ id, x }` offsets that card by x px; past 40% of its width it is dismissed.
 local drag = state("notif_drag", { id = "", x = 0 })
@@ -47,22 +47,7 @@ local function avatar(name)
     for k = 1, #name do
         sum = sum + name:byte(k)
     end
-    return rect {
-        width = 64,
-        height = 64,
-        radius = 32,
-        background = theme.avatar(sum % 5 + 1),
-        children = {
-            text {
-                content = name:match("^[%z\1-\127\194-\244][\128-\191]*") or "?",
-                align_h = "center",
-                align_v = "center",
-                font_size = 28,
-                font_weight = 700,
-                foreground = theme.crust,
-            },
-        },
-    }
+    return marks.avatar(name, theme.avatar(sum % 5 + 1), 64)
 end
 
 local function reply_field(entry)
@@ -102,10 +87,7 @@ local function reply_field(entry)
                 width = 96,
                 height = "fill",
                 radius = 14,
-                background = computed({ sent, theme.success, theme.accent }, function(s, done, ready)
-                    return s and done or
-                        ready
-                end),
+                background = theme.accent,
                 opacity = draft:map(function(d) return d == "" and 0.4 or 1 end),
                 animate = { background = 200, opacity = 200 },
                 children = {
@@ -149,7 +131,7 @@ local function card(entry)
         background = theme.fade("base", "f5"),
         border_width = 1,
         border_color = theme.overlay,
-        opacity = sent:map(function(s) return s and 0 or 1 end),
+        opacity = 1,
         translate = drag:map(function(d) return { x = d.id == entry.id and d.x or 0, y = 0 } end),
         on_drag = function(_, pointer, phase)
             local d = drag:get()

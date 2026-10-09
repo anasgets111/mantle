@@ -123,26 +123,23 @@ local PINNED = {
     "org.telegram.desktop", "vesktop", "steam",
 }
 
--- Pinned apps until you type, then the best fuzzy matches.
+-- Only these apps, so the take never lists yours: in order until you type, then by fuzzy match.
 local apps = computed({ mantle.applications, query }, function(a, q)
     local out = {}
-    if q == "" then
-        for _, id in ipairs(PINNED) do
-            local index = a and a.by_app_id[id]
-            if index and not a.entries[index].no_display then out[#out + 1] = a.entries[index] end
+    for k, id in ipairs(PINNED) do
+        local app = a and a.entries[a.by_app_id[id]]
+        if app and not app.no_display then
+            local score = fuzzy(app.name, q)
+            if q == "" then score = -k end
+            if score then out[#out + 1] = { app = app, score = score } end
         end
-        return out
-    end
-    for _, app in ipairs(a and a.entries or {}) do
-        local score = fuzzy(app.name, q)
-        if not app.no_display and score then out[#out + 1] = { app = app, score = score } end
     end
     table.sort(out, function(l, r)
         return l.score > r.score or (l.score == r.score and l.app.id < r.app.id)
     end)
     local best = {}
-    for k = 1, math.min(#out, 6) do
-        best[k] = out[k].app
+    for k, match in ipairs(out) do
+        best[k] = match.app
     end
     return best
 end)

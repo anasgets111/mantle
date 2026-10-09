@@ -9,6 +9,7 @@ local mockups = require("mockups")
 local theme = require("theme")
 local layout = require("layout")
 local takes = require("takes")
+local feeds = require("feeds")
 
 fonts {
     "CaskaydiaCove Nerd Font Propo",
@@ -21,11 +22,6 @@ local GUTTER = 6
 -- The demo bar's final height, cleared through its exclusive zone.
 local BAR = 56
 local HEADER = 64
--- A tight key shadow under a wide ambient one; the surface needs a 64 px frame to hold them.
-local SHADOWS = {
-    { color = "#00000055", blur = 48, offset = { y = 18 } },
-    { color = "#00000040", blur = 6,  offset = { y = 2 } },
-}
 
 local frame = mantle.screens:map(function(screens)
     return layout.metrics(screens and screens[1])
@@ -332,7 +328,7 @@ local caption_pane = panel {
                 spacing = 12,
                 radius = 18,
                 background = theme.fade("crust", "e6"),
-                shadows = SHADOWS,
+                shadows = layout.SHADOWS,
                 opacity = 1,
                 translate = { x = 0, y = 0 },
                 animate = {
@@ -439,17 +435,22 @@ local function later(ms, fn)
     timer(fast and 1 or ms, fn)
 end
 
--- Runs `mantle -c DEMO_DIR <args>` against the demo shell. A step right after a save can name
--- state or an action the edit adds before the reload lands, so a refusal, or output `accept`
--- rejects, retries for up to 3 s. `done` gets what `accept` returned last.
+-- Runs `mantle -c DEMO_DIR <args>` against the demo shell, or `args.sh` with DEMO_DIR as `$1`. A
+-- step right after a save can name state or an action the edit adds before the reload lands, so
+-- a refusal, or output `accept` rejects, retries for 3 s. `done` gets what `accept` returned last.
 local function demo(args, done, accept)
-    local tries = 0
+    local cmd, argv = "mantle", { "-c", DEMO_DIR, table.unpack(args) }
+    if args.sh then cmd, argv = "sh", { "-c", args.sh, "sh", DEMO_DIR } end
+    local expired = false
+    timer(3000, function() expired = true end)
     local function go()
-        session.run("mantle", { "-c", DEMO_DIR, table.unpack(args) }, function(code, out)
-            tries = tries + 1
+        session.run(cmd, argv, function(code, out)
             local ok = code == 0
             if accept then ok = accept(code, out or {}) end
-            if not ok and tries < 30 and not finished then return timer(100, go) end
+            if not ok and not expired and not finished then
+                progress = progress + 1
+                return timer(100, go)
+            end
             if done then done(code, out, ok) end
         end)
     end
@@ -496,15 +497,21 @@ local function wait(ms)
     return function(next) later(ms, next) end
 end
 
--- With MANTLE_DEMO_SHOTS, captures the screen as `name`.png, then calls `done`.
+-- The output the recorder captures.
+local function monitor_name()
+    local screen = mantle.screens:get()[1]
+    return env("MANTLE_DEMO_MONITOR", screen and screen.name or "screen")
+end
+
+-- With MANTLE_DEMO_SHOTS, captures the recorded output as `name`.png, then calls `done`. An
+-- unnamed output gets no shot: grim without `-o` captures every output, yours included.
 local function shot(name, done)
     done = done or function() end
-    if not SHOTS or fast then return done() end
-    local screen = mantle.screens:get()[1]
-    local args = { SHOTS .. "/" .. name .. ".png" }
-    if screen and screen.name ~= "" then args = { "-o", screen.name, args[1] } end
-    session.run("grim", args, function(code)
-        if code ~= 0 then log.warn("grim could not save", args[#args]) end
+    local monitor = monitor_name()
+    if not SHOTS or fast or monitor == "" or monitor == "screen" then return done() end
+    local path = SHOTS .. "/" .. name .. ".png"
+    session.run("grim", { "-o", monitor, path }, function(code)
+        if code ~= 0 then log.warn("grim could not save", path) end
         done()
     end)
 end
@@ -562,7 +569,9 @@ local function warm(done)
     at(1)
 end
 
-local set_stage
+local set_stage, settle_later
+-- Edits saved so far: each save reloads the demo shell.
+local saves = 0
 
 -- Plays edit `name` in its file's buffer, switching the pane to that file first, then saves it.
 -- Fast-forwarding, it waits for the reload, so later toggles and feeds land as in a full take.
@@ -575,6 +584,8 @@ local function edit(name)
         end
         local function save()
             last_edit, focus = name, nil
+            saves = saves + 1
+            settle_later()
             bump()
             session.write(DEMO_DIR .. "/" .. plan.file, plan.after, function()
                 status:set("saved")
@@ -624,14 +635,24 @@ local function feed(name, value)
     end
 end
 
--- The take's windows in `mantle.windows`' shape: a terminal and an editor, then the mock apps. The
--- browser's title follows the page its mockup shows.
-local WINDOWS = {
-    { id = "0xa1", app_id = "kitty",                title = "~/Work/mantle" },
-    { id = "0xa2", app_id = "dev.zed.Zed",          title = "overview.lua" },
-    { id = "0xa3", app_id = "org.telegram.desktop", title = "Telegram" },
-    { id = "0xa4", app_id = "zen",                  title = "Zen Browser" },
-}
+-- The aurora runs two 16 s passes from a reload, and stilling it mid-pass snaps it. From
+-- `settle_aurora` on it is stilled once 32 s pass with no save, or at once on a respawned
+-- renderer, through `replay_mocks`.
+function settle_later()
+    if not last_fed.aurora_settled then return end
+    local at = saves
+    timer(32500, function()
+        if at == saves and not finished then feed("aurora_settled", true)(function() end) end
+    end)
+end
+
+local function settle_aurora(next)
+    last_fed.aurora_settled = true
+    settle_later()
+    next()
+end
+
+-- The take's windows open one by one; the browser's title follows the page its mockup shows.
 local APP_WINDOW = { [""] = "0xa1", chat = "0xa3", call = "0xa4", browser = "0xa4" }
 local BROWSER_TITLE = { call = "Meet · Weekly sync", browser = "Aurora timelapse · 4K" }
 local windows = { count = 0, focused = "0xa1", page = "" }
@@ -639,7 +660,7 @@ local windows = { count = 0, focused = "0xa1", page = "" }
 local function feed_windows(next)
     local out = {}
     for k = 1, windows.count do
-        local w = WINDOWS[k]
+        local w = feeds.WINDOWS[k]
         local title = w.id == "0xa4" and BROWSER_TITLE[windows.page] or w.title
         out[k] = { id = w.id, app_id = w.app_id, title = title, focused = w.id == windows.focused }
     end
@@ -649,7 +670,7 @@ end
 -- Opens one window more, focused, as an app starting would.
 local function launch(next)
     windows.count = windows.count + 1
-    windows.focused = WINDOWS[windows.count].id
+    windows.focused = feeds.WINDOWS[windows.count].id
     feed_windows(next)
 end
 
@@ -670,26 +691,15 @@ local function open_app(id)
     end
 end
 
+-- Runs `mantle call name arg` on the demo shell, as a keybind would.
+local function call(name, arg)
+    return function(next) demo({ "call", name, arg }, function() next() end) end
+end
+
 local function notify(n)
     return function(next)
-        local entry = {
-            id = n.id,
-            app_name = "Telegram",
-            app_icon = "org.telegram.desktop",
-            desktop_entry = "org.telegram.desktop",
-            summary = n.from,
-            body = n.body or { { kind = "text", text = n.text } },
-            actions = { { key = "read", label = n.read } },
-            has_default_action = true,
-            has_reply = true,
-            reply_placeholder = n.placeholder,
-            urgency = "normal",
-            expired = false,
-            transient = false,
-            timestamp = 0,
-        }
-        demo({ "call", "reply", "" }, function()
-            feed("mock_notifications", { dnd = false, feed = { entry } })(next)
+        call("reply", "")(function()
+            feed("mock_notifications", { dnd = false, feed = { feeds.notification(n) } })(next)
         end)
     end
 end
@@ -713,10 +723,6 @@ local function type_call(name, text)
     end
 end
 
-local function clear_search(next)
-    demo({ "call", "search", "" }, function() next() end)
-end
-
 -- A password's length only, one key at a time: the mocks draw dots, never text.
 local function type_dots(name, count)
     return function(next)
@@ -730,79 +736,15 @@ local function type_dots(name, count)
     end
 end
 
-local TRACK = { title = "Night Signals", artist = "Low Orbit", album = "Chevrons", length = 214 }
-
-local function player(at, play_state)
-    return {
-        players = {
-            {
-                id = "spotify",
-                identity = "Spotify",
-                title = TRACK.title,
-                artist = TRACK.artist,
-                album = TRACK.album,
-                album_art_path = DEMO_DIR .. "/covers/night-signals.svg",
-                length = TRACK.length * 1000000,
-                position = at * 1000000,
-                play_state = play_state,
-            },
-        },
-    }
-end
-
-local TRAY = {
-    items = {
-        { id = "1", name = "Steam",    icon_name = "steam",                status = "active" },
-        { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "active" },
-        { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "active" },
-    },
-}
-
-local PACKAGES = {
-    { name = "linux",      old_version = "7.2.7.arch1-1", new_version = "7.2.8.arch1-1" },
-    { name = "mesa",       old_version = "1:26.1.2-1",    new_version = "1:26.1.3-1" },
-    { name = "mantle-git", old_version = "r1830",         new_version = "r1842" },
-}
-
-local function updates_state(step)
-    if step == nil then return { packages = PACKAGES, installing = false } end
-    if step > #PACKAGES then return { packages = {}, installing = false } end
-    return {
-        packages = {},
-        installing = true,
-        install_current_step = step,
-        install_total_steps = #PACKAGES,
-        install_current_package = PACKAGES[step].name,
-    }
-end
-
 local function install(next)
     local function at(step)
         progress = progress + 1
-        feed("mock_updates", updates_state(step))(function()
-            if step > #PACKAGES then return next() end
+        feed("mock_updates", feeds.updates(step))(function()
+            if not feeds.updates(step).installing then return next() end
             later(500, function() at(step + 1) end)
         end)
     end
     at(1)
-end
-
-local function lock_state(fields)
-    local out = { active = true, attempts = 0, error = "", unlocking = false }
-    for k, v in pairs(fields or {}) do
-        out[k] = v
-    end
-    return out
-end
-
--- Runs `mantle call name arg` on the demo shell, as a keybind would.
-local function call(name, arg)
-    return function(next) demo({ "call", name, arg }, function() next() end) end
-end
-
-local function privacy_users(camera, mic, screen)
-    local function users(on) return on and { { app_name = "Meet" } } or {} end
-    return { camera_users = users(camera), microphone_users = users(mic), screencast_users = users(screen) }
 end
 
 -- Pointer ------------------------------------------------------------------------------------
@@ -1022,9 +964,9 @@ local agent_pane = panel {
 }
 
 -- Types `shown` into the terminal, runs `args` on the demo shell and prints the rows `pick` makes
--- of its output, or nil to reject it. A reload can still be landing, so a rejection retries for
--- 3 s; past that it prints `canned` and warns, never an error or a stall on camera.
-local function agent(shown, args, pick, canned)
+-- of its output, or nil to reject it. A reload can still be landing, so what `accept` (or `pick`)
+-- rejects retries for 3 s; then `canned` prints with a warning, never an error or a stall on camera.
+local function agent(shown, args, pick, canned, accept)
     return function(next)
         if fast then return next() end
         local rows = term:get() or {}
@@ -1043,23 +985,38 @@ local function agent(shown, args, pick, canned)
                 end
                 put()
                 next()
-            end, function(code, out) return pick(code, out) ~= nil end)
+            end, accept or function(code, out) return pick(code, out) ~= nil end)
         end
         later(200, function() key(1) end)
     end
 end
 
 -- Clicks the bar's Focus chip the way an agent would, at the box the pointer aims at: on the bar,
--- screen and surface pixels agree. Not found, it warns and turns focus off itself.
+-- screen and surface pixels agree. Focus ends off either way: a missed click must not leave the
+-- desktop dimmed for the rest of the take.
 local function agent_click(next)
     if fast then return next() end
+    local function off() feed("focus_on", false)(next) end
     locate("focus", "bar", function()
         log.warn("agent beat fallback: click")
-        feed("focus_on", false)(next)
+        off()
     end, function(box)
         local x, y = math.floor(box.x + box.width / 2), math.floor(box.y + box.height / 2)
         agent(string.format("mantle input bar click %d %d", x, y), { "input", "bar", "click", x, y },
-            function(code) return code == 0 and {} or nil end, {})(next)
+            function(code) return code == 0 and {} or nil end, {})(off)
+    end)
+end
+
+-- `focus` toggles, so its call is never retried on a `false`; the state listing says whether the
+-- bar shows focus on, and a feed puts it there if not.
+local function ensure_focus(next)
+    if fast then return next() end
+    demo({ "set" }, function(_, out)
+        for _, line in ipairs(out or {}) do
+            if line == "focus_on\ttrue" then return next() end
+        end
+        log.warn("agent beat fallback: focus")
+        feed("focus_on", true)(next)
     end)
 end
 
@@ -1080,11 +1037,12 @@ local AGENT_BEAT = {
     wait(700),
     agent("mantle call focus", { "call", "focus" }, function(code, out)
         return code == 0 and out[1] == "true" and { { text = "true" } } or nil
-    end, { { text = "true" } }),
+    end, { { text = "true" } }, function(code) return code == 0 end),
+    ensure_focus,
     wait(1100),
-    agent("mantle log | grep focus", { "log" }, function(code, out)
-        local last = ("\n" .. table.concat(out, "\n")):match(".*\n([^\n]*config: focus%s+on)")
-        return code == 0 and last and { { text = (last:gsub("%s+", " ")) } } or nil
+    agent("mantle log | grep focus", { sh = 'mantle -c "$1" log | grep "config: focus" | tail -1' }, function(code, out)
+        local last = code == 0 and out[1] and out[1]:match(".*config: focus%s+on")
+        return last and { { text = (last:gsub("%s+", " ")) } } or nil
     end, { { text = "12:00:00 INFO renderer/config: focus on" } }),
     wait(900),
     spotlight("focus", "bar"),
@@ -1201,12 +1159,6 @@ local function kill_renderer(next)
     end)
 end
 
--- The output the recorder captures.
-local function monitor_name()
-    local screen = mantle.screens:get()[1]
-    return env("MANTLE_DEMO_MONITOR", screen and screen.name or "screen")
-end
-
 -- The recorded output's workspaces, from the compositor.
 local function stage_output()
     local ws, name = mantle.workspaces:get(), monitor_name()
@@ -1223,7 +1175,9 @@ local function pick_workspaces()
     local output, compositor = stage_output()
     stage_ws = {}
     if not output then return end
-    origin_ws = origin_ws or output.active_workspace
+    -- A reload mid-take finds itself on a stage workspace: the stored origin is where you were.
+    origin_ws = origin_ws or session.store.origin_ws:get() or output.active_workspace
+    session.store:set("origin_ws", origin_ws)
     if compositor == "niri" then
         for _, w in ipairs(output.workspaces) do
             if not w.populated then stage_ws[1] = w.id end
@@ -1319,7 +1273,7 @@ local function guard()
     local why = guarding and exposed()
     if not why then return end
     log.error("ending the take:", why)
-    finish()
+    finish(why)
 end
 
 mantle.workspaces:on_change(guard)
@@ -1362,6 +1316,14 @@ local function set_volume(level, done)
     session.run("wpctl", { "set-volume", "@DEFAULT_AUDIO_SINK@", string.format("%.2f", level) }, done)
 end
 
+-- Puts back a volume a take, or one a reload cut short, left nudged.
+local function restore_volume()
+    local level = volume_before or session.store.volume:get()
+    if level then set_volume(level) end
+    volume_before = nil
+    session.store:set("volume", nil)
+end
+
 -- The default output three steps and back, for the OSD beat, through `wpctl` like any other app;
 -- `finish` puts it back if a take ends mid-nudge.
 local function nudge_volume(next)
@@ -1369,11 +1331,14 @@ local function nudge_volume(next)
     session.run("wpctl", { "get-volume", "@DEFAULT_AUDIO_SINK@" }, function(_, out)
         volume_before = tonumber((out[1] or ""):match("Volume:%s*([%d%.]+)"))
         if not volume_before then return next() end
+        session.store:set("volume", volume_before)
         local step = volume_before > 0.8 and -0.06 or 0.06
         local levels = { volume_before + step, volume_before + 2 * step, volume_before + 3 * step, volume_before }
         local function at(k)
+            if finished then return end
             if not levels[k] then
                 volume_before = nil
+                session.store:set("volume", nil)
                 return next()
             end
             set_volume(levels[k], function()
@@ -1388,26 +1353,36 @@ local function stopped(handle)
     return function() return handle.running:get() ~= true end
 end
 
-function finish()
+-- `exposure` names what of yours the stage showed: the video then holds it, so it goes.
+function finish(exposure)
     if finished then return end
     finished, guarding = true, false
     session.recorder:stop()
-    if volume_before then set_volume(volume_before) end
+    restore_volume()
     close_tour()
-    session.wait_for(stopped(session.recorder), 10000, function()
-        session.demo_shell:stop()
-        session.wait_for(stopped(session.demo_shell), 8000, function()
-            if origin_ws then mantle.workspaces:focus(origin_ws) end
-            session.wait_for(function()
-                local output = stage_output()
-                return not origin_ws or (output ~= nil and output.active_workspace == origin_ws)
-            end, 2000, function(back)
-                if not back then log.warn("could not return to workspace", origin_ws) end
+    session.wait_for(stopped(session.recorder), 10000, function(ok)
+        if not ok then session.recorder:signal("KILL") end
+        session.wait_for(stopped(session.recorder), 2000, function(gone)
+            session.demo_shell:stop()
+            session.wait_for(stopped(session.demo_shell), 8000, function()
+                -- Back to your workspace only once nothing can record it.
+                origin_ws = origin_ws or session.store.origin_ws:get()
+                if gone and origin_ws then
+                    mantle.workspaces:focus(origin_ws)
+                    session.store:set("origin_ws", nil)
+                elseif not gone then
+                    log.error("the recorder is still running; staying on the stage")
+                end
+                session.restore_shells(restore)
+                if exposure and not FROM then
+                    session.run("rm", { "-f", OUT })
+                    log.error("discarded", OUT, "as it may show", exposure)
+                elseif not FROM then
+                    log.info("demo written to", OUT)
+                end
+                -- The restore list saves 1 s after its last write.
+                timer(1500, function() session.run("mantle", { "stop", "--pid", tostring(mantle.pid) }) end)
             end)
-            session.restore_shells(restore)
-            if not FROM then log.info("demo written to", OUT) end
-            -- The restore list saves 1 s after its last write.
-            timer(1500, function() session.run("mantle", { "stop", "--pid", tostring(mantle.pid) }) end)
         end)
     end)
 end
@@ -1506,10 +1481,13 @@ local function start_shell(text, played, settle, next)
     session.run("rm", { "-rf", DEMO_DIR .. "/state" }, function() session.each(takes.modules, write_modules, start) end)
 end
 
--- The cold open's shell: the last stage with every module block in, beside fresh frags, theme,
--- layout, covers and wallpapers.
+-- The cold open's shell: the last stage with every module block in, beside fresh frags, shared
+-- modules, covers and wallpapers.
 local function stage_final(next)
-    local sources = { mantle.config_dir .. "/theme.lua", mantle.config_dir .. "/layout.lua" }
+    local sources = {}
+    for _, name in ipairs(takes.shared) do
+        sources[#sources + 1] = mantle.config_dir .. "/" .. name
+    end
     for _, name in ipairs(takes.frags) do
         sources[#sources + 1] = STAGES .. name
     end
@@ -1619,30 +1597,19 @@ end
 -- The cold open on the final shell, its windows open and the code pane off. A preview plays it
 -- behind the title card; a take opens on the shell itself.
 local function cold_open(next)
-    windows.count = #WINDOWS
+    windows.count = #feeds.WINDOWS
     if not FROM then card:set("") end
     feed_windows(function() set_stage(true, next) end)
 end
 
 local function search(text, hold)
-    return chain(toggle("launcher_open"), wait(250), type_call("search", text), wait(hold), clear_search,
+    return chain(toggle("launcher_open"), wait(250), type_call("search", text), wait(hold), call("search", ""),
         toggle("launcher_open"))
 end
 
 local function overview(hold)
     return chain(toggle("overview_open"), wait(hold), select_window("0xa3"), wait(hold), toggle("overview_open"))
 end
-
-local SARAH = {
-    id = 1,
-    from = "Sarah",
-    body = {
-        { kind = "text", text = "Still on for tonight? 8 pm at " },
-        { kind = "text", text = "Luigi's",                       href = "https://maps.example.org/luigis" },
-    },
-    placeholder = "Reply to Sarah",
-    read = "Mark as read",
-}
 
 local script = {
     setup,
@@ -1656,7 +1623,7 @@ local script = {
     pick("ember.png"),
     wait(1300),
     toggle("picker_open"),
-    notify(SARAH),
+    notify(feeds.SARAH),
     wait(1600),
     feed("mock_notifications", { dnd = false, feed = {} }),
     overview(1000),
@@ -1682,14 +1649,14 @@ local script = {
     clear_keys,
     type_call("search", "tele"),
     wait(1500),
-    clear_search,
+    call("search", ""),
     type_call("search", "files"),
     wait(1500),
 
     say("Reloads keep state.", "Restyled while open."),
     edit("05-restyle"),
     wait(1600),
-    clear_search,
+    call("search", ""),
     toggle("launcher_open"),
     wait(300),
 
@@ -1745,16 +1712,16 @@ local script = {
     say("Motion is a property.", "Morphs, springs and waves, eased by the engine."),
     edit("09-media"),
     edit("09-motion"),
-    feed("mock_tray", TRAY),
-    feed("mock_media", player(61, "playing")),
+    feed("mock_tray", feeds.TRAY),
+    feed("mock_media", feeds.player(61, "playing", DEMO_DIR)),
     full_stage,
     toggle("media_open"),
     wait(400),
     point("media:play", "media"),
-    feed("mock_media", player(62, "paused")),
+    feed("mock_media", feeds.player(62, "paused", DEMO_DIR)),
     wait(900),
     point("media:play", "media"),
-    feed("mock_media", player(62, "playing")),
+    feed("mock_media", feeds.player(62, "playing", DEMO_DIR)),
     wait(700),
     hide_pointer,
     toggle("media_open"),
@@ -1780,15 +1747,14 @@ local script = {
     toggle("control_open"),
     wait(300),
     nudge_volume,
-    wait(1200),
+    wait(1800),
 
-    -- The aurora's two passes are over: a renderer respawned later starts still as well.
-    feed("aurora_settled", true),
+    settle_aurora,
     say("Your notification server.", "Links, inline replies, any script, swipe away."),
     edit("11-notifications"),
     edit("11-links"),
     full_stage,
-    notify(SARAH),
+    notify(feeds.SARAH),
     wait(1100),
     type_call("reply", "On my way!"),
     wait(500),
@@ -1804,10 +1770,10 @@ local script = {
     edit("12-indicators"),
     full_stage,
     open_app("call"),
-    feed("mock_privacy", privacy_users(true, true, false)),
+    feed("mock_privacy", feeds.privacy(true, true, false)),
     spotlight("privacy", "bar"),
     wait(2300),
-    feed("mock_privacy", privacy_users(false, false, false)),
+    feed("mock_privacy", feeds.privacy(false, false, false)),
     open_app("browser"),
     feed("mock_idle", { inhibited = true, inhibitors = { { who = "Zen Browser", why = "Playing video" } } }),
     spotlight("idle", "bar"),
@@ -1818,7 +1784,7 @@ local script = {
     say("Updates, with your polkit agent.", "The password prompt is Lua too."),
     edit("13-updates"),
     full_stage,
-    feed("mock_updates", updates_state()),
+    feed("mock_updates", feeds.updates()),
     spotlight("updates", "bar"),
     point("updates", "bar"),
     toggle("updates_open"),
@@ -1847,17 +1813,17 @@ local script = {
 
     say("Even the lock screen.", "Same Lua, same theme. The take mocks ext-session-lock."),
     edit("15-lock"),
-    feed("mock_lock", lock_state()),
+    feed("mock_lock", feeds.lock()),
     wait(600),
     type_dots("lock_typed", 6),
     feed("lock_typed", 0),
-    feed("mock_lock", lock_state({ attempts = 1, error = "authentication failed" })),
+    feed("mock_lock", feeds.lock({ attempts = 1, error = "authentication failed" })),
     wait(1300),
     type_dots("lock_typed", 8),
-    feed("mock_lock", lock_state({ attempts = 1, unlocking = true })),
+    feed("mock_lock", feeds.lock({ attempts = 1, unlocking = true })),
     wait(500),
     feed("lock_typed", 0),
-    feed("mock_lock", lock_state({ active = false })),
+    feed("mock_lock", feeds.lock({ active = false })),
     wait(300),
 
     say("Built for agents, too.", "Actions, states, check and log: a CLI any coding agent can drive."),
@@ -1901,12 +1867,14 @@ local script = {
 }
 
 -- A callback that raises or overruns its budget is dropped, which would leave the take and the
--- recorder running with your shells stopped.
+-- recorder running with your shells stopped. Setup, which stops your shells and waits on the
+-- compositor for the tour, gets a minute.
 local function watchdog(seen)
-    timer(20000, function()
+    local budget = step_at <= 1 and 60000 or 20000
+    timer(budget, function()
         if finished then return end
         if progress == seen then
-            log.error("demo step", step_at, "made no progress for 20 s; ending the take")
+            log.error("demo step", step_at, "made no progress for", budget // 1000, "s; ending the take")
             return finish()
         end
         watchdog(progress)
@@ -1924,7 +1892,8 @@ local function load_sources(done)
     end, done)
 end
 
--- A reload restarts the take from the top, so it first clears what the last one left running.
+-- A reload restarts the take from the top, so it first clears what the last one left running:
+-- the recorder, the demo shell, the tour and a nudged volume.
 math.randomseed(7)
 caption:set("")
 reset_scene()
@@ -1936,45 +1905,48 @@ file_shown:set("shell.lua")
 timer(1, function()
     session.recorder:stop()
     session.demo_shell:stop()
-    session.wait_for(function() return stopped(session.recorder)() and stopped(session.demo_shell)() end, 8000,
-        function()
-            load_sources(function()
-                for _, name in ipairs(takes.sources) do
-                    if not texts[name] then
-                        log.error("could not read stage", name)
-                        return finish()
-                    end
-                end
-                local ok, err = pcall(prepare)
-                if not ok then
-                    log.error("could not plan the take:", err)
+    session.wait_for(function()
+        return stopped(session.recorder)() and stopped(session.demo_shell)() and session.store.shells:get() ~= nil
+    end, 8000, function()
+        close_tour()
+        restore_volume()
+        load_sources(function()
+            for _, name in ipairs(takes.sources) do
+                if not texts[name] then
+                    log.error("could not read stage", name)
                     return finish()
                 end
-                -- Fast up to the edit before FROM, or the restart before the first edit, so its
-                -- caption and setup play at speed.
-                local at, first, to_at
-                for k, step in ipairs(script) do
-                    if edit_steps[step] == FROM then at = at or k end
-                    if edit_steps[step] == TO then to_at = k end
-                    if not at and (edit_steps[step] or step == restart_starter) then first = k end
-                end
-                if (FROM and not at) or (TO and (not to_at or to_at < (at or 0))) then
-                    log.error("MANTLE_DEMO_FROM or MANTLE_DEMO_TO names no edit, or TO plays before FROM")
-                    return finish()
-                end
-                if FROM then
-                    fast = true
-                    table.insert(script, first + 1, function(next)
-                        fast = false
-                        hide_card(next)
-                    end)
-                end
-                watchdog(progress)
-                sample()
-                interval(METER_MS, sample)
-                warm(function() sequence(script, finish) end)
-            end)
+            end
+            local ok, err = pcall(prepare)
+            if not ok then
+                log.error("could not plan the take:", err)
+                return finish()
+            end
+            -- Fast up to the edit before FROM, or the restart before the first edit, so its
+            -- caption and setup play at speed.
+            local at, first, to_at
+            for k, step in ipairs(script) do
+                if edit_steps[step] == FROM then at = at or k end
+                if edit_steps[step] == TO then to_at = k end
+                if not at and (edit_steps[step] or step == restart_starter) then first = k end
+            end
+            if (FROM and not at) or (TO and (not to_at or to_at < (at or 0))) then
+                log.error("MANTLE_DEMO_FROM or MANTLE_DEMO_TO names no edit, or TO plays before FROM")
+                return finish()
+            end
+            if FROM then
+                fast = true
+                table.insert(script, first + 1, function(next)
+                    fast = false
+                    hide_card(next)
+                end)
+            end
+            watchdog(progress)
+            sample()
+            interval(METER_MS, sample)
+            warm(function() sequence(script, finish) end)
         end)
+    end)
 end)
 
 local surfaces = { wallpaper }

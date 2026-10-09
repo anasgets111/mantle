@@ -15,8 +15,9 @@ local M = {
         "taskbar.lua", "overview.lua", "targets.lua", "media.lua", "tray.lua", "control.lua", "updates.lua",
         "polkit.lua", "lock.lua", "sysinfo.lua",
     },
-    -- Copied as they are.
+    -- Copied as they are, from `stages/` and from the director's own directory.
     frags = { "aurora.frag", "chevron.frag" },
+    shared = { "theme.lua", "layout.lua", "marks.lua" },
     -- Art for `wallpaper.lua`'s picker, as SVG paths from the director's directory.
     wallpapers = {
         dusk = "wallpapers/dusk.svg",
@@ -68,7 +69,9 @@ end
 -- so the rescue banner shows the engine's "did you mean"; `fix` puts it back.
 function M.derive(name, good)
     if name == "fix" then return good end
-    local at = good:find("align_v", good:find('return os.date("%a', 1, true), true)
+    local anchor = good:find('return os.date("%a', 1, true)
+    local at = anchor and good:find("align_v", anchor, true)
+    if not at then error("typo: no align_v after the clock's os.date") end
     return good:sub(1, at - 1) .. "aling_v" .. good:sub(at + #"align_v")
 end
 
@@ -101,7 +104,9 @@ function M.prune(text, played)
     local out, open, in_else, keep, taken, n = {}, nil, false, true, false, 0
     for line in (text .. "\n"):gmatch("(.-)\n") do
         n = n + 1
-        local tag = line:match("^%s*%-%-@%s+(%S+)%s*$")
+        local marker = line:match("^%s*%-%-@(.*)$")
+        local tag = marker and marker:match("^%s+(%S+)%s*$")
+        if marker and not tag then error("line " .. n .. ": malformed marker: " .. line) end
         if tag == "end" then
             if not open then error("line " .. n .. ": stray --@ end") end
             open, in_else, keep = nil, false, true

@@ -1,72 +1,25 @@
--- Check only: `targets.lua` requires this under MANTLE_DEMO_MOCKS (`checkpoints.lua` copies it in), so `mantle check` lays out every
--- mock card with data in it and every popup open, as the take's feeds leave them.
--- Mock shapes follow the `state("mock_*", default)` of the module that reads each.
-local PACKAGES = {
-    { name = "linux", old_version = "7.2.7.arch1-1", new_version = "7.2.8.arch1-1" },
-    { name = "mesa",  old_version = "1:26.1.2-1",    new_version = "1:26.1.3-1" },
-}
+-- Check only: `targets.lua` requires this under MANTLE_DEMO_MOCKS (`checkpoints.lua` copies it
+-- in), so `mantle check` lays out every mock card with the take's data in it and every popup open.
+local feeds = require("feeds")
+
+local windows = {}
+for k, w in ipairs(feeds.WINDOWS) do
+    windows[k] = { id = w.id, app_id = w.app_id, title = w.title, focused = k == 2 }
+end
 
 local seeds = {
-    mock_windows = {
-        source = "hyprland",
-        windows = {
-            { id = "0xa1", app_id = "kitty",       title = "~/Work/mantle", focused = false },
-            { id = "0xa2", app_id = "dev.zed.Zed", title = "overview.lua",  focused = true },
-        },
-    },
-    mock_notifications = {
-        dnd = false,
-        feed = {
-            {
-                id = 1,
-                app_name = "Telegram",
-                app_icon = "org.telegram.desktop",
-                summary = "Ahmed",
-                body = {
-                    { kind = "text", text = "v0.9 is out: " },
-                    { kind = "text", text = "release notes", href = "https://example.com/notes" },
-                },
-                actions = { { key = "read", label = "Mark as read" } },
-                has_default_action = true,
-                has_reply = true,
-                reply_placeholder = "Reply",
-                urgency = "normal",
-                expired = false,
-                transient = false,
-                timestamp = 0,
-            },
-        },
-    },
-    mock_media = {
-        players = {
-            {
-                id = "spotify",
-                identity = "Spotify",
-                title = "Signals",
-                artist = "Night",
-                album = "Reload",
-                album_art_path = "",
-                length = 200000000,
-                position = 61000000,
-                play_state = "playing",
-            },
-        },
-    },
-    mock_tray = {
-        items = { { id = "1", name = "Steam", icon_name = "steam", status = "active" } },
-    },
+    mock_windows = { source = "hyprland", windows = windows },
+    mock_notifications = { dnd = false, feed = { feeds.notification(feeds.SARAH) } },
+    mock_media = feeds.player(61, "playing", mantle.config_dir),
+    mock_tray = feeds.TRAY,
     mock_network = { wifi_enabled = true, connected = true, ssid = "Home", strength = 82 },
     mock_bluetooth = { enabled = true, connected_devices = { { name = "WH-1000XM5", battery = 80 } } },
     mock_brightness = { percent = 85 },
-    mock_privacy = {
-        camera_users = { { app_name = "Meet" } },
-        microphone_users = { { app_name = "Meet" } },
-        screencast_users = { { app_name = "OBS" } },
-    },
+    mock_privacy = feeds.privacy(true, true, true),
     mock_idle = { inhibited = true, inhibitors = { { who = "Zen Browser", why = "Playing video" } } },
-    mock_updates = { packages = PACKAGES, installing = false },
+    mock_updates = feeds.updates(),
     mock_polkit = { active = true, user = "you", message = "Authentication is required." },
-    mock_lock = { active = true, attempts = 1, error = "authentication failed", unlocking = false },
+    mock_lock = feeds.lock({ attempts = 1, error = "authentication failed" }),
     notif_drag = { id = "1", x = 40 },
     volume_osd = { volume = 60, muted = false },
     cpu_history = { 20, 40, 35, 60, 45 },

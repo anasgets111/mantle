@@ -1,28 +1,13 @@
 -- Demo: a lock screen fed `mock_lock` and `lock_typed`; a real one is a `lock` surface.
 local theme = require("theme")
+local marks = require("marks")
 
 local lock = state("mock_lock", { active = false, attempts = 0, error = "", unlocking = false })
 local typed = state("lock_typed", 0)
+local dots = typed:map(function(n) return marks.dots(n, 16) end)
 local wallpaper = state("wallpaper", "")
 local up = lock:map(function(l) return l.active and not l.unlocking end)
 local mapped = computed({ up, delay(up, 700) }, function(now, was) return now or was end)
-
-local function dots(count)
-    local out = {}
-    for k = 1, count do
-        out[k] = rect {
-            id = "dot:" .. k,
-            width = 16,
-            height = 16,
-            radius = 8,
-            align_v = "center",
-            background = theme.text,
-            scale = 1,
-            animate = { scale = { duration = 220, easing = "out_back", from = 0 } },
-        }
-    end
-    return out
-end
 
 -- A rejected password shakes the field: each attempt is a new id, so the keyframes play once.
 local field = lock:map(function(l)
@@ -51,7 +36,7 @@ local field = lock:map(function(l)
             },
         } or nil,
         children = {
-            row { height = "fill", align_h = "center", spacing = 12, children = typed:map(dots) },
+            row { height = "fill", align_h = "center", spacing = 12, children = dots },
         },
     } }
 end)

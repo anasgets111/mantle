@@ -49,6 +49,12 @@ end
 
 local M = { metrics = metrics }
 
+-- A tight key shadow under a wide ambient one; the surface needs a 64 px frame to hold them.
+M.SHADOWS = {
+    { color = "#00000055", blur = 48, offset = { y = 18 } },
+    { color = "#00000040", blur = 6,  offset = { y = 2 } },
+}
+
 local function center(screen, design) return box(screen, design) end
 
 local function dock(screen, design) return box(screen, design, true) end

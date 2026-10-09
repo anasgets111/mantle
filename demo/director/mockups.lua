@@ -4,6 +4,7 @@
 
 local theme = require("theme")
 local layout = require("layout")
+local marks = require("marks")
 
 local TITLE = 52
 
@@ -19,27 +20,6 @@ local function label(content, size_px, color, extra)
         node[k] = v
     end
     return text(node)
-end
-
-local function initial_avatar(name, color, px)
-    return rect {
-        width = px,
-        height = px,
-        radius = px / 2,
-        background = color,
-        align_h = "center",
-        align_v = "center",
-        children = {
-            text {
-                content = name:match("^[%z\1-\127\194-\244][\128-\191]*") or "?",
-                align_h = "center",
-                align_v = "center",
-                font_size = math.floor(px * 0.42),
-                font_weight = 700,
-                foreground = theme.crust,
-            },
-        },
-    }
 end
 
 local function window(id, title, app_icon, body)
@@ -59,10 +39,7 @@ local function window(id, title, app_icon, body)
                 height = size:map(function(s) return s.height end),
                 radius = 18,
                 clip = "rounded",
-                shadows = {
-                    { color = "#00000055", blur = 48, offset = { y = 18 } },
-                    { color = "#00000040", blur = 6,  offset = { y = 2 } },
-                },
+                shadows = layout.SHADOWS,
                 background = theme.base,
                 border_width = 1,
                 border_color = theme.overlay,
@@ -120,7 +97,7 @@ local function sidebar()
             radius = 14,
             background = entry.name == CHAT.name and theme.surface or "#00000000",
             children = {
-                initial_avatar(entry.name, entry.color, 52),
+                marks.avatar(entry.name, entry.color, 52),
                 column {
                     width = "fill",
                     spacing = 4,
@@ -183,7 +160,7 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                     padding = { left = 24, right = 24 },
                     spacing = 14,
                     children = {
-                        initial_avatar(CHAT.name, CHATS[1].color, 48),
+                        marks.avatar(CHAT.name, CHATS[1].color, 48),
                         column {
                             align_v = "center",
                             spacing = 2,
@@ -252,7 +229,7 @@ local function tile(person, speaking)
             },
         } or nil,
         children = {
-            initial_avatar(person.name, person.color, 120),
+            marks.avatar(person.name, person.color, 120),
             text {
                 content = person.name,
                 align_h = "start",

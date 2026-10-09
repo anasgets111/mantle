@@ -1,6 +1,6 @@
 -- Writes one config dir per edit under OUT (starter first), each as the demo shell would see it
--- once that edit has saved: shell.lua, the modules pruned to the edits played, frags, theme,
--- layout, covers and wallpapers. Usage: lua checkpoints.lua OUT
+-- once that edit has saved: shell.lua, the modules pruned to the edits played, frags, shared
+-- modules, covers and wallpapers. Usage: lua checkpoints.lua OUT
 local dir = (arg[0]:match("^(.*)/tools/[^/]*$") or ".") .. "/"
 package.path = dir .. "?.lua;" .. package.path
 local takes = require("takes")
@@ -32,11 +32,10 @@ sh(("cp -r %s %s"):format(q(dir .. "covers"), q(assets)))
 for _, file in ipairs(takes.frags) do
     sh(("cp %s %s"):format(q(dir .. "stages/" .. file), q(assets)))
 end
-for _, file in ipairs { "theme.lua", "layout.lua" } do
+-- Check only: `targets.lua` requires the sample under MANTLE_DEMO_MOCKS, and it requires `feeds`.
+for _, file in ipairs { "feeds.lua", "tools/mocks_sample.lua", table.unpack(takes.shared) } do
     sh(("cp %s %s"):format(q(dir .. file), q(assets)))
 end
--- Check only: `targets.lua` requires it under MANTLE_DEMO_MOCKS.
-sh(("cp %s %s"):format(q(dir .. "tools/mocks_sample.lua"), q(assets)))
 
 local function checkpoint(name, shell, played)
     local to = out .. "/" .. name

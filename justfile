@@ -54,12 +54,12 @@ preview from:
     cargo build --workspace --profile swap
     MANTLE_DEMO_FROM="{{from}}" demo/director/tools/run.sh
 
-# Plays edits `from` to `to` with screenshots in `sup-targets/shots/<from>`. Stops your shells.
+# Plays edits `from` to `to` with screenshots in `target/demo-shots/<from>`. Stops your shells.
 [doc('Play the demo from edit `from` to edit `to` and screenshot each beat.')]
 preview-beat from to:
     cargo build --workspace --profile swap
-    MANTLE_DEMO_FROM="{{from}}" MANTLE_DEMO_TO="{{to}}" MANTLE_DEMO_SHOTS="$PWD/sup-targets/shots/{{from}}" \
-        demo/director/tools/run.sh
+    MANTLE_DEMO_FROM="{{from}}" MANTLE_DEMO_TO="{{to}}" \
+        MANTLE_DEMO_SHOTS="$(realpath -m "${CARGO_TARGET_DIR:-target}")/demo-shots/{{from}}" demo/director/tools/run.sh
 
 # Headless, stops no shell: planner tests, every checkpoint through `mantle check` at three screens,
 # layout fit, typing budget and line length. See `demo/director/tools/check.sh`.

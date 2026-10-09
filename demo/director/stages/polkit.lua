@@ -1,30 +1,15 @@
 -- Demo: fed `mock_polkit` and `polkit_typed`, so no password of yours is typed.
 local theme = require("theme")
 local layout = require("layout")
+local marks = require("marks")
 
 local placed = layout.placed("polkit")
 
 local polkit = state("mock_polkit", { active = false, message = "", user = "" })
 local typed = state("polkit_typed", 0)
+local dots = typed:map(function(n) return marks.dots(n, 14) end)
 local shown = polkit:map(function(p) return p.active end)
 local mapped = computed({ shown, delay(shown, 300) }, function(now, was) return now or was end)
-
-local function dots(count)
-    local out = {}
-    for k = 1, count do
-        out[k] = rect {
-            id = "dot:" .. k,
-            width = 14,
-            height = 14,
-            radius = 7,
-            align_v = "center",
-            background = theme.text,
-            scale = 1,
-            animate = { scale = { duration = 220, easing = "out_back", from = 0 } },
-        }
-    end
-    return out
-end
 
 return panel {
     id = "polkit",
@@ -88,7 +73,7 @@ return panel {
                             row {
                                 height = "fill",
                                 spacing = 10,
-                                children = typed:map(dots),
+                                children = dots,
                             },
                         },
                     },

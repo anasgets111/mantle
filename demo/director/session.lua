@@ -7,7 +7,7 @@ if not state_home or state_home == "" then
 end
 
 -- On disk before any shell stops, so a director reload or crash mid-take still knows what to
--- bring back on the next run.
+-- bring back on the next run: the shells, and the director's `origin_ws` and `volume`.
 local store = persistent_table {
     path = state_home .. "/mantle-demo",
     name = "restore.json",
@@ -86,10 +86,10 @@ local function stop_others(demo_dir, done)
     end)
 end
 
--- An empty list leaves the store alone: a take that failed before `stop_others` ran must not
--- forget the shells an earlier one stopped.
+-- An empty list restores the stored one: a take that failed before `stop_others` ran still brings
+-- back the shells an earlier one stopped.
 local function restore_shells(shells)
-    if #shells == 0 then return end
+    if #shells == 0 then shells = store.shells:get() or {} end
     for _, shell in ipairs(shells) do
         local args = { "-d", table.unpack(shell.flags or {}) }
         args[#args + 1] = "-c"
@@ -111,6 +111,7 @@ return {
     stop_others = stop_others,
     restore_shells = restore_shells,
     write = write,
+    store = store,
     demo_shell = demo_shell,
     recorder = recorder,
 }

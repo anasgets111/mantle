@@ -38,7 +38,7 @@ cited only as the why behind behavior the code confirms.
 | `just swap [args]` | Build the `swap` profile, replace the installed pair in `$CARGO_HOME/bin` (default `~/.cargo/bin`), restart detached |
 | `just demo [out]` | Record the demo video; stops every running shell for the take, then restarts it |
 | `just preview <edit>` | Play the demo from one edit (`09-media`) to the end without recording |
-| `just preview-beat <from> <to>` | Play the demo from one edit to another, with screenshots in `sup-targets/shots/<from>` |
+| `just preview-beat <from> <to>` | Play the demo from one edit to another, with screenshots in `target/demo-shots/<from>` |
 | `just demo-check` | Headless demo validation: planner tests, every edit's checkpoint through `mantle check` at three screens, layout fit, typing budget, line length |
 | `just heaptrack [renderer\|supervisor] [secs]` | Dev build under heaptrack for `secs` (default 900), then restore the installed shell |
 | `just tag-release X.Y.Z` | Set the version, run `just stubs check`, date the changelog's `Unreleased`, commit and tag `vX.Y.Z`. Pushing the tag publishes the release |
