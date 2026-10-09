@@ -125,10 +125,22 @@ async fn run_privacy_task(
                     DeviceEvent::Opened => true,
                     // A close only removes pids: recheck the known openers instead of walking `/proc`.
                     // A pid that dropped out may have passed the fd to a child no open announced: walk.
+                    DeviceEvent::Closed if opener_pids.is_empty() => false,
                     DeviceEvent::Closed => {
-                        let known = opener_pids.len();
-                        opener_pids.retain(|&pid| holds_device(&proc_root, pid, &devices));
-                        opener_pids.len() < known
+                        // A copy goes in so a panicked task leaves the known set, not an empty one.
+                        let (root, watched, mut pids) = (proc_root.clone(), devices.clone(), opener_pids.clone());
+                        let recheck = move || {
+                            pids.retain(|&pid| holds_device(&root, pid, &watched));
+                            pids
+                        };
+                        match tokio::task::spawn_blocking(recheck).await {
+                            Ok(kept) => {
+                                let dropped = kept.len() < opener_pids.len();
+                                opener_pids = kept;
+                                dropped
+                            }
+                            Err(_) => true,
+                        }
                     }
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
