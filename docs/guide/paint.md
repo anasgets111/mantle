@@ -247,8 +247,9 @@ background = {
 On `border_color` the gradient spans the node's box and shows only where `border_width` draws, so
 width, `radius`, `corner_shape` and `corner_smoothing` shape the ring as for a flat colour.
 
-```lua
-rect {
+<!-- shot-alt: A rounded rectangle outlined by a 2 px ring that shifts from mauve to blue and back around its edge. -->
+```lua,shot
+return rect {
     width = 120, height = 40, radius = 12,
     border_width = 2,
     border_color = { gradient = "conic", stops = { { 0, "#CBA6F7" }, { 0.5, "#89B4FA" }, { 1, "#CBA6F7" } } },

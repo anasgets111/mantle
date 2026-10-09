@@ -358,7 +358,9 @@ same as on a plain [spring](#spring) and overshoot meets the same range clamp. T
 a spring that has not settled by then jumps the rest of the way. Give a ringing step a `duration`
 of at least its settle time, roughly `14 / damping` seconds, to avoid the jump.
 
-```lua
+<!-- shot-alt: A refresh icon turning a quarter at a time, overshooting slightly and settling before each next turn. -->
+<!-- shot: frames=0..3150/50@50 -->
+```lua,shot
 -- A quarter turn every 800 ms, overshooting and settling on each; 14 / 18 is under 0.8 s.
 local TICK = {
     rotate = {
@@ -369,7 +371,7 @@ local TICK = {
     },
 }
 
-return icon { name = "view-refresh-symbolic", size = 16, animate = TICK }
+return icon { name = "view-refresh-symbolic", size = 24, foreground = "#cdd6f4", animate = TICK }
 ```
 
 ## Move

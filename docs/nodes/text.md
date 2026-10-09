@@ -93,7 +93,8 @@ A run also takes `kind = "text"`, so a [notification](../capabilities/notificati
 text spans pass through unchanged. Drop its image spans, which have no `text`. A `nil` hole ends the
 array.
 
-```lua
+<!-- shot-alt: A paragraph reading "Update ready. 3 packages can be installed. Release notes", with "3 packages" in bold and "Release notes" underlined in blue. -->
+```lua,shot
 local body = text {
     width = 280,
     wrap = "word",
@@ -105,6 +106,8 @@ local body = text {
     },
     on_link = function(href) process.detach("xdg-open", { href }) end,
 }
+
+return body
 ```
 
 ### Variable fonts

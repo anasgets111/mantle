@@ -86,7 +86,8 @@ A child fills its slot less its own margins, whatever its `width` (or `height` i
 
 A segmented control: labels of different widths in equal segments.
 
-```lua
+<!-- shot-alt: A segmented control with Day, Week and Month in three equal-width segments. -->
+```lua,shot
 return row {
     homogeneous = true,
     spacing = 2,
@@ -123,7 +124,8 @@ container needs the bound itself, and without one has a single cell per line.
 
 A chip field:
 
-```lua
+<!-- shot-alt: Seven rounded chips, Rust to Icons, wrapping onto three lines within 180 px. -->
+```lua,shot
 local chips = {}
 for _, name in ipairs({ "Rust", "Lua", "Wayland", "Taffy", "GPU", "Fonts", "Icons" }) do
     chips[#chips + 1] = row {

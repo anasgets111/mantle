@@ -50,7 +50,8 @@ click-through unless it has a pointer handler ([input region](../surfaces/index.
 
 A chart component builds commands from values without writing an SVG file:
 
-```lua
+<!-- shot-alt: A light-blue line chart rising and falling across seven values. -->
+```lua,shot
 local function chart(values)
     local commands = {}
     for i, value in ipairs(values) do
@@ -146,7 +147,9 @@ Arc angles tween too, so a ring can grow its sweep. To morph between shapes, giv
 same command layout. This loader samples three outlines at the same 60 angles and loops through
 them as keyframes, with no Lua running per frame:
 
-```lua
+<!-- shot-alt: An orange star morphs into a square, then a circle, then back into the star, on a loop. -->
+<!-- shot: frames=0..1740/60@60 -->
+```lua,shot
 local function outline(radius)
     local commands = {}
     for i = 0, 59 do
@@ -185,7 +188,9 @@ the band where they are. This wave is trimmed to `progress`, loops its phase on 
 its amplitude on `commands` when `amplitude` changes. Setting it to `0` flattens the moving wave
 without restarting the loop:
 
-```lua
+<!-- shot-alt: A blue wave drawn across 60 percent of its width, scrolling left continuously. -->
+<!-- shot: frames=0..950/50@50 -->
+```lua,shot
 local amplitude = state("amplitude", 6)
 local progress = state("progress", 0.6)
 
