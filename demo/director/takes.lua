@@ -41,6 +41,7 @@ local M = {
         { name = "13-updates",       type = { "updates.badge," } },
         { name = "14-sysinfo",       type = { "sysinfo," } },
         { name = "15-lock",          type = { "lock," } },
+        { name = "16-agent",         type = { 'action("focus"' } },
         { name = "typo",             derived = true },
         { name = "fix",              derived = true },
     },

@@ -445,14 +445,17 @@ local function later(ms, fn)
 end
 
 -- Runs `mantle -c DEMO_DIR <args>` against the demo shell. A step right after a save can name
--- state or an action the edit adds before the reload lands, so a refusal retries for up to 3 s.
-local function demo(args, done)
+-- state or an action the edit adds before the reload lands, so a refusal, or output `accept`
+-- rejects, retries for up to 3 s. `done` gets what `accept` returned last.
+local function demo(args, done, accept)
     local tries = 0
     local function go()
         session.run("mantle", { "-c", DEMO_DIR, table.unpack(args) }, function(code, out)
             tries = tries + 1
-            if code ~= 0 and tries < 30 and not finished then return timer(100, go) end
-            if done then done(code, out) end
+            local ok = code == 0
+            if accept then ok = accept(code, out or {}) end
+            if not ok and tries < 30 and not finished then return timer(100, go) end
+            if done then done(code, out, ok) end
         end)
     end
     go()
@@ -992,6 +995,122 @@ local function swipe(id)
         end)
     end
 end
+
+-- Agent terminal ----------------------------------------------------------------------------
+
+-- What a coding agent would run, over the code pane: typed commands and the demo shell's real
+-- output, `false` while hidden.
+local term = state("demo_term", false)
+
+local agent_pane = panel {
+    id = "agent",
+    layer = "top",
+    anchor = { top = true, right = true, bottom = true },
+    margin = { top = 16, right = 16, bottom = 16 },
+    width = pane_width,
+    height = "fill",
+    visible = term:map(function(t) return t ~= false end),
+    child = column {
+        width = "fill",
+        height = "fill",
+        padding = 28,
+        spacing = 8,
+        background = theme.crust,
+        radius = 18,
+        opacity = 1,
+        animate = { opacity = { duration = 300, from = 0 } },
+        children = computed({ term, code_size }, function(rows, size)
+            local out = { text { content = "agent · fish", font = MONO, font_size = 20, foreground = theme.muted } }
+            for _, r in ipairs(rows or {}) do
+                out[#out + 1] = rect {
+                    margin = { top = r.cmd and 16 or 0 },
+                    padding = { left = 8, right = 8 },
+                    radius = 6,
+                    background = r.hl and theme.accent or nil,
+                    children = { text {
+                        content = r.text,
+                        font = MONO,
+                        font_size = size,
+                        foreground = r.hl and theme.crust or r.cmd and theme.accent or theme.text,
+                    } },
+                }
+            end
+            return out
+        end),
+    },
+}
+
+-- Types `shown` into the terminal, runs `args` on the demo shell and prints the rows `pick` makes
+-- of its output, or nil to reject it. A reload can still be landing, so a rejection retries for
+-- 3 s; past that it prints `canned` and warns, never an error or a stall on camera.
+local function agent(shown, args, pick, canned)
+    return function(next)
+        if fast then return next() end
+        local rows = term:get() or {}
+        local row = { cmd = true }
+        rows[#rows + 1] = row
+        local function put() term:set({ table.unpack(rows) }) end
+        local function key(i)
+            row.text = "$ " .. shown:sub(1, i)
+            put()
+            if i < #shown then return later(30, function() key(i + 1) end) end
+            demo(args, function(code, out, ok)
+                local picked = ok and pick(code, out or {})
+                if not picked then log.warn("agent beat fallback: " .. shown) end
+                for _, r in ipairs(picked or canned) do
+                    rows[#rows + 1] = r
+                end
+                put()
+                next()
+            end, function(code, out) return pick(code, out) ~= nil end)
+        end
+        later(200, function() key(1) end)
+    end
+end
+
+-- Clicks the bar's Focus chip the way an agent would, at the box the pointer aims at: on the bar,
+-- screen and surface pixels agree. Not found, it warns and turns focus off itself.
+local function agent_click(next)
+    if fast then return next() end
+    locate("focus", "bar", function()
+        log.warn("agent beat fallback: click")
+        feed("focus_on", false)(next)
+    end, function(box)
+        local x, y = math.floor(box.x + box.width / 2), math.floor(box.y + box.height / 2)
+        agent(string.format("mantle input bar click %d %d", x, y), { "input", "bar", "click", x, y },
+            function(code) return code == 0 and {} or nil end, {})(next)
+    end)
+end
+
+local AGENT_BEAT = {
+    agent("mantle call", { "call" }, function(code, out)
+        local rows, found = {}, false
+        for _, line in ipairs(out) do
+            rows[#rows + 1] = { text = line, hl = line == "focus" }
+            found = found or line == "focus"
+        end
+        return code == 0 and found and rows or nil
+    end, { { text = "focus", hl = true }, { text = "reply" }, { text = "search" } }),
+    wait(900),
+    agent("mantle check", { "check" }, function(code, out)
+        local line = code == 0 and table.concat(out, "\n"):match("[^/\n]*: ok, %d+ surface%(s%)")
+        return line and { { text = line } } or nil
+    end, { { text = "shell.lua: ok, 13 surface(s)" } }),
+    wait(700),
+    agent("mantle call focus", { "call", "focus" }, function(code, out)
+        return code == 0 and out[1] == "true" and { { text = "true" } } or nil
+    end, { { text = "true" } }),
+    wait(1100),
+    agent("mantle log | grep focus", { "log" }, function(code, out)
+        local last = ("\n" .. table.concat(out, "\n")):match(".*\n([^\n]*config: focus%s+on)")
+        return code == 0 and last and { { text = (last:gsub("%s+", " ")) } } or nil
+    end, { { text = "12:00:00 INFO renderer/config: focus on" } }),
+    wait(900),
+    spotlight("focus", "bar"),
+    agent_click,
+    hide_pointer,
+    wait(1200),
+}
 
 local finish
 
@@ -1695,6 +1814,8 @@ local script = {
     nudge_volume,
     wait(1200),
 
+    -- The aurora's two passes are over: a renderer respawned later starts still as well.
+    feed("aurora_settled", true),
     say("Your notification server.", "Links, inline replies, any script, swipe away."),
     edit("11-notifications"),
     edit("11-links"),
@@ -1770,6 +1891,15 @@ local script = {
     feed("lock_typed", 0),
     feed("mock_lock", lock_state({ active = false })),
     wait(300),
+
+    say("Built for agents, too.", "Actions, states, check and log: a CLI any coding agent can drive."),
+    edit("16-agent"),
+    wait(300),
+    chain(table.unpack(AGENT_BEAT)),
+    function(next)
+        term:set(false)
+        next()
+    end,
 
     say("Break it on purpose.", "A typo never takes the desktop down."),
     edit("typo"),
@@ -1893,7 +2023,7 @@ local surfaces = { wallpaper }
 for _, window in ipairs(mockups.panels(backdrop)) do
     surfaces[#surfaces + 1] = window
 end
-for _, pane in ipairs({ card_pane, caption_pane, code_pane, pointer_pane }) do
+for _, pane in ipairs({ card_pane, caption_pane, code_pane, agent_pane, pointer_pane }) do
     surfaces[#surfaces + 1] = pane
 end
 return surfaces

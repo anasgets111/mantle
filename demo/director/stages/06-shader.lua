@@ -175,15 +175,11 @@ return {
                     height = "fill",
                     params = { tint_a = { 0.54, 0.71, 0.98 }, tint_b = { 0.80, 0.65, 0.97 } },
                     progress = 0,
-                    animate = {
-                        progress = {
-                            duration = 16000,
-                            easing = "linear",
-                            keyframes = { 0, 1 },
-                            -- Two passes, then it holds still: a desktop need not redraw forever.
-                            loops = 2,
-                        },
-                    },
+                    -- Two passes, then still: a desktop need not redraw forever, nor restart.
+                    animate = state("aurora_settled", false):map(function(settled)
+                        local run = { duration = 16000, easing = "linear", keyframes = { 0, 1 }, loops = 2 }
+                        return { progress = not settled and run or nil }
+                    end),
                     source = mantle.config_dir .. "/aurora.frag",
                 },
                 rect {

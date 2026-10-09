@@ -22,6 +22,14 @@ local sysinfo = require("sysinfo")
 local banner = require("banner")
 local lock = require("lock")
 
+-- Focus mode: dims the desktop. An agent finds `focus` with `mantle call` and flips it.
+local focus_on = state("focus_on", false)
+action("focus", function()
+    focus_on:set(not focus_on:get())
+    log.info("focus", focus_on:get() and "on" or "off")
+    return focus_on:get()
+end)
+
 local workspaces = list {
     direction = "horizontal",
     spacing = 6,
@@ -191,6 +199,13 @@ return {
                         },
                     },
                 },
+                rect {
+                    width = "fill",
+                    height = "fill",
+                    background = theme.crust,
+                    opacity = focus_on:map(function(on) return on and 0.7 or 0 end),
+                    animate = { opacity = 400 },
+                },
             },
         },
     },
@@ -228,6 +243,25 @@ return {
                 idle.indicator,
                 updates.badge,
                 sysinfo,
+                rect {
+                    geometry = require("targets")("focus"),
+                    visible = focus_on,
+                    margin = { right = 14 },
+                    height = 40,
+                    align_v = "center",
+                    padding = { left = 16, right = 16 },
+                    radius = 20,
+                    background = theme.accent,
+                    on_click = function() focus_on:set(false) end,
+                    children = {
+                        text {
+                            content = "Focus",
+                            align_v = "center",
+                            font_size = 18,
+                            foreground = theme.crust,
+                        },
+                    },
+                },
                 text {
                     content = mantle.system:map(function(s)
                         return os.date("%a %d %b   %H:%M", s and s.time)
