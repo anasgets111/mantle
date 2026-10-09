@@ -211,6 +211,42 @@ impl MixerState {
         self.last_sent = Some(next);
     }
 
+    /// Drops everything tracked under a removed global. Audio publishes only if a map that feeds
+    /// it lost an entry (ports and links are most removals); privacy only for its three kinds.
+    pub(super) fn remove_global(&mut self, id: u32) {
+        self.nodes.remove(&id);
+        self.sink_nodes.remove(&id);
+        self.source_nodes.remove(&id);
+        // Evaluate every removal: `||` would leave a later map's entry behind.
+        let mut audio = self.sinks.remove(&id).is_some();
+        audio |= self.sources.remove(&id).is_some();
+        audio |= self.app_props.remove(&id).is_some();
+        audio |= self.bluez_cards.remove(&id).is_some();
+        audio |= self.apps.remove(&id).is_some();
+        // ALSA and BlueZ devices both record routes; drop this id's so a reused id inherits none.
+        let routes = self.device_routes.len();
+        self.device_routes.retain(|&(device_id, _), _| device_id != id);
+        audio |= self.devices.remove(&id).is_some();
+        audio |= self.bluez_devices.remove(&id).is_some();
+        audio |= self.device_routes.len() != routes;
+        if self.metadata_id == Some(id) {
+            audio = true;
+            self.metadata = None;
+            self.metadata_id = None;
+            self.default_sink_name = None;
+            self.default_source_name = None;
+        }
+        if audio {
+            self.publish_audio();
+        }
+        let mut privacy = self.video_sources.remove(&id).is_some();
+        privacy |= self.microphones.remove(&id).is_some();
+        privacy |= self.screencasts.remove(&id).is_some();
+        if privacy {
+            self.publish_privacy();
+        }
+    }
+
     /// Publishes all three privacy lists together (ADR-0137), even when only one changed.
     /// Recomputing the two it did not touch is three map walks.
     pub(super) fn publish_privacy(&self) {
@@ -576,5 +612,25 @@ mod tests {
         assert!(rx.try_recv().is_ok());
         state.publish_audio();
         assert!(rx.try_recv().is_err(), "second publish with identical state must be skipped");
+    }
+
+    #[test]
+    fn removing_a_global_publishes_audio_only_when_a_tracked_entry_went() {
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        state.apps.insert(5, sample_stream(5));
+        state.publish_audio();
+        rx.try_recv().unwrap();
+        // Changed behind the publisher's back, so any publish would now differ from `last_sent`.
+        state.apps.insert(6, sample_stream(6));
+        state.remove_global(99);
+        assert!(rx.try_recv().is_err(), "an untracked global (a port or link) must not publish");
+        state.remove_global(5);
+        assert_eq!(rx.try_recv().unwrap().apps.len(), 1);
+
+        state.device_routes.insert((80, 0), master::ActiveRoute { index: 0, port: None, props: None });
+        state.remove_global(80);
+        assert!(state.device_routes.is_empty(), "a removed BlueZ device must not leave routes for a reused id");
     }
 }

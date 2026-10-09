@@ -159,39 +159,7 @@ fn run_inner(
                 rearm(&core_for_global, &barrier_for_global, &state_for_global);
             }
         })
-        .global_remove(move |id| {
-            let mut state = state_for_remove.borrow_mut();
-            state.nodes.remove(&id);
-            state.sinks.remove(&id);
-            state.sink_nodes.remove(&id);
-            state.sources.remove(&id);
-            state.source_nodes.remove(&id);
-            state.app_props.remove(&id);
-            state.bluez_cards.remove(&id);
-            let was_alsa = state.devices.remove(&id).is_some();
-            let was_bluez = state.bluez_devices.remove(&id).is_some();
-            if was_alsa || was_bluez {
-                // Remove all route indices keyed by this device id, so a reused id inherits none.
-                state.device_routes.retain(|&(device_id, _), _| device_id != id);
-            }
-            if state.metadata_id == Some(id) {
-                state.metadata = None;
-                state.metadata_id = None;
-                state.default_sink_name = None;
-                state.default_source_name = None;
-            }
-            // Audio publishes on every removal (ADR-0034); privacy publishes only for its three
-            // node kinds. Sink/metadata cleanup is unconditional because publish_audio recomputes.
-            state.apps.remove(&id);
-            state.publish_audio();
-            // Evaluate all three before the check: `||` could leave one stale map entry.
-            let was_camera = state.video_sources.remove(&id).is_some();
-            let was_microphone = state.microphones.remove(&id).is_some();
-            let was_screencast = state.screencasts.remove(&id).is_some();
-            if was_camera || was_microphone || was_screencast {
-                state.publish_privacy();
-            }
-        })
+        .global_remove(move |id| state_for_remove.borrow_mut().remove_global(id))
         .register();
 
     // The gate itself. `error` opens it too: a core error means no further `done` is coming, and a
