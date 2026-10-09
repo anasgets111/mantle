@@ -125,18 +125,19 @@ fn replace_if_sampled<T: PartialEq>(slot: &mut T, sample: Option<T>) -> bool {
     sample.is_some_and(|sample| std::mem::replace(slot, sample) != *slot)
 }
 
-/// One metric's poll loop: parked while its interval is zero, otherwise `tick` at the next
-/// wall-clock second and once per interval after.
-/// `previous` is the tick's memory across samples, cleared on going dormant: `/proc/stat` counters
-/// are cumulative since boot, so a delta across a dormant spell is bogus.
-async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: impl FnMut(&mut Option<T>)) {
-    let mut previous = None;
+/// One metric's poll loop: parked while its interval is zero, otherwise `tick(fresh)` at the next
+/// wall-clock second and once per interval after. `fresh` marks the first tick after entry or a
+/// dormant spell; the next one comes a full interval later, so a delta never spans a few ms.
+async fn run_async_ticker<F, Fut>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: F)
+where
+    F: FnMut(bool) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
     let mut fresh = true;
     loop {
         let interval = *interval_rx.borrow_and_update();
         match poll_mode(interval) {
             PollMode::Dormant => {
-                previous = None;
                 fresh = true;
                 if interval_rx.changed().await.is_err() {
                     return; // every SysinfoController that could reconfigure this task is gone
@@ -144,17 +145,16 @@ async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, 
             }
             PollMode::Ticking(duration) => {
                 // One sample on entry, not on every reconfigure: a reload would re-sample and blip cpu.
-                if std::mem::take(&mut fresh) {
-                    tick(&mut previous);
+                let first = std::mem::take(&mut fresh);
+                if first {
+                    tick(true).await;
                 }
                 // On the clock's second, so a whole-second interval lands in `system`'s push turn.
-                let mut ticker = tokio::time::interval_at(
-                    crate::capabilities::system::controller::next_wall_clock_second(),
-                    duration,
-                );
+                let second = crate::capabilities::system::controller::next_wall_clock_second();
+                let mut ticker = tokio::time::interval_at(if first { second + duration } else { second }, duration);
                 loop {
                     tokio::select! {
-                        _ = ticker.tick() => tick(&mut previous),
+                        _ = ticker.tick() => tick(false).await,
                         changed = interval_rx.changed() => {
                             if changed.is_err() {
                                 return;
@@ -168,42 +168,19 @@ async fn run_ticker<T>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, 
     }
 }
 
-/// The same schedule for reads that wait on child processes.
-async fn run_async_ticker<F, Fut>(mut interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: F)
-where
-    F: FnMut() -> Fut,
-    Fut: std::future::Future<Output = ()>,
-{
-    let mut fresh = true;
-    loop {
-        let interval = *interval_rx.borrow_and_update();
-        match poll_mode(interval) {
-            PollMode::Dormant => {
-                fresh = true;
-                if interval_rx.changed().await.is_err() {
-                    return;
-                }
-            }
-            PollMode::Ticking(duration) => {
-                if std::mem::take(&mut fresh) {
-                    tick().await;
-                }
-                let mut ticker = tokio::time::interval_at(
-                    crate::capabilities::system::controller::next_wall_clock_second(),
-                    duration,
-                );
-                loop {
-                    tokio::select! {
-                        _ = ticker.tick() => tick().await,
-                        changed = interval_rx.changed() => {
-                            if changed.is_err() { return; }
-                            break;
-                        }
-                    }
-                }
-            }
+/// [`run_async_ticker`] for synchronous reads. `previous` is the tick's memory across samples,
+/// cleared on a fresh tick: `/proc/stat` counters are cumulative since boot, so a delta across a
+/// dormant spell is bogus.
+async fn run_ticker<T>(interval_rx: tokio::sync::watch::Receiver<Duration>, mut tick: impl FnMut(&mut Option<T>)) {
+    let mut previous = None;
+    run_async_ticker(interval_rx, |fresh| {
+        if fresh {
+            previous = None;
         }
-    }
+        tick(&mut previous);
+        std::future::ready(())
+    })
+    .await
 }
 
 /// `cpu_percent` task. The first tick after cold start or resume stores only a sample.
@@ -281,7 +258,7 @@ async fn run_disk_task(
     state: std::sync::Arc<std::sync::Mutex<SysinfoState>>,
     signal_tx: tokio::sync::mpsc::UnboundedSender<()>,
 ) {
-    run_async_ticker(interval_rx, || async {
+    run_async_ticker(interval_rx, |_| async {
         let disks = super::disk::read_disks().await;
         publish_if_changed(&state, &signal_tx, |state| replace_if_sampled(&mut state.disks, disks));
     })
@@ -297,7 +274,7 @@ async fn run_gpu_task(
 ) {
     let drm_root = hwmon_root.parent().unwrap_or(&hwmon_root).join("drm");
     let mut gpu_input = None;
-    run_async_ticker(interval_rx, || {
+    run_async_ticker(interval_rx, |_| {
         let temp_gpu = super::temp::sample_temp_gpu(&mut gpu_input, &hwmon_root);
         let (drm_root, state, signal_tx) = (&drm_root, &state, &signal_tx);
         async move {
@@ -350,11 +327,19 @@ mod tests {
         tokio::spawn(super::run_ticker(rx, move |_: &mut Option<()>| {
             seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }));
+        let samples = || count.load(std::sync::atomic::Ordering::SeqCst);
         tokio::task::yield_now().await;
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(samples(), 1);
+        // The next sample waits a whole interval, so the first delta is not a few ms wide.
+        tokio::time::advance(std::time::Duration::from_secs(59)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(samples(), 1);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(samples(), 2);
         tx.send(std::time::Duration::from_secs(60)).unwrap();
         tokio::task::yield_now().await;
-        assert_eq!(count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(samples(), 2);
     }
 
     #[test]
