@@ -219,3 +219,5 @@ return path {
     },
 }
 ```
+
+Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [vector path](../../renderer/src/layout/node/vector_path.rs).

@@ -75,8 +75,8 @@ dismisses it and `on_dismiss` clears the state.
 
 ## Properties
 
-Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id`, `parent`
-and `on_dismiss` takes a signal.
+Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id`, `parent`,
+`on_dismiss`, `on_escape` and `reset_on_close` takes a signal.
 
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |

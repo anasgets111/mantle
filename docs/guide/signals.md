@@ -454,8 +454,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | `layer`, `anchor`, `output`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |
 | A named state resets on every reload | Its scalar seed changed between evaluations. Keep it stable |
 | `state("x", ...) is declared twice in this evaluation` | Two `state` calls give one name different seeds. Declare it in one module and require that |
-| `delay(mantle.system, 2000)` never updates | Each push is a fresh table, so the hold restarts every second. Delay a scalar derived with `:map` |
-| `pulse(cap, ms)` fires on every push | Table payloads are never `==`; pulse a mapped scalar |
+| `delay` on a capability never updates, or `pulse` fires on every push | Payloads are tables, which never compare `==`. Delay or pulse a scalar derived with `:map` |
 | Hiding a view with `visible = false` keeps its whole subtree | Switch views through `children = sig:map(...)` |
 | A `:set` inside a map or computed | Maps must be side-effect free; write state from `on_click`, `on_change` or a `timer` |
 | A clock from `os.date()` alone stops updating | Nothing it read is a signal, so its node keeps the first answer. Derive it from `mantle.system`'s `time` ([what a node reads again](#what-a-node-reads-again)) |

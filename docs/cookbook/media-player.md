@@ -293,4 +293,5 @@ return {
 | Seek 10 s back and forward | Two more buttons whose `on_click` calls `seek_relative` with the player's `id` and `-10000000` or `10000000` |
 | Show the app icon | `icon { name = current.desktop_entry }` from the player's `desktop_entry` |
 | Hide browsers | Skip players whose `desktop_entry` is `"firefox"` or `"chromium"` in `pick` |
+| Remote covers (Spotify) | On an `art_url` change, `process.run("curl", { "-sfLo", file, url }, function() end, function(code) if code == 0 then cover:set(file) end end)` with `file` under `$XDG_CACHE_HOME`; draw `cover` when `album_art_path` is `""` |
 | No popup, controls in the bar | Put the three `control_button`s in the bar row and drop the popup |

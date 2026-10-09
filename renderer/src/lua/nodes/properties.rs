@@ -512,7 +512,7 @@ props! {
         ///
         /// Book: Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot
         progress: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
-        /// Uniforms by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing ones are `0`. Not tweened.
+        /// Uniforms by name: a finite number for `float`, a list for `vec2`-`vec4` or an array of either, flattened to at most 4096 numbers. Missing ones are `0`. Not tweened.
         params: Bound<Params> = absent(Lua("{}"));
         /// Raster images a shader samples, by name: up to 8 absolute PNG, JPEG or WebP paths, each a `uniform sampler2D <name>` plus `uniform vec2 <name>_size` in pixels. The name is a GLSL identifier, not `u_*`, `mantle_*`, `gl_*` or `*_size`, and has no `__`. A missing or undecodable file samples transparent black and is logged once. Saving the file reloads it. Not tweened.
         ///

@@ -39,7 +39,8 @@ return panel {
 }
 ```
 
-The compositor binds keys to the commands. Hyprland (`hyprland.conf`):
+The compositor binds keys to the commands; `volume.up` stands for an [`action`](scripting.md#action) your config
+defines. Hyprland (`hyprland.conf`):
 
 ```text
 bind = SUPER, Space, exec, mantle toggle launcher_open
