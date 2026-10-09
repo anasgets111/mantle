@@ -145,6 +145,13 @@ impl ResolvedNode {
         }
         self
     }
+
+    /// This node with `padding` on every edge.
+    pub(crate) fn with_padding(mut self, padding: f64) -> Self {
+        let props = PropMap::from_iter([("padding", Value::Number(padding))]);
+        self.layout_style = std::rc::Rc::new(LayoutStyle::parse(&props).unwrap());
+        self
+    }
 }
 
 /// Geometry parsed once per node/pass. A resolved table's `__index` still runs on each access, so
@@ -367,6 +374,17 @@ impl ResolvedNode {
     /// The node's box in surface coordinates, given the absolute origin of its parent.
     pub(crate) fn at(&self, origin_x: f32, origin_y: f32) -> LogicalRect {
         LogicalRect { x: origin_x + self.rect.x, y: origin_y + self.rect.y, ..self.rect }
+    }
+
+    /// `border_box` less this node's `padding`: where a `text` or `textfield` lays out its glyphs.
+    pub(crate) fn content_box(&self, border_box: LogicalRect) -> LogicalRect {
+        let pad = self.layout_style.padding;
+        LogicalRect {
+            x: border_box.x + pad.left,
+            y: border_box.y + pad.top,
+            width: (border_box.width - pad.horizontal()).max(0.0),
+            height: (border_box.height - pad.vertical()).max(0.0),
+        }
     }
 
     /// Whether children are cut to this box; paint, hit testing and regions all ask here (ADR-0328).

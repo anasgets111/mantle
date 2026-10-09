@@ -87,8 +87,13 @@ fn build_node(
 
     let rect = node.at(origin_x, origin_y);
     // The list is in buffer pixels; everything this walk reasons with stays logical until here.
-    let px =
-        LogicalRect { x: rect.x * scale, y: rect.y * scale, width: rect.width * scale, height: rect.height * scale };
+    let physical = |r: LogicalRect| LogicalRect {
+        x: r.x * scale,
+        y: r.y * scale,
+        width: r.width * scale,
+        height: r.height * scale,
+    };
+    let px = physical(rect);
     let cmd = |clip: PhysicalRect, draw: Draw| DrawCmd { rect: px, clip, draw: in_buffer_pixels(draw, scale) };
 
     // Snap this box and intersect it with ancestor clips. Wrapped text is already rewritten by
@@ -311,7 +316,12 @@ fn build_node(
                     }
                     _ => clip,
                 };
-                push_fill(out, cmd(clip, draw), layers);
+                // Glyphs lay out inside `padding`; the clip stays the border box's.
+                let fill = match &draw {
+                    Draw::Text { .. } => DrawCmd { rect: physical(node.content_box(rect)), ..cmd(clip, draw) },
+                    _ => cmd(clip, draw),
+                };
+                push_fill(out, fill, layers);
             }
             out.extend(insets);
             out.extend(border.map(|draw| cmd(clip, draw)));
@@ -746,7 +756,9 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                     selected_text: bar.selected_text.map(|c| fade(c, opacity)),
                     ..*bar
                 },
-                wrap: multiline.map(|_| (crate::layout::field_rows::wrap_width(rect.width, bar.width), node.scrolled)),
+                wrap: multiline.map(|_| {
+                    (crate::layout::field_rows::wrap_width(node.content_box(rect).width, bar.width), node.scrolled)
+                }),
             })
         }
 
@@ -1347,6 +1359,25 @@ mod tests {
             build(&resolved_surface(&Lua::new(), &src("box"), LogicalSize { width: 100.0, height: 60.0 }), 1.0, None);
         let text = boxed.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
         assert!(text.clip.y0 >= 0 && text.clip.y1 <= 60, "a clipping ancestor still cuts the ink: {:?}", text.clip);
+    }
+
+    /// `padding` grows a `text` or `textfield` box, and the glyphs lay out inside it, not at its corner.
+    #[test]
+    fn text_draws_inside_its_padding() {
+        for child in [
+            r#"text { content = "Hg", width = 40, font_size = 20, line_height = 0.5,"#,
+            r#"textfield { placeholder = "Hg", width = 40, height = 20, font_size = 20, line_height = 0.5,"#,
+        ] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 100, height = 60, padding = 20,
+                    child = {child} padding = {{ top = 8, left = 6, right = 4, bottom = 2 }} }} }}"##
+            );
+            let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 60.0 });
+            let list = build(&tree, 2.0, None);
+            let text = list.commands.iter().find(|c| matches!(c.draw, Draw::Text { .. })).unwrap();
+            assert_eq!(text.rect, LogicalRect { x: 52.0, y: 56.0, width: 60.0, height: 20.0 }, "{child}");
+            assert_eq!((text.clip.x0, text.clip.x1), (40, 120), "the clip stays the border box: {child}");
+        }
     }
 
     /// A child's clip is its own box intersected with its parent's, never wider. This is the

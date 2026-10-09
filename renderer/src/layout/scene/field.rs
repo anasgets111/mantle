@@ -25,7 +25,7 @@ impl Scene {
         let path = self.surfaces.get(instance_id).and_then(|tree| hit::path_to_node(tree, id));
         let Some(&node) = path.as_ref().and_then(|path| path.last()) else { return false };
         let Some(PaintStyle::TextField { face, caret, multiline: Some(lines), .. }) = &node.paint else { return false };
-        let width = field_rows::wrap_width(node.rect.width, caret.width);
+        let width = field_rows::wrap_width(node.content_box(node.rect).width, caret.width);
         let old = self.field_drafts.get(&id);
         if old.map_or(text.is_empty(), |old| old.text == text && old.wrapped.0 == width) {
             return false;

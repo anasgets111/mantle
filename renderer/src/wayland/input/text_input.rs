@@ -159,7 +159,7 @@ fn cursor_rect(
 ) -> Option<(i32, i32, i32, i32)> {
     let path = layout::hit::path_to_node(root, id)?;
     let node = *path.last()?;
-    let rect = layout::hit::absolute_rect(&path)?;
+    let rect = node.content_box(layout::hit::absolute_rect(&path)?);
     let node::PaintStyle::TextField { target: None, face, align, caret: bar, multiline, .. } = node.paint.as_ref()?
     else {
         return None;

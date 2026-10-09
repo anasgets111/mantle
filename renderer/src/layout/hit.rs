@@ -61,6 +61,9 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
     let Some(PaintStyle::Text { content, runs, face, align, .. }) = node.paint.as_ref() else {
         return None;
     };
+    // Paint lays the rows out inside `padding`.
+    let inner = node.content_box(LogicalRect { x: 0.0, y: 0.0, ..node.rect });
+    let point = LogicalPoint { x: point.x - inner.x, y: point.y - inner.y };
     if runs.iter().all(|run| run.href.is_none()) || point.y < 0.0 {
         return None;
     }
@@ -72,7 +75,7 @@ pub fn link_under(node: &ResolvedNode, point: LogicalPoint, shaping: &ShapingHan
             row -= shaped.shaped.len();
             continue;
         };
-        let left = align.line_left(laid.rtl, 0.0, node.rect.width, laid.width);
+        let left = align.line_left(laid.rtl, 0.0, inner.width, laid.width);
         let glyph =
             laid.glyphs.iter().find(|glyph| (left + glyph.x..left + glyph.x + glyph.advance).contains(&point.x))?;
         let at = line_start + glyph.start;
@@ -103,7 +106,7 @@ pub fn caret_at(
     else {
         return None;
     };
-    let rect = absolute_rect(&path[..=depth])?;
+    let rect = path[depth].content_box(absolute_rect(&path[..=depth])?);
     let (x, y) = apply_affine(invert_affine(path_transform(&path[..=depth]))?, point.x, point.y);
     if multiline.is_some() {
         let width = field_rows::wrap_width(rect.width, bar.width);
@@ -599,6 +602,10 @@ pub(crate) mod tests {
         assert_eq!(at(-4.0), Some(0), "a press left of the text lands before the first character");
         assert_eq!(at(width_of(&shaping, "hel") + 1.0), Some(3), "just past the third character's midpoint");
         assert_eq!(at(width_of(&shaping, text) + 40.0), Some(text.len()), "past the end is the end");
+        let padded = field.clone().with_padding(20.0);
+        let x = 30.0 + width_of(&shaping, "hel") + 1.0;
+        let press = caret_at(&[&padded], LogicalPoint { x, y: 5.0 }, text, 0, &shaping);
+        assert_eq!(press, Some(3), "the line starts inside the padding, as paint starts it");
 
         field.transform.scale = (2.0, 1.0);
         field.transform.translate = (30.0, 0.0);
@@ -741,6 +748,18 @@ pub(crate) mod tests {
             link_under(&node, LogicalPoint { x: 200.0 - w / 2.0, y: 5.0 }, &shaping),
             Some("https://c/".to_string())
         );
+    }
+
+    /// Paint lays the rows out inside `padding`, so a link moves with its glyphs.
+    #[test]
+    fn padding_moves_a_link_with_its_glyphs() {
+        let shaping = ShapingHandle::spawn();
+        let node = styled_text("go", vec![link(0..2, "https://f/")], TextAlign::End, 200.0).with_padding(20.0);
+        let x = 180.0 - width_of(&shaping, "go") / 2.0;
+        let at = |x: f32, y: f32| link_under(&node, LogicalPoint { x, y }, &shaping);
+        assert_eq!(at(x, 25.0), Some("https://f/".to_string()), "End is the padding's edge");
+        assert_eq!(at(x + 20.0, 25.0), None, "not the box's");
+        assert_eq!(at(x, 5.0), None, "the top padding holds no row");
     }
 
     /// A link a right-to-left line opens with is found at the box's right edge under `Start`.

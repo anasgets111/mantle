@@ -77,8 +77,9 @@ impl App {
         else {
             return None;
         };
-        let width = field_rows::wrap_width(node.rect.width, caret.width);
-        Some((View { height: node.rect.height, face, align: *align, width, scrolled: node.scrolled }, *multiline))
+        let content = node.content_box(node.rect);
+        let width = field_rows::wrap_width(content.width, caret.width);
+        Some((View { height: content.height, face, align: *align, width, scrolled: node.scrolled }, *multiline))
     }
 
     /// The draft of `(surface_id, id)`: the focused field's, else a parked one, else `""`.
