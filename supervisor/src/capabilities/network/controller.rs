@@ -40,11 +40,14 @@ pub struct NetworkController {
     pub(super) events: UnboundedSender<NetworkSignal>,
 }
 
-fn carry_scan(next: &mut NetworkState, previous: &NetworkState, signal: &NetworkSignal) {
+fn carry_scan(next: &mut NetworkState, previous: Option<&NetworkState>, signal: &NetworkSignal) {
     for device in &mut next.wifi_devices {
+        // `None`: `next` is the stored state itself, so its own flag is the previous one.
+        let was_scanning = previous.map_or(device.scanning, |previous| {
+            previous.wifi_devices.iter().find(|old| old.id == device.id).is_some_and(|old| old.scanning)
+        });
         device.scanning = matches!(signal, NetworkSignal::ScanStarted(id) if id == &device.id)
-            || (previous.wifi_devices.iter().find(|old| old.id == device.id).is_some_and(|old| old.scanning)
-                && !matches!(signal, NetworkSignal::ScanCompleted(id) if id == &device.id));
+            || (was_scanning && !matches!(signal, NetworkSignal::ScanCompleted(id) if id == &device.id));
     }
     next.scanning = next.wifi_devices.first().is_some_and(|wifi| wifi.scanning);
 }
@@ -144,10 +147,13 @@ impl NetworkController {
     pub async fn handle_signal(&self, signal: NetworkSignal) -> NetworkState {
         let mut next = match &signal {
             NetworkSignal::ScanStarted(_) => {
-                let current = self.state.lock().expect("mutex poisoned").clone();
-                let mut next =
-                    if current.wifi_devices.is_empty() { self.build_state(&signal).await } else { current.clone() };
-                carry_scan(&mut next, &current, &signal);
+                let mut next = self.state.lock().expect("mutex poisoned").clone();
+                if next.wifi_devices.is_empty() {
+                    next = self.build_state(&signal).await;
+                    carry_scan(&mut next, Some(&NetworkState::default()), &signal);
+                } else {
+                    carry_scan(&mut next, None, &signal);
+                }
                 next
             }
             _ => {
@@ -170,7 +176,7 @@ impl NetworkController {
                 let mut next = self.build_state(&signal).await;
                 {
                     let state = self.state.lock().expect("mutex poisoned");
-                    carry_scan(&mut next, &state, &signal);
+                    carry_scan(&mut next, Some(&state), &signal);
                 }
                 next
             }
@@ -402,10 +408,14 @@ mod tests {
             ..NetworkState::default()
         };
         let mut next = previous.clone();
-        carry_scan(&mut next, &previous, &NetworkSignal::ScanCompleted("wlan1".into()));
+        carry_scan(&mut next, Some(&previous), &NetworkSignal::ScanCompleted("wlan1".into()));
         assert!(next.scanning && next.wifi_devices[0].scanning && !next.wifi_devices[1].scanning);
+        let mut own = previous.clone();
+        own.wifi_devices[0].scanning = false;
+        carry_scan(&mut own, None, &NetworkSignal::ScanStarted("wlan0".into()));
+        assert!(own.scanning && own.wifi_devices[1].scanning, "None carries the state's own flags");
         next.wifi_devices.clear();
-        carry_scan(&mut next, &previous, &NetworkSignal::DevicesChanged);
+        carry_scan(&mut next, Some(&previous), &NetworkSignal::DevicesChanged);
         assert!(!next.scanning);
     }
 
