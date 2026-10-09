@@ -46,11 +46,10 @@ end
 
 -- The tour's window: a terminal of its own app_id, opened on an empty workspace before recording
 -- and closed after its hop, so no window of yours is ever in the shot.
--- ponytail: the take depends on kitty, fish and fastfetch; another app needs its own `--class`-style id.
+-- ponytail: the take depends on kitty and fish; another app needs its own `--class`-style id.
 local TOUR_ID = "mantle-demo-tour"
--- fish with fastfetch in place of its greeting, in $HOME so the prompt shows no checkout path.
-local FETCH = "functions -e fish_greeting; fastfetch"
-local TOUR = { "kitty", "--class", TOUR_ID, "--directory", run.env("HOME", "/"), "-e", "fish", "-C", FETCH }
+-- Your own fish and its greeting, in $HOME so the prompt shows no checkout path.
+local TOUR = { "kitty", "--class", TOUR_ID, "--directory", run.env("HOME", "/"), "-e", "fish" }
 local tour_ws
 
 local function tour_windows()
