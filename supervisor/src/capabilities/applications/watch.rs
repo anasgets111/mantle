@@ -4,8 +4,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use futures_util::StreamExt;
-use inotify::{Inotify, WatchMask};
+use futures_util::{Stream, StreamExt};
+use inotify::{EventMask, Inotify, WatchMask};
 use shared::warn;
 
 use super::scan::walk;
@@ -44,7 +44,7 @@ pub(super) async fn run(dirs: Arc<Vec<PathBuf>>, rescan: Arc<dyn Fn() + Send + S
         else {
             return; // the scan panicked; its mutex is poisoned and `refresh` panics the same way.
         };
-        let mut stream = match watched.and_then(|inotify| inotify.into_event_stream(vec![0u8; 4096])) {
+        let mut stream = match watched.and_then(events) {
             Ok(stream) => stream,
             Err(err) => {
                 warn!("cannot watch the applications directories: {err}; only `refresh` rescans them");
@@ -56,6 +56,25 @@ pub(super) async fn run(dirs: Arc<Vec<PathBuf>>, rescan: Arc<dyn Fn() + Send + S
         }
         settle(&mut stream).await;
     }
+}
+
+/// Events that can change the app list: `.desktop` files, directories, extensionless names (a
+/// symlink to a directory arrives without `ISDIR`) and the watch itself. `mimeinfo.cache` and other
+/// caches are rewritten by the packages that trigger a scan anyway.
+///
+/// ponytail: a symlink to a directory named with an extension is missed until the next event.
+fn events(
+    inotify: Inotify,
+) -> std::io::Result<impl Stream<Item = std::io::Result<inotify::Event<std::ffi::OsString>>> + Unpin> {
+    Ok(inotify.into_event_stream(vec![0u8; 4096])?.filter(|event| {
+        std::future::ready(event.as_ref().map_or(true, |event| {
+            event.mask.contains(EventMask::ISDIR)
+                || event
+                    .name
+                    .as_ref()
+                    .is_none_or(|name| std::path::Path::new(name).extension().is_none_or(|ext| ext == "desktop"))
+        }))
+    }))
 }
 
 /// One inotify instance over every directory the scan walks. A missing directory is watched
@@ -99,5 +118,21 @@ mod tests {
         let start = tokio::time::Instant::now();
         settle(trickle).await;
         assert!(start.elapsed() <= Duration::from_secs(2));
+    }
+
+    #[tokio::test]
+    async fn only_desktop_files_dirs_and_extensionless_names_wake_the_watcher() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut stream = events(watch(&[dir.path().to_path_buf()]).unwrap()).unwrap();
+        std::fs::write(dir.path().join("mimeinfo.cache"), "x").unwrap();
+        std::fs::write(dir.path().join("x.desktop"), "x").unwrap();
+        std::os::unix::fs::symlink("/", dir.path().join("link")).unwrap();
+        let mut names = Vec::new();
+        while names.len() < 3 {
+            let next = tokio::time::timeout(Duration::from_secs(2), stream.next()).await;
+            names.push(next.expect("an expected event never arrived").unwrap().unwrap().name.unwrap());
+        }
+        assert!(names.iter().all(|name| name != "mimeinfo.cache"), "the cache write must not surface: {names:?}");
+        assert!(names.iter().any(|name| name == "link"), "a symlinked directory has no ISDIR");
     }
 }
