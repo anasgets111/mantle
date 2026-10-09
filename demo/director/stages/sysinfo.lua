@@ -1,5 +1,6 @@
 -- Real, unlike the mocks: this machine's CPU and memory, read by `mantle.sysinfo` once a second.
 local theme = require("theme")
+local target = require("targets")
 
 mantle.sysinfo:configure({ cpu_interval = 1, ram_interval = 2 })
 
@@ -50,6 +51,7 @@ local function chip(label, value)
 end
 
 return rect {
+    geometry = target("sysinfo"),
     margin = { right = 18 },
     height = 40,
     align_v = "center",

@@ -104,13 +104,7 @@ local function write(path, text, done)
     run("sh", { "-c", 'printf "%s" "$1" > "$2.part" && mv "$2.part" "$2"', "sh", text, path }, done)
 end
 
--- Writes the demo shell's `state(name)` the way a keybind would.
-local function set_state(dir, name, value, done)
-    run("mantle", { "-c", dir, "set", name, json.encode(value) }, done)
-end
-
 return {
-    set_state = set_state,
     run = run,
     wait_for = wait_for,
     stop_others = stop_others,

@@ -65,7 +65,7 @@ local WALLPAPER_ASPECT = 3440 / 1440
 -- The buffer lives in these locals; `version` is the signal that says it changed.
 local lines = {}
 local caret = { line = 1, col = 1 }
--- Lines outside the playing hunk dim until the next caption.
+-- Lines outside the playing hunk dim while an edit types; the save restores them.
 local focus
 local texts = {}
 -- Bumped by every script step and keystroke; the watchdog ends a take that stops moving.
@@ -125,7 +125,7 @@ local code = computed({ version, theme.state }, function(_, t)
     local runs = {}
     for n, line in ipairs(lines) do
         runs[#runs + 1] = { text = string.format("%4d  ", n), color = n == caret.line and t.subtext or t.overlay }
-        -- Outside the focus, the same colours at 55% alpha.
+        -- Outside the focus, the same colours at 70% alpha.
         local dim = focus and (n < focus.first or n > focus.last)
         local cache = dim and dimmed or highlighted
         local colored = cache[line]
@@ -133,7 +133,7 @@ local code = computed({ version, theme.state }, function(_, t)
             colored = {}
             for _, run in ipairs(tokenize(line)) do
                 local color = t[syntax.roles[run.kind]]
-                colored[#colored + 1] = { text = run.text, color = dim and color .. "8c" or color }
+                colored[#colored + 1] = { text = run.text, color = dim and color .. "b3" or color }
             end
             cache[line] = colored
         end
@@ -307,7 +307,7 @@ local key_row = computed({ keys, key_command }, function(combo, command)
         out[#out + 1] = chip(key)
     end
     out[#out + 1] = text {
-        content = "→  " .. command,
+        content = (#out > 0 and "→  " or "$ ") .. command,
         align_v = "center",
         font = MONO,
         font_size = 22,
@@ -360,7 +360,7 @@ local caption_pane = panel {
                         foreground = theme.subtext,
                     },
                     row {
-                        visible = keys:map(function(k) return k ~= "" end),
+                        visible = computed({ keys, key_command }, function(k, c) return k ~= "" or c ~= "" end),
                         margin = { top = 6 },
                         spacing = 10,
                         children = key_row,
@@ -442,6 +442,20 @@ local function later(ms, fn)
     timer(fast and 1 or ms, fn)
 end
 
+-- Runs `mantle -c DEMO_DIR <args>` against the demo shell. A step right after a save can name
+-- state or an action the edit adds before the reload lands, so a refusal retries for up to 3 s.
+local function demo(args, done)
+    local tries = 0
+    local function go()
+        session.run("mantle", { "-c", DEMO_DIR, table.unpack(args) }, function(code, out)
+            tries = tries + 1
+            if code ~= 0 and tries < 30 and not finished then return timer(100, go) end
+            if done then done(code, out) end
+        end)
+    end
+    go()
+end
+
 local function set_text(text)
     lines = edits.split(text)
     caret.line, caret.col = 1, 1
@@ -508,8 +522,6 @@ local function say(title, text)
         beats = beats + 1
         shot(string.format("%s-end-%02d", last_edit, beats), function()
             log.info("beat", title)
-            focus = nil
-            bump()
             caption:set(title)
             detail:set(text or "")
             next()
@@ -564,7 +576,8 @@ local function edit(name)
             set_text(plan.before)
         end
         local function save()
-            last_edit = name
+            last_edit, focus = name, nil
+            bump()
             session.write(DEMO_DIR .. "/" .. plan.file, plan.after, function()
                 status:set("saved")
                 if fast then return timer(500, next) end
@@ -585,7 +598,7 @@ end
 
 local function toggle(name)
     return function(next)
-        session.run("mantle", { "-c", DEMO_DIR, "toggle", name }, function() next() end)
+        demo({ "toggle", name }, function() next() end)
     end
 end
 
@@ -593,15 +606,14 @@ end
 -- comes back with neither, and `replay_mocks` pushes them again.
 local last_fed, picked = {}, nil
 
--- Picks a wallpaper as a keybind would, and captions the command that did it. The director
+-- Picks a wallpaper as a keybind would. The director
 -- quantizes the same thumbnail the demo shell does, so its own panes re-theme in step.
 local function pick(file)
     return function(next)
         picked = file
-        detail:set("click, or: mantle call wallpaper " .. file)
         backdrop:set(DEMO_DIR .. "/wallpapers/" .. file)
         theme.choose(DEMO_DIR .. "/wallpapers/thumbs/" .. file)
-        session.run("mantle", { "-c", DEMO_DIR, "call", "wallpaper", file }, function() next() end)
+        demo({ "call", "wallpaper", file }, function() next() end)
     end
 end
 
@@ -610,7 +622,7 @@ end
 local function feed(name, value)
     return function(next)
         last_fed[name] = value
-        session.set_state(DEMO_DIR, name, value, function() next() end)
+        demo({ "set", name, json.encode(value) }, function() next() end)
     end
 end
 
@@ -668,7 +680,7 @@ local function notify(n)
             app_icon = "org.telegram.desktop",
             desktop_entry = "org.telegram.desktop",
             summary = n.from,
-            body = { { kind = "text", text = n.text } },
+            body = n.body or { { kind = "text", text = n.text } },
             actions = { { key = "read", label = n.read } },
             has_default_action = true,
             has_reply = true,
@@ -678,7 +690,7 @@ local function notify(n)
             transient = false,
             timestamp = 0,
         }
-        session.run("mantle", { "-c", DEMO_DIR, "call", "reply", "" }, function()
+        demo({ "call", "reply", "" }, function()
             feed("mock_notifications", { dnd = false, feed = { entry } })(next)
         end)
     end
@@ -687,7 +699,7 @@ end
 -- Types `text` one character at a time through `mantle call name`, as a field `set_text` fills.
 local function type_call(name, text)
     return function(next)
-        if fast then return session.run("mantle", { "-c", DEMO_DIR, "call", name, text }, function() next() end) end
+        if fast then return demo({ "call", name, text }, function() next() end) end
         local chars = {}
         for c in text:gmatch("[%z\1-\127\194-\244][\128-\191]*") do
             chars[#chars + 1] = c
@@ -695,7 +707,7 @@ local function type_call(name, text)
         local function at(k)
             progress = progress + 1
             if k > #chars then return next() end
-            session.run("mantle", { "-c", DEMO_DIR, "call", name, table.concat(chars, "", 1, k) }, function()
+            demo({ "call", name, table.concat(chars, "", 1, k) }, function()
                 timer(32 + math.random(0, 36) + (chars[k] == " " and 20 or 0), function() at(k + 1) end)
             end)
         end
@@ -704,32 +716,7 @@ local function type_call(name, text)
 end
 
 local function clear_search(next)
-    session.run("mantle", { "-c", DEMO_DIR, "call", "search", "" }, function() next() end)
-end
-
--- Sends the reply: the card fades, then the chat opens with the reply arriving under the message.
-local function deliver(who, rtl, theirs, mine)
-    return function(next)
-        feed("reply_sent", true)(function()
-            later(400, function()
-                feed("mock_notifications", { dnd = false, feed = {} })(function()
-                    feed("reply_sent", false)(function()
-                        mockups.chat:set({ name = who, rtl = rtl, messages = { { mine = false, text = theirs } } })
-                        open_app("chat")(function()
-                            later(900, function()
-                                mockups.chat:set({
-                                    name = who,
-                                    rtl = rtl,
-                                    messages = { { mine = false, text = theirs }, { mine = true, text = mine } },
-                                })
-                                next()
-                            end)
-                        end)
-                    end)
-                end)
-            end)
-        end)
-    end
+    demo({ "call", "search", "" }, function() next() end)
 end
 
 -- A password's length only, one key at a time: the mocks draw dots, never text.
@@ -756,54 +743,47 @@ local TRACKS = {
     { title = "Warm Reload", artist = "Save State", album = "Hot Path", art = "warm-reload.svg", length = 187 },
 }
 
+local function player(k, at, play_state)
+    local track = TRACKS[k]
+    return {
+        players = {
+            {
+                id = "spotify",
+                identity = "Spotify",
+                title = track.title,
+                artist = track.artist,
+                album = track.album,
+                album_art_path = DEMO_DIR .. "/covers/" .. track.art,
+                length = track.length * 1000000,
+                position = at * 1000000,
+                play_state = play_state,
+            },
+        },
+    }
+end
+
 -- Plays track `k` from `from` seconds for `seconds`, one `mock_media` push a second as a player's
 -- position would advance.
 local function play_track(k, from, seconds)
     return function(next)
-        local track = TRACKS[k]
         local function at(t)
             progress = progress + 1
             if t > seconds then return next() end
             if fast and t < seconds then return at(seconds) end
-            feed("mock_media", {
-                players = {
-                    {
-                        id = "spotify",
-                        identity = "Spotify",
-                        title = track.title,
-                        artist = track.artist,
-                        album = track.album,
-                        album_art_path = DEMO_DIR .. "/covers/" .. track.art,
-                        length = track.length * 1000000,
-                        position = (from + t) * 1000000,
-                        play_state = "playing",
-                    },
-                },
-            })(function() later(1000, function() at(t + 1) end) end)
+            feed("mock_media", player(k, from + t, "playing"))(function() later(1000, function() at(t + 1) end) end)
         end
         at(0)
     end
 end
 
 local TRAY = {
-    { id = "1", name = "Steam",    icon_name = "steam",                status = "active" },
-    { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "active" },
-    { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "active" },
+    items = {
+        { id = "1", name = "Steam",    icon_name = "steam",                status = "active" },
+        { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "active" },
+        { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "active" },
+    }
 }
 
-local function tray_items(count, calling)
-    local out = {}
-    for k = 1, count do
-        local item = TRAY[k]
-        out[k] = {
-            id = item.id,
-            name = item.name,
-            icon_name = item.icon_name,
-            status = item.name == calling and "needs_attention" or item.status,
-        }
-    end
-    return { items = out }
-end
 
 local PACKAGES = {
     { name = "linux",      old_version = "7.2.7.arch1-1", new_version = "7.2.8.arch1-1" },
@@ -828,7 +808,7 @@ local function install(next)
         progress = progress + 1
         feed("mock_updates", updates_state(step))(function()
             if step > #PACKAGES then return next() end
-            later(700, function() at(step + 1) end)
+            later(500, function() at(step + 1) end)
         end)
     end
     at(1)
@@ -844,17 +824,7 @@ end
 
 -- Runs `mantle call name arg` on the demo shell, as a keybind would.
 local function call(name, arg)
-    return function(next) session.run("mantle", { "-c", DEMO_DIR, "call", name, arg }, function() next() end) end
-end
-
--- Captions the switches file as the demo shell saved it.
-local function show_settings(next)
-    session.run("cat", { DEMO_DIR .. "/state/settings.json" }, function(code, out)
-        local saved = code == 0 and table.concat(out, " "):gsub("%s+", " ") or "(not saved yet)"
-        caption:set("Switches that outlive restarts.")
-        detail:set("persistent_table wrote state/settings.json:  " .. saved)
-        next()
-    end)
+    return function(next) demo({ "call", name, arg }, function() next() end) end
 end
 
 local function privacy_users(camera, mic, screen)
@@ -915,6 +885,7 @@ local pointer_pane = panel {
                 },
             },
             image {
+                visible = pointer:map(function(p) return p.shown end),
                 source = POINTER,
                 width = 34,
                 height = 44,
@@ -944,18 +915,24 @@ local function origin_of(surface)
         box = layout.center(screen, 760)
     elseif surface == "control" or surface == "updates" then
         box = layout.dock(screen, 620)
+    elseif surface == "notifications" then
+        box = layout.dock(screen, 660)
     else
         return { x = 0, y = 0 }
     end
     return { x = box.left, y = BAR + box.top }
 end
 
--- Hands `found` the demo shell's node `name` on `surface` as a box on screen, or calls `next`.
-local function locate(name, surface, next, found)
+-- Hands `found` the demo shell's node `name` on `surface` as a box on screen, or calls `next`. A
+-- node not laid out yet, as on a popup just opened, gets 1.5 s.
+local function locate(name, surface, next, found, tries)
     if fast then return next() end
-    session.run("mantle", { "-c", DEMO_DIR, "call", "where", name }, function(code, out)
+    demo({ "call", "where", name }, function(code, out)
         local ok, box = pcall(json.decode, table.concat(out or {}, "\n"))
         if code ~= 0 or not ok or type(box) ~= "table" or not box.width then
+            if (tries or 0) < 15 then
+                return timer(100, function() locate(name, surface, next, found, (tries or 0) + 1) end)
+            end
             log.warn("no pointer target", name)
             return next()
         end
@@ -1005,6 +982,41 @@ local function hide_pointer(next)
     next()
 end
 
+-- Drags notification `id` right past the dismiss threshold: the fake pointer cannot drag, so the
+-- glide and the card's `notif_drag` offset move together, eased as the pointer is.
+local function swipe(id)
+    return function(next)
+        local function done()
+            feed("mock_notifications", { dnd = false, feed = {} })(function()
+                feed("notif_drag", { id = "", x = 0 })(next)
+            end)
+        end
+        locate("notification", "notifications", done, function(box)
+            -- Short of the module's 40% threshold, so the card is seen moving before it lets go.
+            local x, y, reach = box.x + box.width * 0.3, box.y + box.height / 2, box.width * 0.36
+            pointer:set({ x = x, y = y, shown = true })
+            timer(700, function()
+                pointer_clicks:set(pointer_clicks:get() + 1)
+                pointer:set({ x = x + reach, y = y, shown = true })
+                local function at(k)
+                    if k > 12 then
+                        pointer:set({ x = x + box.width * 0.6, y = y, shown = true })
+                        return feed("notif_drag", { id = id, x = math.floor(box.width * 0.5) })(function()
+                            timer(500, function() hide_pointer(done) end)
+                        end)
+                    end
+                    local t = k / 12
+                    local eased = t < 0.5 and 4 * t ^ 3 or 1 - (2 - 2 * t) ^ 3 / 2
+                    feed("notif_drag", { id = id, x = math.floor(reach * eased) })(function()
+                        timer(k == 12 and 250 or 30, function() at(k + 1) end)
+                    end)
+                end
+                at(1)
+            end)
+        end)
+    end
+end
+
 local finish
 
 -- Cost meter -------------------------------------------------------------------------------
@@ -1013,8 +1025,12 @@ local finish
 -- children are the demo shell and the recorder.
 local RENDERER_SCRIPT = [[
 cd /proc || exit 1
-kids=$(cat "$1"/task/*/children 2>/dev/null)
-r=$(for c in $kids; do [ "$(cat "$c/comm" 2>/dev/null)" = mantle-renderer ] && echo "$c"; done)
+renderer() {
+    r=$(for c in $(cat "$1"/task/*/children 2>/dev/null); do
+        [ "$(cat "$c/comm" 2>/dev/null)" = mantle-renderer ] && echo "$c"
+    done)
+}
+renderer "$1"
 ]]
 -- Real, unlike the mocks: proportional memory and CPU of the demo shell's two processes, from
 -- /proc, then the renderer's pid: a respawned one restarts its tick count.
@@ -1048,6 +1064,23 @@ end
 
 -- Crash beat --------------------------------------------------------------------------------
 
+-- Kills renderer `$3` of demo shell `$2` and prints the ms until a new one answers `mantle call`;
+-- fails after 5 s.
+local RESPAWN_SCRIPT = RENDERER_SCRIPT .. [[
+[ "$r" = "$3" ] || exit 1
+t0=$(date +%s%N)
+kill -9 "$3" || exit 1
+for _ in $(seq 250); do
+    renderer "$1"
+    if [ -n "$r" ] && [ "$r" != "$3" ] && mantle -c "$2" call where bar >/dev/null 2>&1; then
+        echo $((($(date +%s%N) - t0) / 1000000))
+        exit 0
+    fi
+    sleep 0.02
+done
+exit 1
+]]
+
 local function renderer_pid(done)
     local script = RENDERER_SCRIPT .. 'echo "$r"'
     session.run("sh", { "-c", script, "sh", tostring(session.demo_shell.pid:get()) }, function(_, out)
@@ -1064,42 +1097,31 @@ local function replay_mocks(next)
     local function at(k)
         if names[k] then return feed(names[k], last_fed[names[k]])(function() at(k + 1) end) end
         if not picked then return next() end
-        session.run("mantle", { "-c", DEMO_DIR, "call", "wallpaper", picked }, function() next() end)
+        demo({ "call", "wallpaper", picked }, function() next() end)
     end
     at(1)
 end
 
--- `kill -9` on the demo shell's renderer, captioned with the real pid. The Supervisor respawns it;
--- once a new one answers `mantle call`, the mocks go back in. No respawn in 5 s ends the take.
+-- `kill -9` on the demo shell's renderer, captioned with the real pid, then with the real time the
+-- Supervisor took to bring a new one up; the mocks go back in after. No respawn in 5 s ends the take.
 local function kill_renderer(next)
     if fast then return next() end
-    renderer_pid(function(shown)
-        if not shown then
+    renderer_pid(function(pid)
+        if not pid then
             log.warn("no demo renderer to kill")
             return next()
         end
-        key_command:set("kill -9 " .. shown)
-        timer(900, function()
-            renderer_pid(function(old)
-                if not old then return finish() end
-                key_command:set("kill -9 " .. old)
-                session.run("kill", { "-9", tostring(old) }, function()
-                    local function poll(ms)
-                        if ms <= 0 then
-                            log.error("the demo renderer did not come back; ending the take")
-                            return finish()
-                        end
-                        local function retry() timer(100, function() poll(ms - 100) end) end
-                        renderer_pid(function(pid)
-                            if not pid or pid == old then return retry() end
-                            session.run("mantle", { "-c", DEMO_DIR, "call", "where", "bar" }, function(code)
-                                if code ~= 0 then return retry() end
-                                replay_mocks(next)
-                            end)
-                        end)
-                    end
-                    poll(5000)
-                end)
+        key_command:set("kill -9 " .. pid)
+        timer(1200, function()
+            local args = { "-c", RESPAWN_SCRIPT, "sh", tostring(session.demo_shell.pid:get()), DEMO_DIR, tostring(pid) }
+            session.run("sh", args, function(code, out)
+                local ms = tonumber(out[1])
+                if code ~= 0 or not ms then
+                    log.error("the demo renderer did not come back; ending the take")
+                    return finish()
+                end
+                detail:set(string.format("Back in %d ms: the supervisor respawned the renderer.", ms))
+                replay_mocks(next)
             end)
         end)
     end)
@@ -1150,9 +1172,12 @@ end
 
 -- The tour's window: a terminal of its own app_id, opened on an empty workspace before recording
 -- and closed after its hop, so no window of yours is ever in the shot.
--- ponytail: the take depends on kitty and fastfetch; another app needs its own `--class`-style id.
+-- ponytail: the take depends on kitty, fish and fastfetch; another app needs its own `--class`-style id.
 local TOUR_ID = "mantle-demo-tour"
-local TOUR = { "kitty", "--class", TOUR_ID, "-e", "sh", "-c", "fastfetch --pipe false; exec sleep 600" }
+-- fish with fastfetch in place of its greeting, `fastfetchy` first if defined; in $HOME, so the
+-- prompt shows no checkout path.
+local FETCH = "functions -e fish_greeting; type -q fastfetchy; and fastfetchy; or fastfetch"
+local TOUR = { "kitty", "--class", TOUR_ID, "--directory", env("HOME", "/"), "-e", "fish", "-C", FETCH }
 local tour_ws
 
 local function tour_windows()
@@ -1283,7 +1308,7 @@ local function nudge_volume(next)
                 return next()
             end
             set_volume(levels[k], function()
-                timer(k == 3 and 1400 or 450, function() at(k + 1) end)
+                timer(k == 3 and 900 or 350, function() at(k + 1) end)
             end)
         end
         at(1)
@@ -1468,7 +1493,7 @@ local function restart_starter(next)
         last_fed, picked = {}, nil
         windows.count, windows.focused, windows.page = 0, "0xa1", ""
         reset_scene()
-        start_shell(texts[takes.starter], {}, 1500, function() hide_card(next) end)
+        start_shell(texts[takes.starter], {}, 2000, function() hide_card(next) end)
     end)
 end
 
@@ -1487,17 +1512,24 @@ local function press(combo, name)
             keys:set(combo)
             key_command:set("mantle toggle " .. name)
         end
-        later(700, function()
-            toggle(name)(function() later(1200, next) end)
+        later(450, function()
+            toggle(name)(function() later(500, next) end)
         end)
     end
 end
 
--- Slides the code pane off for `ms` while the script plays on, so a payoff gets the frame.
+-- Slides the code pane off for `ms` while the script plays on, so a payoff gets the frame. A later
+-- call takes over the timing.
+local pane_serial = 0
+
 local function focus_stage(ms)
     return function(next)
+        pane_serial = pane_serial + 1
+        local serial = pane_serial
         pane_shown:set(false)
-        later(ms, function() pane_shown:set(true) end)
+        later(ms, function()
+            if serial == pane_serial then pane_shown:set(true) end
+        end)
         next()
     end
 end
@@ -1508,274 +1540,233 @@ local function clear_keys(next)
     next()
 end
 
+
+-- Runs `steps` in order as one step.
+local function chain(...)
+    local steps = { ... }
+    return function(next)
+        local function at(k)
+            if k > #steps then return next() end
+            steps[k](function() at(k + 1) end)
+        end
+        at(1)
+    end
+end
+
+-- Shows `text` in the caption as the command that runs the next step.
+local function command(text)
+    return function(next)
+        key_command:set(text)
+        next()
+    end
+end
+
+-- The cold open on the final shell, its windows open and the code pane off. A preview plays it
+-- behind the title card; a take opens on the shell itself.
+local function cold_open(next)
+    pane_shown:set(false)
+    windows.count = #WINDOWS
+    if not FROM then card:set("") end
+    feed_windows(next)
+end
+
+local function search(text, hold)
+    return chain(toggle("launcher_open"), wait(250), type_call("search", text), wait(hold), clear_search,
+        toggle("launcher_open"))
+end
+
+local function overview(hold)
+    return chain(toggle("overview_open"), wait(hold), select_window("0xa3"), wait(hold), toggle("overview_open"))
+end
+
+local SARAH = {
+    id = 1,
+    from = "Sarah",
+    body = {
+        { kind = "text", text = "Still on for tonight? 8 pm at " },
+        { kind = "text", text = "Luigi's",                       href = "https://maps.example.org/luigis" },
+    },
+    placeholder = "Reply to Sarah",
+    read = "Mark as read",
+}
+local NO_NOTIFICATIONS = { dnd = false, feed = {} }
+
 local script = {
     setup,
     stage_final,
+    cold_open,
     record,
-    wait(600),
-    hide_card,
     say("Every pixel is Lua."),
-    press("Super+A", "launcher_open"),
-    clear_keys,
-    type_call("search", "fi"),
-    wait(1400),
-    toggle("launcher_open"),
+    search("fi", 1000),
     toggle("picker_open"),
-    wait(700),
-    point("thumb:ember.png", "picker"),
+    wait(400),
     pick("ember.png"),
-    wait(1400),
-    hide_pointer,
+    wait(1300),
     toggle("picker_open"),
+    notify(SARAH),
+    wait(1600),
+    feed("mock_notifications", NO_NOTIFICATIONS),
+    overview(800),
     show_card("title"),
     restart_starter,
-    say("This is the whole shell.", "One Lua file. Mantle ships no shell of its own: you write it."),
-    wait(2600),
-    say("Save, and it's live.", "No restart. The file reloads in place."),
+
+    say("Save, and it's live.", "One Lua file. Mantle ships no shell."),
     edit("01-size"),
-    wait(1800),
+    wait(2400),
+    say("Change a colour.", "No restart, no rebuild."),
     edit("02-color"),
-    wait(1800),
-    say("Live system state.", "Workspaces from the compositor, as signals the bar redraws from."),
+    wait(2400),
+
+    say("Live compositor state.", "mantle.workspaces: a signal the bar redraws from."),
     edit("03-workspaces"),
-    wait(1200),
+    wait(500),
     tour,
-    wait(800),
-    say("State a keybind can drive.", 'state("launcher_open") is writable from any compositor bind.'),
-    edit("04-launcher"),
-    wait(600),
-    press("Super+A", "launcher_open"),
-    function(next)
-        keys:set("")
-        next()
-    end,
-    say("Reloads keep state.", "The launcher stays open while you restyle it, and behind_blur = true asks for glass."),
-    edit("05-restyle"),
-    wait(2200),
-    say("Fuzzy search, built in.", "fuzzy() scores each app as fzf does; the ranking stays in Lua."),
     wait(400),
+
+    say("A launcher, fuzzy search included.", "state() a keybind toggles; fuzzy() ranks."),
+    edit("04-launcher"),
+    press("Super+A", "launcher_open"),
+    clear_keys,
     type_call("search", "tele"),
-    wait(1600),
+    wait(1500),
     clear_search,
     type_call("search", "files"),
+    wait(1500),
+
+    say("Reloads keep state.", "Restyled while open."),
+    edit("05-restyle"),
     wait(1600),
     clear_search,
     toggle("launcher_open"),
-    wait(700),
-    say("Shaders on any node.", "A GLSL fragment behind the whole desktop, animated by the engine."),
+    wait(300),
+
+    say("Shaders, and glass over them.", "GLSL behind the desktop; blur that fades out."),
     edit("06-shader"),
-    wait(3000),
-    say("Wallpapers that theme the shell.",
-        "mantle.files lists the folder; palette.score picks a seed and palette.scheme paints the shell."),
+    focus_stage(4000),
+    wait(4200),
+
+    say("Your wallpaper themes everything.", "palette.score picks a seed; palette.scheme paints."),
     edit("07-wallpaper"),
-    wait(600),
     toggle("picker_open"),
-    wait(900),
-    point("thumb:dusk.png", "picker"),
-    pick("dusk.png"),
-    wait(2000),
+    wait(500),
     point("thumb:ember.png", "picker"),
     pick("ember.png"),
-    wait(2000),
-    point("thumb:tide.png", "picker"),
-    pick("tide.png"),
-    wait(2000),
-    point("thumb:mantle.png", "picker"),
-    pick("mantle.png"),
-    wait(2200),
     hide_pointer,
+    focus_stage(6300),
+    wait(1900),
+    command("mantle call wallpaper tide.png"),
+    pick("tide.png"),
+    wait(1900),
+    command("mantle call wallpaper dusk.png"),
+    pick("dusk.png"),
+    wait(1900),
+    clear_keys,
     toggle("picker_open"),
-    wait(900),
+    wait(300),
 
-    say("Every window, as a list.", "mantle.windows: app, title and focus from the compositor; a click focuses."),
+    say("Windows, and live captures.", "mantle.windows and capture: the overview is Lua."),
     edit("08-windows"),
-    wait(500),
     launch,
-    wait(350),
+    wait(250),
     launch,
-    wait(350),
+    wait(250),
     launch,
-    wait(350),
+    wait(250),
     launch,
-    wait(1200),
+    wait(400),
     point("task:0xa3", "bar"),
     open_app("chat"),
-    wait(1100),
-    point("task:0xa4", "bar"),
-    open_app("browser"),
-    wait(1100),
-    point("task:0xa1", "bar"),
-    open_app(""),
-    hide_pointer,
     wait(900),
-
-    say("An overview from a screen capture.", "capture draws any output through screencopy, the code pane included."),
-    wait(600),
-    press("Super+Tab", "overview_open"),
-    select_window("0xa2"),
-    wait(650),
-    select_window("0xa3"),
-    wait(650),
-    select_window("0xa4"),
-    wait(650),
-    select_window("0xa3"),
-    wait(500),
-    point("card:0xa3", "overview"),
     hide_pointer,
-    toggle("overview_open"),
-    function(next)
-        keys:set("")
-        mockups.chat:set({ name = "Mantle devs", rtl = false, messages = { { mine = false, text = "v0.9 is out" } } })
-        next()
-    end,
-    open_app("chat"),
-    wait(1300),
     open_app(""),
-    wait(500),
+    focus_stage(3800),
+    press("Super+Tab", "overview_open"),
+    clear_keys,
+    select_window("0xa2"),
+    wait(800),
+    select_window("0xa3"),
+    wait(800),
+    toggle("overview_open"),
+    wait(300),
 
-    say("Now playing, from MPRIS.", "mantle.mpris: title, artist and cover art from any player. The card is yours."),
+    say("Motion is a property.", "Morphs, springs and waves, eased by the engine."),
     edit("09-media"),
-    wait(500),
     edit("09-motion"),
-    play_track(1, 61, 1),
+    feed("mock_tray", TRAY),
+    play_track(1, 61, 0),
+    focus_stage(6000),
     point("media", "bar"),
     toggle("media_open"),
-    play_track(1, 63, 2),
-    point("media:next", "media"),
-    play_track(2, 0, 2),
+    wait(600),
+    point("media:play", "media"),
+    feed("mock_media", player(1, 63, "paused")),
+    wait(1300),
+    point("media:play", "media"),
+    play_track(1, 63, 1),
     hide_pointer,
     toggle("media_open"),
-    wait(400),
-    say("A tray, too.", "mantle.tray: every StatusNotifierItem and its menu. One of them wants you."),
-    feed("mock_tray", tray_items(1)),
-    wait(350),
-    feed("mock_tray", tray_items(2)),
-    wait(350),
-    feed("mock_tray", tray_items(3)),
-    wait(800),
-    feed("mock_tray", tray_items(3, "Telegram")),
-    wait(2000),
-    feed("mock_tray", tray_items(3)),
+    wait(300),
 
-    say("Quick settings.", "mantle.network, mantle.bluetooth and mantle.brightness, drawn as tiles."),
+    say("Quick settings, and an OSD.", "Network, Bluetooth, brightness; volume from any app."),
     edit("10-control"),
-    wait(500),
     press("Super+C", "control_open"),
-    function(next)
-        keys:set("")
-        next()
-    end,
+    clear_keys,
     feed("mock_network", { wifi_enabled = true, connected = false, strength = 0 }),
     feed("mock_bluetooth", { enabled = true, connected_devices = {} }),
-    wait(800),
+    wait(500),
     feed("mock_network", { wifi_enabled = true, connected = true, ssid = "Home", strength = 82 }),
     feed("mock_bluetooth", { enabled = true, connected_devices = { { name = "WH-1000XM5", battery = 80 } } }),
-    wait(600),
     feed("mock_brightness", { percent = 85 }),
-    wait(600),
     point("control:dnd", "control"),
     call("setting", "dnd"),
-    wait(400),
-    point("control:night_light", "control"),
-    call("setting", "night_light"),
-    wait(800),
-    show_settings,
-    wait(2800),
+    wait(700),
     point("control:dnd", "control"),
     call("setting", "dnd"),
     hide_pointer,
-    wait(500),
     toggle("control_open"),
-    wait(500),
-
-    say("React to the system.", 'require("osd"): a volume OSD that follows every change, from any app.'),
-    wait(900),
+    wait(300),
     nudge_volume,
-    wait(1400),
 
-    say("Your notification server.", "Mantle serves org.freedesktop.Notifications. The popup is yours to draw."),
+    say("Your notification server.", "Links, inline replies, any script, swipe away."),
     edit("11-notifications"),
-    wait(600),
     edit("11-links"),
-    notify {
-        id = 1,
-        from = "Sarah",
-        text = "Still on for tonight? 8 pm at the usual place.",
-        placeholder = "Reply to Sarah",
-        read = "Mark as read",
-    },
-    wait(1500),
-    say("Reply inline.",
-        "A real textfield: engine caret, IME, undo. has_reply senders take mantle.notifications:reply(id, text)."),
-    type_call("reply", "On my way, see you in ten!"),
-    wait(400),
-    deliver("Sarah", false, "Still on for tonight? 8 pm at the usual place.", "On my way, see you in ten!"),
-    wait(1800),
-    open_app(""),
-    wait(400),
-
-    say("Any script, either direction.", "Arabic shapes and runs right to left in the same field."),
-    notify {
-        id = 2,
-        from = "أحمد",
-        text = "وصلت؟ الكل بانتظارك",
-        placeholder = "رد على أحمد",
-        read = "تحديد كمقروء",
-    },
-    wait(1500),
-    type_call("reply", "خمس دقائق وأكون عندكم"),
-    wait(400),
-    deliver("أحمد", true, "وصلت؟ الكل بانتظارك", "خمس دقائق وأكون عندكم"),
-    wait(2000),
-    open_app(""),
-    wait(400),
-
-    say("Know who's watching and listening.", "mantle.privacy: every app on the camera, the mic or a screen share."),
-    edit("12-indicators"),
-    wait(500),
-    open_app("call"),
+    focus_stage(10500),
+    notify(SARAH),
+    wait(1400),
+    type_call("reply", "On my way!"),
+    wait(900),
+    notify { id = 2, from = "أحمد", text = "وصلت؟ الكل بانتظارك", placeholder = "رد على أحمد", read = "تحديد كمقروء" },
     wait(700),
-    feed("mock_privacy", privacy_users(true, true, false)),
-    wait(2000),
-    function(next)
-        mockups.sharing:set(true)
-        feed("mock_privacy", privacy_users(true, true, true))(next)
-    end,
-    wait(2000),
-    feed("mock_privacy", privacy_users(false, false, false)),
-    function(next)
-        mockups.sharing:set(false)
-        open_app("")(next)
-    end,
+    type_call("reply", "خمس دقائق وأكون عندكم"),
+    wait(900),
+    notify { id = 3, from = "Mantle devs", text = "v0.9 is out.", placeholder = "Reply", read = "Mark as read" },
     wait(800),
+    swipe(3),
 
-    say("Idle, on your terms.", "mantle.idle names whoever keeps the screen awake."),
-    wait(500),
+    say("Know who's watching.", "mantle.privacy and mantle.idle in the bar."),
+    edit("12-indicators"),
+    open_app("call"),
+    feed("mock_privacy", privacy_users(true, true, false)),
+    spotlight("privacy", "bar"),
+    wait(2300),
+    feed("mock_privacy", privacy_users(false, false, false)),
     function(next)
         mockups.playing:set(true)
         open_app("browser")(next)
     end,
-    wait(700),
     feed("mock_idle", { inhibited = true, inhibitors = { { who = "Zen Browser", why = "Playing video" } } }),
-    wait(2400),
-    function(next)
-        mockups.playing:set(false)
-        feed("mock_idle", { inhibited = false, inhibitors = {} })(next)
-    end,
-    wait(900),
+    spotlight("idle", "bar"),
+    wait(1900),
+    feed("mock_idle", { inhibited = false, inhibitors = {} }),
     open_app(""),
-    wait(600),
 
-    say("Updates, through your polkit agent.",
-        "mantle.updates checks pacman, dnf or apt. The password prompt is Lua too."),
+    say("Updates, with your polkit agent.", "The password prompt is Lua too."),
     edit("13-updates"),
-    wait(500),
     feed("mock_updates", updates_state()),
     spotlight("updates", "bar"),
-    wait(700),
     point("updates", "bar"),
     toggle("updates_open"),
-    wait(1100),
+    wait(500),
     point("updates:install", "updates"),
     hide_pointer,
     feed("mock_polkit", {
@@ -1783,51 +1774,50 @@ local script = {
         user = env("USER", "you"),
         message = "Authentication is required to update the system's packages.",
     }),
-    wait(700),
-    type_dots("polkit_typed", 9),
-    wait(500),
+    wait(400),
+    type_dots("polkit_typed", 6),
+    wait(300),
     feed("mock_polkit", { active = false, user = env("USER", "you"), message = "" }),
     feed("polkit_typed", 0),
     install,
-    wait(1400),
+    wait(600),
     toggle("updates_open"),
-    wait(500),
 
-    say("Real numbers, no polling code.",
-        "mantle.sysinfo reads /proc for you: live CPU and memory, drawn as a path that eases to each reading."),
+    say("Real numbers, no polling code.", "mantle.sysinfo, drawn as trimmed paths."),
     edit("14-sysinfo"),
-    wait(3000),
-
-    say("A lock screen, drawn in Lua.",
-        "The real one holds the session through ext-session-lock and PAM. This take mocks it."),
-    edit("15-lock"),
-    wait(500),
-    feed("mock_lock", lock_state()),
-    wait(1500),
-    type_dots("lock_typed", 7),
     wait(300),
+    spotlight("sysinfo", "bar"),
+    wait(2500),
+
+    say("Even the lock screen.", "Same Lua, same theme. The take mocks ext-session-lock."),
+    edit("15-lock"),
+    feed("mock_lock", lock_state()),
+    wait(600),
+    type_dots("lock_typed", 6),
     feed("lock_typed", 0),
     feed("mock_lock", lock_state({ attempts = 1, error = "authentication failed" })),
-    wait(1400),
-    type_dots("lock_typed", 10),
-    wait(300),
+    wait(1300),
+    type_dots("lock_typed", 8),
     feed("mock_lock", lock_state({ attempts = 1, unlocking = true })),
-    wait(900),
+    wait(500),
     feed("lock_typed", 0),
     feed("mock_lock", lock_state({ active = false })),
-    wait(700),
+    wait(300),
 
-    say("Now break it.", "A typo never takes the desktop down, and the error says what it meant."),
+    say("Break it on purpose.", "A typo never takes the desktop down."),
     edit("typo"),
-    wait(4400),
-    say("Fix it, and it's back.", "The next good save clears the error."),
+    wait(3800),
     edit("fix"),
-    wait(2000),
+    wait(1200),
+
     say("Kill it. It comes back.", "kill -9 the renderer; the supervisor respawns it."),
+    focus_stage(8000),
+    wait(800),
     kill_renderer,
-    wait(1500),
+    wait(3300),
     clear_keys,
-    focus_stage(3500),
+
+    focus_stage(16000),
     function(next)
         if fast then return next() end
         on_sample = function(u)
@@ -1835,7 +1825,13 @@ local script = {
                 string.format("%.1f%% of one core, read live from /proc.", u.cpu))(next)
         end
     end,
-    wait(4000),
+    search("fi", 1800),
+    pick("ember.png"),
+    wait(2500),
+    toggle("media_open"),
+    wait(2500),
+    toggle("media_open"),
+    overview(1200),
     show_card("end"),
     wait(5000),
 }

@@ -33,18 +33,25 @@ local workspaces = list {
     key = function(w) return tostring(w.id) end,
     itemfn = function(w)
         return rect {
-            width = w.active and 68 or 40,
-            height = 40,
-            radius = 20,
+            -- Numbered only when active, the rest dots, so a dozen workspaces leave the bar room.
+            width = w.active and 48 or 14,
+            height = w.active and 32 or 14,
+            radius = w.active and 16 or 7,
+            align_v = "center",
             background = w.active and theme.accent or theme.surface,
-            animate = { width = { spring = { stiffness = 400, damping = 18 } }, background = 300 },
+            animate = {
+                width = { spring = { stiffness = 400, damping = 18 } },
+                height = { spring = { stiffness = 400, damping = 18 } },
+                background = 300,
+            },
             on_click = function() mantle.workspaces:focus(w.id) end,
             children = {
                 text {
+                    visible = w.active,
                     content = w.label,
                     align_h = "center",
                     align_v = "center",
-                    font_size = 20,
+                    font_size = 18,
                     foreground = w.active and theme.crust or theme.text,
                 },
             },

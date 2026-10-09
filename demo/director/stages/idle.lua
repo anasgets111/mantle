@@ -1,9 +1,11 @@
 -- Demo: the director feeds `mock_idle` in `mantle.idle`'s shape with `mantle set`, so the take
 -- needs no real inhibitor. A real shell reads `mantle.idle`.
 local theme = require("theme")
+local target = require("targets")
 local idle = state("mock_idle", { inhibited = false, inhibitors = {} })
 
 local indicator = rect {
+    geometry = target("idle"),
     visible = idle:map(function(i) return i.inhibited end),
     margin = { right = 14 },
     height = 40,

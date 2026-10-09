@@ -3,6 +3,7 @@
 -- reads `mantle.notifications` and answers with `mantle.notifications:reply(id, text)`.
 local theme = require("theme")
 local layout = require("layout")
+local target = require("targets")
 local feed = state("mock_notifications", { dnd = false, feed = {} })
 local draft = state("reply_draft", "")
 local sent = state("reply_sent", false)
@@ -144,6 +145,7 @@ local function card(entry)
     end
     return column {
         id = "notification:" .. entry.id,
+        geometry = target("notification"),
         width = placed:map(function(p) return p.width end),
         padding = 22,
         spacing = 16,

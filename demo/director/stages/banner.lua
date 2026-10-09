@@ -2,29 +2,35 @@ local theme = require("theme")
 local layout = require("layout")
 local rescue = mantle.rescue
 
+-- Sized from the code font, so it reads at a glance on any stage the director leaves open.
+local m = mantle.screens:map(function(screens) return layout.metrics(screens and screens[1]) end)
+
 return panel {
     id = "rescue",
     layer = "overlay",
-    anchor = { bottom = true, left = true },
-    margin = mantle.screens:map(function(screens)
-        local m = layout.metrics(screens and screens[1])
-        return { bottom = m.height // 4, left = 48 }
-    end),
+    anchor = { top = true, left = true },
+    margin = m:map(function(s) return { top = s.height // 4, left = 48 } end),
     visible = rescue:map(function(r) return r ~= nil and r.is_rescue end),
     width = mantle.screens:map(function(screens)
-        return layout.fit(screens and screens[1], 900)
+        return layout.fit(screens and screens[1], 1400)
     end),
-    background = theme.danger,
-    radius = 14,
     child = column {
         width = "fill",
-        padding = 18,
-        spacing = 6,
+        padding = m:map(function(s) return s.font + 8 end),
+        spacing = m:map(function(s) return s.font // 2 end),
+        radius = 22,
+        background = theme.danger,
+        border_width = 3,
+        border_color = theme.crust,
+        scale = 1,
+        animate = { scale = { duration = 420, easing = "out_back", from = 0.85 } },
         children = {
             text {
                 content = "Reload failed. The last good shell is still running.",
-                font_size = 20,
-                font_weight = 700,
+                width = "fill",
+                wrap = "word",
+                font_size = m:map(function(s) return s.font * 5 // 2 end),
+                font_weight = 800,
                 foreground = theme.crust,
             },
             text {
@@ -32,7 +38,7 @@ return panel {
                 width = "fill",
                 wrap = "word",
                 font = "CaskaydiaCove Nerd Font Mono",
-                font_size = 16,
+                font_size = m:map(function(s) return s.font + 4 end),
                 foreground = theme.crust,
             },
         },
