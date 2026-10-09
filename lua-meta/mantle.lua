@@ -269,6 +269,7 @@
 ---@field album string Album title; empty when unset.
 ---@field album_art_path string Cover art as an existing local path, or empty when unavailable.
 ---@field album_artist string Album artists joined with `", "`; empty when unset.
+---@field art_url string `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset.
 ---@field artist string Artists joined with `", "`; empty when unset.
 ---@field can_go_next boolean MPRIS `CanGoNext`.
 ---@field can_go_previous boolean MPRIS `CanGoPrevious`.

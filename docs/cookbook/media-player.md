@@ -282,7 +282,7 @@ return {
 - `players` is in registration order; the map prefers one that is playing and keeps it selected while paused ([mpris](../capabilities/mpris.md)).
 - `position` is a snapshot, not polled. `on_change` stamps each new report with `mantle.system.monotonic`, and a `computed` adds the seconds since ([system](../capabilities/system.md), [derived signals](../guide/signals.md#derived-signals)).
 - The fill is a `"NN%"` width in a rounded, clipped track; `on_drag` on the track seeks on release ([pointer](../guide/input.md#pointer), [clip](../guide/paint.md#clip)).
-- `album_art_path` is an existing local path or `""`. Remote artwork is unsupported. An `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
+- `album_art_path` is an existing local path or `""`. A remote cover arrives only as `art_url`; fetch it into a cache file with `curl` through `process.run` and draw that path. An `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
 - The card is a grabbing [popup](../surfaces/popup.md) anchored to the pill's click rect; it also closes when the last player quits.
 
 ## Variations

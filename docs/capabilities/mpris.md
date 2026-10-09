@@ -59,6 +59,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `album` | `string` | Album title; empty when unset. |
 | `album_art_path` | `string` | Cover art as an existing local path, or empty when unavailable. |
 | `album_artist` | `string` | Album artists joined with `", "`; empty when unset. |
+| `art_url` | `string` | `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset. |
 | `artist` | `string` | Artists joined with `", "`; empty when unset. |
 | `can_go_next` | `boolean` | MPRIS `CanGoNext`. |
 | `can_go_previous` | `boolean` | MPRIS `CanGoPrevious`. |

@@ -286,6 +286,11 @@ async fn resync(
     } else {
         String::new()
     };
+    let art_url = match parsed.art_url {
+        Some(url) => url,
+        None if same_track => kept.art_url,
+        None => String::new(),
+    };
     let length = match parsed.length_us {
         Some(length) if length >= 0 => Some(length),
         _ if same_track => kept.length,
@@ -316,6 +321,7 @@ async fn resync(
         album_artist: parsed.album_artist,
         genre: parsed.genre,
         album_art_path,
+        art_url,
         position,
         position_updated_at,
         length,
@@ -808,6 +814,7 @@ mod resync_tests {
             ("xesam:title", Value::from(title.to_string())),
             ("xesam:artist", Value::from(vec!["Artist"])),
             ("mpris:length", Value::from(240_000_000_i64)),
+            ("mpris:artUrl", Value::from("https://example.com/art.jpg")),
         ])
     }
 
@@ -899,6 +906,7 @@ mod resync_tests {
             maximum_rate: 2.0,
             title: "Song".into(),
             artist: "Artist".into(),
+            art_url: "https://example.com/art.jpg".into(),
             position: state.position,
             position_updated_at: state.position_updated_at,
             length: Some(240_000_000),

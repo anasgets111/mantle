@@ -60,6 +60,8 @@ pub struct PlayerState {
     pub genre: String,
     /// Cover art as an existing local path, or empty when unavailable.
     pub album_art_path: String,
+    /// `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset.
+    pub art_url: String,
     /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
     /// elapsed time. `nil` when unknown (ADR-0036).
     #[serde(skip_serializing_if = "Option::is_none")]

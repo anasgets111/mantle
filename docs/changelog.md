@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Added: `mantle.mpris` players carry `art_url`, the cover URL as the player sent it, so a config can fetch remote artwork such as Spotify's.
+
 ## 0.5.3 - 2026-10-09
 
 - Changed: an image file rewritten in place may take up to 0.5 s to show, because each path is checked for edits at most twice a second.
