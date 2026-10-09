@@ -41,7 +41,9 @@ local badge = rect {
                 },
                 text {
                     content = updates:map(function(u)
-                        if u.installing then return string.format("%d/%d", u.install_current_step, u.install_total_steps) end
+                        if u.installing then
+                            return string.format("%d/%d", u.install_current_step, u.install_total_steps)
+                        end
                         return tostring(#u.packages)
                     end),
                     align_v = "center",
@@ -76,73 +78,90 @@ local popover = panel {
     visible = mapped,
     child = column {
         width = placed:map(function(p) return p.width end),
-        padding = 26,
-        spacing = 16,
-        radius = 28,
-        background = theme.fade("crust", "e6"),
-        border_width = 1,
-        border_color = theme.overlay,
-        opacity = open:map(function(on) return on and 1 or 0 end),
-        translate = open:map(function(on) return { y = on and 0 or -20 } end),
-        animate = {
-            opacity = { duration = 200, from = 0 },
-            translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -20 } },
-        },
-        children = updates:map(function(u)
-            local done = not u.installing and #u.packages == 0
-            local out = {
-                text {
-                    content = u.installing and ("Installing " .. u.install_current_package)
-                        or done and "Up to date"
-                        or string.format("%d updates", #u.packages),
-                    font_size = 28,
-                    font_weight = 800,
-                    foreground = done and theme.success or theme.text,
-                },
-            }
-            if u.installing then
-                out[#out + 1] = rect {
-                    width = "fill",
-                    height = 8,
-                    radius = 4,
-                    background = theme.surface,
-                    children = {
-                        rect {
-                            height = "fill",
-                            radius = 4,
-                            background = theme.accent,
-                            width = string.format("%d%%", u.install_current_step * 100 // math.max(1, u.install_total_steps)),
-                            animate = { width = { duration = 500, easing = "out_cubic" } },
-                        },
+        padding = { top = 14 },
+        children = { column {
+            width = "fill",
+            padding = 26,
+            spacing = 16,
+            outline = { commands = {
+                { op = "M",      points = { 0, 28 } },
+                { op = "corner", points = { 0, 0 },                              radius = 28 },
+                { op = "corner", points = { { from = "right", px = -84 }, 0 },   radius = 4 },
+                { op = "corner", points = { { from = "right", px = -66 }, -12 }, radius = 3 },
+                { op = "corner", points = { { from = "right", px = -48 }, 0 },   radius = 4 },
+                { op = "corner", points = { "100%", 0 },                         radius = 28 },
+                { op = "corner", points = { "100%", "100%" },                    radius = 28 },
+                { op = "corner", points = { 0, "100%" },                         radius = 28 },
+                { op = "Z",      points = {} },
+            } },
+            background = theme.fade("crust", "e6"),
+            border_width = 1,
+            border_color = theme.overlay,
+            opacity = open:map(function(on) return on and 1 or 0 end),
+            translate = open:map(function(on) return { y = on and 0 or -20 } end),
+            animate = {
+                opacity = { duration = 200, from = 0 },
+                translate = { spring = { stiffness = 260, damping = 17 }, from = { y = -20 } },
+            },
+            children = updates:map(function(u)
+                local done = not u.installing and #u.packages == 0
+                local out = {
+                    text {
+                        content = u.installing and ("Installing " .. u.install_current_package)
+                            or done and "Up to date"
+                            or string.format("%d updates", #u.packages),
+                        font_size = 28,
+                        font_weight = 800,
+                        foreground = done and theme.success or theme.text,
                     },
                 }
-            end
-            for _, p in ipairs(u.packages) do
-                out[#out + 1] = package_row(p)
-            end
-            if not u.installing and #u.packages > 0 then
-                out[#out + 1] = rect {
-                    geometry = target("updates:install"),
-                    width = "fill",
-                    height = 56,
-                    radius = 16,
-                    margin = { top = 6 },
-                    background = theme.accent,
-                    on_click = function() mantle.updates:install() end,
-                    children = {
-                        text {
-                            content = "Update all",
-                            align_h = "center",
-                            align_v = "center",
-                            font_size = 22,
-                            font_weight = 700,
-                            foreground = theme.crust,
+                if u.installing then
+                    out[#out + 1] = rect {
+                        width = "fill",
+                        height = 8,
+                        radius = 4,
+                        background = theme.surface,
+                        children = {
+                            rect {
+                                height = "fill",
+                                radius = 4,
+                                background = theme.accent,
+                                width = string.format(
+                                    "%d%%",
+                                    u.install_current_step * 100 // math.max(1, u.install_total_steps)
+                                ),
+                                animate = { width = { duration = 500, easing = "out_cubic" } },
+                            },
                         },
-                    },
-                }
-            end
-            return out
-        end),
+                    }
+                end
+                for _, p in ipairs(u.packages) do
+                    out[#out + 1] = package_row(p)
+                end
+                if not u.installing and #u.packages > 0 then
+                    out[#out + 1] = rect {
+                        geometry = target("updates:install"),
+                        width = "fill",
+                        height = 56,
+                        radius = 16,
+                        margin = { top = 6 },
+                        background = theme.accent,
+                        on_click = function() mantle.updates:install() end,
+                        children = {
+                            text {
+                                content = "Update all",
+                                align_h = "center",
+                                align_v = "center",
+                                font_size = 22,
+                                font_weight = 700,
+                                foreground = theme.crust,
+                            },
+                        },
+                    }
+                end
+                return out
+            end),
+        } },
     },
 }
 

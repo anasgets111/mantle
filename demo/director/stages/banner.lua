@@ -6,7 +6,10 @@ return panel {
     id = "rescue",
     layer = "overlay",
     anchor = { bottom = true, left = true },
-    margin = { bottom = 300, left = 48 },
+    margin = mantle.screens:map(function(screens)
+        local m = layout.metrics(screens and screens[1])
+        return { bottom = m.height // 4, left = 48 }
+    end),
     visible = rescue:map(function(r) return r ~= nil and r.is_rescue end),
     width = mantle.screens:map(function(screens)
         return layout.fit(screens and screens[1], 900)

@@ -46,6 +46,50 @@ local function play_glyph(size, color)
     }
 end
 
+local progress = player:map(function(p)
+    if not (p and p.length and p.position) or p.length <= 0 then return 0 end
+    return math.min(1, p.position / p.length)
+end)
+
+-- Half-waves of 30 px, so a 60 px `shift` loop repeats seamlessly; paused flattens the wave.
+local function wave_commands(width, amplitude)
+    local commands = { { op = "M", points = { 0, 12 } } }
+    for i = 0, math.ceil(width / 30) + 2 do
+        local crest = i % 2 == 0 and -2 * amplitude or 2 * amplitude
+        commands[#commands + 1] = { op = "Q", points = { i * 30 + 15, 12 + crest, i * 30 + 30, 12 } }
+    end
+    return commands
+end
+
+-- Card width less padding 56, gap 30 and the cover.
+local wave_px = computed({ placed, cover_px }, function(p, cover) return p.width - 86 - cover end)
+
+local wave = path {
+    width = wave_px,
+    height = 24,
+    margin = { top = 10 },
+    stroke = theme.accent,
+    stroke_width = 4,
+    stroke_cap = "round",
+    trim_axis = "x",
+    --@ 09-motion
+    trim_end = progress,
+    --@ end
+    commands = computed({ wave_px, playing }, function(width, on)
+        return wave_commands(width, on and 5 or 0)
+    end),
+    animate = {
+        commands = { duration = 300, easing = "out_cubic" },
+        trim_end = { duration = 1000, easing = "linear" },
+        shift = {
+            duration = 1000,
+            easing = "linear",
+            keyframes = { { x = 0, y = 0 }, { x = -60, y = 0 } },
+            loops = "infinite",
+        },
+    },
+}
+
 local function clock(us)
     local s = math.max(0, math.floor(us / 1000000))
     return string.format("%d:%02d", s // 60, s % 60)
@@ -72,15 +116,46 @@ local chip = rect {
             height = "fill",
             spacing = 10,
             children = {
-                image {
-                    source = field("album_art_path", ""),
-                    width = 30,
-                    height = 30,
-                    radius = 15,
+                rect {
+                    width = 36,
+                    height = 36,
                     align_v = "center",
+                    children = {
+                        rect {
+                            width = "fill",
+                            height = "fill",
+                            radius = 18,
+                            background = computed({ theme.accent, theme.accent2 }, function(a, b)
+                                return { gradient = "conic", stops = { { 0, a }, { 0.5, b }, { 1, a } } }
+                            end),
+                            animate = {
+                                --@ 09-motion
+                                rotate = {
+                                    duration = 2400,
+                                    easing = "linear",
+                                    keyframes = { 0, 360 },
+                                    loops = "infinite",
+                                },
+                                --@ end
+                            },
+                        },
+                        image {
+                            source = field("album_art_path", ""),
+                            width = 30,
+                            height = 30,
+                            radius = 15,
+                            align_h = "center",
+                            align_v = "center",
+                        },
+                    },
                 },
                 play_glyph(20, theme.accent),
-                text { content = field("title", ""), align_v = "center", font_size = 18, foreground = theme.text },
+                text {
+                    content = field("title", ""),
+                    align_v = "center",
+                    font_size = 18,
+                    foreground = theme.text,
+                },
             },
         },
     },
@@ -158,36 +233,22 @@ local card = panel {
                         foreground = theme.text,
                     },
                     text { content = field("artist", ""), font_size = 24, foreground = theme.subtext },
-                    rect {
-                        width = "fill",
-                        height = 6,
-                        radius = 3,
-                        margin = { top = 14 },
-                        background = theme.surface,
-                        children = {
-                            rect {
-                                height = "fill",
-                                radius = 3,
-                                background = theme.accent,
-                                width = player:map(function(p)
-                                    if not (p and p.length and p.position) or p.length <= 0 then return "0%" end
-                                    return string.format("%.1f%%", math.min(1, p.position / p.length) * 100)
-                                end),
-                                animate = { width = { duration = 1000, easing = "linear" } },
-                            },
-                        },
-                    },
+                    wave,
                     row {
                         width = "fill",
                         children = {
                             text {
-                                content = player:map(function(p) return p and p.position and clock(p.position) or "" end),
+                                content = player:map(function(p)
+                                    return p and p.position and clock(p.position) or ""
+                                end),
                                 font_size = 16,
                                 foreground = theme.muted,
                             },
                             rect { width = "fill" },
                             text {
-                                content = player:map(function(p) return p and p.length and clock(p.length) or "" end),
+                                content = player:map(function(p)
+                                    return p and p.length and clock(p.length) or ""
+                                end),
                                 font_size = 16,
                                 foreground = theme.muted,
                             },

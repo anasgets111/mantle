@@ -43,10 +43,18 @@ local field = lock:map(function(l)
         animate = failed and {
             translate = {
                 duration = 420,
-                keyframes = { { x = 0, y = 0 }, { x = -18, y = 0 }, { x = 16, y = 0 }, { x = -10, y = 0 }, { x = 0, y = 0 } },
+                keyframes = {
+                    { x = 0,   y = 0 },
+                    { x = -18, y = 0 },
+                    { x = 16,  y = 0 },
+                    { x = -10, y = 0 },
+                    { x = 0,   y = 0 },
+                },
             },
         } or nil,
-        children = { row { height = "fill", align_h = "center", spacing = 12, children = typed:map(dots) } },
+        children = {
+            row { height = "fill", align_h = "center", spacing = 12, children = typed:map(dots) },
+        },
     } }
 end)
 
@@ -92,7 +100,9 @@ return panel {
                         foreground = theme.text,
                     },
                     text {
-                        content = mantle.system:map(function(s) return os.date("%A, %d %B", s and s.time) end),
+                        content = mantle.system:map(function(s)
+                            return os.date("%A, %d %B", s and s.time)
+                        end),
                         align_h = "center",
                         font_size = 36,
                         foreground = theme.subtext,
