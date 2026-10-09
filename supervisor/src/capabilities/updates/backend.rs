@@ -6,8 +6,7 @@
 use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, mpsc};
+use std::sync::mpsc;
 use std::time::Duration;
 
 use shared::action::UpdateCandidate;
@@ -106,18 +105,17 @@ fn run_for(command: &mut Command, failed: fn(Option<i32>, &str) -> bool, limit: 
         .spawn()
         .map_err(|err| format!("failed to run {program}: {err}"))?;
     let group = nix::unistd::Pid::from_raw(child.id() as i32);
-    let timed_out = Arc::new(AtomicBool::new(false));
     let (finished, watchdog) = mpsc::channel::<()>();
-    let flag = Arc::clone(&timed_out);
-    std::thread::spawn(move || {
-        if watchdog.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout) {
-            flag.store(true, Ordering::Release);
+    let watchdog = std::thread::spawn(move || {
+        let timed_out = watchdog.recv_timeout(limit) == Err(mpsc::RecvTimeoutError::Timeout);
+        if timed_out {
             let _ = nix::sys::signal::killpg(group, nix::sys::signal::Signal::SIGKILL);
         }
+        timed_out
     });
     let output = child.wait_with_output().map_err(|err| format!("failed to run {program}: {err}"))?;
     drop(finished);
-    if timed_out.load(Ordering::Acquire) {
+    if watchdog.join().unwrap_or(false) {
         return Err(format!("{program} timed out after {}s", limit.as_secs()));
     }
     let stderr = String::from_utf8_lossy(&output.stderr);

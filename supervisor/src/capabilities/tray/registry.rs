@@ -186,20 +186,17 @@ fn spawn_item_signal_forwarder(
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let Ok(new_title) = item.receive_new_title().await else { return };
-        let Ok(new_icon) = item.receive_new_icon().await else { return };
-        let Ok(new_attention_icon) = item.receive_new_attention_icon().await else { return };
-        let Ok(new_overlay_icon) = item.receive_new_overlay_icon().await else { return };
-        let Ok(new_tool_tip) = item.receive_new_tool_tip().await else { return };
-        let Ok(new_status) = item.receive_new_status().await else { return };
-        let mut signals = futures_util::stream::select_all([
-            new_title.map(|_| false).boxed(),
-            new_icon.map(|_| true).boxed(),
-            new_attention_icon.map(|_| true).boxed(),
-            new_overlay_icon.map(|_| true).boxed(),
-            new_tool_tip.map(|_| false).boxed(),
-            new_status.map(|_| true).boxed(),
-        ]);
+        let streams = async {
+            Ok::<_, zbus::Error>(futures_util::stream::select_all([
+                item.receive_new_title().await?.map(|_| false).boxed(),
+                item.receive_new_icon().await?.map(|_| true).boxed(),
+                item.receive_new_attention_icon().await?.map(|_| true).boxed(),
+                item.receive_new_overlay_icon().await?.map(|_| true).boxed(),
+                item.receive_new_tool_tip().await?.map(|_| false).boxed(),
+                item.receive_new_status().await?.map(|_| true).boxed(),
+            ]))
+        };
+        let Ok(mut signals) = streams.await else { return };
 
         while let Some(icon) = next_burst(&mut signals).await {
             let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
@@ -554,10 +551,7 @@ mod tests {
 
     #[tokio::test]
     async fn menu_icon_files_are_deleted_when_a_refetch_drops_the_node() {
-        let temp = tempfile::tempdir().unwrap();
-        if crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf()).is_ok() {
-            std::mem::forget(temp);
-        }
+        crate::capabilities::tray::menu::init_test_spool();
         let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
         let (kept, dropped, nested) = (spool("reap_menu_1.png"), spool("reap_menu_2.png"), spool("reap_menu_3.png"));
         let foreign = spool("other_menu_4.png");

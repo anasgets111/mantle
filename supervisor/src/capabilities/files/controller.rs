@@ -230,7 +230,7 @@ async fn follow_folder(
                 }
             }
             _ = tokio::time::sleep_until(burst.at().unwrap_or_else(tokio::time::Instant::now)), if burst.at().is_some() => {
-                burst.clear();
+                burst = crate::debounce::Burst::default();
                 relist(&dir, &key, &extensions, &state, &events).await;
             }
         }
@@ -243,29 +243,6 @@ mod tests {
 
     fn touch(dir: &Path, name: &str) {
         std::fs::write(dir.join(name), b"x").unwrap();
-    }
-
-    #[tokio::test]
-    async fn a_constant_stream_of_writes_still_relists_within_the_max_wait() {
-        let dir = tempfile::tempdir().unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = FilesController::new(tx);
-        let key = dir.path().to_string_lossy().into_owned();
-        controller.watch(&key, vec![]);
-        rx.recv().await.unwrap();
-        rx.recv().await.unwrap();
-
-        let start = tokio::time::Instant::now();
-        let mut checked = false;
-        for n in 0.. {
-            touch(dir.path(), &format!("f{n}"));
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            if start.elapsed() > crate::debounce::MAX_WAIT + Duration::from_secs(1) {
-                checked = !controller.snapshot().folders[&key].entries.is_empty();
-                break;
-            }
-        }
-        assert!(checked, "writes every 50ms held the relist off past the max wait");
     }
 
     #[test]

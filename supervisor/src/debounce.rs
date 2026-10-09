@@ -24,10 +24,6 @@ impl Burst {
     pub fn at(&self) -> Option<Instant> {
         self.0.map(|(_, at)| at)
     }
-
-    pub fn clear(&mut self) {
-        self.0 = None;
-    }
 }
 
 #[cfg(test)]
@@ -46,7 +42,7 @@ mod tests {
         }
         assert_eq!(burst.at(), Some(first + MAX_WAIT));
 
-        burst.clear();
+        burst = Burst::default();
         burst.bump(quiet);
         assert_eq!(burst.at(), Some(Instant::now() + quiet));
     }

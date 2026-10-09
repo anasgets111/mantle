@@ -753,13 +753,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn drive_helper_writes_the_opening_lines_in_order_then_answers_the_prompt() {
+    async fn drive_helper_writes_the_opening_lines_then_answers_echo_on_blank_and_echo_off_with_the_password() {
         use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
         let (ours, theirs) = tokio::io::duplex(256);
         let helper = tokio::spawn(async move {
             let (reader, mut writer) = tokio::io::split(theirs);
             let mut lines = tokio::io::BufReader::new(reader).lines();
             let mut seen = vec![lines.next_line().await.unwrap().unwrap(), lines.next_line().await.unwrap().unwrap()];
+            writer.write_all(b"PAM_PROMPT_ECHO_ON Code: \n").await.unwrap();
+            seen.push(lines.next_line().await.unwrap().unwrap());
             writer.write_all(b"PAM_PROMPT_ECHO_OFF Password: \n").await.unwrap();
             seen.push(lines.next_line().await.unwrap().unwrap());
             writer.write_all(b"SUCCESS\n").await.unwrap();
@@ -770,29 +772,7 @@ mod tests {
         let outcome = drive_helper(reader, writer, "alice", "cookie-1", b"hunter2").await.unwrap();
 
         assert_eq!(outcome, shared::PamOutcome::Success);
-        assert_eq!(helper.await.unwrap(), ["alice", "cookie-1", "hunter2"]);
-    }
-
-    #[tokio::test]
-    async fn drive_helper_answers_an_echo_on_prompt_with_an_empty_line_not_the_password() {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        let (ours, theirs) = tokio::io::duplex(256);
-        let helper = tokio::spawn(async move {
-            let (reader, mut writer) = tokio::io::split(theirs);
-            let mut lines = tokio::io::BufReader::new(reader).lines();
-            lines.next_line().await.unwrap();
-            lines.next_line().await.unwrap();
-            writer.write_all(b"PAM_PROMPT_ECHO_ON Code: \n").await.unwrap();
-            let answer = lines.next_line().await.unwrap().unwrap();
-            writer.write_all(b"FAILURE\n").await.unwrap();
-            answer
-        });
-
-        let (reader, writer) = tokio::io::split(ours);
-        let outcome = drive_helper(reader, writer, "alice", "cookie-1", b"hunter2").await.unwrap();
-
-        assert_eq!(outcome, shared::PamOutcome::AuthFailed);
-        assert_eq!(tokio::time::timeout(std::time::Duration::from_secs(5), helper).await.unwrap().unwrap(), "");
+        assert_eq!(helper.await.unwrap(), ["alice", "cookie-1", "", "hunter2"]);
     }
 
     #[test]

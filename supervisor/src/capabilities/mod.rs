@@ -13,12 +13,20 @@
 
 use std::path::Path;
 use std::sync::Mutex;
+use std::time::Duration;
 
 use tokio::sync::mpsc::UnboundedSender;
 
 pub use latest_writes::{LatestWrites, Writer};
 pub use lifecycle::Capabilities;
 pub use signals::Signal;
+
+// Reconnect backoff shared by the PipeWire mixer and the niri reader.
+// ponytail: polls 1 s doubling to 30 s; a watch on the socket would reconnect at once.
+pub const RETRY_FIRST: Duration = Duration::from_secs(1);
+pub const RETRY_MAX: Duration = Duration::from_secs(30);
+/// A connection that lasted this long resets the backoff; a daemon crashing sooner keeps backing off.
+pub const STABLE: Duration = Duration::from_secs(10);
 
 /// Every Supervisor bus gets the 25s call timeout Qt, GDBus and libdbus default to; zbus has none
 /// (ADR-0070 amendment).

@@ -6,12 +6,12 @@
 use std::collections::HashMap;
 use std::time::Duration;
 
-use shared::{debug, error, warn};
+use shared::{debug, warn};
 
 use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
-use crate::capabilities::audio::mixer::{RETRY_FIRST, RETRY_MAX, STABLE};
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
+use crate::capabilities::{RETRY_FIRST, RETRY_MAX, STABLE};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
 /// only a handful of workspaces.
@@ -193,17 +193,28 @@ fn follow(
     }
 }
 
-/// Runs `follow` on `stream`, then on each reconnect with [`RETRY_FIRST`] doubling to
-/// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. `first_delay` is a
-/// parameter for tests.
+/// Connects, runs `follow`, and reconnects after each loss with [`RETRY_FIRST`] doubling to
+/// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. The first connect retries
+/// too. `first_delay` is a parameter for tests.
+/// ponytail: a compositor that never comes up keeps one thread retrying every 30 s until exit; stop once the publishers are gone.
 fn keep_following<S>(
     first_delay: Duration,
-    mut stream: S,
     mut connect: impl FnMut() -> std::io::Result<S>,
     mut follow: impl FnMut(S) -> End,
 ) {
     let mut delay = first_delay;
     loop {
+        let mut failures = 0;
+        let stream = loop {
+            match connect() {
+                Ok(stream) => break stream,
+                Err(err) if failures == 0 => warn!("cannot reach niri ({err}); retrying"),
+                Err(err) => debug!("cannot reach niri ({err}); retrying in {delay:?}"),
+            }
+            failures += 1;
+            std::thread::sleep(delay);
+            delay = (delay * 2).min(RETRY_MAX);
+        };
         let started = std::time::Instant::now();
         if follow(stream) == End::Unwanted {
             return;
@@ -211,36 +222,17 @@ fn keep_following<S>(
         if started.elapsed() >= STABLE {
             delay = first_delay;
         }
-        let mut failures = 0;
-        stream = loop {
-            std::thread::sleep(delay);
-            delay = (delay * 2).min(RETRY_MAX);
-            match connect() {
-                Ok(next) => break next,
-                Err(err) if failures == 0 => warn!("cannot reach niri ({err}); retrying"),
-                Err(err) => debug!("cannot reach niri ({err}); retrying in {delay:?}"),
-            }
-            failures += 1;
-        };
+        std::thread::sleep(delay);
+        delay = (delay * 2).min(RETRY_MAX);
     }
 }
 
 /// On an OS thread, connects, requests the event stream and runs [`keep_following`], so a stalled
 /// niri blocks the reader and not the caller. Also drives `mantle.windows` and `keyboard`'s layout
 /// from the same stream, rather than a second connection.
-///
-/// ponytail: a first connect failure disables the readers for the run; only a stream that was up
-/// is re-established. Upgrade is retrying the first connect too.
 pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
     std::thread::spawn(move || {
-        let socket = match crate::compositor::niri_event_stream() {
-            Ok(socket) => socket,
-            Err(err) => {
-                error!("{err}; workspace and window reporting disabled for this run");
-                return;
-            }
-        };
-        keep_following(RETRY_FIRST, socket, crate::compositor::niri_event_stream, |socket| {
+        keep_following(RETRY_FIRST, crate::compositor::niri_event_stream, |socket| {
             follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
         });
     });
@@ -497,14 +489,13 @@ mod tests {
     }
 
     #[test]
-    fn a_lost_stream_reconnects_until_nobody_listens() {
+    fn a_failed_first_connect_and_a_lost_stream_both_retry_until_nobody_listens() {
         let (mut connects, mut follows) = (0, 0);
         keep_following(
             Duration::ZERO,
-            0,
             || {
                 connects += 1;
-                Ok(connects)
+                if connects == 1 { Err(std::io::ErrorKind::NotFound.into()) } else { Ok(connects) }
             },
             |_| {
                 follows += 1;
@@ -512,7 +503,7 @@ mod tests {
             },
         );
 
-        assert_eq!((follows, connects), (3, 2));
+        assert_eq!((follows, connects), (3, 4), "the first connect failed once and was retried");
     }
 
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an

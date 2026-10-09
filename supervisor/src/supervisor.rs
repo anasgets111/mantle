@@ -351,8 +351,7 @@ impl Supervisor {
             }
             Err(err) => {
                 // A package upgrade or `just swap` can leave the binary briefly unexecutable.
-                // ponytail: retries forever; a binary that never becomes executable leaves a headless
-                // session. Upgrade: give up after a bounded count and stop the loop.
+                // ponytail: retries forever, so a never-executable binary leaves a headless session; cap the count.
                 error!("could not spawn a replacement renderer: {err}; retrying in {RESTART_COOLDOWN:?}");
                 self.respawn_at = Some(std::time::Instant::now() + RESTART_COOLDOWN);
                 false

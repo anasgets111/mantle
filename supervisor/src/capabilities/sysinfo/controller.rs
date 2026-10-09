@@ -278,8 +278,7 @@ async fn run_gpu_task(
         let temp_gpu = super::temp::sample_temp_gpu(&mut gpu_input, &hwmon_root);
         let (drm_root, state, signal_tx) = (&drm_root, &state, &signal_tx);
         async move {
-            // ponytail: a failed or timed-out sample keeps the last reading, so an unplugged eGPU
-            // stays until restart. Upgrade: drop it after N consecutive misses.
+            // ponytail: a failed sample keeps the last reading, so an unplugged eGPU stays; drop it after N misses.
             let gpu = super::gpu::sample_gpu(drm_root, temp_gpu).await;
             publish_if_changed(state, signal_tx, |state| replace_if_sampled(&mut state.gpu, gpu.map(Some)));
         }

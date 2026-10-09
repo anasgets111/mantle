@@ -210,7 +210,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                     }
                 }
                 _ = tokio::time::sleep_until(deadline.at().unwrap_or_else(tokio::time::Instant::now)), if deadline.at().is_some() => {
-                    deadline.clear();
+                    deadline = crate::debounce::Burst::default();
                     debug!("config changed; asking the Renderer to reload it");
                     if tx.send(()).is_err() {
                         break; // receiver dropped: nobody's listening any more.

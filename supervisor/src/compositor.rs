@@ -202,19 +202,6 @@ mod tests {
     }
 
     #[test]
-    fn hyprland_request_gives_up_on_a_socket_that_never_answers() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join(".socket.sock");
-        let _silent = std::os::unix::net::UnixListener::bind(&path).unwrap();
-
-        let started = std::time::Instant::now();
-        let err = hyprland_request(&path, "j/clients").unwrap_err();
-
-        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
-    }
-
-    #[test]
     fn run_in_order_keeps_send_order_when_the_first_job_is_slow() {
         let (seen, arrived) = std::sync::mpsc::channel();
         let first = seen.clone();
@@ -230,16 +217,17 @@ mod tests {
     }
 
     #[test]
-    fn niri_request_gives_up_on_a_socket_that_never_answers() {
+    fn a_request_gives_up_on_a_socket_that_never_answers() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("niri.sock");
+        let path = dir.path().join("silent.sock");
         let _silent = std::os::unix::net::UnixListener::bind(&path).unwrap();
 
         let started = std::time::Instant::now();
-        let err = niri_request(&path, &niri_ipc::Request::Version).unwrap_err();
+        let hypr = hyprland_request(&path, "j/clients").unwrap_err();
+        let niri = niri_request(&path, &niri_ipc::Request::Version).unwrap_err();
 
-        assert_eq!(err.kind(), std::io::ErrorKind::WouldBlock);
-        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+        assert_eq!([hypr.kind(), niri.kind()], [std::io::ErrorKind::WouldBlock; 2]);
+        assert!(started.elapsed() < std::time::Duration::from_secs(20));
     }
 
     #[test]

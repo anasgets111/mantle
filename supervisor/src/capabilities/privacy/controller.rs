@@ -464,23 +464,16 @@ mod tests {
         let proc_root = tempfile::tempdir().unwrap();
         let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let state = Arc::new(Mutex::new(PrivacyState::default()));
-        tokio::spawn(run_privacy_task(
-            proc_root.path().to_path_buf(),
-            dev.path().to_path_buf(),
-            Arc::clone(&state),
-            sources,
-            events_tx,
-        ));
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev.path(), sources, events_tx);
         assert_eq!(within(events_rx.recv()).await, Some(()), "the empty seed");
 
         let node = dev.path().join("video0");
         // Opens the node until `camera_users.is_empty()` equals `want_empty`; a node is unwatched
         // until its create event is handled, so one open may be missed.
         let settle = |want_empty: bool| {
-            let (state, node) = (Arc::clone(&state), node.clone());
+            let (controller, node) = (&controller, node.clone());
             within(async move {
-                while state.lock().unwrap().camera_users.is_empty() != want_empty {
+                while controller.snapshot().camera_users.is_empty() != want_empty {
                     drop(std::fs::File::open(&node).unwrap());
                     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
                 }
@@ -488,10 +481,8 @@ mod tests {
         };
         for _ in 0..2 {
             std::fs::write(&node, "").unwrap();
-            let fd_dir = proc_root.path().join("1234/fd");
-            std::fs::create_dir_all(&fd_dir).unwrap();
-            let _ = std::fs::remove_file(fd_dir.join("5"));
-            std::os::unix::fs::symlink(&node, fd_dir.join("5")).unwrap();
+            let _ = std::fs::remove_dir_all(proc_root.path().join("1234"));
+            write_fd_symlink(proc_root.path(), 1234, 5, &node);
             settle(false).await;
             std::fs::remove_dir_all(proc_root.path().join("1234")).unwrap();
             settle(true).await;
@@ -540,26 +531,16 @@ mod tests {
         let proc_root = tempfile::tempdir().unwrap();
         let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let state = Arc::new(Mutex::new(PrivacyState::default()));
-        let dev_root = dev.path().to_path_buf();
-        tokio::spawn(run_privacy_task(
-            proc_root.path().to_path_buf(),
-            dev_root,
-            Arc::clone(&state),
-            sources,
-            events_tx,
-        ));
+        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev.path(), sources, events_tx);
         assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
 
         drop(privacy_tx);
         tokio::task::yield_now().await;
-        let fd_dir = proc_root.path().join("1234/fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink(&device, fd_dir.join("5")).unwrap();
+        write_fd_symlink(proc_root.path(), 1234, 5, &device);
         std::fs::File::open(&device).unwrap();
 
         assert_eq!(within(events_rx.recv()).await, Some(()));
-        assert_eq!(state.lock().unwrap().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
+        assert_eq!(controller.snapshot().camera_users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
     }
 
     /// ADR-0137 regression: no webcam used to end the task, taking microphone and screencast down.

@@ -4,7 +4,8 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
-use std::time::Duration;
+
+use crate::capabilities::{RETRY_FIRST, RETRY_MAX, STABLE};
 
 use pipewire as pw;
 use pw::keys;
@@ -49,12 +50,6 @@ pub fn run(
 ) {
     reconnect(None, &updates, &privacy_updates, commands);
 }
-
-/// ponytail: polls 1 s doubling to 30 s; a watch on the socket in `$XDG_RUNTIME_DIR` would reconnect at once.
-pub(crate) const RETRY_FIRST: Duration = Duration::from_secs(1);
-pub(crate) const RETRY_MAX: Duration = Duration::from_secs(30);
-/// A connection that lasted this long resets the backoff; a daemon crashing sooner keeps backing off.
-pub(crate) const STABLE: Duration = Duration::from_secs(10);
 
 /// [`run`]'s loop; `remote` names a socket other than the default, for tests.
 fn reconnect(
@@ -657,7 +652,7 @@ fn bind_bluez_device(
 #[cfg(test)]
 mod tests {
     use std::process::{Child, Command, Stdio};
-    use std::time::Instant;
+    use std::time::{Duration, Instant};
 
     use super::*;
 
