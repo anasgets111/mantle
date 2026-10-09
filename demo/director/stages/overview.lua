@@ -9,9 +9,7 @@ local open = state("overview_open", false)
 local mapped = computed({ open, delay(open, 300) }, function(now, was) return now or was end)
 
 -- Sized to the stage the director's code pane leaves open.
-local frame = mantle.screens:map(function(screens)
-    return layout.overview(screens and screens[1])
-end)
+local frame = layout.placed("overview")
 
 local function card(w)
     return column {

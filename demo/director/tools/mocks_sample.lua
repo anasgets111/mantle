@@ -70,6 +70,8 @@ local seeds = {
     notif_drag = { id = "1", x = 40 },
     volume_osd = { volume = 60, muted = false },
     cpu_history = { 20, 40, 35, 60, 45 },
+    -- Popups as the take shows them, with the code pane off.
+    stage_full = true,
 }
 
 for _, name in ipairs { "control", "media", "picker", "updates", "overview" } do

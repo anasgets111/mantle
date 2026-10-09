@@ -5,9 +5,7 @@ local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")
 
-local placed = mantle.screens:map(function(screens)
-    return layout.dock(screens and screens[1], 620)
-end)
+local placed = layout.placed("updates")
 
 local updates = state("mock_updates", { packages = {}, installing = false })
 local open = state("updates_open", false)

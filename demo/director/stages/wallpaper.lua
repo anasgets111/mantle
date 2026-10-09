@@ -30,9 +30,7 @@ local image_node = image {
     animate = { opacity = 600 },
 }
 
-local picker_box = mantle.screens:map(function(screens)
-    return layout.picker(screens and screens[1])
-end)
+local picker_box = layout.placed("picker")
 
 local function thumbnail(entry)
     local chosen = current:map(function(name) return name == entry.name end)

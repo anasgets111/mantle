@@ -4,9 +4,7 @@ local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")
 
-local placed = mantle.screens:map(function(screens)
-    return layout.center(screens and screens[1], 760)
-end)
+local placed = layout.placed("media")
 local cover_px = placed:map(function(p) return math.floor(math.min(240, p.width * 240 / 760)) end)
 
 local media = state("mock_media", { players = {} })

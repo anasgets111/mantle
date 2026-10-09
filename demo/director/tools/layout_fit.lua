@@ -1,11 +1,10 @@
--- Every layout.* box fits the open area at the three screens the demo is checked on.
+-- Every layout.* box fits the open area at the three screens the demo is checked on, beside the
+-- code pane and with it off (`full`).
 -- Usage: lua layout_fit.lua
 local here = (arg[0]:match("^(.*)/[^/]*$") or ".")
 local layout = dofile(here .. "/../layout.lua")
 
 local SCREENS = { { 1920, 1080 }, { 1920, 1200 }, { 3440, 1440 } }
--- The design widths the stages pass to center/dock/fit.
-local DESIGNS = { 380, 620, 640, 660, 760, 900 }
 local bad = 0
 
 local function expect(ok, label, size, detail)
@@ -15,26 +14,25 @@ local function expect(ok, label, size, detail)
     end
 end
 
-for _, wh in ipairs(SCREENS) do
-    local size = wh[1] .. "x" .. wh[2]
-    local screen = { width = wh[1], height = wh[2], name = "DP-1" }
+for k = 1, #SCREENS * 2 do
+    local wh, full = SCREENS[(k - 1) % #SCREENS + 1], k > #SCREENS
+    local size = wh[1] .. "x" .. wh[2] .. (full and " full" or "")
+    local screen = { width = wh[1], height = wh[2], name = "DP-1", full = full }
     local m = layout.metrics(screen)
     expect(m.font >= 16, "font", size, m.font)
     local function fits(label, box)
         local right = box.left + (box.width or box.sheet)
         expect(box.left >= 12, label .. ".left", size, box.left)
-        expect(right <= m.open, label .. " right edge", size, ("%d > open %d"):format(right, m.open))
+        expect(right <= m.open - (full and 12 or 0), label .. " right edge", size, ("%d > open %d"):format(right, m.open))
     end
-    for _, design in ipairs(DESIGNS) do
-        fits("center(" .. design .. ")", layout.center(screen, design))
-        fits("dock(" .. design .. ")", layout.dock(screen, design))
-        expect(layout.fit(screen, design) <= m.open, "fit(" .. design .. ")", size, layout.fit(screen, design))
+    for name in pairs(layout.POPUPS) do
+        fits(name, layout.popup(name, screen))
     end
-    local picker = layout.picker(screen)
-    fits("picker", picker)
+    local picker = layout.popup("picker", screen)
     expect(picker.tile >= 120, "picker.tile", size, picker.tile)
-    fits("overview", layout.overview(screen))
-    fits("mock", layout.mock(screen))
+    local overview = layout.popup("overview", screen)
+    expect(56 + overview.top + overview.shot_height + overview.card + 200 <= m.height, "overview height", size,
+        overview.shot_height)
     -- No width means the caption hugs its text on a stage wide enough for it.
     local caption = layout.caption(m)
     expect(caption.width == nil or caption.width >= 600, "caption.width", size, tostring(caption.width))

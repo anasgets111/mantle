@@ -1,5 +1,6 @@
--- Props: app windows the director draws on the open 56% of the screen, so the notification,
--- privacy and idle beats have something to react to. They are not part of the demo shell.
+-- Props: app windows the director draws in the open area, beside the code pane or across the
+-- screen with it off, so the windows and privacy beats have something to react to. They are not
+-- part of the demo shell.
 
 local theme = require("theme")
 local layout = require("layout")
@@ -8,13 +9,8 @@ local TITLE = 52
 
 local app = state("mock_app", "")
 local shown = state("mock_app_shown", false)
-local chat = state("mock_chat", { name = "", rtl = false, messages = {} })
-local sharing = state("mock_sharing", false)
-local playing = state("mock_playing", true)
 
-local size = mantle.screens:map(function(screens)
-    return layout.mock(screens and screens[1])
-end)
+local size = layout.placed("mock")
 local sidebar_width = size:map(function(s) return math.min(360, math.floor(s.width * 0.42)) end)
 
 local function label(content, size_px, color, extra)
@@ -101,6 +97,12 @@ end
 
 -- Chat ----------------------------------------------------------------------------------------
 
+-- The conversation the taskbar click opens.
+local CHAT = {
+    name = "Sarah",
+    messages = { { mine = false, text = "Still on for tonight?" }, { mine = true, text = "Yes! See you at 8." } },
+}
+
 local CHATS = {
     { name = "Sarah", preview = "Still on for tonight?", color = theme.avatar(1) },
     { name = "أحمد", preview = "وصلت؟", color = theme.avatar(2) },
@@ -109,41 +111,39 @@ local CHATS = {
 }
 
 local function sidebar()
+    local rows = {}
+    for k, entry in ipairs(CHATS) do
+        rows[k] = row {
+            width = "fill",
+            padding = 12,
+            spacing = 14,
+            radius = 14,
+            background = entry.name == CHAT.name and theme.surface or "#00000000",
+            children = {
+                initial_avatar(entry.name, entry.color, 52),
+                column {
+                    width = "fill",
+                    spacing = 4,
+                    align_v = "center",
+                    children = {
+                        label(entry.name, 21, theme.text, { width = "fill", text_align = "start" }),
+                        label(entry.preview, 18, theme.subtle, { width = "fill", text_align = "start" }),
+                    },
+                },
+            },
+        }
+    end
     return column {
         width = sidebar_width,
         height = "fill",
         padding = 14,
         spacing = 6,
         background = theme.mantle,
-        children = chat:map(function(c)
-            local rows = {}
-            for k, entry in ipairs(CHATS) do
-                rows[k] = row {
-                    width = "fill",
-                    padding = 12,
-                    spacing = 14,
-                    radius = 14,
-                    background = entry.name == c.name and theme.surface or "#00000000",
-                    children = {
-                        initial_avatar(entry.name, entry.color, 52),
-                        column {
-                            width = "fill",
-                            spacing = 4,
-                            align_v = "center",
-                            children = {
-                                label(entry.name, 21, theme.text, { width = "fill", text_align = "start" }),
-                                label(entry.preview, 18, theme.subtle, { width = "fill", text_align = "start" }),
-                            },
-                        },
-                    },
-                }
-            end
-            return rows
-        end),
+        children = rows,
     }
 end
 
-local function bubble(message, rtl)
+local function bubble(message)
     local mine = message.mine
     local node = rect {
         max_width = computed({ size, sidebar_width }, function(s, sidebar) return s.width - sidebar - 56 end),
@@ -161,12 +161,10 @@ local function bubble(message, rtl)
                 { width = "fill", wrap = "word" }),
         },
     }
-    -- A right-to-left chat mirrors: your own messages sit on the left.
-    local at_end = mine ~= rtl
     return row {
         id = "bubble:" .. message.text,
         width = "fill",
-        children = at_end and { rect { width = "fill" }, node } or { node, rect { width = "fill" } },
+        children = mine and { rect { width = "fill" }, node } or { node, rect { width = "fill" } },
     }
 end
 
@@ -184,23 +182,17 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                     height = 76,
                     padding = { left = 24, right = 24 },
                     spacing = 14,
-                    children = chat:map(function(c)
-                        local color = CHATS[1].color
-                        for _, entry in ipairs(CHATS) do
-                            if entry.name == c.name then color = entry.color end
-                        end
-                        return {
-                            initial_avatar(c.name, color, 48),
-                            column {
-                                align_v = "center",
-                                spacing = 2,
-                                children = {
-                                    label(c.name, 22, theme.text, { font_weight = 700 }),
-                                    label(c.rtl and "متصل الآن" or "online", 17, theme.success),
-                                },
+                    children = {
+                        initial_avatar(CHAT.name, CHATS[1].color, 48),
+                        column {
+                            align_v = "center",
+                            spacing = 2,
+                            children = {
+                                label(CHAT.name, 22, theme.text, { font_weight = 700 }),
+                                label("online", 17, theme.success),
                             },
-                        }
-                    end),
+                        },
+                    },
                 },
                 rect { width = "fill", height = 1, background = theme.surface },
                 column {
@@ -208,13 +200,7 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                     height = "fill",
                     padding = 28,
                     spacing = 14,
-                    children = chat:map(function(c)
-                        local out = { rect { height = "fill" } }
-                        for _, message in ipairs(c.messages) do
-                            out[#out + 1] = bubble(message, c.rtl)
-                        end
-                        return out
-                    end),
+                    children = { rect { height = "fill" }, bubble(CHAT.messages[1]), bubble(CHAT.messages[2]) },
                 },
                 row {
                     width = "fill",
@@ -227,12 +213,8 @@ local chat_window = window("chat", "Telegram", "org.telegram.desktop", row {
                             background = theme.mantle,
                             padding = { left = 24, right = 24 },
                             children = {
-                                label(
-                                    chat:map(function(c) return c.rtl and "اكتب رسالة" or "Write a message" end),
-                                    20,
-                                    theme.muted,
-                                    { width = "fill", text_align = "start", height = "fill" }
-                                ),
+                                label("Write a message", 20, theme.muted,
+                                    { width = "fill", text_align = "start", height = "fill" }),
                             },
                         },
                     },
@@ -320,10 +302,7 @@ local call_window = window("call", "Meet · Weekly sync", "camera-web-symbolic",
             children = {
                 control("audio-input-microphone-symbolic", theme.surface),
                 control("camera-web-symbolic", theme.surface),
-                control(
-                    "screen-shared-symbolic",
-                    computed({ sharing, theme.accent, theme.surface }, function(s, on, off) return s and on or off end)
-                ),
+                control("screen-shared-symbolic", theme.surface),
                 control("call-stop-symbolic", theme.danger),
             },
         },
@@ -379,24 +358,6 @@ local function browser_window(wallpaper)
                 children = {
                     image { source = wallpaper, width = "fill", height = "fill", fit = "cover" },
                     rect {
-                        width = 120,
-                        height = 120,
-                        radius = 60,
-                        align_h = "center",
-                        align_v = "center",
-                        background = theme.fade("crust", "cc"),
-                        visible = playing:map(function(p) return not p end),
-                        children = {
-                            icon {
-                                name = "media-playback-start-symbolic",
-                                size = 56,
-                                align_h = "center",
-                                align_v = "center",
-                                foreground = theme.text,
-                            },
-                        },
-                    },
-                    rect {
                         width = "fill",
                         height = 8,
                         align_v = "end",
@@ -408,7 +369,7 @@ local function browser_window(wallpaper)
                                 height = "fill",
                                 radius = 4,
                                 background = theme.danger,
-                                width = playing:map(function(p) return p and "100%" or "46%" end),
+                                width = "100%",
                                 animate = {
                                     width = { duration = 9000, easing = "linear", from = "20%" },
                                 },
@@ -437,9 +398,6 @@ end
 
 return {
     app = app,
-    chat = chat,
-    sharing = sharing,
-    playing = playing,
     open = open,
     panels = function(wallpaper) return { chat_window, call_window, browser_window(wallpaper) } end,
 }

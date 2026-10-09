@@ -4,12 +4,7 @@
 local theme = require("theme")
 local layout = require("layout")
 
-local placed = mantle.screens:map(function(screens)
-    local screen = screens and screens[1]
-    local box = layout.center(screen, 640)
-    if screen and screen.height then box.top = math.floor(screen.height * 0.22) end
-    return box
-end)
+local placed = layout.placed("polkit")
 
 local polkit = state("mock_polkit", { active = false, message = "", user = "" })
 local typed = state("polkit_typed", 0)

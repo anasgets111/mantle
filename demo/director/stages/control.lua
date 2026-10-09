@@ -5,9 +5,7 @@ local theme = require("theme")
 local target = require("targets")
 local layout = require("layout")
 
-local placed = mantle.screens:map(function(screens)
-    return layout.dock(screens and screens[1], 620)
-end)
+local placed = layout.placed("control")
 
 local network = state("mock_network", { wifi_enabled = false, connected = false, strength = 0 })
 local bluetooth = state("mock_bluetooth", { enabled = false, connected_devices = {} })

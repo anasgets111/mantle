@@ -2,9 +2,7 @@
 local theme = require("theme")
 local layout = require("layout")
 
-local placed = mantle.screens:map(function(screens)
-    return layout.center(screens and screens[1], 380)
-end)
+local placed = layout.placed("osd")
 local osd = state("volume_osd", { volume = 0, muted = false })
 
 mantle.audio:on_change(function(audio, previous)

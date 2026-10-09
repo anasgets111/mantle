@@ -83,7 +83,9 @@ local card_shown = state("demo_card_shown", true)
 local char_box = geometry("demo_char_box")
 local meter = state("demo_meter", "")
 local file_shown = state("demo_file", "shell.lua")
-local pane_shown = state("demo_pane_shown", true)
+-- Set, the code pane is off and `layout.placed` boxes span the whole screen, here and in the
+-- demo shell (see `set_stage`).
+local stage_full = state("stage_full", false)
 -- The last paste, for the flash over its lines.
 local flash = state("demo_flash", false)
 -- The picked wallpaper, for the cards and the browser mockup; the logo art until the first pick.
@@ -158,14 +160,14 @@ local code_pane = panel {
     margin = { top = 16, right = 16, bottom = 16 },
     width = pane_width,
     height = "fill",
-    -- Hidden, the pane slides off the right edge; the demo shell never lays out again.
+    -- Hidden, the pane slides off the right edge.
     child = column {
         width = "fill",
         height = "fill",
         background = theme.fade("crust", "f2"),
         radius = 18,
-        translate = computed({ pane_shown, frame }, function(shown, m)
-            return { x = shown and 0 or m.pane + 32, y = 0 }
+        translate = computed({ stage_full, frame }, function(full, m)
+            return { x = full and m.pane + 32 or 0, y = 0 }
         end),
         animate = { translate = { duration = 450, easing = "in_out_cubic" } },
         children = {
@@ -566,6 +568,8 @@ local function warm(done)
     at(1)
 end
 
+local set_stage
+
 -- Plays edit `name` in its file's buffer, switching the pane to that file first, then saves it.
 -- Fast-forwarding, it waits for the reload, so later toggles and feeds land as in a full take.
 local function edit(name)
@@ -587,10 +591,10 @@ local function edit(name)
         end
         if fast then
             set_text(plan.after)
-            return save()
+            return set_stage(false, save)
         end
         status:set("unsaved")
-        play(plan.ops, function() timer(450, save) end)
+        set_stage(false, function() play(plan.ops, function() timer(450, save) end) end)
     end
     edit_steps[step] = name
     return step
@@ -762,28 +766,13 @@ local function player(k, at, play_state)
     }
 end
 
--- Plays track `k` from `from` seconds for `seconds`, one `mock_media` push a second as a player's
--- position would advance.
-local function play_track(k, from, seconds)
-    return function(next)
-        local function at(t)
-            progress = progress + 1
-            if t > seconds then return next() end
-            if fast and t < seconds then return at(seconds) end
-            feed("mock_media", player(k, from + t, "playing"))(function() later(1000, function() at(t + 1) end) end)
-        end
-        at(0)
-    end
-end
-
 local TRAY = {
     items = {
         { id = "1", name = "Steam",    icon_name = "steam",                status = "active" },
         { id = "2", name = "Vesktop",  icon_name = "vesktop",              status = "active" },
         { id = "3", name = "Telegram", icon_name = "org.telegram.desktop", status = "active" },
-    }
+    },
 }
-
 
 local PACKAGES = {
     { name = "linux",      old_version = "7.2.7.arch1-1", new_version = "7.2.8.arch1-1" },
@@ -905,21 +894,8 @@ local pointer_pane = panel {
 -- Each demo surface's top-left on screen. The bar's exclusive zone adds BAR on top of the
 -- margin `layout` gives the popup.
 local function origin_of(surface)
-    local screen = mantle.screens:get()[1]
-    local box
-    if surface == "picker" then
-        box = layout.picker(screen)
-    elseif surface == "overview" then
-        box = layout.overview(screen)
-    elseif surface == "media" then
-        box = layout.center(screen, 760)
-    elseif surface == "control" or surface == "updates" then
-        box = layout.dock(screen, 620)
-    elseif surface == "notifications" then
-        box = layout.dock(screen, 660)
-    else
-        return { x = 0, y = 0 }
-    end
+    if surface == "bar" then return { x = 0, y = 0 } end
+    local box = layout.popup(surface, layout.stage(mantle.screens:get(), stage_full:get()))
     return { x = box.left, y = BAR + box.top }
 end
 
@@ -1002,7 +978,7 @@ local function swipe(id)
                     if k > 12 then
                         pointer:set({ x = x + box.width * 0.6, y = y, shown = true })
                         return feed("notif_drag", { id = id, x = math.floor(box.width * 0.5) })(function()
-                            timer(500, function() hide_pointer(done) end)
+                            timer(350, function() hide_pointer(done) end)
                         end)
                     end
                     local t = k / 12
@@ -1174,9 +1150,8 @@ end
 -- and closed after its hop, so no window of yours is ever in the shot.
 -- ponytail: the take depends on kitty, fish and fastfetch; another app needs its own `--class`-style id.
 local TOUR_ID = "mantle-demo-tour"
--- fish with fastfetch in place of its greeting, `fastfetchy` first if defined; in $HOME, so the
--- prompt shows no checkout path.
-local FETCH = "functions -e fish_greeting; type -q fastfetchy; and fastfetchy; or fastfetch"
+-- fish with fastfetch in place of its greeting, in $HOME so the prompt shows no checkout path.
+local FETCH = "functions -e fish_greeting; fastfetch"
 local TOUR = { "kitty", "--class", TOUR_ID, "--directory", env("HOME", "/"), "-e", "fish", "-C", FETCH }
 local tour_ws
 
@@ -1336,7 +1311,7 @@ function finish()
                 if not back then log.warn("could not return to workspace", origin_ws) end
             end)
             session.restore_shells(restore)
-            log.info("demo written to", OUT)
+            if not FROM then log.info("demo written to", OUT) end
             -- The restore list saves 1 s after its last write.
             timer(1500, function() session.run("mantle", { "stop", "--pid", tostring(mantle.pid) }) end)
         end)
@@ -1472,11 +1447,8 @@ local function reset_scene()
     pointer:set({ x = 0, y = 0, shown = false })
     spot:set(false)
     flash:set(false)
-    pane_shown:set(true)
+    stage_full:set(false)
     mockups.app:set("")
-    mockups.chat:set({ name = "", rtl = false, messages = {} })
-    mockups.sharing:set(false)
-    mockups.playing:set(true)
     backdrop:set(WALLPAPER)
     theme.choose(DEMO_DIR .. "/wallpapers/thumbs/mantle.png")
 end
@@ -1518,21 +1490,16 @@ local function press(combo, name)
     end
 end
 
--- Slides the code pane off for `ms` while the script plays on, so a payoff gets the frame. A later
--- call takes over the timing.
-local pane_serial = 0
-
-local function focus_stage(ms)
-    return function(next)
-        pane_serial = pane_serial + 1
-        local serial = pane_serial
-        pane_shown:set(false)
-        later(ms, function()
-            if serial == pane_serial then pane_shown:set(true) end
-        end)
-        next()
-    end
+-- Slides the code pane off, or back, and has every `layout.placed` box follow: the director's
+-- mock windows here, the demo shell's popups through its `stage_full`. Surfaces do not animate
+-- their margin or size, so the script calls it with every popup closed; edits bring the pane back.
+function set_stage(full, next)
+    if stage_full:get() == full then return next() end
+    stage_full:set(full)
+    feed("stage_full", full)(function() later(450, next) end)
 end
+
+local function full_stage(next) set_stage(true, next) end
 
 local function clear_keys(next)
     keys:set("")
@@ -1564,10 +1531,9 @@ end
 -- The cold open on the final shell, its windows open and the code pane off. A preview plays it
 -- behind the title card; a take opens on the shell itself.
 local function cold_open(next)
-    pane_shown:set(false)
     windows.count = #WINDOWS
     if not FROM then card:set("") end
-    feed_windows(next)
+    feed_windows(function() set_stage(true, next) end)
 end
 
 local function search(text, hold)
@@ -1606,22 +1572,22 @@ local script = {
     notify(SARAH),
     wait(1600),
     feed("mock_notifications", NO_NOTIFICATIONS),
-    overview(800),
+    overview(1000),
     show_card("title"),
     restart_starter,
 
     say("Save, and it's live.", "One Lua file. Mantle ships no shell."),
     edit("01-size"),
-    wait(2400),
+    wait(3200),
     say("Change a colour.", "No restart, no rebuild."),
     edit("02-color"),
-    wait(2400),
+    wait(3200),
 
     say("Live compositor state.", "mantle.workspaces: a signal the bar redraws from."),
     edit("03-workspaces"),
     wait(500),
     tour,
-    wait(400),
+    wait(1200),
 
     say("A launcher, fuzzy search included.", "state() a keybind toggles; fuzzy() ranks."),
     edit("04-launcher"),
@@ -1642,17 +1608,17 @@ local script = {
 
     say("Shaders, and glass over them.", "GLSL behind the desktop; blur that fades out."),
     edit("06-shader"),
-    focus_stage(4000),
+    full_stage,
     wait(4200),
 
     say("Your wallpaper themes everything.", "palette.score picks a seed; palette.scheme paints."),
     edit("07-wallpaper"),
+    full_stage,
     toggle("picker_open"),
     wait(500),
     point("thumb:ember.png", "picker"),
     pick("ember.png"),
     hide_pointer,
-    focus_stage(6300),
     wait(1900),
     command("mantle call wallpaper tide.png"),
     pick("tide.png"),
@@ -1666,6 +1632,7 @@ local script = {
 
     say("Windows, and live captures.", "mantle.windows and capture: the overview is Lua."),
     edit("08-windows"),
+    full_stage,
     launch,
     wait(250),
     launch,
@@ -1679,7 +1646,6 @@ local script = {
     wait(900),
     hide_pointer,
     open_app(""),
-    focus_stage(3800),
     press("Super+Tab", "overview_open"),
     clear_keys,
     select_window("0xa2"),
@@ -1693,22 +1659,23 @@ local script = {
     edit("09-media"),
     edit("09-motion"),
     feed("mock_tray", TRAY),
-    play_track(1, 61, 0),
-    focus_stage(6000),
-    point("media", "bar"),
+    feed("mock_media", player(1, 61, "playing")),
+    full_stage,
     toggle("media_open"),
-    wait(600),
+    wait(400),
     point("media:play", "media"),
-    feed("mock_media", player(1, 63, "paused")),
-    wait(1300),
+    feed("mock_media", player(1, 62, "paused")),
+    wait(900),
     point("media:play", "media"),
-    play_track(1, 63, 1),
+    feed("mock_media", player(1, 62, "playing")),
+    wait(700),
     hide_pointer,
     toggle("media_open"),
     wait(300),
 
     say("Quick settings, and an OSD.", "Network, Bluetooth, brightness; volume from any app."),
     edit("10-control"),
+    full_stage,
     press("Super+C", "control_open"),
     clear_keys,
     feed("mock_network", { wifi_enabled = true, connected = false, strength = 0 }),
@@ -1726,34 +1693,33 @@ local script = {
     toggle("control_open"),
     wait(300),
     nudge_volume,
+    wait(1200),
 
     say("Your notification server.", "Links, inline replies, any script, swipe away."),
     edit("11-notifications"),
     edit("11-links"),
-    focus_stage(10500),
+    full_stage,
     notify(SARAH),
-    wait(1400),
+    wait(1100),
     type_call("reply", "On my way!"),
-    wait(900),
+    wait(500),
     notify { id = 2, from = "أحمد", text = "وصلت؟ الكل بانتظارك", placeholder = "رد على أحمد", read = "تحديد كمقروء" },
     wait(700),
     type_call("reply", "خمس دقائق وأكون عندكم"),
-    wait(900),
+    wait(700),
     notify { id = 3, from = "Mantle devs", text = "v0.9 is out.", placeholder = "Reply", read = "Mark as read" },
-    wait(800),
+    wait(600),
     swipe(3),
 
     say("Know who's watching.", "mantle.privacy and mantle.idle in the bar."),
     edit("12-indicators"),
+    full_stage,
     open_app("call"),
     feed("mock_privacy", privacy_users(true, true, false)),
     spotlight("privacy", "bar"),
     wait(2300),
     feed("mock_privacy", privacy_users(false, false, false)),
-    function(next)
-        mockups.playing:set(true)
-        open_app("browser")(next)
-    end,
+    open_app("browser"),
     feed("mock_idle", { inhibited = true, inhibitors = { { who = "Zen Browser", why = "Playing video" } } }),
     spotlight("idle", "bar"),
     wait(1900),
@@ -1762,6 +1728,7 @@ local script = {
 
     say("Updates, with your polkit agent.", "The password prompt is Lua too."),
     edit("13-updates"),
+    full_stage,
     feed("mock_updates", updates_state()),
     spotlight("updates", "bar"),
     point("updates", "bar"),
@@ -1811,13 +1778,12 @@ local script = {
     wait(1200),
 
     say("Kill it. It comes back.", "kill -9 the renderer; the supervisor respawns it."),
-    focus_stage(8000),
-    wait(800),
+    full_stage,
+    wait(1200),
     kill_renderer,
-    wait(3300),
+    wait(4200),
     clear_keys,
 
-    focus_stage(16000),
     function(next)
         if fast then return next() end
         on_sample = function(u)

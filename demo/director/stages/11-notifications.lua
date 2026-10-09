@@ -172,7 +172,8 @@ return {
                             duration = 16000,
                             easing = "linear",
                             keyframes = { 0, 1 },
-                            loops = "infinite",
+                            -- Two passes, then it holds still: a desktop need not redraw forever.
+                            loops = 2,
                         },
                     },
                     source = mantle.config_dir .. "/aurora.frag",

@@ -17,9 +17,7 @@ action("reply", function(text)
     draft:set(text or "")
 end)
 
-local placed = mantle.screens:map(function(screens)
-    return layout.dock(screens and screens[1], 660)
-end)
+local placed = layout.placed("notifications")
 
 local function body_text(entry)
     local out = {}
@@ -243,7 +241,8 @@ return panel {
         local gone = top and d.id == top.id and d.x >= threshold(p)
         return top and top.has_reply and not gone and "exclusive" or "none"
     end),
-    width = placed:map(function(p) return p.width + 440 end),
+    -- To the screen's edge, so a swiped card leaves through it.
+    width = placed:map(function(p) return p.width + p.right end),
     child = column {
         width = "fill",
         children = computed({ feed, drag, placed }, function(f, d, p)

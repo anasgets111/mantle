@@ -6,6 +6,10 @@ local boxes = {}
 
 if os.getenv("MANTLE_DEMO_MOCKS") then require("mocks_sample") end
 
+-- Declared by the first module every stage from 03 loads, so the director can set it before any
+-- popup that reads it through `layout.placed` exists.
+state("stage_full", false)
+
 action("where", function(name)
     local box = boxes[name]
     return box and box:get() or nil
