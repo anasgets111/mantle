@@ -37,7 +37,7 @@ assert(takes.derive("fix", last) == last, "fix does not restore the last stage")
 -- Every module prunes with nothing and with everything played, leaving no marker.
 for file, text in pairs(texts) do
     for _, set in ipairs({ {}, false }) do
-        assert(not takes.prune(text, set or nil):find("%-%-@"), file .. ": marker left")
+        assert(not takes.prune(text, set or nil):find("%f[-]%-%-@ "), file .. ": marker left")
     end
 end
 

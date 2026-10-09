@@ -1,6 +1,7 @@
 -- Replays the edit planner over every edit and prints its keystrokes and estimated seconds, as the
 -- director would play it. Exits 1 when an edit types over MAX_CHARS or runs over MAX_SECONDS.
 -- Usage: lua timing.lua
+---@diagnostic disable: undefined-global, undefined-field -- plain lua: io and os, which the repo .luarc disables for Mantle
 local dir = (arg[0]:match("^(.*)/tools/[^/]*$") or ".") .. "/"
 package.path = dir .. "?.lua;" .. package.path
 local takes, edits = require("takes"), require("edits")

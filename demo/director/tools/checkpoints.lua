@@ -1,6 +1,7 @@
 -- Writes one config dir per edit under OUT (starter first), each as the demo shell would see it
 -- once that edit has saved: shell.lua, the modules pruned to the edits played, frags, shared
 -- modules, covers and wallpapers. Usage: lua checkpoints.lua OUT
+---@diagnostic disable: undefined-global, undefined-field -- plain lua: io and os, which the repo .luarc disables for Mantle
 local dir = (arg[0]:match("^(.*)/tools/[^/]*$") or ".") .. "/"
 package.path = dir .. "?.lua;" .. package.path
 local takes = require("takes")

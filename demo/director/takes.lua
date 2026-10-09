@@ -58,6 +58,7 @@ end
 function M.load(dir)
     local texts = {}
     for _, name in ipairs(M.sources) do
+        ---@diagnostic disable-next-line: undefined-global -- tools only, under plain lua
         local file = assert(io.open(dir .. "stages/" .. name, "rb"))
         texts[name] = file:read("a")
         file:close()

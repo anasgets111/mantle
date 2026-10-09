@@ -1,4 +1,5 @@
 -- Demo: fed `mock_notifications` in `mantle.notifications`' shape; replies typed via `mantle call reply`.
+---@diagnostic disable: duplicate-index -- marker branches share keys until takes.prune keeps one
 local theme = require("theme")
 local layout = require("layout")
 local marks = require("marks")

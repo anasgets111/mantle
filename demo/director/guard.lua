@@ -7,7 +7,8 @@ local M = {}
 -- The recorded output's workspaces, from the compositor.
 local function stage_output()
     local ws, name = mantle.workspaces:get(), run.monitor_name()
-    for _, output in ipairs(ws and ws.outputs or {}) do
+    if not ws then return end
+    for _, output in ipairs(ws.outputs) do
         if output.name == name then return output, ws.compositor end
     end
 end

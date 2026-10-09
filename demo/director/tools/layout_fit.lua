@@ -1,6 +1,7 @@
 -- Every layout.* box fits the open area at the three screens the demo is checked on, beside the
 -- code pane and with it off (`full`).
 -- Usage: lua layout_fit.lua
+---@diagnostic disable: undefined-global, undefined-field -- plain lua: io and os, which the repo .luarc disables for Mantle
 local here = (arg[0]:match("^(.*)/[^/]*$") or ".")
 local layout = dofile(here .. "/../layout.lua")
 
