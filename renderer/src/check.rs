@@ -614,8 +614,8 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
     ///
     /// A `fakes` global table the page's fakes set, `{ battery = {...} }`, is pushed into those
     /// capabilities before layout. After the first layout a `__pointer` table rests the pointer
-    /// (see [`rest_pointer`]), a `__after` function runs, and the scene lays out again: that is how
-    /// a shot shows a change, like an OSD appearing.
+    /// (see [`rest_pointer`]), a `__after` function runs and any fakes table it returns is pushed,
+    /// and the scene lays out again: that is how a shot shows a change, like an OSD appearing.
     fn shoot(
         source: &str,
         files: &[(&str, &str)],
@@ -632,9 +632,9 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         }
         let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
         let lua = loader.lua();
-        // The first push, as the Supervisor's would arrive: `on_change` runs too, once every fake
-        // holds its value, in name order, so a handler reading another capability sees it.
-        if let Ok(fakes) = lua.globals().get::<mlua::Table>("fakes") {
+        // A push, as the Supervisor's would arrive: `on_change` runs too, once every fake holds its
+        // value, in name order, so a handler reading another capability sees it.
+        let push = |fakes: mlua::Table| -> Result<(), String> {
             let mut pushed = Vec::new();
             for pair in fakes.pairs::<String, mlua::Value>() {
                 let (name, value) = pair.map_err(|err| format!("fakes: {err}"))?;
@@ -645,8 +645,14 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             for (_, handle, previous) in pushed {
                 handle.notify_change(lua, previous);
             }
+            crate::lua::signal::run_state_handlers(lua);
+            Ok(())
+        };
+        if let Ok(fakes) = lua.globals().get::<mlua::Table>("fakes") {
+            push(fakes)?;
+        } else {
+            crate::lua::signal::run_state_handlers(lua);
         }
-        crate::lua::signal::run_state_handlers(lua);
         let (mut scene, instances) = super::lay_out(&output, &specs, &loader, shaping, OUTPUT)?;
         let pointer = lua.globals().get::<mlua::Table>("__pointer").ok();
         let after = lua.globals().get::<mlua::Function>("__after").ok();
@@ -658,8 +664,11 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 rest_pointer(&pointer, &scene, &instances, lua)?;
             }
             if let Some(after) = after {
-                after.call::<()>(()).map_err(|err| format!("__after: {err}"))?;
-                crate::lua::signal::run_state_handlers(lua);
+                // A table it returns is the next push, so a capability can change mid-shot.
+                match after.call::<Option<mlua::Table>>(()).map_err(|err| format!("__after: {err}"))? {
+                    Some(fakes) => push(fakes)?,
+                    None => crate::lua::signal::run_state_handlers(lua),
+                }
             }
             scene
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false, true)

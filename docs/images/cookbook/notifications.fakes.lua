@@ -8,4 +8,5 @@ local download = note { id = 2, app_name = "Downloads", app_icon = "folder", sum
     body = { { kind = "text", text = "report.pdf " }, { kind = "text", text = "open", href = "https://example.org" } },
     actions = { { key = "open", label = "Open" }, { key = "show", label = "Show in folder" } }, has_default_action = true }
 
-fakes = { notifications = { dnd = false, feed = { download, saved } } }
+fakes = { notifications = { dnd = false, feed = { saved } } }
+function __after() return { notifications = { dnd = false, feed = { download, saved } } } end

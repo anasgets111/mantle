@@ -4,8 +4,8 @@ Notification cards stacked in the top-right corner, newest first. Each card show
 summary, the formatted body and the sender's action buttons; clicking it runs the default action,
 the × dismisses it, and hovering the stack pauses every countdown.
 
-<!-- shot-alt: Two notification cards entering a corner stack, with actions on the first card. -->
-<!-- shot: frames=0@500,30,60,90,120,150,180,210@1500 -->
+<!-- shot-alt: A new Download finished card with two action buttons fades in at the top of the corner stack while the older Wallpaper saved card slides down below it. -->
+<!-- shot: frames=0@800,30,60,90,120,150,180,210@1500 -->
 ```lua,shot
 local MAX_CARDS = 4
 local stack_hover = hover("notification_stack")
@@ -85,6 +85,7 @@ local function card(item)
             opacity = { duration = 150, from = 0 },
             -- Grows in place: a slide would leave the surface and be clipped at its edge.
             scale = { duration = 200, easing = "out_cubic", from = 0.95 },
+            move = { duration = 200, easing = "out_cubic" }, -- older cards slide down for a new one
             exit = { duration = 150, opacity = 0 },
         },
         on_click = function()
@@ -169,7 +170,7 @@ return {
 
 - `feed` is the newest 20, expired ones included; the map keeps the live ones and caps them ([notifications](../capabilities/notifications.md)).
 - `dnd` only mutes sounds, so hiding popups during it is the config's filter; critical ones still show.
-- `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [exit](../guide/animation.md#exit)).
+- `key` by `id` keeps each card's node when a newer one arrives above it, so only the new one animates in while `animate.move` slides the older ones down; a dismissed card fades out through `animate.exit`, except the last one, which leaves with its hidden panel ([identity](../nodes/index.md#identity-and-reconciliation), [move](../guide/animation.md#move), [exit](../guide/animation.md#exit)).
 - A body's text spans pass to `text` as runs unchanged; `on_link` hands a clicked `href` to `open_url` ([text runs](../nodes/text.md#runs), [applications](../capabilities/applications.md)).
 - The × is a clickable `rect` inside the clickable card: the innermost one with a handler takes the click ([pointer](../guide/input.md#pointer)).
 - `on_hover` on the stack calls `hold_expiry`, so a card cannot expire while being read; the hold lapses after 300 s of continuous hover ([hover](../guide/input.md#hover)).
