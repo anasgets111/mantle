@@ -7,16 +7,6 @@ use std::marker::PhantomData;
 
 use mlua::{AnyUserData, FromLua, Function, IntoLua, Lua, LuaString, Table, Value, Variadic};
 
-use super::location::Site;
-
-/// `message` led by the Lua caller's `chunk:line`, so a raise's first line says where.
-pub(crate) fn raise(lua: &Lua, message: impl std::fmt::Display) -> mlua::Error {
-    match Site::of_caller(lua) {
-        Some(site) => mlua::Error::runtime(format!("{site}: {message}")),
-        None => mlua::Error::runtime(message.to_string()),
-    }
-}
-
 /// What a function's argument errors name: its path and its parameters, for [`Args`].
 pub(crate) trait ArgNames {
     const FUNCTION: &'static str;
@@ -47,12 +37,11 @@ impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
         // SAFETY: mlua's own arguments, forwarded unchanged.
         unsafe { T::from_stack_args(nargs, index, to, lua) }
             .map(|args| Self(args, PhantomData))
-            // SAFETY: `lua.state()` is the live state of the call being converted.
-            .map_err(|err| bad_argument(unsafe { Lua::get_or_init_from_ptr(lua.state()) }, N::FUNCTION, N::NAMES, err))
+            .map_err(|err| bad_argument(N::FUNCTION, N::NAMES, err))
     }
 }
 
-fn bad_argument(lua: &Lua, function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
+fn bad_argument(function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
     let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };
     let name = names.get(pos - 1).map(|name| format!(" ({name})")).unwrap_or_default();
@@ -65,7 +54,7 @@ fn bad_argument(lua: &Lua, function: &str, names: &[&str], err: mlua::Error) -> 
     };
     // mlua's own cause, such as `out of range`, says why a right-typed value was refused.
     let cause = message.as_ref().map(|message| format!(" ({message})")).unwrap_or_default();
-    raise(lua, format!("{function}: bad argument #{pos}{name}: expected {want}, got {from}{cause}"))
+    mlua::Error::runtime(format!("{function}: bad argument #{pos}{name}: expected {want}, got {from}{cause}"))
 }
 
 /// A Rust type name as an article and a Lua noun; an unknown type keeps its own name.
@@ -755,7 +744,7 @@ mod tests {
     fn refused(from: &'static str, to: &str, message: Option<&str>) -> String {
         let cause = mlua::Error::FromLuaConversionError { from, to: to.into(), message: message.map(Into::into) };
         let err = mlua::Error::BadArgument { to: None, pos: 1, name: None, cause: Arc::new(cause) };
-        bad_argument(&Lua::new(), "f", &["x"], err).to_string()
+        bad_argument("f", &["x"], err).to_string()
     }
 
     #[test]

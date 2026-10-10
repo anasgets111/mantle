@@ -247,16 +247,13 @@ impl UserData for IdleMember {
             }
             Ok(())
         });
-        methods.add_method("register_threshold", |lua, this, (sec, on_idle, on_resume): (i64, Function, Function)| {
+        methods.add_method("register_threshold", |_, this, (sec, on_idle, on_resume): (i64, Function, Function)| {
             // ext-idle-notify takes a u32 of milliseconds; past it the Supervisor would clamp.
             let Some(sec) = u64::try_from(sec).ok().filter(|sec| (1..=MAX_THRESHOLD_SEC).contains(sec)) else {
-                return Err(crate::lua::luacats::raise(
-                    lua,
-                    format!(
-                        "mantle.idle:register_threshold: seconds {}",
-                        out_of_range(1, MAX_THRESHOLD_SEC, "integer", sec)
-                    ),
-                ));
+                return Err(mlua::Error::runtime(format!(
+                    "mantle.idle:register_threshold: seconds {}",
+                    out_of_range(1, MAX_THRESHOLD_SEC, "integer", sec)
+                )));
             };
             Ok(this.0.register_threshold(sec, on_idle, on_resume))
         });

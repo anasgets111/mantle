@@ -50,7 +50,8 @@ pub(super) fn chunk_name(config_dir: &Path, path: &Path) -> String {
 /// `__index` upvalue or unnamed `[C]: in ?` is mlua's error handler or userdata dispatch, and
 /// `__mlua_*` chunks are mlua's own Lua; none of them names a line the author wrote. An error that
 /// crossed a Rust callback carries a second traceback, the tail of the first, so only the first is
-/// kept.
+/// kept. A message not already led by `chunk:N: ` is led by the traceback's first config frame, so a
+/// raise from engine code says which line of the config made the call; with no such frame it stays.
 pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = err.to_string();
     let text = text.strip_prefix("runtime error: ").unwrap_or(&text);
@@ -86,7 +87,28 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
     if lines.last() == Some(&"stack traceback:") {
         lines.pop();
     }
-    lines.join("\n")
+    let mut text = lines.join("\n");
+    if location(lines.first().copied().unwrap_or_default()).is_none() {
+        let mut frames = lines.iter().skip_while(|line| **line != "stack traceback:");
+        if let Some(at) = frames.find_map(|frame| location(frame.trim_start())) {
+            text = format!("{at}: {text}");
+        }
+    }
+    text
+}
+
+/// The `chunk:N` a line starts with when `chunk:N: ` leads it, as Lua prefixes its own errors.
+/// `timer: ms 0` and `mantle.x:get: ...` lead with no line number.
+fn location(line: &str) -> Option<&str> {
+    let mut from = 0;
+    while let Some(colon) = line[from..].find(':').map(|at| from + at) {
+        let digits = line[colon + 1..].bytes().take_while(u8::is_ascii_digit).count();
+        if digits > 0 && line[colon + 1 + digits..].starts_with(": ") {
+            return Some(&line[..colon + 1 + digits]);
+        }
+        from = colon + 1;
+    }
+    None
 }
 
 /// Logs a config callback's raise as `{what} raised, ignoring it: ... (defined at file:N)`; `Ok` is
@@ -282,7 +304,25 @@ mod tests {
         let lua = Lua::new();
         let (_, err) = handler(&lua, "return function() error({ code = 1 }) end");
         let text = super::describe(&err);
-        assert!(text.starts_with("error object is a table, not a string"), "{text}");
+        assert!(text.contains("widgets/bar.lua:1: error object is a table, not a string"), "{text}");
+    }
+
+    #[test]
+    fn a_message_without_a_location_gains_the_first_config_frame_and_never_two() {
+        let lua = Lua::new();
+        let fail =
+            lua.create_function(|_, ()| -> mlua::Result<()> { Err(mlua::Error::runtime("mantle.x:go: bad")) }).unwrap();
+        lua.globals().set("fail", fail).unwrap();
+        let run = |name: &str, source: &str| super::describe(&lua.load(source).set_name(name).exec().unwrap_err());
+
+        assert!(run("@shell.lua", "\nfail()").starts_with("shell.lua:2: mantle.x:go: bad\nstack traceback:"));
+        assert!(run("@shell.lua", "\nerror('own')").starts_with("shell.lua:2: own\n"), "Lua's own prefix stays single");
+        assert!(run("=[string \"cfg\"]", "fail()").starts_with("[string \"cfg\"]:1: mantle.x:go: bad"));
+        // No config frame to lead with: the Rust side raised outside any Lua call.
+        let bare = mlua::Error::runtime("timer: ms 0");
+        assert_eq!(super::describe(&bare), "timer: ms 0");
+        assert_eq!(super::location("timer: ms 0"), None);
+        assert_eq!(super::location("a/b.lua:12: x"), Some("a/b.lua:12"));
     }
 
     #[test]

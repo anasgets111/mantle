@@ -445,6 +445,16 @@ mod tests {
                 &["shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"],
             ),
             (
+                "capability field read",
+                &[("shell.lua", "\nlocal v = mantle.audio.volume\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio has no `volume`: did you mean mantle.audio:get().volume?"],
+            ),
+            (
+                "idle threshold out of range",
+                &[("shell.lua", "\nmantle.idle:register_threshold(0, function() end, function() end)\nreturn {}\n")],
+                &["shell.lua:2: mantle.idle:register_threshold: seconds"],
+            ),
+            (
                 "bad action parameter",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(\"x\")\nreturn {}\n")],
                 &[

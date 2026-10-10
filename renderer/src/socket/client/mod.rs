@@ -1457,15 +1457,11 @@ mod tests {
         let missing = std::path::PathBuf::from("/no/such/shell.lua");
         let (client, mut outbound_rx) = test_client(&missing);
 
-        let err = client
-            .loader
-            .lua()
-            .load(r#"session_process { name = "rec", stop_signal = "TEM" }"#)
-            .exec()
-            .unwrap_err()
-            .to_string();
+        let err =
+            client.loader.lua().load(r#"session_process { name = "rec", stop_signal = "TEM" }"#).exec().unwrap_err();
+        let err = crate::lua::describe(&err);
 
-        assert!(err.contains("mantle.processes:declare: bad argument #2: unknown variant `TEM`"), "got {err}");
+        assert!(err.contains("session_process: bad argument (stop_signal): unknown variant `TEM`"), "got {err}");
         assert!(
             crate::lua::capability::tests::queued_command(&mut outbound_rx).is_none(),
             "the invalid declaration must not reach the Supervisor"

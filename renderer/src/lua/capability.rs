@@ -19,7 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::layout::node::preview_for_error;
 use crate::lua::fuzzy::closest;
-use crate::lua::luacats::{raise, rust_type_in_lua};
+use crate::lua::luacats::rust_type_in_lua;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
 
@@ -269,7 +269,7 @@ impl Capability {
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
         shared::action::check(roster, action, &arguments).map_err(|(slot, err)| {
             let words = in_lua_words(&err, slot.and_then(|slot| Some((slot + 1, values.get(slot)?))));
-            raise(lua, format!("mantle.{}:{action}: {words}", self.name))
+            mlua::Error::runtime(format!("mantle.{}:{action}: {words}", self.name))
         })?;
         self.commands.send(&self.name, action, arguments);
         Ok(())
@@ -403,7 +403,7 @@ pub(crate) mod tests {
         for (arg, got) in [(r#""x""#, r#"got string "x""#), ("1.5", "got number 1.5"), ("-1", "got integer -1")] {
             let src = format!("\n\nkeyboard:switch_layout({arg})");
             let err = lua.load(&src).set_name("=shell.lua").exec().unwrap_err();
-            let first = err.to_string().replace("runtime error: ", "");
+            let first = crate::lua::describe(&err);
             let first = first.lines().next().unwrap().to_string();
             assert!(
                 first.starts_with(

@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use mlua::{Function, Lua};
 use shared::debug;
 
-use super::luacats::{lua_class, lua_fn, raise};
+use super::luacats::{lua_class, lua_fn};
 use super::signal::CpuBudget;
 use crate::lua::marshal::out_of_range;
 use crate::lua::warn_raised;
@@ -114,7 +114,7 @@ lua_class! {
 fn start(lua: &Lua, name: &str, ms: f64, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
     // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
     if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
-        return Err(raise(lua, format!("{name}: ms {} ms", out_of_range(MIN_MS, MAX_MS, "number", ms))));
+        return Err(mlua::Error::runtime(format!("{name}: ms {} ms", out_of_range(MIN_MS, MAX_MS, "number", ms))));
     }
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
@@ -588,9 +588,10 @@ mod tests {
         assert!(err.contains("got number NaN"), "the engine's range message: {err}");
         let err = lua.load("interval(0, function() end)").exec().unwrap_err().to_string();
         assert!(err.contains("interval: ms must be within"), "interval shares the range: {err}");
-        let err = lua.load("\ntimer(0, function() end)").set_name("=shell.lua").exec().unwrap_err().to_string();
+        let err = lua.load("\ntimer(0, function() end)").set_name("=shell.lua").exec().unwrap_err();
+        let err = crate::lua::describe(&err);
         assert!(
-            err.starts_with("runtime error: shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"),
+            err.starts_with("shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"),
             "the site leads: {err}"
         );
     }
@@ -599,12 +600,8 @@ mod tests {
     fn a_mistyped_argument_names_its_position_and_speaks_lua() {
         let lua = lua();
 
-        let err = lua.load("\ntimer('x', function() end)").set_name("=shell.lua").exec().unwrap_err().to_string();
-        assert!(
-            err.starts_with(
-                r#"runtime error: shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"#
-            ),
-            "{err}"
-        );
+        let err = lua.load("\ntimer('x', function() end)").set_name("=shell.lua").exec().unwrap_err();
+        let err = crate::lua::describe(&err);
+        assert!(err.starts_with(r#"shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"#), "{err}");
     }
 }

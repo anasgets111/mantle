@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 
-use mlua::{IntoLua, Lua, ObjectLike, Table, Value};
+use mlua::{IntoLua, Lua, LuaSerdeExt, ObjectLike, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, spelled};
 use super::store::{capability, index_entry_signals};
@@ -49,6 +49,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             }
             let stop_signal: Value = spec.get("stop_signal")?;
 
+            lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone())
+                .map_err(|err| mlua::Error::runtime(format!("session_process: bad argument (stop_signal): {}", err.to_string().trim_start_matches("deserialize error: "))))?;
             let processes = capability(lua, "session_process", "processes")?;
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
             // and takes the newer stop signal, so editing that lands on reload without disturbing
