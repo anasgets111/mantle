@@ -275,7 +275,12 @@ async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<Pat
                     return DeviceEvent::Closed;
                 }
             }
-            Some(mut events) => return DeviceEvent::Failed(events.swap_remove(0).unwrap_err()),
+            Some(events) => {
+                // An empty batch has no error to report; keep waiting.
+                if let Some(err) = events.into_iter().find_map(Result::err) {
+                    return DeviceEvent::Failed(err);
+                }
+            }
             None => return DeviceEvent::Ended,
         }
     }

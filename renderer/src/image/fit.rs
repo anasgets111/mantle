@@ -20,7 +20,7 @@ pub(super) fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
 /// `REPEAT_X`/`REPEAT_Y` are set; a smaller rect would smear edge pixels, while `Contain` returns
 /// the smaller rect.
 pub fn fitted_rect(box_rect: LogicalRect, image_width: f32, image_height: f32, fit: Fit) -> LogicalRect {
-    if fit == Fit::Stretch || image_width <= 0.0 || image_height <= 0.0 {
+    if image_width <= 0.0 || image_height <= 0.0 {
         return box_rect;
     }
     let horizontal = box_rect.width / image_width;
@@ -28,7 +28,7 @@ pub fn fitted_rect(box_rect: LogicalRect, image_width: f32, image_height: f32, f
     let scale = match fit {
         Fit::Cover => horizontal.max(vertical),
         Fit::Contain => horizontal.min(vertical),
-        Fit::Stretch => unreachable!("returned above"),
+        Fit::Stretch => return box_rect,
     };
     let width = image_width * scale;
     let height = image_height * scale;

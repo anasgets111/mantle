@@ -76,7 +76,7 @@ impl StatusNotifierWatcher {
         // parses; a bare bus name is what that host rejects as an invalid id (ADR-0172).
         self.registry
             .lock()
-            .unwrap()
+            .expect("mutex poisoned")
             .keys()
             .map(|(unique_name, object_path)| format!("{unique_name}{object_path}"))
             .collect()

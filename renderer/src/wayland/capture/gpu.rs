@@ -1,7 +1,7 @@
 //! Capture dma-buf negotiation, swapchain landing and GL texture lifecycle.
 
 use super::*;
-use crate::wayland::dmabuf::{self, DmabufBuffer, DmabufSupport};
+use crate::wayland::dmabuf::{self, DmabufSupport};
 
 /// What a compositor offered for one source's negotiation batch (ADR-0248 amendment decision 1).
 pub(super) struct DmabufOffer<'a> {
@@ -172,9 +172,8 @@ pub(super) fn land_dmabuf_frame(captures: &mut CaptureRegistry, capture_cache: &
     source.dmabuf.advance();
     source.captured = true;
     source.in_flight = false;
-    match source.dmabuf.front().and_then(DmabufBuffer::image) {
-        Some(image) => {
-            let shape = source.dmabuf.front().expect("front just returned Some").shape();
+    match source.dmabuf.front().and_then(|front| Some((front.image()?, front.shape()))) {
+        Some((image, shape)) => {
             capture_cache.install_texture(*id, image, shape.width, shape.height);
         }
         None => {

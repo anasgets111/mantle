@@ -202,7 +202,7 @@ fn decode_gif(
             canvas.to_vec()
         } else {
             let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
-                .expect("canvas is exactly source_width * source_height * 4 bytes");
+                .ok_or("canvas is not source_width * source_height * 4 bytes")?;
             downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?.into_raw()
         };
         let frame = if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled };

@@ -535,7 +535,7 @@ pub fn run(
             true
         } else {
             let surf = app.surfaces.iter().find_map(|s| s.bound.as_ref().map(|b| b.egl_surface));
-            egl.instance.make_current(egl.display, surf, surf, Some(egl.context)).is_ok()
+            egl.make_current(surf, Some(egl.context)).is_ok()
         };
         // SAFETY: active is true only when the GL context was confirmed current on this thread.
         let not_lost = active && unsafe { gl.get_error() } != glow::CONTEXT_LOST;

@@ -53,6 +53,7 @@ type ImageTargetTexture2DOes = unsafe extern "system" fn(u32, *mut c_void);
 /// # Safety
 /// `T` must be the `unsafe extern "system" fn` type of `name`'s C prototype.
 unsafe fn load<T>(instance: &egl::Instance<egl::Static>, name: &str) -> Option<T> {
+    const { assert!(size_of::<T>() == size_of::<extern "system" fn()>()) };
     let addr = instance.get_proc_address(name)?;
     // SAFETY: `T` is a function pointer of `name`'s signature per this function's contract, so the
     // sizes match; a non-null `eglGetProcAddress` return lives as long as the static libEGL.
@@ -66,17 +67,23 @@ pub const EGL_BUFFER_AGE_EXT: egl::Int = 0x313D;
 pub type SwapBuffersWithDamage =
     unsafe extern "system" fn(egl::EGLDisplay, egl::EGLSurface, *const egl::Int, egl::Int) -> egl::Boolean;
 
-/// Loads `function` if the display names `extension`. Checked against the display's extension
-/// string, since `eglGetProcAddress` can answer for an extension the display lacks.
+/// Whether the display (`None`: the client extensions) names `extension`. Loading is gated on this
+/// because `eglGetProcAddress` can answer for an extension that is absent.
+fn has_extension(instance: &egl::Instance<egl::Static>, display: Option<egl::Display>, extension: &str) -> bool {
+    instance
+        .query_string(display, egl::EXTENSIONS)
+        .is_ok_and(|names| names.to_string_lossy().split_whitespace().any(|name| name == extension))
+}
+
+/// Loads `function` if the display names `extension`.
 fn load_if(
     instance: &egl::Instance<egl::Static>,
     display: egl::Display,
     extension: &str,
     function: &str,
 ) -> Option<SwapBuffersWithDamage> {
-    let extensions = instance.query_string(Some(display), egl::EXTENSIONS).ok()?.to_string_lossy();
     // SAFETY: both callers name a function of the `SwapBuffersWithDamage` prototype.
-    extensions.split_whitespace().any(|name| name == extension).then(|| unsafe { load(instance, function) })?
+    has_extension(instance, Some(display), extension).then(|| unsafe { load(instance, function) })?
 }
 
 /// `EGL_KHR_swap_buffers_with_damage`, else its identical EXT twin.
@@ -111,6 +118,14 @@ impl DmabufEntryPoints {
     /// `None` if this driver is missing any one of the four extensions; the caller treats that as
     /// "no dma-buf import" (amendment decision 4), same as a missing compositor protocol.
     pub fn load(egl: &EglState) -> Option<Self> {
+        let (instance, display) = (&egl.instance, egl.display);
+        let device_query = "EGL_EXT_device_query";
+        if !(has_extension(instance, None, device_query) || has_extension(instance, Some(display), device_query))
+            || !has_extension(instance, Some(display), "EGL_EXT_image_dma_buf_import_modifiers")
+        {
+            return None;
+        }
+        // ponytail: glEGLImageTargetTexture2DOES (GL_OES_EGL_image) is ungated; no GL extension list is reachable here.
         // SAFETY: each field's type alias transcribes the C prototype of the name loaded into it.
         unsafe {
             Some(DmabufEntryPoints {

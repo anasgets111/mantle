@@ -326,7 +326,7 @@ impl Dispatch<TextInputProxy, ()> for App {
                     .filter(|field| state.text_field_takes_keys(field))
                     .map(|field| (field.surface_id.clone(), field.id));
                 let Some(pending) = state.text_input.finish(serial, focused.as_ref()) else { return };
-                let old = focused.expect("finish checked the focused field").0;
+                let Some((old, _)) = focused else { return };
                 let visible_change = had_preedit || pending.preedit.is_some();
                 state.apply_ime_edit(pending.delete, pending.commit.as_deref());
                 if visible_change {

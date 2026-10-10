@@ -68,7 +68,7 @@ pub fn commit(
     lua: &Lua,
 ) -> Result<(), LayoutError> {
     for (property, sample) in samples {
-        let tween = tweens.iter_mut().find(|tween| tween.property == property).expect("a sample names a running tween");
+        let Some(tween) = tweens.iter_mut().find(|tween| tween.property == property) else { continue };
         tween.shown = if tween.done(now) {
             Rc::make_mut(properties).insert(property, to_value(&sample, lua)?);
             None

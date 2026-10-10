@@ -149,7 +149,7 @@ impl NetworkController {
         let (old, attempt) = {
             let mut join = self.join.lock().expect("mutex poisoned");
             let old = join.stash(pending);
-            (old, join.pending().unwrap().attempt)
+            (old, join.id)
         };
         let _ = self.events.send(NetworkSignal::Changed);
         let controller = self.clone();

@@ -626,17 +626,15 @@ impl App {
             return;
         }
         // Clone before callbacks can write a signal and re-resolve the scene.
-        let (text, on_change, on_submit, on_cancel, surface_id, field_id) = {
-            let field = self.focused_text_field.as_ref().expect("the focus was Some a moment ago");
-            (
-                field.buffer.clone(),
-                field.on_change.clone(),
-                field.on_submit.clone(),
-                field.on_cancel.clone(),
-                field.surface_id.clone(),
-                field.id,
-            )
-        };
+        let Some(field) = self.focused_text_field.as_ref() else { return };
+        let (text, on_change, on_submit, on_cancel, surface_id, field_id) = (
+            field.buffer.clone(),
+            field.on_change.clone(),
+            field.on_submit.clone(),
+            field.on_cancel.clone(),
+            field.surface_id.clone(),
+            field.id,
+        );
         // A passed-up key changes neither text nor caret, so it needs no repaint.
         if edit.passed {
             return;

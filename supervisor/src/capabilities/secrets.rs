@@ -66,7 +66,7 @@ impl SecretsController {
     }
 
     fn publish(&self) {
-        let _ = self.events.send(self.inner.lock().unwrap().state.clone());
+        let _ = self.events.send(self.inner.lock().expect("mutex poisoned").state.clone());
     }
 
     /// The only entry from `SecureSubmit`. A second write to a pending name is refused.
@@ -82,7 +82,7 @@ impl SecretsController {
             return;
         }
         {
-            let mut inner = self.inner.lock().unwrap();
+            let mut inner = self.inner.lock().expect("mutex poisoned");
             if !inner.in_flight.insert(name.clone()) {
                 return;
             }
@@ -99,7 +99,7 @@ impl SecretsController {
             tokio::select! {
                 _ = tokio::time::sleep(timeout) => {
                     timer_cancel.cancel();
-                    let mut inner = timer_inner.lock().unwrap();
+                    let mut inner = timer_inner.lock().expect("mutex poisoned");
                     if inner.in_flight.contains(&timer_name)
                         && matches!(inner.state.entries.get(&timer_name), Some(SecretStatus::Pending))
                     {
@@ -121,7 +121,7 @@ impl SecretsController {
             } else {
                 SecretStatus::Unavailable
             };
-            let mut inner = inner.lock().unwrap();
+            let mut inner = inner.lock().expect("mutex poisoned");
             inner.in_flight.remove(&name);
             inner.state.entries.insert(name, status);
             let _ = events.send(inner.state.clone());

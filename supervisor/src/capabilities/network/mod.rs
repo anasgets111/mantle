@@ -60,7 +60,7 @@ pub enum NetworkSignal {
 }
 
 fn root_object_path() -> ObjectPath<'static> {
-    ObjectPath::try_from("/").expect("\"/\" is always a valid D-Bus object path")
+    ObjectPath::from_static_str_unchecked("/")
 }
 
 /// `mantle.network` dispatch (ADR-0037). Writes spawn rather than await inline (ADR-0029);

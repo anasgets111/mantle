@@ -486,7 +486,7 @@ fn shaped_border(
     // Runs of neighbouring edges sharing a colour. Each opens at the one edge whose predecessor
     // differs; the all-alike case returned above.
     for start in (0..4).filter(|&edge| drawn[edge].is_some() && drawn[(edge + 3) % 4] != drawn[edge]) {
-        let color = drawn[start].expect("the filter keeps drawn edges");
+        let Some(color) = drawn[start] else { continue };
         let length = 1 + (1..4).take_while(|&step| drawn[(start + step) % 4] == Some(color)).count();
         let close = (start + length) % 4;
         let mut outline = Outline { path: Path::new(), pen: None };

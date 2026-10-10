@@ -42,6 +42,70 @@ pub struct EglState {
     _connection: wayland_client::Connection,
 }
 
+impl EglState {
+    /// `eglMakeCurrent` for this display. khronos-egl's wrapper `unwrap`s an unrecognized
+    /// `eglGetError` (khronos-egl#25); this reports it instead.
+    pub fn make_current(&self, surface: Option<egl::Surface>, context: Option<egl::Context>) -> Result<(), String> {
+        use egl::api::EGL1_0;
+        let surface = surface.map_or(egl::NO_SURFACE, |surface| surface.as_ptr());
+        let context = context.map_or(egl::NO_CONTEXT, |context| context.as_ptr());
+        // SAFETY: `display` is live; the handles are this state's own or null.
+        egl_result(unsafe { egl::Static.eglMakeCurrent(self.display.as_ptr(), surface, surface, context) })
+    }
+
+    /// `eglSwapInterval`, with the same raw error read as [`Self::make_current`].
+    pub fn swap_interval(&self, interval: egl::Int) -> Result<(), String> {
+        use egl::api::EGL1_1;
+        // SAFETY: `display` is live.
+        egl_result(unsafe { egl::Static.eglSwapInterval(self.display.as_ptr(), interval) })
+    }
+
+    /// `eglCreateWindowSurface` on this state's display and config.
+    ///
+    /// # Safety
+    /// `window` must be a live `wl_egl_window*`.
+    pub unsafe fn create_window_surface(&self, window: *mut c_void) -> Result<egl::Surface, String> {
+        use egl::api::EGL1_0;
+        // SAFETY: the caller vouches for `window`; display and config are this state's own.
+        let raw = unsafe {
+            egl::Static.eglCreateWindowSurface(self.display.as_ptr(), self.config.as_ptr(), window, std::ptr::null())
+        };
+        egl_result(egl::Boolean::from(raw != egl::NO_SURFACE))?;
+        // SAFETY: `raw` is the non-null surface just created.
+        Ok(unsafe { egl::Surface::from_ptr(raw) })
+    }
+
+    pub fn destroy_surface(&self, surface: egl::Surface) -> Result<(), String> {
+        use egl::api::EGL1_0;
+        // SAFETY: `display` is live; EGL rejects a stale surface with an error code.
+        egl_result(unsafe { egl::Static.eglDestroySurface(self.display.as_ptr(), surface.as_ptr()) })
+    }
+
+    pub fn query_surface(&self, surface: egl::Surface, attribute: egl::Int) -> Result<egl::Int, String> {
+        use egl::api::EGL1_0;
+        let mut value = 0;
+        // SAFETY: `value` is out-only, sized for `EGLint`.
+        egl_result(unsafe {
+            egl::Static.eglQuerySurface(self.display.as_ptr(), surface.as_ptr(), attribute, &mut value)
+        })?;
+        Ok(value)
+    }
+}
+
+fn config_attrib(display: egl::Display, config: egl::Config, attribute: egl::Int) -> Result<egl::Int, String> {
+    use egl::api::EGL1_0;
+    let mut value = 0;
+    // SAFETY: `value` is out-only, sized for `EGLint`.
+    egl_result(unsafe { egl::Static.eglGetConfigAttrib(display.as_ptr(), config.as_ptr(), attribute, &mut value) })?;
+    Ok(value)
+}
+
+fn egl_result(ok: egl::Boolean) -> Result<(), String> {
+    use egl::api::EGL1_0;
+    // SAFETY: reads this thread's last EGL error.
+    (ok != egl::FALSE).then_some(()).ok_or_else(|| format!("EGL error {:#x}", unsafe { egl::Static.eglGetError() }))
+}
+
 /// Initializes EGL against Wayland and picks the first candidate that satisfies
 /// [`satisfies_requirements`], not merely the first returned by `eglChooseConfig`.
 pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String> {
@@ -87,7 +151,7 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
     let config = candidates
         .into_iter()
         .find(|candidate| {
-            let attrs = query_config_attribs(&instance, display, *candidate);
+            let attrs = query_config_attribs(display, *candidate);
             attrs.is_ok_and(satisfies_requirements)
         })
         .ok_or("no EGL config matches window+GLES3+8-bit-ARGB requirements")?;
@@ -103,18 +167,14 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
     Ok(EglState { instance, display, config, context, swap_with_damage, set_damage_region, _connection })
 }
 
-fn query_config_attribs(
-    instance: &egl::Instance<egl::Static>,
-    display: egl::Display,
-    config: egl::Config,
-) -> Result<ConfigAttribs, egl::Error> {
+fn query_config_attribs(display: egl::Display, config: egl::Config) -> Result<ConfigAttribs, String> {
     Ok(ConfigAttribs {
-        surface_type: instance.get_config_attrib(display, config, egl::SURFACE_TYPE)?,
-        renderable_type: instance.get_config_attrib(display, config, egl::RENDERABLE_TYPE)?,
-        red_size: instance.get_config_attrib(display, config, egl::RED_SIZE)?,
-        green_size: instance.get_config_attrib(display, config, egl::GREEN_SIZE)?,
-        blue_size: instance.get_config_attrib(display, config, egl::BLUE_SIZE)?,
-        alpha_size: instance.get_config_attrib(display, config, egl::ALPHA_SIZE)?,
+        surface_type: config_attrib(display, config, egl::SURFACE_TYPE)?,
+        renderable_type: config_attrib(display, config, egl::RENDERABLE_TYPE)?,
+        red_size: config_attrib(display, config, egl::RED_SIZE)?,
+        green_size: config_attrib(display, config, egl::GREEN_SIZE)?,
+        blue_size: config_attrib(display, config, egl::BLUE_SIZE)?,
+        alpha_size: config_attrib(display, config, egl::ALPHA_SIZE)?,
     })
 }
 

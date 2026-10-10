@@ -221,7 +221,7 @@ pub fn path_to_node(root: &ResolvedNode, id: crate::layout::scene::NodeId) -> Op
 pub(crate) fn path_transform(path: &[&ResolvedNode]) -> Affine {
     let mut matrix = IDENTITY_AFFINE;
     for (depth, node) in path.iter().enumerate() {
-        let rect = absolute_rect(&path[..=depth]).expect("the prefix includes this node");
+        let Some(rect) = absolute_rect(&path[..=depth]) else { continue };
         if let Some(own) = node.paint_matrix(rect) {
             matrix = compose_affine(matrix, own);
         }

@@ -150,8 +150,8 @@ impl App {
         if self.paste.is_some() {
             return;
         }
-        let target = if self.secure_field_takes_keys() {
-            let field = self.focused_secure_submit.as_ref().unwrap();
+        let target = if let Some(field) = self.focused_secure_submit.as_ref().filter(|_| self.secure_field_takes_keys())
+        {
             PasteTarget::Masked(field.clone())
         } else if let Some(field) = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)) {
             PasteTarget::Plain { surface_id: field.surface_id.clone(), id: field.id }
@@ -204,7 +204,7 @@ impl App {
         self.prune_text_field_focus();
         let Some(paste) = &self.paste else { return };
         let Ok(result) = paste.result.try_recv() else { return };
-        let paste = self.paste.take().unwrap();
+        let Some(paste) = self.paste.take() else { return };
         let offer_current = self
             .data_device
             .as_ref()

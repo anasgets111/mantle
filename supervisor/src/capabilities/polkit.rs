@@ -102,7 +102,7 @@ impl PolkitController {
             return Answer::Failed;
         }
         info!("challenge {cookie:?} authenticated successfully");
-        let pending = self.pending.take().expect("checked above");
+        let Some(pending) = self.pending.take() else { return Answer::Stale };
         self.state = PolkitState::default();
         Answer::Succeeded { reply: pending.reply }
     }

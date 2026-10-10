@@ -75,16 +75,13 @@ impl App {
             // Every paint makes its own surface current again.
             // The painter's images need a current context to delete; this surface is still alive.
             if let Some(painter) = self.text_painter.as_mut()
-                && egl
-                    .instance
-                    .make_current(egl.display, Some(bound.egl_surface), Some(bound.egl_surface), Some(egl.context))
-                    .is_ok()
+                && egl.make_current(Some(bound.egl_surface), Some(egl.context)).is_ok()
             {
                 painter.release_surface(&self.surfaces[index].surface_id);
             }
-            let _ = egl.instance.make_current(egl.display, None, None, None);
+            let _ = egl.make_current(None, None);
             self.current_egl_surface = None;
-            if let Err(err) = egl.instance.destroy_surface(egl.display, bound.egl_surface) {
+            if let Err(err) = egl.destroy_surface(bound.egl_surface) {
                 log_bind_failure(&self.surfaces[index].surface_id, "eglDestroySurface", err);
             }
         }
@@ -96,19 +93,15 @@ impl App {
 
     /// Lazily builds the process-wide EGL state on the first drawable surface (ADR-0071). Failure
     /// is fatal: the Renderer exits and the Supervisor respawns it (ADR-0058, ADR-0071 decision 3).
-    fn ensure_egl(&mut self, surface_id: &str) -> bool {
+    fn ensure_egl(&mut self, surface_id: &str) {
         if self.egl.is_some() {
-            return true;
+            return;
         }
         match egl::init(&self.conn) {
-            Ok(state) => {
-                self.egl = Some(state);
-                true
-            }
+            Ok(state) => self.egl = Some(state),
             Err(err) => {
                 log_bind_failure(surface_id, "egl::init", err);
                 self.exit = true;
-                false
             }
         }
     }
@@ -131,10 +124,8 @@ impl App {
 
         // Only the first drawable surface pays for Mesa (ADR-0071); hidden windows took the cheap
         // bails above.
-        if !self.ensure_egl(&surface_id) {
-            return false;
-        }
-        let egl = self.egl.as_ref().expect("ensure_egl returned true, so the state is built");
+        self.ensure_egl(&surface_id);
+        let Some(egl) = self.egl.as_ref() else { return false };
 
         let native_window = match WlEglSurface::new(surface_object_id, width, height) {
             Ok(w) => w,
@@ -147,9 +138,7 @@ impl App {
 
         // SAFETY: `native_window.ptr()` is the live `wl_egl_window*` just built for this EGL
         // display/config, exactly what `eglCreateWindowSurface` requires.
-        let egl_surface = unsafe {
-            egl.instance.create_window_surface(egl.display, egl.config, native_window.ptr() as *mut c_void, None)
-        };
+        let egl_surface = unsafe { egl.create_window_surface(native_window.ptr() as *mut c_void) };
         let egl_surface = match egl_surface {
             Ok(s) => s,
             Err(e) => {
@@ -159,12 +148,11 @@ impl App {
             }
         };
 
-        if let Err(e) = egl.instance.make_current(egl.display, Some(egl_surface), Some(egl_surface), Some(egl.context))
-        {
+        if let Err(e) = egl.make_current(Some(egl_surface), Some(egl.context)) {
             log_bind_failure(&surface_id, "eglMakeCurrent", e);
             // `native_window` drops on this return. `khronos_egl::Surface` has no `Drop`, so
             // without this the driver keeps a surface bound to a freed `wl_egl_window`.
-            if let Err(err) = egl.instance.destroy_surface(egl.display, egl_surface) {
+            if let Err(err) = egl.destroy_surface(egl_surface) {
                 log_bind_failure(&surface_id, "eglDestroySurface", err);
             }
             self.exit = true;
@@ -177,7 +165,7 @@ impl App {
         // paints only on dirty pushes, so pacing is unnecessary. Measured cost was 0.24-0.89 ms
         // per swap across five swaps in 25 s; it matters when ADR-0130 adds per-frame animation.
         // Failure is non-fatal and leaves EGL's current blocking default.
-        if let Err(e) = egl.instance.swap_interval(egl.display, 0) {
+        if let Err(e) = egl.swap_interval(0) {
             warn!("{surface_id}: eglSwapInterval(0) failed ({e}); swaps on this surface keep EGL's blocking default");
         }
 
@@ -302,9 +290,7 @@ impl App {
         // Re-establish the surface when switching between surfaces; bound surfaces share EGL state.
         // ponytail: skip make_current when this exact surface is already current on the GL context.
         if self.current_egl_surface != Some(egl_surface) {
-            if let Err(e) =
-                egl.instance.make_current(egl.display, Some(egl_surface), Some(egl_surface), Some(egl.context))
-            {
+            if let Err(e) = egl.make_current(Some(egl_surface), Some(egl.context)) {
                 log_bind_failure(&surface_id, "eglMakeCurrent", e);
                 self.exit = true;
                 return;
@@ -313,7 +299,7 @@ impl App {
         }
 
         // 0, unknown, where the driver has no buffer age.
-        let age = egl.instance.query_surface(egl.display, egl_surface, super::egl_ext::EGL_BUFFER_AGE_EXT).unwrap_or(0);
+        let age = egl.query_surface(egl_surface, super::egl_ext::EGL_BUFFER_AGE_EXT).unwrap_or(0);
         let history = &self.surfaces[index].damage_history;
         let regions = match repaint_bounds(usize::try_from(age).unwrap_or(0), damage.as_deref(), history) {
             Some(rects) => {
@@ -417,7 +403,6 @@ impl App {
                 surface.set_buffer_scale(self.surfaces[index].scale.buffer_scale());
             }
         }
-        // TODO(timothee-haudebourg/khronos-egl#25): guard the other wrappers (make_current etc.) too; they still `unwrap` a failed `get_error`.
         use khronos_egl::api::EGL1_0;
         let t_swap = timing.then(Instant::now);
         let swapped = match (egl.swap_with_damage, &damage) {
