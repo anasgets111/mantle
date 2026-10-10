@@ -381,11 +381,7 @@ mod tests {
 
     #[test]
     fn a_toplevel_axis_is_the_compositors_else_the_min_size_else_the_named_constant() {
-        // A tiling compositor sizes every window: a configured size binds, hints never override it.
-        // An unconfigured axis is "you may set the size as you wish" (a floating compositor's first
-        // configure), and `min_size` is all a config can say about size. Its `ponytail:` names the
-        // fallback constant's ceiling: no content size exists to prefer, a toplevel's root being
-        // forced to the surface.
+        // A configured size binds and hints never override it; an unconfigured axis ("size as you wish") takes `min_size`.
         let hinted = WindowSpec {
             min_size: Some(SizeHint { width: 320.0, height: 240.0 }),
             max_size: Some(SizeHint { width: 1280.0, height: 800.0 }),

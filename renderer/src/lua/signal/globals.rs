@@ -670,9 +670,7 @@ mod tests {
 
     #[test]
     fn an_unedited_literal_keeps_the_live_value() {
-        // ADR-0044 decision 5: reload preserves the user's last click, not the literal. A table
-        // cannot be compared (a popup's anchor rect would snap to the corner on every reload), and
-        // Lua `==` says `0 == 0.0`, so reformatting a number is not an edit.
+        // Reload keeps the user's last click; tables are never compared and `0 == 0.0`, so neither counts as an edit.
         let (lua, _dirty) = lua_with_state();
         for (first, again, case) in [
             ("0", "0", "the same literal"),

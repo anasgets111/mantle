@@ -196,9 +196,7 @@ Exec=firefox --new-window
     fn tokenize_exec_follows_desktop_entry_quoting_and_drops_field_codes() {
         let argv =
             |command: &str, args: &[&str]| Some((command.to_string(), args.iter().map(|a| a.to_string()).collect()));
-        // `.desktop` quoting uses double quotes only; shell-style single quotes would split this wrongly.
-        // Field codes need a file or URL this launcher has not got, so a code-only token disappears.
-        // An unknown percent escape is malformed: keep it visible rather than silently change the arguments.
+        // Only double quotes quote; field codes vanish (no file/URL to give); an unknown `%` escape stays visible.
         for (exec, expected) in [
             ("kitty --single-instance", argv("kitty", &["--single-instance"])),
             (r#"prog "one two" 'three"#, argv("prog", &["one two", "'three"])),

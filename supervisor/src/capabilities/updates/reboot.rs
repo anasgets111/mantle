@@ -127,13 +127,14 @@ mod tests {
             events_tx,
         ));
 
-        // The neighbour comes first, so the one push below proves it was seen and ignored.
+        // State disagrees with the absent marker, so a neighbour event that re-stats would flip it and push.
+        tokio::task::yield_now().await;
+        state.lock().unwrap().reboot_required = true;
         std::fs::write(directory.path().join("something-else"), "").unwrap();
-        std::fs::write(directory.path().join("reboot-required"), "").unwrap();
-        wait_for_reboot_required(&state, true).await;
 
-        assert_eq!(events_rx.recv().await, Some(()));
-        assert!(events_rx.try_recv().is_err(), "an unrelated file must not push");
+        let pushed = tokio::time::timeout(Duration::from_millis(200), events_rx.recv()).await;
+        assert!(pushed.is_err(), "an unrelated file must not push");
+        assert!(state.lock().unwrap().reboot_required);
 
         watcher.abort();
     }

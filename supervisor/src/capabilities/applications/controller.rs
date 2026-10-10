@@ -303,15 +303,16 @@ mod tests {
         let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
         within(rx.recv()).await.unwrap();
 
-        // Then a real change: exactly one push before it lands proves the unchanged rescan pushed nothing.
+        // Run the unchanged rescan to completion first, so the write below cannot mask a push.
+        let rescan = Arc::clone(&controller.rescan);
+        tokio::task::spawn_blocking(move || rescan()).await.unwrap();
+        assert!(rx.try_recv().is_err(), "a rescan finding the same entries must not push a snapshot");
+
         controller.refresh();
         std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
-        let mut pushes = 0;
         while controller.snapshot().entries.len() < 2 {
             within(rx.recv()).await.unwrap();
-            pushes += 1;
         }
-        assert_eq!(pushes, 1, "a rescan finding the same entries must not push a snapshot");
     }
 
     #[tokio::test]

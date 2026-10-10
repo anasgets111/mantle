@@ -729,9 +729,7 @@ mod tests {
 
         let first: i64 = {
             let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
-            // ADR-0157. `node::resolve_declared` reads one property at a time, so each read is its
-            // own outermost `get_value`, which used to open its own memo: measured live at 1.35ms
-            // of CPU for one cold getter, against a 2.5ms cap. Four reads, one evaluation.
+            // Each property read is its own outermost `get_value`; they must share one memo (four reads, one run).
             for _ in 0..4 {
                 lua.load("shared:get()").exec().unwrap();
             }

@@ -329,9 +329,7 @@ mod tests {
 
     #[test]
     fn a_long_dependency_chain_is_rejected_by_the_nesting_cap_not_a_stack_overflow() {
-        // Dependency chains nest `get_value` without Lua calls. Unguarded, 10,000 delay links ended
-        // `mantle check` in `fatal runtime error: stack overflow`: SIGABRT, which no config author
-        // can read.
+        // Chains nest `get_value` without Lua calls; unguarded, 10,000 links aborted with a stack overflow.
         for (kind, step) in
             [("map", "s:map(function(v) return v end)"), ("delay", "delay(s, 1)"), ("pulse", "pulse(s, 1)")]
         {

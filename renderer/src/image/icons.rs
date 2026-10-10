@@ -144,10 +144,7 @@ mod tests {
 
     #[test]
     fn only_an_absolute_name_is_its_own_path() {
-        // `capabilities/shm_icons.rs` spools tray icons as absolute `icon_path`s; no stat, so a
-        // nonexistent one still returns itself. A missing `icon.name` is `""` and an unhydrated
-        // capability is `nil` until its first push (ADR-0037); `./x.png` is looked up, not resolved
-        // against CWD.
+        // Tray icons arrive as absolute `icon_path`s with no stat; `./x.png` is looked up, not resolved against CWD.
         for (name, expected) in [
             ("/run/user/1000/mantle/tray/telegram.png", Some(PathBuf::from("/run/user/1000/mantle/tray/telegram.png"))),
             ("/nonexistent/x.png", Some(PathBuf::from("/nonexistent/x.png"))),

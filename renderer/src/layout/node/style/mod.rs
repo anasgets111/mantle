@@ -1009,8 +1009,7 @@ mod tests {
         let lua = signal_lua();
         let clip = |kind: &str, fields: &str| {
             let src = format!(r#"return {{ kind = "{kind}", {fields} }}"#);
-            let table: mlua::Table = lua.load(&src).eval().unwrap();
-            ClipShape::of(kind, &deserialize_lua_table(&table).unwrap().properties).unwrap()
+            ClipShape::of(kind, &props_from_src(&lua, src)).unwrap()
         };
         for kind in ["rect", "row", "column", "list"] {
             assert_eq!(clip(kind, ""), ClipShape::None, "{kind}");
@@ -1027,13 +1026,11 @@ mod tests {
 
     #[test]
     fn clip_reads_every_shape() {
+        let lua = mlua::Lua::new();
         for (declared, expected) in
             [("box", ClipShape::Box), ("rounded", ClipShape::Rounded), ("none", ClipShape::None)]
         {
-            let lua = mlua::Lua::new();
-            let src = format!(r#"return {{ kind = "rect", clip = "{declared}" }}"#);
-            let table: mlua::Table = lua.load(&src).eval().unwrap();
-            let props = deserialize_lua_table(&table).unwrap().properties;
+            let props = props_from_src(&lua, format!(r#"return {{ kind = "rect", clip = "{declared}" }}"#));
             assert_eq!(fields::paint::clip.read(&props).unwrap(), expected, "clip = {declared:?}");
         }
     }
@@ -1043,19 +1040,15 @@ mod tests {
     #[test]
     fn an_unknown_clip_shape_is_rejected_naming_both() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "oval" }"#).eval().unwrap();
-        let props = deserialize_lua_table(&table).unwrap().properties;
-        let err = fields::paint::clip.read(&props).unwrap_err();
+        let err =
+            fields::paint::clip.read(&props_from_src(&lua, r#"return { kind = "rect", clip = "oval" }"#)).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "clip" && detail.contains("`box`, `rounded`")),
             "got {err:?}"
         );
-
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = true }"#).eval().unwrap();
-        let props = deserialize_lua_table(&table).unwrap().properties;
-        assert!(
-            matches!(fields::paint::clip.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "clip")
-        );
+        let err =
+            fields::paint::clip.read(&props_from_src(&lua, r#"return { kind = "rect", clip = true }"#)).unwrap_err();
+        assert!(matches!(err, LayoutError::InvalidProperty { property, .. } if property == "clip"));
     }
 
     #[test]
@@ -1083,8 +1076,7 @@ mod tests {
         let lua = Lua::new();
         let radii = |extra: &str| {
             let src = format!("return {{ kind = 'rect', radius = {{ top_left = 4, bottom_right = 8 }}, {extra} }}");
-            let table: mlua::Table = lua.load(&src).eval().unwrap();
-            parse_radius(&deserialize_lua_table(&table).unwrap().properties).unwrap()
+            parse_radius(&props_from_src(&lua, src)).unwrap()
         };
         assert_eq!(radii(""), Radii([4.0, 0.0, 8.0, 0.0], 0.0, None));
         assert_eq!(radii("corner_shape = 'scoop'"), Radii([-4.0, 0.0, -8.0, 0.0], 0.0, None));
@@ -1092,8 +1084,7 @@ mod tests {
         assert_eq!(Radii::from(4.0).fit(-1.0, 10.0), Radii::default(), "a negative side never flips an arc");
         for bad in ["{ top_left = -1 }", "{ top_left = 0/0 }", "{ nope = 1 }"] {
             let src = format!("return {{ kind = 'rect', radius = {bad} }}");
-            let table: mlua::Table = lua.load(&src).eval().unwrap();
-            assert!(parse_radius(&deserialize_lua_table(&table).unwrap().properties).is_err(), "{bad}");
+            assert!(parse_radius(&props_from_src(&lua, src)).is_err(), "{bad}");
         }
     }
 
@@ -1103,8 +1094,7 @@ mod tests {
         let lua = Lua::new();
         let parse = |extra: &str| {
             let src = format!("return {{ kind = 'rect', radius = {{ top_left = 4, bottom_right = 8 }}, {extra} }}");
-            let table: mlua::Table = lua.load(&src).eval().unwrap();
-            parse_radius(&deserialize_lua_table(&table).unwrap().properties)
+            parse_radius(&props_from_src(&lua, src))
         };
         assert_eq!(parse("corner_smoothing = 0.6").unwrap(), Radii([4.0, 0.0, 8.0, 0.0], 0.6, None));
         assert_eq!(parse("corner_smoothing = 0").unwrap(), parse("").unwrap());

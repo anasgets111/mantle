@@ -423,11 +423,7 @@ mod tests {
 
     #[test]
     fn a_screens_size_comes_from_the_logical_size_then_the_current_mode_then_nowhere() {
-        // A 3840x2160 panel driven at scale 2 is 1920x1080 of compositor space, the coordinate system
-        // a layer surface's geometry is in, so the mode's raw dimensions would put a config's own
-        // arithmetic on a different grid. Below wl_output v4, or before an xdg_output arrives, the
-        // current mode is the documented fallback. With neither there is no screen at all: not an
-        // invented size every surface on that monitor would resolve against.
+        // Layer geometry is in logical space, so the raw mode would be the wrong grid at scale 2; with neither there is no screen.
         for (logical, mode, scale, expected, case) in [
             (Some((1920, 1080)), Some(((3840, 2160), 60_000)), 2, Some((1920, 1080)), "logical size wins"),
             (None, Some(((1366, 768), 60_000)), 1, Some((1366, 768)), "the current mode is the fallback"),
