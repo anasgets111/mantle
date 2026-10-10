@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-10
+
 - Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do, and reads `shell.lua:2: panel: invalid value for `height`: ...`; an unknown property on any node reads `shell.lua:2: text: no property `contnet`; did you mean `content`?`, not as a top-level return error or an invalid `children` value. `mantle check` no longer repeats `layout:` after the pass name.
 - Changed: a layout error from `mantle check` or a reload leads with the line that built the failing node (`shell.lua:9: text: invalid value for `content`: ...`, `text[2]` for a `children` entry), then the path to its parent and the surface in parentheses, and `mantle check` puts the pass on its own last line; a lone `child` no longer shows a made-up `[0]`, and `children` positions count from 1 like Lua.
 - Changed: argument and value errors speak Lua, and an error from a global function, capability action or `mantle check` leads with the `file:line` of the config call that made it: `fonts: bad argument #1 (chain): expected a table, got integer`, `mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string "x"`, `mantle.audio:set_volume: expects 1 argument, got 2`, an out-of-range number says `(out of range)`, and a bad element inside a table argument names that element; a method on an engine object (`signal:reveal`, `mantle.idle:register_threshold`) reads `method reveal: bad argument #1: expected an integer, got string`; a caught `pcall` keeps the caller's `file:line` too; a rejected property value of the wrong type reads `string "tall"` or `nil`.
