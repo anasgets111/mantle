@@ -184,8 +184,11 @@ mod tests {
     }
 
     #[test]
-    fn a_tree_with_no_hover_property_asks_for_no_writes() {
+    fn a_node_without_a_hover_signal_asks_for_no_writes() {
         let tree = node((0.0, 0.0, 100.0, 20.0), None, vec![node((0.0, 0.0, 50.0, 20.0), None, vec![])]);
+        assert!(hover_writes_at(&tree, at(10.0, 10.0)).is_empty());
+        // A non-signal `hover` is inert rather than an error.
+        let tree = node((0.0, 0.0, 100.0, 20.0), Some(Value::Boolean(true)), vec![]);
         assert!(hover_writes_at(&tree, at(10.0, 10.0)).is_empty());
     }
 
@@ -260,20 +263,10 @@ mod tests {
         let leaving = hover_writes_at(&tree, None);
         assert!(leaving[0].on_hover.is_some());
         assert!(!leaving[0].hovered);
-    }
 
-    #[test]
-    fn a_node_with_a_hover_slot_and_no_callback_carries_none() {
-        let lua = Lua::new();
         let (_signal, hover) = hover_userdata(&lua);
-        let tree = node((0.0, 0.0, 100.0, 20.0), Some(hover), vec![]);
-        assert!(hover_writes_at(&tree, at(10.0, 10.0))[0].on_hover.is_none());
-    }
-
-    #[test]
-    fn a_hover_property_that_is_not_a_signal_is_inert_rather_than_an_error() {
-        let tree = node((0.0, 0.0, 100.0, 20.0), Some(Value::Boolean(true)), vec![]);
-        assert!(hover_writes_at(&tree, at(10.0, 10.0)).is_empty());
+        let bare = node((0.0, 0.0, 100.0, 20.0), Some(hover), vec![]);
+        assert!(hover_writes_at(&bare, at(10.0, 10.0))[0].on_hover.is_none());
     }
 
     #[test]

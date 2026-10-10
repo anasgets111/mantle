@@ -214,7 +214,7 @@ fn elide_cut(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::layout::scene::tests::{apply_at, full, surface_from};
+    use crate::layout::scene::tests::{applied, apply_at, full, surface_from};
     use crate::layout::scene::*;
 
     #[test]
@@ -333,10 +333,7 @@ mod tests {
     // ---- styled runs following a wrap or an elide (ADR-0104) ----
 
     fn styled(lua_src: &str) -> (String, Vec<StyleRun>) {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(lua_src);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) = applied(lua_src);
         drawn_text_and_runs(&scene)
     }
 
@@ -394,10 +391,7 @@ mod tests {
     /// Before, it measured every line the shaper would have broken the string onto and painted
     /// one clipped run into a box several times too tall.
     fn text_box(lua_src: &str) -> (String, f32) {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(lua_src);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) = applied(lua_src);
         let node = &scene.surface("bar@TEST").unwrap().children[0];
         (drawn_text(&scene), node.rect.height)
     }
@@ -427,13 +421,10 @@ mod tests {
     /// reason: blind to it, the node would keep the probe's answer and lay out one line of four.
     #[test]
     fn a_wrapping_text_is_measured_at_the_width_it_is_given_not_the_one_it_was_probed_at() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(&format!(
+        let (scene, _lua, shaping, _surface) = applied(&format!(
             r#"panel {{ id = "bar", width = 200,
                 child = column {{ children = {{ text {{ content = "{LONG}", wrap = "word" }} }} }} }}"#
         ));
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let laid_out = scene.surface("bar@TEST").unwrap().children[0].children[0].rect.height;
 
         let line_height = 12.0 * 1.2;
@@ -591,32 +582,26 @@ mod tests {
     }
 
     #[test]
-    fn a_text_that_already_fits_is_left_exactly_as_written() {
-        let drawn = elided(r#"panel { id = "bar", child = text { width = 600, content = "short", elide = "end" } }"#);
-        assert_eq!(drawn, "short", "an ellipsis on a string that fits would be a lie about the content");
-    }
-
-    /// The default: no ellipsis, the clip cuts mid-glyph.
-    #[test]
-    fn a_text_that_does_not_ask_to_elide_keeps_its_whole_string() {
-        let drawn = elided(&format!(r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}" }} }}"#));
-        assert_eq!(drawn, LONG);
-    }
-
-    /// A `Content`-sized box came from measuring this same string, so it fits by construction.
-    #[test]
-    fn a_content_sized_text_never_elides_itself() {
-        let drawn = elided(&format!(r#"panel {{ id = "bar", child = text {{ content = "{LONG}", elide = "end" }} }}"#));
-        assert_eq!(drawn, LONG);
-    }
-
-    /// The degenerate end of the search: a box too narrow for even one character leaves the
-    /// ellipsis alone rather than panicking on an empty prefix or returning the whole string.
-    #[test]
-    fn a_box_too_narrow_for_one_character_draws_only_the_ellipsis() {
-        let drawn = elided(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 1, content = "{LONG}", elide = "end" }} }}"#
-        ));
-        assert_eq!(drawn, "\u{2026}");
+    fn elision_cases() {
+        for (what, props, expected) in [
+            (
+                "a fit is left as written, an ellipsis would lie",
+                r#"width = 600, content = "short", elide = "end""#,
+                "short",
+            ),
+            (
+                "no `elide` keeps the whole string, the clip cuts mid-glyph",
+                &format!(r#"width = 80, content = "{LONG}""#),
+                LONG,
+            ),
+            ("a content-sized box fits by construction", &format!(r#"content = "{LONG}", elide = "end""#), LONG),
+            (
+                "a box too narrow for one character leaves the ellipsis alone",
+                &format!(r#"width = 1, content = "{LONG}", elide = "end""#),
+                "\u{2026}",
+            ),
+        ] {
+            assert_eq!(elided(&format!(r#"panel {{ id = "bar", child = text {{ {props} }} }}"#)), expected, "{what}");
+        }
     }
 }

@@ -1048,7 +1048,8 @@ mod tests {
         let (from, to) = (Animatable::Number(0.0), Animatable::Number(40.0));
         assert_eq!(from.lerp(&to, Easing::InBack.apply(0.3), "width"), Animatable::Number(0.0));
         assert!(matches!(from.lerp(&to, Easing::InBack.apply(0.3), "margin"), Animatable::Number(n) if n < 0.0));
-        assert!(Easing::InBounce.apply(0.5) >= 0.0 && Easing::OutBounce.apply(0.5) <= 1.0, "Bounce stays inside");
+        assert!((Easing::OutBounce.apply(0.5) - 0.765625).abs() < 1e-6, "Bounce stays inside, at its known midpoint");
+        assert!((Easing::InBounce.apply(0.5) - 0.234375).abs() < 1e-6);
     }
 
     /// A four-number table is CSS `cubic-bezier`, solved for `y` at the parameter whose `x` is the

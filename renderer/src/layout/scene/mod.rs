@@ -1011,6 +1011,16 @@ pub(super) mod tests {
         (lua, node)
     }
 
+    /// A scene applied from `lua_src` at [`full`], with the `Lua`, shaping handle and surface kept
+    /// alive for reads and re-applies.
+    pub(super) fn applied(lua_src: &str) -> (Scene, mlua::Lua, ShapingHandle, VirtualNode) {
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(lua_src);
+        let mut scene = Scene::new();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        (scene, lua, shaping, surface)
+    }
+
     pub(super) fn full() -> LogicalSize {
         LogicalSize { width: 1000.0, height: 500.0 }
     }
@@ -1212,9 +1222,7 @@ pub(super) mod tests {
     /// declaration order, for literal and generated children alike.
     #[test]
     fn z_leaves_the_resolved_children_in_declaration_order() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"return panel { id = "bar", child = row { children = {
                    rect { id = "a", width = 10, height = 10, z = 2 },
                    rect { id = "b", width = 10, height = 10, z = -1 },
@@ -1222,7 +1230,6 @@ pub(super) mod tests {
                        return rect { id = name, width = 10, height = 10, z = name == "c" and 5 or 0 }
                    end } } } }"#,
         );
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         let id = |c: &ResolvedNode| node::fields::common::id.read(&c.properties).unwrap().unwrap();
         assert_eq!(row.children[..2].iter().map(id).collect::<Vec<_>>(), ["a", "b"]);
@@ -1243,34 +1250,6 @@ pub(super) mod tests {
         assert!(err.to_string().contains("`z`"), "{err}");
     }
 
-    #[test]
-    fn an_unsupported_top_level_kind_is_rejected() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = { kind = "banana" } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(err, LayoutError::UnsupportedNodeKind(k) if k == "banana"));
-    }
-
-    #[test]
-    fn an_unsupported_kind_nested_inside_children_is_rejected() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) =
-            surface_from(r#"panel { id = "bar", child = row { children = { { kind = "banana" } } } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(err, LayoutError::UnsupportedNodeKind(k) if k == "banana"));
-    }
-
-    #[test]
-    fn an_unknown_elide_fails_the_pass_naming_the_property() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = text { content = "hi", elide = "Middle" } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "elide"), "got {err:?}");
-    }
-
     /// ADR-0068: a bad value fails the apply rather than being clamped or defaulted, so
     /// `opacity = 50` meaning percent is heard about immediately.
     #[test]
@@ -1288,43 +1267,41 @@ pub(super) mod tests {
         }
     }
 
+    /// ADR-0068: paint properties parse on an invisible node too, so a bad one fails at boot
+    /// rather than once something makes the node visible.
     #[test]
-    fn an_unknown_cursor_name_fails_the_pass() {
-        let mut scene = Scene::new();
+    fn a_malformed_node_fails_the_pass_naming_it() {
         let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = rect { cursor = "hand" } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "cursor"), "got {err:?}");
+        for (src, expected) in [
+            (r#"panel { id = "bar", child = { kind = "banana" } }"#, "kind banana"),
+            (r#"panel { id = "bar", child = row { children = { { kind = "banana" } } } }"#, "kind banana"),
+            (r#"panel { id = "bar", child = text { content = "hi", elide = "Middle" } }"#, "elide"),
+            (r#"panel { id = "bar", child = rect { cursor = "hand" } }"#, "cursor"),
+            (r#"panel { id = "bar", child = rect { visible = false, background = 5 } }"#, "background"),
+        ] {
+            let mut scene = Scene::new();
+            let (lua, surface) = surface_from(src);
+            let named = match apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err() {
+                LayoutError::InvalidProperty { property, .. } => property,
+                LayoutError::UnsupportedNodeKind(kind) => format!("kind {kind}"),
+                other => format!("{other:?}"),
+            };
+            assert_eq!(named, expected, "{src}");
+        }
     }
 
     #[test]
     fn an_absent_opacity_is_fully_opaque() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = rect { width = 10, height = 10 } }"#);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) =
+            applied(r#"panel { id = "bar", child = rect { width = 10, height = 10 } }"#);
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].opacity, 1.0);
-    }
-
-    /// ADR-0068's coverage: paint properties parse on an invisible node too, so a bad one fails at
-    /// boot rather than once something makes the node visible.
-    #[test]
-    fn a_malformed_paint_property_on_an_invisible_node_still_fails_the_pass() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = rect { visible = false, background = 5 } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidProperty { property, .. } if property == "background"));
     }
 
     #[test]
     fn image_is_a_supported_leaf_with_no_intrinsic_size_and_icon_still_has_one() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = row { children = { image { source = "/tmp/w.png", fit = "contain" }, icon { name = "audio-volume-high", size = 24 } } } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         let image = &row.children[0];
@@ -1338,16 +1315,13 @@ pub(super) mod tests {
 
     #[test]
     fn path_signal_replacement_changes_paint_and_preserves_layout() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (mut scene, lua, shaping, surface) = applied(
             r##"panel { id='bar', child=path {
             id='chart', width=64, height=32, stroke='#ffffff', commands=state('commands', {
                 {op='M',points={2,2}}, {op='L',points={30,20}}
             })
         }}"##,
         );
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let root = scene.surface("bar@TEST").unwrap();
         let before = crate::layout::paint::build(root, 1.0, None);
         let (id, rect) = (root.children[0].id, root.children[0].rect);
@@ -1370,10 +1344,8 @@ pub(super) mod tests {
 
     #[test]
     fn capture_is_a_supported_leaf_with_no_intrinsic_size() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = capture { output = "DP-1", live = true } }"#);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) =
+            applied(r#"panel { id = "bar", child = capture { output = "DP-1", live = true } }"#);
 
         let capture = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(capture.kind, "capture");
@@ -1383,12 +1355,9 @@ pub(super) mod tests {
 
     #[test]
     fn an_image_given_a_box_takes_that_box() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", width = "fill", height = "fill", child = image { source = "/tmp/w.png", width = "fill", height = "fill" } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
         let image = &scene.surface("bar@TEST").unwrap().children[0];
         assert!(
@@ -1400,12 +1369,9 @@ pub(super) mod tests {
 
     #[test]
     fn textfield_is_a_supported_leaf_kind_carrying_its_properties_unvalidated() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = row { children = { textfield { mask_character = "*", secure_submit = { capability = "polkit", action = "authenticate" } } } } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
         let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
         assert_eq!(field.kind, "textfield");
@@ -2079,10 +2045,7 @@ pub(super) mod tests {
         }
         lua_src.push('}');
 
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(&lua_src);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) = applied(&lua_src);
 
         let mut node = scene.surface("bar@TEST").unwrap();
         for _ in 0..=NESTING {

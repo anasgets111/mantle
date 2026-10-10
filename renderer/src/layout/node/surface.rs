@@ -190,33 +190,28 @@ mod tests {
     use crate::lua::nodes::deserialize_lua_table;
 
     #[test]
-    fn layer_is_required() {
+    fn panel_fields_take_their_declared_defaults() {
         let props = PropMap::default();
         assert!(matches!(fields::panel::layer.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert_eq!(fields::panel::anchor.read(&props).unwrap(), Anchor::default());
+        assert_eq!(fields::panel::output.read(&props).unwrap(), "all");
+        assert_eq!(fields::panel::keyboard_interactivity.read(&props).unwrap(), KeyboardInteractivity::None);
+        assert_eq!(fields::panel::exclusive_zone.read(&props).unwrap(), Exclusive::Respect);
     }
 
     #[test]
     fn an_unrecognized_layer_is_a_config_error_not_a_silent_default() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "panel", layer = "Toop" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", layer = "Toop" }"#);
         let err = fields::panel::layer.read(&props).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "layer"), "got {err}");
         assert!(err.to_string().contains("Toop"), "the message must name the value the config wrote: {err}");
     }
 
     #[test]
-    fn anchor_absent_defaults_all_false() {
-        let props = PropMap::default();
-        assert_eq!(fields::panel::anchor.read(&props).unwrap(), Anchor::default());
-    }
-
-    #[test]
     fn anchor_reads_named_edges_defaulting_absent_ones_to_false() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", anchor = { top = true, left = true } }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", anchor = { top = true, left = true } }"#);
         assert_eq!(
             fields::panel::anchor.read(&props).unwrap(),
             Anchor { top: true, right: false, bottom: false, left: true }
@@ -224,27 +219,19 @@ mod tests {
     }
 
     #[test]
-    fn output_absent_defaults_to_all() {
-        let props = PropMap::default();
-        assert_eq!(fields::panel::output.read(&props).unwrap(), "all");
-    }
-
-    #[test]
     fn output_reads_the_string() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "panel", output = "eDP-1" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", output = "eDP-1" }"#);
         assert_eq!(fields::panel::output.read(&props).unwrap(), "eDP-1");
     }
 
     #[test]
     fn surface_topology_combines_id_layer_anchor_output_and_namespace() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua
-                .load(r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = true }, output = "eDP-1", namespace = "my-{id}" }"#)
-                .eval()
-                .unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(
+            &lua,
+            r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = true }, output = "eDP-1", namespace = "my-{id}" }"#,
+        );
         let topology = surface_topology(&props).unwrap();
         assert_eq!(
             topology,
@@ -261,9 +248,7 @@ mod tests {
     #[test]
     fn namespace_absent_defaults_to_mantle_dash_id() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", id = "launcher", layer = "overlay" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", id = "launcher", layer = "overlay" }"#);
         assert_eq!(fields::panel::namespace.read_with_id(&props, "launcher").unwrap(), "mantle-launcher");
         assert_eq!(surface_topology(&props).unwrap().namespace, "mantle-launcher");
     }
@@ -277,9 +262,7 @@ mod tests {
         )
         .0;
         lua.globals().set("ns", signal).unwrap();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", id = "bar", layer = "top", namespace = ns }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", id = "bar", layer = "top", namespace = ns }"#);
         let resolved = resolve_declared(&props, "panel", false, &lua).unwrap();
         assert!(
             matches!(fields::panel::namespace.read_with_id(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
@@ -287,17 +270,9 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_interactivity_absent_defaults_to_none() {
-        let props = PropMap::default();
-        assert_eq!(fields::panel::keyboard_interactivity.read(&props).unwrap(), KeyboardInteractivity::None);
-    }
-
-    #[test]
     fn an_unrecognized_keyboard_interactivity_is_rejected() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", keyboard_interactivity = "Always" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "panel", keyboard_interactivity = "Always" }"#);
         assert!(
             matches!(fields::panel::keyboard_interactivity.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "keyboard_interactivity")
         );
@@ -312,28 +287,18 @@ mod tests {
         )
         .0;
         lua.globals().set("mode", signal).unwrap();
-        let table: mlua::Table = lua
-            .load(r#"return { kind = "panel", id = "bar", layer = "top", keyboard_interactivity = mode }"#)
-            .eval()
-            .unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(
+            &lua,
+            r#"return { kind = "panel", id = "bar", layer = "top", keyboard_interactivity = mode }"#,
+        );
         let resolved = resolve_declared(&props, "panel", false, &lua).unwrap();
         assert_eq!(fields::panel::keyboard_interactivity.read(&resolved).unwrap(), KeyboardInteractivity::Exclusive);
     }
 
     #[test]
-    fn exclusive_absent_reserves_and_covers_nothing() {
-        let props = PropMap::default();
-        assert_eq!(fields::panel::exclusive_zone.read(&props).unwrap(), Exclusive::Respect);
-    }
-
-    #[test]
     fn exclusive_reads_booleans_a_zone_and_ignore_and_rejects_anything_else() {
         let lua = mlua::Lua::new();
-        let parse = |src: &str| {
-            let table: mlua::Table = lua.load(src).eval().unwrap();
-            fields::panel::exclusive_zone.read(&props_from_table(&table))
-        };
+        let parse = |src: &str| fields::panel::exclusive_zone.read(&props_from_src(&lua, src));
         assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = true }"#).unwrap(), Exclusive::Reserve);
         assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = false }"#).unwrap(), Exclusive::Respect);
         assert_eq!(parse(r#"return { kind = "panel", exclusive_zone = "ignore" }"#).unwrap(), Exclusive::Ignore);
@@ -353,39 +318,28 @@ mod tests {
         }
     }
 
-    /// The placeholder the raw pass takes, which has to be the answer that does nothing visible:
-    /// `crate::socket`'s `surface_specs` runs before any getter, so it cannot know, and both other
-    /// answers are a wrong frame (a wallpaper over the bar, or every window shoved aside).
-    #[test]
-    fn a_signal_valued_exclusive_defers_to_respect_rather_than_guessing() {
-        let lua = signal_lua();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "panel", exclusive_zone = state("hide_bar", true) }"#).eval().unwrap();
-        assert_eq!(fields::panel::exclusive_zone.read(&props_from_table(&table)).unwrap(), Exclusive::Respect);
-    }
-
     #[test]
     fn an_active_panel_refuses_a_percentage_it_has_no_output_to_resolve_against() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua
-            .load(r#"return { kind = "panel", id = "osd", layer = "overlay", output = "active", height = "50%" }"#)
-            .eval()
-            .unwrap();
-        assert!(matches!(panel_spec(&props_from_table(&table)), Err(LayoutError::InvalidProperty { .. })));
+        assert!(matches!(
+            panel_spec(&props_from_src(
+                &lua,
+                r#"return { kind = "panel", id = "osd", layer = "overlay", output = "active", height = "50%" }"#
+            )),
+            Err(LayoutError::InvalidProperty { .. })
+        ));
     }
 
     #[test]
     fn panel_spec_reads_every_layer_surface_field_in_one_pass() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua
-            .load(
-                r#"return { kind = "panel", id = "dock", layer = "bottom", anchor = { bottom = true },
+        let spec = panel_spec(&props_from_src(
+            &lua,
+            r#"return { kind = "panel", id = "dock", layer = "bottom", anchor = { bottom = true },
                        output = "DP-1", namespace = "my-dock", keyboard_interactivity = "on_demand",
                        exclusive_zone = true, margin = { top = 4, left = 8 }, width = "fill", height = 48 }"#,
-            )
-            .eval()
-            .unwrap();
-        let spec = panel_spec(&props_from_table(&table)).unwrap();
+        ))
+        .unwrap();
 
         assert_eq!(spec.topology.id, "dock");
         assert_eq!(spec.topology.layer, LayerKind::Bottom);
@@ -402,15 +356,13 @@ mod tests {
     #[test]
     fn a_signal_in_a_panels_five_in_place_fields_is_deferred_on_the_evaluation_pass() {
         let lua = signal_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"return { kind = "panel", id = "bar", layer = "top",
+        let spec = panel_spec(&props_from_src(
+            &lua,
+            r#"return { kind = "panel", id = "bar", layer = "top",
                                 keyboard_interactivity = state("k", "exclusive"), exclusive_zone = state("e", true),
                                 margin = state("m", { top = 4 }), width = state("w", 100), height = state("h", 48) }"#,
-            )
-            .eval()
-            .unwrap();
-        let spec = panel_spec(&props_from_table(&table)).unwrap();
+        ))
+        .unwrap();
         assert_eq!(
             spec.keyboard_interactivity,
             KeyboardInteractivity::None,
@@ -425,14 +377,10 @@ mod tests {
     fn a_signal_in_a_panels_topology_fields_is_still_rejected_on_the_evaluation_pass() {
         let lua = signal_lua();
         for property in ["layer", "anchor", "output", "namespace"] {
-            let table: mlua::Table = lua
-                .load(format!(
-                    r#"return {{ kind = "panel", id = "bar", layer = "top", {property} = state("s", "top") }}"#
-                ))
-                .eval()
-                .unwrap();
             assert!(
-                matches!(panel_spec(&props_from_table(&table)).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == property),
+                matches!(panel_spec(&props_from_src(&lua, format!(
+                    r#"return {{ kind = "panel", id = "bar", layer = "top", {property} = state("s", "top") }}"#
+                ))).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == property),
                 "{property} is structural"
             );
         }
@@ -467,19 +415,6 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_userdata_in_layer_is_rejected() {
-        let lua = signal_lua();
-        let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
-        let table = lua.create_table().unwrap();
-        table.set("kind", "panel").unwrap();
-        table.set("layer", signal).unwrap();
-        let node = deserialize_lua_table(&table).unwrap();
-        assert!(
-            matches!(fields::panel::layer.read(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
-        );
-    }
-
-    #[test]
     fn a_surface_topology_field_on_a_non_panel_node_is_refused_rather_than_carried() {
         let lua = signal_lua();
         for property in ["layer", "anchor", "output"] {
@@ -506,6 +441,9 @@ mod tests {
         table.set("kind", "panel").unwrap();
         table.set("layer", signal).unwrap();
         let node = deserialize_lua_table(&table).unwrap();
+        assert!(
+            matches!(fields::panel::layer.read(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "layer")
+        );
 
         let resolved = resolve_declared(&node.properties, "panel", false, &lua).unwrap();
 

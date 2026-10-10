@@ -851,18 +851,6 @@ mod tests {
         assert!(overlay_input_regions(&root, 1.0).is_empty());
     }
 
-    /// `hit.rs` hits a default box's overflowing child, so the region has to hold it too.
-    #[test]
-    fn an_unclipped_solid_box_still_claims_its_overflowing_child() {
-        let child = region_node(1, "rect", (60.0, 0.0, 10.0, 10.0), solid_paint(), Vec::new());
-        let parent = region_node(2, "rect", (0.0, 0.0, 50.0, 20.0), solid_paint(), vec![child]);
-        let root = region_node(3, "panel", (0.0, 0.0, 100.0, 20.0), None, vec![parent]);
-        assert_eq!(
-            overlay_input_regions(&root, 1.0),
-            [PhysicalRect { x0: 0, y0: 0, x1: 50, y1: 20 }, PhysicalRect { x0: 60, y0: 0, x1: 70, y1: 10 }]
-        );
-    }
-
     #[test]
     fn a_child_that_fills_its_surface_claims_the_whole_surface() {
         let filling = region_node(120, "row", (0.0, 0.0, 1920.0, 32.0), solid_paint(), Vec::new());

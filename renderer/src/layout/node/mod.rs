@@ -895,6 +895,12 @@ pub(crate) fn props_from_table(table: &mlua::Table) -> PropMap {
     std::rc::Rc::unwrap_or_clone(crate::lua::nodes::deserialize_lua_table(table).unwrap().properties)
 }
 
+/// [`props_from_table`] for the table `src` returns, `kind` included.
+#[cfg(test)]
+pub(crate) fn props_from_src(lua: &mlua::Lua, src: impl AsRef<str>) -> PropMap {
+    props_from_table(&lua.load(src.as_ref()).eval().unwrap())
+}
+
 /// [`props_from_table`] for a table with no `kind`. `rect` accepts every property these parsers
 /// read.
 #[cfg(test)]
@@ -1017,16 +1023,20 @@ mod tests {
             ("column", "children = { rect { width = state('w', 1) } }", "children"),
             ("list", "source = { { a = state('s', 1) } }, itemfn = function() end", "source"),
         ] {
-            let table: mlua::Table = lua.load(format!(r#"return {{ kind = "{kind}", {src} }}"#)).eval().unwrap();
-            let declared = props_from_table(&table);
+            let declared = props_from_src(&lua, format!(r#"return {{ kind = "{kind}", {src} }}"#));
             let resolved = resolve_declared(&declared, kind, false, &lua).unwrap();
             assert!(same_lua_value(&declared[property], &resolved[property]), "{property}");
         }
-        let table: mlua::Table = lua
-            .load(r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = state("a", true) } }"#)
-            .eval()
-            .unwrap();
-        let resolved = resolve_declared(&props_from_table(&table), "panel", false, &lua).unwrap();
+        let resolved = resolve_declared(
+            &props_from_src(
+                &lua,
+                r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = state("a", true) } }"#,
+            ),
+            "panel",
+            false,
+            &lua,
+        )
+        .unwrap();
         assert!(fields::panel::anchor.read(&resolved).unwrap_err().to_string().contains("`top`"));
     }
 
@@ -1145,8 +1155,8 @@ mod tests {
             (r#"{ kind = "icon", submit = 1 }"#, "submit", "expected a boolean, got integer 1"),
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got string \"yes\""),
         ] {
-            let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
-            let err = resolve_declared(&props_from_table(&table), "rect", false, &lua).unwrap_err();
+            let err =
+                resolve_declared(&props_from_src(&lua, format!("return {source}")), "rect", false, &lua).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property: p, detail, .. } if p == property && detail == expected),
                 "{source}: {err}"
@@ -1175,19 +1185,16 @@ mod tests {
     #[test]
     fn two_failing_properties_always_report_the_same_one() {
         let lua = signal_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"
+        let props = props_from_src(
+            &lua,
+            r#"
                     return {
                         kind = "rect",
                         background = computed({}, function() error("background boom") end),
                         opacity = computed({}, function() error("opacity boom") end),
                     }
                     "#,
-            )
-            .eval()
-            .unwrap();
-        let props = props_from_table(&table);
+        );
 
         let unsorted: Vec<&str> = props.keys().copied().collect();
         assert_eq!(unsorted, ["opacity", "background"], "the fixture must not already be in sorted order");
@@ -1202,9 +1209,7 @@ mod tests {
     #[test]
     fn oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#);
         let err = parse_radius(&props).unwrap_err();
         let LayoutError::InvalidProperty { property, detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
@@ -1234,8 +1239,7 @@ mod tests {
     #[test]
     fn short_string_property_error_message_is_unchanged() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = "banana" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", radius = "banana" }"#);
         let err = parse_radius(&props).unwrap_err();
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
@@ -1246,8 +1250,7 @@ mod tests {
     #[test]
     fn non_string_variant_error_message_is_unchanged() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", radius = true }"#);
         let err = parse_radius(&props).unwrap_err();
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");

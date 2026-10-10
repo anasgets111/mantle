@@ -226,7 +226,7 @@ impl std::fmt::Debug for ResolveMemo {
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{apply_at, full, instance_at, surface_from};
+    use super::super::tests::{applied, apply_at, full, instance_at, surface_from};
     use super::super::*;
     use crate::lua::signal::from_userdata;
 
@@ -478,10 +478,7 @@ mod tests {
     fn a_scene_carried_to_a_new_vm_builds_again_rather_than_reading_the_old_ones_memos() {
         const LIST: &str = r#"return panel { id = "bar", child = list { source = { "a" },
             itemfn = function() return rect { width = 10, height = 10 } end } }"#;
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(LIST);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (mut scene, lua, shaping, _surface) = applied(LIST);
         drop(lua);
         let (lua, surface) = surface_from(LIST);
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();

@@ -1139,28 +1139,20 @@ mod tests {
         }
     }
 
-    /// The whole point of the property: one `opacity` on a container fades everything under it,
-    /// rather than each descendant needing its own.
+    /// One `opacity` on a container fades everything under it, multiplied down the chain rather than
+    /// replaced, so nothing inside a faded panel can come back solid.
     #[test]
-    fn a_parents_opacity_reaches_every_descendant() {
+    fn opacity_multiplies_down_the_tree() {
         let lua = Lua::new();
-        let src = r##"return panel { id = "bar", width = 200, height = 40, opacity = 0.5,
-            child = rect { width = 100, height = 20, background = "#ffffffff" } }"##;
-        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let list = build(&tree, 1.0, None);
-        assert_eq!(box_alpha(&list.commands[1]), 0.5, "the child fades with the panel it sits in");
-    }
-
-    /// Multiplied down the chain rather than replaced, so nothing inside a faded panel can come
-    /// back solid.
-    #[test]
-    fn a_nested_opacity_multiplies_with_its_ancestors_rather_than_replacing_them() {
-        let lua = Lua::new();
-        let src = r##"return panel { id = "bar", width = 200, height = 40, opacity = 0.5,
-            child = rect { width = 100, height = 20, opacity = 0.5, background = "#ffffffff" } }"##;
-        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let list = build(&tree, 1.0, None);
-        assert_eq!(box_alpha(&list.commands[1]), 0.25, "half of a half");
+        for (child_opacity, expected) in [("", 0.5), ("opacity = 0.5,", 0.25)] {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 200, height = 40, opacity = 0.5,
+                child = rect {{ width = 100, height = 20, {child_opacity} background = "#ffffffff" }} }}"##
+            );
+            let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 40.0 });
+            let list = build(&tree, 1.0, None);
+            assert_eq!(box_alpha(&list.commands[1]), expected, "child opacity {child_opacity:?}");
+        }
     }
 
     /// A colour that was already translucent keeps its own alpha as a factor: a config writing
@@ -1902,42 +1894,22 @@ mod tests {
         assert_eq!(drawn_text(&list), vec!["Reply".to_string()]);
     }
 
-    /// A masked field ignores a plain focus outright: the two are different kinds, and a
-    /// `secure_submit` field must never draw text a `FieldFocus::Plain` is carrying.
+    /// A masked field draws the placeholder unless the focus is a masked one addressed to it: a
+    /// plain focus's text, no focus, an empty count and another node's count never reach the list.
     #[test]
-    fn a_masked_field_never_draws_a_plain_focuss_text() {
+    fn a_password_field_draws_its_placeholder_unless_it_is_the_masked_focus() {
         let lua = Lua::new();
         let tree = password_surface(&lua);
         let id = tree.children[0].id;
-        let list =
-            build(&tree, 1.0, Some(&FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)), caret_on: true }));
-        assert_eq!(drawn_text(&list), vec!["password".to_string()]);
-    }
-
-    #[test]
-    fn an_unfocused_password_field_shows_its_placeholder() {
-        let lua = Lua::new();
-        let list = build(&password_surface(&lua), 1.0, None);
-        assert_eq!(drawn_text(&list), vec!["password".to_string()]);
-    }
-
-    /// The fix for typing blind: four keystrokes are four glyphs on screen.
-    #[test]
-    fn a_focused_password_field_draws_one_mask_character_per_typed_character() {
-        let lua = Lua::new();
         let target = lock_target();
-        let tree = password_surface(&lua);
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 4 }));
-        assert_eq!(drawn_text(&list), vec!["****".to_string()]);
-    }
-
-    #[test]
-    fn a_focused_but_empty_password_field_still_shows_its_placeholder() {
-        let lua = Lua::new();
-        let target = lock_target();
-        let tree = password_surface(&lua);
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 0 }));
-        assert_eq!(drawn_text(&list), vec!["password".to_string()]);
+        for (what, focus) in [
+            ("a plain focus", Some(FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)), caret_on: true })),
+            ("no focus", None),
+            ("an empty count", Some(FieldFocus::Masked { id, target: &target, filled: 0 })),
+            ("another node", Some(FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9 })),
+        ] {
+            assert_eq!(drawn_text(&build(&tree, 1.0, focus.as_ref())), vec!["password".to_string()], "{what}");
+        }
     }
 
     /// Focus is a `{ capability, action }` pair, so a field addressed somewhere else must not
@@ -1958,15 +1930,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn another_node_with_the_same_secure_target_does_not_show_the_password_length() {
-        let lua = Lua::new();
-        let tree = password_surface(&lua);
-        let target = lock_target();
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9 }));
-        assert_eq!(drawn_text(&list), vec!["password".to_string()]);
-    }
-
     /// The count is all paint ever gets (see [`FieldFocus`]), so there is no path by which a
     /// typed character reaches the list. Asserted because a display list is cloned, compared and
     /// retained in `last_painted`, exactly the places ADR-0005 keeps a secret out of.
@@ -1979,6 +1942,9 @@ mod tests {
         let drawn = drawn_text(&list);
         assert_eq!(drawn, vec!["******".to_string()]);
         assert!(drawn[0].chars().all(|c| c == '*'), "nothing but the mask glyph may reach the list");
+        // Typing changes the list, or `paint_surface` skips the repaint and the dots never appear.
+        let five = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 5 }));
+        assert_ne!(list, five);
     }
 
     /// `mask_character` is optional, and a field that omits it should still look
@@ -2014,19 +1980,6 @@ mod tests {
         let point = crate::layout::hit::LogicalPoint { x: 5.0, y: 5.0 };
         let shaping = crate::text::shaping::ShapingHandle::spawn();
         assert_eq!(crate::layout::hit::caret_at(&[&tree, &tree.children[0]], point, "", 0, &shaping), None);
-    }
-
-    /// The property this feature needs from the display list: typing has to change it, or
-    /// `paint_surface` skips the repaint and the dots never appear.
-    #[test]
-    fn each_typed_character_changes_the_list_so_the_repaint_is_not_skipped() {
-        let lua = Lua::new();
-        let tree = password_surface(&lua);
-        let target = lock_target();
-        let three =
-            build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
-        let four = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 4 }));
-        assert_ne!(three, four);
     }
 
     /// A leaf that asks for a rounded clip has nothing to clip, so it buys no offscreen pass.

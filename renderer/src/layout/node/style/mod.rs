@@ -821,64 +821,40 @@ mod tests {
     use crate::lua::nodes::deserialize_lua_table;
 
     #[test]
-    fn width_absent_is_content() {
+    fn width_reads_each_spelling_and_refuses_the_rest() {
+        let lua = mlua::Lua::new();
+        for (field, expected) in [
+            ("", Some(SizeMode::Content)),
+            ("width = 32", Some(SizeMode::Pixels(32.0))),
+            ("width = 'fill'", Some(SizeMode::Fill)),
+            ("width = '50%'", Some(SizeMode::Percent(0.5))),
+            ("width = 8193", None),
+            ("width = -5", None),
+            ("width = 'banana'", None),
+        ] {
+            let props = props_from_src(&lua, format!("return {{ kind = 'rect', {field} }}"));
+            match (fields::common::width.read(&props), expected) {
+                (Ok(got), Some(want)) => assert_eq!(got, want, "{field}"),
+                (Err(LayoutError::InvalidProperty { .. }), None) => {}
+                (got, _) => panic!("{field}: {got:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn absent_style_properties_take_their_defaults() {
         let props = PropMap::default();
-        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Content);
-    }
-
-    #[test]
-    fn width_integer_is_pixels() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = 32 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Pixels(32.0));
-    }
-
-    #[test]
-    fn width_fill_string_is_fill() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "fill" }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Fill);
-    }
-
-    #[test]
-    fn width_percent_string_divides_by_100() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "50%" }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(fields::common::width.read(&props).unwrap(), SizeMode::Percent(0.5));
-    }
-
-    #[test]
-    fn width_above_the_8192_ceiling_is_invalid_property() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = 8193 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
-    }
-
-    #[test]
-    fn a_negative_width_is_invalid_property() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = -5 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
-    }
-
-    #[test]
-    fn width_garbage_string_is_invalid_property() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", width = "banana" }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(fields::common::width.read(&props).unwrap_err(), LayoutError::InvalidProperty { .. }));
+        assert!(fields::common::visible.read(&props).unwrap());
+        assert!(fields::paint::background.read(&props).unwrap().is_empty());
+        assert_eq!(parse_radius(&props).unwrap(), 0.0.into());
+        assert_eq!(fields::paint::border_width.read(&props).unwrap(), EdgeInsets::default());
+        assert_eq!(fields::paint::border_color.read(&props).unwrap(), BorderPaint::default());
     }
 
     #[test]
     fn height_content_error_names_omission_as_the_spelling() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", height = "content" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", height = "content" }"#);
         let err = fields::common::height.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "height" && detail.contains("omit the property")),
@@ -887,52 +863,23 @@ mod tests {
     }
 
     #[test]
-    fn margin_reads_named_edges_defaulting_absent_ones_to_zero() {
+    fn box_insets_read_scalar_and_edge_table() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", margin = { top = 4, left = 2 } }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let insets = fields::common::margin.read(&props).unwrap();
-        assert_eq!(insets, EdgeInsets { top: 4.0, right: 0.0, bottom: 0.0, left: 2.0 });
-    }
-
-    #[test]
-    fn padding_reads_named_edges_defaulting_absent_ones_to_zero() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", padding = { top = 4, left = 2 } }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let insets = fields::common::padding.read(&props).unwrap();
-        assert_eq!(insets, EdgeInsets { top: 4.0, right: 0.0, bottom: 0.0, left: 2.0 });
-    }
-
-    #[test]
-    fn margin_scalar_broadcasts_to_all_four_edges() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", margin = 10 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(
-            fields::common::margin.read(&props).unwrap(),
-            EdgeInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 }
-        );
-    }
-
-    #[test]
-    fn padding_scalar_broadcasts_to_all_four_edges() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = 10 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(
-            fields::common::padding.read(&props).unwrap(),
-            EdgeInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 }
-        );
+        for (name, field) in [("margin", &fields::common::margin), ("padding", &fields::common::padding)] {
+            let read = |v: &str| field.read(&props_from_src(&lua, format!("return {{ kind = 'rect', {name} = {v} }}")));
+            assert_eq!(
+                read("{ top = 4, left = 2 }").unwrap(),
+                EdgeInsets { top: 4.0, right: 0.0, bottom: 0.0, left: 2.0 },
+                "{name}"
+            );
+            assert_eq!(read("10").unwrap(), EdgeInsets { top: 10.0, right: 10.0, bottom: 10.0, left: 10.0 }, "{name}");
+        }
     }
 
     #[test]
     fn margin_negative_value_is_accepted() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", margin = -10 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", margin = -10 }"#);
         assert_eq!(
             fields::common::margin.read(&props).unwrap(),
             EdgeInsets { top: -10.0, right: -10.0, bottom: -10.0, left: -10.0 }
@@ -942,22 +889,14 @@ mod tests {
     #[test]
     fn negative_padding_is_invalid_property() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = -10 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", padding = -10 }"#);
         assert!(
             matches!(fields::common::padding.read(&props), Err(LayoutError::InvalidProperty { property, .. }) if property == "padding")
         );
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", padding = { left = -10 } }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", padding = { left = -10 } }"#);
         assert!(
             matches!(fields::common::padding.read(&props), Err(LayoutError::InvalidProperty { property, .. }) if property == "padding")
         );
-    }
-
-    #[test]
-    fn visible_absent_defaults_true() {
-        let props = PropMap::default();
-        assert!(fields::common::visible.read(&props).unwrap());
     }
 
     #[test]
@@ -979,8 +918,7 @@ mod tests {
     #[test]
     fn spacing_of_1e300_is_rejected_instead_of_overflowing_to_inf() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "row", spacing = 1e300 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "row", spacing = 1e300 }"#);
         assert!(matches!(
             fields::flow::spacing.read(&props).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "spacing"
@@ -988,42 +926,43 @@ mod tests {
     }
 
     #[test]
-    fn background_absent_is_none() {
-        let props = PropMap::default();
-        assert!(fields::paint::background.read(&props).unwrap().is_empty());
+    fn background_hex_forms_parse() {
+        let lua = mlua::Lua::new();
+        let byte = |b: u8| b as f32 / 255.0;
+        for (hex, expected) in [
+            ("#336699", Rgba { r: byte(0x33), g: byte(0x66), b: byte(0x99), a: 1.0 }),
+            ("#33669980", Rgba { r: byte(0x33), g: byte(0x66), b: byte(0x99), a: byte(0x80) }),
+            ("#FF0000", Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }),
+        ] {
+            let props = props_from_src(&lua, format!("return {{ kind = 'rect', background = '{hex}' }}"));
+            assert_eq!(
+                fields::paint::background.read(&props).unwrap(),
+                [(Fill::Color(expected), Blend::Normal)],
+                "{hex}"
+            );
+        }
     }
 
     #[test]
-    fn background_six_digit_hex_is_opaque() {
+    fn background_colour_rejections_name_the_rule() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#336699" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(
-            fields::paint::background.read(&props).unwrap(),
-            vec![(
-                Fill::Color(Rgba { r: 0x33 as f32 / 255.0, g: 0x66 as f32 / 255.0, b: 0x99 as f32 / 255.0, a: 1.0 }),
-                Blend::Normal
-            )]
-        );
-    }
-
-    #[test]
-    fn background_eight_digit_hex_carries_its_own_alpha() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#33669980" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(
-            fields::paint::background.read(&props).unwrap(),
-            vec![(
-                Fill::Color(Rgba {
-                    r: 0x33 as f32 / 255.0,
-                    g: 0x66 as f32 / 255.0,
-                    b: 0x99 as f32 / 255.0,
-                    a: 0x80 as f32 / 255.0,
-                }),
-                Blend::Normal
-            )]
-        );
+        for (value, needles, must_not) in [
+            (r##""336699""##, &["must start with `#`"][..], ""),
+            (r##""#369""##, &["6 or 8", "got 3"], ""),
+            (r##""#zzzzzz""##, &["only hex digits"], ""),
+            (r##""#日本語""##, &["only hex digits"], "got 9"),
+            ("true", &["expected a hex colour or a gradient table"], ""),
+            (r##""#1234567""##, &["6 or 8", "got 7"], ""),
+            (r##""#""##, &["6 or 8", "got 0"], ""),
+        ] {
+            let props = props_from_src(&lua, format!("return {{ kind = 'rect', background = {value} }}"));
+            let err = fields::paint::background.read(&props).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. }
+                    if property == "background" && needles.iter().all(|n| detail.contains(n)) && (must_not.is_empty() || !detail.contains(must_not))),
+                "{value}: {err}"
+            );
+        }
     }
 
     /// One value stays valid beside a list, first layer on top; `{ fill = .., blend = .. }` is a
@@ -1033,9 +972,8 @@ mod tests {
         use crate::layout::node::prop::Keyword;
         let lua = mlua::Lua::new();
         let read = |src: &str| {
-            let table: mlua::Table =
-                lua.load(format!("return {{ kind = 'rect', background = {src} }}")).eval().unwrap();
-            fields::paint::background.read(&props_from_table(&table))
+            fields::paint::background
+                .read(&props_from_src(&lua, format!("return {{ kind = 'rect', background = {src} }}")))
         };
         let colour = |hex: &str| (Fill::Color(parse_hex_color("background", hex).unwrap()), Blend::Normal);
         let grey = "{ gradient = 'radial', stops = { { 0, '#000000' }, { 1, '#ffffff' } } }";
@@ -1063,101 +1001,6 @@ mod tests {
         let err = read("{ { fill = '#112233', mode = 'multiply' } }").unwrap_err();
         assert!(err.to_string().contains("background[1]"), "{err}");
         assert!(read("{ '#112233', 5 }").unwrap_err().to_string().contains("background[2]"));
-    }
-
-    #[test]
-    fn background_without_a_leading_hash_is_rejected_naming_the_property() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", background = "336699" }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("must start with `#`")),
-            "must name the missing `#`, not just some invalid-property error: {err}"
-        );
-    }
-
-    #[test]
-    fn background_with_the_wrong_digit_count_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#369" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 3")),
-            "must be the digit-count rule specifically, naming 3 digits: {err}"
-        );
-    }
-
-    #[test]
-    fn background_with_non_hex_characters_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#zzzzzz" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("only hex digits")),
-            "must be the hex-digit rule specifically, not the digit-count rule: {err}"
-        );
-    }
-
-    #[test]
-    fn a_non_ascii_colour_string_gets_the_hex_digit_diagnosis_not_a_byte_count() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#日本語" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("only hex digits") && !detail.contains("got 9")),
-            "non-ASCII input must get the hex-digit diagnosis, not a byte-length count: {err}"
-        );
-    }
-
-    #[test]
-    fn background_wrong_type_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", background = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("expected a hex colour or a gradient table")),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn uppercase_hex_parses_the_same_as_lowercase() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#FF0000" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        assert_eq!(
-            fields::paint::background.read(&props).unwrap(),
-            vec![(Fill::Color(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 }), Blend::Normal)]
-        );
-    }
-
-    #[test]
-    fn a_seven_digit_hex_is_rejected_naming_the_digit_count() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#1234567" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 7")),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_bare_hash_is_rejected_for_wrong_digit_count() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", background = "#" }"##).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::background.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 0")),
-            "{err}"
-        );
     }
 
     /// Absent `clip` cuts only a surface or a scroll viewport; a declared one is kept as written.
@@ -1216,16 +1059,22 @@ mod tests {
     }
 
     #[test]
-    fn radius_absent_defaults_to_zero() {
-        let props = PropMap::default();
-        assert_eq!(parse_radius(&props).unwrap(), 0.0.into());
+    fn radius_out_of_range_is_rejected() {
+        let lua = mlua::Lua::new();
+        for value in ["-4", "8193"] {
+            let err = parse_radius(&props_from_src(&lua, format!("return {{ kind = 'rect', radius = {value} }}")))
+                .unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("[0, 8192]")),
+                "{value}: must be the range rule, naming the bound: {err}"
+            );
+        }
     }
 
     #[test]
     fn radius_reads_the_number() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = 6 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", radius = 6 }"#);
         assert_eq!(parse_radius(&props).unwrap(), Radii::from(6.0));
     }
 
@@ -1269,52 +1118,9 @@ mod tests {
     }
 
     #[test]
-    fn radius_wrong_type_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = parse_radius(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("expected a number")),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_negative_radius_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = -4 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = parse_radius(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("[0, 8192]")),
-            "must be the range rule, naming the bound: {err}"
-        );
-    }
-
-    #[test]
-    fn radius_above_8192_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", radius = 8193 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = parse_radius(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("[0, 8192]")),
-            "must be the range rule, naming the bound: {err}"
-        );
-    }
-
-    #[test]
-    fn border_width_absent_defaults_to_all_zero() {
-        let props = PropMap::default();
-        assert_eq!(fields::paint::border_width.read(&props).unwrap(), EdgeInsets::default());
-    }
-
-    #[test]
     fn border_width_scalar_broadcasts_to_all_four_edges() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = 3 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", border_width = 3 }"#);
         assert_eq!(
             fields::paint::border_width.read(&props).unwrap(),
             EdgeInsets { top: 3.0, right: 3.0, bottom: 3.0, left: 3.0 }
@@ -1324,9 +1130,7 @@ mod tests {
     #[test]
     fn border_width_table_sets_edges_independently() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", border_width = { top = 2, left = 5 } }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", border_width = { top = 2, left = 5 } }"#);
         assert_eq!(
             fields::paint::border_width.read(&props).unwrap(),
             EdgeInsets { top: 2.0, right: 0.0, bottom: 0.0, left: 5.0 }
@@ -1334,50 +1138,26 @@ mod tests {
     }
 
     #[test]
+    fn border_width_out_of_range_is_rejected() {
+        let lua = mlua::Lua::new();
+        for value in ["-4", "8193", "{ top = 8193 }"] {
+            let props = props_from_src(&lua, format!("return {{ kind = 'rect', border_width = {value} }}"));
+            let err = fields::paint::border_width.read(&props).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
+                "{value}: must be the range rule, naming the bound: {err}"
+            );
+        }
+    }
+
+    #[test]
     fn border_width_wrong_type_is_rejected() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", border_width = true }"#);
         let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("expected a number or a table")),
             "{err}"
-        );
-    }
-
-    #[test]
-    fn a_negative_border_width_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = -4 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::border_width.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
-            "must be the range rule, naming the bound: {err}"
-        );
-    }
-
-    #[test]
-    fn border_width_above_8192_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = 8193 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::border_width.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
-            "must be the range rule, naming the bound: {err}"
-        );
-    }
-
-    #[test]
-    fn border_width_table_form_out_of_range_edge_is_rejected() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_width = { top = 8193 } }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::border_width.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
-            "must be the range rule, naming the bound: {err}"
         );
     }
 
@@ -1397,16 +1177,9 @@ mod tests {
     }
 
     #[test]
-    fn border_color_absent_is_all_none() {
-        let props = PropMap::default();
-        assert_eq!(fields::paint::border_color.read(&props).unwrap(), BorderPaint::default());
-    }
-
-    #[test]
     fn border_color_scalar_string_broadcasts_to_all_four_edges() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "rect", border_color = "#ff0000" }"##).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r##"return { kind = "rect", border_color = "#ff0000" }"##);
         let red = Some(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 });
         assert_eq!(
             fields::paint::border_color.read(&props).unwrap(),
@@ -1417,11 +1190,8 @@ mod tests {
     #[test]
     fn border_color_table_sets_edges_independently_leaving_absent_edges_none() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua
-            .load(r##"return { kind = "rect", border_color = { top = "#ff0000", left = "#00ff00" } }"##)
-            .eval()
-            .unwrap();
-        let props = props_from_table(&table);
+        let props =
+            props_from_src(&lua, r##"return { kind = "rect", border_color = { top = "#ff0000", left = "#00ff00" } }"##);
         assert_eq!(
             fields::paint::border_color.read(&props).unwrap(),
             BorderPaint::Edges(BorderColor {
@@ -1437,9 +1207,8 @@ mod tests {
     fn border_color_takes_a_gradient_table_and_refuses_one_per_edge() {
         let lua = mlua::Lua::new();
         let read = |src: &str| {
-            let table: mlua::Table =
-                lua.load(format!("return {{ kind = \"rect\", border_color = {src} }}")).eval().unwrap();
-            fields::paint::border_color.read(&props_from_table(&table))
+            fields::paint::border_color
+                .read(&props_from_src(&lua, format!("return {{ kind = \"rect\", border_color = {src} }}")))
         };
         let stops = r##"stops = { { 0, "#ff0000" }, { 1, "#0000ff" } }"##;
         let Ok(BorderPaint::Gradient(gradient)) = read(&format!(r#"{{ gradient = "conic", angle = 90, {stops} }}"#))
@@ -1465,27 +1234,17 @@ mod tests {
     #[test]
     fn border_color_malformed_hex_in_a_table_is_rejected_naming_the_edge() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", border_color = { top = "not-a-color" } }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::border_color.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("top") && detail.contains("must start with `#`")),
-            "must name the failing edge, not just `border_color`: {err}"
-        );
-    }
-
-    #[test]
-    fn a_malformed_hex_on_a_non_top_edge_names_that_edge() {
-        let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "rect", border_color = { right = "not-a-color" } }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        let err = fields::paint::border_color.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("right")),
-            "must name `right`, the edge that actually failed: {err}"
-        );
+        for edge in ["top", "right"] {
+            let props = props_from_src(
+                &lua,
+                format!(r#"return {{ kind = "rect", border_color = {{ {edge} = "not-a-color" }} }}"#),
+            );
+            let err = fields::paint::border_color.read(&props).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains(edge) && detail.contains("must start with `#`")),
+                "must name `{edge}`, the edge that actually failed: {err}"
+            );
+        }
     }
 
     #[test]
@@ -1503,8 +1262,7 @@ mod tests {
     #[test]
     fn border_color_wrong_type_is_rejected() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", border_color = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", border_color = true }"#);
         let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("expected a string or a table")),

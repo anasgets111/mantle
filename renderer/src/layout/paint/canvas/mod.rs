@@ -1619,6 +1619,7 @@ pub(crate) mod tests {
         let Some(mut painter) = text_painter(&instance, &shaping, 400, 60) else { return };
         let face = first_face(&shaping, Some("ZZ No Such Family 9184"));
         painter.sync();
+        assert_eq!(face, first_face(&shaping, None), "the declared chain's face, not an arbitrary one");
         assert!(painter.font_id(face).is_some());
     }
 

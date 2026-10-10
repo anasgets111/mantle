@@ -406,7 +406,7 @@ fn scroll_offset(properties: &PropMap, limit: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use crate::layout::node::scene_lua;
-    use crate::layout::scene::tests::{apply_at, full, surface_from};
+    use crate::layout::scene::tests::{applied, apply_at, full, surface_from};
     use crate::layout::scene::*;
     use crate::lua::nodes::deserialize_lua_table;
 
@@ -525,32 +525,19 @@ mod tests {
         assert_eq!(used, 20.0, "a child that does not exist reveals nothing");
     }
 
+    /// The bound is content minus viewport: 300 of children in a 100 box leaves 200 to scroll, and
+    /// the signal holds what was used, not what the wheel asked for.
     #[test]
-    fn a_scroll_offset_moves_children_up_within_the_viewport() {
-        let (_lua, ys, used) = scrolled(SCROLLED_COLUMN, 120.0);
-        assert_eq!(ys, vec![-120.0, -20.0, 80.0], "every child shifts by the offset, first one out of the box");
-        assert_eq!(used, 120.0, "an in-range offset is used as asked");
-    }
-
-    #[test]
-    fn an_unscrolled_container_places_children_exactly_as_before() {
-        let (_lua, ys, _) = scrolled(SCROLLED_COLUMN, 0.0);
-        assert_eq!(ys, vec![0.0, 100.0, 200.0]);
-    }
-
-    /// The bound is content minus viewport: 300 of children in a 100 box leaves 200 to scroll.
-    #[test]
-    fn an_offset_past_the_end_is_clamped_and_written_back() {
-        let (_lua, ys, used) = scrolled(SCROLLED_COLUMN, 5_000.0);
-        assert_eq!(used, 200.0, "the signal holds what was used, not what the wheel asked for");
-        assert_eq!(ys, vec![-200.0, -100.0, 0.0], "so the last child sits at the top and nothing scrolls past it");
-    }
-
-    #[test]
-    fn a_negative_offset_is_clamped_to_the_top() {
-        let (_lua, ys, used) = scrolled(SCROLLED_COLUMN, -50.0);
-        assert_eq!(used, 0.0);
-        assert_eq!(ys[0], 0.0);
+    fn a_scroll_offset_shifts_children_and_is_clamped_and_written_back() {
+        for (asked, ys, used) in [
+            (0.0, [0.0, 100.0, 200.0], 0.0),
+            (120.0, [-120.0, -20.0, 80.0], 120.0),
+            (5_000.0, [-200.0, -100.0, 0.0], 200.0),
+            (-50.0, [0.0, 100.0, 200.0], 0.0),
+        ] {
+            let (_lua, got_ys, got_used) = scrolled(SCROLLED_COLUMN, asked);
+            assert_eq!((got_ys, got_used), (ys.to_vec(), used), "offset {asked}");
+        }
     }
 
     /// Decision 5: a container whose content and viewport are the same number by construction.
@@ -578,14 +565,11 @@ mod tests {
         assert_eq!(ys, vec![-150.0, -50.0, 50.0]);
         drop(lua);
 
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = column { width = 100, max_height = 150, children = {
                 rect { width = 10, height = 40 }, rect { width = 10, height = 40 },
             } } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let column = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(column.rect.height, 80.0, "under the cap the box is the content, as with no cap at all");
     }

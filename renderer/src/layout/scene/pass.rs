@@ -810,7 +810,7 @@ pub(super) fn publish_geometry(
 mod tests {
     use super::*;
     use crate::layout::node::scene_lua;
-    use crate::layout::scene::tests::{apply_at, full, surface_from};
+    use crate::layout::scene::tests::{applied, apply_at, full, surface_from};
     use crate::layout::scene::*;
     use crate::lua::nodes::{deserialize_lua_table, register_node_constructors};
 
@@ -1386,9 +1386,7 @@ mod tests {
     /// read it, and the next pass must see the new rect.
     #[test]
     fn a_geometry_read_by_itemfn_rebuilds_the_list_once_layout_moves_it() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (mut scene, lua, shaping, surface) = applied(
             r#"g = geometry("box")
             return panel { id = "bar", child = column { children = {
                 rect { width = 40, height = 10, geometry = g },
@@ -1397,7 +1395,6 @@ mod tests {
                 end },
             } } }"#,
         );
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(list_contents(&scene), ["a0"], "the first build ran before the first layout");
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(list_contents(&scene), ["a40"]);
@@ -1460,16 +1457,13 @@ mod tests {
 
     #[test]
     fn a_child_removed_while_hidden_plays_no_exit_on_thaw() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (mut scene, lua, shaping, surface) = applied(
             r#"panel { id = "bar", child = column { visible = state("open", true),
                 children = { list { source = state("items", { "a", "b" }), itemfn = function(name)
                     return rect { id = name, width = 10, height = 10,
                         animate = { exit = { duration = 100, opacity = 0 } } }
                 end } } } }"#,
         );
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("open", true):set(false) state("items", {}):set({ "b" })"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("open", true):set(true)"#).exec().unwrap();
@@ -1989,15 +1983,12 @@ mod tests {
 
     #[test]
     fn the_same_id_under_two_different_parents_does_not_collide() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = row { children = {
                 column { children = { rect { id = "inner", width = 1, height = 1 } } },
                 column { children = { rect { id = "inner", width = 2, height = 2 } } },
             } } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(
             row.children.len(),
@@ -2470,15 +2461,12 @@ mod tests {
 
     #[test]
     fn a_list_resolves_one_child_per_source_element_in_source_order() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list {
                 source = { 10, 20, 30 },
                 itemfn = function(item) return rect { width = item, height = 5 } end,
             } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let list = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(list.children.len(), 3);
         assert_eq!(list.children[0].rect.width, 10.0);
@@ -2572,118 +2560,52 @@ mod tests {
 
     #[test]
     fn a_list_with_no_source_lays_out_empty() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) =
-            surface_from(r#"panel { id = "bar", child = list { itemfn = function(item) return rect {} end } }"#);
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+        let (scene, _lua, _shaping, _surface) =
+            applied(r#"panel { id = "bar", child = list { itemfn = function(item) return rect {} end } }"#);
         assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty());
     }
 
     #[test]
-    fn a_list_source_that_is_not_a_table_is_a_layout_error_naming_source() {
-        let mut scene = Scene::new();
+    fn a_malformed_list_is_a_layout_error_naming_the_property() {
         let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = list { source = 5, itemfn = function(item) return rect {} end } }"#,
-        );
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "source"), "{err:?}");
-    }
-
-    #[test]
-    fn a_list_with_no_itemfn_is_a_layout_error_naming_itemfn() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = list { source = { 1 } } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "itemfn"), "{err:?}");
-    }
-
-    #[test]
-    fn a_list_itemfn_that_is_not_a_function_is_a_layout_error_naming_itemfn() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(r#"panel { id = "bar", child = list { source = { 1 }, itemfn = "nope" } }"#);
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "itemfn"), "{err:?}");
-    }
-
-    #[test]
-    fn a_list_itemfn_raising_a_lua_error_is_a_layout_error_naming_itemfn() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = list { source = { 1 }, itemfn = function(item) error("boom") end } }"#,
-        );
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "itemfn" && detail.contains("boom")),
-            "{err:?}"
-        );
-    }
-
-    #[test]
-    fn a_list_itemfn_returning_a_non_node_table_is_a_layout_error_naming_itemfn() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = list { source = { 1 }, itemfn = function(item) return 5 end } }"#,
-        );
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "itemfn"), "{err:?}");
-    }
-
-    #[test]
-    fn a_list_key_that_is_not_a_function_is_a_layout_error_naming_key() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = list { source = { 1 }, key = "nope", itemfn = function(item) return rect {} end } }"#,
-        );
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "key"), "{err:?}");
-    }
-
-    #[test]
-    fn a_list_key_returning_a_non_string_is_a_layout_error_naming_key() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"panel { id = "bar", child = list {
-                source = { 1 },
-                key = function(item) return 5 end,
-                itemfn = function(item) return rect {} end,
-            } }"#,
-        );
-        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "key"), "{err:?}");
+        let item = "itemfn = function(item) return rect {} end";
+        for (fields, property, needle) in [
+            (format!("source = 5, {item}"), "source", ""),
+            ("source = { 1 }".to_string(), "itemfn", ""),
+            (r#"source = { 1 }, itemfn = "nope""#.to_string(), "itemfn", ""),
+            (r#"source = { 1 }, itemfn = function(item) error("boom") end"#.to_string(), "itemfn", "boom"),
+            ("source = { 1 }, itemfn = function(item) return 5 end".to_string(), "itemfn", ""),
+            (format!(r#"source = {{ 1 }}, key = "nope", {item}"#), "key", ""),
+            (format!("source = {{ 1 }}, key = function(item) return 5 end, {item}"), "key", ""),
+        ] {
+            let mut scene = Scene::new();
+            let (lua, surface) = surface_from(&format!(r#"panel {{ id = "bar", child = list {{ {fields} }} }}"#));
+            let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property: got, detail, .. } if got == property && detail.contains(needle)),
+                "{fields}: {err:?}"
+            );
+        }
     }
 
     #[test]
     fn a_list_with_an_empty_source_has_no_children_and_does_not_error() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list { source = {}, itemfn = function(item) return rect {} end } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let list = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(list.children.len(), 0);
     }
 
     #[test]
     fn a_list_sizes_and_positions_like_a_column() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list {
                 spacing = 3,
                 source = { 1, 2 },
                 itemfn = function(item) return rect { width = 6, height = 10 } end,
             } }"#,
         );
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
         let list = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(list.rect.width, 6.0, "own width is the widest child, same formula as column");
         assert_eq!(list.rect.height, 23.0, "10 + 10 + 3 spacing, same formula as column");
@@ -2694,12 +2616,8 @@ mod tests {
     #[test]
     fn window_and_popup_are_supported_kinds_carrying_a_single_child() {
         for kind in ["window", "popup"] {
-            let mut scene = Scene::new();
-            let shaping = ShapingHandle::spawn();
-            let (lua, surface) = surface_from(&format!(
-                r#"{{ kind = "{kind}", id = "s", child = rect {{ width = 40, height = 20 }} }}"#
-            ));
-            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let (scene, _lua, _shaping, _surface) =
+                applied(&format!(r#"{{ kind = "{kind}", id = "s", child = rect {{ width = 40, height = 20 }} }}"#));
             let root = scene.surface("s@TEST").unwrap();
             assert_eq!(root.kind, kind);
             assert_eq!(root.children.len(), 1, "`{kind}` must carry its `child`");
@@ -2711,13 +2629,10 @@ mod tests {
     #[test]
     fn a_window_or_popup_root_stacks_and_stretches_its_child_exactly_as_a_panel_does() {
         for kind in ["window", "popup"] {
-            let mut scene = Scene::new();
-            let shaping = ShapingHandle::spawn();
-            let (lua, surface) = surface_from(&format!(
+            let (scene, _lua, _shaping, _surface) = applied(&format!(
                 r#"{{ kind = "{kind}", id = "s", width = 100, height = 50,
                        child = rect {{ align_h = "stretch", align_v = "stretch" }} }}"#
             ));
-            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
             let child = &scene.surface("s@TEST").unwrap().children[0];
             assert_eq!(child.rect.width, 100.0, "`{kind}` must stretch its child like `panel`");
             assert_eq!(child.rect.height, 50.0);
@@ -2942,9 +2857,7 @@ mod tests {
     }
     #[test]
     fn node_mask_removal_does_not_paint_its_exit_as_content() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
+        let (mut scene, lua, shaping, surface) = applied(
             r##"
             local shape = rect { id = "shape", width = 20, height = 20, background = "#ffffff",
                 animate = { exit = { duration = 100, opacity = 0 } } }
@@ -2955,7 +2868,6 @@ mod tests {
                 background = "#ff0000", mask = selected, children = kids } }
         "##,
         );
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load("selected:set({ node = 'replacement' }); kids:set({ replacement })").exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let parent = &scene.surface("bar@TEST").unwrap().children[0];

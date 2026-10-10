@@ -428,12 +428,6 @@ mod tests {
     }
 
     #[test]
-    fn text_content_absent_defaults_to_the_empty_string() {
-        let props = PropMap::default();
-        assert_eq!(fields::text::content.read(&props).unwrap().0, "");
-    }
-
-    #[test]
     fn a_signal_resolving_to_a_string_satisfies_content() {
         let lua = signal_lua();
         let hello = lua.create_string("hello").unwrap();
@@ -477,8 +471,7 @@ mod tests {
     // ---- styled runs (ADR-0104) ----
 
     fn runs_content(lua: &mlua::Lua, src: &str) -> Result<(String, Vec<StyleRun>), LayoutError> {
-        let table: mlua::Table = lua.load(format!(r#"return {{ kind = "text", content = {src} }}"#)).eval().unwrap();
-        fields::text::content.read(&props_from_table(&table))
+        fields::text::content.read(&props_from_src(lua, format!(r#"return {{ kind = "text", content = {src} }}"#)))
     }
 
     #[test]
@@ -509,7 +502,11 @@ mod tests {
     #[test]
     fn a_run_after_a_hole_is_refused_rather_than_dropped() {
         let lua = mlua::Lua::new();
-        assert!(runs_content(&lua, r#"{ { text = "a" }, nil, { text = "c" } }"#).is_err());
+        let err = runs_content(&lua, r#"{ { text = "a" }, nil, { text = "c" } }"#).unwrap_err();
+        assert!(
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "content" && detail.contains("dense array")),
+            "{err}"
+        );
     }
 
     #[test]
@@ -545,19 +542,21 @@ mod tests {
     #[test]
     fn a_run_with_a_mistyped_flag_or_colour_is_refused() {
         let lua = mlua::Lua::new();
-        assert!(runs_content(&lua, r#"{ { text = "a", bold = "yes" } }"#).is_err());
-        assert!(runs_content(&lua, r#"{ { text = "a", color = "red" } }"#).is_err());
-        assert!(runs_content(&lua, r#"{ "just a string" }"#).is_err());
+        for run in [r#"{ text = "a", bold = "yes" }"#, r#"{ text = "a", color = "red" }"#, r#""just a string""#] {
+            let err = runs_content(&lua, &format!("{{ {run} }}")).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "content" && detail.starts_with("run 1:")),
+                "{run}: {err}"
+            );
+        }
     }
 
     #[test]
     fn a_signal_in_a_run_resolves_and_a_bad_value_names_its_full_path() {
         let lua = crate::layout::node::signal_lua();
         let resolved = |src: &str| {
-            let table: mlua::Table =
-                lua.load(format!(r#"return {{ kind = "text", content = {src} }}"#)).eval().unwrap();
             fields::text::content.read(&crate::layout::node::resolve_declared(
-                &props_from_table(&table),
+                &props_from_src(&lua, format!(r#"return {{ kind = "text", content = {src} }}"#)),
                 "text",
                 false,
                 &lua,
@@ -601,62 +600,72 @@ mod tests {
     fn fit_parses_the_three_spelled_modes_and_nothing_else() {
         let lua = mlua::Lua::new();
         for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
-            let table: mlua::Table =
-                lua.load(format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)).eval().unwrap();
-            assert_eq!(fields::image::fit.read(&props_from_table(&table)).unwrap(), expected);
+            assert_eq!(
+                fields::image::fit
+                    .read(&props_from_src(&lua, format!(r#"return {{ kind = "image", fit = "{spelling}" }}"#)))
+                    .unwrap(),
+                expected
+            );
         }
-        let table: mlua::Table = lua.load(r#"return { kind = "image" }"#).eval().unwrap();
-        assert_eq!(fields::image::fit.read(&props_from_table(&table)).unwrap(), Fit::Cover, "an absent `fit` covers");
+        assert_eq!(
+            fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image" }"#)).unwrap(),
+            Fit::Cover,
+            "an absent `fit` covers"
+        );
         // Case matters: `Cover` is not a spelling.
-        let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "Cover" }"#).eval().unwrap();
-        assert!(fields::image::fit.read(&props_from_table(&table)).is_err());
+        assert!(fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "Cover" }"#)).is_err());
     }
 
     #[test]
     fn fit_rejects_a_mode_that_does_not_exist_rather_than_covering_silently() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "image", fit = "fill" }"#).eval().unwrap();
-        let err = fields::image::fit.read(&props_from_table(&table)).unwrap_err();
+        let err =
+            fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "fill" }"#)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
 
-        let table: mlua::Table = lua.load(r#"return { kind = "image", fit = 3 }"#).eval().unwrap();
-        assert!(fields::image::fit.read(&props_from_table(&table)).is_err());
+        assert!(fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = 3 }"#)).is_err());
     }
 
     #[test]
     fn an_image_source_that_is_not_a_string_is_rejected() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "image", source = 5 }"#).eval().unwrap();
-        assert!(fields::image::source.read(&props_from_table(&table)).is_err());
-        let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
-        assert_eq!(fields::image::source.read(&props_from_table(&table)).unwrap(), "/tmp/w.png");
+        let err =
+            fields::image::source.read(&props_from_src(&lua, r#"return { kind = "image", source = 5 }"#)).unwrap_err();
+        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "source"), "{err}");
+        assert_eq!(
+            fields::image::source
+                .read(&props_from_src(&lua, r#"return { kind = "image", source = "/tmp/w.png" }"#))
+                .unwrap(),
+            "/tmp/w.png"
+        );
     }
 
     #[test]
     fn capture_output_defaults_to_empty_and_reads_a_connector_name() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
-        assert_eq!(fields::capture::output.read(&props_from_table(&table)).unwrap(), "");
-        let table: mlua::Table = lua.load(r#"return { kind = "capture", output = "DP-1" }"#).eval().unwrap();
-        assert_eq!(fields::capture::output.read(&props_from_table(&table)).unwrap(), "DP-1");
+        assert_eq!(fields::capture::output.read(&props_from_src(&lua, r#"return { kind = "capture" }"#)).unwrap(), "");
+        assert_eq!(
+            fields::capture::output
+                .read(&props_from_src(&lua, r#"return { kind = "capture", output = "DP-1" }"#))
+                .unwrap(),
+            "DP-1"
+        );
     }
 
     #[test]
     fn live_and_paint_cursor_default_false_and_reject_non_booleans() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "capture" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "capture" }"#);
         assert_eq!(fields::capture::live.read(&props).unwrap(), None);
         assert!(!fields::capture::paint_cursor.read(&props).unwrap());
 
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "capture", live = true, paint_cursor = true }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "capture", live = true, paint_cursor = true }"#);
         assert_eq!(fields::capture::live.read(&props).unwrap(), Some(f32::INFINITY));
         assert!(fields::capture::paint_cursor.read(&props).unwrap());
 
-        let table: mlua::Table = lua.load(r#"return { kind = "capture", live = "yes" }"#).eval().unwrap();
-        assert!(fields::capture::live.read(&props_from_table(&table)).is_err());
+        assert!(
+            fields::capture::live.read(&props_from_src(&lua, r#"return { kind = "capture", live = "yes" }"#)).is_err()
+        );
     }
 
     /// ADR-0263: frames per second in (0, 1000].
@@ -664,8 +673,7 @@ mod tests {
     fn live_takes_frames_per_second() {
         let lua = mlua::Lua::new();
         let live = |src: &str| {
-            let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', live = {src} }}")).eval().unwrap();
-            fields::capture::live.read(&props_from_table(&table))
+            fields::capture::live.read(&props_from_src(&lua, format!("return {{ kind = 'capture', live = {src} }}")))
         };
         assert_eq!(live("false").unwrap(), None);
         assert_eq!(live("60").unwrap(), Some(60.0));
@@ -680,8 +688,8 @@ mod tests {
     fn region_is_a_positive_rect() {
         let lua = mlua::Lua::new();
         let region = |src: &str| {
-            let table: mlua::Table = lua.load(format!("return {{ kind = 'capture', region = {src} }}")).eval().unwrap();
-            fields::capture::region.read(&props_from_table(&table))
+            fields::capture::region
+                .read(&props_from_src(&lua, format!("return {{ kind = 'capture', region = {src} }}")))
         };
         assert_eq!(
             region("{ x = 10, y = 20.5, width = 300, height = 200 }").unwrap(),
@@ -702,40 +710,39 @@ mod tests {
     #[test]
     fn source_blur_defaults_to_zero_and_rejects_negative() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "image", source = "/tmp/w.png" }"#).eval().unwrap();
-        assert_eq!(fields::image::source_blur.read(&props_from_table(&table)).unwrap(), 0.0);
+        assert_eq!(
+            fields::image::source_blur
+                .read(&props_from_src(&lua, r#"return { kind = "image", source = "/tmp/w.png" }"#))
+                .unwrap(),
+            0.0
+        );
 
-        let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = 12 }"#).eval().unwrap();
-        assert_eq!(fields::image::source_blur.read(&props_from_table(&table)).unwrap(), 12.0);
+        assert_eq!(
+            fields::image::source_blur
+                .read(&props_from_src(&lua, r#"return { kind = "image", source_blur = 12 }"#))
+                .unwrap(),
+            12.0
+        );
 
-        let table: mlua::Table = lua.load(r#"return { kind = "image", source_blur = -1 }"#).eval().unwrap();
         assert!(matches!(
-            fields::image::source_blur.read(&props_from_table(&table)).unwrap_err(),
+            fields::image::source_blur.read(&props_from_src(&lua, r#"return { kind = "image", source_blur = -1 }"#)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "source_blur"
         ));
     }
 
     #[test]
-    fn font_size_of_1e300_is_rejected_instead_of_overflowing_to_inf() {
+    fn font_size_out_of_range_is_rejected_instead_of_overflowing_or_reaching_the_shaper() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "text", font_size = 1e300 }"#).eval().unwrap();
-        let props = props_from_table(&table);
-        assert!(matches!(
-            fields::typeface::font_size.read(&props).unwrap_err(),
-            LayoutError::InvalidProperty { property, .. } if property == "font_size"
-        ));
-    }
-
-    /// A zero font size gives the shaper a zero line height. `-0.0` counts: IEEE 754 says it equals `0.0`.
-    #[test]
-    fn font_size_of_zero_is_rejected_rather_than_reaching_the_shaper() {
-        let lua = mlua::Lua::new();
-        for source in [r#"return { kind = "text", font_size = 0 }"#, r#"return { kind = "text", font_size = -0.0 }"#] {
-            let table: mlua::Table = lua.load(source).eval().unwrap();
-            assert!(matches!(
-                fields::typeface::font_size.read(&props_from_table(&table)).unwrap_err(),
-                LayoutError::InvalidProperty { property, .. } if property == "font_size"
-            ));
+        // Zero gives the shaper a zero line height, `-0.0` included: IEEE 754 says it equals `0.0`.
+        for size in ["1e300", "0", "-0.0"] {
+            let props = props_from_src(&lua, format!(r#"return {{ kind = "text", font_size = {size} }}"#));
+            assert!(
+                matches!(
+                    fields::typeface::font_size.read(&props).unwrap_err(),
+                    LayoutError::InvalidProperty { property, .. } if property == "font_size"
+                ),
+                "{size}"
+            );
         }
     }
 
@@ -744,12 +751,15 @@ mod tests {
         let lua = mlua::Lua::new();
         assert_eq!(fields::text_flow::wrap.read(&PropMap::default()).unwrap(), Wrap::None);
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "word" }"#).eval().unwrap();
-        assert_eq!(fields::text_flow::wrap.read(&props_from_table(&table)).unwrap(), Wrap::Word);
+        assert_eq!(
+            fields::text_flow::wrap.read(&props_from_src(&lua, r#"return { kind = "text", wrap = "word" }"#)).unwrap(),
+            Wrap::Word
+        );
 
         // "WordWrap" is the plausible typo.
-        let table: mlua::Table = lua.load(r#"return { kind = "text", wrap = "WordWrap" }"#).eval().unwrap();
-        let err = fields::text_flow::wrap.read(&props_from_table(&table)).unwrap_err();
+        let err = fields::text_flow::wrap
+            .read(&props_from_src(&lua, r#"return { kind = "text", wrap = "WordWrap" }"#))
+            .unwrap_err();
         assert!(format!("{err}").contains("word"), "the error should name the modes that do exist, got {err}");
     }
 
@@ -758,9 +768,8 @@ mod tests {
     fn font_variations_sort_by_tag_and_refuse_a_bad_tag_or_value() {
         let lua = mlua::Lua::new();
         let read = |source: &str| {
-            let table: mlua::Table =
-                lua.load(format!("return {{ kind = \"text\", font_variations = {source} }}")).eval().unwrap();
-            fields::typeface::font_variations.read(&props_from_table(&table))
+            fields::typeface::font_variations
+                .read(&props_from_src(&lua, format!("return {{ kind = \"text\", font_variations = {source} }}")))
         };
         assert!(read("nil").unwrap().is_empty());
         let axes = read("{ opsz = 24, FILL = 1, GRAD = -25 }").unwrap();
@@ -779,40 +788,50 @@ mod tests {
         let lua = mlua::Lua::new();
         assert_eq!(fields::text_flow::max_lines.read(&PropMap::default()).unwrap(), None);
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 0 }"#).eval().unwrap();
-        assert_eq!(fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap(), None);
+        assert_eq!(
+            fields::text_flow::max_lines
+                .read(&props_from_src(&lua, r#"return { kind = "text", max_lines = 0 }"#))
+                .unwrap(),
+            None
+        );
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = 2 }"#).eval().unwrap();
-        assert_eq!(fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap(), Some(2));
+        assert_eq!(
+            fields::text_flow::max_lines
+                .read(&props_from_src(&lua, r#"return { kind = "text", max_lines = 2 }"#))
+                .unwrap(),
+            Some(2)
+        );
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = -1 }"#).eval().unwrap();
         assert!(matches!(
-            fields::text_flow::max_lines.read(&props_from_table(&table)).unwrap_err(),
+            fields::text_flow::max_lines.read(&props_from_src(&lua, r#"return { kind = "text", max_lines = -1 }"#)).unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "max_lines"
         ));
 
-        let table: mlua::Table = lua.load(r#"return { kind = "text", max_lines = "two" }"#).eval().unwrap();
-        assert!(fields::text_flow::max_lines.read(&props_from_table(&table)).is_err());
+        assert!(
+            fields::text_flow::max_lines
+                .read(&props_from_src(&lua, r#"return { kind = "text", max_lines = "two" }"#))
+                .is_err()
+        );
     }
 
     #[test]
-    fn font_size_absent_defaults_to_twelve() {
-        let props = PropMap::default();
-        assert_eq!(fields::typeface::font_size.read(&props).unwrap(), 12.0);
-    }
-
-    #[test]
-    fn text_style_defaults_and_bounds_are_parsed_before_shaping() {
+    fn text_node_defaults_and_bounds_are_parsed_before_shaping() {
         let defaults = PropMap::default();
+        assert_eq!(fields::text::content.read(&defaults).unwrap().0, "");
+        assert_eq!(fields::typeface::font_size.read(&defaults).unwrap(), 12.0);
+        assert_eq!(fields::icon::size.read(&defaults).unwrap(), 12.0);
+        assert_eq!(fields::common::id.read(&defaults).unwrap(), None);
+        assert_eq!(
+            fields::typeface::foreground.read(&defaults).unwrap(),
+            Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 })
+        );
         assert_eq!(fields::typeface::line_height.read(&defaults).unwrap(), 1.2);
         assert_eq!(fields::typeface::letter_spacing.read(&defaults).unwrap(), 0.0);
         assert_eq!(fields::typeface::font_weight.read(&defaults).unwrap(), 400.0);
         assert!(!fields::typeface::italic.read(&defaults).unwrap());
 
         let lua = mlua::Lua::new();
-        let table: mlua::Table =
-            lua.load(r#"return { kind = "text", line_height = 0, font_weight = 1001 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "text", line_height = 0, font_weight = 1001 }"#);
         assert!(fields::typeface::line_height.read(&props).is_err());
         assert!(fields::typeface::font_weight.read(&props).is_err());
     }
@@ -834,22 +853,9 @@ mod tests {
     }
 
     #[test]
-    fn icon_size_absent_defaults_to_twelve() {
-        let props = PropMap::default();
-        assert_eq!(fields::icon::size.read(&props).unwrap(), 12.0);
-    }
-
-    #[test]
-    fn node_id_absent_is_none() {
-        let props = PropMap::default();
-        assert_eq!(fields::common::id.read(&props).unwrap(), None);
-    }
-
-    #[test]
     fn node_id_reads_the_string() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", id = "handle" }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "rect", id = "handle" }"#);
         assert_eq!(fields::common::id.read(&props).unwrap(), Some("handle".to_string()));
     }
 
@@ -869,42 +875,23 @@ mod tests {
     #[test]
     fn a_non_utf8_node_id_is_rejected_rather_than_lossily_converted() {
         let lua = mlua::Lua::new();
-        let table = lua.create_table().unwrap();
-        table.set("kind", "rect").unwrap();
-        table.set("id", lua.create_string(b"\xff").unwrap()).unwrap();
-        let props = props_from_table(&table);
-        let err = fields::common::id.read(&props).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "id"),
-            "a non-UTF-8 id must be a LayoutError naming the property: {err:?}"
-        );
-    }
-
-    #[test]
-    fn two_distinct_non_utf8_ids_do_not_collapse_onto_one_replacement_character() {
-        let lua = mlua::Lua::new();
+        // Two distinct bad ids must not collapse onto one replacement character.
         for byte in [b"\xff".as_slice(), b"\xfe".as_slice()] {
             let table = lua.create_table().unwrap();
             table.set("kind", "rect").unwrap();
             table.set("id", lua.create_string(byte).unwrap()).unwrap();
-            let props = props_from_table(&table);
+            let err = fields::common::id.read(&props_from_table(&table)).unwrap_err();
             assert!(
-                matches!(fields::common::id.read(&props), Err(LayoutError::InvalidProperty { ref property, .. }) if property == "id")
+                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "id"),
+                "a non-UTF-8 id must be a LayoutError naming the property: {err:?}"
             );
         }
     }
 
     #[test]
-    fn foreground_absent_defaults_to_white() {
-        let props = PropMap::default();
-        assert_eq!(fields::typeface::foreground.read(&props).unwrap(), Some(Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 }));
-    }
-
-    #[test]
     fn foreground_reads_a_hex_colour() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r##"return { kind = "text", foreground = "#00ff0080" }"##).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r##"return { kind = "text", foreground = "#00ff0080" }"##);
         assert_eq!(
             fields::typeface::foreground.read(&props).unwrap(),
             Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 })
@@ -914,8 +901,7 @@ mod tests {
     #[test]
     fn foreground_wrong_type_is_rejected() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "text", foreground = 5 }"#).eval().unwrap();
-        let props = props_from_table(&table);
+        let props = props_from_src(&lua, r#"return { kind = "text", foreground = 5 }"#);
         let err = fields::typeface::foreground.read(&props).unwrap_err();
         assert!(
             matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "foreground" && detail.contains("expected a string")),

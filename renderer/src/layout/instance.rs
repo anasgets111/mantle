@@ -296,9 +296,15 @@ mod tests {
     }
 
     #[test]
-    fn an_output_that_matches_no_connected_output_produces_no_instance_at_all() {
-        let outputs = [output("eDP-1", 1920.0, 1080.0)];
-        assert!(expand_instances(&[spec("bar", "HDMI-A-9")], &outputs).is_empty());
+    fn expansion_yields_nothing_when_no_output_matches() {
+        let one = [output("eDP-1", 1920.0, 1080.0)];
+        for (what, specs, outputs) in [
+            ("an output that matches none connected", vec![spec("bar", "HDMI-A-9")], &one[..]),
+            ("output all with none connected", vec![spec("bar", "all")], &[]),
+            ("a lock with none connected", vec![lock("screen-lock")], &[]),
+        ] {
+            assert!(expand_instances(&specs, outputs).is_empty(), "{what}");
+        }
     }
 
     #[test]
@@ -309,11 +315,6 @@ mod tests {
         assert_eq!(instances.len(), 1);
         assert_eq!((instances[0].instance_id.as_str(), instances[0].output.as_str()), ("osd", ""));
         assert!(expand_instances(&[spec("osd", "active")], &[]).is_empty());
-    }
-
-    #[test]
-    fn no_outputs_at_all_produces_no_instances_even_for_output_all() {
-        assert!(expand_instances(&[spec("bar", "all")], &[]).is_empty());
     }
 
     #[test]
@@ -366,11 +367,6 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_with_no_outputs_connected_expands_to_nothing_rather_than_to_one_unplaced_instance() {
-        assert!(expand_instances(&[lock("screen-lock")], &[]).is_empty());
-    }
-
-    #[test]
     fn a_popup_gets_one_instance_on_its_bare_id_however_many_monitors_are_connected() {
         let instances = expand_instances(
             &[popup("menu", "bar")],
@@ -405,13 +401,7 @@ mod tests {
         assert!(!is_instance_of("bar", "barn"));
         assert!(!is_instance_of("barn@eDP-1", "bar"), "a prefix that is not followed by `@` is a different surface");
         assert!(!is_instance_of("sidebar@eDP-1", "bar"));
-    }
-
-    #[test]
-    fn is_instance_of_survives_a_declared_id_that_itself_contains_an_at_sign() {
-        assert!(is_instance_of("a@b@DP-1", "a@b"));
-        assert!(is_instance_of("a@b", "a@b"));
-        assert!(is_instance_of("a@b@DP-1", "a"));
+        assert!(is_instance_of("a@b@DP-1", "a@b") && is_instance_of("a@b", "a@b") && is_instance_of("a@b@DP-1", "a"));
     }
 
     #[test]

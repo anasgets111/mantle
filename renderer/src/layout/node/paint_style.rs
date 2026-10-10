@@ -410,27 +410,25 @@ mod tests {
         paint_style(node.kind, &node.properties)
     }
 
+    /// A malformed value fails the pass naming its property: a `focus_target` that is not a handle
+    /// would leave a node no request can focus, an empty `font` would silently draw in the declared chain.
     #[test]
-    fn an_unknown_text_align_fails_the_pass_naming_the_property() {
+    fn a_malformed_paint_property_fails_the_pass_naming_it() {
         let lua = Lua::new();
-        let err = style(&lua, r#"return { kind = "text", content = "hi", text_align = "Middle" }"#).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "text_align"),
-            "got {err:?}"
-        );
-        let err = style(&lua, r#"return { kind = "text", content = "hi", text_align = 1 }"#).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "text_align"));
-    }
-
-    /// `focus_target = "search"` would otherwise leave a node no request can ever focus.
-    #[test]
-    fn a_focus_target_that_is_not_a_handle_fails_the_pass() {
-        let lua = Lua::new();
-        for kind in ["textfield", "rect"] {
-            let err = style(&lua, &format!(r#"return {{ kind = "{kind}", focus_target = "search" }}"#)).unwrap_err();
+        for (src, property) in [
+            (r#"return { kind = "text", content = "hi", text_align = "Middle" }"#, "text_align"),
+            (r#"return { kind = "text", content = "hi", text_align = 1 }"#, "text_align"),
+            (r#"return { kind = "textfield", focus_target = "search" }"#, "focus_target"),
+            (r#"return { kind = "rect", focus_target = "search" }"#, "focus_target"),
+            (r#"return { kind = "text", content = "hi", font = "" }"#, "font"),
+            (r#"return { kind = "text", content = "hi", font = 1 }"#, "font"),
+            ("return { kind = 'rect', background = 5 }", "background"),
+            ("return { kind = 'textfield', secure_submit = 'polkit' }", "secure_submit"),
+        ] {
+            let err = style(&lua, src).unwrap_err();
             assert!(
-                matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "focus_target"),
-                "got {err:?}"
+                matches!(&err, LayoutError::InvalidProperty { property: got, .. } if got == property),
+                "{src}: {err:?}"
             );
         }
     }
@@ -455,17 +453,6 @@ mod tests {
         assert_eq!(font.as_deref(), Some("JetBrainsMono Nerd Font Mono"));
     }
 
-    /// An empty string would otherwise read as "no family named" and silently draw in the declared
-    /// chain with nothing for the reader to point at.
-    #[test]
-    fn an_empty_or_non_string_font_fails_the_pass_naming_the_property() {
-        let lua = Lua::new();
-        let err = style(&lua, r#"return { kind = "text", content = "hi", font = "" }"#).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "font"), "got {err:?}");
-        let err = style(&lua, r#"return { kind = "text", content = "hi", font = 1 }"#).unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "font"));
-    }
-
     #[test]
     fn a_list_has_a_box_that_draws_nothing_and_carries_its_clip() {
         let lua = Lua::new();
@@ -485,12 +472,6 @@ mod tests {
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "shadows"), "{err:?}");
         assert!(style(&lua, "return { kind = 'text', content = 'hi', shadows = { { blur = 2 } } }").is_ok());
         assert!(style(&lua, "return { kind = 'rect', shadows = { { blur = 2, inset = true } } }").is_ok());
-    }
-
-    #[test]
-    fn a_malformed_background_fails_the_pass_instead_of_defaulting() {
-        let lua = Lua::new();
-        assert!(style(&lua, "return { kind = 'rect', background = 5 }").is_err());
     }
 
     #[test]
@@ -619,12 +600,6 @@ mod tests {
             panic!("a `textfield` always has a style");
         };
         assert_eq!(target, None);
-    }
-
-    #[test]
-    fn a_malformed_secure_submit_names_no_capability_and_fails_the_pass() {
-        let lua = Lua::new();
-        assert!(style(&lua, "return { kind = 'textfield', secure_submit = 'polkit' }").is_err());
     }
 
     #[test]
