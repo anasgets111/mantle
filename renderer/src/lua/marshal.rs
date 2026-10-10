@@ -72,8 +72,24 @@ pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String
         }
     }
     let Some(first) = unknown.into_iter().min() else { return Ok(()) };
-    let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
-    Err(format!("unknown key {first}; it takes {}", keys.join(", ")))
+    let near = super::fuzzy::closest(first.trim_matches('`'), keys.iter().copied());
+    Err(match near {
+        Some(near) => format!("unknown key {first}; did you mean `{near}`?"),
+        None => {
+            let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
+            format!("unknown key {first}; it takes {}", keys.join(", "))
+        }
+    })
+}
+
+/// "expected one of `a`, `b`, got {shown}", plus a "did you mean" when `got` is near a choice.
+pub(crate) fn expected_one_of(names: &[&str], got: &str, shown: &str) -> String {
+    let list: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
+    let mut message = format!("expected one of {}, got {shown}", list.join(", "));
+    if let Some(near) = super::fuzzy::closest(got, names.iter().copied()) {
+        message.push_str(&format!("; did you mean `{near}`?"));
+    }
+    message
 }
 
 /// A config list's entries `1..=n` in order, ending at the first hole, which reads as `nil` so
@@ -129,14 +145,20 @@ mod tests {
     }
 
     #[test]
+    fn a_misspelt_choice_gets_a_suggestion_and_a_far_off_one_only_the_list() {
+        let near = expected_one_of(&["start", "center", "stretch"], "cenetr", "\"cenetr\"");
+        assert_eq!(near, "expected one of `start`, `center`, `stretch`, got \"cenetr\"; did you mean `center`?");
+        assert!(!expected_one_of(&["start", "center"], "zzzzzz", "\"zzzzzz\"").contains("did you mean"));
+    }
+
+    #[test]
     fn only_keys_names_the_first_unknown_key_and_what_the_table_takes() {
         let lua = mlua::Lua::new();
         let table: mlua::Table = lua.load("return { top = 1, topp = 2, bottum = 3 }").eval().unwrap();
-        assert_eq!(
-            only_keys(&table, &["top", "bottom"]).unwrap_err(),
-            "unknown key `bottum`; it takes `top`, `bottom`"
-        );
+        assert_eq!(only_keys(&table, &["top", "bottom"]).unwrap_err(), "unknown key `bottum`; did you mean `bottom`?");
         assert_eq!(only_keys(&table, &["top", "topp", "bottum"]), Ok(()));
+        let far: mlua::Table = lua.load("return { zzzzzz = 1 }").eval().unwrap();
+        assert_eq!(only_keys(&far, &["top", "bottom"]).unwrap_err(), "unknown key `zzzzzz`; it takes `top`, `bottom`");
     }
 
     #[test]

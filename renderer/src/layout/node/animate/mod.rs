@@ -1162,6 +1162,13 @@ mod tests {
         .unwrap_err();
         let text = err.to_string();
         assert!(text.contains("animate.width") && text.contains("Bouncy") && text.contains("out_back"), "{text}");
+        assert!(!text.contains("did you mean"), "{text}");
+        let err = parse_animate(
+            "rect",
+            &rect_props(&lua, r#"return { animate = { width = { duration = 1, easing = "out_bak" } } }"#),
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("did you mean `out_back`?"), "{err}");
     }
 
     #[test]

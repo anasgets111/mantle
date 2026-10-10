@@ -10,6 +10,7 @@ version is 0.x, a minor release can break the Lua API.
 - Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do; an unknown property on one no longer reads as a top-level return error.
 - Changed: argument and value errors speak Lua and lead with the caller's `file:line`: `fonts: bad argument #1 (chain): expected a table, got integer`, `mantle.keyboard:switch_layout: argument 1 expects a non-negative integer, got string "x"`; rejected property values read `string "tall"`, `integer 42`, `nil`.
 - Changed: a config handler that raises logs where it was defined (`widgets/bar.lua:12`) and folds identical repeats into `raised again (N times)`; `error({...})` names the value type, and a missing `require` lists config-relative paths without the C-modules line.
+- Changed: a misspelt table key or choice value (`anchor = { lefft = true }`, `easing = "out_bak"`) in a config error now ends with "did you mean `left`?".
 
 ## 0.5.5 - 2026-10-10
 

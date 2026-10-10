@@ -205,8 +205,7 @@ impl Prop for ConstraintAdjustment {
             // Flags make repeats no-ops; array position has no meaning.
             let name = checked_string("constraint_adjustment", &s)?;
             let Some(at) = Adjustment::NAMES.iter().position(|known| *known == name) else {
-                let names: Vec<String> = Adjustment::NAMES.iter().map(|name| format!("`{name}`")).collect();
-                let message = format!("expected one of {}, got `{name}`", names.join(", "));
+                let message = crate::lua::marshal::expected_one_of(Adjustment::NAMES, &name, &format!("`{name}`"));
                 return Err(invalid("constraint_adjustment", message));
             };
             match Adjustment::VALUES[at] {

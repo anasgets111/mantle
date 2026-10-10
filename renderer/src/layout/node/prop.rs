@@ -388,8 +388,8 @@ impl<E: Keyword> Prop for OneOf<E> {
             return Err(invalid(row.name, format!("expected a string, got {}", preview_for_error(value))));
         };
         E::find(&s.as_bytes()).ok_or_else(|| {
-            let names: Vec<String> = E::NAMES.iter().map(|name| format!("`{name}`")).collect();
-            invalid(row.name, format!("expected one of {}, got {}", names.join(", "), preview_for_error(value)))
+            let got = s.to_str().map(|got| got.to_string()).unwrap_or_default();
+            invalid(row.name, crate::lua::marshal::expected_one_of(E::NAMES, &got, &preview_for_error(value)))
         })
     }
 }

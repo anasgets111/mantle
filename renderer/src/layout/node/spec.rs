@@ -643,7 +643,7 @@ mod tests {
             ),
             (
                 r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
-                "unknown key `acton`; it takes `capability`, `action`, `name`",
+                "unknown key `acton`; did you mean `action`?",
             ),
         ] {
             let table: mlua::Table =
