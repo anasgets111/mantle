@@ -55,7 +55,7 @@ on every monitor, so the blocking parts of the standard library are removed (ADR
 | `table` | `concat`, `insert`, `move`, `pack`, `remove`, `sort`, `unpack` | None |
 | `math` | `abs`, `acos`, `asin`, `atan`, `ceil`, `cos`, `deg`, `exp`, `floor`, `fmod`, `huge`, `log`, `max`, `maxinteger`, `min`, `mininteger`, `modf`, `pi`, `rad`, `random`, `randomseed`, `sin`, `sqrt`, `tan`, `tointeger`, `type`, `ult`, plus the 5.3 compatibility functions `atan2`, `cosh`, `frexp`, `ldexp`, `log10`, `pow`, `sinh`, `tanh` | None |
 | `utf8` | `char`, `charpattern`, `codepoint`, `codes`, `len`, `offset` | None |
-| `package` | `config`, `cpath` (unused), `loaded`, `path` (the config directory only), `preload`, `searchers`, `searchpath` | `loadlib` exists but raises. C modules never load |
+| `package` | `config`, `cpath` (unused), `loaded`, `path` (the config directory only), `preload`, `searchers` (the Lua file searcher only), `searchpath` | `loadlib` exists but raises. C modules never load |
 | `os` | `clock`, `date`, `getenv`, `time`. `require("os")` returns the same four | `difftime`, `execute`, `exit`, `remove`, `rename`, `setlocale`, `tmpname` |
 | `io` | Nothing | The whole library. `require("io")` fails too |
 | `debug` | Nothing | The whole library. `debug.traceback` included |

@@ -437,6 +437,20 @@ mod tests {
         assert!(lua.globals().get::<bool>("fired").unwrap(), "one bad callback must not take the batch with it");
     }
 
+    /// The dispatch loop hands the callback itself to the reporter, so the log line can say where it was defined.
+    #[test]
+    fn a_raising_callback_is_logged_with_where_it_was_defined() {
+        let lua = lua();
+        lua.load("\n\ntimer(1, function() error('boom') end)").set_name("@widgets/clock.lua").exec().unwrap();
+
+        fire_everything(&lua);
+
+        let logged = crate::lua::location::LOGGED.with_borrow(Clone::clone);
+        assert_eq!(logged.len(), 1, "{logged:?}");
+        assert!(logged[0].starts_with("timer callback raised, ignoring it: widgets/clock.lua:3: boom"), "{logged:?}");
+        assert!(logged[0].ends_with("(defined at widgets/clock.lua:3)"), "{logged:?}");
+    }
+
     /// An evaluation whose output nothing applies must not leave its timers running.
     #[test]
     fn a_discarded_evaluations_timers_never_fire() {

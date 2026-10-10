@@ -264,6 +264,215 @@ mod tests {
         );
     }
 
+    /// Every row is a config that fails `mantle check`; the substrings pin the parts an author reads.
+    #[test]
+    fn the_error_corpus_names_the_site_the_lua_type_and_the_fix() {
+        type Row<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a [&'a str]);
+        let rows: &[Row] = &[
+            (
+                "syntax error in shell.lua",
+                &[("shell.lua", "return panel {\n")],
+                &["syntax error: shell.lua:2: unexpected symbol"],
+            ),
+            (
+                "syntax error two modules deep",
+                &[
+                    ("shell.lua", "return require(\"a.b\")\n"),
+                    ("a/b.lua", "return require(\"c.d\")\n"),
+                    ("c/d.lua", "local x = 1\nlocal = \n"),
+                ],
+                &["c/d.lua:2:", "a/b.lua:1: in main chunk"],
+            ),
+            // quoted in docs/guide/cli.md
+            (
+                "runtime error in a module",
+                &[
+                    ("shell.lua", "local bar = require(\"widgets.bar\")\nlocal built = bar.build()\nreturn built\n"),
+                    ("widgets/bar.lua", "local M = {}\n\nfunction M.build()\n  return nil + 1\nend\nreturn M\n"),
+                ],
+                &[
+                    "widgets/bar.lua:4: attempt to perform arithmetic on a nil value",
+                    "in function 'widgets.bar.build'",
+                    "shell.lua:2: in main chunk",
+                ],
+            ),
+            (
+                "missing module",
+                &[("shell.lua", "require(\"nope.missing\")\n")],
+                &["shell.lua:1: module 'nope.missing' not found", "no file 'nope/missing.lua'"],
+            ),
+            (
+                "error with a table",
+                &[("shell.lua", "error({ code = 1 })\n")],
+                &["error object is a table, not a string", "shell.lua:1: in main chunk"],
+            ),
+            (
+                "error at level 2",
+                &[
+                    ("shell.lua", "local m = require(\"need\")\nm.need()\n"),
+                    ("need.lua", "local M = {}\nfunction M.need() error(\"msg\", 2) end\nreturn M\n"),
+                ],
+                &["shell.lua:2: msg"],
+            ),
+            (
+                "unknown root property",
+                &[("shell.lua", "\nreturn panel { id = \"bar\", layer = \"top\", paddng = 1 }\n")],
+                &["shell.lua:2: `panel` has no property `paddng`; did you mean `padding`?"],
+            ),
+            (
+                "bad root value",
+                &[("shell.lua", "\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n")],
+                &["shell.lua:2: surface topology is invalid", "invalid value for `height`", "got string \"tall\""],
+            ),
+            (
+                "bad window value",
+                &[("shell.lua", "\nreturn window { id = \"w\", width = \"wide\" }\n")],
+                &["window (shell.lua:2)", "invalid value for `width`", "got string \"wide\""],
+            ),
+            (
+                "bad popup value",
+                &[(
+                    "shell.lua",
+                    "\nreturn popup { id = \"p\", parent = \"bar\", anchor_rect = { x = 0, y = 0, width = 1, height = 1 }, width = \"wide\" }\n",
+                )],
+                &["shell.lua:2: surface topology is invalid", "invalid value for `width`", "got string \"wide\""],
+            ),
+            (
+                "root built in a module",
+                &[
+                    ("shell.lua", "return require(\"widgets.bar\")\n"),
+                    ("widgets/bar.lua", "\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n"),
+                ],
+                &["widgets/bar.lua:2: surface topology is invalid", "got string \"tall\""],
+            ),
+            // quoted in docs/guide/cli.md
+            (
+                "unknown child property",
+                &[(
+                    "shell.lua",
+                    "local function label()\n  return text { contnet = \"hi\" }\nend\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = row { children = { label() } } }\n",
+                )],
+                &[
+                    "invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?",
+                ],
+            ),
+            (
+                "bad value deep in the tree",
+                &[(
+                    "shell.lua",
+                    "return panel { id = \"p\", layer = \"top\", child = column {\n  children = { row {\n    children = { rect { opacity = 2 } },\n  } },\n} }\n",
+                )],
+                &[
+                    "panel (shell.lua:1) > column[0] (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3)",
+                    "invalid value for `opacity`",
+                    "got 2",
+                ],
+            ),
+            (
+                "enum typo",
+                &[(
+                    "shell.lua",
+                    "return panel { id = \"p\", layer = \"top\", child = row { align_h = \"cenetr\" } }\n",
+                )],
+                &[
+                    "row[0] (shell.lua:1)",
+                    "expected one of `start`, `center`, `end`, `stretch`, got string \"cenetr\"; did you mean `center`?",
+                ],
+            ),
+            (
+                "enum far off",
+                &[(
+                    "shell.lua",
+                    "return panel { id = \"p\", layer = \"top\", child = row { align_h = \"qqqqqqqq\" } }\n",
+                )],
+                &[
+                    "row[0] (shell.lua:1)",
+                    "expected one of `start`, `center`, `end`, `stretch`, got string \"qqqqqqqq\"",
+                ],
+            ),
+            (
+                "nested key typo",
+                &[("shell.lua", "return panel { id = \"p\", layer = \"top\", anchor = { lefft = true } }\n")],
+                &["shell.lua:1: surface topology is invalid", "unknown key `lefft`; did you mean `left`?"],
+            ),
+            (
+                "duplicate id",
+                &[(
+                    "shell.lua",
+                    "local a = panel { id = \"bar\", layer = \"top\" }\nreturn { a,\n panel { id = \"bar\", layer = \"top\" } }\n",
+                )],
+                &["shell.lua:3: surface topology is invalid", "two surfaces declare `bar` (first at shell.lua:1)"],
+            ),
+            (
+                "return a number",
+                &[("shell.lua", "return 5\n")],
+                &["shell.lua's top-level return must be", "got integer"],
+            ),
+            (
+                "text at the top level",
+                &[("shell.lua", "return text { content = \"hi\" }\n")],
+                &["shell.lua's top-level return must be", "got `text`"],
+            ),
+            // quoted in docs/guide/cli.md
+            (
+                "failing map",
+                &[(
+                    "shell.lua",
+                    "-- clock\nlocal count = state(\"count\", 1)\nlocal label = count:map(function(n)\n  return n.missing\nend)\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = text { content = label } }\n",
+                )],
+                &[
+                    "panel (shell.lua:9) > text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')",
+                    "shell.lua:4: in function <shell.lua:3>",
+                ],
+            ),
+            (
+                "wrong argument to a global",
+                &[("shell.lua", "\nfonts(5)\nreturn {}\n")],
+                &["shell.lua:2: fonts: bad argument #1 (chain): expected a table, got integer"],
+            ),
+            (
+                "bad timer argument",
+                &[("shell.lua", "\ntimer(\"x\", function() end)\nreturn {}\n")],
+                &["shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"],
+            ),
+            (
+                "bad action parameter",
+                &[("shell.lua", "\nmantle.keyboard:switch_layout(\"x\")\nreturn {}\n")],
+                &[
+                    "shell.lua:2: mantle.keyboard:switch_layout: argument 1 expects a non-negative integer, got string \"x\"",
+                ],
+            ),
+            // quoted in docs/guide/agents.md
+            (
+                "typo in a counter",
+                &[(
+                    "shell.lua",
+                    "local count = state(\"count\", 0)\n\n-- counter\n\n\n\n\n\n\n\n\n\n\n\nreturn panel { id = \"counter\", layer = \"top\",\n  child = text { contnet = \"x\" } }\n",
+                )],
+                &[
+                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > shell.lua:16: `text` has no property `contnet`; did you mean `content`?",
+                ],
+            ),
+        ];
+        for (name, files, must) in rows {
+            let dir = tempfile::tempdir().unwrap();
+            for (path, source) in *files {
+                let path = dir.path().join(path);
+                std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+                std::fs::write(path, source).unwrap();
+            }
+            let err = super::run(dir.path()).unwrap_err();
+            let dir_name = dir.path().display().to_string();
+            for want in *must {
+                assert!(err.contains(want), "{name}: missing {want:?} in:\n{err}");
+            }
+            assert_eq!(err.matches(&dir_name).count(), 1, "{name}: the config dir is named once:\n{err}");
+            for rust_form in ["String(", "Integer(", "usize", "f64", "C modules"] {
+                assert!(!err.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
+            }
+        }
+    }
+
     /// A live pass drops a bad value for its default; the check still fails on it.
     #[test]
     fn a_bad_value_fails_the_check() {

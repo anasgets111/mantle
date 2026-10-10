@@ -54,7 +54,9 @@ the exact centre whatever its width. The right row packs its children at its end
 
 Every kind accepts the [common properties](#common-properties). Box kinds also accept the
 [box properties](#box-properties). Any other key raises an error: a typo such as `aling_v` asks
-"did you mean `align_v`?", and a key close to nothing lists what the kind accepts.
+"did you mean `align_v`?", and a key close to nothing lists what the kind accepts. Keys inside a
+property table (`anchor = { lefft = true }`) and choice values (`align_h = "cenetr"`) get the same
+suggestion.
 
 | Kind | Page | Box | Children |
 | :--- | :--- | :---: | :--- |

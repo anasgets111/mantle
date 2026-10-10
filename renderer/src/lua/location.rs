@@ -109,6 +109,12 @@ thread_local! {
     static RAISED: RefCell<HashMap<(String, String), u32>> = RefCell::default();
 }
 
+#[cfg(test)]
+thread_local! {
+    /// The lines [`report_raised`] logged on this thread, since the log has no capture.
+    pub(crate) static LOGGED: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
+}
+
 /// Forgets every folded raise, so a re-evaluated config's first raise logs in full.
 pub(crate) fn forget_raised() {
     RAISED.with_borrow_mut(HashMap::clear);
@@ -119,6 +125,8 @@ pub(crate) fn forget_raised() {
 /// 8th... as `raised again (N times)`, so a hot handler cannot flood the log.
 pub(crate) fn report_raised(handler: &mlua::Function, head: String, err: &mlua::Error) {
     if let Some(line) = raised_line(handler, head, err) {
+        #[cfg(test)]
+        LOGGED.with_borrow_mut(|lines| lines.push(line.clone()));
         warn!("{line}");
     }
 }
