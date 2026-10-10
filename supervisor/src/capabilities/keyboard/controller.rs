@@ -18,7 +18,7 @@ use crate::compositor::{CompositorKind, hyprland_signature, unsupported_session_
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
-use super::layout::{CompositorLink, HyprlandLink, NiriLink};
+use super::layout::{CompositorLink, HyprlandLink, NiriLink, SwayLink};
 use super::locks::{find_leds, read_led_on, resolve_lock_leds};
 
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
@@ -73,6 +73,7 @@ impl KeyboardController {
                 }
             },
             Some(CompositorKind::Niri) => Some(Box::new(NiriLink)),
+            Some(CompositorKind::Sway) => Some(Box::new(SwayLink)),
             None => {
                 debug!("{}; layout reporting disabled for this run", unsupported_session_report());
                 None

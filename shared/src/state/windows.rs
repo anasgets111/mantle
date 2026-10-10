@@ -2,14 +2,15 @@
 
 use serde::Serialize;
 
-/// `mantle.windows` payload; `nil` with no niri, Hyprland or wlr-foreign-toplevel backend.
+/// `mantle.windows` payload; `nil` with no niri, Hyprland, sway or wlr-foreign-toplevel
+/// backend.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WindowsState {
-    /// `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`.
+    /// `"niri"`, `"hyprland"`, `"sway"`, or `"wlr_foreign_toplevel"`.
     pub source: String,
-    /// Sorted by numbered `workspace_id`, then Hyprland named ones, then backend order; windows
-    /// without one last.
+    /// Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id
+    /// (sway names such as `1:web`) or none come last, in backend order.
     pub windows: Vec<WindowEntry>,
 }
 

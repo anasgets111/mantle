@@ -131,7 +131,7 @@ impl Parts {
 
 /// Why [`follow`] stopped.
 #[derive(Debug, PartialEq)]
-enum End {
+pub(super) enum End {
     /// The stream ended or its state desynced; the published state is cleared and a fresh stream's
     /// replay rebuilds every part.
     Lost,
@@ -197,7 +197,8 @@ fn follow(
 /// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. The first connect retries
 /// too. `first_delay` is a parameter for tests.
 /// ponytail: a compositor that never comes up keeps one thread retrying every 30 s until exit; stop once the publishers are gone.
-fn keep_following<S>(
+pub(super) fn keep_following<S>(
+    compositor: &str,
     first_delay: Duration,
     mut connect: impl FnMut() -> std::io::Result<S>,
     mut follow: impl FnMut(S) -> End,
@@ -208,8 +209,8 @@ fn keep_following<S>(
         let stream = loop {
             match connect() {
                 Ok(stream) => break stream,
-                Err(err) if failures == 0 => warn!("cannot reach niri ({err}); retrying"),
-                Err(err) => debug!("cannot reach niri ({err}); retrying in {delay:?}"),
+                Err(err) if failures == 0 => warn!("cannot reach {compositor} ({err}); retrying"),
+                Err(err) => debug!("cannot reach {compositor} ({err}); retrying in {delay:?}"),
             }
             failures += 1;
             std::thread::sleep(delay);
@@ -232,7 +233,7 @@ fn keep_following<S>(
 /// from the same stream, rather than a second connection.
 pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
     std::thread::spawn(move || {
-        keep_following(RETRY_FIRST, crate::compositor::niri_event_stream, |socket| {
+        keep_following("niri", RETRY_FIRST, crate::compositor::niri_event_stream, |socket| {
             follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
         });
     });
@@ -492,6 +493,7 @@ mod tests {
     fn a_failed_first_connect_and_a_lost_stream_both_retry_until_nobody_listens() {
         let (mut connects, mut follows) = (0, 0);
         keep_following(
+            "niri",
             Duration::ZERO,
             || {
                 connects += 1;

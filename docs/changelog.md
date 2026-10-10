@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Added: `mantle.workspaces`, `mantle.windows` and keyboard layouts on Sway, over `$SWAYSOCK`. A workspace's `id` is its name, and an Xwayland window reports its X11 class as `app_id`; `set_maximized` and `toggle_special` are ignored there.
 - Fixed: `mantle.idle` reports a compositor hold taken while the seat is already idle, such as a video resumed from a phone; `inhibited` stayed false until input came and went.
 
 ## 0.5.4 - 2026-10-09

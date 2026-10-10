@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::capabilities::workspaces::{hyprland, niri};
+use crate::capabilities::workspaces::{hyprland, niri, sway};
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::wlr;
@@ -52,7 +52,7 @@ pub struct WindowsController {
 }
 
 impl WindowsController {
-    /// `state`/`compositor` come from the shared niri/Hyprland reader; with neither, this tries
+    /// `state`/`compositor` come from the shared niri/Hyprland/sway reader; with neither, this tries
     /// `zwlr_foreign_toplevel_manager_v1` on its own connection before giving up.
     ///
     /// A reader that was already running wrote `state` and signalled before this controller
@@ -94,6 +94,7 @@ impl WindowsController {
         match &self.backend {
             Backend::Ipc(CompositorKind::Niri) => niri::focus_window(id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::focus_window(id),
+            Backend::Ipc(CompositorKind::Sway) => sway::focus_window(id),
             Backend::Wlr(handle) => wlr::activate(handle, id),
             Backend::None => debug!("focus({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -103,6 +104,7 @@ impl WindowsController {
         match &self.backend {
             Backend::Ipc(CompositorKind::Niri) => niri::close_window(id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::close_window(id),
+            Backend::Ipc(CompositorKind::Sway) => sway::close_window(id),
             Backend::Wlr(handle) => wlr::close(handle, id),
             Backend::None => debug!("close({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -119,6 +121,7 @@ impl WindowsController {
                     hyprland::toggle_window_fullscreen(id);
                 }
             }
+            Backend::Ipc(CompositorKind::Sway) => sway::set_fullscreen(id, fullscreen),
             Backend::Wlr(handle) => wlr::set_fullscreen(handle, id, fullscreen),
             Backend::None => {
                 debug!(
@@ -145,7 +148,7 @@ impl WindowsController {
                 }
             }
             Backend::Wlr(handle) => wlr::set_maximized(handle, id, maximized),
-            Backend::Ipc(CompositorKind::Niri) | Backend::None => {
+            Backend::Ipc(CompositorKind::Niri | CompositorKind::Sway) | Backend::None => {
                 debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
             }
         }
@@ -155,6 +158,7 @@ impl WindowsController {
         match &self.backend {
             Backend::Ipc(CompositorKind::Niri) => niri::move_window_to_workspace(id, workspace_id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::move_window_to_workspace(id, workspace_id),
+            Backend::Ipc(CompositorKind::Sway) => sway::move_window_to_workspace(id, workspace_id),
             Backend::Wlr(_) => {
                 debug!("move_to_workspace({id:?}, {workspace_id}) called on wlr backend; ignored")
             }

@@ -22,6 +22,7 @@ use shared::debug;
 pub enum CompositorKind {
     Hyprland,
     Niri,
+    Sway,
 }
 
 impl CompositorKind {
@@ -31,6 +32,7 @@ impl CompositorKind {
         match self {
             CompositorKind::Hyprland => "hyprland",
             CompositorKind::Niri => "niri",
+            CompositorKind::Sway => "sway",
         }
     }
 }
@@ -43,8 +45,11 @@ impl CompositorKind {
 /// Entries are vars set *because the compositor is running*. `$XDG_CURRENT_DESKTOP` is only a name
 /// written by the launcher and remains set if the compositor never starts. It is useful to report
 /// via [`unsupported_session_report`], not to dispatch on.
-const PROBES: &[(CompositorKind, &str)] =
-    &[(CompositorKind::Hyprland, "HYPRLAND_INSTANCE_SIGNATURE"), (CompositorKind::Niri, "NIRI_SOCKET")];
+const PROBES: &[(CompositorKind, &str)] = &[
+    (CompositorKind::Hyprland, "HYPRLAND_INSTANCE_SIGNATURE"),
+    (CompositorKind::Niri, "NIRI_SOCKET"),
+    (CompositorKind::Sway, "SWAYSOCK"),
+];
 
 /// The first [`PROBES`] entry whose var this session has set, or `None` for a compositor with no
 /// implementor here.
@@ -55,7 +60,7 @@ pub fn detect_compositor() -> Option<CompositorKind> {
 /// The "disabled for this run" line `keyboard` and `workspaces` share when [`detect_compositor`]
 /// returns `None`.
 ///
-/// If set, names `$XDG_CURRENT_DESKTOP`, because "this session is sway, which has no implementor"
+/// If set, names `$XDG_CURRENT_DESKTOP`, because "this session is river, which has no implementor"
 /// is actionable. This is not a second detection path; an unrecognised name still yields no
 /// implementor.
 pub fn unsupported_session_report() -> String {
@@ -129,6 +134,80 @@ pub fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
     }
 }
 
+/// `$SWAYSOCK`, or `None` when unset or empty.
+pub fn sway_socket() -> Option<PathBuf> {
+    std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+pub const SWAY_RUN_COMMAND: u32 = 0;
+pub const SWAY_GET_WORKSPACES: u32 = 1;
+pub const SWAY_SUBSCRIBE: u32 = 2;
+pub const SWAY_GET_TREE: u32 = 4;
+pub const SWAY_GET_INPUTS: u32 = 100;
+const SWAY_MAGIC: &[u8; 6] = b"i3-ipc";
+/// Far above a real `GET_TREE`; a corrupt length must not allocate gigabytes.
+const SWAY_MAX_PAYLOAD: usize = 64 << 20;
+
+/// Writes one i3-ipc frame.
+pub fn sway_write(stream: &mut impl Write, kind: u32, payload: &[u8]) -> std::io::Result<()> {
+    let mut frame = Vec::with_capacity(14 + payload.len());
+    frame.extend_from_slice(SWAY_MAGIC);
+    frame.extend_from_slice(&(payload.len() as u32).to_ne_bytes());
+    frame.extend_from_slice(&kind.to_ne_bytes());
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame)
+}
+
+/// Reads one frame as `(type, payload)`.
+pub fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
+    let mut header = [0u8; 14];
+    stream.read_exact(&mut header)?;
+    if &header[..6] != SWAY_MAGIC {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "sway frame lacks the i3-ipc magic"));
+    }
+    let len = u32::from_ne_bytes(header[6..10].try_into().expect("4 bytes")) as usize;
+    let kind = u32::from_ne_bytes(header[10..14].try_into().expect("4 bytes"));
+    if len > SWAY_MAX_PAYLOAD {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("sway frame of {len} bytes")));
+    }
+    let mut payload = vec![0; len];
+    stream.read_exact(&mut payload)?;
+    Ok((kind, payload))
+}
+
+/// A connection to sway whose reads and writes give up after [`REQUEST_TIMEOUT`].
+pub fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
+    let stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    Ok(stream)
+}
+
+/// One request on a fresh connection; the first frame back is the reply.
+pub fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
+    let mut stream = sway_connect(socket_path)?;
+    sway_write(&mut stream, kind, payload.as_bytes())?;
+    Ok(sway_read(&mut stream)?.1)
+}
+
+/// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.
+pub fn sway_command(command: String, capability: &'static str) {
+    run_in_order(move || {
+        let Some(path) = sway_socket() else {
+            return debug!("{capability}: SWAYSOCK is unset; sway `{command}` ignored");
+        };
+        match sway_request(&path, SWAY_RUN_COMMAND, &command) {
+            Ok(reply) => match serde_json::from_slice::<Vec<serde_json::Value>>(&reply) {
+                Ok(results) if results.iter().all(|r| r["success"] == true) => {
+                    debug!(2; "{capability}: sway command `{command}` succeeded");
+                }
+                _ => debug!("{capability}: sway refused `{command}`: {}", String::from_utf8_lossy(&reply)),
+            },
+            Err(err) => debug!("{capability}: sway `{command}` request failed: {err}"),
+        }
+    });
+}
+
 /// Runs `job` after every earlier one on a single shared thread, so rapid write actions reach the
 /// compositor in the order they were sent. Each job blocks for at most one IPC round trip.
 pub fn run_in_order(job: impl FnOnce() + Send + 'static) {
@@ -191,14 +270,15 @@ mod tests {
     fn every_compositor_kind_is_detectable_by_the_var_that_compositor_sets() {
         // The exhaustive `match` forces each new kind to name its env var. `find` and the length
         // then force that pair into `PROBES`; a missing entry is undetectable.
-        for kind in [CompositorKind::Hyprland, CompositorKind::Niri] {
+        for kind in [CompositorKind::Hyprland, CompositorKind::Niri, CompositorKind::Sway] {
             let var = match kind {
                 CompositorKind::Hyprland => "HYPRLAND_INSTANCE_SIGNATURE",
                 CompositorKind::Niri => "NIRI_SOCKET",
+                CompositorKind::Sway => "SWAYSOCK",
             };
             assert_eq!(PROBES.iter().find(|(probe, _)| *probe == kind).map(|(_, v)| *v), Some(var), "{kind:?}");
         }
-        assert_eq!(PROBES.len(), 2, "a PROBES entry for a kind the loop above does not list");
+        assert_eq!(PROBES.len(), 3, "a PROBES entry for a kind the loop above does not list");
     }
 
     #[test]
@@ -231,6 +311,43 @@ mod tests {
     }
 
     #[test]
+    fn a_sway_frame_round_trips_over_a_socket_and_a_bad_magic_is_rejected() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        sway_write(&mut ours, SWAY_GET_TREE, b"{\"x\":1}").unwrap();
+        assert_eq!(sway_read(&mut theirs).unwrap(), (SWAY_GET_TREE, b"{\"x\":1}".to_vec()));
+
+        ours.write_all(b"i3-ipx\0\0\0\0\0\0\0\0").unwrap();
+        assert_eq!(sway_read(&mut theirs).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_sway_frame_announcing_more_than_the_cap_is_rejected_before_allocating() {
+        let mut frame = b"i3-ipc".to_vec();
+        frame.extend_from_slice(&u32::MAX.to_ne_bytes());
+        frame.extend_from_slice(&4u32.to_ne_bytes());
+
+        assert_eq!(sway_read(&mut frame.as_slice()).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_sway_request_reads_the_first_frame_the_server_answers_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sway.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let asked = sway_read(&mut conn).unwrap();
+            sway_write(&mut conn, asked.0, b"[]").unwrap();
+            asked
+        });
+
+        let reply = sway_request(&path, SWAY_GET_WORKSPACES, "").unwrap();
+
+        assert_eq!(reply, b"[]");
+        assert_eq!(server.join().unwrap(), (SWAY_GET_WORKSPACES, Vec::new()));
+    }
+
+    #[test]
     fn hyprland_socket_path_joins_runtime_dir_hypr_signature_and_name() {
         assert_eq!(
             hyprland_socket_path_in("/run/user/1000", "abc123", "socket2.sock"),
@@ -250,7 +367,7 @@ mod tests {
     fn desktop_name_takes_the_most_specific_entry_of_a_colon_separated_list() {
         assert_eq!(desktop_name("niri:wlroots"), Some("niri"));
         assert_eq!(desktop_name("Hyprland"), Some("Hyprland"));
-        assert_eq!(desktop_name(" sway : wlroots "), Some("sway"));
+        assert_eq!(desktop_name(" river : wlroots "), Some("river"));
     }
 
     #[test]

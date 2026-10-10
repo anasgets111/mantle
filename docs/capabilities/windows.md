@@ -25,12 +25,13 @@ list {
 
 `mantle.windows:get()` returns `WindowsState`, `nil` before the first push. A field marked `?` may be absent.
 
-`mantle.windows` payload; `nil` with no niri, Hyprland or wlr-foreign-toplevel backend.
+`mantle.windows` payload; `nil` with no niri, Hyprland, sway or wlr-foreign-toplevel
+backend.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `source` | `string` | `"niri"`, `"hyprland"`, or `"wlr_foreign_toplevel"`. |
-| `windows` | `WindowEntry[]` | Sorted by numbered `workspace_id`, then Hyprland named ones, then backend order; windows without one last. |
+| `source` | `string` | `"niri"`, `"hyprland"`, `"sway"`, or `"wlr_foreign_toplevel"`. |
+| `windows` | `WindowEntry[]` | Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`) or none come last, in backend order. |
 
 ### `WindowEntry`
 
@@ -60,18 +61,19 @@ Call each as `mantle.windows:<action>(arguments...)`; `?` marks an argument you 
 | `close` | `id: string` | Asks the compositor to close the window. |
 | `set_fullscreen` | `id: string, fullscreen: boolean` | Sets fullscreen on or off; no-op on niri. |
 | `set_minimized` | `id: string, minimized: boolean` | Sets minimized on or off; wlr only. |
-| `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri. |
+| `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri and sway. |
 | `move_to_workspace` | `id: string, workspace_id: string` | Moves a window to a workspace. |
 
 ## Backend
 
-niri and Hyprland share the `workspaces` reader; any other compositor needs
+niri, Hyprland and sway share the `workspaces` reader; any other compositor needs
 `zwlr_foreign_toplevel_manager_v1` ([backend table](workspaces.md#backend)).
 
 | Backend | Reports | Writes |
 | :--- | :--- | :--- |
 | niri | `floating` | `focus`, `close`, `move_to_workspace` |
 | Hyprland | `floating`, `fullscreen`, `maximized` | `focus`, `close`, `set_fullscreen`, `set_maximized`, `move_to_workspace` |
+| sway | `floating`, `fullscreen` | `focus`, `close`, `set_fullscreen`, `move_to_workspace` |
 | wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen`, `set_minimized`, `set_maximized` |
 
 A flag a backend does not report is `nil`; an action it lacks is logged at debug level and dropped.
@@ -81,6 +83,7 @@ On Hyprland, a window's `id` also feeds [`capture { window = id }`](../nodes/cap
 
 | Trap | Fix |
 | :--- | :--- |
+| `window.app_id` is a class on sway | Xwayland windows have no `app_id`; sway reports their X11 class instead |
 | `if window.fullscreen == false` never matches on niri | The flag is `nil` there. Test truthiness, or branch on `source` |
 | `output` is `nil` for a window on a monitor plugged in after startup | wlr binds outputs once, at connect. Restart the Supervisor after a hotplug if a dock sorts by `output` |
 

@@ -141,7 +141,7 @@ impl Capabilities {
         (capabilities, signals)
     }
 
-    /// Spawns the niri/Hyprland reader on the first call; later calls reuse it. Returns the
+    /// Spawns the niri/Hyprland/sway reader on the first call; later calls reuse it. Returns the
     /// detected compositor, if any.
     fn ensure_compositor_reader(&mut self) -> Option<CompositorKind> {
         if !self.compositor_reader.started {
@@ -165,6 +165,9 @@ impl Capabilities {
                     }
                     CompositorKind::Hyprland => {
                         workspaces::hyprland::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                    }
+                    CompositorKind::Sway => {
+                        workspaces::sway::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                 }
             }

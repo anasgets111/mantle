@@ -2,11 +2,11 @@
 
 use serde::Serialize;
 
-/// `mantle.workspaces` payload; `nil` without niri or Hyprland.
+/// `mantle.workspaces` payload; `nil` without niri, Hyprland or sway.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkspacesState {
-    /// `"niri"` or `"hyprland"` (ADR-0119).
+    /// `"niri"`, `"hyprland"` or `"sway"` (ADR-0119).
     pub compositor: String,
     /// One entry per output, sorted by connector name.
     pub outputs: Vec<OutputWorkspaces>,
@@ -62,10 +62,12 @@ pub struct OutputWorkspaces {
 pub struct WorkspaceEntry {
     /// Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in
     /// decimal, so a numbered workspace's id is its number and focusing an unlisted number
-    /// creates it; named workspaces have negative ids. niri's id in decimal.
+    /// creates it; named workspaces have negative ids. niri's id in decimal; sway's workspace
+    /// name.
     pub id: String,
     /// The number a keybind targets: niri's 1-based position on the output, renumbered on
-    /// reorder; Hyprland's workspace number. `nil` for a Hyprland named workspace.
+    /// reorder; Hyprland's workspace number; sway's leading number. `nil` for a Hyprland named or
+    /// non-numeric sway workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
     /// Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.

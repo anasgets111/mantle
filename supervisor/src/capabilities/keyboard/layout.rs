@@ -10,7 +10,9 @@ use serde::Deserialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{hyprland_command, hyprland_request, hyprland_socket_path, niri_action};
+use crate::compositor::{
+    SWAY_GET_INPUTS, hyprland_command, hyprland_request, hyprland_socket_path, niri_action, sway_command, sway_request,
+};
 
 use super::controller::KeyboardState;
 
@@ -68,6 +70,18 @@ impl LayoutSink {
         self.apply_hyprland(keyboard);
     }
 
+    /// One `GET_INPUTS` read, on sway's `input` events and once at reader start.
+    pub fn read_sway(&self, socket_path: &Path) {
+        let reply = match sway_request(socket_path, SWAY_GET_INPUTS, "") {
+            Ok(reply) => reply,
+            Err(err) => return debug!("sway `GET_INPUTS` request failed; layout not updated this round: {err}"),
+        };
+        match parse_sway_inputs(&reply) {
+            Some((name, index, count)) => self.write(name, index, count),
+            None => debug!("sway `GET_INPUTS` reply held no keyboard with layouts; layout not updated this round"),
+        }
+    }
+
     fn apply_hyprland(&self, keyboard: HyprlandKeyboard) {
         let count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;
         self.write(keyboard.active_keymap, keyboard.active_layout_index, count);
@@ -86,6 +100,38 @@ impl CompositorLink for NiriLink {
         };
         let layout = niri_ipc::LayoutSwitchTarget::Index(index);
         niri_action(niri_ipc::Action::SwitchLayout { layout }, "keyboard");
+    }
+}
+
+/// `(active layout, index, count)` of the first sway keyboard that reports layouts; sway lists
+/// every keyboard device and gives no "typed on last" marker.
+fn parse_sway_inputs(json: &[u8]) -> Option<(String, u32, u32)> {
+    #[derive(Deserialize)]
+    struct Input {
+        #[serde(rename = "type")]
+        kind: String,
+        #[serde(default)]
+        // A layout xkb cannot name is `null` (ipc_json_describe_input).
+        xkb_layout_names: Vec<Option<String>>,
+        xkb_active_layout_name: Option<String>,
+        #[serde(default)]
+        xkb_active_layout_index: u32,
+    }
+    let inputs: Vec<Input> = serde_json::from_slice(json).ok()?;
+    let keyboard = inputs.into_iter().find(|input| input.kind == "keyboard" && !input.xkb_layout_names.is_empty())?;
+    let name = keyboard
+        .xkb_active_layout_name
+        .or_else(|| keyboard.xkb_layout_names.get(keyboard.xkb_active_layout_index as usize).cloned().flatten())
+        .unwrap_or_default();
+    Some((name, keyboard.xkb_active_layout_index, keyboard.xkb_layout_names.len() as u32))
+}
+
+/// `input type:keyboard xkb_switch_layout <index>` over sway's IPC.
+pub struct SwayLink;
+
+impl CompositorLink for SwayLink {
+    fn switch_layout(&self, index: usize) {
+        sway_command(format!("input type:keyboard xkb_switch_layout {index}"), "keyboard");
     }
 }
 
@@ -191,6 +237,28 @@ mod tests {
             (guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count),
             ("Arabic (Egypt)", 1, 2)
         );
+    }
+
+    #[test]
+    fn parse_sway_inputs_takes_the_first_keyboard_with_layouts_and_skips_other_devices() {
+        let json = br#"[
+            {"identifier":"1:1:Power_Button","name":"Power Button","type":"keyboard","xkb_layout_names":[],"xkb_active_layout_index":0},
+            {"identifier":"1133:16495:Mouse","name":"Mouse","type":"pointer","libinput":{}},
+            {"identifier":"1:1:AT","name":"AT keyboard","type":"keyboard","xkb_active_layout_name":null,
+             "xkb_layout_names":["English (US)",null],"xkb_active_layout_index":1}
+        ]"#;
+
+        assert_eq!(parse_sway_inputs(json), Some((String::new(), 1, 2)));
+        assert_eq!(parse_sway_inputs(b"[]"), None);
+        assert_eq!(parse_sway_inputs(b"not json"), None);
+    }
+
+    #[test]
+    fn parse_sway_inputs_falls_back_to_the_layout_list_when_the_active_name_is_null() {
+        let json = br#"[{"type":"keyboard","xkb_layout_names":["English (US)","Arabic (Egypt)"],
+            "xkb_active_layout_index":1,"xkb_active_layout_name":null}]"#;
+
+        assert_eq!(parse_sway_inputs(json), Some(("Arabic (Egypt)".to_string(), 1, 2)));
     }
 
     #[test]
