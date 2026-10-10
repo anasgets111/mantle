@@ -545,8 +545,6 @@ mod tests {
     // ---- pam_service_in ----
 
     /// Without a stack, keep the console-login service. Naming `mantle` would select
-    /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password.
-    /// Without a stack, keep the console-login service. Naming `mantle` would select
     /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password. An unreadable
     /// PAM directory is "not installed", not a panic; this runs in the unlock worker.
     #[test]

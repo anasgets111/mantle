@@ -259,9 +259,11 @@ mod tests {
         assert_eq!(result, vec![ap("home", 90)]);
         let mut connected = ap("home", 58);
         connected.active = true;
-        for pair in [[ap("home", 62), connected.clone()], [connected, ap("home", 62)]] {
+        for (case, pair) in
+            [("active last", [ap("home", 62), connected.clone()]), ("active first", [connected, ap("home", 62)])]
+        {
             let merged = dedup_and_top20(pair.to_vec());
-            assert_eq!((merged[0].strength, merged[0].active), (62, true));
+            assert_eq!((merged[0].strength, merged[0].active), (62, true), "{case}");
         }
     }
 

@@ -154,7 +154,9 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             if event.mask.contains(EventMask::Q_OVERFLOW) {
                                 // Events were lost, so any edit or new directory may have been missed.
                                 hashes.clear();
-                                let _ = watch_tree(&mut watches, &mut wd_to_dir, &root);
+                                if let Err(err) = watch_tree(&mut watches, &mut wd_to_dir, &root) {
+                                    warn!("cannot re-watch {} after an inotify overflow: {err}; live reload may miss changes", root.display());
+                                }
                                 deadline.bump(debounce);
                                 continue;
                             }
@@ -173,7 +175,9 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                     // ponytail: a write between CREATE and walk can slip past.
                                     // Upgrade: recursive `notify` watcher (`RecommendedWatcher`)
                                     // if more than a config directory justifies it.
-                                    let _ = watch_tree(&mut watches, &mut wd_to_dir, &path);
+                                    if let Err(err) = watch_tree(&mut watches, &mut wd_to_dir, &path) {
+                                        warn!("cannot watch {}: {err}; changes inside it will not reload", path.display());
+                                    }
                                 } else if event.mask.intersects(EventMask::DELETE | EventMask::MOVED_FROM)
                                     && forget_subtree(&mut watches, &mut wd_to_dir, &mut hashes, &path)
                                 {
@@ -388,7 +392,7 @@ mod tests {
     async fn an_unrelated_event_during_the_debounce_window_does_not_push_back_the_deadline() {
         // Regression: rebuilding sleep(debounce) for every inotify event, even irrelevant ones,
         // restarted the window. A wider debounce than SHORT_DEBOUNCE leaves jitter margin.
-        let debounce = Duration::from_millis(80);
+        let debounce = Duration::from_millis(200);
         let dir = tempfile::tempdir().unwrap();
         let mut rx = spawn_watcher(dir.path(), debounce).unwrap();
 
@@ -397,9 +401,9 @@ mod tests {
         std::fs::write(dir.path().join("notes.txt"), "unrelated").unwrap();
 
         // The deadline is `debounce`/2 away. Correct behavior fires here; a from-here restart fires
-        // a full `debounce` later. This has 20ms margin on either side.
+        // a full `debounce` later. This has 50ms margin on either side.
         assert!(
-            recv_within(&mut rx, debounce / 2 + Duration::from_millis(20)).await.is_some(),
+            recv_within(&mut rx, debounce / 2 + Duration::from_millis(50)).await.is_some(),
             "an unrelated event during the debounce window must not delay the trigger"
         );
     }

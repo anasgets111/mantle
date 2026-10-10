@@ -379,6 +379,21 @@ mod tests {
         assert_eq!(controller.snapshot().files[&path], json!({}));
     }
 
+    /// Reads the saved file once the `spawn_blocking` save has landed. Paused time does not wait for
+    /// blocking tasks, so this polls on the real clock; `yield_now` keeps the runtime busy so the
+    /// paused clock cannot jump past the deadline.
+    async fn saved(file: &Path) -> String {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(text) = std::fs::read_to_string(file) {
+                return text;
+            }
+            assert!(std::time::Instant::now() < deadline, "{} was never saved", file.display());
+            std::thread::sleep(Duration::from_millis(1));
+            tokio::task::yield_now().await;
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn a_write_that_changes_nothing_pushes_nothing_and_still_saves() {
         let dir = tempfile::tempdir().unwrap();
@@ -396,9 +411,7 @@ mod tests {
         assert!(rx.try_recv().is_err(), "a write that edits nothing must not push the whole store");
 
         tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
-        let written: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&path).expect("an unchanged write still repairs the file"))
-                .unwrap();
+        let written: serde_json::Value = serde_json::from_str(&saved(Path::new(&path)).await).unwrap();
         assert_eq!(written["fit"], json!("cover"));
 
         // After our own rename in the watch queue, so exactly one push proves that one pushed nothing.
@@ -435,9 +448,8 @@ mod tests {
         assert!(!file.exists(), "nothing is written while the writes are still coming");
 
         tokio::time::sleep(SAVE_DEBOUNCE * 2).await;
-        tokio::task::yield_now().await;
 
-        let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        let written: serde_json::Value = serde_json::from_str(&saved(&file).await).unwrap();
         assert_eq!(written, json!({ "scroll": 5 }));
         let leftovers: Vec<_> = std::fs::read_dir(file.parent().unwrap())
             .unwrap()
@@ -456,7 +468,7 @@ mod tests {
         first.open(&path, &json!({}));
         first.set(&path, "theme", json!("latte"));
         tokio::time::sleep(SAVE_DEBOUNCE * 2).await;
-        tokio::task::yield_now().await;
+        saved(Path::new(&path)).await;
 
         let (second, _rx) = controller();
         second.open(&path, &json!({ "theme": "mocha" }));

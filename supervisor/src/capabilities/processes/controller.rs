@@ -282,14 +282,16 @@ mod tests {
     /// Polls `snapshot` until `predicate` holds. A real process is being waited on, so the exit
     /// lands whenever the kernel says so; a fixed sleep would either flake or be slow.
     async fn until(controller: &ProcessesController, name: &str, predicate: impl Fn(&SessionProcess) -> bool) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while tokio::time::Instant::now() < deadline {
-            if predicate(&session(controller, name)) {
-                return;
+        // Twice `STOP_GRACE`, so a SIGKILL escalation fits; `within`'s five seconds would not.
+        let wait = async {
+            while !predicate(&session(controller, name)) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("timed out waiting on {name:?}; last state was {:?}", session(controller, name));
+        };
+        let last = || session(controller, name);
+        tokio::time::timeout(STOP_GRACE * 2, wait)
+            .await
+            .unwrap_or_else(|_| panic!("timed out on {name:?}: {:?}", last()));
     }
 
     fn shell(script: &str) -> (String, Vec<String>) {
@@ -307,14 +309,12 @@ mod tests {
     }
 
     async fn until_ready(marker: &Path) {
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-        while tokio::time::Instant::now() < deadline {
-            if marker.exists() {
-                return;
+        crate::capabilities::test_support::within(async {
+            while !marker.exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        panic!("the child never reported its trap installed at {}", marker.display());
+        })
+        .await;
     }
 
     #[tokio::test]

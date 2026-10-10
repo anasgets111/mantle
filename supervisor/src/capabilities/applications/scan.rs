@@ -249,8 +249,8 @@ mod tests {
 
         for app_id in ["org.example.Helper", "org.example.helper", "helper", "HelperWindow", "helperwindow"] {
             let index = result.by_app_id[app_id];
-            assert_eq!(result.entries[index - 1].icon.as_deref(), Some("helper"));
-            assert!(result.entries[index - 1].no_display);
+            assert_eq!(result.entries[index - 1].icon.as_deref(), Some("helper"), "{app_id}");
+            assert!(result.entries[index - 1].no_display, "{app_id}");
         }
         assert!(!result.by_app_id.contains_key("hidden"));
         assert_eq!(result.entries.len(), 2);

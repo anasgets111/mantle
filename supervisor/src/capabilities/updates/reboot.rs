@@ -74,11 +74,12 @@ mod tests {
     /// Polls until the watcher has published `expected`; the inotify round trip has no completion
     /// to await.
     async fn wait_for_reboot_required(state: &Arc<Mutex<UpdatesState>>, expected: bool) {
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while state.lock().unwrap().reboot_required != expected {
-            assert!(std::time::Instant::now() < deadline, "reboot_required never became {expected}");
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        crate::capabilities::test_support::within(async {
+            while state.lock().unwrap().reboot_required != expected {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
     }
 
     #[tokio::test]

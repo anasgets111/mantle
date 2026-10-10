@@ -681,11 +681,11 @@ mod tests {
         let mut excess = UnixStream::connect(&path).await.unwrap();
         let mut byte = [0];
         assert_eq!(tokio::time::timeout(Duration::from_secs(2), excess.read(&mut byte)).await.unwrap().unwrap(), 0);
-        tokio::select! {
-            biased;
-            _ = peers.last().unwrap().readable() => panic!("a connection within the limit was closed"),
-            () = tokio::task::yield_now() => {}
-        }
+        // The server has handled the excess by now; a wrongly closed peer would be readable (EOF).
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), peers.last().unwrap().readable()).await.is_err(),
+            "a connection within the limit was closed"
+        );
     }
 
     #[tokio::test(start_paused = true)]

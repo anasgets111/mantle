@@ -856,9 +856,18 @@ mod resync_tests {
         (connection, peer, player)
     }
 
-    /// Long enough for queued wakes, their resyncs and the 100 ms recheck to finish.
-    async fn settle() {
-        tokio::time::sleep(Duration::from_millis(400)).await;
+    /// Returns once `Position` reads stop for 150 ms: queued wakes, their resyncs and the 100 ms recheck are done.
+    async fn settle(player: &Player) {
+        within(async {
+            loop {
+                let reads = player.position_reads.load(Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                if player.position_reads.load(Ordering::Relaxed) == reads {
+                    return;
+                }
+            }
+        })
+        .await;
     }
 
     async fn properties_changed(peer: &zbus::Connection, changed: HashMap<&str, Value<'_>>) {
@@ -944,7 +953,7 @@ mod resync_tests {
         let reads = || player.position_reads.load(Ordering::Relaxed);
         let before = reads();
         within(woken.recv()).await;
-        settle().await;
+        settle(&player).await;
         // zbus replays all 13 cached properties as the forwarder subscribes, 13 resyncs undrained;
         // a second batch is legitimate on a multi-thread runtime. Plus the replayed status's recheck.
         assert!(reads() - before <= 3, "{} resyncs for the subscription replay", reads() - before);
@@ -955,7 +964,7 @@ mod resync_tests {
         properties_changed(&peer, HashMap::from(changed)).await;
         seeked(&peer, 5_000_000).await;
         until(&registry, |state| state.volume == 25.0 && state.position == Some(5_000_000)).await;
-        settle().await; // the upper bound on resyncs needs the quiet period
+        settle(&player).await; // the upper bound on resyncs needs the quiet period
         assert!(reads() - before <= 3, "{} resyncs for one signal of 4 properties and a Seeked", reads() - before);
         assert!(!last_known(&registry).shuffle);
     }
@@ -966,14 +975,14 @@ mod resync_tests {
         let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
         let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
         register_player(&connection, &registry, &events, NAME.to_string()).await;
-        settle().await;
+        settle(&player).await;
         let stalled = player.gate.lock().await;
         // A resync stuck on `Position` while the next batch queues up behind it.
         properties_changed(&peer, HashMap::from([("Volume", 0.75.into())])).await;
-        settle().await;
+        settle(&player).await;
         seeked(&peer, 300_000_000).await;
         properties_changed(&peer, HashMap::from([("Metadata", Value::from(track("/t/2", "Next")))])).await;
-        settle().await; // the batch must queue behind the stalled resync
+        settle(&player).await; // the batch must queue behind the stalled resync
         drop(stalled);
         until(&registry, |state| state.title == "Next").await;
         assert_ne!(last_known(&registry).position, Some(300_000_000), "the old track's seek target");
