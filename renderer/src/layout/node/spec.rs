@@ -168,7 +168,7 @@ impl Prop for Children {
                 Value::Table(entry) => deserialize_child(&entry, "children", Some(index - 1)),
                 other => Err(invalid(
                     "children",
-                    format!("children[{}]: expected a node table, got {}", index - 1, preview_for_error(&other)),
+                    format!("children[{}]: expected a node table, got {}", index, preview_for_error(&other)),
                 )),
             };
             match child {
@@ -953,7 +953,7 @@ mod tests {
             .unwrap();
         let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "children" && detail == "children[1]: expected a node table, got nil"),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "children" && detail == "children[2]: expected a node table, got nil"),
             "{err}"
         );
 

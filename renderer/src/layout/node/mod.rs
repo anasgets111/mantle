@@ -321,7 +321,7 @@ fn invalid_property(property: &str, detail: &str, at: Option<&Trail>) -> String 
 impl std::fmt::Display for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.index {
-            Some(index) => write!(f, "{}[{index}]", self.kind),
+            Some(index) => write!(f, "{}[{}]", self.kind, index + 1),
             None => write!(f, "{}", self.kind),
         }
     }

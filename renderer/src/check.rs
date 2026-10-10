@@ -315,7 +315,7 @@ mod tests {
                     "local function label()\n  return text { contnet = \"hi\" }\nend\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = row { children = { label() } } }\n",
                 )],
                 &[
-                    "shell.lua:2: text[0]: no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) on `bar@DP-1`)",
+                    "shell.lua:2: text[1]: no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) on `bar@DP-1`)",
                 ],
             ),
             (
@@ -325,8 +325,8 @@ mod tests {
                     "return panel { id = \"p\", layer = \"top\", child = column {\n  children = { row {\n    children = { rect { opacity = 2 } },\n  } },\n} }\n",
                 )],
                 &[
-                    "shell.lua:3: rect[0]: invalid value for `opacity`",
-                    "(at panel (shell.lua:1) > column (shell.lua:1) > row[0] (shell.lua:2) on `p@DP-1`)",
+                    "shell.lua:3: rect[1]: invalid value for `opacity`",
+                    "(at panel (shell.lua:1) > column (shell.lua:1) > row[1] (shell.lua:2) on `p@DP-1`)",
                     "must be within [0, 1], got integer 2",
                 ],
             ),

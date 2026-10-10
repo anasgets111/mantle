@@ -1645,7 +1645,7 @@ pub(super) mod tests {
                 && first.contains("must be within [0, 1], got integer 2"),
             "{first}"
         );
-        assert!(first.contains("> list[1] ("), "the list item's too: {first}");
+        assert!(first.contains("> list[2] ("), "the list item's too: {first}");
         let bar = column(&scene);
         assert_eq!((bar.children[0].opacity, bar.children[1].children[0].opacity), (1.0, 1.0), "the default");
 
