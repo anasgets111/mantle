@@ -4,14 +4,17 @@
 //! of `WorkspaceRow`/`FocusedWindow`; this maps niri types and drives the loop.
 
 use std::collections::HashMap;
-use std::time::Duration;
+use std::io::Write;
+use std::os::unix::net::UnixStream;
+use std::path::Path;
 
 use shared::{debug, warn};
 
-use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::capabilities::{RETRY_FIRST, RETRY_MAX, STABLE};
+use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
 /// only a handful of workspaces.
@@ -129,16 +132,6 @@ impl Parts {
     }
 }
 
-/// Why [`follow`] stopped.
-#[derive(Debug, PartialEq)]
-pub(super) enum End {
-    /// The stream ended or its state desynced; the published state is cleared and a fresh stream's
-    /// replay rebuilds every part.
-    Lost,
-    /// Nobody listens to either publisher.
-    Unwanted,
-}
-
 /// Folds one event stream into the published state.
 fn follow(
     socket: niri_ipc::socket::Socket,
@@ -193,47 +186,12 @@ fn follow(
     }
 }
 
-/// Connects, runs `follow`, and reconnects after each loss with [`RETRY_FIRST`] doubling to
-/// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. The first connect retries
-/// too. `first_delay` is a parameter for tests.
-/// ponytail: a compositor that never comes up keeps one thread retrying every 30 s until exit; stop once the publishers are gone.
-pub(super) fn keep_following<S>(
-    compositor: &str,
-    first_delay: Duration,
-    mut connect: impl FnMut() -> std::io::Result<S>,
-    mut follow: impl FnMut(S) -> End,
-) {
-    let mut delay = first_delay;
-    loop {
-        let mut failures = 0;
-        let stream = loop {
-            match connect() {
-                Ok(stream) => break stream,
-                Err(err) if failures == 0 => warn!("cannot reach {compositor} ({err}); retrying"),
-                Err(err) => debug!("cannot reach {compositor} ({err}); retrying in {delay:?}"),
-            }
-            failures += 1;
-            std::thread::sleep(delay);
-            delay = (delay * 2).min(RETRY_MAX);
-        };
-        let started = std::time::Instant::now();
-        if follow(stream) == End::Unwanted {
-            return;
-        }
-        if started.elapsed() >= STABLE {
-            delay = first_delay;
-        }
-        std::thread::sleep(delay);
-        delay = (delay * 2).min(RETRY_MAX);
-    }
-}
-
 /// On an OS thread, connects, requests the event stream and runs [`keep_following`], so a stalled
 /// niri blocks the reader and not the caller. Also drives `mantle.windows` and `keyboard`'s layout
 /// from the same stream, rather than a second connection.
 pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
     std::thread::spawn(move || {
-        keep_following("niri", RETRY_FIRST, crate::compositor::niri_event_stream, |socket| {
+        keep_following("niri", RETRY_FIRST, niri_event_stream, |socket| {
             follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
         });
     });
@@ -249,7 +207,7 @@ fn undecodable(err: &std::io::Error) -> bool {
 /// could focus the wrong workspace.
 pub fn focus(id: &str) {
     let Some(reference) = workspace_reference(id) else { return };
-    crate::compositor::niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
+    niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
 }
 
 fn workspace_reference(id: &str) -> Option<niri_ipc::WorkspaceReferenceArg> {
@@ -265,7 +223,7 @@ pub fn focus_window(id: &str) {
         debug!("focus({id:?}) is not a niri window id; ignored");
         return;
     };
-    crate::compositor::niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
+    niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
 }
 
 pub fn close_window(id: &str) {
@@ -273,7 +231,7 @@ pub fn close_window(id: &str) {
         debug!("close({id:?}) is not a niri window id; ignored");
         return;
     };
-    crate::compositor::niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
+    niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
 }
 
 pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
@@ -282,10 +240,46 @@ pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
         debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
         return;
     };
-    crate::compositor::niri_action(
-        niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false },
-        "windows",
-    );
+    niri_action(niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false }, "windows");
+}
+
+/// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. Blocks on niri's
+/// reply, so callers run it off the main task.
+pub fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
+    let mut socket = niri_ipc::socket::Socket::connect()?;
+    match socket.send(niri_ipc::Request::EventStream)? {
+        Ok(niri_ipc::Response::Handled) => Ok(socket),
+        Ok(other) => Err(std::io::Error::other(format!("unexpected reply to the niri EventStream request: {other:?}"))),
+        Err(msg) => Err(std::io::Error::other(format!("niri refused the EventStream request: {msg}"))),
+    }
+}
+
+/// One niri request on a fresh connection (`read_events` shuts down the event-stream socket's
+/// write half), bounded by [`REQUEST_TIMEOUT`]: `niri_ipc::socket::Socket` has no timeout API, so a
+/// stalled niri would wedge [`run_in_order`]'s thread. The connect itself cannot stall on a unix
+/// socket short of a full backlog.
+pub(super) fn niri_request(path: &Path, request: &niri_ipc::Request) -> std::io::Result<()> {
+    let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
+    line.push('\n');
+    stream.write_all(line.as_bytes())?;
+    std::io::BufRead::read_line(&mut std::io::BufReader::new(stream), &mut String::new())?;
+    Ok(())
+}
+
+/// One niri action, fire-and-forget through [`run_in_order`].
+pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
+    run_in_order(move || {
+        let label = format!("{action:?}");
+        let Some(path) = std::env::var_os(niri_ipc::socket::SOCKET_PATH_ENV) else {
+            return debug!("{capability}: {} is unset; {label} ignored", niri_ipc::socket::SOCKET_PATH_ENV);
+        };
+        if let Err(err) = niri_request(Path::new(&path), &niri_ipc::Request::Action(action)) {
+            debug!("{capability}: niri {label} request failed: {err}");
+        }
+    });
 }
 
 #[cfg(test)]
@@ -487,25 +481,6 @@ mod tests {
         let closed: niri_ipc::Event = serde_json::from_str(r#"{"WindowClosed":{"id":9}}"#).unwrap();
 
         assert!(!parts.apply(closed), "niri-ipc would panic on a window it never saw");
-    }
-
-    #[test]
-    fn a_failed_first_connect_and_a_lost_stream_both_retry_until_nobody_listens() {
-        let (mut connects, mut follows) = (0, 0);
-        keep_following(
-            "niri",
-            Duration::ZERO,
-            || {
-                connects += 1;
-                if connects == 1 { Err(std::io::ErrorKind::NotFound.into()) } else { Ok(connects) }
-            },
-            |_| {
-                follows += 1;
-                if follows < 3 { End::Lost } else { End::Unwanted }
-            },
-        );
-
-        assert_eq!((follows, connects), (3, 4), "the first connect failed once and was retried");
     }
 
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an

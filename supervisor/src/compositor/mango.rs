@@ -6,18 +6,19 @@
 //! come from `build_monitor_json`, `build_tags_json` and `build_client_json` in mango's
 //! `src/ipc/ipc.c`.
 
+use std::io::{BufRead, Write};
 use std::io::{BufReader, Read};
-use std::path::Path;
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
-use super::niri::{End, keep_following};
+use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::compositor::{MANGO_LINE_MAX, mango_dispatch, mango_read_line, mango_request, mango_send, mango_socket};
+use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
 #[derive(Deserialize)]
 struct Monitors {
@@ -294,6 +295,60 @@ pub fn toggle_window_fullscreen(id: &str) {
     dispatch_window("togglefullscreen", id);
 }
 
+/// `$MANGO_INSTANCE_SIGNATURE`, the path of mango's IPC socket, or `None` when unset or empty.
+/// mango exports it only while its socket is bound and unsets it on exit.
+pub fn mango_socket() -> Option<PathBuf> {
+    std::env::var_os("MANGO_INSTANCE_SIGNATURE").filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+/// Longest mango line read, matching the other compositor readers; a longer one is a lost stream.
+pub const MANGO_LINE_MAX: u64 = 64 << 20;
+
+/// Connects and sends one newline-terminated mango command. A newline inside `command` would
+/// smuggle a second command, so it is refused. A `watch` keeps the stream open for more lines.
+pub fn mango_send(socket_path: &Path, command: &str) -> std::io::Result<UnixStream> {
+    if command.contains(['\n', '\r']) {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "newline in a mango command"));
+    }
+    let mut stream = UnixStream::connect(socket_path)?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.write_all(format!("{command}\n").as_bytes())?;
+    Ok(stream)
+}
+
+/// One line of at most `max` bytes, `None` at end of stream. Lossy: mango copies window titles
+/// into its JSON raw, and a strict `read_line` would fail the stream on one that is not UTF-8.
+pub fn mango_read_line(reader: &mut impl BufRead, max: u64) -> std::io::Result<Option<String>> {
+    let mut line = Vec::new();
+    let read = reader.take(max).read_until(b'\n', &mut line)?;
+    if read as u64 == max && line.last() != Some(&b'\n') {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "mango line over the size limit"));
+    }
+    Ok((read > 0).then(|| String::from_utf8_lossy(&line).into_owned()))
+}
+
+/// One mango `get` or `dispatch`: a single JSON line back, then mango closes the connection.
+pub fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
+    let stream = mango_send(socket_path, command)?;
+    // A stalled mango must not wedge the reader or the shared action thread.
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    Ok(mango_read_line(&mut std::io::BufReader::new(stream), MANGO_LINE_MAX)?.unwrap_or_default())
+}
+
+/// A mango `dispatch` through [`run_in_order`], logging a refusal (`{"error":...}`) at debug level.
+pub fn mango_dispatch(command: String, capability: &'static str) {
+    run_in_order(move || {
+        let Some(path) = mango_socket() else {
+            return debug!("{capability}: MANGO_INSTANCE_SIGNATURE is unset; `{command}` ignored");
+        };
+        match mango_request(&path, &format!("dispatch {command}")) {
+            Ok(reply) if reply.contains("\"success\":true") => debug!(2; "{capability}: mango `{command}` succeeded"),
+            Ok(reply) => debug!("{capability}: mango refused `{command}`: {}", reply.trim()),
+            Err(err) => debug!("{capability}: mango `{command}` request failed: {err}"),
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +566,14 @@ mod tests {
         stream.read_line(&mut line).unwrap();
         assert_eq!(line, "{\"monitors\":[]}\n");
         assert!(mango_send(&path, "watch x\nget version").is_err());
+    }
+
+    #[test]
+    fn a_mango_line_over_the_limit_is_an_error_and_bad_utf8_is_replaced() {
+        let read = |bytes: &[u8]| mango_read_line(&mut std::io::BufReader::new(bytes), 8);
+        assert_eq!(read(b"0123456\n").unwrap().as_deref(), Some("0123456\n"));
+        assert_eq!(read(b"01234567\n").unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(read(b"a\xffb").unwrap().as_deref(), Some("a\u{fffd}b"));
+        assert_eq!(read(b"").unwrap(), None);
     }
 }

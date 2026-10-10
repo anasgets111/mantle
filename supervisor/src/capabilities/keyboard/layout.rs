@@ -10,9 +10,9 @@ use serde::Deserialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::{
-    SWAY_GET_INPUTS, hyprland_command, hyprland_request, hyprland_socket_path, niri_action, sway_command, sway_request,
-};
+use crate::compositor::hyprland::{hyprland_command, hyprland_request, hyprland_socket_path};
+use crate::compositor::niri::niri_action;
+use crate::compositor::sway::{SWAY_GET_INPUTS, sway_command, sway_request};
 
 use super::controller::KeyboardState;
 

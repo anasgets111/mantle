@@ -37,15 +37,16 @@
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
+use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
+use super::{REQUEST_TIMEOUT, run_in_order};
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::compositor::{hyprland_command, hyprland_request, hyprland_signature, hyprland_socket_path};
+use crate::capabilities::workspaces::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
 use shared::{Capability, debug, error, warn};
 
 /// One `j/workspaces` entry. Hyprland's `windows` count identifies empty workspaces without a
@@ -486,7 +487,7 @@ fn dispatch(what: String, capability: &'static str) {
         debug!("`dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
-    crate::compositor::run_in_order(move || {
+    run_in_order(move || {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
         hyprland_command(&socket_path, &format!("dispatch {what}"), capability);
     });
@@ -515,7 +516,7 @@ fn dispatch_to_workspace(id: &str, capability: &'static str, build: impl FnOnce(
         debug!("workspace {id} requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
         return;
     };
-    crate::compositor::run_in_order(move || {
+    run_in_order(move || {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
         let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(&socket_path, "workspaces") else { return };
         let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == parsed) else {
@@ -602,6 +603,57 @@ fn lua_escape(name: &str) -> String {
             c => c.to_string(),
         })
         .collect()
+}
+
+/// `$HYPRLAND_INSTANCE_SIGNATURE`, or `None` when it is unset or empty.
+///
+/// [`super::detect_compositor`] probes with `var_os`, which accepts bytes `var` rejects, so a session
+/// detected as Hyprland can still have no usable signature. An empty one builds
+/// `$XDG_RUNTIME_DIR/hypr//.socket.sock`, which resolves and never connects.
+pub fn hyprland_signature() -> Option<String> {
+    std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().filter(|signature| !signature.is_empty())
+}
+
+/// A socket in Hyprland's per-instance directory,
+/// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`. `"socket2.sock"` pushes
+/// newline-terminated `event>>payload` lines; `"socket.sock"` answers one plain-text command per
+/// connection (`j/workspaces` for JSON, `dispatch ...` for a write). Shared because `keyboard` and
+/// `workspaces` both open these files, and their path is a session-level fact.
+pub fn hyprland_socket_path(signature: &str, name: &str) -> PathBuf {
+    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
+    hyprland_socket_path_in(&runtime_dir, signature, name)
+}
+
+/// The `join` half of [`hyprland_socket_path`], split from `$XDG_RUNTIME_DIR` lookup so tests avoid
+/// `set_var`. `setenv` rewrites process-wide `environ` and races every concurrent `getenv` in the
+/// test binary, even for unrelated variables.
+fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> PathBuf {
+    PathBuf::from(runtime_dir).join("hypr").join(signature).join(name)
+}
+
+/// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
+/// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
+pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
+    let mut stream = UnixStream::connect(socket_path)?;
+    // A stalled Hyprland must not wedge the reader or the shared action thread.
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.write_all(command.as_bytes())?;
+    let mut reply = String::new();
+    stream.read_to_string(&mut reply)?;
+    Ok(reply)
+}
+
+/// A write and its reply check, blocking. `capability` prefixes the log line, the only thing the
+/// two callers differ in. An unread reply makes a refusal silent: a bad device, an index out of
+/// range.
+pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
+    match hyprland_request(socket_path, command) {
+        Ok(reply) if reply.trim() == "ok" => {
+            debug!(2; "{capability}: Hyprland command `{command}` succeeded");
+        }
+        Ok(reply) => debug!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
+        Err(err) => debug!("{capability}: Hyprland `{command}` request failed: {err}"),
+    }
 }
 
 #[cfg(test)]
@@ -1037,6 +1089,22 @@ mod tests {
         assert_eq!(
             move_window_to_workspace_command(r#"0x"bad"#, "1"),
             r#"hl.dsp.window.move({ window = "address:0x\"bad", workspace = 1, follow = false })"#
+        );
+    }
+
+    #[test]
+    fn hyprland_socket_path_joins_runtime_dir_hypr_signature_and_name() {
+        assert_eq!(
+            hyprland_socket_path_in("/run/user/1000", "abc123", "socket2.sock"),
+            PathBuf::from("/run/user/1000/hypr/abc123/socket2.sock")
+        );
+    }
+
+    #[test]
+    fn a_missing_runtime_dir_falls_back_to_tmp() {
+        assert_eq!(
+            hyprland_socket_path_in("/tmp", "abc123", "socket2.sock"),
+            PathBuf::from("/tmp/hypr/abc123/socket2.sock")
         );
     }
 }

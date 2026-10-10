@@ -13,7 +13,8 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use crate::compositor::{CompositorKind, hyprland_signature, unsupported_session_report};
+use crate::compositor::hyprland::hyprland_signature;
+use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;

@@ -161,16 +161,16 @@ impl Capabilities {
                 let keyboard = self.compositor_reader.keyboard.clone();
                 match kind {
                     CompositorKind::Niri => {
-                        workspaces::niri::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                        crate::compositor::niri::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                     CompositorKind::Hyprland => {
-                        workspaces::hyprland::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                        crate::compositor::hyprland::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                     CompositorKind::Sway => {
-                        workspaces::sway::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                        crate::compositor::sway::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                     CompositorKind::Mango => {
-                        workspaces::mango::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                        crate::compositor::mango::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
                 }
             }

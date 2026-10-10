@@ -16,9 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{CompositorKind, unsupported_session_report};
-
-use super::{hyprland, mango, niri, sway};
+use crate::compositor::{CompositorKind, hyprland, mango, niri, sway, unsupported_session_report};
 
 /// One compositor workspace reduced to [`derive_state`]'s input fields; owned by neither adaptor.
 #[derive(Debug, Clone, PartialEq, Eq)]

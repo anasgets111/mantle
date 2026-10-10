@@ -5,22 +5,18 @@
 //! drives the loop. A workspace's `id` is its name: sway focuses and moves by name, and a numeric
 //! id would not survive a rename or reorder.
 
-use std::io::BufReader;
+use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
-use super::niri::{End, keep_following};
+use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::compositor::{
-    SWAY_GET_TREE, SWAY_GET_WORKSPACES, SWAY_SUBSCRIBE, sway_command, sway_connect, sway_read, sway_request,
-    sway_socket, sway_write,
-};
+use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
 const EVENT_INPUT: u32 = (1 << 31) | 21;
 
@@ -323,12 +319,85 @@ pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
     send(move_command(id, workspace_id), "windows");
 }
 
+/// `$SWAYSOCK`, or `None` when unset or empty.
+pub fn sway_socket() -> Option<PathBuf> {
+    std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+pub const SWAY_RUN_COMMAND: u32 = 0;
+pub const SWAY_GET_WORKSPACES: u32 = 1;
+pub const SWAY_SUBSCRIBE: u32 = 2;
+pub const SWAY_GET_TREE: u32 = 4;
+pub const SWAY_GET_INPUTS: u32 = 100;
+const SWAY_MAGIC: &[u8; 6] = b"i3-ipc";
+/// Far above a real `GET_TREE`; a corrupt length must not allocate gigabytes.
+const SWAY_MAX_PAYLOAD: usize = 64 << 20;
+
+/// Writes one i3-ipc frame.
+pub fn sway_write(stream: &mut impl Write, kind: u32, payload: &[u8]) -> std::io::Result<()> {
+    let mut frame = Vec::with_capacity(14 + payload.len());
+    frame.extend_from_slice(SWAY_MAGIC);
+    frame.extend_from_slice(&(payload.len() as u32).to_ne_bytes());
+    frame.extend_from_slice(&kind.to_ne_bytes());
+    frame.extend_from_slice(payload);
+    stream.write_all(&frame)
+}
+
+/// Reads one frame as `(type, payload)`.
+pub fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
+    let mut header = [0u8; 14];
+    stream.read_exact(&mut header)?;
+    if &header[..6] != SWAY_MAGIC {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "sway frame lacks the i3-ipc magic"));
+    }
+    let len = u32::from_ne_bytes(header[6..10].try_into().expect("4 bytes")) as usize;
+    let kind = u32::from_ne_bytes(header[10..14].try_into().expect("4 bytes"));
+    if len > SWAY_MAX_PAYLOAD {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("sway frame of {len} bytes")));
+    }
+    let mut payload = vec![0; len];
+    stream.read_exact(&mut payload)?;
+    Ok((kind, payload))
+}
+
+/// A connection to sway whose reads and writes give up after [`REQUEST_TIMEOUT`].
+pub fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
+    let stream = UnixStream::connect(socket_path)?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    Ok(stream)
+}
+
+/// One request on a fresh connection; the first frame back is the reply.
+pub fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
+    let mut stream = sway_connect(socket_path)?;
+    sway_write(&mut stream, kind, payload.as_bytes())?;
+    Ok(sway_read(&mut stream)?.1)
+}
+
+/// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.
+pub fn sway_command(command: String, capability: &'static str) {
+    run_in_order(move || {
+        let Some(path) = sway_socket() else {
+            return debug!("{capability}: SWAYSOCK is unset; sway `{command}` ignored");
+        };
+        match sway_request(&path, SWAY_RUN_COMMAND, &command) {
+            Ok(reply) => match serde_json::from_slice::<Vec<serde_json::Value>>(&reply) {
+                Ok(results) if results.iter().all(|r| r["success"] == true) => {
+                    debug!(2; "{capability}: sway command `{command}` succeeded");
+                }
+                _ => debug!("{capability}: sway refused `{command}`: {}", String::from_utf8_lossy(&reply)),
+            },
+            Err(err) => debug!("{capability}: sway `{command}` request failed: {err}"),
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const EVENT_WINDOW: u32 = (1 << 31) | 3;
-    use crate::compositor::SWAY_GET_INPUTS;
     use std::sync::{Arc, Mutex};
 
     // Shapes follow `ipc_json_describe_workspace`/`_node`/`_view` and `ipc-server.c` get_workspaces.
@@ -490,5 +559,42 @@ mod tests {
         assert!(ws_rx.try_recv().is_ok(), "the first read published workspaces");
         let layout = keyboard.state.lock().unwrap().clone();
         assert_eq!((layout.active_layout.as_str(), layout.layout_count), ("English (US)", 1));
+    }
+
+    #[test]
+    fn a_sway_frame_round_trips_over_a_socket_and_a_bad_magic_is_rejected() {
+        let (mut ours, mut theirs) = UnixStream::pair().unwrap();
+        sway_write(&mut ours, SWAY_GET_TREE, b"{\"x\":1}").unwrap();
+        assert_eq!(sway_read(&mut theirs).unwrap(), (SWAY_GET_TREE, b"{\"x\":1}".to_vec()));
+
+        ours.write_all(b"i3-ipx\0\0\0\0\0\0\0\0").unwrap();
+        assert_eq!(sway_read(&mut theirs).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_sway_frame_announcing_more_than_the_cap_is_rejected_before_allocating() {
+        let mut frame = b"i3-ipc".to_vec();
+        frame.extend_from_slice(&u32::MAX.to_ne_bytes());
+        frame.extend_from_slice(&4u32.to_ne_bytes());
+
+        assert_eq!(sway_read(&mut frame.as_slice()).unwrap_err().kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn a_sway_request_reads_the_first_frame_the_server_answers_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sway.sock");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut conn, _) = listener.accept().unwrap();
+            let asked = sway_read(&mut conn).unwrap();
+            sway_write(&mut conn, asked.0, b"[]").unwrap();
+            asked
+        });
+
+        let reply = sway_request(&path, SWAY_GET_WORKSPACES, "").unwrap();
+
+        assert_eq!(reply, b"[]");
+        assert_eq!(server.join().unwrap(), (SWAY_GET_WORKSPACES, Vec::new()));
     }
 }

@@ -13,10 +13,6 @@
 //! window list from the same events, through a second publisher.
 
 pub mod controller;
-pub mod hyprland;
-pub mod mango;
-pub mod niri;
-pub mod sway;
 
 pub use controller::WorkspacesController;
 use shared::action::WorkspacesAction;

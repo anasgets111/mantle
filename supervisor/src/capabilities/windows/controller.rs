@@ -10,8 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::capabilities::workspaces::{hyprland, mango, niri, sway};
-use crate::compositor::{CompositorKind, unsupported_session_report};
+use crate::compositor::{CompositorKind, hyprland, mango, niri, sway, unsupported_session_report};
 
 use super::wlr;
 
