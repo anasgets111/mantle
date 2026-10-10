@@ -216,49 +216,30 @@ mod tests {
     }
 
     #[test]
-    fn a_renderer_that_exits_zero_is_not_a_crash() {
-        assert_eq!(classify_departure(exited(0)), RendererDeparture::Clean);
-    }
-
-    #[test]
-    fn a_renderer_that_exits_nonzero_carries_its_code() {
-        assert_eq!(classify_departure(exited(101)), RendererDeparture::Failed { code: 101 });
-    }
-
-    #[test]
-    fn a_renderer_killed_by_a_signal_reports_the_signal_not_an_exit_code() {
+    fn a_renderer_departure_is_classified_by_exit_code_or_signal() {
         // A signalled child has no exit code; calling `code()` first returns `None` and loses this.
-        assert_eq!(classify_departure(killed_by(9)), RendererDeparture::Signalled { signal: 9 });
-    }
-
-    #[test]
-    fn a_departure_while_locked_says_the_session_stays_locked() {
-        let report = departure_report(RendererDeparture::Signalled { signal: 9 }, 3, true);
-
-        assert!(report.contains("signal 9"), "the signal has to survive into the message: {report}");
-        assert!(
-            report.contains("session stays locked"),
-            "a Renderer that died holding the lock is a different emergency from one that died without it, and the \
-             message is the only place that distinction reaches a human: {report}"
-        );
-    }
-
-    #[test]
-    fn a_departure_while_unlocked_does_not_mention_the_lock() {
-        let report = departure_report(RendererDeparture::Failed { code: 101 }, 3, false);
-
-        assert!(report.contains("code 101"), "{report}");
-        assert!(!report.contains("locked"), "an unlocked crash must not cry lock: {report}");
-    }
-
-    #[test]
-    fn the_brake_allows_restarts_up_to_its_limit() {
-        let start = std::time::Instant::now();
-        let mut brake = RestartBrake::default();
-
-        for attempt in 0..3 {
-            assert!(brake.allow(start + Duration::from_secs(attempt)), "restart {attempt} is within the limit");
+        for (case, status, want) in [
+            ("zero is not a crash", exited(0), RendererDeparture::Clean),
+            ("nonzero carries its code", exited(101), RendererDeparture::Failed { code: 101 }),
+            ("a signal is not an exit code", killed_by(9), RendererDeparture::Signalled { signal: 9 }),
+        ] {
+            assert_eq!(classify_departure(status), want, "{case}");
         }
+    }
+
+    #[test]
+    fn a_departure_says_the_session_stays_locked_only_when_it_was() {
+        let locked = departure_report(RendererDeparture::Signalled { signal: 9 }, 3, true);
+        assert!(locked.contains("signal 9"), "the signal has to survive into the message: {locked}");
+        assert!(
+            locked.contains("session stays locked"),
+            "a Renderer that died holding the lock is a different emergency, and the message is the only place \
+             that distinction reaches a human: {locked}"
+        );
+
+        let unlocked = departure_report(RendererDeparture::Failed { code: 101 }, 3, false);
+        assert!(unlocked.contains("code 101"), "{unlocked}");
+        assert!(!unlocked.contains("locked"), "an unlocked crash must not cry lock: {unlocked}");
     }
 
     #[test]
@@ -266,7 +247,7 @@ mod tests {
         let start = std::time::Instant::now();
         let mut brake = RestartBrake::default();
         for attempt in 0..3 {
-            brake.allow(start + Duration::from_secs(attempt));
+            assert!(brake.allow(start + Duration::from_secs(attempt)), "restart {attempt} is within the limit");
         }
 
         assert!(

@@ -342,13 +342,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ordinary_lines_come_back_split_and_without_their_newlines() {
-        assert_eq!(lines_of(b"one\ntwo\nthree\n").await, vec!["one", "two", "three"]);
-    }
-
-    #[tokio::test]
-    async fn a_final_line_without_a_newline_is_still_delivered() {
-        assert_eq!(lines_of(b"first\nno trailing newline").await, vec!["first", "no trailing newline"]);
+    async fn lines_come_back_split_without_newlines_and_a_final_unterminated_line_is_kept() {
+        let cases: [(&[u8], &[&str]); 3] = [
+            (b"one\ntwo\nthree\n", &["one", "two", "three"]),
+            (b"first\nno trailing newline", &["first", "no trailing newline"]),
+            (b"", &[]),
+        ];
+        for (input, want) in cases {
+            assert_eq!(lines_of(input).await, want, "{input:?}");
+        }
     }
 
     #[tokio::test]
@@ -428,11 +430,6 @@ mod tests {
             Some("keep me".to_string()),
             "the line after the over-long one must survive"
         );
-    }
-
-    #[tokio::test]
-    async fn empty_output_is_no_lines_at_all() {
-        assert!(lines_of(b"").await.is_empty());
     }
 
     #[test]
@@ -517,12 +514,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn taking_an_unregistered_id_returns_none() {
-        let mut processes: LiveProcesses = HashMap::new();
-        assert!(processes.remove(&(1, 1)).is_none());
-    }
-
-    #[tokio::test]
     async fn a_finished_child_is_reported_with_its_real_exit_code_and_forgotten() {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args("exit 7"));
@@ -564,10 +555,25 @@ mod tests {
         let (stdout, stderr) =
             spawn_and_register_process(&mut processes, 1, 2, "seq", &["1".into(), "5000".into()]).unwrap();
         // Never read: a Renderer slower than the child.
-        let (registry, _rx) = registry_with_connection(1);
+        let (registry, rx) = registry_with_connection(1);
 
         let flood = stream_process_output(&registry, 1, 2, stdout, stderr);
-        assert!(tokio::time::timeout(std::time::Duration::from_millis(300), flood).await.is_err(), "it must wait");
+        tokio::pin!(flood);
+        // Output stops short of the queue's end, leaving the reserve for other frames.
+        let full = async {
+            while rx.len() < crate::socket::MAX_OUTBOUND_FRAMES - crate::socket::OUTPUT_RESERVE {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::select! {
+            _ = &mut flood => panic!("the flood finished although nothing was read"),
+            full = tokio::time::timeout(std::time::Duration::from_secs(10), full) => full.expect("the pipe never backed up"),
+        }
+        tokio::select! {
+            biased;
+            _ = &mut flood => panic!("the flood finished although the channel is full"),
+            () = tokio::task::yield_now() => {}
+        }
 
         assert!(registry.send_to(1, b"lock".to_vec()), "a control frame still fits and the peer was not hung up on");
     }

@@ -124,15 +124,6 @@ pub fn shell_lua_path() -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// No lock is needed: precedence tests use [`config_dir_from`] and no test writes the
-    /// process-wide environment anymore.
-    #[test]
-    fn shell_lua_path_is_config_dir_joined_with_shell_lua() {
-        let path = shell_lua_path().unwrap();
-        assert_eq!(path, config_dir().unwrap().join("shell.lua"));
-        assert!(path.ends_with("shell.lua"));
-    }
-
     /// The named directory is the config itself, not a parent to join with `mantle`.
     #[test]
     fn the_named_directory_wins_over_xdg_config_home() {

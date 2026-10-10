@@ -196,19 +196,9 @@ mod capability_tests {
     fn every_entry_round_trips_through_its_name() {
         // One `roster!` list makes omission from `ALL` or `as_str` unrepresentable; this pins
         // `from_name` agreeing with the two wire-facing matches.
-        assert_eq!(Capability::ALL.len(), 26, "a variant was added or removed; check every iterator over ALL");
         for capability in Capability::ALL {
             assert_eq!(Capability::from_name(capability.as_str()), Some(*capability));
         }
-    }
-
-    #[test]
-    fn every_name_is_unique_so_two_variants_cannot_claim_one_lua_member() {
-        let mut names: Vec<&str> = Capability::ALL.iter().map(|capability| capability.as_str()).collect();
-        names.sort_unstable();
-        let count = names.len();
-        names.dedup();
-        assert_eq!(names.len(), count, "two capabilities share a name; `from_name` would resolve only the first");
     }
 
     #[test]

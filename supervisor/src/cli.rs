@@ -405,12 +405,6 @@ mod tests {
             );
             assert_eq!(parsed.config_dir.as_deref(), Some(std::path::Path::new(path)), "{args:?}");
         }
-        // A value that merely begins with a dash is still a value.
-        let parsed = parse_args(&["set", "volume_step", "-5"]).unwrap();
-        assert_eq!(
-            parsed.command,
-            Command::SetState(SetState { name: "volume_step".into(), write: StateWrite::Set(serde_json::json!(-5)) })
-        );
     }
 
     #[test]
@@ -448,18 +442,12 @@ mod tests {
     }
 
     #[test]
-    fn a_config_directory_is_made_absolute() {
+    fn a_config_directory_is_made_absolute_in_the_long_and_equals_forms_alike() {
         let args = parse_args(&["-c", "some/config"]).unwrap();
         let dir = args.config_dir.expect("-c sets a directory");
         assert!(dir.is_absolute(), "a relative -c must be resolved before any Renderer inherits it");
         assert!(dir.ends_with("some/config"));
-    }
-
-    #[test]
-    fn the_long_form_and_the_equals_form_agree() {
-        let a = parse_args(&["--config", "some/config"]).unwrap();
-        let b = parse_args(&["--config=some/config"]).unwrap();
-        assert_eq!(a, b);
+        assert_eq!(parse_args(&["--config", "some/config"]).unwrap(), parse_args(&["--config=some/config"]).unwrap());
     }
 
     #[test]

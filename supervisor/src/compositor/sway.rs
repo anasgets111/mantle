@@ -526,7 +526,7 @@ mod tests {
     }
 
     #[test]
-    fn a_burst_of_frames_already_buffered_asks_for_one_refresh() {
+    fn buffered_bursts_ask_for_one_refresh_and_an_input_only_burst_leaves_the_rows_alone() {
         let mut queued = Vec::new();
         for kind in [EVENT_WINDOW, EVENT_WINDOW, EVENT_INPUT] {
             sway_write(&mut queued, kind, br#"{"change":"title"}"#).unwrap();
@@ -535,10 +535,8 @@ mod tests {
 
         assert_eq!(read_burst(&mut reader).unwrap(), Burst { rows: true, layout: true });
         assert_eq!(read_burst(&mut reader).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
-    }
 
-    #[test]
-    fn an_input_only_burst_leaves_the_rows_alone() {
+        // An input-only burst leaves the rows alone.
         let mut queued = Vec::new();
         sway_write(&mut queued, EVENT_INPUT, b"{}").unwrap();
 
@@ -635,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_sway_inputs_takes_the_first_keyboard_with_layouts_and_skips_other_devices() {
+    fn parse_sway_inputs_takes_the_first_keyboard_with_layouts_and_names_the_active_one_from_the_list() {
         let json = br#"[
             {"identifier":"1:1:Power_Button","name":"Power Button","type":"keyboard","xkb_layout_names":[],"xkb_active_layout_index":0},
             {"identifier":"1133:16495:Mouse","name":"Mouse","type":"pointer","libinput":{}},
@@ -646,10 +644,8 @@ mod tests {
         assert_eq!(parse_sway_inputs(json), Some((String::new(), 1, 2)));
         assert_eq!(parse_sway_inputs(b"[]"), None);
         assert_eq!(parse_sway_inputs(b"not json"), None);
-    }
 
-    #[test]
-    fn parse_sway_inputs_falls_back_to_the_layout_list_when_the_active_name_is_null() {
+        // A null active name falls back to the layout list.
         let json = br#"[{"type":"keyboard","xkb_layout_names":["English (US)","Arabic (Egypt)"],
             "xkb_active_layout_index":1,"xkb_active_layout_name":null}]"#;
 

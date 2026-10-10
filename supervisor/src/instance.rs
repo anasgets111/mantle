@@ -248,10 +248,13 @@ pub(crate) mod tests {
         let (first, _held) = claim(root.path(), 42, Path::new("/old")).unwrap();
         std::fs::write(first.join(LOG), "an earlier run").unwrap();
         std::fs::set_permissions(first.join(LOCK), std::fs::Permissions::from_mode(0o000)).unwrap();
-        // The directory name has millisecond resolution.
-        std::thread::sleep(Duration::from_millis(2));
-
-        let (second, _also_held) = claim(root.path(), 42, Path::new("/new")).unwrap();
+        // The directory name has millisecond resolution; retry until the clock moves on.
+        let (second, _also_held) = loop {
+            match claim(root.path(), 42, Path::new("/new")) {
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+                other => break other.unwrap(),
+            }
+        };
         assert_ne!(first, second);
         assert_eq!(std::fs::read(first.join(LOG)).unwrap(), b"an earlier run");
     }

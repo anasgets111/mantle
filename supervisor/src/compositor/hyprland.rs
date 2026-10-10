@@ -800,10 +800,14 @@ mod tests {
     }
 
     #[test]
-    fn the_number_is_the_id_and_a_numbered_workspace_has_no_name() {
+    fn the_number_is_the_id_and_only_a_workspace_named_otherwise_has_a_name() {
         // Workspaces 1 and 7: `number` is 7, not second-on-monitor, because keybinds dispatch 7.
         let rows = workspace_rows(
-            &workspaces(serde_json::json!([workspace(7, "7", "DP-1", 0), workspace(1, "1", "DP-1", 1)])),
+            &workspaces(serde_json::json!([
+                workspace(7, "7", "DP-1", 0),
+                workspace(1, "1", "DP-1", 1),
+                workspace(2, "mail", "DP-1", 0)
+            ])),
             &monitors(serde_json::json!([monitor("DP-1", 1, true)])),
             &[],
         );
@@ -813,17 +817,8 @@ mod tests {
         assert_eq!(seven.name, None);
         assert!(!seven.populated);
         assert_eq!(seven.app_id, None);
-    }
-
-    #[test]
-    fn a_workspace_named_something_other_than_its_number_keeps_the_name() {
-        let rows = workspace_rows(
-            &workspaces(serde_json::json!([workspace(2, "mail", "DP-1", 1)])),
-            &monitors(serde_json::json!([monitor("DP-1", 2, true)])),
-            &[],
-        );
-
-        assert_eq!(rows[0].name.as_deref(), Some("mail"));
+        // A workspace named something other than its number keeps the name.
+        assert_eq!(rows.iter().find(|row| row.id == "2").unwrap().name.as_deref(), Some("mail"));
     }
 
     #[test]
@@ -916,6 +911,8 @@ mod tests {
         assert!(!is_trigger("workspacev2>>3,3"));
         assert!(!is_trigger("activewindowv2>>55d1c0a3b2c0"));
         assert!(is_trigger("openwindow>>55d1c0a3b2c0,3,kitty,~"));
+        // Without this, `set_maximized`/`set_fullscreen` compare against stale state and can toggle back off.
+        assert!(is_trigger("fullscreen>>1"));
         assert!(!is_trigger("activelayout>>at-translated-set-2-keyboard,English (US)"));
         assert!(!is_trigger("submap>>resize"));
     }
@@ -992,13 +989,6 @@ mod tests {
 
         assert_eq!(state.3[0].title, "vim");
         assert_eq!(state.1.unwrap().title, "vim");
-    }
-
-    /// Without this, `set_maximized`/`set_fullscreen` compare against stale state and can toggle
-    /// right back off.
-    #[test]
-    fn a_fullscreen_or_maximize_change_is_a_trigger() {
-        assert!(is_trigger("fullscreen>>1"));
     }
 
     #[test]
@@ -1165,41 +1155,25 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_runtime_dir_falls_back_to_tmp() {
-        assert_eq!(
-            hyprland_socket_path_in("/tmp", "abc123", "socket2.sock"),
-            PathBuf::from("/tmp/hypr/abc123/socket2.sock")
-        );
-    }
-
-    #[test]
-    fn parse_hyprland_devices_reads_the_first_keyboards_entry() {
-        let json = r#"{"mice":[],"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1}],"tablets":[]}"#;
-        let keyboard = parse_hyprland_devices(json).expect("should parse");
-        assert_eq!(keyboard.active_keymap, "Arabic (Egypt)");
-        assert_eq!(keyboard.active_layout_index, 1);
-    }
-
-    #[test]
-    fn parse_hyprland_devices_prefers_the_main_keyboard_over_array_order() {
+    fn parse_hyprland_devices_reads_the_main_keyboard_and_gives_up_on_nothing_usable() {
         // `main` moves to whichever keyboard was typed on last, so array order names the wrong one.
-        let json = r#"{"keyboards":[
+        let two = r#"{"keyboards":[
             {"active_keymap":"English (US)","layout":"us,ara","active_layout_index":0,"main":false},
             {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}
         ]}"#;
-        let keyboard = parse_hyprland_devices(json).expect("should parse");
-        assert_eq!(keyboard.active_layout_index, 1);
-    }
-
-    #[test]
-    fn parse_hyprland_devices_is_none_when_keyboards_is_empty() {
-        let json = r#"{"keyboards":[]}"#;
-        assert!(parse_hyprland_devices(json).is_none());
-    }
-
-    #[test]
-    fn parse_hyprland_devices_is_none_for_malformed_json() {
-        assert!(parse_hyprland_devices("not json").is_none());
+        let one = r#"{"mice":[],"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1}],"tablets":[]}"#;
+        let omitted = r#"{"keyboards":[{"active_keymap":"English (US)","layout":"us"}]}"#;
+        for (case, json, want) in [
+            ("first entry", one, Some(("Arabic (Egypt)", 1))),
+            ("main over array order", two, Some(("Arabic (Egypt)", 1))),
+            ("index omitted defaults to 0", omitted, Some(("English (US)", 0))),
+            ("empty keyboards", r#"{"keyboards":[]}"#, None),
+            ("malformed json", "not json", None),
+        ] {
+            let got = parse_hyprland_devices(json);
+            let got = got.as_ref().map(|k| (k.active_keymap.as_str(), k.active_layout_index));
+            assert_eq!(got, want, "{case}");
+        }
     }
 
     #[test]
@@ -1213,12 +1187,6 @@ mod tests {
             (guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count),
             ("Arabic (Egypt)", 1, 2)
         );
-    }
-
-    #[test]
-    fn parse_hyprland_devices_defaults_the_index_when_hyprland_omits_it() {
-        let json = r#"{"keyboards":[{"active_keymap":"English (US)","layout":"us"}]}"#;
-        assert_eq!(parse_hyprland_devices(json).expect("should parse").active_layout_index, 0);
     }
 
     #[test]

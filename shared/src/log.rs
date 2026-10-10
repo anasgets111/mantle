@@ -252,12 +252,16 @@ mod tests {
     }
 
     #[test]
-    fn a_level_is_admitted_when_it_is_no_more_frequent_than_the_threshold() {
+    fn a_level_is_admitted_when_it_is_no_more_frequent_than_the_threshold_debug_numbers_included() {
+        let debug = config("", "debug").threshold("audio").unwrap();
         let config = config("", "warn");
 
         assert!(Level::Error <= config.threshold("audio").unwrap(), "a rarer level than the threshold prints");
         assert!(Level::Warn <= config.threshold("audio").unwrap(), "the threshold itself prints");
         assert!(Level::Info > config.threshold("audio").unwrap(), "a more frequent one does not");
+
+        assert!(Level::Debug(1) <= debug, "a debug threshold admits its own number");
+        assert!(Level::Debug(2) > debug, "a louder debug level does not");
     }
 
     #[test]
@@ -267,14 +271,6 @@ mod tests {
         assert_eq!(verbosity_level(2), Level::Debug(1));
         assert_eq!(verbosity_level(3), Level::Debug(2));
         assert_eq!(verbosity_level(9), Level::Debug(2), "past 3, it holds rather than erroring");
-    }
-
-    #[test]
-    fn debug_verbosity_admits_its_own_number_and_everything_quieter() {
-        let config = config("", "debug");
-
-        assert!(Level::Debug(1) <= config.threshold("audio").unwrap(), "the threshold itself prints");
-        assert!(Level::Debug(2) > config.threshold("audio").unwrap(), "a louder debug level does not");
     }
 
     #[test]
@@ -294,15 +290,13 @@ mod tests {
     }
 
     #[test]
-    fn a_line_written_somewhere_that_is_not_a_terminal_carries_no_escape_sequence() {
+    fn a_written_line_carries_no_escape_sequence_and_a_tag_leads_the_subsystem() {
         let line = format_line("", Level::Warn, "tray", format_args!("RequestName failed"));
 
         assert!(!line.contains('\x1b'), "the log file has to stay greppable: {line:?}");
         assert!(line.ends_with(" WARN  tray: RequestName failed\n"), "{line:?}");
-    }
 
-    #[test]
-    fn a_tagged_process_names_itself_before_the_subsystem_so_one_log_can_hold_both() {
+        // A tagged process names itself before the subsystem so one log can hold both.
         let line = format_line("renderer", Level::Info, "image", format_args!("decoded"));
 
         assert!(line.ends_with(" INFO  renderer/image: decoded\n"), "{line:?}");

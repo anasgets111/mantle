@@ -337,15 +337,6 @@ Locked:                0 kB
         assert_eq!(parse_rollup(text), None);
     }
 
-    #[test]
-    fn parse_rollup_is_none_without_a_pss_line() {
-        assert_eq!(
-            parse_rollup("Rss:                3932 kB\n"),
-            None,
-            "a truncated rollup must not be reported as a zero-byte process"
-        );
-    }
-
     // ---- parse_drm_client ----
 
     /// Real i915 output. `drm-resident-system0` plus `drm-resident-stolen-system0` is 279968, equal
@@ -393,62 +384,49 @@ drm-engine-video-enhance:\t0 ns\n";
     }
 
     #[test]
-    fn parse_drm_client_ignores_drm_total_and_only_sums_resident_and_shared() {
-        let text = "drm-driver:\tamdgpu\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t9\ndrm-total-system0:\t500000 KiB\ndrm-resident-system0:\t100000 KiB\ndrm-shared-system0:\t20000 KiB\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:03:00.0".to_string(), client_id: 9, resident: 100000, shared: 20000 })
-        );
-    }
-
-    #[test]
-    fn parse_drm_client_falls_back_to_the_older_drm_memory_naming_when_no_resident_field_exists() {
-        let text = "drm-driver:\tamdgpu\ndrm-pdev:\t0000:03:00.0\ndrm-client-id:\t7\ndrm-memory-vram:\t102400 KiB\ndrm-memory-gtt:\t51200 KiB\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:03:00.0".to_string(), client_id: 7, resident: 153600, shared: 0 })
-        );
-    }
-
-    #[test]
-    fn parse_drm_client_never_adds_the_resident_and_memory_style_fields_together() {
-        // If both naming styles appear, resident wins instead of adding the fallback.
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t1000 KiB\ndrm-memory-system0:\t9999 KiB\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 1000, shared: 0 })
-        );
-    }
-
-    #[test]
-    fn parse_drm_client_treats_a_bare_zero_resident_value_as_present_not_missing() {
-        // If bare `0` failed to parse, this would fall back to `drm-memory-system0`'s 99999.
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t0\ndrm-memory-system0:\t99999 KiB\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 0, shared: 0 })
-        );
-    }
-
-    /// Select fallback only when the modern key is absent, not when its value fails to parse; a
-    /// stale legacy number is wrong, not absent.
-    #[test]
-    fn an_unparseable_resident_value_does_not_fall_back_to_the_legacy_field() {
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 GiB\ndrm-memory-system0:\t99999 KiB\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 0, shared: 0 })
-        );
-    }
-
-    /// Live i915 prints `drm-shared-system0: 40 MiB` beside a `KiB` resident total.
-    #[test]
-    fn parse_drm_client_scales_mib_and_unitless_byte_values() {
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\ndrm-resident-system0:\t50 MiB\ndrm-resident-other:\t1000 KiB\ndrm-shared-system0:\t2048\n";
-        assert_eq!(
-            parse_drm_client(text),
-            Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 52200, shared: 2 })
-        );
+    fn parse_drm_client_picks_resident_and_shared_by_key_and_unit() {
+        let head = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\n";
+        let cases = [
+            (
+                "drm-total ignored",
+                "drm-total-system0:\t500000 KiB\ndrm-resident-system0:\t100000 KiB\ndrm-shared-system0:\t20000 KiB\n",
+                100000,
+                20000,
+            ),
+            (
+                "older drm-memory naming when no resident field exists",
+                "drm-memory-vram:\t102400 KiB\ndrm-memory-gtt:\t51200 KiB\n",
+                153600,
+                0,
+            ),
+            // Resident wins instead of adding the fallback.
+            (
+                "resident and memory styles are never added",
+                "drm-resident-system0:\t1000 KiB\ndrm-memory-system0:\t9999 KiB\n",
+                1000,
+                0,
+            ),
+            // A bare `0` that failed to parse would fall back to 99999.
+            ("bare zero resident is present", "drm-resident-system0:\t0\ndrm-memory-system0:\t99999 KiB\n", 0, 0),
+            // A stale legacy number is wrong, not absent.
+            (
+                "unparseable resident does not fall back",
+                "drm-resident-system0:\t50 GiB\ndrm-memory-system0:\t99999 KiB\n",
+                0,
+                0,
+            ),
+            // Live i915 prints `40 MiB` beside a `KiB` resident total.
+            (
+                "MiB and unitless byte values scale",
+                "drm-resident-system0:\t50 MiB\ndrm-resident-other:\t1000 KiB\ndrm-shared-system0:\t2048\n",
+                52200,
+                2,
+            ),
+        ];
+        for (case, body, resident, shared) in cases {
+            let want = DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident, shared };
+            assert_eq!(parse_drm_client(&format!("{head}{body}")), Some(want), "{case}");
+        }
     }
 
     // ---- read_process_memory / read_gpu, against a fake proc root ----

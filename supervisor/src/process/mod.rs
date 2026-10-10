@@ -199,16 +199,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_group_leader_puts_the_child_in_its_own_process_group() {
-        let mut child = spawn_group_leader("sh", &sh_args("sleep 5"), &[]).expect("failed to spawn");
-        let child_pid = child.id().expect("freshly spawned child has a pid");
-
-        let child_pgid = nix::unistd::getpgid(Some(Pid::from_raw(child_pid as i32))).expect("getpgid on the child");
-        let our_pgid = nix::unistd::getpgrp();
-        assert_ne!(child_pgid, our_pgid, "child should not inherit the test process's own group");
-        assert_eq!(child_pgid.as_raw(), child_pid as i32, "a group leader's pgid equals its own pid");
-
-        reap_process_group(&mut child, Duration::from_millis(200)).await.expect("cleanup reap failed");
+    async fn every_spawn_group_leader_variant_puts_the_child_in_its_own_process_group() {
+        let sleep = sh_args("sleep 5");
+        let children = [
+            ("plain", spawn_group_leader("sh", &sleep, &[])),
+            ("piped", spawn_group_leader_piped("sh", &sleep)),
+            ("stdio_piped", spawn_group_leader_stdio_piped("sh", &sleep, &[])),
+        ];
+        for (variant, child) in children {
+            let mut child = child.expect("failed to spawn");
+            let child_pid = child.id().expect("freshly spawned child has a pid");
+            let child_pgid = nix::unistd::getpgid(Some(Pid::from_raw(child_pid as i32))).expect("getpgid on the child");
+            assert_ne!(child_pgid, nix::unistd::getpgrp(), "{variant}: child inherited the test process's group");
+            assert_eq!(child_pgid.as_raw(), child_pid as i32, "{variant}: a group leader's pgid equals its pid");
+            reap_process_group(&mut child, Duration::from_millis(200)).await.expect("cleanup reap failed");
+        }
     }
 
     #[tokio::test]
@@ -303,19 +308,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_group_leader_piped_also_puts_the_child_in_its_own_process_group() {
-        // Guard the piped variant's process-group behavior.
-        let mut child = spawn_group_leader_piped("sh", &sh_args("sleep 5")).expect("failed to spawn");
-        let child_pid = child.id().expect("freshly spawned child has a pid");
-
-        let child_pgid = nix::unistd::getpgid(Some(Pid::from_raw(child_pid as i32))).expect("getpgid on the child");
-        let our_pgid = nix::unistd::getpgrp();
-        assert_ne!(child_pgid, our_pgid, "child should not inherit the test process's own group");
-
-        reap_process_group(&mut child, Duration::from_millis(200)).await.expect("cleanup reap failed");
-    }
-
-    #[tokio::test]
     async fn spawn_group_leader_piped_pipes_stdout_and_stderr_separately_with_the_real_exit_code() {
         let mut child =
             spawn_group_leader_piped("sh", &sh_args("echo line1; echo line2 >&2; exit 3")).expect("failed to spawn");
@@ -330,19 +322,6 @@ mod tests {
 
         let status = child.wait().await.expect("wait failed");
         assert_eq!(status.code(), Some(3));
-    }
-
-    #[tokio::test]
-    async fn spawn_group_leader_stdio_piped_also_puts_the_child_in_its_own_process_group() {
-        // Guard the stdin/stdout-piped variant's process-group behavior.
-        let mut child = spawn_group_leader_stdio_piped("sh", &sh_args("cat"), &[]).expect("failed to spawn");
-        let child_pid = child.id().expect("freshly spawned child has a pid");
-
-        let child_pgid = nix::unistd::getpgid(Some(Pid::from_raw(child_pid as i32))).expect("getpgid on the child");
-        let our_pgid = nix::unistd::getpgrp();
-        assert_ne!(child_pgid, our_pgid, "child should not inherit the test process's own group");
-
-        reap_process_group(&mut child, Duration::from_millis(200)).await.expect("cleanup reap failed");
     }
 
     #[tokio::test]
@@ -386,9 +365,6 @@ mod tests {
         let recorded = std::fs::read_to_string(&out).expect("the detached program must have run");
         let parent: u32 = recorded.trim().parse().expect("a pid");
         assert_ne!(parent, std::process::id(), "a detached program must not be this process's child");
-
-        // And it is a session of its own, so a signal to this process's group cannot reach it.
-        assert_ne!(parent, 0);
     }
 
     #[tokio::test]

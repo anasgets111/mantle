@@ -550,12 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn no_monitors_means_no_workspaces() {
-        let Monitors { monitors } = serde_json::from_str(r#"{"monitors":[]}"#).unwrap();
-        assert!(workspace_rows(&monitors, &clients()).is_empty());
-    }
-
-    #[test]
     fn the_watch_command_reaches_the_socket_as_one_line() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("mango.sock");

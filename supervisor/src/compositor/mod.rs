@@ -307,14 +307,10 @@ mod tests {
     }
 
     #[test]
-    fn desktop_name_takes_the_most_specific_entry_of_a_colon_separated_list() {
+    fn desktop_name_takes_the_most_specific_entry_and_is_none_for_an_empty_variable() {
         assert_eq!(desktop_name("niri:wlroots"), Some("niri"));
         assert_eq!(desktop_name("Hyprland"), Some("Hyprland"));
         assert_eq!(desktop_name(" river : wlroots "), Some("river"));
-    }
-
-    #[test]
-    fn desktop_name_is_none_when_the_variable_is_set_but_empty() {
         // Bare `weston`/`cage` can leave `XDG_CURRENT_DESKTOP` set but empty; reporting
         // "this session is , which has no implementor" is worse than the generic line.
         assert_eq!(desktop_name(""), None);

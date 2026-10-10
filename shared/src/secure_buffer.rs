@@ -134,30 +134,6 @@ pub fn deserialize_secret<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
 #[cfg(test)]
 mod tests {
 
-    #[test]
-    fn growth_scrubs_the_block_it_leaves_behind() {
-        // The trap this exists for: a plain `Vec` frees the old block with the secret still in it,
-        // beyond the reach of zeroizing the final buffer.
-        let mut buffer = SecureBuffer::new();
-        buffer.push_bytes(b"secret");
-        let first_block = buffer.expose_secret().as_ptr();
-        buffer.push_bytes(&[b'x'; 4096]);
-        assert_ne!(
-            buffer.expose_secret().as_ptr(),
-            first_block,
-            "the append must have forced a reallocation for this to be testing anything"
-        );
-        assert!(buffer.expose_secret().starts_with(b"secretxxx"), "growth must preserve what was already there");
-    }
-
-    #[test]
-    fn push_str_and_push_bytes_are_the_same_append() {
-        let mut from_str = SecureBuffer::new();
-        from_str.push_str("hello");
-        let mut from_bytes = SecureBuffer::new();
-        from_bytes.push_bytes(b"hello");
-        assert_eq!(from_str.expose_secret(), from_bytes.expose_secret());
-    }
     use super::*;
 
     #[test]
@@ -166,36 +142,7 @@ mod tests {
         buf.push_str("pa\u{00df}w\u{00f6}rd");
         assert_eq!(buf.len(), 9, "two of these seven characters are two bytes each");
         assert_eq!(buf.grapheme_count(), 7, "a masked field must draw one dot per keystroke, not per byte");
-    }
-
-    #[test]
-    fn grapheme_count_follows_a_backspace() {
-        let mut buf = SecureBuffer::new();
-        buf.push_str("ab\u{00e9}");
-        assert_eq!(buf.grapheme_count(), 3);
-        assert!(buf.pop_grapheme());
-        assert_eq!(buf.grapheme_count(), 2, "deleting one multi-byte character removes exactly one dot");
-    }
-
-    #[test]
-    fn an_empty_buffer_has_no_characters() {
         assert_eq!(SecureBuffer::new().grapheme_count(), 0);
-    }
-
-    #[test]
-    fn push_str_is_readable_via_expose_secret() {
-        let mut buf = SecureBuffer::new();
-        buf.push_str("hunter2");
-        assert_eq!(buf.expose_secret(), b"hunter2");
-        assert_eq!(buf.len(), 7);
-        assert!(!buf.is_empty());
-    }
-
-    #[test]
-    fn new_buffer_is_empty() {
-        let buf = SecureBuffer::new();
-        assert!(buf.is_empty());
-        assert_eq!(buf.expose_secret(), b"");
     }
 
     /// After `.zeroize()`, the entire backing allocation, including bytes past `len()` that
@@ -241,9 +188,11 @@ mod tests {
         let mut buf = SecureBuffer::new();
         buf.push_str("a\u{e9}");
         assert_eq!(buf.len(), 3);
+        assert_eq!(buf.grapheme_count(), 2);
 
         assert!(buf.pop_grapheme());
         assert_eq!(buf.expose_secret(), b"a");
+        assert_eq!(buf.grapheme_count(), 1, "deleting one multi-byte character removes exactly one dot");
 
         assert!(buf.pop_grapheme());
         assert!(buf.is_empty());

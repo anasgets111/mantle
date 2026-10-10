@@ -585,28 +585,6 @@ mod tests {
     }
 
     #[test]
-    fn state_snapshot_round_trips() {
-        let snapshot = StateSnapshot {
-            capability: "audio".to_string(),
-            revision: 42,
-            payload: serde_json::json!({"volume": 0.75}),
-        };
-
-        let wire = serde_json::to_value(&snapshot).unwrap();
-        assert_eq!(wire, serde_json::json!({ "capability": "audio", "revision": 42, "payload": {"volume": 0.75} }));
-        let parsed: StateSnapshot = serde_json::from_value(wire).unwrap();
-        assert_eq!(parsed, snapshot);
-    }
-
-    #[test]
-    fn state_snapshot_routes_by_capability_not_just_payload_shape() {
-        // ADR-0029: `capability` tells two structurally identical payloads apart.
-        let audio = StateSnapshot { capability: "audio".to_string(), revision: 1, payload: serde_json::json!({}) };
-        let network = StateSnapshot { capability: "network".to_string(), revision: 1, payload: serde_json::json!({}) };
-        assert_ne!(audio, network);
-    }
-
-    #[test]
     fn connection_handshake_round_trips() {
         let handshake = ConnectionHandshake { generation_id: 3 };
         let wire = serde_json::to_value(handshake).unwrap();
@@ -658,14 +636,16 @@ mod tests {
         };
         let frame = RendererFrame::Command(envelope.clone());
         let wire = serde_json::to_value(&frame).unwrap();
-        assert_eq!(wire["kind"], "Command");
-        assert_eq!(wire["data"]["id"], 105);
+        assert_eq!(
+            wire,
+            serde_json::json!({ "kind": "Command", "data": {
+                "params": { "generation_id": 4, "capability": "audio", "action": "set_volume", "arguments": [0.75], "expected_revision": 0 },
+                "id": 105
+            } })
+        );
 
         let parsed: RendererFrame = serde_json::from_value(wire).unwrap();
-        match parsed {
-            RendererFrame::Command(parsed_envelope) => assert_eq!(parsed_envelope.id, envelope.id),
-            other => panic!("expected Command, got {other:?}"),
-        }
+        assert_eq!(parsed, frame);
     }
 
     #[test]

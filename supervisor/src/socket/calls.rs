@@ -171,14 +171,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_id_nobody_waits_on_is_refused_rather_than_panicking() {
+    async fn an_id_nobody_waits_on_or_a_caller_that_hung_up_is_refused_rather_than_panicking() {
         let routes = CallRoutes::default();
         assert!(routes.answer(7, &result(404)).is_err());
-    }
-
-    #[tokio::test]
-    async fn a_caller_that_hung_up_leaves_nothing_behind() {
-        let routes = CallRoutes::default();
         let (tx, _rx) = mpsc::channel::<Vec<u8>>(4);
         let id = routes.open(tx).unwrap();
         routes.close(&[id]);

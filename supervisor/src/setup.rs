@@ -210,7 +210,7 @@ mod tests {
     /// a stale schema with no error. It was once wrong by exactly one `parent()`.
     /// Build both layouts directly so this runs in normal `cargo test`.
     #[test]
-    fn both_installed_layouts_resolve_to_the_packaged_stub_directory() {
+    fn both_installed_layouts_resolve_to_the_packaged_stub_directory_and_a_bare_prefix_to_nothing() {
         let root = tempfile::tempdir().unwrap();
         for (exe_rel, label) in [("lib/mantle/mantle", "packaged prefix"), ("bin/mantle", "flat prefix")] {
             let prefix = root.path().join(label.replace(' ', "-"));
@@ -223,6 +223,11 @@ mod tests {
             let found = packaged_stub_dir_from(exe.parent().unwrap());
             assert_eq!(found, Some(stubs.canonicalize().unwrap()), "{label} layout must resolve its stubs");
         }
+
+        // Without adjacent packaged stubs: `None`, not an editor path that completes nothing.
+        let bare = root.path().join("bare/lib/mantle");
+        std::fs::create_dir_all(&bare).unwrap();
+        assert_eq!(packaged_stub_dir_from(&bare), None);
     }
 
     /// Stubs change while the version stays put, so a same-version edit must still be rewritten.
@@ -242,17 +247,6 @@ mod tests {
         run_into(config.path(), false, Some(&stubs)).unwrap();
         assert_eq!(stale_stubs(&stubs).count(), 0, "every stub must match the embedded copy again");
         assert_eq!(stale_stub_notice(&stubs), None);
-    }
-
-    /// Without adjacent packaged stubs, return `None` instead of an editor path that completes
-    /// nothing silently.
-    #[test]
-    fn a_prefix_without_stubs_resolves_to_nothing() {
-        let root = tempfile::tempdir().unwrap();
-        let exe_dir = root.path().join("lib/mantle");
-        std::fs::create_dir_all(&exe_dir).unwrap();
-        let found = packaged_stub_dir_from(&exe_dir);
-        assert_eq!(found, None);
     }
 
     #[test]

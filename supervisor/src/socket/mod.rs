@@ -69,10 +69,10 @@ const MAX_INBOUND_FRAMES: usize = 1024;
 /// without limit. Snapshot pushes coalesce at the Renderer, so a peer this far behind is not going
 /// to catch up by being given more room. `send_to` reports the drop to its caller, which already
 /// handles "this generation did not take the frame".
-const MAX_OUTBOUND_FRAMES: usize = 1024;
+pub(crate) const MAX_OUTBOUND_FRAMES: usize = 1024;
 
 /// Queue slots `process.run` output leaves free for control frames (lock, reload, snapshots).
-const OUTPUT_RESERVE: usize = 256;
+pub(crate) const OUTPUT_RESERVE: usize = 256;
 
 /// How long a wedged Renderer gets to exit after its connection is hung up before its group is killed.
 const WEDGED_KILL_AFTER: Duration = Duration::from_secs(if cfg!(test) { 0 } else { 5 });
@@ -560,10 +560,7 @@ mod tests {
         let refusal = refuse_frame(false, 2, &command_frame(7)).expect("a mismatched generation must be refused");
         assert!(refusal.contains("generation 7"), "{refusal}");
         assert!(refusal.contains("generation 2"), "{refusal}");
-    }
-
-    #[test]
-    fn frames_that_name_no_generation_are_forwarded_because_the_socket_identifies_the_sender() {
+        // A frame naming no generation is forwarded: the socket identifies the sender.
         assert!(
             refuse_frame(false, 3, &RendererFrame::StartCapability { capability: shared::Capability::Audio }).is_none()
         );
@@ -577,15 +574,10 @@ mod tests {
         assert_eq!(registry.may_claim(0, 4242), Some(true));
         assert_eq!(registry.may_claim(0, 4243), Some(false), "another process must not displace the Renderer");
         assert_eq!(registry.may_claim(1, 4242), None, "the binding is per generation, not per process");
-    }
 
-    #[test]
-    fn a_reaped_generations_id_stops_being_claimable() {
-        // Pids are recycled; a stale expectation would eventually match something unrelated.
-        let registry = GenerationRegistry::default();
-        registry.expect_generation(2, 99);
-        registry.forget_generation(2);
-        assert_eq!(registry.may_claim(2, 99), None);
+        // Pids are recycled; a reaped generation's stale expectation would eventually match something unrelated.
+        registry.forget_generation(0);
+        assert_eq!(registry.may_claim(0, 4242), None);
     }
 
     #[tokio::test]
@@ -689,9 +681,11 @@ mod tests {
         let mut excess = UnixStream::connect(&path).await.unwrap();
         let mut byte = [0];
         assert_eq!(tokio::time::timeout(Duration::from_secs(2), excess.read(&mut byte)).await.unwrap().unwrap(), 0);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), peers.last_mut().unwrap().read(&mut byte)).await.is_err()
-        );
+        tokio::select! {
+            biased;
+            _ = peers.last().unwrap().readable() => panic!("a connection within the limit was closed"),
+            () = tokio::task::yield_now() => {}
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -744,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn spawn_listener_forwards_a_decoded_command_envelope_tagged_with_its_generation() {
+    async fn spawn_listener_forwards_decoded_command_and_capability_frames_tagged_with_their_generation() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("control.sock");
         let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
@@ -753,7 +747,7 @@ mod tests {
         let mut client = UnixStream::connect(&path).await.unwrap();
         framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
 
-        let envelope = shared::CommandEnvelope {
+        let command = RendererFrame::Command(shared::CommandEnvelope {
             params: shared::CommandParams {
                 generation_id: 5,
                 capability: "audio".to_string(),
@@ -762,44 +756,19 @@ mod tests {
                 legacy_expected_revision: 0,
             },
             id: 1,
-        };
-        framing::write_json_frame(&mut client, &RendererFrame::Command(envelope)).await.unwrap();
+        });
+        let start = RendererFrame::StartCapability { capability: shared::Capability::Audio };
+        for frame in [command, start] {
+            framing::write_json_frame(&mut client, &frame).await.unwrap();
 
-        let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
-            .await
-            .expect("inbound command did not arrive in time")
-            .expect("inbound channel closed unexpectedly");
+            let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
+                .await
+                .expect("inbound frame did not arrive in time")
+                .expect("inbound channel closed unexpectedly");
 
-        assert_eq!(received.generation_id, 5);
-        match received.frame {
-            RendererFrame::Command(envelope) => {
-                assert_eq!(envelope.params.capability, "audio");
-                assert_eq!(envelope.params.action, "set_volume");
-            }
-            other => panic!("expected Command, got {other:?}"),
+            assert_eq!(received.generation_id, 5);
+            assert_eq!(received.frame, frame);
         }
-    }
-
-    #[tokio::test]
-    async fn spawn_listener_forwards_a_decoded_frame_tagged_with_its_generation() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock");
-        let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
-        expect_this_process(&registry, &[5]);
-
-        let mut client = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
-
-        let frame = RendererFrame::StartCapability { capability: shared::Capability::Audio };
-        framing::write_json_frame(&mut client, &frame).await.unwrap();
-
-        let received = tokio::time::timeout(std::time::Duration::from_secs(2), inbound.recv())
-            .await
-            .expect("inbound frame did not arrive in time")
-            .expect("inbound channel closed unexpectedly");
-
-        assert_eq!(received.generation_id, 5);
-        assert_eq!(received.frame, frame);
     }
 
     /// `mantle set`'s exit code rides on this: its write is routed like a call, so the refusal the

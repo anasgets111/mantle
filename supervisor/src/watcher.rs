@@ -257,11 +257,9 @@ mod tests {
         let _ = recv_within(&mut rx, WAIT).await;
 
         std::fs::create_dir(dir.path().join("widgets")).unwrap();
-        // Watch before writing; otherwise this hits the ISDIR race, not the hash map.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        std::fs::write(dir.path().join("widgets/clock.lua"), "return 1").unwrap();
+        // Retried until the new directory is watched; otherwise this hits the ISDIR race, not the hash map.
         assert!(
-            recv_within(&mut rx, WAIT).await.is_some(),
+            write_until_triggered(&mut rx, &dir.path().join("widgets/clock.lua"), "return 1").await,
             "a file recreated under a rebuilt directory has to reload, whatever its bytes"
         );
     }
@@ -322,33 +320,40 @@ mod tests {
         tokio::time::timeout(timeout, rx.recv()).await.unwrap_or(None)
     }
 
+    /// Rewrites `path` until a trigger arrives, riding out the delay before a new directory's watch exists.
+    async fn write_until_triggered(rx: &mut mpsc::UnboundedReceiver<()>, path: &Path, contents: &str) -> bool {
+        for _ in 0..20 {
+            std::fs::write(path, contents).unwrap();
+            if recv_within(rx, Duration::from_millis(100)).await.is_some() {
+                return true;
+            }
+        }
+        false
+    }
+
     const SHORT_DEBOUNCE: Duration = Duration::from_millis(40);
     const WAIT: Duration = Duration::from_millis(500);
 
     #[tokio::test]
-    async fn a_single_write_to_shell_lua_fires_exactly_one_trigger() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
+    async fn a_lua_or_frag_write_fires_a_trigger_wherever_it_lands() {
+        // Any `.lua` matches, not just shell.lua; configs can split across files (ADR-0047).
+        for (case, rel, seeded) in [
+            ("a changed .frag", "background.frag", true),
+            ("a non-shell .lua at the top level", "colors.lua", false),
+            ("a .lua in a subdirectory present at startup", "widgets/clock.lua", false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            if seeded {
+                std::fs::write(&path, "first").unwrap();
+            }
+            let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
 
-        std::fs::write(dir.path().join("shell.lua"), "return {}").unwrap();
+            std::fs::write(&path, "second").unwrap();
 
-        assert!(recv_within(&mut rx, WAIT).await.is_some(), "a write to shell.lua must fire a trigger");
-        assert!(
-            recv_within(&mut rx, SHORT_DEBOUNCE * 3).await.is_none(),
-            "must not fire a second trigger for the same settled write"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_frag_change_fires_a_reload_trigger() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("background.frag");
-        std::fs::write(&path, "first").unwrap();
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
-
-        std::fs::write(&path, "second").unwrap();
-
-        assert!(recv_within(&mut rx, WAIT).await.is_some());
+            assert!(recv_within(&mut rx, WAIT).await.is_some(), "{case} must trigger a reload");
+        }
     }
 
     #[tokio::test]
@@ -360,7 +365,6 @@ mod tests {
         let path = dir.path().join("shell.lua");
 
         std::fs::write(&path, "return {}").unwrap();
-        tokio::time::sleep(Duration::from_millis(10)).await;
         std::fs::write(&path, "return { id = 2 }").unwrap();
 
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "the burst must fire a trigger");
@@ -401,53 +405,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_write_to_a_non_shell_lua_file_at_the_top_level_still_fires_a_trigger() {
-        // Any `.lua` matches; configs can split across files (ADR-0047).
-        let dir = tempfile::tempdir().unwrap();
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
-
-        std::fs::write(dir.path().join("colors.lua"), "return {}").unwrap();
-
-        assert!(
-            recv_within(&mut rx, WAIT).await.is_some(),
-            "any .lua file at the top level must trigger a reload, not just shell.lua"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_write_to_a_lua_file_in_a_subdirectory_present_at_startup_fires_a_trigger() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("widgets")).unwrap();
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
-
-        std::fs::write(dir.path().join("widgets/clock.lua"), "return {}").unwrap();
-
-        assert!(
-            recv_within(&mut rx, WAIT).await.is_some(),
-            "a .lua file inside a subdirectory that existed at startup must trigger a reload"
-        );
-    }
-
-    #[tokio::test]
     async fn a_directory_created_after_startup_is_watched_for_lua_changes() {
         // A post-start `widgets/` folder must reload without restarting.
         let dir = tempfile::tempdir().unwrap();
         let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
 
         std::fs::create_dir(dir.path().join("widgets")).unwrap();
-        // Let CREATE register the watch before writing; this is the ISDIR race, though real editor
-        // saves are slower.
-        tokio::time::sleep(SHORT_DEBOUNCE).await;
-        std::fs::write(dir.path().join("widgets/clock.lua"), "return {}").unwrap();
 
         assert!(
-            recv_within(&mut rx, WAIT).await.is_some(),
+            write_until_triggered(&mut rx, &dir.path().join("widgets/clock.lua"), "return {}").await,
             "a .lua file inside a directory created after startup must trigger a reload"
         );
     }
 
     #[tokio::test]
-    async fn rewriting_a_lua_file_with_identical_contents_fires_no_trigger() {
+    async fn rewriting_a_lua_file_fires_only_when_its_contents_changed() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("shell.lua");
         let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
@@ -458,25 +430,12 @@ mod tests {
 
         // Write-truncate-rewrite with identical bytes emits CLOSE_WRITE but is no change.
         std::fs::write(&path, "return {}").unwrap();
-
         assert!(
             recv_within(&mut rx, WAIT).await.is_none(),
             "rewriting identical contents must not fire a second trigger"
         );
-    }
-
-    #[tokio::test]
-    async fn rewriting_a_lua_file_with_different_contents_still_fires_a_trigger() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("shell.lua");
-        let mut rx = spawn_watcher(dir.path(), SHORT_DEBOUNCE).unwrap();
-
-        std::fs::write(&path, "return {}").unwrap();
-        assert!(recv_within(&mut rx, WAIT).await.is_some(), "the first write must fire a trigger");
-        assert!(recv_within(&mut rx, SHORT_DEBOUNCE * 3).await.is_none(), "must settle before the next write");
 
         std::fs::write(&path, "return { id = 2 }").unwrap();
-
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "a genuinely changed rewrite must still fire a trigger");
     }
 

@@ -517,19 +517,6 @@ mod tests {
         assert!(!parts.apply(closed), "niri-ipc would panic on a window it never saw");
     }
 
-    #[test]
-    fn niri_switch_layout_index_validation_accepts_the_full_u8_range() {
-        assert_eq!(u8::try_from(0usize), Ok(0));
-        assert_eq!(u8::try_from(255usize), Ok(255));
-    }
-
-    #[test]
-    fn niri_switch_layout_index_validation_rejects_values_that_would_truncate() {
-        // Regression: 256 used to truncate to 0 via `as u8`.
-        assert!(u8::try_from(256usize).is_err());
-        assert!(u8::try_from(usize::MAX).is_err());
-    }
-
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an
     /// unknown event kind and socket end landing on different kinds.
     #[test]

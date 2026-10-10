@@ -442,33 +442,21 @@ mod tests {
     }
 
     #[test]
-    fn first_unix_user_uid_is_none_for_an_empty_list() {
-        assert_eq!(first_unix_user_uid(&[]), None);
-    }
-
-    #[test]
-    fn first_unix_user_uid_is_none_when_only_a_unix_group_is_present() {
+    fn first_unix_user_uid_takes_the_first_unix_user_and_nothing_else() {
         let group = (
             "unix-group".to_string(),
             HashMap::from([("gid".to_string(), OwnedValue::try_from(Value::from(100u32)).unwrap())]),
         );
-        assert_eq!(first_unix_user_uid(&[group]), None);
-    }
-
-    #[test]
-    fn first_unix_user_uid_returns_the_uid_of_a_unix_user_identity() {
-        assert_eq!(first_unix_user_uid(&[unix_user_identity(1000)]), Some(1000));
-    }
-
-    #[test]
-    fn first_unix_user_uid_is_none_when_the_unix_user_entry_is_missing_the_uid_key() {
-        let malformed = ("unix-user".to_string(), HashMap::new());
-        assert_eq!(first_unix_user_uid(&[malformed]), None);
-    }
-
-    #[test]
-    fn first_unix_user_uid_returns_the_first_unix_user_entrys_uid_when_multiple_are_present() {
-        let identities = [unix_user_identity(1000), unix_user_identity(2000)];
-        assert_eq!(first_unix_user_uid(&identities), Some(1000), "must take the first identity, not just any of them");
+        let no_uid = ("unix-user".to_string(), HashMap::new());
+        let cases = [
+            ("empty list", vec![], None),
+            ("only a unix group", vec![group], None),
+            ("unix-user without a uid key", vec![no_uid], None),
+            ("one unix user", vec![unix_user_identity(1000)], Some(1000)),
+            ("several unix users", vec![unix_user_identity(1000), unix_user_identity(2000)], Some(1000)),
+        ];
+        for (case, identities, want) in cases {
+            assert_eq!(first_unix_user_uid(&identities), want, "{case}");
+        }
     }
 }

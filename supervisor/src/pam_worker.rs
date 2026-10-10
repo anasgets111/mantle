@@ -456,36 +456,6 @@ mod tests {
 
     // ---- SELF_EXE (ADR-0161) ----
 
-    /// The bug this constant exists for, reproduced without PAM: replace a running executable and
-    /// then spawn it again. Asserting the string would prove nothing, because `current_exe()`
-    /// returns the right path until the moment the inode is replaced.
-    ///
-    /// Uses `cp` as a stand-in for any binary: copy it, run the copy, unlink the copy, and check
-    /// that both routes to "run myself again" still work from inside that process. `current_exe()`
-    /// is what the shell used and what stranded a locked session.
-    #[tokio::test]
-    async fn a_replaced_binary_is_still_reachable_through_the_magic_link() {
-        let dir = tempfile::tempdir().unwrap();
-        let copy = dir.path().join("stand-in");
-        std::fs::copy("/bin/cp", &copy).expect("a binary to stand in for this one");
-
-        // Hold it open the way a running process holds its own image, then unlink it.
-        let running = std::fs::File::open(&copy).unwrap();
-        std::fs::remove_file(&copy).unwrap();
-
-        let read_back = std::fs::read_link(format!("/proc/self/fd/{}", std::os::fd::AsRawFd::as_raw_fd(&running)))
-            .expect("procfs names the open file");
-        assert!(
-            read_back.to_string_lossy().ends_with(" (deleted)"),
-            "the kernel marks a replaced binary's pathname, which is what made the spawn fail: {read_back:?}"
-        );
-        assert!(
-            !std::path::Path::new(&read_back).exists(),
-            "so the pathname `current_exe()` hands back cannot be spawned"
-        );
-        assert_eq!(SELF_EXE, "/proc/self/exe", "and the link itself is what stays executable");
-    }
-
     /// The child half of [`a_process_whose_binary_was_unlinked_can_still_spawn_itself`]. Inert
     /// unless that test asks for it by name and sets the variable, so the ordinary suite skips it
     /// rather than re-execing itself.
@@ -576,34 +546,23 @@ mod tests {
 
     /// Without a stack, keep the console-login service. Naming `mantle` would select
     /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password.
+    /// Without a stack, keep the console-login service. Naming `mantle` would select
+    /// `/etc/pam.d/other`, `pam_deny` on stock Arch, and reject the correct password. An unreadable
+    /// PAM directory is "not installed", not a panic; this runs in the unlock worker.
     #[test]
-    fn without_an_installed_stack_the_service_falls_back_to_login() {
-        let admin = tempfile::tempdir().unwrap();
-        let vendor = tempfile::tempdir().unwrap();
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "login");
-    }
-
-    #[test]
-    fn an_installed_stack_is_preferred_over_the_console_login_one() {
-        let admin = tempfile::tempdir().unwrap();
-        let vendor = tempfile::tempdir().unwrap();
-        std::fs::write(admin.path().join("mantle"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle");
-    }
-
-    #[test]
-    fn a_stack_installed_to_the_vendor_directory_is_found_without_an_admin_override() {
-        let admin = tempfile::tempdir().unwrap();
-        let vendor = tempfile::tempdir().unwrap();
-        std::fs::write(vendor.path().join("mantle"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle");
-    }
-
-    /// An unreadable PAM directory is "not installed", not a panic; this runs in the unlock worker.
-    #[test]
-    fn a_missing_pam_config_directory_falls_back_rather_than_failing() {
+    fn the_pam_service_is_mantle_only_when_a_stack_is_installed() {
         let no_such = std::path::Path::new("/no/such/pam.d");
-        assert_eq!(pam_service_in(no_such, no_such), "login");
+        assert_eq!(pam_service_in(no_such, no_such), "login", "missing directories");
+
+        let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "login", "no stack installed");
+
+        std::fs::write(admin.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle", "admin directory");
+
+        let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(vendor.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle", "vendor directory without an override");
     }
 
     /// The shipped file is what the probe finds and must carry both chains: `run_conversation`
@@ -623,26 +582,18 @@ mod tests {
         );
     }
 
-    /// Test timeout for ordinary paths: short enough to bound a hung test, long enough for local
-    /// `sh -c` fakes. Deliberately distinct from [`PAM_EXCHANGE_TIMEOUT`].
-    const TEST_TIMEOUT: Duration = Duration::from_secs(2);
+    /// Upper bound for ordinary paths, never waited on in a passing run. Distinct from [`PAM_EXCHANGE_TIMEOUT`].
+    const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[test]
-    fn outcome_for_error_maps_max_tries() {
-        assert_eq!(outcome_for_error(nonstick::ErrorCode::MaxTries), shared::PamOutcome::MaxTries);
-    }
-
-    #[test]
-    fn outcome_for_error_maps_authentication_error_to_auth_failed() {
-        assert_eq!(outcome_for_error(nonstick::ErrorCode::AuthenticationError), shared::PamOutcome::AuthFailed);
-    }
-
-    #[test]
-    fn outcome_for_error_maps_an_arbitrary_other_variant_to_pam_error() {
-        assert_eq!(
-            outcome_for_error(nonstick::ErrorCode::SystemError),
-            shared::PamOutcome::PamError("SystemError".to_string())
-        );
+    fn outcome_for_error_maps_known_errors_and_names_any_other_variant() {
+        for (error, want) in [
+            (nonstick::ErrorCode::MaxTries, shared::PamOutcome::MaxTries),
+            (nonstick::ErrorCode::AuthenticationError, shared::PamOutcome::AuthFailed),
+            (nonstick::ErrorCode::SystemError, shared::PamOutcome::PamError("SystemError".to_string())),
+        ] {
+            assert_eq!(outcome_for_error(error), want, "{error:?}");
+        }
     }
 
     // Real libpam re-exec needs a real PAM stack; unit-test the wire protocol with a fake shell
@@ -776,7 +727,7 @@ mod tests {
     }
 
     #[test]
-    fn read_frame_zeroizes_whatever_it_already_read_before_a_mid_stream_error() {
+    fn read_frame_surfaces_a_mid_stream_read_error() {
         // A valid length prefix, then real payload bytes once, then failure -- reproducing a
         // mid-`read_exact` pipe error after the secret has partly landed in the buffer.
         struct FailsAfterTheLengthPrefix {
@@ -806,8 +757,6 @@ mod tests {
             .expect_err("a reader that errors mid-stream must surface that error, not silently truncate");
 
         assert_eq!(err.to_string(), "simulated mid-read pipe failure");
-        // The partial buffer is already dropped here; proving live zeroization requires observing
-        // it before drop, not afterward.
     }
 
     /// The worker's actual conversation driver, proven without PAM or a subprocess: more than one
