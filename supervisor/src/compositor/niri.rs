@@ -292,10 +292,8 @@ impl Compositor for Niri {
         niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
     }
 
-    // niri only toggles and never reports the state, so a toggle could undo the request.
-    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
-        debug!("set_fullscreen({id:?}, {fullscreen}) called but niri reports no fullscreen state; ignored")
-    }
+    // No `set_fullscreen`: niri only toggles and never reports the state, so a toggle could undo
+    // the request.
 
     fn move_window(&self, id: &str, workspace_id: &str) {
         let Some(reference) = workspace_reference(workspace_id) else { return };

@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, backend_or_unsupported};
 
 use super::wlr;
 
@@ -65,10 +65,7 @@ impl WindowsController {
             Some(kind) => Self { state, backend: Backend::Compositor(kind.backend()) },
             None => match wlr::connect(events.clone(), Arc::clone(&state)).await {
                 Some(handle) => Self { state, backend: Backend::Wlr(handle) },
-                None => {
-                    debug!("{}; window reporting disabled for this run", unsupported_session_report());
-                    Self { state, backend: Backend::Compositor(&Unsupported) }
-                }
+                None => Self { state, backend: Backend::Compositor(backend_or_unsupported(None, "window")) },
             },
         };
         if controller.snapshot() != WindowsState::default() {

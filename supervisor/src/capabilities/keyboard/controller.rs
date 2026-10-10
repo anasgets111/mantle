@@ -13,7 +13,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, backend_or_unsupported};
 
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
@@ -63,13 +63,10 @@ impl KeyboardController {
             }
         }
         tokio::spawn(watch_locks(resolve_locks(leds_root, &state), Arc::clone(&state), events_tx.clone()));
-        if compositor.is_none() {
-            debug!("{}; layout reporting disabled for this run", unsupported_session_report());
-        }
         Self {
             state,
             backlight: Arc::new(backlight),
-            compositor: compositor.map_or(&Unsupported, CompositorKind::backend),
+            compositor: backend_or_unsupported(compositor, "layout"),
             system_bus,
             events: events_tx,
             writes: Default::default(),

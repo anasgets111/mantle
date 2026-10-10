@@ -67,7 +67,9 @@ pub trait Compositor: Sync {
     fn focus_window(&self, id: &str);
     fn close_window(&self, id: &str);
     /// `current` is the last published state; a compositor that only toggles writes on a change.
-    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>);
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
+        unsupported(format_args!("set_fullscreen({id:?}, {fullscreen})"))
+    }
     fn set_maximized(&self, id: &str, maximized: bool, _current: Option<bool>) {
         unsupported(format_args!("set_maximized({id:?}, {maximized})"))
     }
@@ -84,7 +86,7 @@ fn unsupported(call: std::fmt::Arguments) {
 }
 
 /// Stands in when [`detect_compositor`] finds none: no reader, every write logged and dropped.
-pub struct Unsupported;
+struct Unsupported;
 
 impl Compositor for Unsupported {
     fn spawn_reader(&self, _: StatePublisher, _: WindowsPublisher, _: LayoutSink) {}
@@ -96,9 +98,6 @@ impl Compositor for Unsupported {
     }
     fn close_window(&self, id: &str) {
         unsupported(format_args!("close_window({id:?})"))
-    }
-    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
-        unsupported(format_args!("set_fullscreen({id:?}, {fullscreen})"))
     }
 }
 
@@ -115,7 +114,7 @@ fn toggle_needed(current: Option<bool>, want: bool) -> bool {
 ///
 /// Entries are vars set *because the compositor is running*. `$XDG_CURRENT_DESKTOP` is only a name
 /// written by the launcher and remains set if the compositor never starts. It is useful to report
-/// via [`unsupported_session_report`], not to dispatch on.
+/// via [`backend_or_unsupported`], not to dispatch on.
 const PROBES: &[(CompositorKind, &str)] = &[
     (CompositorKind::Hyprland, "HYPRLAND_INSTANCE_SIGNATURE"),
     (CompositorKind::Niri, "NIRI_SOCKET"),
@@ -129,17 +128,20 @@ pub fn detect_compositor() -> Option<CompositorKind> {
     PROBES.iter().find(|(_, var)| std::env::var_os(var).is_some()).map(|(kind, _)| *kind)
 }
 
-/// The "disabled for this run" line `keyboard` and `workspaces` share when [`detect_compositor`]
-/// returns `None`.
+/// `compositor`'s backend, or [`Unsupported`] after logging that `what` reporting is off.
 ///
-/// If set, names `$XDG_CURRENT_DESKTOP`, because "this session is river, which has no implementor"
-/// is actionable. This is not a second detection path; an unrecognised name still yields no
-/// implementor.
-pub fn unsupported_session_report() -> String {
-    match session_desktop() {
-        Some(desktop) => format!("this session is {desktop}, which has no implementor"),
-        None => "no supported compositor was detected".to_string(),
+/// The log names `$XDG_CURRENT_DESKTOP` if set, because "this session is river, which has no
+/// implementor" is actionable. This is not a second detection path; an unrecognised name still
+/// yields no implementor.
+pub fn backend_or_unsupported(compositor: Option<CompositorKind>, what: &str) -> &'static dyn Compositor {
+    if let Some(kind) = compositor {
+        return kind.backend();
     }
+    match session_desktop() {
+        Some(desktop) => debug!("this session is {desktop}, which has no implementor; {what} reporting disabled"),
+        None => debug!("no supported compositor was detected; {what} reporting disabled"),
+    }
+    &Unsupported
 }
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);

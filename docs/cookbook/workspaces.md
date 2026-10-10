@@ -1,6 +1,6 @@
 # Workspaces
 
-A bar on every monitor listing that monitor's workspaces, on Hyprland and niri alike. The active
+A bar on every monitor listing that monitor's workspaces, on every supported compositor. The active
 workspace is a wide pill, occupied ones are brighter, a click focuses one and the wheel steps
 through them. On Hyprland, special workspaces get their own toggles.
 

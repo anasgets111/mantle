@@ -43,7 +43,7 @@ There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set
 | First read of `mantle.<name>` | The Supervisor starts that backend, once. `mantle.idle` starts on its first method call, `:get`, `:map` and `:on_change` included |
 | Before the first push | Every read is `nil`. A missing backend may keep it `nil` for good |
 | Running | A started backend runs for the Supervisor's lifetime. Its state survives reloads and Renderer replacement: a new generation gets every last snapshot replayed ([hydration](../glossary.md#capabilities)) |
-| Shared readers | `audio` and `privacy` share one PipeWire thread; `workspaces` and `windows` share one niri/Hyprland reader. Whichever is read first starts it |
+| Shared readers | `audio` and `privacy` share one PipeWire thread; `workspaces` and `windows` share one compositor reader. Whichever is read first starts it |
 | Buses | One system-bus connection for all. `tray`, `notifications`, `mpris`, `idle` and `appearance` each open their own session bus. Every D-Bus method call times out after 25 s |
 | Pushes | On backend events. `system`, `sysinfo`, `updates`, notification expiry, mpris's position recheck and the `brightness` fallback also run timers |
 | Renderer replaced | The departed generation's Bluetooth discovery stops, its pending Wi-Fi prompt is cancelled, its `files` watches, idle thresholds and inhibits are dropped, and its `process.run` children are reaped ([processes](../guide/processes.md#processrun)). An in-place reload keeps the generation |

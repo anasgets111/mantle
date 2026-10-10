@@ -11,12 +11,11 @@ pub use shared::state::workspaces::{
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, backend_or_unsupported};
 
 /// One compositor workspace reduced to [`derive_state`]'s input fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,12 +152,11 @@ impl WorkspacesController {
         compositor: Option<CompositorKind>,
         events: UnboundedSender<()>,
     ) -> Self {
-        if compositor.is_none() {
-            debug!("{}; workspace reporting disabled for this run", unsupported_session_report());
-        } else if *state.lock().expect("workspaces state mutex poisoned") != WorkspacesState::default() {
+        if compositor.is_some() && *state.lock().expect("workspaces state mutex poisoned") != WorkspacesState::default()
+        {
             let _ = events.send(());
         }
-        Self { state, compositor: compositor.map_or(&Unsupported, CompositorKind::backend) }
+        Self { state, compositor: backend_or_unsupported(compositor, "workspace") }
     }
 
     pub fn snapshot(&self) -> WorkspacesState {
