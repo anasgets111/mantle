@@ -434,8 +434,10 @@ mod tests {
             assert!(parse(&bad).is_err(), "accepted {bad}");
         }
         let lua = mlua::Lua::new();
-        let table = |src: &str| lua.load(format!("return {{ kind = 'rect', {src} }}")).eval::<mlua::Table>().unwrap();
-        let style = |src: &str| super::super::paint_style("rect", &super::super::props_from_table(&table(src)));
+        let style = |src: &str| {
+            let props = super::super::props_from_src(&lua, format!("return {{ kind = 'rect', {src} }}"));
+            super::super::paint_style("rect", &props)
+        };
         assert!(style(&format!("outline = {TAIL}, border_width = 2, border_color = '#000000'")).is_ok());
         for bad in ["radius = 4", "corner_shape = 'scoop'", "border_width = { top = 2 }"] {
             assert!(style(&format!("outline = {TAIL}, {bad}")).is_err(), "accepted {bad}");

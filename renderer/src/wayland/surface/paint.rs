@@ -415,10 +415,8 @@ impl App {
             // SAFETY: `egl_surface` was made current on `egl.display` above.
             _ => unsafe { khronos_egl::Static.eglSwapBuffers(egl.display.as_ptr(), egl_surface.as_ptr()) },
         };
-        if swapped == khronos_egl::FALSE {
-            // SAFETY: reads this thread's last EGL error.
-            let error = unsafe { khronos_egl::Static.eglGetError() };
-            log_bind_failure(&surface_id, "eglSwapBuffers", format!("EGL error {error:#x}"));
+        if let Err(error) = egl::egl_result(swapped) {
+            log_bind_failure(&surface_id, "eglSwapBuffers", error);
             self.exit = true;
             return;
         }

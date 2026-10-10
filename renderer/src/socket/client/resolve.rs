@@ -704,7 +704,7 @@ mod tests {
             dir.path(),
             r#"
             h = state("h", false)
-            local linger = computed({ h, delay(h, 20) }, function(now, was) return now == true or was == true end)
+            local linger = computed({ h, delay(h, 150) }, function(now, was) return now == true or was == true end)
             local expanded = computed({ linger, state("held", false) }, function(o, held) return o or held end)
             local probe = computed({ h, linger, expanded }, function(_, _, e) return e end)
             local function cell(shown)
@@ -737,13 +737,13 @@ mod tests {
         };
         client.loader.lua().load("h:set(true)").exec().unwrap();
         turn(&mut client);
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        std::thread::sleep(std::time::Duration::from_millis(170));
         turn(&mut client);
         assert_eq!(widths(&client), [34.0, 34.0]);
         client.loader.lua().load("h:set(false)").exec().unwrap();
         turn(&mut client);
         assert_eq!(widths(&client), [34.0, 34.0], "the delay holds it open");
-        std::thread::sleep(std::time::Duration::from_millis(40));
+        std::thread::sleep(std::time::Duration::from_millis(170));
         turn(&mut client);
         assert_eq!(widths(&client), [0.0, 34.0], "and lets go on the turn it comes due");
     }

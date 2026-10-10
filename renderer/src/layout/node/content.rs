@@ -446,8 +446,7 @@ mod tests {
     fn a_signal_resolving_to_a_number_reports_the_same_error_a_literal_number_would() {
         let lua = signal_lua();
 
-        let literal_table: mlua::Table = lua.load(r#"return { kind = "text", content = 5 }"#).eval().unwrap();
-        let literal_props = props_from_table(&literal_table);
+        let literal_props = props_from_src(&lua, r#"return { kind = "text", content = 5 }"#);
         let literal_err =
             fields::text::content.read(&resolve_declared(&literal_props, "text", false, &lua).unwrap()).unwrap_err();
 
@@ -613,7 +612,9 @@ mod tests {
             "an absent `fit` covers"
         );
         // Case matters: `Cover` is not a spelling.
-        assert!(fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "Cover" }"#)).is_err());
+        let err =
+            fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "Cover" }"#)).unwrap_err();
+        assert!(err.to_string().contains("fit"), "{err}");
     }
 
     #[test]
@@ -623,7 +624,8 @@ mod tests {
             fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "fill" }"#)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
 
-        assert!(fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = 3 }"#)).is_err());
+        let err = fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = 3 }"#)).unwrap_err();
+        assert!(err.to_string().contains("fit"), "{err}");
     }
 
     #[test]
@@ -832,8 +834,10 @@ mod tests {
 
         let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r#"return { kind = "text", line_height = 0, font_weight = 1001 }"#);
-        assert!(fields::typeface::line_height.read(&props).is_err());
-        assert!(fields::typeface::font_weight.read(&props).is_err());
+        let err = fields::typeface::line_height.read(&props).unwrap_err();
+        assert!(err.to_string().contains("line_height"), "{err}");
+        let err = fields::typeface::font_weight.read(&props).unwrap_err();
+        assert!(err.to_string().contains("font_weight"), "{err}");
     }
 
     #[test]

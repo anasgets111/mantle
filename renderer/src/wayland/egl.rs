@@ -81,6 +81,31 @@ impl EglState {
         egl_result(unsafe { egl::Static.eglDestroySurface(self.display.as_ptr(), surface.as_ptr()) })
     }
 
+    /// `eglCreateImage` with no context or client buffer, as `EGL_EXT_image_dma_buf_import` requires.
+    pub fn create_image(&self, target: egl::Enum, attribs: &[egl::Attrib]) -> Result<egl::Image, String> {
+        use egl::api::EGL1_5;
+        // SAFETY: `display` is live; the null context and buffer are the sentinels the target
+        // requires, and `attribs` ends in `ATTRIB_NONE`.
+        let raw = unsafe {
+            egl::Static.eglCreateImage(
+                self.display.as_ptr(),
+                egl::NO_CONTEXT,
+                target,
+                std::ptr::null_mut(),
+                attribs.as_ptr(),
+            )
+        };
+        egl_result(egl::Boolean::from(raw != egl::NO_IMAGE))?;
+        // SAFETY: `raw` is the non-null image just created.
+        Ok(unsafe { egl::Image::from_ptr(raw) })
+    }
+
+    pub fn destroy_image(&self, image: egl::Image) -> Result<(), String> {
+        use egl::api::EGL1_5;
+        // SAFETY: `display` is live; EGL rejects a stale image with an error code.
+        egl_result(unsafe { egl::Static.eglDestroyImage(self.display.as_ptr(), image.as_ptr()) })
+    }
+
     pub fn query_surface(&self, surface: egl::Surface, attribute: egl::Int) -> Result<egl::Int, String> {
         use egl::api::EGL1_0;
         let mut value = 0;
@@ -100,7 +125,7 @@ fn config_attrib(display: egl::Display, config: egl::Config, attribute: egl::Int
     Ok(value)
 }
 
-fn egl_result(ok: egl::Boolean) -> Result<(), String> {
+pub(super) fn egl_result(ok: egl::Boolean) -> Result<(), String> {
     use egl::api::EGL1_0;
     // SAFETY: reads this thread's last EGL error.
     (ok != egl::FALSE).then_some(()).ok_or_else(|| format!("EGL error {:#x}", unsafe { egl::Static.eglGetError() }))

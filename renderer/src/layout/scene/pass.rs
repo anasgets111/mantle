@@ -1754,7 +1754,8 @@ mod tests {
         let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err().to_string();
         assert!(err.contains("initial_text"), "{err}");
         let (lua, surface) = field_panel(r#"textfield { initial_text = "a\nb", on_change = function() end }"#);
-        assert!(apply_at(&mut scene, &[surface], full(), &shaping, &lua).is_err());
+        let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err().to_string();
+        assert!(err.contains("initial_text"), "{err}");
         assert!(scene.take_seeds().is_empty(), "a rolled-back pass leaves no seed for a reused id");
     }
 

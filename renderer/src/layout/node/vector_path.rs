@@ -453,8 +453,8 @@ mod tests {
     fn stroke_caps_joins_and_trims_parse_and_refuse_out_of_range() {
         let lua = mlua::Lua::new();
         let style = |fields: &str| -> Result<_, LayoutError> {
-            let table: Table = lua.load(format!("return {{ kind = 'path', {fields} }}")).eval().unwrap();
-            match super::super::paint_style("path", &super::super::props_from_table(&table))? {
+            let props = super::super::props_from_src(&lua, format!("return {{ kind = 'path', {fields} }}"));
+            match super::super::paint_style("path", &props)? {
                 Some(super::super::PaintStyle::Path(path)) => Ok((path.stroke_cap, path.stroke_join, path.trim)),
                 other => panic!("a path paints, got {other:?}"),
             }

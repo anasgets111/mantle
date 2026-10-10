@@ -215,12 +215,7 @@ impl DmabufEntryPoints {
             ]);
         }
         attribs.push(egl::ATTRIB_NONE);
-        // SAFETY: `EGL_NO_CONTEXT`/`EGL_NO_CLIENT_BUFFER` are the values
-        // `EGL_EXT_image_dma_buf_import` requires for this target; both are null sentinels, not
-        // live handles.
-        let (ctx, buffer) =
-            unsafe { (egl::Context::from_ptr(egl::NO_CONTEXT), egl::ClientBuffer::from_ptr(std::ptr::null_mut())) };
-        egl.instance.create_image(egl.display, ctx, EGL_LINUX_DMA_BUF_EXT, buffer, &attribs).ok()
+        egl.create_image(EGL_LINUX_DMA_BUF_EXT, &attribs).ok()
     }
 
     /// Binds `image` onto whichever `GL_TEXTURE_2D` is currently bound.

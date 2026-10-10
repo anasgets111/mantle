@@ -800,7 +800,9 @@ mod tests {
     #[test]
     fn an_adjustment_after_a_hole_is_refused_rather_than_dropped() {
         let lua = mlua::Lua::new();
-        assert!(popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "flip_y", nil, "slide_x" }"#)).is_err());
+        let err =
+            popup_spec(&popup_props(&lua, r#", constraint_adjustment = { "flip_y", nil, "slide_x" }"#)).unwrap_err();
+        assert!(err.to_string().contains("constraint_adjustment"), "{err}");
     }
 
     #[test]

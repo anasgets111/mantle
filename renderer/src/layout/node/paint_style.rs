@@ -488,7 +488,8 @@ mod tests {
             (false, None),
             "0 is unlimited, as max_lines"
         );
-        assert!(style(&lua, "return { kind = 'textfield', max_length = -1 }").is_err());
+        let err = style(&lua, "return { kind = 'textfield', max_length = -1 }").unwrap_err();
+        assert!(err.to_string().contains("max_length"), "{err}");
     }
 
     /// A field reads the typography rows `text` does: same keys, ranges and defaults.

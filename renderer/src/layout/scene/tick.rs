@@ -729,7 +729,7 @@ mod tests {
             &lua,
             |_, _| Err(node::invalid("child", "veto")),
         );
-        assert!(err.is_err());
+        assert!(err.unwrap_err().to_string().contains("veto"));
         let after = moved(&scene).movement.as_ref().unwrap();
         assert_eq!((after.offset, after.started, moved(&scene).rect.x), (before.offset, before.started, 20.0));
 

@@ -210,7 +210,7 @@ pub fn import(
     // bound to `GL_TEXTURE_2D` immediately below.
     let texture = unsafe {
         let Ok(texture) = gl.create_texture() else {
-            let _ = egl.instance.destroy_image(egl.display, egl_image);
+            let _ = egl.destroy_image(egl_image);
             return None;
         };
         gl.bind_texture(glow::TEXTURE_2D, Some(texture));
@@ -233,7 +233,7 @@ pub fn import(
     let Ok(image) = canvas.create_image_from_native_texture(texture, info) else {
         // SAFETY: as above; `texture` was created here and nothing else holds it.
         unsafe { gl.delete_texture(texture) };
-        let _ = egl.instance.destroy_image(egl.display, egl_image);
+        let _ = egl.destroy_image(egl_image);
         return None;
     };
     buffer.texture = Some((egl_image, image, texture));
@@ -254,7 +254,7 @@ pub fn free_texture(
     // SAFETY: the caller guarantees the GL context is current; `texture` was created by `import`
     // and not deleted since.
     unsafe { gl.delete_texture(texture) };
-    let _ = egl.instance.destroy_image(egl.display, image);
+    let _ = egl.destroy_image(image);
 }
 
 /// A capture source's double buffer (ADR-0248 amendment decision 3): the compositor writes into

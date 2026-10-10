@@ -1422,7 +1422,8 @@ mod tests {
         assert!(!only.layers(), "an inset layer opens no offscreen");
         let layers = |n: usize| format!("return {{ shadows = {{ {} }} }}", "{ blur = 1, inset = true },".repeat(n));
         assert_eq!(parse(&layers(16)).unwrap().inset.len(), 16);
-        assert!(parse(&layers(17)).is_err());
+        let err = parse(&layers(17)).unwrap_err();
+        assert!(err.to_string().contains("shadows"), "{err}");
     }
 
     /// Filter Effects `saturate()`: the matrix on `(192, 96, 64)` gives the spec's own numbers, `0`

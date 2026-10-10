@@ -807,8 +807,7 @@ mod tests {
             ("stroke = '#ffffff', commands = {{ op = 'M', points = {1, 1} }, { op = 'L', points = {10, 10} }}", true),
             ("fill = '#ffffff', commands = {{ op = 'A', points = {10, 10, 5, 0, 360} }}", true),
         ] {
-            let table: mlua::Table = lua.load(format!("return {{ kind = 'path', {fields} }}")).eval().unwrap();
-            let properties = node::props_from_table(&table);
+            let properties = node::props_from_src(&lua, format!("return {{ kind = 'path', {fields} }}"));
             let paint = node::paint_style("path", &properties).unwrap();
             let child = region_node(1, "path", (0.0, 0.0, 20.0, 20.0), paint, Vec::new());
             let mut root = region_node(2, "panel", (0.0, 0.0, 20.0, 20.0), None, vec![child]);

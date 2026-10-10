@@ -14,7 +14,7 @@ use crate::socket::FrameOutcome;
 /// the same reason: `std::process::exit` skips destructors. Returning an error instead unwinds `App`,
 /// whose EGL surfaces and `wl_surface`s talk to the compositor that just left, which is how a log
 /// out became a `khronos-egl` `unwrap()` panic and exit code 101.
-/// TODO(timothee-haudebourg/khronos-egl#25): unwind through `App` instead once EGL wrappers return errors.
+/// TODO(timothee-haudebourg/khronos-egl#25): unwind through `App` instead once the init-time EGL wrappers return errors.
 fn exit_because_the_compositor_is_gone(what_failed: &str, err: &dyn std::fmt::Display) -> ! {
     error!("{what_failed} failed ({err}); there is no compositor to talk to, so exiting");
     std::process::exit(shared::EXIT_COMPOSITOR_GONE);

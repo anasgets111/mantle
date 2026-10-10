@@ -68,7 +68,8 @@ mod tests {
         scene.apply(std::slice::from_ref(&surface), &[right.clone()], &shaping, &lua).unwrap();
         assert!(cut(), "a narrowed pass keeps the other output's measurement");
         lua.load("narrow:set(500); height:set(-1)").exec().unwrap();
-        assert!(scene.apply(std::slice::from_ref(&surface), &[left.clone(), right.clone()], &shaping, &lua).is_err());
+        let err = scene.apply(std::slice::from_ref(&surface), &[left.clone(), right.clone()], &shaping, &lua);
+        assert!(err.unwrap_err().to_string().contains("height"));
         assert!(cut(), "LEFT's successful fit rolled back with RIGHT");
         lua.load("height:set(10)").exec().unwrap();
         scene.apply(std::slice::from_ref(&surface), &[left.clone(), right.clone()], &shaping, &lua).unwrap();

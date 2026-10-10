@@ -847,7 +847,7 @@ mod tests {
 
     /// Next queued non-start frame, or a panic naming what was missing. Reading `mantle.lock`
     /// queues a start (ADR-0070 decision 1), so tests would otherwise step over it; the dedicated
-    /// `a_capability_read_asks_the_supervisor_to_start_it` test accounts for starts.
+    /// `capability_reads_start_only_rostered_names_once` test accounts for starts.
     fn queued_frame(outbound_rx: &mut mpsc::UnboundedReceiver<RendererFrame>) -> RendererFrame {
         loop {
             match outbound_rx.try_recv().expect("a frame must have been queued for the socket thread") {
@@ -2103,6 +2103,17 @@ mod tests {
             !error.contains("top-level return"),
             "must not reuse the unrelated top-level-return message, got: {error}"
         );
+    }
+
+    #[test]
+    fn a_push_arriving_before_the_first_successful_apply_is_not_consumed_and_lost() {
+        let (mut client, _outbound_rx) = bare_client();
+        run_startup(&mut client);
+        assert!(client.state.applied_output.is_none(), "startup must have failed (no file)");
+        let push = StateSnapshot { capability: "audio".to_string(), revision: 1, payload: serde_json::json!(1) };
+        client.apply_state_snapshot(push).unwrap();
+        client.re_resolve_if_dirty();
+        assert!(client.dirty.take(), "the push stays pending for whatever applies next");
     }
 
     #[test]

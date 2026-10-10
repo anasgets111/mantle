@@ -868,8 +868,7 @@ mod tests {
     fn list_children_bounds_to_limit_and_refuses_invalid_values() {
         let lua = scene_lua();
         let eval = |s: &str| -> Result<usize, LayoutError> {
-            let t: mlua::Table = lua.load(s).eval().unwrap();
-            list_children(&props_from_table(&t), &lua).map(|(children, _)| children.len())
+            list_children(&props_from_src(&lua, s), &lua).map(|(children, _)| children.len())
         };
         assert_eq!(
             eval("return list { source = { 1, 2, 3, 4 }, limit = 2, itemfn = function(i) return rect { width = i, height = i } end }").unwrap(),

@@ -256,14 +256,9 @@ impl Mask {
 #[cfg(test)]
 mod tests {
     use super::{Fill, Gradient, GradientShape, Mask, MaskSource};
-    use crate::layout::node::{LayoutError, PropMap, Rgba, fields, props_from_table};
+    use crate::layout::node::{LayoutError, Rgba, fields, props_from_src};
     const WHITE: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 1.0 };
     const CLEAR: Rgba = Rgba { r: 1.0, g: 1.0, b: 1.0, a: 0.0 };
-
-    fn eval_props(lua: &mlua::Lua, lua_src: &str) -> PropMap {
-        let table: mlua::Table = lua.load(lua_src).eval().unwrap();
-        props_from_table(&table)
-    }
 
     fn rejects<T: std::fmt::Debug>(result: Result<T, LayoutError>, name: &str, needle: &str) {
         let err = result.unwrap_err();
@@ -284,7 +279,7 @@ mod tests {
             ("conic", GradientShape::Conic { angle: 0.0 }),
         ] {
             let src = format!(r#"return {{ kind = "rect", background = {{ gradient = "{shape}", {stops} }} }}"#);
-            let background = fields::paint::background.read(&eval_props(&lua, &src)).unwrap();
+            let background = fields::paint::background.read(&props_from_src(&lua, &src)).unwrap();
             let [(Fill::Gradient(gradient), _)] = background.as_slice() else { panic!("{shape}") };
             assert_eq!(*gradient, Gradient { shape: expected, stops: vec![(0.0, WHITE), (1.0, CLEAR)] }, "{shape}");
         }
@@ -296,9 +291,9 @@ mod tests {
     fn gradient_stops_must_be_two_or_more_ascending_positions_in_the_unit_range() {
         let lua = mlua::Lua::new();
         let with = |stops: &str| {
-            eval_props(
+            props_from_src(
                 &lua,
-                &format!(r#"return {{ kind = "rect", background = {{ gradient = "linear", stops = {stops} }} }}"#),
+                format!(r#"return {{ kind = "rect", background = {{ gradient = "linear", stops = {stops} }} }}"#),
             )
         };
         rejects(fields::paint::background.read(&with(r##"{ { 0, "#ffffff" } }"##)), "background", "at least two");
@@ -330,15 +325,19 @@ mod tests {
         let lua = mlua::Lua::new();
         let src = r#"return { kind = "rect", background = { stops = {} } }"#;
         rejects(
-            fields::paint::background.read(&eval_props(&lua, src)),
+            fields::paint::background.read(&props_from_src(&lua, src)),
             "background",
             r#"`gradient` must be "linear"|"radial"|"conic", got nil"#,
         );
         let src = r##"return { kind = "rect", background = { gradient = "box", stops = {} } }"##;
-        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", r#""linear"|"radial"|"conic""#);
+        rejects(
+            fields::paint::background.read(&props_from_src(&lua, src)),
+            "background",
+            r#""linear"|"radial"|"conic""#,
+        );
         let src = r##"return { kind = "rect", background = { gradient = "radial", angle = 45,
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
-        rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", "angle");
+        rejects(fields::paint::background.read(&props_from_src(&lua, src)), "background", "angle");
     }
 
     /// One gradient shape for `background` and `mask`, so a fade is written the way a fill is.
@@ -350,13 +349,13 @@ mod tests {
         let gradient =
             Gradient { shape: GradientShape::Linear { angle: 180.0 }, stops: vec![(0.0, CLEAR), (1.0, WHITE)] };
         assert_eq!(
-            fields::paint::mask.read(&eval_props(&lua, src)).unwrap(),
+            fields::paint::mask.read(&props_from_src(&lua, src)).unwrap(),
             Some(Mask { source: MaskSource::Gradient(gradient), invert: false })
         );
 
         let src = r#"return { kind = "rect", mask = { source = "/tmp/shape.svg", invert = true } }"#;
         assert_eq!(
-            fields::paint::mask.read(&eval_props(&lua, src)).unwrap(),
+            fields::paint::mask.read(&props_from_src(&lua, src)).unwrap(),
             Some(Mask { source: MaskSource::Image("/tmp/shape.svg".into()), invert: true })
         );
     }
@@ -371,12 +370,12 @@ mod tests {
             )
         };
         let bound = crate::layout::node::resolve_declared(
-            &eval_props(&lua, &src(r##"state("white", "#ffffff")"##)),
+            &props_from_src(&lua, src(r##"state("white", "#ffffff")"##)),
             "rect",
             false,
             &lua,
         );
-        let plain = fields::paint::background.read(&eval_props(&lua, &src(r##""#ffffff""##))).unwrap();
+        let plain = fields::paint::background.read(&props_from_src(&lua, src(r##""#ffffff""##))).unwrap();
         assert_eq!(fields::paint::background.read(&bound.unwrap()).unwrap(), plain);
     }
 
@@ -384,34 +383,34 @@ mod tests {
     fn a_mask_naming_both_sources_or_neither_is_refused() {
         let lua = mlua::Lua::new();
         rejects(
-            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = "/tmp/a.png" }"#)),
+            fields::paint::mask.read(&props_from_src(&lua, r#"return { kind = "rect", mask = "/tmp/a.png" }"#)),
             "mask",
             "table",
         );
         rejects(
-            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = { invert = true } }"#)),
+            fields::paint::mask.read(&props_from_src(&lua, r#"return { kind = "rect", mask = { invert = true } }"#)),
             "mask",
             "one of",
         );
         let both = r##"return { kind = "rect", mask = { source = "/a.png", gradient = "radial",
             stops = { { 0, "#ffffff" }, { 1, "#000000" } } } }"##;
-        rejects(fields::paint::mask.read(&eval_props(&lua, both)), "mask", "one of");
+        rejects(fields::paint::mask.read(&props_from_src(&lua, both)), "mask", "one of");
         let stray = r##"return { kind = "rect", mask = { source = "/a.png", stops = { { 0, "#ffffff" } } } }"##;
-        rejects(fields::paint::mask.read(&eval_props(&lua, stray)), "mask", "one of");
+        rejects(fields::paint::mask.read(&props_from_src(&lua, stray)), "mask", "one of");
         let stray = r#"return { kind = "rect", mask = { source = "/a.png", angle = 90 } }"#;
-        rejects(fields::paint::mask.read(&eval_props(&lua, stray)), "mask", "one of");
+        rejects(fields::paint::mask.read(&props_from_src(&lua, stray)), "mask", "one of");
         rejects(
-            fields::paint::mask.read(&eval_props(&lua, r#"return { kind = "rect", mask = { source = "" } }"#)),
+            fields::paint::mask.read(&props_from_src(&lua, r#"return { kind = "rect", mask = { source = "" } }"#)),
             "mask",
             "empty",
         );
         for mask in [r#"node = """#, r#"node = "shape", source = "/a.png""#, r#"node = "shape", angle = 90"#] {
             let src = format!("return {{ kind = \"rect\", mask = {{ {mask} }} }}");
-            rejects(fields::paint::mask.read(&eval_props(&lua, &src)), "mask", "exactly one");
+            rejects(fields::paint::mask.read(&props_from_src(&lua, &src)), "mask", "exactly one");
         }
         let src = r#"return { kind = "rect", mask = { source = "/a.png", invert = 1 } }"#;
-        rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "invert");
+        rejects(fields::paint::mask.read(&props_from_src(&lua, src)), "mask", "invert");
         let src = r#"return { kind = "rect", mask = { source = false, gradient = "radial" } }"#;
-        rejects(fields::paint::mask.read(&eval_props(&lua, src)), "mask", "`source` must be string");
+        rejects(fields::paint::mask.read(&props_from_src(&lua, src)), "mask", "`source` must be string");
     }
 }

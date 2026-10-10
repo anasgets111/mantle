@@ -225,8 +225,8 @@ mod tests {
         assert_eq!(slot.read_valid(), Some((pixels.clone(), 2, 1)));
 
         // A later source mtime makes the thumbnail stale.
-        std::thread::sleep(std::time::Duration::from_millis(1100));
-        ::image::RgbaImage::from_pixel(4, 2, ::image::Rgba([1, 2, 3, 255])).save(&source).unwrap();
+        let bumped = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        std::fs::File::options().write(true).open(&source).unwrap().set_modified(bumped).unwrap();
         let later = Slot::for_file(&cache, &source, (100, 100)).unwrap();
         assert!(later.read_valid().is_none());
     }
