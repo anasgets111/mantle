@@ -441,21 +441,27 @@ const MAX_ERROR_VALUE_PREVIEW_BYTES: usize = 200;
 /// `background`/`radius` (ADR-0068), so the cap bounds the `rescue` message, not a frame.
 /// `oversized_string_property_error_still_names_type_and_shows_a_recognizable_prefix` guards this.
 pub(crate) fn preview_for_error(value: &Value) -> String {
-    let Value::String(s) = value else {
-        return format!("{value:?}");
-    };
-    // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
-    let bytes = s.as_bytes();
-    let total_len = bytes.len();
-    if total_len <= MAX_ERROR_VALUE_PREVIEW_BYTES {
-        return format!("{value:?}");
+    match value {
+        Value::Nil => "nil".into(),
+        Value::Boolean(b) => format!("boolean {b}"),
+        Value::Integer(i) => format!("integer {i}"),
+        Value::Number(n) => format!("number {n}"),
+        Value::String(s) => {
+            // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
+            let bytes = s.as_bytes();
+            let total_len = bytes.len();
+            if total_len <= MAX_ERROR_VALUE_PREVIEW_BYTES {
+                return format!("string {s:?}");
+            }
+            // Slice before formatting, so a 20 MB string costs O(200 bytes), not O(len). Lossy rendering
+            // is intentional: this is a log preview, and the byte boundary may split a codepoint.
+            let prefix = String::from_utf8_lossy(&bytes[..MAX_ERROR_VALUE_PREVIEW_BYTES]);
+            format!(
+                "string {prefix:?}... -- {total_len} bytes total, truncated to the first {MAX_ERROR_VALUE_PREVIEW_BYTES} here"
+            )
+        }
+        other => other.type_name().into(),
     }
-    // Slice before formatting, so a 20 MB string costs O(200 bytes), not O(len). Lossy rendering
-    // is intentional: this is a log preview, and the byte boundary may split a codepoint.
-    let prefix = String::from_utf8_lossy(&bytes[..MAX_ERROR_VALUE_PREVIEW_BYTES]);
-    format!(
-        "String({prefix:?}...) -- {total_len} bytes total, truncated to the first {MAX_ERROR_VALUE_PREVIEW_BYTES} here"
-    )
 }
 
 /// Applies the Lua numeric checks before parser ranges, then checks the narrowed `f32`. This covers
@@ -1119,9 +1125,9 @@ mod tests {
     fn a_wrong_typed_callback_or_input_flag_is_refused_by_name() {
         let lua = mlua::Lua::new();
         for (source, property, expected) in [
-            (r#"{ kind = "row", on_click = "quit" }"#, "on_click", "expected a function, got String(\"quit\")"),
-            (r#"{ kind = "icon", submit = 1 }"#, "submit", "expected a boolean, got Integer(1)"),
-            (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got String(\"yes\")"),
+            (r#"{ kind = "row", on_click = "quit" }"#, "on_click", "expected a function, got string \"quit\""),
+            (r#"{ kind = "icon", submit = 1 }"#, "submit", "expected a boolean, got integer 1"),
+            (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got string \"yes\""),
         ] {
             let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
             let err = resolve_declared(&props_from_table(&table), "rect", false, &lua).unwrap_err();
@@ -1194,7 +1200,7 @@ mod tests {
             detail.len()
         );
         assert!(detail.contains("expected a number"), "{detail}");
-        assert!(detail.contains("String("), "must still name the rejected type: {detail}");
+        assert!(detail.contains("string \""), "must still name the rejected type: {detail}");
         assert!(detail.contains("QQQ"), "must show a recognizable prefix of the value: {detail}");
         assert!(
             detail.contains(&(20 * 1024 * 1024).to_string()),
@@ -1211,7 +1217,7 @@ mod tests {
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
         };
-        assert_eq!(detail, "expected a number or a table, got String(\"banana\")");
+        assert_eq!(detail, "expected a number or a table, got string \"banana\"");
     }
 
     #[test]
@@ -1223,6 +1229,6 @@ mod tests {
         let LayoutError::InvalidProperty { detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
         };
-        assert_eq!(detail, "expected a number or a table, got Boolean(true)");
+        assert_eq!(detail, "expected a number or a table, got boolean true");
     }
 }

@@ -331,7 +331,7 @@ mod tests {
         rejects(
             fields::paint::background.read(&eval_props(&lua, src)),
             "background",
-            r#"`gradient` must be "linear"|"radial"|"conic", got Nil"#,
+            r#"`gradient` must be "linear"|"radial"|"conic", got nil"#,
         );
         let src = r##"return { kind = "rect", background = { gradient = "box", stops = {} } }"##;
         rejects(fields::paint::background.read(&eval_props(&lua, src)), "background", r#""linear"|"radial"|"conic""#);

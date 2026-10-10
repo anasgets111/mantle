@@ -950,7 +950,7 @@ mod tests {
             .unwrap();
         let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "children[1]: expected a node table, got Nil"),
+            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "children[1]: expected a node table, got nil"),
             "{err}"
         );
 

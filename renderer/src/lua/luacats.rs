@@ -7,6 +7,72 @@ use std::marker::PhantomData;
 
 use mlua::{AnyUserData, FromLua, Function, IntoLua, Lua, LuaString, Table, Value, Variadic};
 
+use super::location::Site;
+
+/// `message` led by the Lua caller's `chunk:line`, so a raise's first line says where.
+pub(crate) fn raise(lua: &Lua, message: impl std::fmt::Display) -> mlua::Error {
+    match Site::of_caller(lua) {
+        Some(site) => mlua::Error::runtime(format!("{site}: {message}")),
+        None => mlua::Error::runtime(message.to_string()),
+    }
+}
+
+/// What a function's argument errors name: its path and its parameters, for [`Args`].
+pub(crate) trait ArgNames {
+    const FUNCTION: &'static str;
+    const NAMES: &'static [&'static str];
+}
+
+/// A function's typed arguments. Converting is mlua's own stack path, so a call costs nothing
+/// over a bare tuple; only a failure is reworded, as the author reads it:
+/// `file:3: fonts: bad argument #1 (chain): expected a table, got integer`.
+pub(crate) struct Args<T, N>(pub T, pub PhantomData<N>);
+
+impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
+    fn from_lua_multi(values: mlua::MultiValue, lua: &Lua) -> mlua::Result<Self> {
+        T::from_lua_multi(values, lua).map(|args| Self(args, PhantomData))
+    }
+
+    unsafe fn from_stack_multi(nvals: std::ffi::c_int, lua: &mlua::state::RawLua) -> mlua::Result<Self> {
+        // SAFETY: mlua's own arguments, forwarded unchanged.
+        unsafe { T::from_stack_multi(nvals, lua) }.map(|args| Self(args, PhantomData))
+    }
+
+    unsafe fn from_stack_args(
+        nargs: std::ffi::c_int,
+        index: usize,
+        to: Option<&str>,
+        lua: &mlua::state::RawLua,
+    ) -> mlua::Result<Self> {
+        // SAFETY: mlua's own arguments, forwarded unchanged.
+        unsafe { T::from_stack_args(nargs, index, to, lua) }
+            .map(|args| Self(args, PhantomData))
+            // SAFETY: `lua.state()` is the live state of the call being converted.
+            .map_err(|err| bad_argument(unsafe { Lua::get_or_init_from_ptr(lua.state()) }, N::FUNCTION, N::NAMES, err))
+    }
+}
+
+fn bad_argument(lua: &Lua, function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
+    let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
+    let mlua::Error::FromLuaConversionError { from, to, .. } = &**cause else { return err };
+    let name = names.get(pos - 1).map(|name| format!(" ({name})")).unwrap_or_default();
+    raise(lua, format!("{function}: bad argument #{pos}{name}: expected {}, got {from}", rust_type_in_lua(to)))
+}
+
+/// A Rust type name as an article and a Lua noun; an unknown type keeps its own name.
+pub(crate) fn rust_type_in_lua(rust: &str) -> &str {
+    match rust {
+        "u8" | "u16" | "u32" | "u64" | "usize" => "a non-negative integer",
+        "i8" | "i16" | "i32" | "i64" | "isize" => "an integer",
+        "f32" | "f64" => "a number",
+        "bool" => "a boolean",
+        "String" | "string" | "&str" => "a string",
+        "table" => "a table",
+        "function" => "a function",
+        other => other,
+    }
+}
+
 /// A Rust type as LuaCATS spells it.
 pub(crate) trait LuaType {
     /// The LuaCATS type, `""` for none (`()`).
@@ -398,13 +464,20 @@ macro_rules! lua_fn {
             $lua,
             $path,
             $crate::lua::Stub::Fn(&SIGNATURE),
-            $crate::lua::luacats::lua_fn!(@value $lua; $how; $($name: $ty),*),
+            $crate::lua::luacats::lua_fn!(@value $lua; $path; $how; $($name: $ty),*),
         )
     }};
-    (@value $lua:expr; (body $l:ident; $out:ty; $body:block); $($name:ident: $ty:ty),*) => {
-        $lua.create_function(move |$l, ($($name,)*): ($($ty,)*)| -> mlua::Result<$out> { $body })?
+    (@value $lua:expr; $path:expr; (body $l:ident; $out:ty; $body:block); $($name:ident: $ty:ty),*) => {
+        {
+            struct Names;
+            impl $crate::lua::luacats::ArgNames for Names {
+                const FUNCTION: &'static str = $path;
+                const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
+            }
+            $lua.create_function(move |$l, $crate::lua::luacats::Args(($($name,)*), _): $crate::lua::luacats::Args<($($ty,)*), Names>| -> mlua::Result<$out> { $body })?
+        }
     };
-    (@value $lua:expr; (value $value:expr); $($name:ident: $ty:ty),*) => {
+    (@value $lua:expr; $path:expr; (value $value:expr); $($name:ident: $ty:ty),*) => {
         $value
     };
 }

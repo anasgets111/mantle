@@ -1503,7 +1503,7 @@ mod tests {
         assert_eq!(property, "content");
         assert_eq!(
             detail,
-            "on `bar@TEST`: panel (shell.lua:1) > column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected a string or an array of runs, got Integer(5)",
+            "on `bar@TEST`: panel (shell.lua:1) > column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected a string or an array of runs, got integer 5",
             "the path must lead to the guilty node, and neither sibling text node is on it"
         );
     }

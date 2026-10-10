@@ -18,6 +18,7 @@ use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::lua::fuzzy::closest;
+use crate::lua::luacats::{raise, rust_type_in_lua};
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
 
@@ -263,11 +264,37 @@ impl Capability {
         }
         // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
-        shared::action::check(roster, action, &arguments)
-            .map_err(|err| mlua::Error::runtime(format!("mantle.{}:{action}: {err}", self.name)))?;
+        shared::action::check(roster, action, &arguments).map_err(|err| {
+            raise(lua, format!("mantle.{}:{action}: {}", self.name, in_lua_words(&err, arguments.len())))
+        })?;
         self.commands.send(&self.name, action, arguments);
         Ok(())
     }
+}
+
+/// serde's `invalid type: string "x", expected usize` as `argument 1 expects a non-negative
+/// integer, got string "x"`. serde reports no position, so only a one-argument call names one.
+// ponytail: only the type and value mismatches are reworded; any other serde message passes through.
+fn in_lua_words(err: &serde_json::Error, argc: usize) -> String {
+    let text = err.to_string();
+    let Some((got, want)) = text
+        .strip_prefix("invalid type: ")
+        .or_else(|| text.strip_prefix("invalid value: "))
+        .and_then(|rest| rest.split_once(", expected "))
+    else {
+        return text;
+    };
+    let got = match got.split_once(" `") {
+        Some(("floating point", n)) => format!("number {}", n.trim_end_matches('`')),
+        Some((kind, n)) => format!("{kind} {}", n.trim_end_matches('`')),
+        None => match got {
+            "null" | "unit value" => "nil".into(),
+            "map" | "sequence" => "table".into(),
+            other => other.into(),
+        },
+    };
+    let which = if argc == 1 { "argument 1" } else { "an argument" };
+    format!("{which} expects {}, got {got}", rust_type_in_lua(want))
 }
 
 #[cfg(test)]
@@ -352,8 +379,31 @@ pub(crate) mod tests {
 
         let err = lua.load(r#"lock:set_unlock_animation("fast")"#).exec().unwrap_err();
 
-        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: invalid type: string "fast""#), "{err}");
+        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: argument 1 expects"#), "{err}");
+        assert!(err.to_string().contains(r#"got string "fast""#), "{err}");
         assert!(queued_command(&mut rx).is_none(), "a refused argument must not reach the Supervisor");
+    }
+
+    #[test]
+    fn a_value_error_leads_with_the_caller_site_and_speaks_lua() {
+        let lua = Lua::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (keyboard, _) = Capability::new("keyboard", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("keyboard", keyboard).unwrap();
+
+        for (arg, got) in [(r#""x""#, r#"got string "x""#), ("1.5", "got number 1.5"), ("-1", "got integer -1")] {
+            let src = format!("\n\nkeyboard:switch_layout({arg})");
+            let err = lua.load(&src).set_name("=shell.lua").exec().unwrap_err();
+            let first = err.to_string().replace("runtime error: ", "");
+            let first = first.lines().next().unwrap().to_string();
+            assert!(
+                first.starts_with(
+                    "shell.lua:3: mantle.keyboard:switch_layout: argument 1 expects a non-negative integer"
+                ),
+                "{first}"
+            );
+            assert!(first.ends_with(got), "{first}");
+        }
     }
 
     #[test]

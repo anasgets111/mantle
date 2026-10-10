@@ -15,7 +15,7 @@ use std::time::{Duration, Instant};
 use mlua::{Function, Lua};
 use shared::debug;
 
-use super::luacats::{lua_class, lua_fn};
+use super::luacats::{lua_class, lua_fn, raise};
 use super::signal::CpuBudget;
 use crate::lua::warn_raised;
 
@@ -113,7 +113,7 @@ lua_class! {
 fn start(lua: &Lua, name: &str, ms: f64, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
     // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
     if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
-        return Err(mlua::Error::runtime(format!("{name}({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
+        return Err(raise(lua, format!("{name}({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
     }
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
@@ -570,5 +570,20 @@ mod tests {
         assert!(err.contains("timer(NaN) is outside"), "the engine's range message: {err}");
         let err = lua.load("interval(0, function() end)").exec().unwrap_err().to_string();
         assert!(err.contains("interval(0) is outside"), "interval shares the range: {err}");
+        let err = lua.load("\ntimer(0, function() end)").set_name("=shell.lua").exec().unwrap_err().to_string();
+        assert!(err.starts_with("runtime error: shell.lua:2: timer(0) is outside"), "the site leads: {err}");
+    }
+
+    #[test]
+    fn a_mistyped_argument_names_its_position_and_speaks_lua() {
+        let lua = lua();
+
+        let err = lua.load("\ntimer('x', function() end)").set_name("=shell.lua").exec().unwrap_err().to_string();
+        assert!(
+            err.starts_with(
+                r#"runtime error: shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"#
+            ),
+            "{err}"
+        );
     }
 }
