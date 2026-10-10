@@ -18,7 +18,7 @@ Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-cloc
 The demo opens on a finished shell, then rebuilds it from the starter one save at a time. Mantle
 itself [types and records it](demo/director).
 
-https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5
+https://github.com/user-attachments/assets/d5a618ae-29a8-4483-b479-1eedd5ec9755
 
 - Built-in [capabilities](https://anasgets111.github.io/mantle/capabilities/) for audio, network,
   Bluetooth, notifications, tray, workspaces and other desktop services.
