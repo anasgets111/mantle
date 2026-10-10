@@ -6,7 +6,9 @@ use std::cell::RefCell;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use mlua::{IntoLuaMulti, Lua, Table, Value};
+use mlua::{FromLuaMulti, IntoLuaMulti, Lua, Table, Value};
+
+use crate::lua::luacats::{Args, Method};
 use shared::warn;
 
 /// Replaces Lua's file searcher, `package.searchers[2]`, with one that names the chunk as
@@ -112,14 +114,31 @@ pub(crate) fn located(lua: &Lua, err: mlua::Error) -> mlua::Error {
     }
 }
 
-/// Runs a method's `body` on its converted `args`, either failure led by the calling config line.
-pub(crate) fn locate<T, R>(
-    lua: &Lua,
-    args: mlua::Result<T>,
-    body: impl FnOnce(T) -> mlua::Result<R>,
-) -> mlua::Result<R> {
-    args.and_then(body).map_err(|err| located(lua, err))
+/// `add_method` and `add_function` whose argument and body failures lead with the calling config
+/// line, and whose wrong-typed arguments read `method reveal: bad argument #1: ...`.
+pub(crate) trait LocatedMethods<T>: mlua::UserDataMethods<T> {
+    fn located_method<A: FromLuaMulti, R: IntoLuaMulti>(
+        &mut self,
+        name: &str,
+        f: impl Fn(&Lua, &T, A) -> mlua::Result<R> + 'static,
+    ) {
+        self.add_method(name, move |lua, this, Args(args, _): Method<A>| {
+            args.and_then(|args| f(lua, this, args)).map_err(|err| located(lua, err))
+        });
+    }
+
+    fn located_function<A: FromLuaMulti, R: IntoLuaMulti>(
+        &mut self,
+        name: &str,
+        f: impl Fn(&Lua, A) -> mlua::Result<R> + 'static,
+    ) {
+        self.add_function(name, move |lua, Args(args, _): Method<A>| {
+            args.and_then(|args| f(lua, args)).map_err(|err| located(lua, err))
+        });
+    }
 }
+
+impl<T, M: mlua::UserDataMethods<T>> LocatedMethods<T> for M {}
 
 /// Logs a config callback's raise as `{what} raised, ignoring it: ... (defined at file:N)`; `Ok` is
 /// silent. A callback nothing waits on must not take the turn with it.

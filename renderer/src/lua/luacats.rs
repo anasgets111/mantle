@@ -486,11 +486,7 @@ macro_rules! lua_fn {
             }
             $lua.create_function(move |$l, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Args<($($ty,)*), Names>|
                     -> mlua::Result<$out> {
-                let run = || -> mlua::Result<$out> {
-                    let ($($name,)*) = args?;
-                    $body
-                };
-                run().map_err(|err| $crate::lua::location::located($l, err))
+                args.and_then(|($($name,)*)| -> mlua::Result<$out> { $body }).map_err(|err| $crate::lua::location::located($l, err))
             })?
         }
     };
@@ -540,9 +536,8 @@ macro_rules! lua_class {
     }) => {
         impl mlua::UserData for $class {
             fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
-                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Method<($($param_ty,)*)>| -> mlua::Result<$crate::lua::luacats::lua_class!(@ret $($ret)?)> {
-                    $crate::lua::location::locate($l, args, |($($param,)*)| $body)
-                });)*
+                use $crate::lua::location::LocatedMethods;
+                $(methods.located_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<$crate::lua::luacats::lua_class!(@ret $($ret)?)> { $body });)*
             }
         }
 

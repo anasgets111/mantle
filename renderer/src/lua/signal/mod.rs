@@ -20,8 +20,7 @@ use std::time::{Duration, Instant};
 
 use mlua::{Function, Lua, MultiValue, UserData, UserDataMethods, Value};
 
-use crate::lua::location::{Site, locate};
-use crate::lua::luacats::{Args, Method};
+use crate::lua::location::{LocatedMethods, Site};
 use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
@@ -586,55 +585,45 @@ impl UserData for Signal {
         // Functions, not methods: a derived signal's read needs the userdata its user values hang
         // off, which a method's `&Self` has lost.
         methods.add_function("get", |lua, ud: mlua::AnyUserData| read(lua, &ud));
-        methods.add_function("map", |lua, Args(args, _): Method<(mlua::AnyUserData, Function)>| {
-            locate(lua, args, |(ud, f)| Signal::mapped(lua, ud, f))
-        });
+        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
         // ADR-0112: config requests a child, not a pixel offset; the pass owns pixels
         // (ADR-0069 decision 2).
-        methods.add_method("reveal", |lua, this, Args(args, _): Method<(i64,)>| {
-            locate(lua, args, |(index,)| {
-                let Some(index) = usize::try_from(index).ok().filter(|index| *index >= 1) else {
-                    return Err(mlua::Error::runtime(format!(
-                        "signal:reveal(): index must be 1 or more, got integer {index}"
-                    )));
-                };
-                this.scroll_request("reveal", ScrollRequest::Reveal(index))
-            })
+        methods.located_method("reveal", |_, this, index: i64| {
+            let Some(index) = usize::try_from(index).ok().filter(|index| *index >= 1) else {
+                return Err(mlua::Error::runtime(format!(
+                    "signal:reveal(): index must be 1 or more, got integer {index}"
+                )));
+            };
+            this.scroll_request("reveal", ScrollRequest::Reveal(index))
         });
-        methods.add_method("scroll_to", |lua, this, Args(args, _): Method<(f64,)>| {
-            locate(lua, args, |(offset,)| {
-                this.scroll_request("scroll_to", ScrollRequest::To(finite("scroll_to", offset)?))
-            })
+        methods.located_method("scroll_to", |_, this, offset: f64| {
+            this.scroll_request("scroll_to", ScrollRequest::To(finite("scroll_to", offset)?))
         });
-        methods.add_method("scroll_by", |lua, this, Args(args, _): Method<(f64,)>| {
-            locate(lua, args, |(delta,)| {
-                this.scroll_request("scroll_by", ScrollRequest::By(finite("scroll_by", delta)?))
-            })
+        methods.located_method("scroll_by", |_, this, delta: f64| {
+            this.scroll_request("scroll_by", ScrollRequest::By(finite("scroll_by", delta)?))
         });
         // ADR-0044 decision 5's only Lua write path. Other kinds refuse by name, so
         // `network:set(...)`
         // says why.
-        methods.add_method("set", |lua, this, Args(args, _): Method<(Value,)>| {
-            locate(lua, args, |(value,)| {
-                let SignalKind::State { id, cell, dirty } = &this.0 else {
-                    return Err(mlua::Error::runtime(format!(
-                        "signal:set() is only valid on a state(name, initial) signal, and this is {} signal: every other signal kind is read-only to Lua (ADR-0044 decision 5)",
-                        this.0.describe()
-                    )));
-                };
-                // Check before writing; refusal preserves the value and dirty flag, matching
-                // `new_state`.
-                check_lua_authored(&value).map_err(|err| {
-                    mlua::Error::runtime(format!("signal:set() refused its value at the marshalling boundary: {err}"))
-                })?;
-                if !same_value(&cell.borrow(), &value) {
-                    let previous = cell.replace(value);
-                    dirty.mark_cell(*id);
-                    state_handlers::note_write(lua, this, previous);
-                }
-                Ok(())
-            })
-        });
+        methods.located_method("set", |lua, this, value: Value| {
+            let SignalKind::State { id, cell, dirty } = &this.0 else {
+                return Err(mlua::Error::runtime(format!(
+                    "signal:set() is only valid on a state(name, initial) signal, and this is {} signal: every other signal kind is read-only to Lua (ADR-0044 decision 5)",
+                    this.0.describe()
+                )));
+            };
+            // Check before writing; refusal preserves the value and dirty flag, matching
+            // `new_state`.
+            check_lua_authored(&value).map_err(|err| {
+                mlua::Error::runtime(format!("signal:set() refused its value at the marshalling boundary: {err}"))
+            })?;
+            if !same_value(&cell.borrow(), &value) {
+                let previous = cell.replace(value);
+                dirty.mark_cell(*id);
+                state_handlers::note_write(lua, this, previous);
+            }
+            Ok(())
+            });
     }
 }
 

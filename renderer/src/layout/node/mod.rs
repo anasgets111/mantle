@@ -310,10 +310,7 @@ fn invalid_property(property: &str, detail: &str, at: Option<&Trail>) -> String 
         }
         None => (String::new(), steps.iter().collect()),
     };
-    let path = above.iter().rev().map(|step| match step.site {
-        Some(site) => format!("{step} ({site})"),
-        None => step.to_string(),
-    });
+    let path = above.iter().rev().map(|step| step.site.map_or_else(|| step.to_string(), |at| format!("{step} ({at})")));
     let path = (!above.is_empty()).then(|| format!("at {}", path.collect::<Vec<_>>().join(" > ")));
     let context = [path, surface.map(|surface| format!("on `{surface}`"))].into_iter().flatten();
     let context = context.collect::<Vec<_>>().join(" ");
@@ -467,13 +464,9 @@ pub(crate) fn preview_for_error(value: &Value) -> String {
         Value::Boolean(b) => format!("boolean {b}"),
         Value::Integer(i) => format!("integer {i}"),
         Value::Number(n) => marshal::number_word(n),
-        Value::String(s) => {
-            // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
-            if s.as_bytes().len() <= MAX_ERROR_VALUE_PREVIEW_BYTES {
-                return format!("string {s:?}");
-            }
-            oversized(&s.as_bytes())
-        }
+        // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
+        Value::String(s) if s.as_bytes().len() <= MAX_ERROR_VALUE_PREVIEW_BYTES => format!("string {s:?}"),
+        Value::String(s) => oversized(&s.as_bytes()),
         other => other.type_name().into(),
     }
 }

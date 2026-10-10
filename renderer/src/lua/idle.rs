@@ -38,8 +38,7 @@ use shared::debug;
 
 use crate::lua::call_logged;
 use crate::lua::capability::Capability;
-use crate::lua::location::locate;
-use crate::lua::luacats::{Args, Method};
+use crate::lua::location::LocatedMethods;
 use crate::lua::marshal::out_of_range;
 
 /// The longest threshold ext-idle-notify's u32 millisecond timeout holds.
@@ -233,30 +232,25 @@ impl UserData for IdleMember {
             this.announce();
             this.0.state().signal().get_value(lua)
         });
-        methods.add_function("map", |lua, Args(args, _): Method<(mlua::AnyUserData, Function)>| {
-            locate(lua, args, |(ud, f)| {
-                ud.borrow::<IdleMember>()?.announce();
-                crate::lua::signal::Signal::mapped(lua, ud, f)
-            })
+        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| {
+            ud.borrow::<IdleMember>()?.announce();
+            crate::lua::signal::Signal::mapped(lua, ud, f)
         });
-        methods.add_method("on_change", |lua, this, Args(args, _): Method<(Function,)>| {
-            locate(lua, args, |(f,)| {
-                this.announce();
-                this.0.state().add_handler(f);
-                Ok(())
-            })
+        methods.located_method("on_change", |_, this, f: Function| {
+            this.announce();
+            this.0.state().add_handler(f);
+            Ok(())
         });
-        methods.add_method("cancel_threshold", |lua, this, Args(args, _): Method<(i64,)>| {
-            locate(lua, args, |(id,)| {
-                // A negative handle was never issued, and an unknown handle cancels nothing.
-                if let Ok(id) = u64::try_from(id) {
-                    this.0.cancel_threshold(id);
-                }
-                Ok(())
-            })
+        methods.located_method("cancel_threshold", |_, this, id: i64| {
+            // A negative handle was never issued, and an unknown handle cancels nothing.
+            if let Ok(id) = u64::try_from(id) {
+                this.0.cancel_threshold(id);
+            }
+            Ok(())
         });
-        methods.add_method("register_threshold", |lua, this, Args(args, _): Method<(i64, Function, Function)>| {
-            locate(lua, args, |(sec, on_idle, on_resume)| {
+        methods.located_method(
+            "register_threshold",
+            |_, this, (sec, on_idle, on_resume): (i64, Function, Function)| {
                 // ext-idle-notify takes a u32 of milliseconds; past it the Supervisor would clamp.
                 let Some(sec) = u64::try_from(sec).ok().filter(|sec| (1..=MAX_THRESHOLD_SEC).contains(sec)) else {
                     return Err(mlua::Error::runtime(format!(
@@ -265,13 +259,11 @@ impl UserData for IdleMember {
                     )));
                 };
                 Ok(this.0.register_threshold(sec, on_idle, on_resume))
-            })
-        });
-        methods.add_method("inhibit", |lua, this, Args(args, _): Method<(String,)>| {
-            locate(lua, args, |(reason,)| {
-                this.0.inhibit(reason);
-                Ok(())
-            })
+            },
+        );
+        methods.located_method("inhibit", |_, this, reason: String| {
+            this.0.inhibit(reason);
+            Ok(())
         });
         methods.add_method("release_inhibit", |_, this, ()| {
             this.0.release_inhibit();
