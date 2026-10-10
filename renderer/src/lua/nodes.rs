@@ -84,7 +84,7 @@ pub enum DeserializeError {
     KindNotAString,
     /// A key no parser for this `kind` reads; rejected instead of copied through
     /// (`properties::properties`).
-    #[error("`{kind}` has no property `{property}`; {hint}")]
+    #[error("no property `{property}`; {hint}")]
     UnknownProperty { kind: String, property: String, hint: String },
     /// A kind with no `properties::KINDS` row, and so no vocabulary to key a map by (ADR-0219).
     #[error("`{0}` is not a node kind")]
@@ -222,7 +222,7 @@ mod tests {
         let lua = lua_with_constructors();
         let table: mlua::Table = lua.load(r#"return text { shadow_mode = "box" }"#).eval().unwrap();
         let err = deserialize_lua_table(&table).unwrap_err().to_string();
-        assert!(err.contains("`text` has no property `shadow_mode`"), "{err}");
+        assert!(err.contains("no property `shadow_mode`"), "{err}");
         let table: mlua::Table = lua.load(r#"return rect { shadow_mode = "content" }"#).eval().unwrap();
         assert!(deserialize_lua_table(&table).is_ok());
     }
@@ -310,12 +310,9 @@ mod tests {
         let lua = lua_with_constructors();
         let unknown = |source: &str| deserialize_lua_table(&lua.load(source).eval().unwrap()).unwrap_err().to_string();
 
-        assert_eq!(
-            unknown(r#"return text { contnet = "x" }"#),
-            "`text` has no property `contnet`; did you mean `content`?"
-        );
+        assert_eq!(unknown(r#"return text { contnet = "x" }"#), "no property `contnet`; did you mean `content`?");
         let far = unknown(r#"return text { zzz = 1 }"#);
-        assert!(far.starts_with("`text` has no property `zzz`; expected one of `"), "{far}");
+        assert!(far.starts_with("no property `zzz`; expected one of `"), "{far}");
         assert!(far.contains("content"), "{far}");
     }
 

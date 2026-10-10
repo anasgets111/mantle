@@ -228,10 +228,10 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
 /// bound written in floats and then rounds to nothing, leaving a `delay` that holds for no time
 /// and a `pulse` that is never true, both of them silently.
 fn parse_hold(what: &str, ms: Num) -> Result<Duration, mlua::Error> {
-    let millis = ms.get();
+    let millis = ms.0;
     let rounded = millis.round() as u64;
     if !(millis > 0.0 && millis <= 60_000.0) || rounded == 0 {
-        let got = crate::layout::node::preview_for_error(&ms.0);
+        let got = crate::layout::node::preview_for_error(&ms.1);
         return Err(mlua::Error::runtime(format!("{what}: ms {}", out_of_range(1, 60_000, got))));
     }
     Ok(Duration::from_millis(rounded))

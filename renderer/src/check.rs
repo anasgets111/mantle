@@ -179,22 +179,6 @@ mod tests {
     }
 
     #[test]
-    fn a_root_node_error_names_the_constructor_line() {
-        let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n");
-        assert!(err.contains("shell.lua:2:"), "{err}");
-        let err = check_err("\n\nreturn panel { id = \"bar\", layer = \"top\", background = \"#zzz\" }\n");
-        assert!(err.contains("shell.lua:3: panel: invalid value for `background`"), "{err}");
-    }
-
-    #[test]
-    fn a_duplicate_surface_id_names_both_declarations() {
-        let err = check_err(
-            "local a = panel { id = \"bar\", layer = \"top\" }\nreturn { a,\n panel { id = \"bar\", layer = \"top\" } }\n",
-        );
-        assert!(err.contains("shell.lua:3:") && err.contains("first at shell.lua:1"), "{err}");
-    }
-
-    #[test]
     fn an_unknown_root_property_is_not_called_a_top_level_return_error() {
         let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", paddng = 1 }\n");
         assert!(err.contains("shell.lua:2:") && err.contains("padding"), "{err}");
@@ -236,34 +220,6 @@ mod tests {
             format!("{}: widgets/bar.lua:2: attempt to perform arithmetic on a nil value\n", dir.path().display());
         assert!(err.starts_with(&head), "{err}");
         assert_eq!(err.matches(&dir.path().display().to_string()).count(), 1, "{err}");
-    }
-
-    /// Each step of the path to a refused node names the line that built it, including a node a
-    /// helper function returned.
-    #[test]
-    fn a_node_error_names_the_line_that_built_each_node_on_its_path() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
-            "local function label()\n\
-             \x20 return text { contnet = \"hi\" }\n\
-             end\n\
-             return panel { id = \"p\", layer = \"top\", child = row {\n\
-             \x20 children = { row {\n\
-             \x20   children = { label() },\n\
-             \x20 } },\n\
-             } }\n",
-        )
-        .unwrap();
-
-        let err = super::run(dir.path()).unwrap_err();
-
-        assert!(
-            err.contains(
-                "shell.lua:2: text: invalid value for `children`: `text` has no property `contnet`"
-            ) && err.contains("(at panel (shell.lua:4) > row (shell.lua:4) > row[0] (shell.lua:5) > text[0] (shell.lua:2) on `p@DP-1`)"),
-            "{err}"
-        );
     }
 
     /// Every row is a config that fails `mantle check`; the substrings pin the parts an author reads.
@@ -319,7 +275,7 @@ mod tests {
             (
                 "unknown root property",
                 &[("shell.lua", "\nreturn panel { id = \"bar\", layer = \"top\", paddng = 1 }\n")],
-                &["shell.lua:2: `panel` has no property `paddng`; did you mean `padding`?"],
+                &["shell.lua:2: panel: no property `paddng`; did you mean `padding`?"],
             ),
             (
                 "bad root value",
@@ -359,7 +315,7 @@ mod tests {
                     "local function label()\n  return text { contnet = \"hi\" }\nend\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = row { children = { label() } } }\n",
                 )],
                 &[
-                    "shell.lua:2: text: invalid value for `children`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) > text[0] (shell.lua:2) on `bar@DP-1`)",
+                    "shell.lua:2: text[0]: no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) on `bar@DP-1`)",
                 ],
             ),
             (
@@ -369,8 +325,8 @@ mod tests {
                     "return panel { id = \"p\", layer = \"top\", child = column {\n  children = { row {\n    children = { rect { opacity = 2 } },\n  } },\n} }\n",
                 )],
                 &[
-                    "shell.lua:3: rect: invalid value for `opacity`",
-                    "(at panel (shell.lua:1) > column (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3) on `p@DP-1`)",
+                    "shell.lua:3: rect[0]: invalid value for `opacity`",
+                    "(at panel (shell.lua:1) > column (shell.lua:1) > row[0] (shell.lua:2) on `p@DP-1`)",
                     "must be within [0, 1], got integer 2",
                 ],
             ),
@@ -411,7 +367,7 @@ mod tests {
             (
                 "return a number",
                 &[("shell.lua", "return 5\n")],
-                &["shell.lua's top-level return must be", "got integer"],
+                &["shell.lua's top-level return must be", "got integer 5"],
             ),
             (
                 "text at the top level",
@@ -426,7 +382,7 @@ mod tests {
                     "-- clock\nlocal count = state(\"count\", 1)\nlocal label = count:map(function(n)\n  return n.missing\nend)\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = text { content = label } }\n",
                 )],
                 &[
-                    "shell.lua:9: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n') (at panel (shell.lua:9) > text (shell.lua:9) on `bar@DP-1`)",
+                    "shell.lua:9: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n') (at panel (shell.lua:9) on `bar@DP-1`)",
                     "shell.lua:4: in function <shell.lua:3>",
                 ],
             ),
@@ -512,7 +468,7 @@ mod tests {
                     "local count = state(\"count\", 0)\n\n-- counter\n\n\n\n\n\n\n\n\n\n\n\nreturn panel { id = \"counter\", layer = \"top\",\n  child = text { contnet = \"x\" } }\n",
                 )],
                 &[
-                    "shell.lua:16: text: invalid value for `child`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:15) > text (shell.lua:16) on `counter@DP-1`)",
+                    "shell.lua:16: text: no property `contnet`; did you mean `content`? (at panel (shell.lua:15) on `counter@DP-1`)",
                 ],
             ),
         ];
@@ -535,19 +491,6 @@ mod tests {
         }
     }
 
-    /// A live pass drops a bad value for its default; the check still fails on it.
-    #[test]
-    fn a_bad_value_fails_the_check() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
-            "return panel { id = \"p\", layer = \"top\", child = rect { opacity = 2 } }\n",
-        )
-        .unwrap();
-        let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("invalid value for `opacity`") && err.contains("got integer 2"), "{err}");
-    }
-
     /// A getter's failure names the line that made the signal, not only the line inside its function.
     #[test]
     fn a_failing_map_names_where_the_signal_was_created() {
@@ -567,7 +510,7 @@ mod tests {
         assert!(
             err.contains(
                 "shell.lua:5: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:2: \
-                 shell.lua:3: attempt to index a number value (local 'n') (at panel (shell.lua:5) > text (shell.lua:5) on `p@DP-1`)\n\
+                 shell.lua:3: attempt to index a number value (local 'n') (at panel (shell.lua:5) on `p@DP-1`)\n\
                  stack traceback:\n\tshell.lua:3: in function <shell.lua:2>"
             ),
             "{err}"

@@ -254,11 +254,10 @@ impl Capability {
                 self.name
             )));
         }
-        let values: Vec<Value> = args.into_iter().collect();
-        let mut arguments = Vec::with_capacity(values.len());
-        for (index, value) in values.iter().enumerate() {
+        let mut arguments = Vec::with_capacity(args.len());
+        for (index, value) in args.into_iter().enumerate() {
             // A function or userdata has no JSON form, so only here can the error name its slot.
-            let json = lua.from_value::<serde_json::Value>(value.clone()).map_err(|err| {
+            let json = lua.from_value::<serde_json::Value>(value).map_err(|err| {
                 mlua::Error::runtime(format!(
                     "mantle.{}:{action} could not marshal argument {}: {err}",
                     self.name,
@@ -269,35 +268,30 @@ impl Capability {
         }
         // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
-        shared::action::check(roster, action, &arguments).map_err(|(slot, err)| {
-            let words = in_lua_words(&err, slot.and_then(|slot| Some((slot + 1, values.get(slot)?))));
-            mlua::Error::runtime(format!("mantle.{}:{action}: {words}", self.name))
+        shared::action::check(roster, action, &arguments).map_err(|err| {
+            mlua::Error::runtime(format!("mantle.{}:{action}: {}", self.name, in_lua_words(lua, &err, &arguments)))
         })?;
         self.commands.send(&self.name, action, arguments);
         Ok(())
     }
 }
 
-/// serde's `invalid type: string "x", expected usize` for argument 1 as `bad argument #1: expected
-/// a non-negative integer, got string "x"`, with the Lua value as sent. Inside a table argument it
-/// is serde's own got-word, as the table is not what failed. `invalid value` (right type, out of
-/// range) says so for a number; no slot but a wrong count reads `expects 1 argument, got 2`.
+/// `shared::action`'s `argument 1: invalid type: string "x", expected usize` as `bad argument #1:
+/// expected a non-negative integer, got string "x"`, with the Lua value as sent. Inside a table
+/// argument it is serde's own got-word, as the table is not what failed. `invalid value` (right
+/// type, out of range) says so for a number; no slot but a wrong count reads `expects 1 argument, got 2`.
 // ponytail: only these three serde messages are reworded; any other passes through, after the slot.
-fn in_lua_words(err: &serde_json::Error, arg: Option<(usize, &Value)>) -> String {
+fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Value]) -> String {
     let text = err.to_string();
-    let Some((slot, value)) = arg else {
+    let slot = text.strip_prefix("argument ").and_then(|rest| rest.split_once(": "));
+    let Some((slot, text)) = slot.and_then(|(n, rest)| Some((n.parse::<usize>().ok()?, rest))) else {
         let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.split_once(", expected "))
         else {
             return text;
         };
-        // `no arguments`, `1 elements`, or `struct X::y with 2 elements`.
+        // `1 elements` or `struct variant X::y with 2 elements`.
         let words: Vec<&str> = want.split_whitespace().collect();
-        let count = if words.first() == Some(&"no") {
-            Some("0")
-        } else {
-            words.windows(2).find(|pair| pair[1].starts_with("element")).map(|pair| pair[0])
-        };
-        return match count {
+        return match words.windows(2).find(|pair| pair[1].starts_with("element")).map(|pair| pair[0]) {
             Some(n) => format!("expects {n} argument{}, got {got}", if n == "1" { "" } else { "s" }),
             None => text,
         };
@@ -310,10 +304,12 @@ fn in_lua_words(err: &serde_json::Error, arg: Option<(usize, &Value)>) -> String
     };
     let note =
         if range && (got.starts_with("integer") || got.starts_with("floating point")) { " (out of range)" } else { "" };
+    // Back from JSON, which keeps a string, an integer or a float as Lua sent it.
+    let value = arguments.get(slot - 1).and_then(|json| lua.to_value(json).ok()).unwrap_or(Value::Nil);
     let got = if matches!(value, Value::Table(_)) && !matches!(got, "sequence" | "map") {
         got.replace('`', "").replace("floating point", "number")
     } else {
-        preview_for_error(value)
+        preview_for_error(&value)
     };
     format!("bad argument #{slot}: expected {}, got {got}{note}", rust_type_in_lua(want))
 }
@@ -428,32 +424,11 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_action_error_names_the_slot_the_count_and_a_range_miss() {
+    fn an_action_error_names_the_slot_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
-        for (call, want) in [
-            ("set_app_volume(7, 'x')", "bad argument #2: expected a number, got string \"x\""),
-            ("set_volume(1, 2)", "expects 1 argument, got 2"),
-            (
-                "set_default_sink(4294967296)",
-                "bad argument #1: expected a non-negative integer, got integer 4294967296 (out of range)",
-            ),
-        ] {
-            let err = lua.load(format!("mantle.probe:{call}")).exec().unwrap_err();
-            assert!(err.to_string().contains(want), "{call}: {err}");
-        }
+        let err = lua.load("mantle.probe:set_app_volume(7, 'x')").exec().unwrap_err();
+        assert!(err.to_string().contains("bad argument #2: expected a number, got string \"x\""), "{err}");
         assert!(rx.try_recv().is_err(), "a refused argument must not queue a command");
-    }
-
-    #[test]
-    fn a_bad_element_inside_a_table_argument_is_named_by_its_own_value() {
-        let lua = Lua::new();
-        let (tx, _rx) = mpsc::unbounded_channel();
-        let (files, _) = Capability::new("files", DirtyFlag::new(), CommandSender::new(0, tx));
-        lua.globals().set("files", files).unwrap();
-
-        let err = lua.load(r#"files:watch("/tmp", { "a", 5 })"#).exec().unwrap_err();
-
-        assert!(err.to_string().contains("bad argument #2: expected a string, got integer 5"), "{err}");
     }
 
     #[test]

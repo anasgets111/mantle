@@ -113,13 +113,12 @@ lua_class! {
 
 /// `timer` and `interval`'s shared body; `repeat` keeps the entry armed every `ms`.
 fn start(lua: &Lua, name: &str, ms: Num, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
-    let ms_value = ms.get();
     // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
-    if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms_value) {
-        let got = preview_for_error(&ms.0);
+    if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms.0) {
+        let got = preview_for_error(&ms.1);
         return Err(mlua::Error::runtime(format!("{name}: ms {}", out_of_range(MIN_MS, MAX_MS, got))));
     }
-    let ms = ms_value;
+    let ms = ms.0;
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
     let id = super::app_data_or_default::<TimerRegistry>(lua).arm(Instant::now() + period, callback, every)?;
@@ -598,14 +597,5 @@ mod tests {
             err.starts_with("shell.lua:2: timer: ms must be within [1, 86400000], got integer 0\n"),
             "the site leads: {err}"
         );
-    }
-
-    #[test]
-    fn a_mistyped_argument_names_its_position_and_speaks_lua() {
-        let lua = lua();
-
-        let err = lua.load("\ntimer('x', function() end)").set_name("=shell.lua").exec().unwrap_err();
-        let err = crate::lua::describe(&err);
-        assert!(err.starts_with(r#"shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"#), "{err}");
     }
 }

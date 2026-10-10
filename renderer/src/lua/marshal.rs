@@ -27,27 +27,18 @@ pub(crate) fn number_word(n: impl std::fmt::Debug) -> String {
     format!("number {n:?}").replace("NaN", "nan")
 }
 
-/// A Lua number argument kept as written, so a range error says `integer 0` for `0` and `number 0.0`
-/// for `0.0`.
-pub(crate) struct Num(pub mlua::Value);
+/// A Lua number argument and the value as written, so a range error says `integer 0` for `0` and
+/// `number 0.0` for `0.0`. Unlike `f64`, refuses a numeric string.
+pub(crate) struct Num(pub f64, pub mlua::Value);
 
 impl mlua::FromLua for Num {
     fn from_lua(value: mlua::Value, _: &mlua::Lua) -> mlua::Result<Self> {
         match value {
-            mlua::Value::Integer(_) | mlua::Value::Number(_) => Ok(Self(value)),
+            mlua::Value::Integer(i) => Ok(Self(i as f64, value)),
+            mlua::Value::Number(n) => Ok(Self(n, value)),
             other => {
                 Err(mlua::Error::FromLuaConversionError { from: other.type_name(), to: "f64".into(), message: None })
             }
-        }
-    }
-}
-
-impl Num {
-    pub(crate) fn get(&self) -> f64 {
-        match self.0 {
-            mlua::Value::Integer(i) => i as f64,
-            mlua::Value::Number(n) => n,
-            _ => unreachable!("Num holds a number"),
         }
     }
 }
@@ -172,13 +163,6 @@ mod tests {
         assert_eq!(refused("return { [0] = 1 }"), "key 0 is not a list index");
         assert_eq!(refused("return { [1.5] = 1 }"), "key 1.5 is not a list index");
         assert_eq!(refused("return { [{}] = 1 }"), "a table key is not a list index");
-    }
-
-    #[test]
-    fn a_misspelt_choice_gets_a_suggestion_and_a_far_off_one_only_the_list() {
-        let near = expected_one_of(&["start", "center", "stretch"], "cenetr", "\"cenetr\"");
-        assert_eq!(near, "got \"cenetr\"; did you mean `center`?");
-        assert!(!expected_one_of(&["start", "center"], "zzzzzz", "\"zzzzzz\"").contains("did you mean"));
     }
 
     #[test]

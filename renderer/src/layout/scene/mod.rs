@@ -750,7 +750,7 @@ impl Scene {
                         node::fields::surface::id.read(&s.properties).is_ok_and(|id| id == instance.declared_id)
                     });
                     let err = match root {
-                        Some(root) => err.at_root(root.kind, root.site),
+                        Some(root) => err.in_node(root.kind, None, root.site),
                         None => err,
                     };
                     failed.push(err.on_surface(&instance.instance_id));

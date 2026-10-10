@@ -290,7 +290,7 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
             let name = name.to_str().map_err(|e| invalid(field, e.to_string()))?;
             Easing::parse(&name).ok_or_else(|| {
                 let known: Vec<&str> = Easing::NAMES.iter().map(|(n, _)| *n).collect();
-                invalid(field, crate::lua::marshal::expected_one_of(&known, &name, &format!("`{name}`")))
+                invalid(field, crate::lua::marshal::expected_one_of(&known, &name, &preview_for_error(value)))
             })
         }
         Value::Table(table) => {

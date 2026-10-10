@@ -94,13 +94,14 @@ fn deserialize_child(table: &mlua::Table, property: &str, index: Option<usize>) 
     deserialize_lua_table(table).map_err(|e| match e {
         DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
         other => {
-            // A node-shaped failure names its kind like `LayoutError::in_node`; a table with no kind keeps the property.
-            let label = match &other {
-                DeserializeError::UnknownProperty { kind, .. } => kind,
-                _ => property,
-            };
             let site = crate::lua::nodes::site_of(table);
-            invalid(property, other.to_string()).in_node(label, index, site)
+            match &other {
+                // The key is the whole problem, so no `children` header; the node's kind leads as for any node.
+                DeserializeError::UnknownProperty { kind, .. } => {
+                    invalid("", other.to_string()).in_node(kind, index, site)
+                }
+                _ => invalid(property, other.to_string()).in_node(property, index, site),
+            }
         }
     })
 }

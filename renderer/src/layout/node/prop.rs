@@ -214,10 +214,12 @@ pub(crate) fn within_range(name: &str, (low, high): (f32, f32), n: f32) -> Resul
 
 /// [`within`] for a number read from `value`, so the error says `integer 2`, not `number 2.0`.
 pub(crate) fn within_value(row: &Property, n: f32, value: &Value) -> Result<f32, LayoutError> {
-    within(row, n).map_err(|err| match row.range {
-        Some((low, high)) => invalid(row.name, out_of_range(low, high, preview_for_error(value))),
-        None => err,
-    })
+    match row.range {
+        Some((low, high)) if !(low..=high).contains(&n) => {
+            Err(invalid(row.name, out_of_range(low, high, preview_for_error(value))))
+        }
+        _ => Ok(n),
+    }
 }
 
 /// A boolean, the row's default when absent.

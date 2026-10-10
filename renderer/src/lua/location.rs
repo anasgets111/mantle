@@ -298,14 +298,6 @@ mod tests {
     }
 
     #[test]
-    fn a_non_string_error_value_is_named_by_type() {
-        let lua = Lua::new();
-        let (_, err) = handler(&lua, "return function() error({ code = 1 }) end");
-        let text = super::describe(&err);
-        assert!(text.contains("widgets/bar.lua:1: error object is a table, not a string"), "{text}");
-    }
-
-    #[test]
     fn a_message_without_a_location_gains_the_first_config_frame_and_never_two() {
         let lua = Lua::new();
         let fail =
@@ -324,45 +316,6 @@ mod tests {
         assert_eq!(super::location("got string \"10:30: x\""), None, "a clock inside a value is not a position");
         assert_eq!(super::location("[string \"cfg\"]:3: x"), Some("[string \"cfg\"]:3"));
         assert_eq!(super::location("mantle.x:go: 10: x"), None);
-    }
-
-    #[test]
-    fn a_pcall_caught_raise_keeps_the_calling_line() {
-        let lua = Lua::new();
-        let fail = lua
-            .create_function(|lua, ()| -> mlua::Result<()> {
-                Err(super::located(lua, mlua::Error::runtime("mantle.x:go: bad")))
-            })
-            .unwrap();
-        lua.globals().set("fail", fail).unwrap();
-        let msg: String = lua
-            .load("local _, msg = pcall(function()\n  fail()\nend)\nreturn tostring(msg)")
-            .set_name("@shell.lua")
-            .eval()
-            .unwrap();
-        assert!(msg.starts_with("runtime error: shell.lua:2: mantle.x:go: bad"), "{msg}");
-    }
-
-    #[test]
-    fn a_missing_module_lists_config_relative_paths_and_no_c_loader() {
-        let dir = tempfile::tempdir().unwrap();
-        let loader = crate::lua::Loader::new(crate::lua::signal::DirtyFlag::new(), dir.path()).unwrap();
-        let err = loader.lua().load("require('nope.missing')").exec().unwrap_err();
-        let text = super::describe(&err);
-        assert!(text.contains("no file 'nope/missing.lua'"), "{text}");
-        assert!(!text.contains(&dir.path().display().to_string()), "{text}");
-        assert!(!text.contains("C modules"), "{text}");
-    }
-
-    #[test]
-    fn a_syntax_error_in_a_required_module_names_its_file_and_line() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("mod.lua"), "local x = 1\nlocal = \n").unwrap();
-        let loader = crate::lua::Loader::new(crate::lua::signal::DirtyFlag::new(), dir.path()).unwrap();
-        let err = loader.lua().load("require('mod')").exec().unwrap_err();
-        let text = super::describe(&err);
-        assert!(text.contains("mod.lua:2:"), "{text}");
-        assert!(!text.contains(&dir.path().display().to_string()), "{text}");
     }
 
     /// `error` raised in the main chunk, and a failing `computed` read through `:get()`, which

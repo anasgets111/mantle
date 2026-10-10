@@ -1502,8 +1502,8 @@ mod tests {
         assert_eq!(property, "content");
         assert_eq!(
             err.to_string(),
-            "shell.lua:3: text: invalid value for `content`: expected a string or an array of runs, got integer 5 \
-             (at panel (shell.lua:1) > column (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) on `bar@TEST`)",
+            "shell.lua:3: text[1]: invalid value for `content`: expected a string or an array of runs, got integer 5 \
+             (at panel (shell.lua:1) > column (shell.lua:1) > row[1] (shell.lua:3) on `bar@TEST`)",
             "the site leads, the path reaches the guilty node, a lone `child` has no index, and neither sibling text node is on it"
         );
     }
@@ -1529,19 +1529,17 @@ mod tests {
         assert_eq!(lines.len(), 4, "a count, then one line per broken node: {err}");
         assert_eq!(lines[0], "3 nodes failed:");
         assert!(
-            lines[1].starts_with("  shell.lua:2: text: invalid value for `content`: expected a string")
-                && lines[1]
-                    .contains("(at panel (shell.lua:1) > column (shell.lua:1) > text[0] (shell.lua:2) on `bar@TEST`)"),
+            lines[1].starts_with("  shell.lua:2: text[0]: invalid value for `content`: expected a string")
+                && lines[1].contains("(at panel (shell.lua:1) > column (shell.lua:1) on `bar@TEST`)"),
             "{err}"
         );
         assert!(
-            lines[2].starts_with("  shell.lua:3: text:")
-                && lines[2].contains("column (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) on"),
+            lines[2].starts_with("  shell.lua:3: text[1]:")
+                && lines[2].contains("column (shell.lua:1) > row[1] (shell.lua:3) on"),
             "{err}"
         );
         assert!(
-            lines[3].starts_with("  shell.lua:4: rect:")
-                && lines[3].contains("column (shell.lua:1) > rect[2] (shell.lua:4) on `bar@TEST`)"),
+            lines[3].starts_with("  shell.lua:4: rect[2]:") && lines[3].contains("column (shell.lua:1) on `bar@TEST`)"),
             "{err}"
         );
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].kind, "rect", "the prior scene stays");
@@ -1564,21 +1562,18 @@ mod tests {
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines.len(), 4, "{err}");
         assert!(
-            lines[1].starts_with("  shell.lua:2: text:")
-                && lines[1].contains("`text` has no property `contnet`")
-                && lines[1].contains("row[0] (shell.lua:2) > text[0] (shell.lua:2) on"),
+            lines[1].starts_with("  shell.lua:2: text[0]: no property `contnet`")
+                && lines[1].contains("row[0] (shell.lua:2) on"),
             "{err}"
         );
         assert!(
-            lines[2].starts_with("  shell.lua:2: rect:")
-                && lines[2].contains("`rect` has no property `color`")
-                && lines[2].contains("row[0] (shell.lua:2) > rect[1] (shell.lua:2) on"),
+            lines[2].starts_with("  shell.lua:2: rect[1]: no property `color`")
+                && lines[2].contains("row[0] (shell.lua:2) on"),
             "{err}"
         );
         assert!(
-            lines[3].starts_with("  shell.lua:3: text:")
-                && lines[3].contains("`text` has no property `contnet`")
-                && lines[3].contains("list[1] (shell.lua:3) > text (shell.lua:3) on"),
+            lines[3].starts_with("  shell.lua:3: text: no property `contnet`")
+                && lines[3].contains("list[1] (shell.lua:3) on"),
             "{err}"
         );
     }
@@ -1619,7 +1614,7 @@ mod tests {
         assert!(
             lines[2].contains("(at panel (")
                 && lines[2].contains(") > column (")
-                && lines[2].contains(") > text[0] (")
+                && lines[2].contains(": text[0]: ")
                 && lines[2].contains("on `dock@LEFT`)"),
             "{err}"
         );

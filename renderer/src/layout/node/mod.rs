@@ -258,8 +258,8 @@ spelled!(Rgba => prop::Color::lua());
 pub enum LayoutError {
     #[error("unsupported node kind `{0}`")]
     UnsupportedNodeKind(String),
-    #[error("{}", invalid_property(property, detail, at))]
-    InvalidProperty { property: String, detail: String, at: Trail },
+    #[error("{}", invalid_property(property, detail, at.as_deref()))]
+    InvalidProperty { property: String, detail: String, at: Option<Box<Trail>> },
     #[error("`{0}` is a Signal handle, not a plain value -- read it via :get() before returning it from shell.lua")]
     UnsupportedSignalProperty(String),
     /// `prepare` exceeded `MAX_TREE_DEPTH`, from a literal cycle or a depth-generating signal.
@@ -280,7 +280,7 @@ pub enum LayoutError {
     Several(Vec<LayoutError>),
 }
 
-/// One node on the way down to a failure: `kind[index] (site)`, `index` absent for a lone `child`.
+/// One node on the way down to a failure, `kind[index] (site)` in a path; no `index` for a lone `child`.
 #[derive(Debug)]
 struct Step {
     kind: String,
@@ -289,43 +289,41 @@ struct Step {
 }
 
 /// Where an `InvalidProperty` happened: the nodes walked from the failing one up to its root, then
-/// the surface instance. Parts, not a joined string, so [`invalid_property`] renders them once.
+/// the surface instance. Boxed so a property read's `Result` stays 56 bytes, not 96.
 #[derive(Debug, Default)]
 pub struct Trail {
     steps: Vec<Step>,
     surface: Option<String>,
 }
 
-/// `file:N: kind: invalid value for \`p\`: problem (at root (site) > node (site) on \`surface\`)`.
-/// The failing node's line leads, as in Lua's own errors; the whole path closes the first line of
-/// the problem, ahead of any traceback it carries. A lone step is the failing node, so no path.
-fn invalid_property(property: &str, detail: &str, at: &Trail) -> String {
-    let lead = match at.steps.first() {
-        Some(Step { kind, site: Some(site), .. }) => format!("{site}: {kind}: "),
-        _ => String::new(),
+/// `file:N: kind[i]: invalid value for \`p\`: problem (at root (site) > parent (site) on \`surface\`)`.
+/// The failing node's line leads, as in Lua's own errors, so the path names only the nodes above it;
+/// it closes the problem's first line, ahead of any traceback. An empty `property` has no header.
+fn invalid_property(property: &str, detail: &str, at: Option<&Trail>) -> String {
+    let (steps, surface) = at.map_or((&[][..], None), |at| (&at.steps[..], at.surface.as_deref()));
+    let (lead, above) = match steps.split_first() {
+        Some((step @ Step { site: Some(site), .. }, above)) => (format!("{site}: {step}: "), above),
+        _ => (String::new(), steps),
     };
-    let path = (at.steps.len() > 1).then(|| {
-        let steps: Vec<String> = at.steps.iter().rev().map(Step::to_string).collect();
-        format!("at {}", steps.join(" > "))
+    let path = above.iter().rev().map(|step| match step.site {
+        Some(site) => format!("{step} ({site})"),
+        None => step.to_string(),
     });
-    let surface = at.surface.as_ref().map(|surface| format!("on `{surface}`"));
-    let context = [path, surface].into_iter().flatten().collect::<Vec<_>>().join(" ");
-    let (first, rest) = detail.split_once('\n').map_or((detail, ""), |(first, rest)| (first, rest));
+    let path = (!above.is_empty()).then(|| format!("at {}", path.collect::<Vec<_>>().join(" > ")));
+    let context = [path, surface.map(|surface| format!("on `{surface}`"))].into_iter().flatten();
+    let context = context.collect::<Vec<_>>().join(" ");
     let context = if context.is_empty() { context } else { format!(" ({context})") };
-    let rest = if rest.is_empty() { String::new() } else { format!("\n{rest}") };
-    format!("{lead}invalid value for `{property}`: {first}{context}{rest}")
+    let head = if property.is_empty() { String::new() } else { format!("invalid value for `{property}`: ") };
+    let (first, rest) = detail.split_at(detail.find('\n').unwrap_or(detail.len()));
+    format!("{lead}{head}{first}{context}{rest}")
 }
 
 impl std::fmt::Display for Step {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.kind)?;
-        if let Some(index) = self.index {
-            write!(f, "[{index}]")?;
+        match self.index {
+            Some(index) => write!(f, "{}[{index}]", self.kind),
+            None => write!(f, "{}", self.kind),
         }
-        if let Some(site) = self.site {
-            write!(f, " ({site})")?;
-        }
-        Ok(())
     }
 }
 
@@ -372,53 +370,28 @@ impl LayoutError {
         }
     }
 
-    /// Names the surface this came from, added by `layout::scene::Scene::apply_admitting` as it
-    /// walks instances. A whole-scene re-resolve reported one property name for a config with a
-    /// dozen surfaces (`invalid value for \`background\`` and nothing else), leaving a reader to
-    /// grep every surface that has one; the instance id is right there in the loop.
-    ///
-    /// It extends the `Trail` rather than wrapping in a new variant so that `InvalidProperty` stays
-    /// the variant callers match on, `property` keeps naming the property alone, and no reader of
-    /// this enum has to learn a wrapper. The other variants already name the node kind or the whole
-    /// pass, which is enough to find them, and none of them has a free-form field to extend.
+    /// Names the surface instance, added by `layout::scene::Scene::apply_admitting`: one property
+    /// name alone left a config with a dozen surfaces to grep every one. Only `InvalidProperty`
+    /// carries a [`Trail`]; the other variants already name the node kind or the whole pass.
     pub(crate) fn on_surface(self, surface: &str) -> Self {
         let Self::InvalidProperty { property, detail, mut at } = self else {
             return self;
         };
-        at.surface = Some(surface.to_string());
+        at.get_or_insert_default().surface = Some(surface.to_string());
         Self::InvalidProperty { property, detail, at }
     }
 
-    /// Leads a root's error with its constructor line, `shell.lua:13: panel: ...`.
-    pub(crate) fn at_root(self, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
-        match site {
-            Some(_) => self.in_node(kind, None, site),
-            None => self,
-        }
-    }
-
-    /// Prepends one step of the walk that reached the failing node, added by `layout::scene`'s
-    /// `prepare` for each child it descends into. Segments accumulate as the error unwinds, so the
-    /// detail carries the whole path from the surface down.
-    ///
-    /// The surface alone was not enough. On 2026-09-08 a lock screen reported `invalid value for
-    /// \`content\`: on \`lock_screen@eDP-1\`: expected a string or an array of runs, got
-    /// Integer(0)` and froze on its last good scene; that surface holds a dozen `text` nodes and
-    /// the message distinguished none of them. Reading the config did not find it either, because
-    /// the value came from a capability payload no static check evaluates.
-    ///
-    /// Indices are positions among a parent's `children`, so they are stable to read against the
-    /// config but not identities: a `list` renumbers its rows as its source changes.
-    ///
-    /// `site` is the line that built the child: indices say where in the tree, not which line of
-    /// which file, and a node a helper function returns has no index in the file at all.
-    ///
-    /// `index` is `None` for a lone `child`, which has no position to name.
+    /// Adds the next node up the walk that reached the failure, from `layout::scene`'s `prepare`
+    /// for each child and from the scene for the root. On 2026-09-08 a lock screen's `content`
+    /// error named only the surface, which held a dozen `text` nodes, and froze on its last good
+    /// scene. `site` names the line that built the node, which an index cannot for a node a helper
+    /// returned; `index`, a position among `children` (`None` for a lone `child`), tells apart
+    /// siblings built on one line. A `list` renumbers its rows as its source changes.
     pub(crate) fn in_node(self, kind: &str, index: Option<usize>, site: Option<crate::lua::location::Site>) -> Self {
         let Self::InvalidProperty { property, detail, mut at } = self else {
             return self;
         };
-        at.steps.push(Step { kind: kind.to_string(), index, site });
+        at.get_or_insert_default().steps.push(Step { kind: kind.to_string(), index, site });
         Self::InvalidProperty { property, detail, at }
     }
 }
@@ -447,7 +420,7 @@ pub(crate) fn signal_at(properties: &PropMap, property: &str) -> Option<signal::
 /// Crate-visible for `layout::scene::Scene::apply_one_instance`; all crate `InvalidProperty`
 /// values use this helper.
 pub(crate) fn invalid(property: &str, detail: impl Into<String>) -> LayoutError {
-    LayoutError::InvalidProperty { property: property.to_string(), detail: detail.into(), at: Trail::default() }
+    LayoutError::InvalidProperty { property: property.to_string(), detail: detail.into(), at: None }
 }
 
 /// Elements accepted from one config-supplied array: a node's `children`, a `list`'s `source`, and

@@ -89,7 +89,7 @@ error, printing `<config dir>: <error>`, with `file:line` and, for a mistyped pr
 suggestion:
 
 ```text
-/home/me/.config/mantle: shell.lua:16: text: invalid value for `child`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:15) > text (shell.lua:16) on `counter@DP-1`)
+/home/me/.config/mantle: shell.lua:16: text: no property `contnet`; did you mean `content`? (at panel (shell.lua:15) on `counter@DP-1`)
   (before capability data)
 ```
 

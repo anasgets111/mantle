@@ -227,9 +227,10 @@ real layout code, on one 1920x1080 output plus one per `output` name a panel pin
 
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
 the config `print`ed. An error prints as `<config dir>: <error>` and exits 1; files in it are named
-relative to the config directory. A layout error leads with the line that built the failing node, then gives the path from the
-surface down and the surface instance, and ends with its pass on a line of its own,
-`<config dir>: <error>` then `  (<pass>)`, once per failing pass. With more than one broken node,
+relative to the config directory. A layout error leads with the line that built the failing node
+and its kind (`text[0]`, with its index among `children`), then gives the path down to its parent
+and the surface instance, and ends with its pass on a line of its own, `<config dir>: <error>`
+then `  (<pass>)`, once per failing pass. With more than one broken node,
 `<error>` is `N nodes failed:` and then one node per line: the first 20, then `and N more`. A
 mistake repeated on every output, or by every item of a `list`, is listed once. The path names the
 line that built each node (a lone `child` has no index) and, for a failing `:map` or `computed`,
@@ -240,9 +241,9 @@ the line that created the signal:
 stack traceback:
 	widgets/bar.lua:4: in function 'widgets.bar.build'
 	shell.lua:2: in main chunk
-/home/me/.config/mantle: shell.lua:2: text: invalid value for `children`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) > text[0] (shell.lua:2) on `bar@DP-1`)
+/home/me/.config/mantle: shell.lua:2: text[0]: no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) on `bar@DP-1`)
   (before capability data)
-/home/me/.config/mantle: shell.lua:9: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n') (at panel (shell.lua:9) > text (shell.lua:9) on `bar@DP-1`)
+/home/me/.config/mantle: shell.lua:9: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n') (at panel (shell.lua:9) on `bar@DP-1`)
 stack traceback:
 	shell.lua:4: in function <shell.lua:3>
   (before capability data)

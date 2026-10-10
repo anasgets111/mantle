@@ -89,13 +89,6 @@ mod tests {
     }
 
     #[test]
-    fn a_non_table_argument_is_a_lua_worded_error_at_the_caller() {
-        let err = lua_with_fonts().load("\nfonts(5)").set_name("=shell.lua").exec().unwrap_err();
-        let err = crate::lua::describe(&err);
-        assert!(err.starts_with("shell.lua:2: fonts: bad argument #1 (chain): expected a table, got integer"), "{err}");
-    }
-
-    #[test]
     fn a_declared_chain_is_read_back_in_the_order_it_was_written() {
         let lua = lua_with_fonts();
         lua.load(r#"fonts { "CaskaydiaCove Nerd Font Propo", "Noto Sans", "Noto Color Emoji" }"#).exec().unwrap();

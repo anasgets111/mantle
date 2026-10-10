@@ -316,7 +316,10 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
         // Legal (ADR-0070 decision 7): no `return` is Lua's `nil`.
         Value::Nil => return Ok(Vec::new()),
         other => {
-            return Err(LoaderError::InvalidTopLevelReturn(format!("expected a table, got {}", other.type_name())));
+            return Err(LoaderError::InvalidTopLevelReturn(format!(
+                "expected a table, got {}",
+                crate::layout::node::preview_for_error(&other)
+            )));
         }
     };
 
@@ -360,12 +363,15 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
 /// compositor sends `locked`; rejecting it would leave the authored lock-screen `child` nowhere
 /// legal to write.
 fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
-    let node = nodes::deserialize_lua_table(table).map_err(|err| match err {
-        nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
-        err @ nodes::DeserializeError::UnknownProperty { .. } => {
-            LoaderError::Invalid(location::Site::lead(nodes::site_of(table), err))
+    let node = nodes::deserialize_lua_table(table).map_err(|err| {
+        let site = nodes::site_of(table);
+        match &err {
+            nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(kind),
+            nodes::DeserializeError::UnknownProperty { kind, .. } => {
+                LoaderError::Invalid(location::Site::lead(site, format!("{kind}: {err}")))
+            }
+            _ => LoaderError::InvalidTopLevelReturn(location::Site::lead(site, err)),
         }
-        other => LoaderError::InvalidTopLevelReturn(location::Site::lead(nodes::site_of(table), other)),
     })?;
     match node.kind {
         "panel" | "window" | "popup" | "lock" => Ok(node),

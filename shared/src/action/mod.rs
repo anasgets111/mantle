@@ -5,23 +5,17 @@
 mod catalog;
 
 pub use catalog::*;
-use std::cell::Cell;
-
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::Capability;
 
-/// The action name, its arguments, and where to note which argument failed to decode.
-struct Invocation<'a>(&'a str, &'a [Value], &'a Cell<Option<usize>>);
-struct Arguments<'a>(&'a [Value], &'a Cell<Option<usize>>);
+struct Invocation<'a>(&'a str, &'a [Value]);
+struct Arguments<'a>(&'a [Value]);
 
-/// Hands out the arguments in order and records the slot of the one that fails.
-struct Positional<'a> {
-    rest: std::slice::Iter<'a, Value>,
-    next: usize,
-    failed: &'a Cell<Option<usize>>,
-}
+/// Hands out the arguments in order; a failing one's error leads with `argument N: `, which the
+/// Renderer reads back to name the slot.
+struct Positional<'a>(std::iter::Enumerate<std::slice::Iter<'a, Value>>);
 
 impl<'de> serde::de::SeqAccess<'de> for Positional<'de> {
     type Error = serde_json::Error;
@@ -29,12 +23,12 @@ impl<'de> serde::de::SeqAccess<'de> for Positional<'de> {
         &mut self,
         seed: T,
     ) -> Result<Option<T::Value>, Self::Error> {
-        let Some(value) = self.rest.next() else { return Ok(None) };
-        self.next += 1;
-        seed.deserialize(value).map(Some).inspect_err(|_| self.failed.set(Some(self.next - 1)))
+        let Some((index, value)) = self.0.next() else { return Ok(None) };
+        let at = |err| serde::de::Error::custom(format_args!("argument {}: {err}", index + 1));
+        seed.deserialize(value).map(Some).map_err(at)
     }
     fn size_hint(&self) -> Option<usize> {
-        Some(self.rest.len())
+        Some(self.0.len())
     }
 }
 
@@ -46,12 +40,12 @@ impl<'de> serde::de::EnumAccess<'de> for Invocation<'de> {
         seed: S,
     ) -> Result<(S::Value, Self::Variant), Self::Error> {
         use serde::de::IntoDeserializer;
-        let Invocation(action, mut arguments, failed) = self;
+        let Invocation(action, mut arguments) = self;
         // Lua sends a trailing `nil` as `null`: an omitted argument, not an extra one.
         while let [rest @ .., Value::Null] = arguments {
             arguments = rest;
         }
-        Ok((seed.deserialize(action.into_deserializer())?, Arguments(arguments, failed)))
+        Ok((seed.deserialize(action.into_deserializer())?, Arguments(arguments)))
     }
 }
 
@@ -60,18 +54,18 @@ impl<'de> serde::de::VariantAccess<'de> for Arguments<'de> {
     fn unit_variant(self) -> Result<(), Self::Error> {
         match self.0.len() {
             0 => Ok(()),
-            n => Err(serde::de::Error::invalid_length(n, &"no arguments")),
+            n => Err(serde::de::Error::invalid_length(n, &"0 elements")),
         }
     }
     fn newtype_variant_seed<T: serde::de::DeserializeSeed<'de>>(self, _: T) -> Result<T::Value, Self::Error> {
         Err(serde::de::Error::custom("an action names its fields"))
     }
     fn tuple_variant<V: serde::de::Visitor<'de>>(self, _: usize, visitor: V) -> Result<V::Value, Self::Error> {
-        let mut seq = Positional { rest: self.0.iter(), next: 0, failed: self.1 };
+        let mut seq = Positional(self.0.iter().enumerate());
         let decoded = visitor.visit_seq(&mut seq)?;
-        match seq.rest.len() {
+        match seq.0.len() {
             0 => Ok(decoded),
-            _ => Err(serde::de::Error::invalid_length(self.0.len(), &&*format!("{} elements", seq.next))),
+            left => Err(serde::de::Error::invalid_length(self.0.len(), &&*format!("{} elements", self.0.len() - left))),
         }
     }
     fn struct_variant<V: serde::de::Visitor<'de>>(
@@ -86,55 +80,39 @@ impl<'de> serde::de::VariantAccess<'de> for Arguments<'de> {
 /// Decodes `action` and its positional `arguments` into `A`'s variant (ADR-0037). Serde owns the
 /// accepted spellings and argument types; `supervisor/src/stubs.rs` generates Lua from the same enum.
 pub fn decode<A: DeserializeOwned>(action: &str, arguments: &[Value]) -> Result<A, serde_json::Error> {
-    decode_at(action, arguments, &Cell::new(None))
-}
-
-fn decode_at<A: DeserializeOwned>(
-    action: &str,
-    arguments: &[Value],
-    failed: &Cell<Option<usize>>,
-) -> Result<A, serde_json::Error> {
-    A::deserialize(serde::de::value::EnumAccessDeserializer::new(Invocation(action, arguments, failed)))
+    A::deserialize(serde::de::value::EnumAccessDeserializer::new(Invocation(action, arguments)))
 }
 
 /// Whether `arguments` fit `capability`'s `action`. Only the shape: a check that needs live state,
-/// such as whether a profile or MAC exists, stays with the Supervisor. An error carries the index of
-/// the argument that failed to decode, `None` for a wrong count or an unknown action.
-pub fn check(
-    capability: Capability,
-    action: &str,
-    arguments: &[Value],
-) -> Result<(), (Option<usize>, serde_json::Error)> {
-    let failed = Cell::new(None);
-    macro_rules! fits {
-        ($ty:ty) => {
-            decode_at::<$ty>(action, arguments, &failed).map(drop).map_err(|err| (failed.get(), err))
-        };
+/// such as whether a profile or MAC exists, stays with the Supervisor.
+pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Result<(), serde_json::Error> {
+    fn fits<A: DeserializeOwned>(action: &str, arguments: &[Value]) -> Result<(), serde_json::Error> {
+        decode::<A>(action, arguments).map(drop)
     }
     match capability {
-        Capability::Applications => fits!(ApplicationsAction),
-        Capability::Audio => fits!(AudioAction),
-        Capability::Bluetooth => fits!(BluetoothAction),
-        Capability::Brightness => fits!(BrightnessAction),
-        Capability::Files => fits!(FilesAction),
-        Capability::Processes => fits!(ProcessesAction),
-        Capability::Keyboard => fits!(KeyboardAction),
-        Capability::Lock => fits!(LockAction),
-        Capability::Mpris => fits!(MprisAction),
-        Capability::Network => fits!(NetworkAction),
-        Capability::Notifications => fits!(NotificationsAction),
-        Capability::Radio => fits!(RadioAction),
-        Capability::Power => fits!(PowerAction),
-        Capability::Sysinfo => fits!(SysinfoAction),
-        Capability::Storage => fits!(StorageAction),
-        Capability::Polkit => fits!(PolkitAction),
-        Capability::Tray => fits!(TrayAction),
-        Capability::Updates => fits!(UpdatesAction),
-        Capability::Workspaces => fits!(WorkspacesAction),
-        Capability::Windows => fits!(WindowsAction),
-        Capability::System => fits!(SystemAction),
+        Capability::Applications => fits::<ApplicationsAction>(action, arguments),
+        Capability::Audio => fits::<AudioAction>(action, arguments),
+        Capability::Bluetooth => fits::<BluetoothAction>(action, arguments),
+        Capability::Brightness => fits::<BrightnessAction>(action, arguments),
+        Capability::Files => fits::<FilesAction>(action, arguments),
+        Capability::Processes => fits::<ProcessesAction>(action, arguments),
+        Capability::Keyboard => fits::<KeyboardAction>(action, arguments),
+        Capability::Lock => fits::<LockAction>(action, arguments),
+        Capability::Mpris => fits::<MprisAction>(action, arguments),
+        Capability::Network => fits::<NetworkAction>(action, arguments),
+        Capability::Notifications => fits::<NotificationsAction>(action, arguments),
+        Capability::Radio => fits::<RadioAction>(action, arguments),
+        Capability::Power => fits::<PowerAction>(action, arguments),
+        Capability::Sysinfo => fits::<SysinfoAction>(action, arguments),
+        Capability::Storage => fits::<StorageAction>(action, arguments),
+        Capability::Polkit => fits::<PolkitAction>(action, arguments),
+        Capability::Tray => fits::<TrayAction>(action, arguments),
+        Capability::Updates => fits::<UpdatesAction>(action, arguments),
+        Capability::Workspaces => fits::<WorkspacesAction>(action, arguments),
+        Capability::Windows => fits::<WindowsAction>(action, arguments),
+        Capability::System => fits::<SystemAction>(action, arguments),
         Capability::Appearance | Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => {
-            Err((None, serde::de::Error::custom("it has no actions")))
+            Err(serde::de::Error::custom("it has no actions"))
         }
     }
 }
@@ -181,12 +159,12 @@ mod tests {
         for (decoded, expected) in [
             (decode::<NetworkAction>("scan", json!([])), Ok("Scan")),
             (decode::<NetworkAction>("scan", json!([null])), Ok("Scan")),
-            (decode::<NetworkAction>("scan", json!([1])), Err("invalid length 1, expected no arguments")),
+            (decode::<NetworkAction>("scan", json!([1])), Err("invalid length 1, expected 0 elements")),
             (
                 decode::<NetworkAction>("connect", json!(["Home", true])),
                 Ok(r#"Connect { ssid: "Home", hidden: true }"#),
             ),
-            (decode::<NetworkAction>("connect", json!([1, true])), Err("invalid type")),
+            (decode::<NetworkAction>("connect", json!([1, true])), Err("argument 1: invalid type")),
             (decode::<NetworkAction>("connect", json!(["Home"])), Err("invalid length 1")),
             (decode::<NetworkAction>("connect", json!(["Home", true, 3])), Err("invalid length 3")),
             (decode::<NetworkAction>("unlock", json!([])), Err("unknown variant")),
