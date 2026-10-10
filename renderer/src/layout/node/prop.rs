@@ -12,7 +12,7 @@ use super::{
     reject_signal_in_structural_field, value_as_f32,
 };
 use crate::lua::luacats::{LuaType, spelled};
-use crate::lua::marshal::out_of_range;
+use crate::lua::marshal::{number_word, out_of_range};
 use crate::lua::nodes::properties::{Absent, Property, kind_of};
 use crate::lua::signal::{self, is_signal};
 
@@ -180,7 +180,7 @@ impl Prop for Num {
         };
         let n = value_as_f32(row.name, value)?
             .ok_or_else(|| invalid(row.name, format!("expected a number, got {}", preview_for_error(value))))?;
-        within(row, n)
+        within_value(row, n, value)
     }
 }
 
@@ -196,7 +196,7 @@ impl Prop for Pixels {
     fn read(row: &Property, value: Option<&Value>) -> Result<Option<f32>, LayoutError> {
         let Some(value) = value else { return Ok(None) };
         match value_as_f32(row.name, value)? {
-            Some(n) => within(row, n).map(Some),
+            Some(n) => within_value(row, n, value).map(Some),
             None => Err(invalid(row.name, format!("expected a number of pixels, got {}", preview_for_error(value)))),
         }
     }
@@ -209,7 +209,15 @@ pub(crate) fn within(row: &Property, n: f32) -> Result<f32, LayoutError> {
 
 /// `n` inside the closed range `(low, high)` of the property or field `name`.
 pub(crate) fn within_range(name: &str, (low, high): (f32, f32), n: f32) -> Result<f32, LayoutError> {
-    if (low..=high).contains(&n) { Ok(n) } else { Err(invalid(name, out_of_range(low, high, "number", n))) }
+    if (low..=high).contains(&n) { Ok(n) } else { Err(invalid(name, out_of_range(low, high, number_word(n)))) }
+}
+
+/// [`within`] for a number read from `value`, so the error says `integer 2`, not `number 2.0`.
+pub(crate) fn within_value(row: &Property, n: f32, value: &Value) -> Result<f32, LayoutError> {
+    within(row, n).map_err(|err| match row.range {
+        Some((low, high)) => invalid(row.name, out_of_range(low, high, preview_for_error(value))),
+        None => err,
+    })
 }
 
 /// A boolean, the row's default when absent.

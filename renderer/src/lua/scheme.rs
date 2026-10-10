@@ -16,6 +16,7 @@ use mlua::{IntoLua, Lua, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, lua_shape, spelled};
 use super::palette::PaletteSwatch;
+use crate::layout::node::preview_for_error;
 use crate::layout::node::prop::Color;
 
 /// The crate's variants but `Cmf`, which takes a second source colour.
@@ -118,41 +119,43 @@ fn options(opts: Option<Table>) -> Result<(bool, M3Variant, f64), String> {
     let dark = match opts.get::<Value>("dark").map_err(|e| e.to_string())? {
         Value::Nil => false,
         Value::Boolean(dark) => dark,
-        other => return Err(format!("`dark` must be a boolean, got {}", other.type_name())),
+        other => return Err(format!("`dark` must be a boolean, got {}", preview_for_error(&other))),
     };
     let variant = match opts.get::<Value>("variant").map_err(|e| e.to_string())? {
         Value::Nil => M3Variant::TonalSpot,
         Value::String(name) => {
             VARIANTS.into_iter().find(|(known, _)| name.as_bytes() == known.as_bytes()).map(|(_, v)| v).ok_or_else(
                 || {
+                    let known = VARIANTS.map(|(name, _)| name);
+                    let got = preview_for_error(&Value::String(name.clone()));
                     format!(
-                        "unknown `variant` `{}`; it takes {}",
-                        name.to_string_lossy(),
-                        VARIANTS.map(|(name, _)| name).join(", ")
+                        "`variant` is not a variant, {}",
+                        super::marshal::expected_one_of(&known, &name.to_string_lossy(), &got)
                     )
                 },
             )?
         }
-        other => return Err(format!("`variant` must be a string, got {}", other.type_name())),
+        other => return Err(format!("`variant` must be a string, got {}", preview_for_error(&other))),
     };
-    let contrast = match opts.get::<Value>("contrast").map_err(|e| e.to_string())? {
+    let given = opts.get::<Value>("contrast").map_err(|e| e.to_string())?;
+    let contrast = match given {
         Value::Nil => 0.0,
         Value::Integer(n) => n as f64,
         Value::Number(n) => n,
-        other => return Err(format!("`contrast` must be a number, got {}", other.type_name())),
+        other => return Err(format!("`contrast` must be a number, got {}", preview_for_error(&other))),
     };
     if !(-1.0..=1.0).contains(&contrast) {
-        return Err(format!("`contrast` {}", super::marshal::out_of_range(-1, 1, "number", contrast)));
+        return Err(format!("`contrast` {}", super::marshal::out_of_range(-1, 1, preview_for_error(&given))));
     }
     Ok((dark, variant, contrast))
 }
 
 fn swatch(entry: &Table) -> Result<(Rgb, f64), String> {
     let color: String = entry.get("color").map_err(|_| "`color` must be a string".to_string())?;
-    let rgb = parse(&color).ok_or_else(|| format!("`color` must be #RRGGBB, got `{color}`"))?;
+    let rgb = parse(&color).ok_or_else(|| format!("`color` must be #RRGGBB, got string {color:?}"))?;
     let share: f64 = entry.get("share").map_err(|_| "`share` must be a number".to_string())?;
     if !(share.is_finite() && share > 0.0) {
-        return Err(format!("`share` must be above 0, got {share}"));
+        return Err(format!("`share` must be above 0, got {}", super::marshal::number_word(share)));
     }
     Ok((rgb, share))
 }
@@ -170,8 +173,9 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             /// Anything else raises.
             opts: As<Option<Table>, Option<Options>>,
         ) -> Roles {
-            let rgb = parse(&seed.0)
-                .ok_or_else(|| mlua::Error::runtime(format!("palette.scheme: seed must be #RRGGBB, got `{}`", seed.0)))?;
+            let rgb = parse(&seed.0).ok_or_else(|| {
+                mlua::Error::runtime(format!("palette.scheme: seed must be #RRGGBB, got string {:?}", seed.0))
+            })?;
             let (dark, variant, contrast) =
                 options(opts.0).map_err(|detail| mlua::Error::runtime(format!("palette.scheme: options: {detail}")))?;
             Ok(generate(rgb, variant, dark, contrast))
@@ -186,8 +190,9 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             /// `#RRGGBB`.
             color: As<String, Color>,
         ) -> PaletteHct {
-            let rgb = parse(&color.0)
-                .ok_or_else(|| mlua::Error::runtime(format!("palette.hct: color must be #RRGGBB, got `{}`", color.0)))?;
+            let rgb = parse(&color.0).ok_or_else(|| {
+                mlua::Error::runtime(format!("palette.hct: color must be #RRGGBB, got string {:?}", color.0))
+            })?;
             let hct = Hct::new(rgb);
             Ok(PaletteHct { hue: hct.get_hue(), chroma: hct.get_chroma(), tone: hct.get_tone() })
         }
@@ -300,14 +305,17 @@ mod tests {
     fn bad_input_raises_naming_the_problem() {
         let lua = lua();
         for (code, expected) in [
-            (r#"palette.scheme("red")"#, "seed must be #RRGGBB, got `red`"),
+            (r#"palette.scheme("red")"#, "seed must be #RRGGBB, got string \"red\""),
             (r##"palette.scheme("#6750A4FF")"##, "seed must be #RRGGBB"),
-            (r##"palette.scheme("#6750A4", { variant = "loud" })"##, "unknown `variant` `loud`; it takes tonal_spot,"),
-            (r##"palette.scheme("#6750A4", { contrast = 2 })"##, "`contrast` must be within [-1, 1], got number 2"),
+            (
+                r##"palette.scheme("#6750A4", { variant = "loud" })"##,
+                "`variant` is not a variant, got string \"loud\"; expected one of `tonal_spot`,",
+            ),
+            (r##"palette.scheme("#6750A4", { contrast = 2 })"##, "`contrast` must be within [-1, 1], got integer 2"),
             (r##"palette.scheme("#6750A4", { contrast = 0/0 })"##, "`contrast` must be within [-1, 1]"),
-            (r##"palette.scheme("#6750A4", { dark = "yes" })"##, "`dark` must be a boolean, got string"),
+            (r##"palette.scheme("#6750A4", { dark = "yes" })"##, "`dark` must be a boolean, got string \"yes\""),
             (r##"palette.scheme("#6750A4", { darke = true })"##, "unknown key `darke`"),
-            (r##"palette.hct("#6750A4FF")"##, "palette.hct: color must be #RRGGBB, got `#6750A4FF`"),
+            (r##"palette.hct("#6750A4FF")"##, "palette.hct: color must be #RRGGBB, got string \"#6750A4FF\""),
             (r#"palette.score({ { color = "blue", share = 1 } })"#, "swatch 1: `color` must be #RRGGBB"),
             (r##"palette.score({ { color = "#0000FF", share = 0 } })"##, "swatch 1: `share` must be above 0"),
         ] {

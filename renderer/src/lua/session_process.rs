@@ -49,8 +49,15 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             }
             let stop_signal: Value = spec.get("stop_signal")?;
 
-            lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone())
-                .map_err(|err| mlua::Error::runtime(format!("session_process: bad argument (stop_signal): {}", err.to_string().trim_start_matches("deserialize error: "))))?;
+            lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone()).map_err(|err| {
+                let got = crate::layout::node::preview_for_error(&stop_signal);
+                let err = err.to_string();
+                let names = err.split_once(", expected one of ").map(|(_, n)| format!("; the names are {n}"));
+                mlua::Error::runtime(format!(
+                    "session_process: stop_signal: expected a signal name, got {got}{}",
+                    names.unwrap_or_default()
+                ))
+            })?;
             let processes = capability(lua, "session_process", "processes")?;
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
             // and takes the newer stop signal, so editing that lands on reload without disturbing

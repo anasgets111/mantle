@@ -191,7 +191,7 @@ pub(super) fn parse_sequence(
         Loops::Infinite => None,
         Loops::Count(count) if (1..=10_000).contains(&count) => Some(count),
         Loops::Count(count) => {
-            return Err(invalid(field, format!("`loops` {}", out_of_range(1, 10_000, "integer", count))));
+            return Err(invalid(field, format!("`loops` {}", out_of_range(1, 10_000, format!("integer {count}")))));
         }
     };
     Sequence::new(frames, loops).map(Some).ok_or_else(|| {

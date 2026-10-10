@@ -3,7 +3,7 @@
 use cursor_icon::CursorIcon;
 use mlua::Value;
 
-use super::prop::{keywords, within as row_within, within_range};
+use super::prop::{keywords, within as row_within, within_range, within_value};
 use super::*;
 use crate::lua::luacats::lua_shape;
 
@@ -48,7 +48,7 @@ impl Prop for SizeMode {
             return Ok(SizeMode::Content);
         };
         if let Some(n) = value_as_f32(row.name, value)? {
-            return Ok(SizeMode::Pixels(row_within(row, n)?));
+            return Ok(SizeMode::Pixels(within_value(row, n, value)?));
         }
         if let Value::String(s) = value {
             if &*s.as_bytes() == b"fill" {
@@ -246,7 +246,7 @@ impl Prop for Scale {
             return <Axes as Prop>::read(row, None);
         };
         match value_as_f32(row.name, value)? {
-            Some(n) => Ok((row_within(row, n)?, n)),
+            Some(n) => Ok((within_value(row, n, value)?, n)),
             None => xy(row, value),
         }
     }

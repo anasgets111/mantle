@@ -8,10 +8,11 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do, and reads `shell.lua:2: panel: invalid value for `height`: ...`; an unknown property on one no longer reads as a top-level return error. `mantle check` no longer repeats `layout:` after the pass name.
-- Changed: argument and value errors speak Lua, and every error the engine raises leads with the `file:line` of the config call that made it: `fonts: bad argument #1 (chain): expected a table, got integer`, `mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string "x"`, `mantle.audio:set_volume: expects 1 argument, got 2`, and an out-of-range number says `(out of range)`; a rejected property value of the wrong type reads `string "tall"` or `nil`.
-- Changed: every out-of-range number reads `must be within [a, b], got number 2`, including `timer`, `interval`, `delay`, `pulse`, `loops`, gradient stops and `idle:register_threshold`.
+- Changed: argument and value errors speak Lua, and every error the engine raises leads with the `file:line` of the config call that made it: `fonts: bad argument #1 (chain): expected a table, got integer`, `mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string "x"`, `mantle.audio:set_volume: expects 1 argument, got 2`, an out-of-range number says `(out of range)`, and a bad element inside a table argument names that element; a caught `pcall` keeps the caller's `file:line` too; a rejected property value of the wrong type reads `string "tall"` or `nil`.
+- Changed: every out-of-range value reads `must be within [a, b], got integer 2` (`number 2.5` for a float, `number 1.0` for a whole one), unit in the subject: `timer: ms must be within [1, 86400000], got integer 0`, including `timer`, `interval`, `delay`, `pulse`, `loops`, gradient stops and `idle:register_threshold`.
 - Changed: a config handler that raises logs where it was defined (`widgets/bar.lua:12`) and folds identical repeats into `raised again (N times)`; `error({...})` names the value type, and a missing `require` lists config-relative paths without the C-modules line.
 - Changed: a misspelt table key or choice value (`anchor = { lefft = true }`, `easing = "out_bak"`) in a config error now ends with "did you mean `left`?".
+- Breaking: `package.searchers` holds only the Lua file searcher (the C-module searchers could never load in safe mode), and config error text changed throughout; a shell that matches on `mantle.rescue.error_log` text must update.
 
 ## 0.5.5 - 2026-10-10
 

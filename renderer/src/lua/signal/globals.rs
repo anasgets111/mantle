@@ -6,7 +6,7 @@ use std::time::Duration;
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
-use crate::lua::marshal::{a_type, list_entries, out_of_range, rect_table};
+use crate::lua::marshal::{Num, a_type, list_entries, out_of_range, rect_table};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
@@ -227,10 +227,12 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
 /// Bounded on what the caller actually gets rather than on the number it wrote: `0.1` clears a
 /// bound written in floats and then rounds to nothing, leaving a `delay` that holds for no time
 /// and a `pulse` that is never true, both of them silently.
-fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
+fn parse_hold(what: &str, ms: Num) -> Result<Duration, mlua::Error> {
+    let millis = ms.get();
     let rounded = millis.round() as u64;
     if !(millis > 0.0 && millis <= 60_000.0) || rounded == 0 {
-        return Err(mlua::Error::runtime(format!("{what} {} ms", out_of_range(1, 60_000, "number", millis))));
+        let got = crate::layout::node::preview_for_error(&ms.0);
+        return Err(mlua::Error::runtime(format!("{what}: ms {}", out_of_range(1, 60_000, got))));
     }
     Ok(Duration::from_millis(rounded))
 }
@@ -293,13 +295,15 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             /// A signal or capability; anything else raises.
             source: SignalOf<Generic, AnyUserData>,
             /// `[1, 60000]`, rounded to whole milliseconds; outside raises.
-            ms: f64,
+            ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<Generic, AnyUserData> {
             let source_ud = source.0;
             let source = from_userdata(&source_ud)
-                .ok_or_else(|| mlua::Error::runtime("delay() takes a Signal or an `mantle` capability first"))?;
-            let hold = parse_hold("delay() hold", ms)?;
+                .ok_or_else(|| {
+                    mlua::Error::runtime("delay: source must be a Signal or a `mantle` capability, got userdata")
+                })?;
+            let hold = parse_hold("delay", ms.0)?;
             let held = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, held)?;
@@ -317,13 +321,15 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             /// A signal or capability; anything else raises.
             source: SignalOf<Value, AnyUserData>,
             /// `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
-            ms: f64,
+            ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<bool, AnyUserData> {
             let source_ud = source.0;
             let source = from_userdata(&source_ud)
-                .ok_or_else(|| mlua::Error::runtime("pulse() takes a Signal or an `mantle` capability first"))?;
-            let hold = parse_hold("pulse() window", ms)?;
+                .ok_or_else(|| {
+                    mlua::Error::runtime("pulse: source must be a Signal or a `mantle` capability, got userdata")
+                })?;
+            let hold = parse_hold("pulse", ms.0)?;
             let seen = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
             ud.set_nth_user_value(HELD_SLOT, seen)?;

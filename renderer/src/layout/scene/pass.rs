@@ -1568,7 +1568,7 @@ mod tests {
             "{err}"
         );
         assert!(
-            lines[3].contains("list[1] (shell.lua:3) > text[0] (shell.lua:3) > `text` has no property `contnet`"),
+            lines[3].contains("list[1] (shell.lua:3) > text (shell.lua:3) > `text` has no property `contnet`"),
             "{err}"
         );
     }

@@ -415,8 +415,10 @@ mod tests {
         ] {
             assert_eq!(closest(typo, names), meant, "{typo}");
         }
-        // Past the bound there is no suggestion, and no edit table of 2 MB x candidate to build.
-        assert_eq!(closest(&"content".repeat(300_000), names), None);
+        // 64 bytes is the cap: one `a` more is one edit from the candidate, and still gets no suggestion.
+        let at_cap = "a".repeat(64);
+        assert_eq!(closest(&at_cap, [at_cap.as_str()]), Some(at_cap.as_str()));
+        assert_eq!(closest(&format!("{at_cap}a"), [at_cap.as_str()]), None);
     }
 
     fn scored(haystack: &str, needle: &str) -> i32 {

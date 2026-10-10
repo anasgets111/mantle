@@ -41,17 +41,15 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             chain: super::luacats::As<mlua::Table, Vec<String>>,
         ) {
             let entries = super::marshal::list_entries(&chain.0)
-                .map_err(|detail| mlua::Error::runtime(format!("fonts() takes a list of family names: {detail}")))?;
+                .map_err(|detail| mlua::Error::runtime(format!("fonts: chain must be a list of names: {detail}")))?;
             let mut families = Vec::with_capacity(entries.len());
             for (index, entry) in (1..).zip(entries) {
                 // Check before mlua's `FromLua`, which coerces numbers like Lua. Without this,
                 // `fonts { 12 }` records family `"12"`; only `resolve_chain` then reports a
                 // missing font, hiding the config error.
                 let mlua::Value::String(family) = entry else {
-                    return Err(mlua::Error::runtime(format!(
-                        "fonts() entry {index} is {}; it takes family-name strings",
-                        super::marshal::a_type(&entry)
-                    )));
+                    let got = crate::layout::node::preview_for_error(&entry);
+                    return Err(mlua::Error::runtime(format!("fonts: entry {index} must be a family string, got {got}")));
                 };
                 families.push(family.to_string_lossy());
             }

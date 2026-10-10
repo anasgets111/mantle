@@ -234,7 +234,9 @@ impl UserData for Capability {
             };
             let capability = this.clone();
             lua.create_function(move |lua, (receiver, args): (Value, MultiValue)| {
-                capability.send_action(lua, &receiver, action, args)
+                capability
+                    .send_action(lua, &receiver, action, args)
+                    .map_err(|err| crate::lua::location::located(lua, err))
             })
         });
     }
@@ -277,12 +279,17 @@ impl Capability {
 }
 
 /// serde's `invalid type: string "x", expected usize` for argument 1 as `bad argument #1: expected
-/// a non-negative integer, got string "x"`, with the Lua value as sent; `invalid value` (right type,
-/// out of range) says so. A wrong count reads `expects 1 argument, got 2`.
+/// a non-negative integer, got string "x"`, with the Lua value as sent. Inside a table argument it
+/// is serde's own got-word, as the table is not what failed. `invalid value` (right type, out of
+/// range) says so for a number; no slot but a wrong count reads `expects 1 argument, got 2`.
 // ponytail: only these three serde messages are reworded; any other passes through, after the slot.
 fn in_lua_words(err: &serde_json::Error, arg: Option<(usize, &Value)>) -> String {
     let text = err.to_string();
-    if let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.split_once(", expected ")) {
+    let Some((slot, value)) = arg else {
+        let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.split_once(", expected "))
+        else {
+            return text;
+        };
         // `no arguments`, `1 elements`, or `struct X::y with 2 elements`.
         let words: Vec<&str> = want.split_whitespace().collect();
         let count = if words.first() == Some(&"no") {
@@ -294,16 +301,21 @@ fn in_lua_words(err: &serde_json::Error, arg: Option<(usize, &Value)>) -> String
             Some(n) => format!("expects {n} argument{}, got {got}", if n == "1" { "" } else { "s" }),
             None => text,
         };
-    }
-    let Some((slot, value)) = arg else { return text };
-    let mismatch = text.strip_prefix("invalid type: ").map(|rest| (rest, ""));
-    let range = text.strip_prefix("invalid value: ").map(|rest| (rest, " (out of range)"));
-    match mismatch.or(range).and_then(|(rest, note)| Some((rest.split_once(", expected ")?.1, note))) {
-        Some((want, note)) => {
-            format!("bad argument #{slot}: expected {}, got {}{note}", rust_type_in_lua(want), preview_for_error(value))
-        }
-        None => format!("bad argument #{slot}: {text}"),
-    }
+    };
+    let invalid = |prefix| text.strip_prefix(prefix)?.split_once(", expected ");
+    let (range, (got, want)) = match (invalid("invalid type: "), invalid("invalid value: ")) {
+        (Some(pair), _) => (false, pair),
+        (_, Some(pair)) => (true, pair),
+        _ => return format!("bad argument #{slot}: {text}"),
+    };
+    let note =
+        if range && (got.starts_with("integer") || got.starts_with("floating point")) { " (out of range)" } else { "" };
+    let got = if matches!(value, Value::Table(_)) && !matches!(got, "sequence" | "map") {
+        got.replace('`', "").replace("floating point", "number")
+    } else {
+        preview_for_error(value)
+    };
+    format!("bad argument #{slot}: expected {}, got {got}{note}", rust_type_in_lua(want))
 }
 
 #[cfg(test)]
@@ -430,6 +442,18 @@ pub(crate) mod tests {
             assert!(err.to_string().contains(want), "{call}: {err}");
         }
         assert!(rx.try_recv().is_err(), "a refused argument must not queue a command");
+    }
+
+    #[test]
+    fn a_bad_element_inside_a_table_argument_is_named_by_its_own_value() {
+        let lua = Lua::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (files, _) = Capability::new("files", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("files", files).unwrap();
+
+        let err = lua.load(r#"files:watch("/tmp", { "a", 5 })"#).exec().unwrap_err();
+
+        assert!(err.to_string().contains("bad argument #2: expected a string, got integer 5"), "{err}");
     }
 
     #[test]

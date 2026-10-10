@@ -103,11 +103,14 @@ impl LuaType for PersistentTable {
 fn join(path: &str, name: &str) -> mlua::Result<String> {
     if !path.starts_with('/') {
         return Err(mlua::Error::runtime(format!(
-            "persistent_table: path must be absolute, got {path:?}. A relative path resolves against the Supervisor's working directory, which nothing sets"
+            "persistent_table: path must be absolute, got string {path:?}; a relative one resolves against the \
+             Supervisor's working directory, which nothing sets"
         )));
     }
     if name.is_empty() || name.contains('/') {
-        return Err(mlua::Error::runtime(format!("persistent_table: name is one file name, not a path, got {name:?}")));
+        return Err(mlua::Error::runtime(format!(
+            "persistent_table: name must be one file name, not a path, got string {name:?}"
+        )));
     }
     Ok(format!("{}/{name}", path.trim_end_matches('/')))
 }

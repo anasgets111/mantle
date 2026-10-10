@@ -8,6 +8,7 @@ use mlua::{FromLua, IntoLua, Lua, Value};
 use shared::warn;
 
 use super::luacats::{LuaType, SignalOf, lua_class, lua_fn, lua_shape};
+use super::marshal::expected_one_of;
 use super::signal::{DirtyFlag, LiveSignalHandle, Signal};
 use crate::layout::node::Decorations;
 use crate::layout::node::prop::{Keyword, keywords};
@@ -200,7 +201,10 @@ impl FromLua for Flag {
     fn from_lua(value: Value, _: &Lua) -> mlua::Result<Self> {
         match value {
             Value::Boolean(on) => Ok(Self(on)),
-            other => Err(mlua::Error::runtime(format!("expected a boolean, got {}", other.type_name()))),
+            other => Err(mlua::Error::runtime(format!(
+                "argument must be a boolean, got {}",
+                crate::layout::node::preview_for_error(&other)
+            ))),
         }
     }
 }
@@ -222,7 +226,8 @@ lua_class! {
             edge: String,
         ) {
             let Some(edge) = Edge::find(edge.as_bytes()) else {
-                return Err(mlua::Error::runtime(format!("resize() takes {}, not {edge:?}", Edge::NAMES.join(", "))));
+                let hint = expected_one_of(Edge::NAMES, &edge, &format!("string {edge:?}"));
+                return Err(mlua::Error::runtime(format!("resize: edge is not an edge, {hint}")));
             };
             this.queue(lua, |_| Action::Resize(edge));
             Ok(())

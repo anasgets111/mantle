@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 use super::{Animatable, Motion, Tween};
 use crate::layout::node::{LayoutError, invalid};
 use crate::lua::luacats::lua_shape;
+use crate::lua::marshal::number_word;
 
 /// Which closed-form solution a spring's constants put it in. Underdamped rings past the target,
 /// overdamped crawls in without reaching it, and the boundary between them is its own formula
@@ -236,7 +237,7 @@ impl SpringConstants {
             if value <= 0.0 || value > highest {
                 return Err(invalid(
                     &format!("{field}.spring.{name}"),
-                    format!("`{name}` must be within (0, {highest}], got number {value}"),
+                    format!("`{name}` must be within (0, {highest}], got {}", number_word(value)),
                 ));
             }
         }

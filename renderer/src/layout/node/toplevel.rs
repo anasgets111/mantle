@@ -47,7 +47,10 @@ impl Prop for SizeHint {
             // Negative values make the request fail (`invalid_size`).
             let (low, high) = row.range.expect("a size hint has a range");
             if !(low..=high).contains(&n) {
-                return Err(invalid(property, format!("`{key}` must be within [{low}, {high}], got {n}")));
+                return Err(invalid(
+                    property,
+                    format!("`{key}` {}", marshal::out_of_range(low, high, marshal::number_word(n))),
+                ));
             }
             Ok(n)
         };
@@ -286,7 +289,8 @@ impl Prop for AnchorRect {
                 return Err(invalid(
                     "anchor_rect",
                     format!(
-                        "`{key}` must be within (0, 8192], got number {n} -- a zero or negative anchor rectangle size is a protocol error"
+                        "`{key}` must be within (0, 8192], got {} -- a zero size is a protocol error",
+                        marshal::number_word(n)
                     ),
                 ));
             }
@@ -333,7 +337,8 @@ impl Prop for PopupExtent {
             return Err(invalid(
                 property,
                 format!(
-                    "must be within (0, 8192], got number {n} -- set_size raises invalid_input on a zero or negative size"
+                    "must be within (0, 8192], got {} -- a zero or negative size is a protocol error",
+                    marshal::number_word(n)
                 ),
             ));
         }

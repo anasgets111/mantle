@@ -374,8 +374,8 @@ again after changing it in place is a write.
 | :--- | :--- |
 | `computed() dependency 2 is nil` / `is a table` | That `computed` list entry is not a signal or capability; `nil` is often a misspelled variable |
 | `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
-| `delay() takes a Signal` / `pulse() takes a Signal` | The first argument is not a signal or capability |
-| `delay() hold must be within [1, 60000] ms` / `pulse() window must be within` | `ms` out of range, or rounds to 0 |
+| `delay: source must be a Signal` / `pulse: source must be a Signal` | The first argument is not a signal or capability |
+| `delay: ms must be within [1, 60000]` / `pulse: ms must be within` | `ms` out of range, or rounds to 0 |
 | `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry or elided signal |
 | `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry or elided signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |

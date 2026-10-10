@@ -12,7 +12,7 @@ use crate::lua::nodes::properties::closable;
 use crate::lua::{LoadOutput, Loader, LoaderError};
 
 /// Parses every declared root role and returns the roster. Field type errors are
-/// [`LoaderError::Invalid`], distinct from top-level shape errors.
+/// [`LoaderError::Invalid`], led by the surface's `file:line`.
 ///
 /// **Parse every role, including unused-path properties.** Role violations become protocol errors
 /// (`invalid_positioner` for zero `anchor_rect`, `invalid_size` for `max_size < min_size`) that
@@ -60,7 +60,8 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
         return Err(LoaderError::Invalid(Site::lead(
             second.site,
             format!(
-                "{}: invalid value for `id`: two surfaces declare `{duplicate}`{first}, expected each surface id to be unique",
+                "{}: invalid value for `id`: two surfaces declare `{duplicate}`{first}, \
+                 expected each surface id to be unique",
                 second.kind
             ),
         )));

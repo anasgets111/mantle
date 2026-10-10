@@ -1461,7 +1461,7 @@ mod tests {
             client.loader.lua().load(r#"session_process { name = "rec", stop_signal = "TEM" }"#).exec().unwrap_err();
         let err = crate::lua::describe(&err);
 
-        assert!(err.contains("session_process: bad argument (stop_signal): unknown variant `TEM`"), "got {err}");
+        assert!(err.contains("session_process: stop_signal: expected a signal name, got string \"TEM\""), "got {err}");
         assert!(
             crate::lua::capability::tests::queued_command(&mut outbound_rx).is_none(),
             "the invalid declaration must not reach the Supervisor"

@@ -45,19 +45,13 @@ fn bad_argument(function: &str, names: &[&str], err: mlua::Error) -> mlua::Error
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
     let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };
     let name = names.get(pos - 1).map(|name| format!(" ({name})")).unwrap_or_default();
-    // A lowercase word is already Lua's; anything else is a Rust path or generic, said as no type.
-    let want = match rust_type_in_lua(to) {
-        word if word.bytes().all(|b| b.is_ascii_lowercase()) || word.starts_with("a ") || word.starts_with("an ") => {
-            word
-        }
-        _ => "a valid value",
-    };
+    let want = rust_type_in_lua(to);
     // mlua's own cause, such as `out of range`, says why a right-typed value was refused.
     let cause = message.as_ref().map(|message| format!(" ({message})")).unwrap_or_default();
     mlua::Error::runtime(format!("{function}: bad argument #{pos}{name}: expected {want}, got {from}{cause}"))
 }
 
-/// A Rust type name as an article and a Lua noun; an unknown type keeps its own name.
+/// A Rust type name as an article and a Lua noun; an unknown one is `a valid value`, never a Rust path.
 pub(crate) fn rust_type_in_lua(rust: &str) -> &str {
     match rust {
         "u8" | "u16" | "u32" | "u64" | "usize" => "a non-negative integer",
@@ -67,7 +61,10 @@ pub(crate) fn rust_type_in_lua(rust: &str) -> &str {
         "String" | "string" | "&str" => "a string",
         "table" => "a table",
         "function" => "a function",
-        other => other,
+        word if word.bytes().all(|b| b.is_ascii_lowercase()) || word.starts_with("a ") || word.starts_with("an ") => {
+            word
+        }
+        _ => "a valid value",
     }
 }
 
@@ -472,7 +469,11 @@ macro_rules! lua_fn {
                 const FUNCTION: &'static str = $path;
                 const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
             }
-            $lua.create_function(move |$l, $crate::lua::luacats::Args(($($name,)*), _): $crate::lua::luacats::Args<($($ty,)*), Names>| -> mlua::Result<$out> { $body })?
+            $lua.create_function(move |$l, $crate::lua::luacats::Args(($($name,)*), _): $crate::lua::luacats::Args<($($ty,)*), Names>|
+                    -> mlua::Result<$out> {
+                let run = || -> mlua::Result<$out> { $body };
+                run().map_err(|err| $crate::lua::location::located($l, err))
+            })?
         }
     };
     (@value $lua:expr; $path:expr; (value $value:expr); $($name:ident: $ty:ty),*) => {

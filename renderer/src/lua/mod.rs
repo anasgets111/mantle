@@ -363,9 +363,9 @@ fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
     let node = nodes::deserialize_lua_table(table).map_err(|err| match err {
         nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
         err @ nodes::DeserializeError::UnknownProperty { .. } => {
-            LoaderError::Invalid(nodes::at_site(table, err.to_string()))
+            LoaderError::Invalid(location::Site::lead(nodes::site_of(table), err))
         }
-        other => LoaderError::InvalidTopLevelReturn(nodes::at_site(table, other.to_string())),
+        other => LoaderError::InvalidTopLevelReturn(location::Site::lead(nodes::site_of(table), other)),
     })?;
     match node.kind {
         "panel" | "window" | "popup" | "lock" => Ok(node),

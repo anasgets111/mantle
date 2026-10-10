@@ -18,6 +18,7 @@ use super::{Animatable, AnimationSpec, Easing, Motion};
 #[cfg(test)]
 use crate::lua::luacats::optional;
 use crate::lua::luacats::{LuaType, lua_shape};
+use crate::lua::marshal::number_word;
 
 /// The name an `animate` entry eases, refused if `kind` does not have it. `animate` itself is not
 /// one: a block cannot ease the block.
@@ -313,8 +314,9 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
                 return Err(invalid(
                     field,
                     format!(
-                        "a Bezier's `x1` and `x2` must be within [0, 1], got number {} and number {}",
-                        points[0], points[2]
+                        "a Bezier's `x1` and `x2` must be within [0, 1], got {} and {}",
+                        number_word(points[0]),
+                        number_word(points[2])
                     ),
                 ));
             }

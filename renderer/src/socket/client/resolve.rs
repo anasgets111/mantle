@@ -1022,7 +1022,7 @@ mod tests {
         on_click.unwrap().expect("the sibling's handler").call::<()>(()).unwrap();
         assert_eq!(lua.load("return clicked:get()").eval::<String>().unwrap(), "b", "and it is the new one");
         let (is_rescue, error_log) = rescue_state(&client.loader);
-        assert!(is_rescue && error_log.contains("`opacity`") && error_log.contains("got number 2"), "{error_log}");
+        assert!(is_rescue && error_log.contains("`opacity`") && error_log.contains("got integer 2"), "{error_log}");
         assert!(client.re_resolve_if_dirty(), "the rescue write's pass");
         assert!(client.scene.surface("banner@TEST").unwrap().visible, "the banner shows it");
 

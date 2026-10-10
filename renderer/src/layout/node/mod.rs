@@ -339,13 +339,11 @@ impl LayoutError {
         Self::InvalidProperty { property, detail: format!("on `{surface}`: {detail}") }
     }
 
-    /// Names a root node's constructor line, `panel (shell.lua:13) > detail`, the way [`Self::in_child`]
-    /// names a child, ahead of whatever the detail already holds (a child path included). Takes one
-    /// error of [`Self::into_each`]; without a site, or on another variant, it changes nothing.
+    /// Leads a root's error with its constructor line, `panel (shell.lua:13) > detail`.
     pub(crate) fn at_root(self, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
         match (self, site) {
             (Self::InvalidProperty { property, detail }, Some(site)) => {
-                Self::InvalidProperty { property, detail: format!("{kind} ({site}) > {detail}") }
+                Self::InvalidProperty { property, detail: path_step(kind, None, Some(site), &detail) }
             }
             (other, _) => other,
         }
@@ -370,14 +368,21 @@ impl LayoutError {
         let Self::InvalidProperty { property, detail } = self else {
             return self;
         };
-        Self::InvalidProperty { property, detail: path_step(kind, index, site, &detail) }
+        Self::InvalidProperty { property, detail: path_step(kind, Some(index), site, &detail) }
     }
 }
 
-/// `kind[index] (site) > detail`, one step of the path to a failing node; `site` drops out when unknown.
-pub(crate) fn path_step(kind: &str, index: usize, site: Option<crate::lua::location::Site>, detail: &str) -> String {
+/// `kind[index] (site) > detail`, one step of the path to a failing node; `index` drops out for a
+/// lone `child`, and `site` when unknown.
+pub(crate) fn path_step(
+    kind: &str,
+    index: Option<usize>,
+    site: Option<crate::lua::location::Site>,
+    detail: &str,
+) -> String {
+    let index = index.map(|index| format!("[{index}]")).unwrap_or_default();
     let site = site.map(|site| format!(" ({site})")).unwrap_or_default();
-    format!("{kind}[{index}]{site} > {detail}")
+    format!("{kind}{index}{site} > {detail}")
 }
 
 /// [`marshal::only_keys`] for a property's sub-table, naming the property.
@@ -445,7 +450,7 @@ pub(crate) fn preview_for_error(value: &Value) -> String {
         Value::Nil => "nil".into(),
         Value::Boolean(b) => format!("boolean {b}"),
         Value::Integer(i) => format!("integer {i}"),
-        Value::Number(n) => format!("number {n}"),
+        Value::Number(n) => marshal::number_word(n),
         Value::String(s) => {
             // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
             let bytes = s.as_bytes();

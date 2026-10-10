@@ -1640,7 +1640,7 @@ pub(super) mod tests {
 
         let first = apply(&mut scene).unwrap().expect("the bad values are reported").to_string();
         assert!(
-            first.contains("on `bar@TEST`: panel (") && first.contains("> must be within [0, 1], got number 2"),
+            first.contains("on `bar@TEST`: panel (") && first.contains("> must be within [0, 1], got integer 2"),
             "{first}"
         );
         assert!(first.contains("> list[1] ("), "the list item's too: {first}");

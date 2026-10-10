@@ -367,7 +367,7 @@ mod tests {
                 &[
                     "panel (shell.lua:1) > column[0] (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3)",
                     "invalid value for `opacity`",
-                    "must be within [0, 1], got number 2",
+                    "must be within [0, 1], got integer 2",
                 ],
             ),
             (
@@ -442,7 +442,7 @@ mod tests {
             (
                 "timer out of range",
                 &[("shell.lua", "\ntimer(0, function() end)\nreturn {}\n")],
-                &["shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"],
+                &["shell.lua:2: timer: ms must be within [1, 86400000], got integer 0"],
             ),
             (
                 "capability field read",
@@ -473,6 +473,26 @@ mod tests {
                     "shell.lua:2: mantle.audio:set_default_sink: bad argument #1: expected a non-negative integer, got integer 4294967296 (out of range)",
                 ],
             ),
+            (
+                "a caught raise keeps the caller's line",
+                &[("shell.lua", "local ok, msg = pcall(function()\n  timer(0, function() end)\nend)\nerror(msg, 0)\n")],
+                &["shell.lua:2: timer: ms must be within [1, 86400000], got integer 0"],
+            ),
+            (
+                "action argument nested in a table",
+                &[("shell.lua", "\nmantle.files:watch(\"/tmp\", { \"a\", 5 })\nreturn {}\n")],
+                &["shell.lua:2: mantle.files:watch: bad argument #2: expected a string, got integer 5"],
+            ),
+            (
+                "set_volume with a string",
+                &[("shell.lua", "\nmantle.audio:set_volume(\"loud\")\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: bad argument #1: expected a number, got string \"loud\""],
+            ),
+            (
+                "an integral float is a number",
+                &[("shell.lua", "\nmantle.keyboard:switch_layout(1.0)\nreturn {}\n")],
+                &["expected a non-negative integer, got number 1.0"],
+            ),
             // quoted in docs/guide/agents.md
             (
                 "typo in a counter",
@@ -481,7 +501,7 @@ mod tests {
                     "local count = state(\"count\", 0)\n\n-- counter\n\n\n\n\n\n\n\n\n\n\n\nreturn panel { id = \"counter\", layer = \"top\",\n  child = text { contnet = \"x\" } }\n",
                 )],
                 &[
-                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text[0] (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?",
+                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?",
                 ],
             ),
         ];
@@ -514,7 +534,7 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("invalid value for `opacity`") && err.contains("got number 2"), "{err}");
+        assert!(err.contains("invalid value for `opacity`") && err.contains("got integer 2"), "{err}");
     }
 
     /// A getter's failure names the line that made the signal, not only the line inside its function.

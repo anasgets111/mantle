@@ -6,7 +6,7 @@ use super::Blend;
 use crate::layout::node::prop::{Prop, keywords};
 use crate::layout::node::{LayoutError, Property, Rgba, input, invalid, lua_hex_color, only_keys, preview_for_error};
 use crate::lua::luacats::{LuaType, lua_shape, spelled};
-use crate::lua::marshal::out_of_range;
+use crate::lua::marshal::{number_word, out_of_range};
 
 /// A box's fill: one colour, or a gradient across its box (ADR-0255).
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +101,7 @@ impl GradientInput {
             (GradientKind::Radial, Some(_)) => return Err(invalid(property, "a \"radial\" gradient takes no `angle`")),
         };
         if let Some((at, _)) = self.stops.iter().find(|(at, _)| !(0.0..=1.0).contains(at)) {
-            return Err(invalid(property, format!("stop positions {}", out_of_range(0, 1, "number", at))));
+            return Err(invalid(property, format!("stop positions {}", out_of_range(0, 1, number_word(at)))));
         }
         if self.stops.windows(2).any(|pair| pair[1].0 < pair[0].0) {
             return Err(invalid(property, "stop positions must be ascending"));

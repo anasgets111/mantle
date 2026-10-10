@@ -45,13 +45,7 @@ pub(super) fn chunk_name(config_dir: &Path, path: &Path) -> String {
     path.strip_prefix(config_dir).unwrap_or(path).display().to_string()
 }
 
-/// A Lua error as a config author reads it: without mlua's `runtime error: ` prefix, and without
-/// the traceback frames that are the engine's glue rather than config code. A `[C]` metamethod,
-/// `__index` upvalue or unnamed `[C]: in ?` is mlua's error handler or userdata dispatch, and
-/// `__mlua_*` chunks are mlua's own Lua; none of them names a line the author wrote. An error that
-/// crossed a Rust callback carries a second traceback, the tail of the first, so only the first is
-/// kept. A message not already led by `chunk:N: ` is led by the traceback's first config frame, so a
-/// raise from engine code says which line of the config made the call; with no such frame it stays.
+/// A Lua error as a config author reads it: no mlua prefix, no engine frames, and led by the config line when unlocated.
 pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = err.to_string();
     let text = text.strip_prefix("runtime error: ").unwrap_or(&text);
@@ -97,18 +91,23 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
     text
 }
 
-/// The `chunk:N` a line starts with when `chunk:N: ` leads it, as Lua prefixes its own errors.
-/// `timer: ms 0` and `mantle.x:get: ...` lead with no line number.
+/// The `chunk:N` that leads a line as Lua prefixes its errors; `timer: ms 0` and `got string "10:30: x"` have none.
 fn location(line: &str) -> Option<&str> {
-    let mut from = 0;
-    while let Some(colon) = line[from..].find(':').map(|at| from + at) {
-        let digits = line[colon + 1..].bytes().take_while(u8::is_ascii_digit).count();
-        if digits > 0 && line[colon + 1 + digits..].starts_with(": ") {
-            return Some(&line[..colon + 1 + digits]);
+    let (head, _) = line.split_once(": ")?;
+    let (chunk, n) = head.rsplit_once(':')?;
+    // A quote only belongs to a `[string "..."]` chunk name.
+    let named = !chunk.is_empty() && (chunk.starts_with('[') || !chunk.contains('"'));
+    (named && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(head)
+}
+
+/// `err` led by the calling config line when unlocated, so `pcall` returns a position as Lua's builtins do.
+pub(crate) fn located(lua: &Lua, err: mlua::Error) -> mlua::Error {
+    match err {
+        mlua::Error::RuntimeError(msg) if location(&msg).is_none() => {
+            mlua::Error::runtime(Site::lead(Site::of_caller(lua), msg))
         }
-        from = colon + 1;
+        other => other,
     }
-    None
 }
 
 /// Logs a config callback's raise as `{what} raised, ignoring it: ... (defined at file:N)`; `Ok` is
@@ -129,15 +128,14 @@ pub(crate) fn call_logged(f: &mlua::Function, args: impl IntoLuaMulti, what: imp
 /// and the next raises log in full again; upgrade path: an LRU.
 const FOLD_CAP: usize = 64;
 
-/// A repeat also logs once this long has passed since the key last logged, so a slow failure
-/// (a handler raising every minute) is not folded away for hours.
+/// A repeat also logs this long after the key last logged.
 const REFOLD_AFTER: Duration = Duration::from_secs(60);
 
-/// What a fold counts: the label, the message, and the handler's definition (source, line).
+/// What a fold counts: label, message's first line, handler definition (source, line).
 type FoldKey = (String, String, Option<String>, Option<usize>);
 
 thread_local! {
-    /// Per key: the raises so far and when one was last logged.
+    /// Raises so far and the last log time, per key.
     static RAISED: RefCell<HashMap<FoldKey, (u32, Instant)>> = RefCell::default();
 }
 
@@ -167,7 +165,7 @@ pub(crate) fn report_raised(handler: &mlua::Function, head: String, err: &mlua::
 fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error, now: Instant) -> Option<String> {
     let message = describe(err);
     let info = handler.info();
-    let key = (head, message, info.short_src.clone(), info.line_defined);
+    let key = (head, message.lines().next().unwrap_or_default().to_string(), info.short_src.clone(), info.line_defined);
     let (times, log) = RAISED.with_borrow_mut(|seen| {
         if seen.len() >= FOLD_CAP && !seen.contains_key(&key) {
             seen.clear();
@@ -180,7 +178,7 @@ fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error, now: I
         }
         (*times, log)
     });
-    let (head, message, ..) = key;
+    let (head, ..) = key;
     if times == 1 {
         let at = match (info.short_src, info.line_defined) {
             (Some(src), Some(line)) => format!(" (defined at {src}:{line})"),
@@ -323,6 +321,26 @@ mod tests {
         assert_eq!(super::describe(&bare), "timer: ms 0");
         assert_eq!(super::location("timer: ms 0"), None);
         assert_eq!(super::location("a/b.lua:12: x"), Some("a/b.lua:12"));
+        assert_eq!(super::location("got string \"10:30: x\""), None, "a clock inside a value is not a position");
+        assert_eq!(super::location("[string \"cfg\"]:3: x"), Some("[string \"cfg\"]:3"));
+        assert_eq!(super::location("mantle.x:go: 10: x"), None);
+    }
+
+    #[test]
+    fn a_pcall_caught_raise_keeps_the_calling_line() {
+        let lua = Lua::new();
+        let fail = lua
+            .create_function(|lua, ()| -> mlua::Result<()> {
+                Err(super::located(lua, mlua::Error::runtime("mantle.x:go: bad")))
+            })
+            .unwrap();
+        lua.globals().set("fail", fail).unwrap();
+        let msg: String = lua
+            .load("local _, msg = pcall(function()\n  fail()\nend)\nreturn tostring(msg)")
+            .set_name("@shell.lua")
+            .eval()
+            .unwrap();
+        assert!(msg.starts_with("runtime error: shell.lua:2: mantle.x:go: bad"), "{msg}");
     }
 
     #[test]

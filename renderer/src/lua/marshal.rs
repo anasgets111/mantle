@@ -12,14 +12,44 @@ const MIN_SAFE_INTEGER: i64 = -MAX_SAFE_INTEGER;
 /// Maximum string size: 64KB.
 pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
 
-/// The one wording for a number outside its closed range; `ty` is the Lua type the author wrote.
+/// The one wording for a value outside its closed range; `got` is the value as [`number_word`] or
+/// `preview_for_error` spells it.
 pub(crate) fn out_of_range(
     low: impl std::fmt::Display,
     high: impl std::fmt::Display,
-    ty: &str,
     got: impl std::fmt::Display,
 ) -> String {
-    format!("must be within [{low}, {high}], got {ty} {got}")
+    format!("must be within [{low}, {high}], got {got}")
+}
+
+/// A Rust float as Lua prints it, led by its type: `number 2.5`, `number 1.0`, `number nan`.
+pub(crate) fn number_word(n: impl std::fmt::Debug) -> String {
+    format!("number {n:?}").replace("NaN", "nan")
+}
+
+/// A Lua number argument kept as written, so a range error says `integer 0` for `0` and `number 0.0`
+/// for `0.0`.
+pub(crate) struct Num(pub mlua::Value);
+
+impl mlua::FromLua for Num {
+    fn from_lua(value: mlua::Value, _: &mlua::Lua) -> mlua::Result<Self> {
+        match value {
+            mlua::Value::Integer(_) | mlua::Value::Number(_) => Ok(Self(value)),
+            other => {
+                Err(mlua::Error::FromLuaConversionError { from: other.type_name(), to: "f64".into(), message: None })
+            }
+        }
+    }
+}
+
+impl Num {
+    pub(crate) fn get(&self) -> f64 {
+        match self.0 {
+            mlua::Value::Integer(i) => i as f64,
+            mlua::Value::Number(n) => n,
+            _ => unreachable!("Num holds a number"),
+        }
+    }
 }
 
 /// A rect as the `{ x, y, width, height }` table Lua reads: `on_click`'s argument, `hover_rect` and

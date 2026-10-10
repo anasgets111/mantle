@@ -15,9 +15,10 @@ use std::time::{Duration, Instant};
 use mlua::{Function, Lua};
 use shared::debug;
 
-use super::luacats::{lua_class, lua_fn};
+use super::luacats::{As, lua_class, lua_fn};
 use super::signal::CpuBudget;
-use crate::lua::marshal::out_of_range;
+use crate::layout::node::preview_for_error;
+use crate::lua::marshal::{Num, out_of_range};
 use crate::lua::warn_raised;
 
 /// Range of `ms`, one millisecond to one day. Deliberately not `delay`/`pulse`'s 60-second ceiling:
@@ -111,11 +112,14 @@ lua_class! {
 }
 
 /// `timer` and `interval`'s shared body; `repeat` keeps the entry armed every `ms`.
-fn start(lua: &Lua, name: &str, ms: f64, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
+fn start(lua: &Lua, name: &str, ms: Num, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
+    let ms_value = ms.get();
     // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
-    if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
-        return Err(mlua::Error::runtime(format!("{name}: ms {} ms", out_of_range(MIN_MS, MAX_MS, "number", ms))));
+    if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms_value) {
+        let got = preview_for_error(&ms.0);
+        return Err(mlua::Error::runtime(format!("{name}: ms {}", out_of_range(MIN_MS, MAX_MS, got))));
     }
+    let ms = ms_value;
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
     let id = super::app_data_or_default::<TimerRegistry>(lua).arm(Instant::now() + period, callback, every)?;
@@ -132,11 +136,11 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         fn timer(
             lua,
             /// `[1, 86400000]`; outside raises.
-            ms: f64,
+            ms: As<Num, f64>,
             /// A raise is logged as a warning.
             callback: fn(),
         ) -> TimerHandle {
-            start(lua, "timer", ms, callback.0, false)
+            start(lua, "timer", ms.0, callback.0, false)
         }
     )?;
     lua_fn!(
@@ -147,11 +151,11 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         fn interval(
             lua,
             /// `[1, 86400000]`; outside raises.
-            ms: f64,
+            ms: As<Num, f64>,
             /// A raise is logged as a warning and the interval keeps running.
             callback: fn(),
         ) -> TimerHandle {
-            start(lua, "interval", ms, callback.0, true)
+            start(lua, "interval", ms.0, callback.0, true)
         }
     )
 }
@@ -578,20 +582,20 @@ mod tests {
         assert!(lua.load("timer(0, function() end)").exec().is_err());
         let err = lua.load("timer(-1, function() end)").exec().unwrap_err().to_string();
         assert!(
-            err.contains("timer: ms must be within [1, 86400000], got number -1"),
+            err.contains("timer: ms must be within [1, 86400000], got integer -1"),
             "the engine's range message, not mlua's conversion error: {err}"
         );
         assert!(lua.load("timer(86400001, function() end)").exec().is_err());
         lua.load("timer(86400000, function() end)").exec().expect("a full day is the documented ceiling");
         lua.load("timer(1.5, function() end)").exec().expect("a fractional ms is a duration like any other");
         let err = lua.load("timer(0/0, function() end)").exec().unwrap_err().to_string();
-        assert!(err.contains("got number NaN"), "the engine's range message: {err}");
+        assert!(err.contains("got number nan"), "the engine's range message: {err}");
         let err = lua.load("interval(0, function() end)").exec().unwrap_err().to_string();
         assert!(err.contains("interval: ms must be within"), "interval shares the range: {err}");
         let err = lua.load("\ntimer(0, function() end)").set_name("=shell.lua").exec().unwrap_err();
         let err = crate::lua::describe(&err);
         assert!(
-            err.starts_with("shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"),
+            err.starts_with("shell.lua:2: timer: ms must be within [1, 86400000], got integer 0\n"),
             "the site leads: {err}"
         );
     }

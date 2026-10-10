@@ -252,7 +252,7 @@ impl UserData for IdleMember {
             let Some(sec) = u64::try_from(sec).ok().filter(|sec| (1..=MAX_THRESHOLD_SEC).contains(sec)) else {
                 return Err(mlua::Error::runtime(format!(
                     "mantle.idle:register_threshold: seconds {}",
-                    out_of_range(1, MAX_THRESHOLD_SEC, "integer", sec)
+                    out_of_range(1, MAX_THRESHOLD_SEC, format!("integer {sec}"))
                 )));
             };
             Ok(this.0.register_threshold(sec, on_idle, on_resume))

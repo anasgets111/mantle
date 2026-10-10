@@ -14,7 +14,9 @@ use shared::warn;
 
 use crate::image::quantize::{Method, quantize_file};
 use crate::image::thumbnails;
+use crate::layout::node::preview_for_error;
 use crate::lua::call_logged;
+use crate::lua::marshal::{expected_one_of, out_of_range};
 
 const DEFAULT_DEPTH: i64 = 3;
 /// A freedesktop "normal" thumbnail's edge, so the default hits a thumbnail already on disk.
@@ -140,24 +142,21 @@ fn method(opts: &Option<Table>) -> mlua::Result<Method> {
         Some(opts) => opts.get::<Value>("method")?,
         None => Value::Nil,
     };
-    let valid = || Method::NAMES.map(|(name, _)| name).join(", ");
+    let valid = Method::NAMES.map(|(name, _)| name);
     match value {
         Value::Nil => Ok(Method::Celebi),
         Value::String(name) => {
             Method::NAMES.into_iter().find(|(known, _)| name.as_bytes() == known.as_bytes()).map(|(_, m)| m).ok_or_else(
                 || {
-                    mlua::Error::runtime(format!(
-                        "palette.quantize: options: unknown `method` `{}`; it takes {}",
-                        name.to_string_lossy(),
-                        valid()
-                    ))
+                    let got = preview_for_error(&Value::String(name.clone()));
+                    let hint = expected_one_of(&valid, &name.to_string_lossy(), &got);
+                    mlua::Error::runtime(format!("palette.quantize: options: `method` is not a method, {hint}"))
                 },
             )
         }
         other => Err(mlua::Error::runtime(format!(
-            "palette.quantize: options: `method` must be a string ({}), got {}",
-            valid(),
-            other.type_name()
+            "palette.quantize: options: `method` must be a string, got {}",
+            preview_for_error(&other)
         ))),
     }
 }
@@ -193,10 +192,13 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
             let depth = opt(&opts, "depth", DEFAULT_DEPTH)?;
             let method = method(&opts)?;
             let rescale = opt(&opts, "rescale", DEFAULT_RESCALE)?;
-            let (Ok(depth @ 0..=8), Ok(rescale)) = (u8::try_from(depth), u32::try_from(rescale)) else {
-                return Err(mlua::Error::runtime(format!(
-                    "palette.quantize: depth must be 0..=8 and rescale not negative, got {depth} and {rescale}"
-                )));
+            let Ok(depth @ 0..=8) = u8::try_from(depth) else {
+                let range = out_of_range(0, 8, format!("integer {depth}"));
+                return Err(mlua::Error::runtime(format!("palette.quantize: options: `depth` {range}")));
+            };
+            let Ok(rescale) = u32::try_from(rescale) else {
+                let range = out_of_range(0, u32::MAX, format!("integer {rescale}"));
+                return Err(mlua::Error::runtime(format!("palette.quantize: options: `rescale` {range}")));
             };
             Ok(registry.quantize(path, depth, method, rescale, on_done))
         }
@@ -296,13 +298,16 @@ mod tests {
             lua.load(format!(r#"palette.quantize("x.png", {{ method = "{name}" }}, function() end)"#)).exec().unwrap();
         }
         let err = lua.load(r#"palette.quantize("x.png", { method = "median" }, function() end)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("celebi, wu"), "expected the valid names in the error, got: {err}");
+        assert!(err.to_string().contains("`celebi`, `wu`"), "expected the valid names in the error, got: {err}");
     }
 
     #[test]
     fn depth_out_of_range_is_a_config_error() {
         let (lua, _registry) = lua_with_palette();
         let err = lua.load(r#"palette.quantize("x.png", { depth = 9 }, function() end)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("0..=8"), "expected the depth range in the error, got: {err}");
+        assert!(
+            err.to_string().contains("must be within [0, 8], got integer 9"),
+            "expected the depth range in the error, got: {err}"
+        );
     }
 }

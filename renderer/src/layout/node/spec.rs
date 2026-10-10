@@ -90,7 +90,7 @@ pub enum SurfaceFingerprint {
 
 /// [`deserialize_lua_table`] with a refused kind kept as itself, so a child of an unsupported kind
 /// still fails the pass as one rather than as a malformed `children` entry.
-fn deserialize_child(table: &mlua::Table, property: &str, index: usize) -> Result<VirtualNode, LayoutError> {
+fn deserialize_child(table: &mlua::Table, property: &str, index: Option<usize>) -> Result<VirtualNode, LayoutError> {
     deserialize_lua_table(table).map_err(|e| match e {
         DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
         other => {
@@ -115,7 +115,7 @@ impl Prop for VirtualNode {
         let Value::Table(table) = value else {
             return Err(invalid(row.name, format!("expected a node table, got {}", preview_for_error(value))));
         };
-        Ok(Some(deserialize_child(table, row.name, 0)?))
+        Ok(Some(deserialize_child(table, row.name, None)?))
     }
 }
 
@@ -164,7 +164,7 @@ impl Prop for Children {
             }
             let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
             let child = match entry {
-                Value::Table(entry) => deserialize_child(&entry, "children", index - 1),
+                Value::Table(entry) => deserialize_child(&entry, "children", Some(index - 1)),
                 other => Err(invalid(
                     "children",
                     format!("children[{}]: expected a node table, got {}", index - 1, preview_for_error(&other)),
@@ -400,7 +400,7 @@ fn build_item(itemfn: &mlua::Function, element: &Value) -> Result<VirtualNode, L
     let Value::Table(built_table) = built else {
         return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
     };
-    deserialize_child(&built_table, "itemfn", 0)
+    deserialize_child(&built_table, "itemfn", None)
 }
 
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved
@@ -548,10 +548,14 @@ impl Prop for SecureSubmitTarget {
         };
         let (capability, action) = (field("capability")?, field("action")?);
         if !SECURE_SUBMIT_TARGETS.contains(&(capability.as_str(), action.as_str())) {
-            let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("`{c}`/`{a}`")).collect();
+            let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("{c}/{a}")).collect();
+            let hint = crate::lua::fuzzy::hint(
+                &format!("{capability}/{action}"),
+                &known.iter().map(String::as_str).collect::<Vec<_>>(),
+            );
             return Err(invalid(
                 "secure_submit",
-                format!("`{capability}`/`{action}` receives no password; it takes {}", known.join(", ")),
+                format!("`capability`/`action` receives no password, got string \"{capability}/{action}\"; {hint}"),
             ));
         }
         let name: Option<String> = table.get("name").map_err(|e| invalid("secure_submit", e.to_string()))?;
@@ -637,7 +641,7 @@ mod tests {
         for (source, expected) in [
             (
                 r#"{ capability = "lock", action = "connect" }"#,
-                "`lock`/`connect` receives no password; it takes `lock`/`authenticate`, `network`/`connect`, `network`/`vpn_secret`, `polkit`/`authenticate`, `secrets`/`store`, `bluetooth`/`pair`",
+                "`capability`/`action` receives no password, got string \"lock/connect\"; expected one of `lock/authenticate`, `network/connect`, `network/vpn_secret`, `polkit/authenticate`, `secrets/store`, `bluetooth/pair`",
             ),
             (
                 r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,

@@ -89,7 +89,7 @@ error, printing `<config dir>: <error>`, with `file:line` and, for a mistyped pr
 suggestion:
 
 ```text
-/home/me/.config/mantle: before capability data: invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text[0] (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?
+/home/me/.config/mantle: before capability data: invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?
 ```
 
 Details: [What check covers](cli.md#what-check-covers). `-c DIR` checks another directory.
