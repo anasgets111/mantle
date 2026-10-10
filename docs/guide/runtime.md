@@ -147,7 +147,7 @@ How each failure ends:
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 
-An error from an engine function or a capability action keeps its leading `file:line:` through `pcall`. One from a method on a signal, `list` or capability (`signal:set`, `list:reveal`, an unknown `mantle.audio` field) omits it there; the logged and `mantle check` forms carry it.
+An error from an engine function or a capability action keeps its leading `file:line:` through `pcall`. One from a method called with `:` on an engine object (a signal, `list`, `mantle.idle`, a `timer` or `toplevel` handle: `signal:set`, `list:reveal`, `mantle.idle:register_threshold`) or from an unknown capability field omits it there; the logged and `mantle check` forms carry it.
 
 A failed reload keeps the old scene, but not the old evaluation's actions, timers, `on_change`
 handlers or idle thresholds ([what survives](#what-survives-a-reload)):

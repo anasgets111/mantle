@@ -90,7 +90,6 @@ suggestion:
 
 ```text
 /home/me/.config/mantle: shell.lua:16: text: no property `contnet`; did you mean `content`? (at panel (shell.lua:15) on `counter@DP-1`)
-  (before capability data)
 ```
 
 Details: [What check covers](cli.md#what-check-covers). `-c DIR` checks another directory.

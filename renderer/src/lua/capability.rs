@@ -257,6 +257,7 @@ impl Capability {
         }
         let mut arguments = Vec::with_capacity(args.len());
         for (index, value) in args.into_iter().enumerate() {
+            // ponytail: only a top-level NaN or inf; one inside a table marshals as null (upgrade: walk tables).
             if let Value::Number(n) = value
                 && !n.is_finite()
             {

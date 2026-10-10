@@ -162,10 +162,13 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 mod tests {
     #[test]
     fn signal_names_match_the_wire_enum() {
-        let lua = mlua::Lua::new();
+        use shared::action::SignalName::*;
         for name in super::SIGNALS {
-            let value = mlua::LuaSerdeExt::to_value(&lua, name).unwrap();
-            mlua::LuaSerdeExt::from_value::<shared::action::SignalName>(&lua, value).expect(name);
+            // Exhaustive, so a new variant fails to compile until SIGNALS lists it.
+            match serde_json::from_value(serde_json::Value::from(*name)).expect(name) {
+                Term | Int | Hup | Quit | Usr1 | Usr2 | Kill | Stop | Cont => {}
+            }
         }
+        assert_eq!(super::SIGNALS.len(), 9);
     }
 }
