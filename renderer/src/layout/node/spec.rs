@@ -90,19 +90,17 @@ pub enum SurfaceFingerprint {
 
 /// [`deserialize_lua_table`] with a refused kind kept as itself, so a child of an unsupported kind
 /// still fails the pass as one rather than as a malformed `children` entry.
-fn deserialize_child(table: &mlua::Table, property: &str, index: Option<usize>) -> Result<VirtualNode, LayoutError> {
+fn deserialize_child(table: &mlua::Table, property: &str, index: usize) -> Result<VirtualNode, LayoutError> {
     deserialize_lua_table(table).map_err(|e| match e {
         DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
         other => {
-            let detail = crate::lua::nodes::at_site(table, other.to_string());
-            // The index tells apart siblings a helper built on one line, which share a site.
-            invalid(
-                property,
-                match index {
-                    Some(index) => format!("{property}[{index}]: {detail}"),
-                    None => detail,
-                },
-            )
+            // A node-shaped failure names its kind like `LayoutError::in_child`; a table with no kind keeps the property.
+            let label = match &other {
+                DeserializeError::UnknownProperty { kind, .. } => kind,
+                _ => property,
+            };
+            let site = crate::lua::nodes::site_of(table);
+            invalid(property, super::path_step(label, index, site, &other.to_string()))
         }
     })
 }
@@ -117,7 +115,7 @@ impl Prop for VirtualNode {
         let Value::Table(table) = value else {
             return Err(invalid(row.name, format!("expected a node table, got {}", preview_for_error(value))));
         };
-        Ok(Some(deserialize_child(table, row.name, None)?))
+        Ok(Some(deserialize_child(table, row.name, 0)?))
     }
 }
 
@@ -166,7 +164,7 @@ impl Prop for Children {
             }
             let entry: Value = table.raw_get(index).map_err(|e| invalid("children", e.to_string()))?;
             let child = match entry {
-                Value::Table(entry) => deserialize_child(&entry, "children", Some(index - 1)),
+                Value::Table(entry) => deserialize_child(&entry, "children", index - 1),
                 other => Err(invalid(
                     "children",
                     format!("children[{}]: expected a node table, got {}", index - 1, preview_for_error(&other)),
@@ -402,7 +400,7 @@ fn build_item(itemfn: &mlua::Function, element: &Value) -> Result<VirtualNode, L
     let Value::Table(built_table) = built else {
         return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
     };
-    deserialize_child(&built_table, "itemfn", None)
+    deserialize_child(&built_table, "itemfn", 0)
 }
 
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved

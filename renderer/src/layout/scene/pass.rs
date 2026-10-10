@@ -1560,14 +1560,17 @@ mod tests {
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines.len(), 4, "{err}");
         assert!(
-            lines[1].contains("row[0] (shell.lua:2) > children[0]: shell.lua:2: `text` has no property `contnet`"),
+            lines[1].contains("row[0] (shell.lua:2) > text[0] (shell.lua:2) > `text` has no property `contnet`"),
             "{err}"
         );
         assert!(
-            lines[2].contains("row[0] (shell.lua:2) > children[1]: shell.lua:2: `rect` has no property `color`"),
+            lines[2].contains("row[0] (shell.lua:2) > rect[1] (shell.lua:2) > `rect` has no property `color`"),
             "{err}"
         );
-        assert!(lines[3].contains("list[1] (shell.lua:3) > shell.lua:3: `text` has no property `contnet`"), "{err}");
+        assert!(
+            lines[3].contains("list[1] (shell.lua:3) > text[0] (shell.lua:3) > `text` has no property `contnet`"),
+            "{err}"
+        );
     }
 
     /// A surface on two outputs repeats each mistake; another surface's still counts.

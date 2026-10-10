@@ -370,12 +370,14 @@ impl LayoutError {
         let Self::InvalidProperty { property, detail } = self else {
             return self;
         };
-        let detail = match site {
-            Some(site) => format!("{kind}[{index}] ({site}) > {detail}"),
-            None => format!("{kind}[{index}] > {detail}"),
-        };
-        Self::InvalidProperty { property, detail }
+        Self::InvalidProperty { property, detail: path_step(kind, index, site, &detail) }
     }
+}
+
+/// `kind[index] (site) > detail`, one step of the path to a failing node; `site` drops out when unknown.
+pub(crate) fn path_step(kind: &str, index: usize, site: Option<crate::lua::location::Site>, detail: &str) -> String {
+    let site = site.map(|site| format!(" ({site})")).unwrap_or_default();
+    format!("{kind}[{index}]{site} > {detail}")
 }
 
 /// [`marshal::only_keys`] for a property's sub-table, naming the property.

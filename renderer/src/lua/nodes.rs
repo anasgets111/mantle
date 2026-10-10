@@ -72,7 +72,12 @@ const SITE: &str = "__site";
 /// `detail` behind the line that built `table`, `shell.lua:12: detail`, the way Lua prefixes its own
 /// errors. For a table the loader refused, so no [`VirtualNode`] carries the site.
 pub(crate) fn at_site(table: &Table, detail: String) -> String {
-    Site::lead(table.raw_get::<Value>(SITE).ok().as_ref().and_then(Site::from_lua), detail)
+    Site::lead(site_of(table), detail)
+}
+
+/// The line that built `table`, if it was built by a constructor.
+pub(crate) fn site_of(table: &Table) -> Option<Site> {
+    table.raw_get::<Value>(SITE).ok().as_ref().and_then(Site::from_lua)
 }
 
 #[derive(Debug, thiserror::Error)]

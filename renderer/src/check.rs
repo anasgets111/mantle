@@ -259,7 +259,9 @@ mod tests {
         let err = super::run(dir.path()).unwrap_err();
 
         assert!(
-            err.contains("row[0] (shell.lua:4) > row[0] (shell.lua:5) > children[0]: shell.lua:2: `text` has no property `contnet`"),
+            err.contains(
+                "row[0] (shell.lua:4) > row[0] (shell.lua:5) > text[0] (shell.lua:2) > `text` has no property `contnet`"
+            ),
             "{err}"
         );
     }
@@ -353,7 +355,7 @@ mod tests {
                     "local function label()\n  return text { contnet = \"hi\" }\nend\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = row { children = { label() } } }\n",
                 )],
                 &[
-                    "invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?",
+                    "invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > text[0] (shell.lua:2) > `text` has no property `contnet`; did you mean `content`?",
                 ],
             ),
             (
@@ -457,7 +459,7 @@ mod tests {
                     "local count = state(\"count\", 0)\n\n-- counter\n\n\n\n\n\n\n\n\n\n\n\nreturn panel { id = \"counter\", layer = \"top\",\n  child = text { contnet = \"x\" } }\n",
                 )],
                 &[
-                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > shell.lua:16: `text` has no property `contnet`; did you mean `content`?",
+                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text[0] (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?",
                 ],
             ),
         ];
