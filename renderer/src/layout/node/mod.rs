@@ -258,8 +258,8 @@ spelled!(Rgba => prop::Color::lua());
 pub enum LayoutError {
     #[error("unsupported node kind `{0}`")]
     UnsupportedNodeKind(String),
-    #[error("invalid value for `{property}`: {detail}")]
-    InvalidProperty { property: String, detail: String },
+    #[error("{}", invalid_property(property, detail, at))]
+    InvalidProperty { property: String, detail: String, at: Trail },
     #[error("`{0}` is a Signal handle, not a plain value -- read it via :get() before returning it from shell.lua")]
     UnsupportedSignalProperty(String),
     /// `prepare` exceeded `MAX_TREE_DEPTH`, from a literal cycle or a depth-generating signal.
@@ -278,6 +278,55 @@ pub enum LayoutError {
     /// each entry is one node's error, never another `Several`.
     #[error("{}", several(.0))]
     Several(Vec<LayoutError>),
+}
+
+/// One node on the way down to a failure: `kind[index] (site)`, `index` absent for a lone `child`.
+#[derive(Debug)]
+struct Step {
+    kind: String,
+    index: Option<usize>,
+    site: Option<crate::lua::location::Site>,
+}
+
+/// Where an `InvalidProperty` happened: the nodes walked from the failing one up to its root, then
+/// the surface instance. Parts, not a joined string, so [`invalid_property`] renders them once.
+#[derive(Debug, Default)]
+pub struct Trail {
+    steps: Vec<Step>,
+    surface: Option<String>,
+}
+
+/// `file:N: kind: invalid value for \`p\`: problem (at root (site) > node (site) on \`surface\`)`.
+/// The failing node's line leads, as in Lua's own errors; the whole path closes the first line of
+/// the problem, ahead of any traceback it carries. A lone step is the failing node, so no path.
+fn invalid_property(property: &str, detail: &str, at: &Trail) -> String {
+    let lead = match at.steps.first() {
+        Some(Step { kind, site: Some(site), .. }) => format!("{site}: {kind}: "),
+        _ => String::new(),
+    };
+    let path = (at.steps.len() > 1).then(|| {
+        let steps: Vec<String> = at.steps.iter().rev().map(Step::to_string).collect();
+        format!("at {}", steps.join(" > "))
+    });
+    let surface = at.surface.as_ref().map(|surface| format!("on `{surface}`"));
+    let context = [path, surface].into_iter().flatten().collect::<Vec<_>>().join(" ");
+    let (first, rest) = detail.split_once('\n').map_or((detail, ""), |(first, rest)| (first, rest));
+    let context = if context.is_empty() { context } else { format!(" ({context})") };
+    let rest = if rest.is_empty() { String::new() } else { format!("\n{rest}") };
+    format!("{lead}invalid value for `{property}`: {first}{context}{rest}")
+}
+
+impl std::fmt::Display for Step {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.kind)?;
+        if let Some(index) = self.index {
+            write!(f, "[{index}]")?;
+        }
+        if let Some(site) = self.site {
+            write!(f, " ({site})")?;
+        }
+        Ok(())
+    }
 }
 
 /// Most failures one report lists. A config broken past this gets the count, and twenty are
@@ -299,8 +348,8 @@ impl LayoutError {
     /// Add diagnostic paths only after a reader fails, keeping allocation off the success path.
     pub(crate) fn under(self, prefix: &str) -> Self {
         match self {
-            Self::InvalidProperty { property, detail } => {
-                Self::InvalidProperty { property: format!("{prefix}{property}"), detail }
+            Self::InvalidProperty { property, detail, at } => {
+                Self::InvalidProperty { property: format!("{prefix}{property}"), detail, at }
             }
             Self::UnsupportedSignalProperty(path) => Self::UnsupportedSignalProperty(format!("{prefix}{path}")),
             other => other,
@@ -328,24 +377,23 @@ impl LayoutError {
     /// dozen surfaces (`invalid value for \`background\`` and nothing else), leaving a reader to
     /// grep every surface that has one; the instance id is right there in the loop.
     ///
-    /// It extends `detail` rather than wrapping in a new variant so that `InvalidProperty` stays
+    /// It extends the `Trail` rather than wrapping in a new variant so that `InvalidProperty` stays
     /// the variant callers match on, `property` keeps naming the property alone, and no reader of
     /// this enum has to learn a wrapper. The other variants already name the node kind or the whole
     /// pass, which is enough to find them, and none of them has a free-form field to extend.
     pub(crate) fn on_surface(self, surface: &str) -> Self {
-        let Self::InvalidProperty { property, detail } = self else {
+        let Self::InvalidProperty { property, detail, mut at } = self else {
             return self;
         };
-        Self::InvalidProperty { property, detail: format!("on `{surface}`: {detail}") }
+        at.surface = Some(surface.to_string());
+        Self::InvalidProperty { property, detail, at }
     }
 
-    /// Leads a root's error with its constructor line, `panel (shell.lua:13) > detail`.
+    /// Leads a root's error with its constructor line, `shell.lua:13: panel: ...`.
     pub(crate) fn at_root(self, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
-        match (self, site) {
-            (Self::InvalidProperty { property, detail }, Some(site)) => {
-                Self::InvalidProperty { property, detail: path_step(kind, None, Some(site), &detail) }
-            }
-            (other, _) => other,
+        match site {
+            Some(_) => self.in_node(kind, None, site),
+            None => self,
         }
     }
 
@@ -364,25 +412,15 @@ impl LayoutError {
     ///
     /// `site` is the line that built the child: indices say where in the tree, not which line of
     /// which file, and a node a helper function returns has no index in the file at all.
-    pub(crate) fn in_child(self, index: usize, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
-        let Self::InvalidProperty { property, detail } = self else {
+    ///
+    /// `index` is `None` for a lone `child`, which has no position to name.
+    pub(crate) fn in_node(self, kind: &str, index: Option<usize>, site: Option<crate::lua::location::Site>) -> Self {
+        let Self::InvalidProperty { property, detail, mut at } = self else {
             return self;
         };
-        Self::InvalidProperty { property, detail: path_step(kind, Some(index), site, &detail) }
+        at.steps.push(Step { kind: kind.to_string(), index, site });
+        Self::InvalidProperty { property, detail, at }
     }
-}
-
-/// `kind[index] (site) > detail`, one step of the path to a failing node; `index` drops out for a
-/// lone `child`, and `site` when unknown.
-pub(crate) fn path_step(
-    kind: &str,
-    index: Option<usize>,
-    site: Option<crate::lua::location::Site>,
-    detail: &str,
-) -> String {
-    let index = index.map(|index| format!("[{index}]")).unwrap_or_default();
-    let site = site.map(|site| format!(" ({site})")).unwrap_or_default();
-    format!("{kind}{index}{site} > {detail}")
 }
 
 /// [`marshal::only_keys`] for a property's sub-table, naming the property.
@@ -409,7 +447,7 @@ pub(crate) fn signal_at(properties: &PropMap, property: &str) -> Option<signal::
 /// Crate-visible for `layout::scene::Scene::apply_one_instance`; all crate `InvalidProperty`
 /// values use this helper.
 pub(crate) fn invalid(property: &str, detail: impl Into<String>) -> LayoutError {
-    LayoutError::InvalidProperty { property: property.to_string(), detail: detail.into() }
+    LayoutError::InvalidProperty { property: property.to_string(), detail: detail.into(), at: Trail::default() }
 }
 
 /// Elements accepted from one config-supplied array: a node's `children`, a `list`'s `source`, and
@@ -1137,7 +1175,7 @@ mod tests {
             let table: mlua::Table = lua.load(format!("return {source}")).eval().unwrap();
             let err = resolve_declared(&props_from_table(&table), "rect", false, &lua).unwrap_err();
             assert!(
-                matches!(&err, LayoutError::InvalidProperty { property: p, detail } if p == property && detail == expected),
+                matches!(&err, LayoutError::InvalidProperty { property: p, detail, .. } if p == property && detail == expected),
                 "{source}: {err}"
             );
         }
@@ -1195,7 +1233,7 @@ mod tests {
             lua.load(r#"return { kind = "rect", radius = string.rep("Q", 20 * 1024 * 1024) }"#).eval().unwrap();
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();
-        let LayoutError::InvalidProperty { property, detail } = &err else {
+        let LayoutError::InvalidProperty { property, detail, .. } = &err else {
             panic!("expected InvalidProperty, got {err}");
         };
         assert_eq!(property, "radius");

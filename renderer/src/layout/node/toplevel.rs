@@ -555,7 +555,7 @@ mod tests {
             lua.load(r#"return { kind = "window", id = "settings", min_size = { width = 320 } }"#).eval().unwrap();
         assert!(matches!(
             window_spec(&props_from_table(&table)).unwrap_err(),
-            LayoutError::InvalidProperty { property, detail } if property == "min_size" && detail.contains("height")
+            LayoutError::InvalidProperty { property, detail, .. } if property == "min_size" && detail.contains("height")
         ));
     }
 

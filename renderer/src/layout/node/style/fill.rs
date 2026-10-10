@@ -268,7 +268,7 @@ mod tests {
     fn rejects<T: std::fmt::Debug>(result: Result<T, LayoutError>, name: &str, needle: &str) {
         let err = result.unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == name && detail.contains(needle)),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == name && detail.contains(needle)),
             "expected `{name}` naming {needle:?}, got {err:?}"
         );
     }

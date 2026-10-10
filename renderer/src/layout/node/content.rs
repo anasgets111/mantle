@@ -468,7 +468,7 @@ mod tests {
         for err in [&literal_err, &signal_err] {
             assert!(matches!(
                 err,
-                LayoutError::InvalidProperty { property, detail }
+                LayoutError::InvalidProperty { property, detail, .. }
                     if property == "content" && detail.starts_with("expected a string or an array of runs")
             ));
         }
@@ -517,7 +517,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let err = runs_content(&lua, r##"{ { kind = "text", text = "a", colour = "#ffffff" } }"##).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail }
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. }
             if property == "content" && detail.starts_with("run 1: unknown key `colour`")),
             "{err}"
         );
@@ -528,7 +528,7 @@ mod tests {
         let lua = mlua::Lua::new();
         let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "image", image_path = "/x.png" } }"#).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail }
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. }
             if property == "content" && detail.starts_with("run 2: unknown key `image_path`")),
             "{err}"
         );
@@ -538,7 +538,7 @@ mod tests {
     fn a_run_without_text_and_without_unknown_keys_is_still_refused() {
         let lua = mlua::Lua::new();
         let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "text" } }"#).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidProperty { property, detail }
+        assert!(matches!(err, LayoutError::InvalidProperty { property, detail, .. }
             if property == "content" && detail.starts_with("run 2: `text` must be string")));
     }
 
@@ -918,7 +918,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::typeface::foreground.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "foreground" && detail.contains("expected a string")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "foreground" && detail.contains("expected a string")),
             "{err}"
         );
     }

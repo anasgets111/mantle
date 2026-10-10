@@ -326,10 +326,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             let window = capture::window.read(properties)?;
             let region = capture::region.read(properties)?;
             if !window.is_empty() && (!output.is_empty() || region.is_some()) {
-                return Err(LayoutError::InvalidProperty {
-                    property: "capture.window".into(),
-                    detail: "cannot combine a window with output or region".into(),
-                });
+                return Err(invalid("capture.window", "cannot combine a window with output or region"));
             }
             PaintStyle::Capture {
                 target: if window.is_empty() { CaptureTarget::Output(output) } else { CaptureTarget::Window(window) },
@@ -360,17 +357,15 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
             };
             let target = textfield::secure_submit.read(properties)?;
             if target.is_some() && !textfield::initial_text.read(properties)?.is_empty() {
-                return Err(LayoutError::InvalidProperty {
-                    property: "textfield.initial_text".into(),
-                    detail: "a `secure_submit` field never holds text a config gave it".into(),
-                });
+                return Err(invalid(
+                    "textfield.initial_text",
+                    "a `secure_submit` field never holds text a config gave it",
+                ));
             }
             let (min_lines, max_lines) =
                 (textfield::min_lines.read(properties)?, textfield::max_lines.read(properties)?);
             let submit = textfield::submit_key.read(properties)?;
-            let refuse = |property: &str, detail: &str| {
-                Err(LayoutError::InvalidProperty { property: format!("textfield.{property}"), detail: detail.into() })
-            };
+            let refuse = |property: &str, detail: &str| Err(invalid(&format!("textfield.{property}"), detail));
             let multiline = match textfield::multiline.read(properties)? {
                 true if target.is_some() => return refuse("multiline", "a `secure_submit` field is one line"),
                 true if min_lines.zip(max_lines).is_some_and(|(min, max)| min > max) => {

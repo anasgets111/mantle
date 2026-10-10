@@ -881,7 +881,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::common::height.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "height" && detail.contains("omit the property")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "height" && detail.contains("omit the property")),
             "must name omission as how Content sizing is spelled: {err}"
         );
     }
@@ -1072,7 +1072,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("must start with `#`")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("must start with `#`")),
             "must name the missing `#`, not just some invalid-property error: {err}"
         );
     }
@@ -1084,7 +1084,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 3")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 3")),
             "must be the digit-count rule specifically, naming 3 digits: {err}"
         );
     }
@@ -1096,7 +1096,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("only hex digits")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("only hex digits")),
             "must be the hex-digit rule specifically, not the digit-count rule: {err}"
         );
     }
@@ -1108,7 +1108,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("only hex digits") && !detail.contains("got 9")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("only hex digits") && !detail.contains("got 9")),
             "non-ASCII input must get the hex-digit diagnosis, not a byte-length count: {err}"
         );
     }
@@ -1120,7 +1120,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("expected a hex colour or a gradient table")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("expected a hex colour or a gradient table")),
             "{err}"
         );
     }
@@ -1143,7 +1143,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 7")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 7")),
             "{err}"
         );
     }
@@ -1155,7 +1155,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::background.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "background" && detail.contains("6 or 8") && detail.contains("got 0")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "background" && detail.contains("6 or 8") && detail.contains("got 0")),
             "{err}"
         );
     }
@@ -1204,7 +1204,7 @@ mod tests {
         let props = deserialize_lua_table(&table).unwrap().properties;
         let err = fields::paint::clip.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "clip" && detail.contains("`box`, `rounded`")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "clip" && detail.contains("`box`, `rounded`")),
             "got {err:?}"
         );
 
@@ -1275,7 +1275,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "radius" && detail.contains("expected a number")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("expected a number")),
             "{err}"
         );
     }
@@ -1287,7 +1287,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "radius" && detail.contains("[0, 8192]")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
         );
     }
@@ -1299,7 +1299,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = parse_radius(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "radius" && detail.contains("[0, 8192]")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "radius" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
         );
     }
@@ -1340,7 +1340,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("expected a number or a table")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("expected a number or a table")),
             "{err}"
         );
     }
@@ -1352,7 +1352,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
         );
     }
@@ -1364,7 +1364,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
         );
     }
@@ -1376,7 +1376,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_width.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_width" && detail.contains("[0, 8192]")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_width" && detail.contains("[0, 8192]")),
             "must be the range rule, naming the bound: {err}"
         );
     }
@@ -1470,7 +1470,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("top") && detail.contains("must start with `#`")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("top") && detail.contains("must start with `#`")),
             "must name the failing edge, not just `border_color`: {err}"
         );
     }
@@ -1483,7 +1483,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("right")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("right")),
             "must name `right`, the edge that actually failed: {err}"
         );
     }
@@ -1507,7 +1507,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::paint::border_color.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "border_color" && detail.contains("expected a string or a table")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "border_color" && detail.contains("expected a string or a table")),
             "{err}"
         );
     }

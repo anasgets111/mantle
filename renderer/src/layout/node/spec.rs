@@ -94,13 +94,13 @@ fn deserialize_child(table: &mlua::Table, property: &str, index: Option<usize>) 
     deserialize_lua_table(table).map_err(|e| match e {
         DeserializeError::UnsupportedKind(kind) => LayoutError::UnsupportedNodeKind(kind),
         other => {
-            // A node-shaped failure names its kind like `LayoutError::in_child`; a table with no kind keeps the property.
+            // A node-shaped failure names its kind like `LayoutError::in_node`; a table with no kind keeps the property.
             let label = match &other {
                 DeserializeError::UnknownProperty { kind, .. } => kind,
                 _ => property,
             };
             let site = crate::lua::nodes::site_of(table);
-            invalid(property, super::path_step(label, index, site, &other.to_string()))
+            invalid(property, other.to_string()).in_node(label, index, site)
         }
     })
 }
@@ -652,7 +652,7 @@ mod tests {
                 lua.load(format!("return {{ kind = \"textfield\", secure_submit = {source} }}")).eval().unwrap();
             let err = fields::textfield::secure_submit.read(&props_from_table(&table)).unwrap_err();
             assert!(
-                matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail == expected),
+                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail == expected),
                 "{err}"
             );
         }
@@ -708,7 +708,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("capability")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail.contains("capability")),
             "got {err}"
         );
     }
@@ -721,7 +721,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("action")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail.contains("action")),
             "got {err}"
         );
     }
@@ -736,7 +736,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("capability")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail.contains("capability")),
             "got {err}"
         );
     }
@@ -751,7 +751,7 @@ mod tests {
         let props = props_from_table(&table);
         let err = fields::textfield::secure_submit.read(&props).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "secure_submit" && detail.contains("action")),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail.contains("action")),
             "got {err}"
         );
     }
@@ -952,7 +952,7 @@ mod tests {
             .unwrap();
         let err = fields::stack::children.read(&props_from_table(&table)).unwrap_err();
         assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail } if property == "children" && detail == "children[1]: expected a node table, got nil"),
+            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "children" && detail == "children[1]: expected a node table, got nil"),
             "{err}"
         );
 

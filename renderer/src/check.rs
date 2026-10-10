@@ -67,7 +67,7 @@ fn lay_out_passes(
         if let Err(err) = lay_out(output, specs, loader, shaping, size)
             && !errors.contains(&err)
         {
-            failures.push(format!("{pass}: {err}"));
+            failures.push(format!("{err}\n  ({pass})"));
             errors.push(err);
         }
     }
@@ -183,7 +183,7 @@ mod tests {
         let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n");
         assert!(err.contains("shell.lua:2:"), "{err}");
         let err = check_err("\n\nreturn panel { id = \"bar\", layer = \"top\", background = \"#zzz\" }\n");
-        assert!(err.contains("shell.lua:3)"), "{err}");
+        assert!(err.contains("shell.lua:3: panel: invalid value for `background`"), "{err}");
     }
 
     #[test]
@@ -260,8 +260,8 @@ mod tests {
 
         assert!(
             err.contains(
-                "row[0] (shell.lua:4) > row[0] (shell.lua:5) > text[0] (shell.lua:2) > `text` has no property `contnet`"
-            ),
+                "shell.lua:2: text: invalid value for `children`: `text` has no property `contnet`"
+            ) && err.contains("(at panel (shell.lua:4) > row (shell.lua:4) > row[0] (shell.lua:5) > text[0] (shell.lua:2) on `p@DP-1`)"),
             "{err}"
         );
     }
@@ -329,7 +329,11 @@ mod tests {
             (
                 "bad window value",
                 &[("shell.lua", "\nreturn window { id = \"w\", width = \"wide\" }\n")],
-                &["window (shell.lua:2)", "invalid value for `width`", "got string \"wide\""],
+                &[
+                    "shell.lua:2: window: invalid value for `width`",
+                    "got string \"wide\"",
+                    "(on `w`)\n  (before capability data)",
+                ],
             ),
             (
                 "bad popup value",
@@ -355,7 +359,7 @@ mod tests {
                     "local function label()\n  return text { contnet = \"hi\" }\nend\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = row { children = { label() } } }\n",
                 )],
                 &[
-                    "invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > text[0] (shell.lua:2) > `text` has no property `contnet`; did you mean `content`?",
+                    "shell.lua:2: text: invalid value for `children`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:7) > row (shell.lua:7) > text[0] (shell.lua:2) on `bar@DP-1`)",
                 ],
             ),
             (
@@ -365,8 +369,8 @@ mod tests {
                     "return panel { id = \"p\", layer = \"top\", child = column {\n  children = { row {\n    children = { rect { opacity = 2 } },\n  } },\n} }\n",
                 )],
                 &[
-                    "panel (shell.lua:1) > column[0] (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3)",
-                    "invalid value for `opacity`",
+                    "shell.lua:3: rect: invalid value for `opacity`",
+                    "(at panel (shell.lua:1) > column (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3) on `p@DP-1`)",
                     "must be within [0, 1], got integer 2",
                 ],
             ),
@@ -376,7 +380,7 @@ mod tests {
                     "shell.lua",
                     "return panel { id = \"p\", layer = \"top\", child = row { align_h = \"cenetr\" } }\n",
                 )],
-                &["row[0] (shell.lua:1)", "got string \"cenetr\"; did you mean `center`?"],
+                &["shell.lua:1: row:", "got string \"cenetr\"; did you mean `center`?"],
             ),
             (
                 "enum far off",
@@ -384,10 +388,7 @@ mod tests {
                     "shell.lua",
                     "return panel { id = \"p\", layer = \"top\", child = row { align_h = \"qqqqqqqq\" } }\n",
                 )],
-                &[
-                    "row[0] (shell.lua:1)",
-                    "got string \"qqqqqqqq\"; expected one of `start`, `center`, `end`, `stretch`",
-                ],
+                &["shell.lua:1: row:", "got string \"qqqqqqqq\"; expected one of `start`, `center`, `end`, `stretch`"],
             ),
             (
                 "nested key typo",
@@ -425,7 +426,7 @@ mod tests {
                     "-- clock\nlocal count = state(\"count\", 1)\nlocal label = count:map(function(n)\n  return n.missing\nend)\n\n-- bar\n\nreturn panel { id = \"bar\", layer = \"top\", child = text { content = label } }\n",
                 )],
                 &[
-                    "panel (shell.lua:9) > text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')",
+                    "shell.lua:9: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n') (at panel (shell.lua:9) > text (shell.lua:9) on `bar@DP-1`)",
                     "shell.lua:4: in function <shell.lua:3>",
                 ],
             ),
@@ -511,7 +512,7 @@ mod tests {
                     "local count = state(\"count\", 0)\n\n-- counter\n\n\n\n\n\n\n\n\n\n\n\nreturn panel { id = \"counter\", layer = \"top\",\n  child = text { contnet = \"x\" } }\n",
                 )],
                 &[
-                    "invalid value for `child`: on `counter@DP-1`: panel (shell.lua:15) > text (shell.lua:16) > `text` has no property `contnet`; did you mean `content`?",
+                    "shell.lua:16: text: invalid value for `child`: `text` has no property `contnet`; did you mean `content`? (at panel (shell.lua:15) > text (shell.lua:16) on `counter@DP-1`)",
                 ],
             ),
         ];
@@ -565,8 +566,9 @@ mod tests {
 
         assert!(
             err.contains(
-                "text[0] (shell.lua:5) > Signal getter on a `text` node failed: signal created at shell.lua:2: \
-                 shell.lua:3: attempt to index a number value (local 'n')\nstack traceback:\n\tshell.lua:3: in function <shell.lua:2>"
+                "shell.lua:5: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:2: \
+                 shell.lua:3: attempt to index a number value (local 'n') (at panel (shell.lua:5) > text (shell.lua:5) on `p@DP-1`)\n\
+                 stack traceback:\n\tshell.lua:3: in function <shell.lua:2>"
             ),
             "{err}"
         );
@@ -595,7 +597,8 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains(&format!("{}: before capability data: invalid value", dir.path().display())), "{err}");
+        assert!(err.starts_with(&format!("{}: shell.lua:1: rect: invalid value", dir.path().display())), "{err}");
+        assert!(err.ends_with("on `bar@HDMI-A-1`)\n  (before capability data)"), "{err}");
     }
 
     /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until
@@ -668,7 +671,8 @@ mod tests {
             )
             .unwrap();
             let err = super::run(dir.path()).unwrap_err();
-            assert!(err.starts_with(&format!("{}: {pass}: ", dir.path().display())), "{source}: {err}");
+            assert!(err.starts_with(&format!("{}: shell.lua:", dir.path().display())), "{source}: {err}");
+            assert!(err.ends_with(&format!("\n  ({pass})")), "{source}: {err}");
             assert_eq!(err.matches("contnet").count(), 1, "{source}: {err}");
         }
     }
