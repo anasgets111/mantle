@@ -746,6 +746,13 @@ impl Scene {
             }
             for err in errors {
                 if seen.insert((instance.declared_id.as_str(), err.to_string())) {
+                    let root = fresh_surfaces.iter().find(|s| {
+                        node::fields::surface::id.read(&s.properties).is_ok_and(|id| id == instance.declared_id)
+                    });
+                    let err = match root {
+                        Some(root) => err.at_root(root.kind, root.site),
+                        None => err,
+                    };
                     failed.push(err.on_surface(&instance.instance_id));
                 }
             }
@@ -1633,7 +1640,7 @@ pub(super) mod tests {
 
         let first = apply(&mut scene).unwrap().expect("the bad values are reported").to_string();
         assert!(
-            first.contains("on `bar@TEST`: column[0] (") && first.contains("> must be within [0, 1], got 2"),
+            first.contains("on `bar@TEST`: panel (") && first.contains("> must be within [0, 1], got 2"),
             "{first}"
         );
         assert!(first.contains("> list[1] ("), "the list item's too: {first}");

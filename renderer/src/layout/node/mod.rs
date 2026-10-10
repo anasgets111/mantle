@@ -339,6 +339,20 @@ impl LayoutError {
         Self::InvalidProperty { property, detail: format!("on `{surface}`: {detail}") }
     }
 
+    /// Names a root node's constructor line, `panel (shell.lua:13) > detail`, the way [`Self::in_child`]
+    /// names a child. A detail already carrying a child path is left alone.
+    pub(crate) fn at_root(self, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
+        match (self, site) {
+            (Self::Several(errors), _) => {
+                Self::Several(errors.into_iter().map(|err| err.at_root(kind, site)).collect())
+            }
+            (Self::InvalidProperty { property, detail }, Some(site)) => {
+                Self::InvalidProperty { property, detail: format!("{kind} ({site}) > {detail}") }
+            }
+            (other, _) => other,
+        }
+    }
+
     /// Prepends one step of the walk that reached the failing node, added by `layout::scene`'s
     /// `prepare` for each child it descends into. Segments accumulate as the error unwinds, so the
     /// detail carries the whole path from the surface down.

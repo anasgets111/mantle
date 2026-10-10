@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do; an unknown property on one no longer reads as a top-level return error.
+
 ## 0.5.5 - 2026-10-10
 
 - Added: `mantle.workspaces`, `mantle.windows` and keyboard layouts on Sway, over `$SWAYSOCK`. A workspace's `id` is its name, and an Xwayland window reports its X11 class as `app_id`; `set_maximized` and `toggle_special` are ignored there.

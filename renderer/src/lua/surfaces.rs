@@ -7,6 +7,7 @@
 use std::path::Path;
 
 use crate::layout::{self, node::SurfaceSpec};
+use crate::lua::location::Site;
 use crate::lua::nodes::properties::closable;
 use crate::lua::{LoadOutput, Loader, LoaderError};
 
@@ -30,9 +31,13 @@ use crate::lua::{LoadOutput, Loader, LoaderError};
 /// scene, so
 /// [`lock_spec`](layout::node::lock_spec) reads no field through `Bound`, so defers nothing.
 pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, LoaderError> {
-    let invalid = |err: layout::node::LayoutError| LoaderError::InvalidTopology(err.to_string());
+    let at = |site: Option<Site>, text: String| match site {
+        Some(site) => format!("{site}: surface topology is invalid: {text}"),
+        None => format!("surface topology is invalid: {text}"),
+    };
     let mut specs = Vec::with_capacity(output.surfaces.len());
     for surface in &output.surfaces {
+        let invalid = |err: layout::node::LayoutError| LoaderError::InvalidTopology(at(surface.site, err.to_string()));
         specs.push(match surface.kind {
             "panel" => SurfaceSpec::Panel(layout::node::panel_spec(&surface.properties).map_err(invalid)?),
             "window" => SurfaceSpec::Window(layout::node::window_spec(&surface.properties).map_err(invalid)?),
@@ -40,19 +45,25 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
             "lock" => SurfaceSpec::Lock(layout::node::lock_spec(&surface.properties).map_err(invalid)?),
             // `lua::require_surface` admits exactly four roles; keep this arm explicit so a fifth
             // cannot reach a generation unvalidated.
-            other => return Err(LoaderError::InvalidTopology(format!("`{other}` is not a surface role"))),
+            other => return Err(LoaderError::InvalidTopology(at(None, format!("`{other}` is not a surface role")))),
         });
         if surface.kind != "lock" {
             let id = specs.last().map_or("", SurfaceSpec::declared_id);
-            let named = |err| LoaderError::InvalidTopology(format!("surface `{id}`: {err}"));
+            let named = |err| LoaderError::InvalidTopology(at(surface.site, format!("surface `{id}`: {err}")));
             closable::reset_on_close.read(&surface.properties).map_err(named)?;
         }
     }
     // Instances are keyed `id@output`, so a second surface with one id shadowed the first.
     let mut ids = std::collections::HashSet::new();
-    if let Some(duplicate) = specs.iter().map(SurfaceSpec::declared_id).find(|id| !ids.insert(*id)) {
-        return Err(LoaderError::InvalidTopology(format!(
-            "invalid value for `id`: two surfaces declare `{duplicate}`, expected each surface id to be unique"
+    let ids_by_site = || specs.iter().map(SurfaceSpec::declared_id).zip(&output.surfaces);
+    if let Some((duplicate, second)) = ids_by_site().find(|(id, _)| !ids.insert(*id)) {
+        let first = ids_by_site().find(|(id, _)| id == &duplicate).and_then(|(_, surface)| surface.site);
+        let first = first.map_or(String::new(), |site| format!(" (first at {site})"));
+        return Err(LoaderError::InvalidTopology(at(
+            second.site,
+            format!(
+                "invalid value for `id`: two surfaces declare `{duplicate}`{first}, expected each surface id to be unique"
+            ),
         )));
     }
     // **At most one `lock`, checked here on startup and `Reevaluate`.** This is the only place
@@ -65,10 +76,13 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     // `lock` has no `output` and one surface per output, so two screens have no valid layout.
     let locks = specs.iter().filter(|spec| matches!(spec, SurfaceSpec::Lock(_))).count();
     if locks > 1 {
-        return Err(LoaderError::InvalidTopology(format!(
-            "this config declares {locks} `lock` surfaces; a `lock` has no `output` and exactly one surface per output, so a config may \
+        return Err(LoaderError::InvalidTopology(at(
+            None,
+            format!(
+                "this config declares {locks} `lock` surfaces; a `lock` has no `output` and exactly one surface per output, so a config may \
              declare at most one -- a second would ask the compositor for two lock surfaces on one output, which is `duplicate_output`, which kills \
              the connection with the session still locked"
+            ),
         )));
     }
     Ok(specs)

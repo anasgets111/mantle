@@ -172,6 +172,35 @@ mod tests {
         assert!(report.contains("panel   bar"), "the bar must be in the report:\n{report}");
     }
 
+    fn check_err(lua: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shell.lua"), lua).unwrap();
+        super::run(dir.path()).unwrap_err()
+    }
+
+    #[test]
+    fn a_root_node_error_names_the_constructor_line() {
+        let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n");
+        assert!(err.contains("shell.lua:2:"), "{err}");
+        let err = check_err("\n\nreturn panel { id = \"bar\", layer = \"top\", background = \"#zzz\" }\n");
+        assert!(err.contains("shell.lua:3)"), "{err}");
+    }
+
+    #[test]
+    fn a_duplicate_surface_id_names_both_declarations() {
+        let err = check_err(
+            "local a = panel { id = \"bar\", layer = \"top\" }\nreturn { a,\n panel { id = \"bar\", layer = \"top\" } }\n",
+        );
+        assert!(err.contains("shell.lua:3:") && err.contains("first at shell.lua:1"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_root_property_is_not_called_a_top_level_return_error() {
+        let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", paddng = 1 }\n");
+        assert!(err.contains("shell.lua:2:") && err.contains("padding"), "{err}");
+        assert!(!err.contains("top-level return"), "{err}");
+    }
+
     #[test]
     fn a_directory_with_no_shell_lua_says_so_and_names_the_fix() {
         let dir = tempfile::tempdir().unwrap();

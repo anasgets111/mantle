@@ -1503,7 +1503,7 @@ mod tests {
         assert_eq!(property, "content");
         assert_eq!(
             detail,
-            "on `bar@TEST`: column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected a string or an array of runs, got Integer(5)",
+            "on `bar@TEST`: panel (shell.lua:1) > column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected a string or an array of runs, got Integer(5)",
             "the path must lead to the guilty node, and neither sibling text node is on it"
         );
     }
@@ -1529,14 +1529,17 @@ mod tests {
         assert_eq!(lines.len(), 4, "a count, then one line per broken node: {err}");
         assert_eq!(lines[0], "3 nodes failed:");
         assert!(
-            lines[1].contains("on `bar@TEST`: column[0] (shell.lua:1) > text[0] (shell.lua:2) > expected a string"),
+            lines[1].contains("on `bar@TEST`: panel (shell.lua:1) > column[0] (shell.lua:1) > text[0] (shell.lua:2) > expected a string"),
             "{err}"
         );
         assert!(
             lines[2].contains("column[0] (shell.lua:1) > row[1] (shell.lua:3) > text[1] (shell.lua:3) > expected"),
             "{err}"
         );
-        assert!(lines[3].contains("on `bar@TEST`: column[0] (shell.lua:1) > rect[2] (shell.lua:4) >"), "{err}");
+        assert!(
+            lines[3].contains("on `bar@TEST`: panel (shell.lua:1) > column[0] (shell.lua:1) > rect[2] (shell.lua:4) >"),
+            "{err}"
+        );
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].kind, "rect", "the prior scene stays");
     }
 
@@ -1599,8 +1602,13 @@ mod tests {
 
         let lines: Vec<&str> = err.lines().collect();
         assert_eq!(lines[0], "31 nodes failed:", "bar once, not once per output, and dock's 30: {err}");
-        assert!(lines[1].contains("on `bar@LEFT`: text[0] ("), "{err}");
-        assert!(lines[2].contains("on `dock@LEFT`: column[0] (") && lines[2].contains(") > text[0] ("), "{err}");
+        assert!(lines[1].contains("on `bar@LEFT`: panel (") && lines[1].contains(") > text[0] ("), "{err}");
+        assert!(
+            lines[2].contains("on `dock@LEFT`: panel (")
+                && lines[2].contains(") > column[0] (")
+                && lines[2].contains(") > text[0] ("),
+            "{err}"
+        );
         assert_eq!(lines.len(), 22, "twenty listed, then the rest counted: {err}");
         assert_eq!(lines[21], "  and 11 more");
     }
