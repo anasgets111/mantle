@@ -185,6 +185,7 @@ impl CapabilityHandle {
         let current = self.signal.get();
         for handler in handlers {
             warn_raised(
+                &handler,
                 CpuBudget::call(lua, &handler, (current.clone(), previous.clone())),
                 format_args!("mantle.{}:on_change handler", self.name),
             );

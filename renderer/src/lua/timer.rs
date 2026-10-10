@@ -200,7 +200,7 @@ pub fn dispatch_due(lua: &Lua, now: Instant) {
         // The cap `action` and `on_change` handlers run under. ponytail: per callback, not per
         // batch, so a config arming many timers for one moment can still spend that many budgets in
         // one turn -- the same ceiling a capability with many `on_change` handlers already has.
-        warn_raised(CpuBudget::call(lua, &callback, ()), "timer callback");
+        warn_raised(&callback, CpuBudget::call(lua, &callback, ()), "timer callback");
     }
     if let Some(mut registry) = lua.app_data_mut::<TimerRegistry>() {
         registry.firing.clear();

@@ -25,7 +25,7 @@ pub mod surfaces;
 pub mod timer;
 pub(crate) mod toplevel;
 
-pub(crate) use location::{call_logged, describe, warn_raised};
+pub(crate) use location::{call_logged, describe, forget_raised, report_raised, warn_raised};
 pub use nodes::VirtualNode;
 use std::cell::RefCell;
 

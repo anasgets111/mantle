@@ -54,6 +54,7 @@ pub fn run(lua: &Lua) {
             let handlers = lua.app_data_ref::<StateHandlers>().and_then(|registry| registry.handlers.get(&id).cloned());
             for handler in handlers.unwrap_or_default() {
                 warn_raised(
+                    &handler,
                     CpuBudget::call(lua, &handler, (current.clone(), previous.clone())),
                     format_args!("state({:?}):on_change handler", super::globals::state_name(lua, id)),
                 );

@@ -14,17 +14,29 @@ use shared::warn;
 /// results, so `package.loaded` and ADR-0047's forgetting see no difference.
 pub(super) fn name_required_chunks_relatively(lua: &Lua, config_dir: &Path) -> mlua::Result<()> {
     let root = config_dir.to_path_buf();
+    let prefix = format!("{}/", root.display());
     let searcher = lua.create_function(move |lua, name: mlua::LuaString| {
         let package: Table = lua.globals().get("package")?;
         let search: mlua::Function = package.get("searchpath")?;
         let (found, tried): (Option<String>, Value) = search.call((name, package.get::<Value>("path")?))?;
-        let Some(path) = found else { return Ok((tried, Value::Nil)) };
+        let Some(path) = found else {
+            // The config-relative form every other error uses, not the absolute search paths.
+            let tried = match tried {
+                Value::String(tried) => Value::String(lua.create_string(tried.to_str()?.replace(&prefix, ""))?),
+                other => other,
+            };
+            return Ok((tried, Value::Nil));
+        };
         let source = std::fs::read(&path).map_err(mlua::Error::external)?;
         let chunk = format!("@{}", chunk_name(&root, Path::new(&path)));
         let loader = lua.load(source).set_name(chunk).into_function()?;
         Ok((Value::Function(loader), Value::String(lua.create_string(&path)?)))
     })?;
-    lua.globals().get::<Table>("package")?.get::<Table>("searchers")?.set(2, searcher)
+    let searchers: Table = lua.globals().get::<Table>("package")?.get("searchers")?;
+    searchers.set(2, searcher)?;
+    // Safe mode loads no C modules; these two only add a "can't load C modules" line to the error.
+    searchers.set(3, Value::Nil)?;
+    searchers.set(4, Value::Nil)
 }
 
 /// `path` relative to the config directory, the name every error and traceback shows for it.
@@ -41,6 +53,19 @@ pub(super) fn chunk_name(config_dir: &Path, path: &Path) -> String {
 pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = err.to_string();
     let text = text.strip_prefix("runtime error: ").unwrap_or(&text);
+    // `error({...})`: Lua stringifies a non-string error value as `table: 0x...`.
+    let first = text.lines().next().unwrap_or_default();
+    let object;
+    let text = match first.split_once(": 0x") {
+        Some((kind, address))
+            if matches!(kind, "table" | "function" | "thread" | "userdata")
+                && address.bytes().all(|b| b.is_ascii_hexdigit()) =>
+        {
+            object = format!("error object is a {kind}, not a string{}", &text[first.len()..]);
+            &object
+        }
+        _ => text,
+    };
     let text = match text.match_indices("stack traceback:").nth(1) {
         Some((second, _)) => &text[..second],
         None => text,
@@ -62,18 +87,64 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
     lines.join("\n")
 }
 
-/// Logs a config callback's raise as `{what} raised, ignoring it: ...`; `Ok` is silent. A callback
-/// nothing waits on must not take the turn with it.
-pub(crate) fn warn_raised(outcome: mlua::Result<()>, what: impl std::fmt::Display) {
+/// Logs a config callback's raise as `{what} raised, ignoring it: ... (defined at file:N)`; `Ok` is
+/// silent. A callback nothing waits on must not take the turn with it.
+pub(crate) fn warn_raised(handler: &mlua::Function, outcome: mlua::Result<()>, what: impl std::fmt::Display) {
     if let Err(err) = outcome {
-        warn!("{what} raised, ignoring it: {}", describe(&err));
+        report_raised(handler, format!("{what} raised, ignoring it"), &err);
     }
 }
 
 /// Calls `f` for its side effects and logs a raise through [`warn_raised`]. Unbudgeted: for the
 /// callbacks that run no CPU cap, see [`CpuBudget::call`](super::signal::CpuBudget::call) for those that do.
 pub(crate) fn call_logged(f: &mlua::Function, args: impl IntoLuaMulti, what: impl std::fmt::Display) {
-    warn_raised(f.call(args), what);
+    warn_raised(f, f.call(args), what);
+}
+
+/// Most distinct `(label, message)` pairs [`report_raised`] remembers. ponytail: past it the table
+/// resets and the next raises log in full again; upgrade path: an LRU.
+const FOLD_CAP: usize = 64;
+
+thread_local! {
+    static RAISED: RefCell<HashMap<(String, String), u32>> = RefCell::default();
+}
+
+/// Forgets every folded raise, so a re-evaluated config's first raise logs in full.
+pub(crate) fn forget_raised() {
+    RAISED.with_borrow_mut(HashMap::clear);
+}
+
+/// Logs `head: message (defined at ...)` for a raise of `handler`. A handler that keeps raising the
+/// same message (per pointer motion, per timer tick) logs the first and then only the 2nd, 4th,
+/// 8th... as `raised again (N times)`, so a hot handler cannot flood the log.
+pub(crate) fn report_raised(handler: &mlua::Function, head: String, err: &mlua::Error) {
+    if let Some(line) = raised_line(handler, head, err) {
+        warn!("{line}");
+    }
+}
+
+fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error) -> Option<String> {
+    let message = describe(err);
+    let times = RAISED.with_borrow_mut(|seen| {
+        if seen.len() >= FOLD_CAP && !seen.contains_key(&(head.clone(), message.clone())) {
+            seen.clear();
+        }
+        let times = seen.entry((head.clone(), message.clone())).or_default();
+        *times += 1;
+        *times
+    });
+    if times == 1 {
+        let info = handler.info();
+        let at = match (info.short_src, info.line_defined) {
+            (Some(src), Some(line)) => format!(" (defined at {src}:{line})"),
+            _ => String::new(),
+        };
+        Some(format!("{head}: {message}{at}"))
+    } else if times.is_power_of_two() {
+        Some(format!("{head}: raised again ({times} times): {}", message.lines().next().unwrap_or_default()))
+    } else {
+        None
+    }
 }
 
 /// A line of config code, `widgets/bar.lua:12` once displayed: where a node or derived signal was
@@ -139,6 +210,59 @@ impl std::fmt::Display for Site {
 #[cfg(test)]
 mod tests {
     use mlua::Lua;
+
+    fn handler(lua: &Lua, source: &str) -> (mlua::Function, mlua::Error) {
+        let f: mlua::Function = lua.load(source).set_name("@widgets/bar.lua").eval().unwrap();
+        let err = f.call::<()>(()).unwrap_err();
+        (f, err)
+    }
+
+    #[test]
+    fn a_raise_names_where_the_handler_was_defined_and_repeats_fold() {
+        let lua = Lua::new();
+        let (f, err) = handler(&lua, "\n\nreturn function() error('boom') end");
+        let line = |head: &str| super::raised_line(&f, head.into(), &err);
+
+        let first = line("bar: on_hover raised, ignoring it").unwrap();
+        assert!(first.contains("widgets/bar.lua:3: boom"), "{first}");
+        assert!(first.ends_with("(defined at widgets/bar.lua:3)"), "{first}");
+        let rest: Vec<_> = (2..=8).map(|_| line("bar: on_hover raised, ignoring it")).collect();
+        assert!(rest[0].as_ref().unwrap().contains("raised again (2 times)"), "{rest:?}");
+        assert_eq!(rest.iter().flatten().count(), 3, "2nd, 4th and 8th only: {rest:?}");
+        assert!(line("other: on_hover raised, ignoring it").is_some(), "another label logs afresh");
+        super::forget_raised();
+        assert!(line("bar: on_hover raised, ignoring it").unwrap().contains("(defined at"), "reload logs in full");
+    }
+
+    #[test]
+    fn a_non_string_error_value_is_named_by_type() {
+        let lua = Lua::new();
+        let (_, err) = handler(&lua, "return function() error({ code = 1 }) end");
+        let text = super::describe(&err);
+        assert!(text.starts_with("error object is a table, not a string"), "{text}");
+    }
+
+    #[test]
+    fn a_missing_module_lists_config_relative_paths_and_no_c_loader() {
+        let dir = tempfile::tempdir().unwrap();
+        let loader = crate::lua::Loader::new(crate::lua::signal::DirtyFlag::new(), dir.path()).unwrap();
+        let err = loader.lua().load("require('nope.missing')").exec().unwrap_err();
+        let text = super::describe(&err);
+        assert!(text.contains("no file 'nope/missing.lua'"), "{text}");
+        assert!(!text.contains(&dir.path().display().to_string()), "{text}");
+        assert!(!text.contains("C modules"), "{text}");
+    }
+
+    #[test]
+    fn a_syntax_error_in_a_required_module_names_its_file_and_line() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("mod.lua"), "local x = 1\nlocal = \n").unwrap();
+        let loader = crate::lua::Loader::new(crate::lua::signal::DirtyFlag::new(), dir.path()).unwrap();
+        let err = loader.lua().load("require('mod')").exec().unwrap_err();
+        let text = super::describe(&err);
+        assert!(text.contains("mod.lua:2:"), "{text}");
+        assert!(!text.contains(&dir.path().display().to_string()), "{text}");
+    }
 
     /// `error` raised in the main chunk, and a failing `computed` read through `:get()`, which
     /// crosses a Rust callback and so gathers a second traceback.

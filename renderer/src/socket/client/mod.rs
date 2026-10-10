@@ -262,6 +262,7 @@ impl RendererClient {
         lua::signal::clear_state_handlers(self.loader.lua());
         lua::action::clear(self.loader.lua());
         lua::timer::begin_evaluation(self.loader.lua());
+        lua::forget_raised();
     }
 
     /// Returns a handle, lazily adding `mantle.<capability>` as `nil` (ADR-0029).

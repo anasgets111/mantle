@@ -76,7 +76,7 @@ pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: KeyPress, what: &st
                 break;
             }
             Ok(_) => {}
-            Err(err) => crate::lua::warn_raised(Err(err), format_args!("{what}: on_key")),
+            Err(err) => crate::lua::warn_raised(handler, Err(err), format_args!("{what}: on_key")),
         }
     }
     crate::lua::focus::end_callback(lua);

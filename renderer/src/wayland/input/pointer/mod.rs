@@ -579,7 +579,7 @@ impl App {
                     && let Err((what, e)) =
                         call_on_press(self.client.lua(), &target.handler, &target, name, self.modifiers_held())
                 {
-                    warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
+                    crate::lua::report_raised(&target.handler, format!("{instance_id}: {what}"), &e);
                 }
                 // Left `on_drag` holds until release (ADR-0116 decision 1); other buttons stay
                 // free for clicks, and fields drag nothing just as they click nothing.
@@ -772,7 +772,7 @@ impl App {
             self.drag = None;
         }
         if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, local, phase, self.modifiers_held()) {
-            warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
+            crate::lua::report_raised(&handler, format!("{instance_id}: {what}"), &e);
         }
     }
 
@@ -881,7 +881,7 @@ impl App {
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         crate::lua::focus::begin_callback(self.client.lua(), instance_id, keyboard);
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, local, self.modifiers_held()) {
-            warn!("{instance_id}: {what}: {}", crate::lua::describe(&e));
+            crate::lua::report_raised(on_click, format!("{instance_id}: {what}"), &e);
         }
         crate::lua::focus::end_callback(self.client.lua());
     }
