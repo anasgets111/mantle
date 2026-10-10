@@ -7,7 +7,7 @@ Mantle runs a desktop shell written in Lua on Wayland. Your `shell.lua` returns
 [nodes](nodes/index.md) for layout and drawing. [Signals](guide/signals.md) keep their properties
 up to date as [capabilities](capabilities/index.md) report changes.
 
-<video src="https://github.com/user-attachments/assets/6eea81f4-9755-468e-aa2d-f8151c25e2f5" controls muted playsinline preload="metadata"></video>
+<video src="https://github.com/user-attachments/assets/d5a618ae-29a8-4483-b479-1eedd5ec9755" controls muted playsinline preload="metadata"></video>
 
 The video is a Mantle shell: [`demo/director`](../demo/director/shell.lua) types each save and records
 the result. `just demo` records it again; [The demo](development/demo.md) covers changing it.
