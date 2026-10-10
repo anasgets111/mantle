@@ -1375,7 +1375,7 @@ mod tests {
         }
         for src in ["s:scroll_to(0/0)", "s:scroll_by(math.huge)", "n:scroll_to(1)"] {
             let err = client.loader.lua().load(src).exec().unwrap_err().to_string();
-            assert!(err.contains("finite number") || err.contains("only valid on a scroll"), "{src}: {err}");
+            assert!(err.contains("must be finite") || err.contains("only valid on a scroll"), "{src}: {err}");
         }
         assert!(!client.re_resolve_if_dirty(), "a refused request asks for nothing");
     }

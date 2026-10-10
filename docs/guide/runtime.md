@@ -147,6 +147,8 @@ How each failure ends:
 | The Renderer crashes | The Supervisor starts a new generation. After three crashes within 60 s, it waits 30 s before the next respawn |
 | The compositor goes away | The Renderer exits with code 71 and the Supervisor shuts down instead of respawning |
 
+A bad argument to an engine function caught by `pcall` omits the leading `file:line:`; the logged and `mantle check` forms carry it.
+
 A failed reload keeps the old scene, but not the old evaluation's actions, timers, `on_change`
 handlers or idle thresholds ([what survives](#what-survives-a-reload)):
 

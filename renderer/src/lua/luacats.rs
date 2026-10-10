@@ -41,6 +41,8 @@ impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
     }
 }
 
+// ponytail: mlua converts arguments before our code runs and gives no `&Lua`, so a `pcall`-caught error has no
+// `file:N:` lead; `describe` hoists it for logs. Upgrade: an mlua API exposing `RawLua::lua()`, or `unsafe Lua::get_or_init_from_ptr`.
 fn bad_argument(function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
     let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };

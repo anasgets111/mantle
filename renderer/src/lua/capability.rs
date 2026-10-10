@@ -18,7 +18,7 @@ use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::layout::node::preview_for_error;
-use crate::lua::fuzzy::closest;
+use crate::lua::fuzzy::{closest, hint};
 use crate::lua::luacats::rust_type_in_lua;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
@@ -223,12 +223,12 @@ impl UserData for Capability {
                 let samples = crate::check::samples("first");
                 let fields = samples.get(name.as_str()).and_then(|state| state.as_object()).into_iter().flatten();
                 let hint = match closest(&key, actions.iter().copied().chain(fields.map(|(field, _)| field.as_str()))) {
-                    Some(near) if actions.contains(&near) => format!("did you mean mantle.{name}:{near}(...)?"),
-                    Some(near) => format!("did you mean mantle.{name}:get().{near}?"),
+                    Some(near) if actions.contains(&near) => format!("did you mean `mantle.{name}:{near}(...)`?"),
+                    Some(near) => format!("did you mean `mantle.{name}:get().{near}`?"),
                     None if actions.is_empty() => {
-                        format!("it is read-only, with no actions; read it with mantle.{name}:get()")
+                        format!("it is read-only, with no actions; read it with `mantle.{name}:get()`")
                     }
-                    None => format!("its actions are {}; :get() reads its state", actions.join(", ")),
+                    None => format!("{}; `:get()` reads its state", hint(&key, actions)),
                 };
                 return Err(mlua::Error::runtime(format!("mantle.{name} has no `{key}`: {hint}")));
             };
@@ -460,9 +460,9 @@ pub(crate) mod tests {
     fn an_unknown_or_read_only_action_is_a_config_error_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
         let err = lua.load(r#"mantle.probe:set_volumee(1)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("did you mean mantle.audio:set_volume(...)?"), "{err}");
+        assert!(err.to_string().contains("did you mean `mantle.audio:set_volume(...)`?"), "{err}");
         let err = lua.load(r#"mantle.probe:rename()"#).exec().unwrap_err();
-        assert!(err.to_string().contains("its actions are set_volume,"), "{err}");
+        assert!(err.to_string().contains("expected one of `set_volume`,"), "{err}");
 
         let (tx, _rx) = mpsc::unbounded_channel();
         let (battery, _) = Capability::new("battery", DirtyFlag::new(), CommandSender::new(0, tx));
@@ -479,17 +479,17 @@ pub(crate) mod tests {
 
         let err = lua.load("return mantle.probe.volume").exec().unwrap_err();
         assert!(
-            err.to_string().contains("mantle.audio has no `volume`: did you mean mantle.audio:get().volume?"),
+            err.to_string().contains("mantle.audio has no `volume`: did you mean `mantle.audio:get().volume`?"),
             "{err}"
         );
         let err = lua.load("return mantle.probe.volme").exec().unwrap_err();
-        assert!(err.to_string().contains("did you mean mantle.audio:get().volume?"), "{err}");
+        assert!(err.to_string().contains("did you mean `mantle.audio:get().volume`?"), "{err}");
 
         let (tx, _rx) = mpsc::unbounded_channel();
         let (battery, _) = Capability::new("battery", DirtyFlag::new(), CommandSender::new(0, tx));
         lua.globals().get::<mlua::Table>("mantle").unwrap().set("battery", battery).unwrap();
         let err = lua.load("return mantle.battery.percent").exec().unwrap_err();
-        assert!(err.to_string().contains("did you mean mantle.battery:get().percent?"), "{err}");
+        assert!(err.to_string().contains("did you mean `mantle.battery:get().percent`?"), "{err}");
     }
 
     #[test]

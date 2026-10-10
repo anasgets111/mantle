@@ -129,7 +129,8 @@ fn finite(method: &str, offset: f64) -> mlua::Result<f32> {
     let pixels = offset as f32;
     if !pixels.is_finite() {
         return Err(mlua::Error::runtime(format!(
-            "signal:{method}() takes a finite number of pixels, and {offset} is not one"
+            "signal:{method}(): offset must be finite, got {}",
+            crate::lua::marshal::number_word(offset)
         )));
     }
     Ok(pixels)
@@ -590,7 +591,7 @@ impl UserData for Signal {
         methods.add_method("reveal", |_, this, index: i64| {
             let Some(index) = usize::try_from(index).ok().filter(|index| *index >= 1) else {
                 return Err(mlua::Error::runtime(format!(
-                    "signal:reveal() takes a 1-based child index, and {index} is not one"
+                    "signal:reveal(): index must be 1 or more, got integer {index}"
                 )));
             };
             this.scroll_request("reveal", ScrollRequest::Reveal(index))

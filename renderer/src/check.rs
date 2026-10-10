@@ -447,7 +447,17 @@ mod tests {
             (
                 "capability field read",
                 &[("shell.lua", "\nlocal v = mantle.audio.volume\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio has no `volume`: did you mean mantle.audio:get().volume?"],
+                &["shell.lua:2: mantle.audio has no `volume`: did you mean `mantle.audio:get().volume`?"],
+            ),
+            (
+                "capability field far from every name",
+                &[("shell.lua", "\nlocal v = mantle.audio.zzzzzzzz\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio has no `zzzzzzzz`: expected one of `", "`:get()` reads its state"],
+            ),
+            (
+                "signal method argument",
+                &[("shell.lua", "\nscroll(\"s\"):reveal(0)\nreturn {}\n")],
+                &["shell.lua:2: signal:reveal(): index must be 1 or more, got integer 0"],
             ),
             (
                 "idle threshold out of range",

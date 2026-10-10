@@ -380,7 +380,7 @@ again after changing it in place is a write.
 | `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry or elided signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
-| `signal:reveal() is only valid on a scroll(name) signal` / `takes a 1-based child index` | `:reveal` on another kind, or an index below 1 |
+| `signal:reveal() is only valid on a scroll(name) signal` / `index must be 1 or more` | `:reveal` on another kind, or an index below 1 |
 | `signal nesting exceeded its maximum depth of 32 levels` | A derived chain deeper than 32, or one that reads itself |
 | `exceeded the 2.5ms CPU budget for one evaluation` | A map or computed body ran too long ([runtime](runtime.md)) |
 | `a Signal resolved to another Signal` | A map returned a signal; return a plain value |
