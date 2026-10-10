@@ -12,6 +12,16 @@ const MIN_SAFE_INTEGER: i64 = -MAX_SAFE_INTEGER;
 /// Maximum string size: 64KB.
 pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
 
+/// The one wording for a number outside its closed range; `ty` is the Lua type the author wrote.
+pub(crate) fn out_of_range(
+    low: impl std::fmt::Display,
+    high: impl std::fmt::Display,
+    ty: &str,
+    got: impl std::fmt::Display,
+) -> String {
+    format!("must be within [{low}, {high}], got {ty} {got}")
+}
+
 /// A rect as the `{ x, y, width, height }` table Lua reads: `on_click`'s argument, `hover_rect` and
 /// `geometry` (ADR-0050 decision 3).
 pub(crate) fn rect_table(lua: &mlua::Lua, rect: LogicalRect) -> mlua::Result<mlua::Table> {

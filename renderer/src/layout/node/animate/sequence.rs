@@ -8,6 +8,7 @@ use super::easing::Easing;
 use super::spring::{Spring, SpringConstants};
 use crate::layout::node::{LayoutError, invalid, preview_for_error};
 use crate::lua::luacats::lua_shape;
+use crate::lua::marshal::out_of_range;
 
 // The first frame anchors the sequence; only later frames contribute to its duration.
 lua_shape! {
@@ -189,7 +190,9 @@ pub(super) fn parse_sequence(
     let loops = match loops.unwrap_or(Loops::Count(1)) {
         Loops::Infinite => None,
         Loops::Count(count) if (1..=10_000).contains(&count) => Some(count),
-        Loops::Count(count) => return Err(invalid(field, format!("`loops` must be within [1, 10000], got {count}"))),
+        Loops::Count(count) => {
+            return Err(invalid(field, format!("`loops` {}", out_of_range(1, 10_000, "integer", count))));
+        }
     };
     Sequence::new(frames, loops).map(Some).ok_or_else(|| {
         invalid(field, "every `keyframes` segment lasts no time: a sequence that takes none is a jump".to_string())

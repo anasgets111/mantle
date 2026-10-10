@@ -312,7 +312,10 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
             if !(0.0..=1.0).contains(&points[0]) || !(0.0..=1.0).contains(&points[2]) {
                 return Err(invalid(
                     field,
-                    format!("a Bezier's `x1` and `x2` must be within [0, 1], got {} and {}", points[0], points[2]),
+                    format!(
+                        "a Bezier's `x1` and `x2` must be within [0, 1], got number {} and number {}",
+                        points[0], points[2]
+                    ),
                 ));
             }
             Ok(Easing::Bezier { x1: points[0], y1: points[1], x2: points[2], y2: points[3] })

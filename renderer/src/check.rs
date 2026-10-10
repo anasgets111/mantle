@@ -365,7 +365,7 @@ mod tests {
                 &[
                     "panel (shell.lua:1) > column[0] (shell.lua:1) > row[0] (shell.lua:2) > rect[0] (shell.lua:3)",
                     "invalid value for `opacity`",
-                    "got 2",
+                    "must be within [0, 1], got number 2",
                 ],
             ),
             (
@@ -438,6 +438,11 @@ mod tests {
                 &["shell.lua:2: timer: bad argument #1 (ms): expected a number, got string"],
             ),
             (
+                "timer out of range",
+                &[("shell.lua", "\ntimer(0, function() end)\nreturn {}\n")],
+                &["shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"],
+            ),
+            (
                 "bad action parameter",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(\"x\")\nreturn {}\n")],
                 &[
@@ -485,7 +490,7 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("invalid value for `opacity`") && err.contains("got 2"), "{err}");
+        assert!(err.contains("invalid value for `opacity`") && err.contains("got number 2"), "{err}");
     }
 
     /// A getter's failure names the line that made the signal, not only the line inside its function.

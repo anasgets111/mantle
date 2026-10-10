@@ -236,7 +236,7 @@ impl SpringConstants {
             if value <= 0.0 || value > highest {
                 return Err(invalid(
                     &format!("{field}.spring.{name}"),
-                    format!("`{name}` must be within (0, {highest}], got {value}"),
+                    format!("`{name}` must be within (0, {highest}], got number {value}"),
                 ));
             }
         }

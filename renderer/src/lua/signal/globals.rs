@@ -6,7 +6,7 @@ use std::time::Duration;
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
-use crate::lua::marshal::{a_type, list_entries, rect_table};
+use crate::lua::marshal::{a_type, list_entries, out_of_range, rect_table};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
@@ -230,7 +230,7 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
 fn parse_hold(what: &str, millis: f64) -> Result<Duration, mlua::Error> {
     let rounded = millis.round() as u64;
     if !(millis > 0.0 && millis <= 60_000.0) || rounded == 0 {
-        return Err(mlua::Error::runtime(format!("{what} must be within [1, 60000] ms, got {millis}")));
+        return Err(mlua::Error::runtime(format!("{what} {} ms", out_of_range(1, 60_000, "number", millis))));
     }
     Ok(Duration::from_millis(rounded))
 }

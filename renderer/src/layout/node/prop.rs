@@ -12,6 +12,7 @@ use super::{
     reject_signal_in_structural_field, value_as_f32,
 };
 use crate::lua::luacats::{LuaType, spelled};
+use crate::lua::marshal::out_of_range;
 use crate::lua::nodes::properties::{Absent, Property, kind_of};
 use crate::lua::signal::{self, is_signal};
 
@@ -208,11 +209,7 @@ pub(crate) fn within(row: &Property, n: f32) -> Result<f32, LayoutError> {
 
 /// `n` inside the closed range `(low, high)` of the property or field `name`.
 pub(crate) fn within_range(name: &str, (low, high): (f32, f32), n: f32) -> Result<f32, LayoutError> {
-    if (low..=high).contains(&n) {
-        Ok(n)
-    } else {
-        Err(invalid(name, format!("must be within [{low}, {high}], got {n}")))
-    }
+    if (low..=high).contains(&n) { Ok(n) } else { Err(invalid(name, out_of_range(low, high, "number", n))) }
 }
 
 /// A boolean, the row's default when absent.

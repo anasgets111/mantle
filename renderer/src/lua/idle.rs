@@ -38,6 +38,7 @@ use shared::debug;
 
 use crate::lua::call_logged;
 use crate::lua::capability::Capability;
+use crate::lua::marshal::out_of_range;
 
 /// The longest threshold ext-idle-notify's u32 millisecond timeout holds.
 const MAX_THRESHOLD_SEC: u64 = u32::MAX as u64 / 1000;
@@ -251,7 +252,10 @@ impl UserData for IdleMember {
             let Some(sec) = u64::try_from(sec).ok().filter(|sec| (1..=MAX_THRESHOLD_SEC).contains(sec)) else {
                 return Err(crate::lua::luacats::raise(
                     lua,
-                    format!("mantle.idle:register_threshold({sec}) is outside 1..={MAX_THRESHOLD_SEC} seconds"),
+                    format!(
+                        "mantle.idle:register_threshold: seconds {}",
+                        out_of_range(1, MAX_THRESHOLD_SEC, "integer", sec)
+                    ),
                 ));
             };
             Ok(this.0.register_threshold(sec, on_idle, on_resume))
@@ -315,7 +319,7 @@ mod tests {
         for sec in ["0", "-1", "4294968"] {
             let err = lua.load(format!("idle:register_threshold({sec}, function() end, function() end)")).exec();
             let err = err.unwrap_err().to_string();
-            assert!(err.contains(&format!("register_threshold({sec}) is outside 1..=4294967 seconds")), "{err}");
+            assert!(err.contains(&format!("seconds must be within [1, 4294967], got integer {sec}")), "{err}");
         }
         lua.load("idle:cancel_threshold(-1)").exec().expect("an unknown handle is a no-op");
     }

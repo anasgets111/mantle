@@ -142,7 +142,7 @@ fn options(opts: Option<Table>) -> Result<(bool, M3Variant, f64), String> {
         other => return Err(format!("`contrast` must be a number, got {}", other.type_name())),
     };
     if !(-1.0..=1.0).contains(&contrast) {
-        return Err(format!("`contrast` must be -1 to 1, got {contrast}"));
+        return Err(format!("`contrast` {}", super::marshal::out_of_range(-1, 1, "number", contrast)));
     }
     Ok((dark, variant, contrast))
 }
@@ -303,8 +303,8 @@ mod tests {
             (r#"palette.scheme("red")"#, "seed must be #RRGGBB, got `red`"),
             (r##"palette.scheme("#6750A4FF")"##, "seed must be #RRGGBB"),
             (r##"palette.scheme("#6750A4", { variant = "loud" })"##, "unknown `variant` `loud`; it takes tonal_spot,"),
-            (r##"palette.scheme("#6750A4", { contrast = 2 })"##, "`contrast` must be -1 to 1, got 2"),
-            (r##"palette.scheme("#6750A4", { contrast = 0/0 })"##, "`contrast` must be -1 to 1"),
+            (r##"palette.scheme("#6750A4", { contrast = 2 })"##, "`contrast` must be within [-1, 1], got number 2"),
+            (r##"palette.scheme("#6750A4", { contrast = 0/0 })"##, "`contrast` must be within [-1, 1]"),
             (r##"palette.scheme("#6750A4", { dark = "yes" })"##, "`dark` must be a boolean, got string"),
             (r##"palette.scheme("#6750A4", { darke = true })"##, "unknown key `darke`"),
             (r##"palette.hct("#6750A4FF")"##, "palette.hct: color must be #RRGGBB, got `#6750A4FF`"),

@@ -17,6 +17,7 @@ use shared::debug;
 
 use super::luacats::{lua_class, lua_fn, raise};
 use super::signal::CpuBudget;
+use crate::lua::marshal::out_of_range;
 use crate::lua::warn_raised;
 
 /// Range of `ms`, one millisecond to one day. Deliberately not `delay`/`pulse`'s 60-second ceiling:
@@ -113,7 +114,7 @@ lua_class! {
 fn start(lua: &Lua, name: &str, ms: f64, callback: Function, repeat: bool) -> mlua::Result<TimerHandle> {
     // `contains` is false for NaN, so a non-finite `ms` gets the range message too.
     if !(MIN_MS as f64..=MAX_MS as f64).contains(&ms) {
-        return Err(raise(lua, format!("{name}({ms}) is outside {MIN_MS}..={MAX_MS} milliseconds")));
+        return Err(raise(lua, format!("{name}: ms {} ms", out_of_range(MIN_MS, MAX_MS, "number", ms))));
     }
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
@@ -576,16 +577,22 @@ mod tests {
 
         assert!(lua.load("timer(0, function() end)").exec().is_err());
         let err = lua.load("timer(-1, function() end)").exec().unwrap_err().to_string();
-        assert!(err.contains("timer(-1) is outside"), "the engine's range message, not mlua's conversion error: {err}");
+        assert!(
+            err.contains("timer: ms must be within [1, 86400000], got number -1"),
+            "the engine's range message, not mlua's conversion error: {err}"
+        );
         assert!(lua.load("timer(86400001, function() end)").exec().is_err());
         lua.load("timer(86400000, function() end)").exec().expect("a full day is the documented ceiling");
         lua.load("timer(1.5, function() end)").exec().expect("a fractional ms is a duration like any other");
         let err = lua.load("timer(0/0, function() end)").exec().unwrap_err().to_string();
-        assert!(err.contains("timer(NaN) is outside"), "the engine's range message: {err}");
+        assert!(err.contains("got number NaN"), "the engine's range message: {err}");
         let err = lua.load("interval(0, function() end)").exec().unwrap_err().to_string();
-        assert!(err.contains("interval(0) is outside"), "interval shares the range: {err}");
+        assert!(err.contains("interval: ms must be within"), "interval shares the range: {err}");
         let err = lua.load("\ntimer(0, function() end)").set_name("=shell.lua").exec().unwrap_err().to_string();
-        assert!(err.starts_with("runtime error: shell.lua:2: timer(0) is outside"), "the site leads: {err}");
+        assert!(
+            err.starts_with("runtime error: shell.lua:2: timer: ms must be within [1, 86400000], got number 0 ms"),
+            "the site leads: {err}"
+        );
     }
 
     #[test]

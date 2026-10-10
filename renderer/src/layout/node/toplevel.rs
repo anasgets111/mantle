@@ -286,7 +286,7 @@ impl Prop for AnchorRect {
                 return Err(invalid(
                     "anchor_rect",
                     format!(
-                        "`{key}` must be within (0, 8192], got {n} -- a zero or negative anchor rectangle size is a protocol error"
+                        "`{key}` must be within (0, 8192], got number {n} -- a zero or negative anchor rectangle size is a protocol error"
                     ),
                 ));
             }
@@ -333,7 +333,7 @@ impl Prop for PopupExtent {
             return Err(invalid(
                 property,
                 format!(
-                    "must be within (0, 8192], got {n} -- set_size raises invalid_input on a zero or negative size"
+                    "must be within (0, 8192], got number {n} -- set_size raises invalid_input on a zero or negative size"
                 ),
             ));
         }
