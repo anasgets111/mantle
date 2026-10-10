@@ -2727,4 +2727,27 @@ mod tests {
         assert_eq!(lua.get::<String>("probe_stream").unwrap(), "stdout");
         assert_eq!(lua.get::<i64>("probe_code").unwrap(), 3);
     }
+
+    /// A reload forgets folded raises, so the failing handler of the new config logs in full again.
+    #[test]
+    fn a_reload_logs_a_repeating_raise_in_full_again() {
+        const SHELL: &str = r#"
+            timer(1, function() error("boom") end)
+            return panel { id = "bar", layer = "top" }
+        "#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), SHELL);
+        let (mut client, _outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let fire = |client: &RendererClient| {
+            let day = std::time::Instant::now() + std::time::Duration::from_secs(86_400);
+            crate::lua::timer::dispatch_due(client.loader.lua(), day);
+            crate::lua::location::LOGGED.with_borrow(|lines| lines.last().cloned().unwrap_or_default())
+        };
+
+        assert!(fire(&client).contains("defined at"));
+        assert!(reload(&mut client, &path, SHELL));
+        let logged = fire(&client);
+        assert!(logged.contains("defined at"), "the reload forgot the fold: {logged}");
+    }
 }

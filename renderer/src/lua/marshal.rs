@@ -68,7 +68,9 @@ pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String
         match pair.map_err(|e| e.to_string())?.0 {
             mlua::Value::String(key) if keys.iter().any(|known| key.as_bytes() == known.as_bytes()) => {}
             mlua::Value::String(key) => unknown.push(format!("`{}`", key.to_string_lossy())),
-            other => unknown.push(format!("{other:?}")),
+            mlua::Value::Integer(key) => unknown.push(format!("`{key}`")),
+            mlua::Value::Number(key) => unknown.push(format!("`{key}`")),
+            other => unknown.push(format!("of type {}", other.type_name())),
         }
     }
     let Some(first) = unknown.into_iter().min() else { return Ok(()) };
@@ -159,6 +161,10 @@ mod tests {
         assert_eq!(only_keys(&table, &["top", "topp", "bottum"]), Ok(()));
         let far: mlua::Table = lua.load("return { zzzzzz = 1 }").eval().unwrap();
         assert_eq!(only_keys(&far, &["top", "bottom"]).unwrap_err(), "unknown key `zzzzzz`; it takes `top`, `bottom`");
+        let other: mlua::Table = lua.load("return { [1] = true }").eval().unwrap();
+        assert_eq!(only_keys(&other, &["top"]).unwrap_err(), "unknown key `1`; it takes `top`");
+        let boolean: mlua::Table = lua.load("return { [true] = 1 }").eval().unwrap();
+        assert_eq!(only_keys(&boolean, &["top"]).unwrap_err(), "unknown key of type boolean; it takes `top`");
     }
 
     #[test]

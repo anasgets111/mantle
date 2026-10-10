@@ -4,6 +4,7 @@
 use rustc_hash::FxHashMap as HashMap;
 use std::cell::RefCell;
 use std::path::Path;
+use std::time::{Duration, Instant};
 
 use mlua::{IntoLuaMulti, Lua, Table, Value};
 use shared::warn;
@@ -59,6 +60,7 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
     let text = match first.split_once(": 0x") {
         Some((kind, address))
             if matches!(kind, "table" | "function" | "thread" | "userdata")
+                && !address.is_empty()
                 && address.bytes().all(|b| b.is_ascii_hexdigit()) =>
         {
             object = format!("error object is a {kind}, not a string{}", &text[first.len()..]);
@@ -101,12 +103,20 @@ pub(crate) fn call_logged(f: &mlua::Function, args: impl IntoLuaMulti, what: imp
     warn_raised(f, f.call(args), what);
 }
 
-/// Most distinct `(label, message)` pairs [`report_raised`] remembers. ponytail: past it the table
-/// resets and the next raises log in full again; upgrade path: an LRU.
+/// Most distinct handlers' raises [`report_raised`] remembers. ponytail: past it the table resets
+/// and the next raises log in full again; upgrade path: an LRU.
 const FOLD_CAP: usize = 64;
 
+/// A repeat also logs once this long has passed since the key last logged, so a slow failure
+/// (a handler raising every minute) is not folded away for hours.
+const REFOLD_AFTER: Duration = Duration::from_secs(60);
+
+/// What a fold counts: the label, the message, and the handler's definition (source, line).
+type FoldKey = (String, String, Option<String>, Option<usize>);
+
 thread_local! {
-    static RAISED: RefCell<HashMap<(String, String), u32>> = RefCell::default();
+    /// Per key: the raises so far and when one was last logged.
+    static RAISED: RefCell<HashMap<FoldKey, (u32, Instant)>> = RefCell::default();
 }
 
 #[cfg(test)]
@@ -121,34 +131,41 @@ pub(crate) fn forget_raised() {
 }
 
 /// Logs `head: message (defined at ...)` for a raise of `handler`. A handler that keeps raising the
-/// same message (per pointer motion, per timer tick) logs the first and then only the 2nd, 4th,
-/// 8th... as `raised again (N times)`, so a hot handler cannot flood the log.
+/// same message (per pointer motion, per timer tick) logs the first, then the 2nd, 4th, 8th... and
+/// any repeat 60 s after the last log, as `raised again (N times)`, so a hot handler cannot flood
+/// the log.
 pub(crate) fn report_raised(handler: &mlua::Function, head: String, err: &mlua::Error) {
-    if let Some(line) = raised_line(handler, head, err) {
+    if let Some(line) = raised_line(handler, head, err, Instant::now()) {
         #[cfg(test)]
         LOGGED.with_borrow_mut(|lines| lines.push(line.clone()));
         warn!("{line}");
     }
 }
 
-fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error) -> Option<String> {
+fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error, now: Instant) -> Option<String> {
     let message = describe(err);
-    let times = RAISED.with_borrow_mut(|seen| {
-        if seen.len() >= FOLD_CAP && !seen.contains_key(&(head.clone(), message.clone())) {
+    let info = handler.info();
+    let key = (head, message, info.short_src.clone(), info.line_defined);
+    let (times, log) = RAISED.with_borrow_mut(|seen| {
+        if seen.len() >= FOLD_CAP && !seen.contains_key(&key) {
             seen.clear();
         }
-        let times = seen.entry((head.clone(), message.clone())).or_default();
+        let (times, logged) = seen.entry(key.clone()).or_insert((0, now));
         *times += 1;
-        *times
+        let log = *times == 1 || times.is_power_of_two() || now.duration_since(*logged) >= REFOLD_AFTER;
+        if log {
+            *logged = now;
+        }
+        (*times, log)
     });
+    let (head, message, ..) = key;
     if times == 1 {
-        let info = handler.info();
         let at = match (info.short_src, info.line_defined) {
             (Some(src), Some(line)) => format!(" (defined at {src}:{line})"),
             _ => String::new(),
         };
         Some(format!("{head}: {message}{at}"))
-    } else if times.is_power_of_two() {
+    } else if log {
         Some(format!("{head}: raised again ({times} times): {}", message.lines().next().unwrap_or_default()))
     } else {
         None
@@ -229,7 +246,8 @@ mod tests {
     fn a_raise_names_where_the_handler_was_defined_and_repeats_fold() {
         let lua = Lua::new();
         let (f, err) = handler(&lua, "\n\nreturn function() error('boom') end");
-        let line = |head: &str| super::raised_line(&f, head.into(), &err);
+        let t0 = std::time::Instant::now();
+        let line = |head: &str| super::raised_line(&f, head.into(), &err, t0);
 
         let first = line("bar: on_hover raised, ignoring it").unwrap();
         assert!(first.contains("widgets/bar.lua:3: boom"), "{first}");
@@ -238,6 +256,18 @@ mod tests {
         assert!(rest[0].as_ref().unwrap().contains("raised again (2 times)"), "{rest:?}");
         assert_eq!(rest.iter().flatten().count(), 3, "2nd, 4th and 8th only: {rest:?}");
         assert!(line("other: on_hover raised, ignoring it").is_some(), "another label logs afresh");
+        let later =
+            |secs, head: &str| super::raised_line(&f, head.into(), &err, t0 + std::time::Duration::from_secs(secs));
+        assert!(later(30, "bar: on_hover raised, ignoring it").is_none(), "9th, 30 s on: still folded");
+        assert!(
+            later(61, "bar: on_hover raised, ignoring it").unwrap().contains("raised again (10 times)"),
+            "a minute decays the fold"
+        );
+        let (g, _) = handler(&lua, "\n\n\n\nreturn function() error('boom') end");
+        assert!(
+            super::raised_line(&g, "bar: on_hover raised, ignoring it".into(), &err, t0).is_some(),
+            "another definition folds apart"
+        );
         super::forget_raised();
         assert!(line("bar: on_hover raised, ignoring it").unwrap().contains("(defined at"), "reload logs in full");
     }

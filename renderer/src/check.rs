@@ -396,6 +396,11 @@ mod tests {
                 &["shell.lua:1: surface topology is invalid", "unknown key `lefft`; did you mean `left`?"],
             ),
             (
+                "nested key that is not a string",
+                &[("shell.lua", "return panel { id = \"p\", layer = \"top\", anchor = { [1] = true } }\n")],
+                &["unknown key `1`; it takes `top`"],
+            ),
+            (
                 "duplicate id",
                 &[(
                     "shell.lua",
@@ -467,7 +472,7 @@ mod tests {
                 assert!(err.contains(want), "{name}: missing {want:?} in:\n{err}");
             }
             assert_eq!(err.matches(&dir_name).count(), 1, "{name}: the config dir is named once:\n{err}");
-            for rust_form in ["String(", "Integer(", "usize", "f64", "C modules"] {
+            for rust_form in ["String(", "Integer(", "usize", "f64", "C modules", "..="] {
                 assert!(!err.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
             }
         }

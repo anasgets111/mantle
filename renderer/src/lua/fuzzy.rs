@@ -306,6 +306,11 @@ pub fn score(haystack: &str, needle: &str) -> Option<(i32, usize)> {
 /// characters or fewer get one edit, since two reach unrelated words (`top` to `gap`). Earlier
 /// candidates win ties.
 pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) -> Option<&'a str> {
+    // ponytail: no suggestion past 64 bytes (no key or choice is near that long); the edit table is O(len x candidate).
+    const MAX_NAME_BYTES: usize = 64;
+    if name.len() > MAX_NAME_BYTES {
+        return None;
+    }
     let name: Vec<char> = name.to_lowercase().chars().collect();
     let limit = if name.len() <= 3 { 1 } else { 2 };
     let candidates: Vec<(&str, Vec<char>)> =
@@ -400,6 +405,8 @@ mod tests {
         ] {
             assert_eq!(closest(typo, names), meant, "{typo}");
         }
+        // Past the bound there is no suggestion, and no edit table of 2 MB x candidate to build.
+        assert_eq!(closest(&"content".repeat(300_000), names), None);
     }
 
     fn scored(haystack: &str, needle: &str) -> i32 {

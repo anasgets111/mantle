@@ -340,12 +340,10 @@ impl LayoutError {
     }
 
     /// Names a root node's constructor line, `panel (shell.lua:13) > detail`, the way [`Self::in_child`]
-    /// names a child. A detail already carrying a child path is left alone.
+    /// names a child, ahead of whatever the detail already holds (a child path included). Takes one
+    /// error of [`Self::into_each`]; without a site, or on another variant, it changes nothing.
     pub(crate) fn at_root(self, kind: &str, site: Option<crate::lua::location::Site>) -> Self {
         match (self, site) {
-            (Self::Several(errors), _) => {
-                Self::Several(errors.into_iter().map(|err| err.at_root(kind, site)).collect())
-            }
             (Self::InvalidProperty { property, detail }, Some(site)) => {
                 Self::InvalidProperty { property, detail: format!("{kind} ({site}) > {detail}") }
             }
