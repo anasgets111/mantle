@@ -3,16 +3,15 @@
 //! `switch_layout` goes through a [`CompositorLink`]. Without a supported compositor, layout is
 //! empty with count `0`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use serde::Deserialize;
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::compositor::hyprland::{hyprland_command, hyprland_request, hyprland_socket_path};
+use crate::compositor::hyprland::{hyprland_command, hyprland_socket_path};
 use crate::compositor::niri::niri_action;
-use crate::compositor::sway::{SWAY_GET_INPUTS, sway_command, sway_request};
+use crate::compositor::sway::sway_command;
 
 use super::controller::KeyboardState;
 
@@ -42,50 +41,6 @@ impl LayoutSink {
             let _ = events.send(());
         }
     }
-
-    /// Applies a niri layout event; `false` for any other. `names` carries the list between a
-    /// `KeyboardLayoutsChanged` and the `KeyboardLayoutSwitched` events after it.
-    pub fn apply_niri(&self, names: &mut Vec<String>, event: &niri_ipc::Event) -> bool {
-        let idx = match event {
-            niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts } => {
-                names.clone_from(&keyboard_layouts.names);
-                keyboard_layouts.current_idx
-            }
-            niri_ipc::Event::KeyboardLayoutSwitched { idx } => *idx,
-            _ => return false,
-        };
-        self.write(names.get(idx as usize).cloned().unwrap_or_default(), u32::from(idx), names.len() as u32);
-        true
-    }
-
-    /// One `j/devices` read, on Hyprland's `activelayout` event and once at reader start.
-    pub fn read_hyprland(&self, socket_path: &Path) {
-        let reply = match hyprland_request(socket_path, "j/devices") {
-            Ok(reply) => reply,
-            Err(err) => return debug!("Hyprland `devices` request failed; layout not updated this round: {err}"),
-        };
-        let Some(keyboard) = parse_hyprland_devices(&reply) else {
-            return debug!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
-        };
-        self.apply_hyprland(keyboard);
-    }
-
-    /// One `GET_INPUTS` read, on sway's `input` events and once at reader start.
-    pub fn read_sway(&self, socket_path: &Path) {
-        let reply = match sway_request(socket_path, SWAY_GET_INPUTS, "") {
-            Ok(reply) => reply,
-            Err(err) => return debug!("sway `GET_INPUTS` request failed; layout not updated this round: {err}"),
-        };
-        match parse_sway_inputs(&reply) {
-            Some((name, index, count)) => self.write(name, index, count),
-            None => debug!("sway `GET_INPUTS` reply held no keyboard with layouts; layout not updated this round"),
-        }
-    }
-
-    fn apply_hyprland(&self, keyboard: HyprlandKeyboard) {
-        let count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;
-        self.write(keyboard.active_keymap, keyboard.active_layout_index, count);
-    }
 }
 
 pub struct NiriLink;
@@ -103,29 +58,6 @@ impl CompositorLink for NiriLink {
     }
 }
 
-/// `(active layout, index, count)` of the first sway keyboard that reports layouts; sway lists
-/// every keyboard device and gives no "typed on last" marker.
-fn parse_sway_inputs(json: &[u8]) -> Option<(String, u32, u32)> {
-    #[derive(Deserialize)]
-    struct Input {
-        #[serde(rename = "type")]
-        kind: String,
-        #[serde(default)]
-        // A layout xkb cannot name is `null` (ipc_json_describe_input).
-        xkb_layout_names: Vec<Option<String>>,
-        xkb_active_layout_name: Option<String>,
-        #[serde(default)]
-        xkb_active_layout_index: u32,
-    }
-    let inputs: Vec<Input> = serde_json::from_slice(json).ok()?;
-    let keyboard = inputs.into_iter().find(|input| input.kind == "keyboard" && !input.xkb_layout_names.is_empty())?;
-    let name = keyboard
-        .xkb_active_layout_name
-        .or_else(|| keyboard.xkb_layout_names.get(keyboard.xkb_active_layout_index as usize).cloned().flatten())
-        .unwrap_or_default();
-    Some((name, keyboard.xkb_active_layout_index, keyboard.xkb_layout_names.len() as u32))
-}
-
 /// `input type:keyboard xkb_switch_layout <index>` over sway's IPC.
 pub struct SwayLink;
 
@@ -138,40 +70,6 @@ impl CompositorLink for SwayLink {
 /// `switchxkblayout main <index>` over Hyprland's `.socket.sock`.
 pub struct HyprlandLink {
     command_path: PathBuf,
-}
-
-/// Needed fields from `j/devices`'s `keyboards` entries; comma-separated `layout` only supplies the
-/// count. `main` is Hyprland's `m_active`, reassigned on every key event, so it is the keyboard
-/// being typed on, media and power-button nodes included. That is Hyprland's own answer and is not
-/// narrowed here.
-#[derive(Debug, Clone, Deserialize)]
-struct HyprlandKeyboard {
-    active_keymap: String,
-    layout: String,
-    #[serde(default, deserialize_with = "layout_index")]
-    active_layout_index: u32,
-    #[serde(default)]
-    main: bool,
-}
-
-/// `0` for an absent, null or out-of-range `active_layout_index`. `#[serde(default)]` covers only
-/// an absent key, and `parse_hyprland_devices` drops an entry that fails to deserialize, so one bad
-/// value costs the whole layout rather than one field. Same tolerance as `workspaces::hyprland::fullscreen_mode`.
-fn layout_index<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
-    Ok(serde_json::Value::deserialize(deserializer)?.as_u64().and_then(|index| u32::try_from(index).ok()).unwrap_or(0))
-}
-
-fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
-    let root: serde_json::Value = serde_json::from_str(json).ok()?;
-    let keyboards = root.get("keyboards")?.as_array()?;
-    // `"none"`/`"error"` is what Hyprland reports for a device xkb resolved no layout for, which a
-    // `wtype` virtual keyboard is while it holds `main`. Either draws as the layout name.
-    let parsed: Vec<HyprlandKeyboard> = keyboards
-        .iter()
-        .filter_map(|keyboard| HyprlandKeyboard::deserialize(keyboard).ok())
-        .filter(|k| !matches!(k.active_keymap.as_str(), "none" | "error"))
-        .collect();
-    parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
 }
 
 impl HyprlandLink {
@@ -194,126 +92,6 @@ impl CompositorLink for HyprlandLink {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn parse_hyprland_devices_reads_the_first_keyboards_entry() {
-        let json = r#"{"mice":[],"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1}],"tablets":[]}"#;
-        let keyboard = parse_hyprland_devices(json).expect("should parse");
-        assert_eq!(keyboard.active_keymap, "Arabic (Egypt)");
-        assert_eq!(keyboard.active_layout_index, 1);
-    }
-
-    #[test]
-    fn parse_hyprland_devices_prefers_the_main_keyboard_over_array_order() {
-        // `main` moves to whichever keyboard was typed on last, so array order names the wrong one.
-        let json = r#"{"keyboards":[
-            {"active_keymap":"English (US)","layout":"us,ara","active_layout_index":0,"main":false},
-            {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}
-        ]}"#;
-        let keyboard = parse_hyprland_devices(json).expect("should parse");
-        assert_eq!(keyboard.active_layout_index, 1);
-    }
-
-    #[test]
-    fn parse_hyprland_devices_is_none_when_keyboards_is_empty() {
-        let json = r#"{"keyboards":[]}"#;
-        assert!(parse_hyprland_devices(json).is_none());
-    }
-
-    #[test]
-    fn parse_hyprland_devices_is_none_for_malformed_json() {
-        assert!(parse_hyprland_devices("not json").is_none());
-    }
-
-    #[test]
-    fn apply_hyprland_layout_counts_the_configured_layouts_and_keeps_the_reported_index() {
-        // Regression: the index was pinned to `0`, so Lua could not cycle from the reported value.
-        let json = r#"{"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}]}"#;
-        let sink = LayoutSink::default();
-        sink.apply_hyprland(parse_hyprland_devices(json).expect("should parse"));
-        let guard = sink.state.lock().unwrap();
-        assert_eq!(
-            (guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count),
-            ("Arabic (Egypt)", 1, 2)
-        );
-    }
-
-    #[test]
-    fn parse_sway_inputs_takes_the_first_keyboard_with_layouts_and_skips_other_devices() {
-        let json = br#"[
-            {"identifier":"1:1:Power_Button","name":"Power Button","type":"keyboard","xkb_layout_names":[],"xkb_active_layout_index":0},
-            {"identifier":"1133:16495:Mouse","name":"Mouse","type":"pointer","libinput":{}},
-            {"identifier":"1:1:AT","name":"AT keyboard","type":"keyboard","xkb_active_layout_name":null,
-             "xkb_layout_names":["English (US)",null],"xkb_active_layout_index":1}
-        ]"#;
-
-        assert_eq!(parse_sway_inputs(json), Some((String::new(), 1, 2)));
-        assert_eq!(parse_sway_inputs(b"[]"), None);
-        assert_eq!(parse_sway_inputs(b"not json"), None);
-    }
-
-    #[test]
-    fn parse_sway_inputs_falls_back_to_the_layout_list_when_the_active_name_is_null() {
-        let json = br#"[{"type":"keyboard","xkb_layout_names":["English (US)","Arabic (Egypt)"],
-            "xkb_active_layout_index":1,"xkb_active_layout_name":null}]"#;
-
-        assert_eq!(parse_sway_inputs(json), Some(("Arabic (Egypt)".to_string(), 1, 2)));
-    }
-
-    #[test]
-    fn a_niri_switch_names_its_layout_from_the_last_list_and_signals_once_keyboard_listens() {
-        let sink = LayoutSink::default();
-        let mut names = Vec::new();
-        let layouts: niri_ipc::KeyboardLayouts =
-            serde_json::from_value(serde_json::json!({ "names": ["English (US)", "Arabic"], "current_idx": 0 }))
-                .unwrap();
-        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts: layouts }));
-
-        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
-        sink.events.set(events).unwrap();
-        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutSwitched { idx: 1 }));
-        assert!(!sink.apply_niri(&mut names, &niri_ipc::Event::OverviewOpenedOrClosed { is_open: true }));
-
-        let guard = sink.state.lock().unwrap();
-        assert_eq!((guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count), ("Arabic", 1, 2));
-        assert_eq!(signals.try_recv(), Ok(()));
-        assert!(signals.try_recv().is_err(), "the write before `keyboard` started sent nothing");
-    }
-
-    #[test]
-    fn parse_hyprland_devices_defaults_the_index_when_hyprland_omits_it() {
-        let json = r#"{"keyboards":[{"active_keymap":"English (US)","layout":"us"}]}"#;
-        assert_eq!(parse_hyprland_devices(json).expect("should parse").active_layout_index, 0);
-    }
-
-    #[test]
-    fn a_keyboard_entry_survives_an_index_hyprland_sends_in_an_unexpected_shape() {
-        // `#[serde(default)]` covers an absent key only; a null or negative value must not fail
-        // the whole entry and leave `KeyboardState` with no layout at all.
-        for index in ["null", "-1", "1.5", "\"1\""] {
-            let json = format!(
-                r#"{{"keyboards":[{{"active_keymap":"English (US)","layout":"us,ara","active_layout_index":{index}}}]}}"#
-            );
-            let keyboard = parse_hyprland_devices(&json).unwrap_or_else(|| panic!("{index} dropped the entry"));
-            assert_eq!(keyboard.active_layout_index, 0, "{index}");
-            assert_eq!(keyboard.active_keymap, "English (US)", "{index}");
-        }
-    }
-
-    #[test]
-    fn parse_hyprland_devices_skips_a_keyboard_whose_keymap_hyprland_left_unresolved() {
-        // `wtype` registers a virtual keyboard that takes `main` for the keystrokes it injects.
-        let json = r#"{"keyboards":[
-            {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":false},
-            {"active_keymap":"none","layout":"us,ara","active_layout_index":0,"main":true}
-        ]}"#;
-        assert_eq!(parse_hyprland_devices(json).expect("should parse").active_keymap, "Arabic (Egypt)");
-
-        let json = r#"{"keyboards":[{"active_keymap":"error","layout":"us,ara","main":true}]}"#;
-        assert!(parse_hyprland_devices(json).is_none(), "the last good layout stands instead");
-    }
-
     #[test]
     fn niri_switch_layout_index_validation_accepts_the_full_u8_range() {
         assert_eq!(u8::try_from(0usize), Ok(0));

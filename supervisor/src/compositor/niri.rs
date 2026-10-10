@@ -282,6 +282,23 @@ pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
     });
 }
 
+impl LayoutSink {
+    /// Applies a niri layout event; `false` for any other. `names` carries the list between a
+    /// `KeyboardLayoutsChanged` and the `KeyboardLayoutSwitched` events after it.
+    pub fn apply_niri(&self, names: &mut Vec<String>, event: &niri_ipc::Event) -> bool {
+        let idx = match event {
+            niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts } => {
+                names.clone_from(&keyboard_layouts.names);
+                keyboard_layouts.current_idx
+            }
+            niri_ipc::Event::KeyboardLayoutSwitched { idx } => *idx,
+            _ => return false,
+        };
+        self.write(names.get(idx as usize).cloned().unwrap_or_default(), u32::from(idx), names.len() as u32);
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -491,5 +508,25 @@ mod tests {
 
         assert!(undecodable(&decode(r#"{"ScreencastStarted":{"id":1}}"#)));
         assert!(!undecodable(&decode("")), "read_line gives an empty line at socket end");
+    }
+
+    #[test]
+    fn a_niri_switch_names_its_layout_from_the_last_list_and_signals_once_keyboard_listens() {
+        let sink = LayoutSink::default();
+        let mut names = Vec::new();
+        let layouts: niri_ipc::KeyboardLayouts =
+            serde_json::from_value(serde_json::json!({ "names": ["English (US)", "Arabic"], "current_idx": 0 }))
+                .unwrap();
+        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts: layouts }));
+
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        sink.events.set(events).unwrap();
+        assert!(sink.apply_niri(&mut names, &niri_ipc::Event::KeyboardLayoutSwitched { idx: 1 }));
+        assert!(!sink.apply_niri(&mut names, &niri_ipc::Event::OverviewOpenedOrClosed { is_open: true }));
+
+        let guard = sink.state.lock().unwrap();
+        assert_eq!((guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count), ("Arabic", 1, 2));
+        assert_eq!(signals.try_recv(), Ok(()));
+        assert!(signals.try_recv().is_err(), "the write before `keyboard` started sent nothing");
     }
 }
