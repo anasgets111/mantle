@@ -330,6 +330,16 @@ pub fn closest<'a>(name: &str, candidates: impl IntoIterator<Item = &'a str>) ->
     }
 }
 
+/// The tail of a name error: "did you mean `near`?", else "expected one of `a`, `b`".
+pub fn hint(name: &str, candidates: &[&str]) -> String {
+    match closest(name, candidates.iter().copied()) {
+        Some(near) => format!("did you mean `{near}`?"),
+        None => {
+            format!("expected one of {}", candidates.iter().map(|c| format!("`{c}`")).collect::<Vec<_>>().join(", "))
+        }
+    }
+}
+
 /// Optimal string alignment distance: Levenshtein plus one-edit adjacent transpositions, the
 /// commonest typo (`contnet`).
 fn edit_distance(a: &[char], b: &[char]) -> usize {

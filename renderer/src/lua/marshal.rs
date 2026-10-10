@@ -74,24 +74,12 @@ pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String
         }
     }
     let Some(first) = unknown.into_iter().min() else { return Ok(()) };
-    let near = super::fuzzy::closest(first.trim_matches('`'), keys.iter().copied());
-    Err(match near {
-        Some(near) => format!("unknown key {first}; did you mean `{near}`?"),
-        None => {
-            let keys: Vec<String> = keys.iter().map(|key| format!("`{key}`")).collect();
-            format!("unknown key {first}; it takes {}", keys.join(", "))
-        }
-    })
+    Err(format!("unknown key {first}; {}", super::fuzzy::hint(first.trim_matches('`'), keys)))
 }
 
-/// "expected one of `a`, `b`, got {shown}", plus a "did you mean" when `got` is near a choice.
+/// "got {shown}; did you mean `c`?" or "got {shown}; expected one of `a`, `b`".
 pub(crate) fn expected_one_of(names: &[&str], got: &str, shown: &str) -> String {
-    let list: Vec<String> = names.iter().map(|name| format!("`{name}`")).collect();
-    let mut message = format!("expected one of {}, got {shown}", list.join(", "));
-    if let Some(near) = super::fuzzy::closest(got, names.iter().copied()) {
-        message.push_str(&format!("; did you mean `{near}`?"));
-    }
-    message
+    format!("got {shown}; {}", super::fuzzy::hint(got, names))
 }
 
 /// A config list's entries `1..=n` in order, ending at the first hole, which reads as `nil` so
@@ -149,7 +137,7 @@ mod tests {
     #[test]
     fn a_misspelt_choice_gets_a_suggestion_and_a_far_off_one_only_the_list() {
         let near = expected_one_of(&["start", "center", "stretch"], "cenetr", "\"cenetr\"");
-        assert_eq!(near, "expected one of `start`, `center`, `stretch`, got \"cenetr\"; did you mean `center`?");
+        assert_eq!(near, "got \"cenetr\"; did you mean `center`?");
         assert!(!expected_one_of(&["start", "center"], "zzzzzz", "\"zzzzzz\"").contains("did you mean"));
     }
 
@@ -160,11 +148,14 @@ mod tests {
         assert_eq!(only_keys(&table, &["top", "bottom"]).unwrap_err(), "unknown key `bottum`; did you mean `bottom`?");
         assert_eq!(only_keys(&table, &["top", "topp", "bottum"]), Ok(()));
         let far: mlua::Table = lua.load("return { zzzzzz = 1 }").eval().unwrap();
-        assert_eq!(only_keys(&far, &["top", "bottom"]).unwrap_err(), "unknown key `zzzzzz`; it takes `top`, `bottom`");
+        assert_eq!(
+            only_keys(&far, &["top", "bottom"]).unwrap_err(),
+            "unknown key `zzzzzz`; expected one of `top`, `bottom`"
+        );
         let other: mlua::Table = lua.load("return { [1] = true }").eval().unwrap();
-        assert_eq!(only_keys(&other, &["top"]).unwrap_err(), "unknown key `1`; it takes `top`");
+        assert_eq!(only_keys(&other, &["top"]).unwrap_err(), "unknown key `1`; expected one of `top`");
         let boolean: mlua::Table = lua.load("return { [true] = 1 }").eval().unwrap();
-        assert_eq!(only_keys(&boolean, &["top"]).unwrap_err(), "unknown key of type boolean; it takes `top`");
+        assert_eq!(only_keys(&boolean, &["top"]).unwrap_err(), "unknown key of type boolean; expected one of `top`");
     }
 
     #[test]

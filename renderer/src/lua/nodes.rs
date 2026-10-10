@@ -7,7 +7,6 @@
 
 use mlua::{Lua, Table, Value};
 
-use super::fuzzy::closest;
 use crate::layout::node::PropMap;
 use crate::lua::location::Site;
 
@@ -155,10 +154,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
                 other => other.to_string()?,
             };
             let accepted = accepted_properties(kind);
-            let hint = match closest(&property, accepted.iter().copied()) {
-                Some(near) => format!("did you mean `{near}`?"),
-                None => format!("it accepts {}", accepted.join(", ")),
-            };
+            let hint = super::fuzzy::hint(&property, &accepted);
             return Err(DeserializeError::UnknownProperty { kind: kind.to_string(), property, hint });
         };
         properties.insert(name, value);
@@ -320,7 +316,7 @@ mod tests {
             "`text` has no property `contnet`; did you mean `content`?"
         );
         let far = unknown(r#"return text { zzz = 1 }"#);
-        assert!(far.starts_with("`text` has no property `zzz`; it accepts "), "{far}");
+        assert!(far.starts_with("`text` has no property `zzz`; expected one of `"), "{far}");
         assert!(far.contains("content"), "{far}");
     }
 

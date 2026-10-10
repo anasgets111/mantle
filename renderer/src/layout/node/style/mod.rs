@@ -1200,7 +1200,7 @@ mod tests {
     #[test]
     fn an_unknown_clip_shape_is_rejected_naming_both() {
         let lua = mlua::Lua::new();
-        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "Rounded" }"#).eval().unwrap();
+        let table: mlua::Table = lua.load(r#"return { kind = "rect", clip = "oval" }"#).eval().unwrap();
         let props = deserialize_lua_table(&table).unwrap().properties;
         let err = fields::paint::clip.read(&props).unwrap_err();
         assert!(

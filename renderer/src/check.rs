@@ -374,10 +374,7 @@ mod tests {
                     "shell.lua",
                     "return panel { id = \"p\", layer = \"top\", child = row { align_h = \"cenetr\" } }\n",
                 )],
-                &[
-                    "row[0] (shell.lua:1)",
-                    "expected one of `start`, `center`, `end`, `stretch`, got string \"cenetr\"; did you mean `center`?",
-                ],
+                &["row[0] (shell.lua:1)", "got string \"cenetr\"; did you mean `center`?"],
             ),
             (
                 "enum far off",
@@ -387,7 +384,7 @@ mod tests {
                 )],
                 &[
                     "row[0] (shell.lua:1)",
-                    "expected one of `start`, `center`, `end`, `stretch`, got string \"qqqqqqqq\"",
+                    "got string \"qqqqqqqq\"; expected one of `start`, `center`, `end`, `stretch`",
                 ],
             ),
             (
@@ -398,7 +395,7 @@ mod tests {
             (
                 "nested key that is not a string",
                 &[("shell.lua", "return panel { id = \"p\", layer = \"top\", anchor = { [1] = true } }\n")],
-                &["unknown key `1`; it takes `top`"],
+                &["unknown key `1`; expected one of `top`"],
             ),
             (
                 "duplicate id",
