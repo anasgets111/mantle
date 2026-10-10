@@ -125,6 +125,9 @@ They are embedded in the renderer, never checked in or touched by `just stubs`.
 - Never hardcode `/sys` or `/proc`: readers take `sys_root`/`proc_root`; tests pass a tempdir.
 - D-Bus tests use `p2p_pair()` from `supervisor/src/capabilities/test_support.rs`, or `private_bus()`
   there when they need `NameOwnerChanged`; never the session or system bus.
+- `unwrap()` is a clippy error outside tests (`unwrap_used`); production code uses `let .. else`, `?`,
+  or `expect` naming the invariant. Tests wait by polling inside a bound (`within` in `test_support`),
+  never by a fixed sleep.
 - Docs Lua blocks run per their fence tags; `lua,shot` blocks must match their images in
   `docs/images/`. Rules: `docs/development/documenting.md`.
 
