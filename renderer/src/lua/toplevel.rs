@@ -201,10 +201,9 @@ impl FromLua for Flag {
     fn from_lua(value: Value, _: &Lua) -> mlua::Result<Self> {
         match value {
             Value::Boolean(on) => Ok(Self(on)),
-            other => Err(mlua::Error::runtime(format!(
-                "argument must be a boolean, got {}",
-                crate::layout::node::preview_for_error(&other)
-            ))),
+            other => {
+                Err(mlua::Error::FromLuaConversionError { from: other.type_name(), to: "bool".into(), message: None })
+            }
         }
     }
 }
@@ -406,6 +405,8 @@ mod tests {
             assert!(lua.load(format!("frame:set_maximized({flag})")).exec().is_err(), "{flag}");
             assert!(lua.load(format!("frame:set_fullscreen({flag})")).exec().is_err(), "{flag}");
         }
+        let err = lua.load("frame:set_maximized(1)").exec().unwrap_err().to_string();
+        assert!(err.contains("method set_maximized: bad argument #1: expected a boolean, got integer"), "{err}");
         assert!(lua.load("toplevel('')").exec().is_err());
         assert!(end_press(&lua).is_empty());
     }

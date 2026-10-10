@@ -415,6 +415,42 @@ mod tests {
                 &["shell.lua:2: signal:reveal(): index must be 1 or more, got integer 0"],
             ),
             (
+                "signal method argument of the wrong type",
+                &[("shell.lua", "\nscroll(\"s\"):reveal(\"x\")\nreturn {}\n")],
+                &["shell.lua:2: method reveal: bad argument #1: expected an integer, got string"],
+            ),
+            (
+                "idle method argument of the wrong type",
+                &[(
+                    "shell.lua",
+                    "\nmantle.idle:register_threshold(\"x\", function() end, function() end)\nreturn {}\n",
+                )],
+                &["shell.lua:2: method register_threshold: bad argument #1: expected an integer, got string"],
+            ),
+            (
+                "a caught method raise keeps the caller's line",
+                &[(
+                    "shell.lua",
+                    "local sig = scroll(\"s\")\nlocal ok, msg = pcall(function()\n  sig:reveal(0)\nend)\nlocal ok2, msg2 = pcall(function()\n  sig:reveal(\"x\")\nend)\nlocal _, msg3 = pcall(function()\n  sig:reveal()\nend)\nif not tostring(msg):find(\"shell.lua:3: signal:reveal\", 1, true) or not tostring(msg2):find(\"shell.lua:6: method reveal\", 1, true) or not tostring(msg3):find(\"shell.lua:9: method reveal: bad argument #1: expected an integer, got nil\", 1, true) then error(\"unlocated: \" .. tostring(msg) .. tostring(msg2)) end\nerror(msg, 0)\n",
+                )],
+                &["shell.lua:3: signal:reveal(): index must be 1 or more, got integer 0"],
+            ),
+            (
+                "a map argument of the wrong type",
+                &[("shell.lua", "\nstate(\"s\", 1):map(5)\nreturn {}\n")],
+                &["shell.lua:2: method map: bad argument #1: expected a function, got integer"],
+            ),
+            (
+                "idle inhibit argument of the wrong type",
+                &[("shell.lua", "\nmantle.idle:inhibit({})\nreturn {}\n")],
+                &["shell.lua:2: method inhibit: bad argument #1: expected a string, got table"],
+            ),
+            (
+                "idle cancel_threshold argument of the wrong type",
+                &[("shell.lua", "\nmantle.idle:cancel_threshold(\"x\")\nreturn {}\n")],
+                &["shell.lua:2: method cancel_threshold: bad argument #1: expected an integer, got string"],
+            ),
+            (
                 "idle threshold out of range",
                 &[("shell.lua", "\nmantle.idle:register_threshold(0, function() end, function() end)\nreturn {}\n")],
                 &["shell.lua:2: mantle.idle:register_threshold: seconds"],
@@ -550,7 +586,9 @@ mod tests {
                 assert!(err.contains(want), "{name}: missing {want:?} in:\n{err}");
             }
             assert_eq!(err.matches(&dir_name).count(), 1, "{name}: the config dir is named once:\n{err}");
-            for rust_form in ["String(", "Integer(", "usize", "f64", "C modules", "..="] {
+            for rust_form in
+                ["String(", "Integer(", "usize", "f64", "i64", "i32", "u32", "u64", "converting", "C modules", "..="]
+            {
                 assert!(!err.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
             }
         }

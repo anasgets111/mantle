@@ -160,15 +160,12 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 
 #[cfg(test)]
 mod tests {
+    /// serde lists every variant in its unknown-variant error, so a new one fails here unprompted.
     #[test]
     fn signal_names_match_the_wire_enum() {
-        use shared::action::SignalName::*;
-        for name in super::SIGNALS {
-            // Exhaustive, so a new variant fails to compile until SIGNALS lists it.
-            match serde_json::from_value(serde_json::Value::from(*name)).expect(name) {
-                Term | Int | Hup | Quit | Usr1 | Usr2 | Kill | Stop | Cont => {}
-            }
-        }
-        assert_eq!(super::SIGNALS.len(), 9);
+        let err = serde_json::from_str::<shared::action::SignalName>("\"?\"").unwrap_err().to_string();
+        let listed = err.split("expected one of ").nth(1).expect(&err);
+        assert!(super::SIGNALS.iter().all(|name| listed.contains(&format!("`{name}`"))), "{err}");
+        assert_eq!(listed.matches('`').count(), super::SIGNALS.len() * 2, "{err}");
     }
 }

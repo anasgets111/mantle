@@ -7,10 +7,9 @@ use std::marker::PhantomData;
 
 use mlua::{AnyUserData, FromLua, Function, IntoLua, Lua, LuaString, Table, Value, Variadic};
 
-/// What a function's argument errors name: its path and its parameters, for [`Args`].
-pub(crate) trait ArgNames {
-    const FUNCTION: &'static str;
-    const NAMES: &'static [&'static str];
+/// How [`Args`] words a failed conversion; only a failure calls it.
+pub(crate) trait Reword {
+    fn reword(to: Option<&str>, err: mlua::Error) -> mlua::Error;
 }
 
 /// A function's typed arguments. Converting is mlua's own stack path, so a call costs nothing
@@ -19,7 +18,7 @@ pub(crate) trait ArgNames {
 /// held in `.0` for the body to raise, as mlua gives no `&Lua` to locate it with here.
 pub(crate) struct Args<T, N>(pub mlua::Result<T>, pub PhantomData<N>);
 
-impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
+impl<T: mlua::FromLuaMulti, N: Reword> mlua::FromLuaMulti for Args<T, N> {
     fn from_lua_multi(values: mlua::MultiValue, lua: &Lua) -> mlua::Result<Self> {
         Ok(Self(T::from_lua_multi(values, lua), PhantomData))
     }
@@ -37,17 +36,32 @@ impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
     ) -> mlua::Result<Self> {
         // SAFETY: mlua's own arguments, forwarded unchanged.
         let args = unsafe { T::from_stack_args(nargs, index, to, lua) };
-        Ok(Self(args.map_err(|err| bad_argument(N::FUNCTION, N::NAMES, err)), PhantomData))
+        Ok(Self(args.map_err(|err| N::reword(to, err)), PhantomData))
     }
 }
 
-fn bad_argument(function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
+/// A userdata method's arguments, numbered without `self`.
+pub(crate) struct OnMethod;
+pub(crate) type Method<T> = Args<T, OnMethod>;
+
+impl Reword for OnMethod {
+    fn reword(to: Option<&str>, err: mlua::Error) -> mlua::Error {
+        // `to` is mlua's `Class.method`; the Rust class is not a name a config author writes.
+        let method = to.and_then(|to| to.split_once('.')).map_or("", |(_, method)| method);
+        bad_argument(&format!("method {method}"), &[], 2, err)
+    }
+}
+
+/// `first` is the position mlua counts the first argument at: 1 for a function, 2 after a method's `self`.
+pub(crate) fn bad_argument(function: &str, names: &[&str], first: usize, err: mlua::Error) -> mlua::Error {
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
     let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };
-    let name = names.get(pos - 1).map(|name| format!(" ({name})")).unwrap_or_default();
+    let pos = (pos + 1).saturating_sub(first);
+    let name = names.get(pos.saturating_sub(1)).map(|name| format!(" ({name})")).unwrap_or_default();
     let want = rust_type_in_lua(to);
-    // mlua's own cause, such as `out of range`, says why a right-typed value was refused.
-    let cause = message.as_ref().map(|message| format!(" ({message})")).unwrap_or_default();
+    // mlua's own cause, such as `out of range`, says why a right-typed value was refused; its
+    // `expected number or string coercible to number` only repeats `want`.
+    let cause = message.iter().filter(|m| !m.starts_with("expected ")).map(|m| format!(" ({m})")).collect::<String>();
     mlua::Error::runtime(format!("{function}: bad argument #{pos}{name}: expected {want}, got {from}{cause}"))
 }
 
@@ -465,9 +479,10 @@ macro_rules! lua_fn {
     (@value $lua:expr; $path:expr; (body $l:ident; $out:ty; $body:block); $($name:ident: $ty:ty),*) => {
         {
             struct Names;
-            impl $crate::lua::luacats::ArgNames for Names {
-                const FUNCTION: &'static str = $path;
-                const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
+            impl $crate::lua::luacats::Reword for Names {
+                fn reword(_: Option<&str>, err: mlua::Error) -> mlua::Error {
+                    $crate::lua::luacats::bad_argument($path, &[$(stringify!($name)),*], 1, err)
+                }
             }
             $lua.create_function(move |$l, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Args<($($ty,)*), Names>|
                     -> mlua::Result<$out> {
@@ -525,7 +540,9 @@ macro_rules! lua_class {
     }) => {
         impl mlua::UserData for $class {
             fn add_methods<M: mlua::UserDataMethods<Self>>(methods: &mut M) {
-                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, ($($param,)*): ($($param_ty,)*)| -> mlua::Result<$crate::lua::luacats::lua_class!(@ret $($ret)?)> { $body });)*
+                $(methods.add_method($crate::lua::luacats::unraw(stringify!($method)), |$l, $this, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Method<($($param_ty,)*)>| -> mlua::Result<$crate::lua::luacats::lua_class!(@ret $($ret)?)> {
+                    $crate::lua::location::locate($l, args, |($($param,)*)| $body)
+                });)*
             }
         }
 
@@ -748,7 +765,7 @@ mod tests {
     fn refused(from: &'static str, to: &str, message: Option<&str>) -> String {
         let cause = mlua::Error::FromLuaConversionError { from, to: to.into(), message: message.map(Into::into) };
         let err = mlua::Error::BadArgument { to: None, pos: 1, name: None, cause: Arc::new(cause) };
-        bad_argument("f", &["x"], err).to_string()
+        bad_argument("f", &["x"], 1, err).to_string()
     }
 
     #[test]

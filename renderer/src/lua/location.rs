@@ -112,6 +112,15 @@ pub(crate) fn located(lua: &Lua, err: mlua::Error) -> mlua::Error {
     }
 }
 
+/// Runs a method's `body` on its converted `args`, either failure led by the calling config line.
+pub(crate) fn locate<T, R>(
+    lua: &Lua,
+    args: mlua::Result<T>,
+    body: impl FnOnce(T) -> mlua::Result<R>,
+) -> mlua::Result<R> {
+    args.and_then(body).map_err(|err| located(lua, err))
+}
+
 /// Logs a config callback's raise as `{what} raised, ignoring it: ... (defined at file:N)`; `Ok` is
 /// silent. A callback nothing waits on must not take the turn with it.
 pub(crate) fn warn_raised(handler: &mlua::Function, outcome: mlua::Result<()>, what: impl std::fmt::Display) {

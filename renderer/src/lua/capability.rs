@@ -19,7 +19,8 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::layout::node::preview_for_error;
 use crate::lua::fuzzy::{closest, hint};
-use crate::lua::luacats::rust_type_in_lua;
+use crate::lua::location::locate;
+use crate::lua::luacats::{Args, Method, rust_type_in_lua};
 use crate::lua::marshal::number_word;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
@@ -205,12 +206,16 @@ impl UserData for Capability {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Delegate `get`/`map` so capabilities read like bare `Signal` globals.
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
-        methods.add_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
+        methods.add_function("map", |lua, Args(args, _): Method<(mlua::AnyUserData, Function)>| {
+            locate(lua, args, |(ud, f)| Signal::mapped(lua, ud, f))
+        });
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,
         // with new and old payloads, and input-callback powers (actions, `process.run`, state).
-        methods.add_method("on_change", |_, this, f: Function| {
-            this.handlers.borrow_mut().push(f);
-            Ok(())
+        methods.add_method("on_change", |lua, this, Args(args, _): Method<(Function,)>| {
+            locate(lua, args, |(f,)| {
+                this.handlers.borrow_mut().push(f);
+                Ok(())
+            })
         });
         // Each action is a method (ADR-0264). mlua looks up `get`/`map`/`on_change` before
         // `__index`; `every_roster_action_is_a_method_no_builtin_shadows` keeps names clear of them.
