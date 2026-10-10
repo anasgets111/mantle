@@ -17,6 +17,7 @@ use mlua::{Function, Lua, LuaSerdeExt, MetaMethod, MultiValue, UserData, UserDat
 use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::layout::node::preview_for_error;
 use crate::lua::fuzzy::closest;
 use crate::lua::luacats::{raise, rust_type_in_lua};
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
@@ -251,10 +252,11 @@ impl Capability {
                 self.name
             )));
         }
-        let mut arguments = Vec::with_capacity(args.len());
-        for (index, value) in args.into_iter().enumerate() {
+        let values: Vec<Value> = args.into_iter().collect();
+        let mut arguments = Vec::with_capacity(values.len());
+        for (index, value) in values.iter().enumerate() {
             // A function or userdata has no JSON form, so only here can the error name its slot.
-            let json = lua.from_value::<serde_json::Value>(value).map_err(|err| {
+            let json = lua.from_value::<serde_json::Value>(value.clone()).map_err(|err| {
                 mlua::Error::runtime(format!(
                     "mantle.{}:{action} could not marshal argument {}: {err}",
                     self.name,
@@ -265,37 +267,43 @@ impl Capability {
         }
         // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
-        shared::action::check(roster, action, &arguments).map_err(|err| {
-            raise(lua, format!("mantle.{}:{action}: {}", self.name, in_lua_words(&err, arguments.len())))
+        shared::action::check(roster, action, &arguments).map_err(|(slot, err)| {
+            let words = in_lua_words(&err, slot.and_then(|slot| Some((slot + 1, values.get(slot)?))));
+            raise(lua, format!("mantle.{}:{action}: {words}", self.name))
         })?;
         self.commands.send(&self.name, action, arguments);
         Ok(())
     }
 }
 
-/// serde's `invalid type: string "x", expected usize` as `argument 1 expects a non-negative
-/// integer, got string "x"`. serde reports no position, so only a one-argument call names one.
-// ponytail: only the type and value mismatches are reworded; any other serde message passes through.
-fn in_lua_words(err: &serde_json::Error, argc: usize) -> String {
+/// serde's `invalid type: string "x", expected usize` for argument 1 as `bad argument #1: expected
+/// a non-negative integer, got string "x"`, with the Lua value as sent; `invalid value` (right type,
+/// out of range) says so. A wrong count reads `expects 1 argument, got 2`.
+// ponytail: only these three serde messages are reworded; any other passes through, after the slot.
+fn in_lua_words(err: &serde_json::Error, arg: Option<(usize, &Value)>) -> String {
     let text = err.to_string();
-    let Some((got, want)) = text
-        .strip_prefix("invalid type: ")
-        .or_else(|| text.strip_prefix("invalid value: "))
-        .and_then(|rest| rest.split_once(", expected "))
-    else {
-        return text;
-    };
-    let got = match got.split_once(" `") {
-        Some(("floating point", n)) => format!("number {}", n.trim_end_matches('`')),
-        Some((kind, n)) => format!("{kind} {}", n.trim_end_matches('`')),
-        None => match got {
-            "null" | "unit value" => "nil".into(),
-            "map" | "sequence" => "table".into(),
-            other => other.into(),
-        },
-    };
-    let which = if argc == 1 { "argument 1" } else { "an argument" };
-    format!("{which} expects {}, got {got}", rust_type_in_lua(want))
+    if let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.split_once(", expected ")) {
+        // `no arguments`, `1 elements`, or `struct X::y with 2 elements`.
+        let words: Vec<&str> = want.split_whitespace().collect();
+        let count = if words.first() == Some(&"no") {
+            Some("0")
+        } else {
+            words.windows(2).find(|pair| pair[1].starts_with("element")).map(|pair| pair[0])
+        };
+        return match count {
+            Some(n) => format!("expects {n} argument{}, got {got}", if n == "1" { "" } else { "s" }),
+            None => text,
+        };
+    }
+    let Some((slot, value)) = arg else { return text };
+    let mismatch = text.strip_prefix("invalid type: ").map(|rest| (rest, ""));
+    let range = text.strip_prefix("invalid value: ").map(|rest| (rest, " (out of range)"));
+    match mismatch.or(range).and_then(|(rest, note)| Some((rest.split_once(", expected ")?.1, note))) {
+        Some((want, note)) => {
+            format!("bad argument #{slot}: expected {}, got {}{note}", rust_type_in_lua(want), preview_for_error(value))
+        }
+        None => format!("bad argument #{slot}: {text}"),
+    }
 }
 
 #[cfg(test)]
@@ -380,7 +388,7 @@ pub(crate) mod tests {
 
         let err = lua.load(r#"lock:set_unlock_animation("fast")"#).exec().unwrap_err();
 
-        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: argument 1 expects"#), "{err}");
+        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: bad argument #1: expected"#), "{err}");
         assert!(err.to_string().contains(r#"got string "fast""#), "{err}");
         assert!(queued_command(&mut rx).is_none(), "a refused argument must not reach the Supervisor");
     }
@@ -399,12 +407,29 @@ pub(crate) mod tests {
             let first = first.lines().next().unwrap().to_string();
             assert!(
                 first.starts_with(
-                    "shell.lua:3: mantle.keyboard:switch_layout: argument 1 expects a non-negative integer"
+                    "shell.lua:3: mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer"
                 ),
                 "{first}"
             );
-            assert!(first.ends_with(got), "{first}");
+            assert!(first.contains(got), "{first}");
         }
+    }
+
+    #[test]
+    fn an_action_error_names_the_slot_the_count_and_a_range_miss() {
+        let (lua, _handle, mut rx) = lua_with_capability(0);
+        for (call, want) in [
+            ("set_app_volume(7, 'x')", "bad argument #2: expected a number, got string \"x\""),
+            ("set_volume(1, 2)", "expects 1 argument, got 2"),
+            (
+                "set_default_sink(4294967296)",
+                "bad argument #1: expected a non-negative integer, got integer 4294967296 (out of range)",
+            ),
+        ] {
+            let err = lua.load(format!("mantle.probe:{call}")).exec().unwrap_err();
+            assert!(err.to_string().contains(want), "{call}: {err}");
+        }
+        assert!(rx.try_recv().is_err(), "a refused argument must not queue a command");
     }
 
     #[test]
@@ -471,7 +496,7 @@ pub(crate) mod tests {
                         assert_eq!(sent.params.action, *action, "mantle.{capability}:{action} is shadowed");
                     }
                     Err(err) => assert!(
-                        err.to_string().contains(&format!("mantle.{capability}:{action}: invalid length 0")),
+                        err.to_string().contains(&format!("mantle.{capability}:{action}: expects ")),
                         "mantle.{capability}:{action} is shadowed: {err}"
                     ),
                 }

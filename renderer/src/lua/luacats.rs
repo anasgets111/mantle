@@ -54,9 +54,18 @@ impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
 
 fn bad_argument(lua: &Lua, function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
-    let mlua::Error::FromLuaConversionError { from, to, .. } = &**cause else { return err };
+    let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };
     let name = names.get(pos - 1).map(|name| format!(" ({name})")).unwrap_or_default();
-    raise(lua, format!("{function}: bad argument #{pos}{name}: expected {}, got {from}", rust_type_in_lua(to)))
+    // A lowercase word is already Lua's; anything else is a Rust path or generic, said as no type.
+    let want = match rust_type_in_lua(to) {
+        word if word.bytes().all(|b| b.is_ascii_lowercase()) || word.starts_with("a ") || word.starts_with("an ") => {
+            word
+        }
+        _ => "a valid value",
+    };
+    // mlua's own cause, such as `out of range`, says why a right-typed value was refused.
+    let cause = message.as_ref().map(|message| format!(" ({message})")).unwrap_or_default();
+    raise(lua, format!("{function}: bad argument #{pos}{name}: expected {want}, got {from}{cause}"))
 }
 
 /// A Rust type name as an article and a Lua noun; an unknown type keeps its own name.
@@ -733,5 +742,30 @@ pub(crate) fn class(out: &mut Vec<String>, name: &str, doc: &str, fields: &str, 
     }
     if !out.contains(&class) {
         out.push(class);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[allow(clippy::arc_with_non_send_sync)] // mlua's `BadArgument` demands an `Arc`.
+    fn refused(from: &'static str, to: &str, message: Option<&str>) -> String {
+        let cause = mlua::Error::FromLuaConversionError { from, to: to.into(), message: message.map(Into::into) };
+        let err = mlua::Error::BadArgument { to: None, pos: 1, name: None, cause: Arc::new(cause) };
+        bad_argument(&Lua::new(), "f", &["x"], err).to_string()
+    }
+
+    #[test]
+    fn a_refused_conversion_keeps_mlua_s_cause_and_never_prints_a_rust_path() {
+        assert!(
+            refused("integer", "u8", Some("out of range"))
+                .ends_with("(x): expected a non-negative integer, got integer (out of range)")
+        );
+        assert!(
+            refused("table", "alloc::vec::Vec<mantle::Thing>", None).ends_with("expected a valid value, got table")
+        );
     }
 }

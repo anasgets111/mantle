@@ -65,7 +65,7 @@ still exists.
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
 | Any other method but `get`, `map` and `on_change` on `appearance`, `battery`, `privacy` or `system` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
-| Wrong type or argument count | Raises at the call: `mantle.audio:set_volume: argument 1 expects a number, got string "loud"` |
+| Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #1: expected a number, got string "loud"`, or `mantle.audio:set_volume: expects 1 argument, got 2` |
 | A value the type rules out | Raises at the call: an empty name, a relative `files:watch` path, a negative `hold_expiry` |
 | A float where an `integer` goes | Raises: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
 | Arguments to an action that takes none | Raises: `mantle.network:scan(1)` is refused |
@@ -174,7 +174,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | `attempt to index a nil value` in a `:map` at startup | Guard the whole payload before its fields |
 | An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (`audio.volume` with no default sink) |
 | `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for refused commands |
-| An action raises `argument 1 expects ...` or `invalid length` | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`) |
+| An action raises `bad argument #N: expected ...` or `expects N arguments, got M` | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`) |
 | An action silently does nothing | Its target is stale or unknown to the Supervisor, such as a closed window's ID. Check `mantle log` |
 | `on_change` fires at startup with `previous == nil` | That push is learned state, not a change; return early. A replacement Renderer gets every snapshot replayed the same way. An in-place reload keeps the last value, so its next push has a real `previous` |
 | `on_change` fires with nothing visibly changed | Every push carries the whole snapshot. Compare the fields you care about |

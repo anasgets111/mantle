@@ -448,7 +448,19 @@ mod tests {
                 "bad action parameter",
                 &[("shell.lua", "\nmantle.keyboard:switch_layout(\"x\")\nreturn {}\n")],
                 &[
-                    "shell.lua:2: mantle.keyboard:switch_layout: argument 1 expects a non-negative integer, got string \"x\"",
+                    "shell.lua:2: mantle.keyboard:switch_layout: bad argument #1: expected a non-negative integer, got string \"x\"",
+                ],
+            ),
+            (
+                "action with a wrong argument count",
+                &[("shell.lua", "\nmantle.audio:set_volume(1, 2)\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: expects 1 argument, got 2"],
+            ),
+            (
+                "action value out of range",
+                &[("shell.lua", "\nmantle.audio:set_default_sink(4294967296)\nreturn {}\n")],
+                &[
+                    "shell.lua:2: mantle.audio:set_default_sink: bad argument #1: expected a non-negative integer, got integer 4294967296 (out of range)",
                 ],
             ),
             // quoted in docs/guide/agents.md

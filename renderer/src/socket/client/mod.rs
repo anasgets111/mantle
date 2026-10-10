@@ -1465,7 +1465,7 @@ mod tests {
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("mantle.processes:declare: unknown variant `TEM`"), "got {err}");
+        assert!(err.contains("mantle.processes:declare: bad argument #2: unknown variant `TEM`"), "got {err}");
         assert!(
             crate::lua::capability::tests::queued_command(&mut outbound_rx).is_none(),
             "the invalid declaration must not reach the Supervisor"
