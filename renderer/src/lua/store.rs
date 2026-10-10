@@ -185,14 +185,14 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_path_is_refused_at_the_call_rather_than_on_the_wire() {
-        let err = join(".config/bar", "settings.json").unwrap_err().to_string();
-        assert!(err.contains("must be absolute"), "the message has to say what to fix: {err}");
-    }
-
-    #[test]
-    fn a_name_carrying_a_separator_is_refused() {
-        assert!(join("/home/u", "nested/settings.json").is_err());
-        assert!(join("/home/u", "").is_err());
+    fn a_relative_path_or_a_non_file_name_is_refused_at_the_call_rather_than_on_the_wire() {
+        for (path, name, needle) in [
+            (".config/bar", "settings.json", "must be absolute"),
+            ("/home/u", "nested/settings.json", "name must be one file name"),
+            ("/home/u", "", "name must be one file name"),
+        ] {
+            let err = join(path, name).unwrap_err().to_string();
+            assert!(err.contains(needle), "{path:?} {name:?}: the message has to say what to fix: {err}");
+        }
     }
 }

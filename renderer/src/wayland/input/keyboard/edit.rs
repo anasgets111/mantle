@@ -420,10 +420,8 @@ mod tests {
         assert!(history.restore(&mut text, &mut selection, false));
         assert_eq!(text, "small");
         assert!(history.undo.is_empty() && history.redo.is_empty());
-    }
 
-    #[test]
-    fn trim_keeps_100_entries_and_drops_the_oldest_undo_first() {
+        // `trim` keeps 100 entries across both stacks and drops the oldest undo entries first.
         let entry = |tag: &str, n: usize| (format!("{tag}{n}"), (0, 0));
         let mut history = EditHistory {
             undo: (0..60).map(|n| entry("u", n)).collect(),
@@ -533,35 +531,52 @@ mod tests {
         edit_plain_buffer(buffer, &mut selection, action, false, Escape::Clear, cancels)
     }
 
-    #[test]
-    fn escape_on_a_plain_field_without_on_cancel_clears_and_keeps_the_focus() {
-        let mut buffer = "on my wa".to_string();
-        let edit = edit_at_end(&mut buffer, KeyAction::Clear, false);
-        assert_eq!(edit, PlainEdit { changed: true, submitted: false, cancelled: false, passed: false, moved: false });
-        assert!(buffer.is_empty());
-    }
-
-    #[test]
-    fn escape_on_a_plain_field_with_on_cancel_clears_and_gives_the_field_up() {
-        let mut buffer = "on my wa".to_string();
-        let edit = edit_at_end(&mut buffer, KeyAction::Clear, true);
-        assert_eq!(edit, PlainEdit { changed: true, submitted: false, cancelled: true, passed: false, moved: false });
-        assert!(buffer.is_empty());
-    }
-
     /// An empty field has nothing for `on_change` to report, but Escape is still a cancel: the
-    /// field was open and the user asked to leave it.
+    /// field was open and the user asked to leave it. Typing and submitting never cancel.
     #[test]
-    fn escape_on_an_empty_field_cancels_without_reporting_a_change() {
-        let mut buffer = String::new();
-        let edit = edit_at_end(&mut buffer, KeyAction::Clear, true);
-        assert_eq!(edit, PlainEdit { changed: false, submitted: false, cancelled: true, passed: false, moved: false });
-        let edit = edit_at_end(&mut buffer, KeyAction::Clear, false);
-        assert_eq!(
-            edit,
-            PlainEdit { changed: false, submitted: false, cancelled: false, passed: false, moved: false },
-            "nothing at all to do"
-        );
+    fn a_plain_field_reports_what_each_key_did() {
+        let edit =
+            |changed, submitted, cancelled| PlainEdit { changed, submitted, cancelled, passed: false, moved: false };
+        for (before, action, cancels, expected, after, case) in [
+            (
+                "on my wa",
+                KeyAction::Clear,
+                false,
+                edit(true, false, false),
+                "",
+                "Escape without on_cancel clears and keeps the focus",
+            ),
+            (
+                "on my wa",
+                KeyAction::Clear,
+                true,
+                edit(true, false, true),
+                "",
+                "Escape with on_cancel clears and gives the field up",
+            ),
+            (
+                "",
+                KeyAction::Clear,
+                true,
+                edit(false, false, true),
+                "",
+                "Escape on an empty field cancels without a change",
+            ),
+            ("", KeyAction::Clear, false, edit(false, false, false), "", "nothing at all to do"),
+            ("", KeyAction::Append("a"), true, edit(true, false, false), "a", "typing never cancels"),
+            (
+                "a",
+                KeyAction::Submit,
+                true,
+                edit(true, true, false),
+                "a",
+                "submitting never cancels; the caller empties the buffer",
+            ),
+        ] {
+            let mut buffer = before.to_string();
+            assert_eq!(edit_at_end(&mut buffer, action, cancels), expected, "{case}");
+            assert_eq!(buffer, after, "{case}");
+        }
     }
 
     /// One Backspace removes one character as the user sees it, whatever it is made of: a base
@@ -805,19 +820,5 @@ mod tests {
         let (text, edit) = run(Escape::Pass, true);
         assert_eq!((text.as_str(), edit.changed, edit.cancelled, edit.passed), ("draft", false, false, true));
         assert!(!field_took(KeyAction::Clear, &edit), "the key goes up to on_key");
-    }
-
-    #[test]
-    fn typing_and_submitting_a_plain_field_never_cancel() {
-        let mut buffer = String::new();
-        assert_eq!(
-            edit_at_end(&mut buffer, KeyAction::Append("a"), true),
-            PlainEdit { changed: true, submitted: false, cancelled: false, passed: false, moved: false }
-        );
-        assert_eq!(
-            edit_at_end(&mut buffer, KeyAction::Submit, true),
-            PlainEdit { changed: true, submitted: true, cancelled: false, passed: false, moved: false }
-        );
-        assert_eq!(buffer, "a", "the caller empties the buffer after the submit, not this");
     }
 }

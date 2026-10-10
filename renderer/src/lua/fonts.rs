@@ -99,23 +99,22 @@ mod tests {
         );
     }
 
-    /// Review found that `sequence_values` stops at the first `nil`: `{ [1] = "A", [3] = "C" }`
-    /// recorded `["A"]` and silently shortened the fallback chain.
+    /// `sequence_values` stops at the first `nil`, so `{ [1] = "A", [3] = "C" }` once recorded
+    /// `["A"]` and shortened the fallback chain. The key walk catches named keys, which are not
+    /// array entries. mlua's `FromLua<String>` coerces numbers, so `12` once became family `"12"`.
     #[test]
-    fn a_hole_in_the_chain_is_refused_rather_than_truncating_it() {
-        let lua = lua_with_fonts();
-        let err = lua.load(r#"local t = {} t[1] = "A" t[3] = "C" fonts(t)"#).exec().unwrap_err().to_string();
-        assert!(err.contains("entry 2"), "the message must name the gap: {err}");
-        assert!(declared_chain(&lua).is_empty(), "a refused call records nothing");
-    }
-
-    /// The key walk catches named keys, which are not array entries and would silently drop a
-    /// declared family.
-    #[test]
-    fn a_table_with_named_keys_is_not_a_chain() {
-        let lua = lua_with_fonts();
-        assert!(lua.load(r#"fonts { family = "Noto Sans" }"#).exec().is_err());
-        assert!(declared_chain(&lua).is_empty());
+    fn a_malformed_chain_is_refused_and_records_nothing() {
+        for (call, needle) in [
+            (r#"local t = {} t[1] = "A" t[3] = "C" fonts(t)"#, "entry 2"),
+            (r#"fonts { family = "Noto Sans" }"#, "key `family` is not a list index"),
+            (r#"fonts { "Noto Sans", 12 }"#, "entry 2"),
+            (r#"fonts("Noto Sans")"#, "expected a table, got string"),
+        ] {
+            let lua = lua_with_fonts();
+            let err = lua.load(call).exec().unwrap_err().to_string();
+            assert!(err.contains(needle), "{call}: the message must name the problem: {err}");
+            assert!(declared_chain(&lua).is_empty(), "{call}: a refused call records nothing");
+        }
     }
 
     #[test]
@@ -123,16 +122,5 @@ mod tests {
         let lua = lua_with_fonts();
         lua.load(r#"fonts { "A" } fonts { "B" }"#).exec().unwrap();
         assert_eq!(declared_chain(&lua), vec!["B"]);
-    }
-
-    /// mlua's `FromLua<String>` coerces numbers like Lua, so without the check `12` becomes family
-    /// `"12"` and only `resolve_chain` reports it missing.
-    #[test]
-    fn a_chain_entry_that_is_not_a_string_is_refused_by_name() {
-        let lua = lua_with_fonts();
-        let err = lua.load(r#"fonts { "Noto Sans", 12 }"#).exec().unwrap_err().to_string();
-        assert!(err.contains("entry 2"), "the message must say which entry is wrong: {err}");
-        assert!(lua.load(r#"fonts("Noto Sans")"#).exec().is_err(), "a bare string is not a chain");
-        assert!(declared_chain(&lua).is_empty(), "a refused call records nothing");
     }
 }

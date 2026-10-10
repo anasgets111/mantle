@@ -518,23 +518,7 @@ mod tests {
     // push it before `run_startup_evaluation` for a bare (not `:get()`) reference to evaluate.
 
     #[test]
-    fn apply_state_snapshot_marks_the_scene_dirty() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
-        assert!(!client.dirty.take(), "a fresh client must not start dirty");
-
-        let snapshot = StateSnapshot {
-            capability: "audio".to_string(),
-            revision: 1,
-            payload: serde_json::json!({ "app_name": "Zen" }),
-        };
-        client.apply_state_snapshot(snapshot).unwrap();
-
-        assert!(client.dirty.take(), "LiveSignalHandle::set must mark the shared scene-dirty flag");
-    }
-
-    #[test]
-    fn re_resolve_if_dirty_applies_a_pushed_value_without_reading_shell_lua_again() {
+    fn re_resolve_if_dirty_applies_a_push_without_rereading_shell_lua_clears_the_flag_and_a_second_call_does_no_work() {
         let dir = tempfile::tempdir().unwrap();
         let path =
             write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
@@ -547,45 +531,8 @@ mod tests {
             })
             .unwrap();
         run_startup(&mut client);
-        assert!(
-            client.scene.surface("bar@TEST").unwrap().visible,
-            "startup must have applied the pushed initial value"
-        );
-
         // Break the file: re-resolve must read the retained tree's live signal, never disk.
         std::fs::write(&path, "this is not lua").unwrap();
-
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 2,
-                payload: serde_json::json!(false),
-            })
-            .unwrap();
-        client.re_resolve_if_dirty();
-
-        assert!(!client.scene.surface("bar@TEST").unwrap().visible, "the re-resolve must reflect the pushed value");
-        assert_eq!(
-            rescue_state(&client.loader),
-            (false, String::new()),
-            "no evaluation error occurred -- shell.lua was never re-read, so the broken file on disk is never seen"
-        );
-    }
-
-    #[test]
-    fn re_resolve_if_dirty_clears_the_flag_and_a_second_call_does_no_work() {
-        let dir = tempfile::tempdir().unwrap();
-        let path =
-            write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = mantle.workspace }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "workspace".to_string(),
-                revision: 1,
-                payload: serde_json::json!(true),
-            })
-            .unwrap();
-        run_startup(&mut client);
         client
             .apply_state_snapshot(StateSnapshot {
                 capability: "workspace".to_string(),
@@ -596,6 +543,7 @@ mod tests {
 
         client.re_resolve_if_dirty();
         assert!(!client.scene.surface("bar@TEST").unwrap().visible, "the first re-resolve must apply the pushed value");
+        assert_eq!(rescue_state(&client.loader), (false, String::new()), "shell.lua was never re-read");
         assert!(!client.dirty.take(), "re_resolve_if_dirty must clear the flag it consumed");
 
         // Replace `applied_output` directly, bypassing the dirtying push path, with
@@ -1037,76 +985,44 @@ mod tests {
     }
 
     #[test]
-    fn a_dirty_capability_push_runs_a_computed_body_exactly_once() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"
-            runs = 0
-            local sig = computed({mantle.network}, function(net)
-                runs = runs + 1
-                return net and net.connected and "online" or "offline"
-            end)
-            return panel { id = "status", layer = "top", child = text { content = sig } }
-            "#,
-        );
-        let (mut client, _) = test_client(&path);
-        run_startup(&mut client);
+    fn a_push_runs_a_computed_body_once_and_a_clean_one_does_not_and_neither_leaks_the_memo() {
+        for (payload, resolves, runs, case) in [
+            (
+                serde_json::json!({ "connected": true }),
+                true,
+                Some(2),
+                "the body runs exactly once across take_scope and the layout pass",
+            ),
+            (serde_json::Value::Null, false, None, "unmodified state does not re-resolve"),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_shell_lua(
+                dir.path(),
+                r#"
+                runs = 0
+                local sig = computed({mantle.network}, function(net)
+                    runs = runs + 1
+                    return net and net.connected and "online" or "offline"
+                end)
+                return panel { id = "status", layer = "top", child = text { content = sig } }
+                "#,
+            );
+            let (mut client, _) = test_client(&path);
+            run_startup(&mut client);
+            assert_eq!(client.loader.lua().globals().get::<i64>("runs").unwrap(), 1, "startup evaluates it once");
 
-        let initial_runs: i64 = client.loader.lua().globals().get("runs").unwrap();
-        assert_eq!(initial_runs, 1, "startup must evaluate the computed once");
+            client
+                .apply_state_snapshot(StateSnapshot { capability: "network".to_string(), revision: 1, payload })
+                .unwrap();
 
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "network".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "connected": true }),
-            })
-            .unwrap();
-
-        assert!(client.re_resolve_if_dirty(), "the dirty push must re-resolve");
-
-        let after_runs: i64 = client.loader.lua().globals().get("runs").unwrap();
-        assert_eq!(
-            after_runs, 2,
-            "the computed body must run exactly once across take_scope and the layout pass (was {after_runs})"
-        );
-
-        let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
-        assert!(table.map.is_empty(), "memo map must be empty after re-resolve");
-        assert_eq!(table.depth, 0, "memo depth must be 0 after re-resolve");
-    }
-
-    #[test]
-    fn a_clean_re_resolve_drops_the_memo_without_leaking() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"
-            runs = 0
-            local sig = computed({mantle.network}, function(net)
-                runs = runs + 1
-                return net and net.connected and "online" or "offline"
-            end)
-            return panel { id = "status", layer = "top", child = text { content = sig } }
-            "#,
-        );
-        let (mut client, _) = test_client(&path);
-        run_startup(&mut client);
-
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "network".to_string(),
-                revision: 1,
-                payload: serde_json::Value::Null,
-            })
-            .unwrap();
-
-        assert!(!client.re_resolve_if_dirty(), "unmodified state should not re-resolve");
-
-        let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
-        assert!(table.map.is_empty(), "memo map must be empty when scope is clean");
-        assert_eq!(table.depth, 0, "memo depth must be 0 when scope is clean");
+            assert_eq!(client.re_resolve_if_dirty(), resolves, "{case}");
+            if let Some(runs) = runs {
+                assert_eq!(client.loader.lua().globals().get::<i64>("runs").unwrap(), runs, "{case}");
+            }
+            let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
+            assert!(table.map.is_empty(), "{case}: memo map must be empty after re-resolve");
+            assert_eq!(table.depth, 0, "{case}: memo depth must be 0 after re-resolve");
+        }
     }
 
     /// A wheel past either end: the pass clamps the offset after the getter read the wheel's value,

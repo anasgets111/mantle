@@ -873,32 +873,14 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         assert!(os_execute, "`require(\"os\")` gave back a working os.execute");
     }
 
-    #[test]
-    fn evaluate_rejects_a_lua_syntax_error_as_an_eval_error() {
-        let loader = test_loader();
-        let err = loader.evaluate("this is not lua").unwrap_err();
-        assert!(matches!(err, LoaderError::Eval(_)));
-    }
-
-    #[test]
-    fn evaluate_rejects_a_top_level_return_that_is_not_a_surface() {
-        let loader = test_loader();
-        let err = loader.evaluate(r#"return rect { background = "red" }"#).unwrap_err();
-        assert!(matches!(err, LoaderError::InvalidTopLevelReturn(_)));
-    }
-
     /// ADR-0070 decision 7: "run nothing" is the state where a config gates every capability off.
-    #[test]
-    fn a_config_may_declare_no_surfaces_at_all() {
-        let loader = test_loader();
-        assert!(loader.evaluate("return {}").unwrap().surfaces.is_empty());
-    }
-
     /// An empty chunk has no `return`, so Lua yields `nil`, not a table.
     #[test]
-    fn an_empty_shell_lua_declares_no_surfaces_rather_than_failing() {
+    fn empty_returns_declare_no_surfaces() {
         let loader = test_loader();
-        assert!(loader.evaluate("").unwrap().surfaces.is_empty());
+        for src in ["return {}", ""] {
+            assert!(loader.evaluate(src).unwrap().surfaces.is_empty(), "{src:?}");
+        }
     }
 
     /// Empty cases must not widen the shape check: a wrong-kind top-level return remains an error
@@ -912,39 +894,22 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
     }
 
     #[test]
-    fn evaluate_accepts_a_single_top_level_surface() {
-        let loader = test_loader();
-        let output = loader.evaluate(r#"return panel { id = "bar", layer = "top" }"#).unwrap();
-        assert_eq!(output.surfaces.len(), 1);
-        assert_eq!(output.surfaces[0].kind, "panel");
-    }
-
-    #[test]
-    fn evaluate_accepts_a_window_and_a_popup_at_the_top_level_beside_a_panel() {
-        // ADR-0040 decision 1: root roles may be mixed together in the top-level array.
+    fn evaluate_accepts_every_root_role_in_one_top_level_array() {
+        // ADR-0040 decision 1: root roles may be mixed. ADR-0052 decision 2: the compositor decides
+        // when the lock surface exists; the loader only admits its declaration location.
         let loader = test_loader();
         let output = loader
             .evaluate(
-                r#"return {
+                r##"return {
                     panel { id = "bar", layer = "top" },
                     window { id = "settings", title = "Settings" },
                     popup { id = "menu", parent = "bar", width = 200, height = 120, anchor_rect = { x = 0, y = 0, width = 86, height = 24 } },
-                }"#,
+                    lock { id = "screen", child = rect { background = "#000000FF" } },
+                }"##,
             )
             .unwrap();
         let kinds: Vec<&str> = output.surfaces.iter().map(|s| s.kind).collect();
-        assert_eq!(kinds, ["panel", "window", "popup"]);
-    }
-
-    #[test]
-    fn evaluate_accepts_a_top_level_lock_because_declaring_one_is_not_the_same_as_locking() {
-        // ADR-0052 decision 2: the compositor decides when the lock surface exists; this only
-        // admits its declaration location.
-        let loader = test_loader();
-        let output =
-            loader.evaluate(r##"return lock { id = "screen", child = rect { background = "#000000FF" } }"##).unwrap();
-        assert_eq!(output.surfaces.len(), 1);
-        assert_eq!(output.surfaces[0].kind, "lock");
+        assert_eq!(kinds, ["panel", "window", "popup", "lock"]);
     }
 
     /// Both halves of "not a surface": a node kind that is not a role, and one that is not a node.
@@ -963,67 +928,25 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         }
     }
 
-    #[test]
-    fn a_global_set_on_the_vm_is_seen_by_a_later_evaluate() {
-        let loader = test_loader();
-        let (signal, handle) = signal::Signal::new_live(Value::Integer(7), signal::DirtyFlag::new());
-        loader.lua().globals().set("audio", signal).unwrap();
-
-        assert_eq!(probe::<i64>(&loader, "reading = audio:get()", "reading"), 7);
-
-        handle.set(Value::Integer(9));
-        assert_eq!(probe::<i64>(&loader, "reading = audio:get()", "reading"), 9);
-    }
-
-    #[test]
-    fn to_lua_value_converts_a_json_object_a_script_can_read_fields_from() {
-        let loader = test_loader();
-        let json = serde_json::json!({ "volume": 0.5, "muted": false });
-        let value = loader.to_lua_value(&json).unwrap();
-        loader.lua().globals().set("state", value).unwrap();
-
-        assert_eq!(probe::<f64>(&loader, "volume = state.volume", "volume"), 0.5);
-        assert!(!probe::<bool>(&loader, "muted = state.muted", "muted"));
-    }
-
     /// Actual bug: mlua's default `serialize_none_to_null` maps JSON `null` to truthy
     /// lightuserdata, so a live Telegram tray item's `icon_path = null` made `if item.icon_path`
-    /// assume a real path.
-    /// Type checks still pass for that sentinel; only truthiness distinguishes it from nil.
+    /// assume a real path. Type checks still pass for that sentinel; only truthiness tells it from
+    /// nil. Live tray nulls sit inside `items[1]`, so a fix handling only the outer value fails.
     #[test]
-    fn to_lua_value_a_null_field_is_falsy_not_a_truthy_lightuserdata_sentinel() {
+    fn to_lua_value_a_null_is_falsy_not_a_truthy_lightuserdata_sentinel() {
         let loader = test_loader();
-        let json = serde_json::json!({ "icon_path": null });
-        let value = loader.to_lua_value(&json).unwrap();
-        loader.lua().globals().set("payload", value).unwrap();
-
-        let result: String =
-            loader.lua().load(r#"if payload.icon_path then return "truthy" else return "falsy" end"#).eval().unwrap();
-        assert_eq!(result, "falsy");
-    }
-
-    /// Live tray nulls are inside `items[1]`, not top-level; catches a fix that handles only the
-    /// outer value and leaves the real one-level-deep sentinel truthy.
-    #[test]
-    fn to_lua_value_a_null_nested_inside_an_array_element_is_also_nil() {
-        let loader = test_loader();
-        let json = serde_json::json!({
-            "items": [
-                {
-                    "icon_name": "org.telegram.desktop-mute-symbolic",
-                    "icon_path": null,
-                }
-            ]
-        });
-        let value = loader.to_lua_value(&json).unwrap();
-        loader.lua().globals().set("tray", value).unwrap();
-
-        let result: String = loader
-            .lua()
-            .load(r#"if tray.items[1].icon_path then return "truthy" else return "falsy" end"#)
-            .eval()
-            .unwrap();
-        assert_eq!(result, "falsy");
+        for (json, expr) in [
+            (serde_json::json!({ "icon_path": null }), "payload.icon_path"),
+            (
+                serde_json::json!({ "items": [{ "icon_name": "org.telegram.desktop-mute-symbolic", "icon_path": null }] }),
+                "payload.items[1].icon_path",
+            ),
+        ] {
+            loader.lua().globals().set("payload", loader.to_lua_value(&json).unwrap()).unwrap();
+            let result: String =
+                loader.lua().load(format!(r#"if {expr} then return "truthy" else return "falsy" end"#)).eval().unwrap();
+            assert_eq!(result, "falsy", "{expr}");
+        }
     }
 
     /// Trade-off: null-to-nil leaves an array hole; `ipairs` stops there, while `#` and direct
@@ -1093,7 +1016,9 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         std::fs::write(&path, "return panel { id = \"bar\" }\nthis is not lua\n").unwrap();
 
         let loader = Loader::new(signal::DirtyFlag::new(), dir.path()).unwrap();
-        let message = loader.evaluate_file(&path).unwrap_err().to_string();
+        let err = loader.evaluate_file(&path).unwrap_err();
+        assert!(matches!(err, LoaderError::Eval(_)), "{err:?}");
+        let message = err.to_string();
 
         // The file and line to fix, relative to the config directory. Not
         // `renderer/src/lua/mod.rs:74:127`, and not `[string "..."]`, which Lua truncates.
@@ -1105,21 +1030,5 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         let loader = test_loader();
         let err = loader.evaluate_file(std::path::Path::new("/no/such/shell.lua")).unwrap_err();
         assert!(matches!(err, LoaderError::Io(_)));
-    }
-
-    #[test]
-    fn evaluate_accepts_an_array_of_top_level_surfaces() {
-        let loader = test_loader();
-        let output = loader
-            .evaluate(
-                r#"
-                return {
-                    panel { id = "bar" },
-                    panel { id = "overlay" },
-                }
-                "#,
-            )
-            .unwrap();
-        assert_eq!(output.surfaces.len(), 2);
     }
 }

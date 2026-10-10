@@ -380,36 +380,26 @@ mod tests {
     }
 
     #[test]
-    fn a_configured_toplevel_axis_is_the_compositors_and_is_taken_as_given() {
-        // A tiling compositor sizes every window: `xdg_toplevel::configure` makes a maximized or
-        // fullscreen size binding, not advisory. On niri this is the only branch that ever runs.
-        let mut spec = settings_window();
-        spec.min_size = Some(SizeHint { width: 320.0, height: 240.0 });
-        spec.max_size = Some(SizeHint { width: 1280.0, height: 800.0 });
-        assert_eq!(
-            toplevel_size_for((nz(1920), nz(1168)), &spec),
-            (1920, 1168),
-            "the hints never override a configure"
-        );
-    }
-
-    #[test]
-    fn an_unconfigured_toplevel_axis_takes_the_min_size_the_config_declared() {
-        // "If this value is None, you may set the size of the window as you wish", which is the
-        // ordinary first configure on a floating compositor. `min_size` is the only thing a config
-        // can say about a window's size, so it is what the client says back.
-        let mut spec = settings_window();
-        spec.min_size = Some(SizeHint { width: 320.0, height: 240.0 });
-        assert_eq!(toplevel_size_for((None, None), &spec), (320, 240));
-        // One axis each way, which is the shape a compositor constraining only width produces.
-        assert_eq!(toplevel_size_for((nz(800), None), &spec), (800, 240));
-    }
-
-    #[test]
-    fn an_unconfigured_axis_with_no_min_size_falls_back_to_the_named_constant() {
-        // Its `ponytail:` states the ceiling: a config has nothing else to say here, and a
-        // toplevel's root is forced to the surface, so no content size exists to prefer instead.
-        assert_eq!(toplevel_size_for((None, None), &settings_window()), (640, 480));
+    fn a_toplevel_axis_is_the_compositors_else_the_min_size_else_the_named_constant() {
+        // A tiling compositor sizes every window: a configured size binds, hints never override it.
+        // An unconfigured axis is "you may set the size as you wish" (a floating compositor's first
+        // configure), and `min_size` is all a config can say about size. Its `ponytail:` names the
+        // fallback constant's ceiling: no content size exists to prefer, a toplevel's root being
+        // forced to the surface.
+        let hinted = WindowSpec {
+            min_size: Some(SizeHint { width: 320.0, height: 240.0 }),
+            max_size: Some(SizeHint { width: 1280.0, height: 800.0 }),
+            ..settings_window()
+        };
+        let min_only = WindowSpec { max_size: None, ..hinted.clone() };
+        for (configure, spec, expected, case) in [
+            ((nz(1920), nz(1168)), &hinted, (1920, 1168), "a configured axis is taken as given"),
+            ((None, None), &min_only, (320, 240), "unconfigured takes the min size"),
+            ((nz(800), None), &min_only, (800, 240), "one axis each way"),
+            ((None, None), &settings_window(), (640, 480), "no min size falls back to the constant"),
+        ] {
+            assert_eq!(toplevel_size_for(configure, spec), expected, "{case}");
+        }
     }
 
     #[test]
@@ -440,23 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn an_inset_change_is_its_own_update() {
-        let applied = settings_window();
-        let mut fresh = applied.clone();
-        fresh.geometry_inset = EdgeInsets { top: 24.0, ..Default::default() };
-        assert_eq!(
-            window_update(&applied, &fresh),
-            WindowUpdate { geometry_inset: Some(fresh.geometry_inset), ..WindowUpdate::default() }
-        );
-    }
-
-    #[test]
-    fn a_re_resolve_that_changed_no_window_property_sends_no_requests_at_all() {
-        let applied = settings_window();
-        assert_eq!(window_update(&applied, &applied.clone()), WindowUpdate::default());
-    }
-
-    #[test]
     fn every_window_field_is_pushed_on_its_own_and_only_when_it_moved() {
         // All four, unlike a panel's diff: `xdg-shell.xml` allows `set_app_id`/`set_title` after
         // mapping, and both size hints are ordinary double-buffered requests, so a changed `title`
@@ -483,33 +456,35 @@ mod tests {
             window_update(&applied, &bounded),
             WindowUpdate { min_size: Some(Some(SizeHint { width: 320.0, height: 240.0 })), ..WindowUpdate::default() }
         );
-    }
 
-    #[test]
-    fn a_size_hint_that_moved_to_absent_is_still_a_change_that_has_to_reach_the_wire() {
-        // The reason the field is `Option<Option<_>>`: the outer layer is "did it move", the inner
-        // one is absent-versus-present, and dropping a `max_size` from a config has to send
-        // the protocol's zero (meaning unset) rather than leaving the old maximum standing.
-        let mut applied = settings_window();
-        applied.max_size = Some(SizeHint { width: 1280.0, height: 800.0 });
-        let fresh = settings_window();
-
-        assert_eq!(window_update(&applied, &fresh), WindowUpdate { max_size: Some(None), ..WindowUpdate::default() });
-        assert_eq!(size_hint_pair(None), None, "which `Window::set_max_size` sends as the protocol's zero");
-        assert_eq!(size_hint_pair(Some(SizeHint { width: 320.0, height: 240.0 })), Some((320, 240)));
-    }
-
-    #[test]
-    fn a_decorations_change_is_the_one_field_that_reaches_the_wire() {
-        let applied = settings_window();
-        let mut fresh = applied.clone();
-        fresh.decorations = Decorations::Client;
+        let mut inset = applied.clone();
+        inset.geometry_inset = EdgeInsets { top: 24.0, ..Default::default() };
         assert_eq!(
-            window_update(&applied, &fresh),
+            window_update(&applied, &inset),
+            WindowUpdate { geometry_inset: Some(inset.geometry_inset), ..WindowUpdate::default() }
+        );
+
+        let mut client_drawn = applied.clone();
+        client_drawn.decorations = Decorations::Client;
+        assert_eq!(
+            window_update(&applied, &client_drawn),
             WindowUpdate { decorations: Some(Decorations::Client), ..WindowUpdate::default() }
         );
         assert_eq!(DecorationMode::from(Decorations::Client), DecorationMode::Client);
         assert_eq!(DecorationMode::from(Decorations::Server), DecorationMode::Server);
+
+        assert_eq!(window_update(&applied, &applied.clone()), WindowUpdate::default(), "nothing moved, nothing sent");
+
+        // The reason the size hint is `Option<Option<_>>`: dropping a `max_size` from a config has to
+        // send the protocol's zero (unset) rather than leave the old maximum standing.
+        let mut limited = settings_window();
+        limited.max_size = Some(SizeHint { width: 1280.0, height: 800.0 });
+        assert_eq!(
+            window_update(&limited, &settings_window()),
+            WindowUpdate { max_size: Some(None), ..WindowUpdate::default() }
+        );
+        assert_eq!(size_hint_pair(None), None, "which `Window::set_max_size` sends as the protocol's zero");
+        assert_eq!(size_hint_pair(Some(SizeHint { width: 320.0, height: 240.0 })), Some((320, 240)));
     }
 
     #[test]

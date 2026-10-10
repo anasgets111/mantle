@@ -138,39 +138,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn integer_scale_is_exact() {
-        let r = LogicalRect { x: 10.0, y: 20.0, width: 30.0, height: 40.0 };
-        assert_eq!(snap_to_physical(r, 1.0), PhysicalRect { x0: 10, y0: 20, x1: 40, y1: 60 });
-    }
-
-    #[test]
-    fn already_pixel_aligned_rect_is_unchanged() {
-        let r = LogicalRect { x: 4.0, y: 4.0, width: 8.0, height: 8.0 };
-        assert_eq!(snap_to_physical(r, 1.0), PhysicalRect { x0: 4, y0: 4, x1: 12, y1: 12 });
-    }
-
-    #[test]
-    fn fractional_scale_rounds_outward_never_inward() {
-        let r = LogicalRect { x: 10.4, y: 0.0, width: 5.0, height: 0.0 };
-        let p = snap_to_physical(r, 1.5);
-        assert_eq!(p.x0, 15);
-        assert_eq!(p.x1, 24);
-    }
-
-    #[test]
-    fn zero_size_rect_snaps_to_zero_width_box() {
-        let r = LogicalRect { x: 3.0, y: 3.0, width: 0.0, height: 0.0 };
-        let p = snap_to_physical(r, 2.0);
-        assert_eq!(p.x0, 6);
-        assert_eq!(p.x1, 6);
-    }
-
-    #[test]
-    fn negative_coordinates_snap_consistently() {
-        let r = LogicalRect { x: -10.6, y: 0.0, width: 5.0, height: 0.0 };
-        let p = snap_to_physical(r, 1.0);
-        assert_eq!(p.x0, -11); // floor(-10.6) = -11
-        assert_eq!(p.x1, -5); // ceil(-5.6) = -5
+    fn snap_to_physical_rounds_outward() {
+        let rect = |x, w| LogicalRect { x, y: 0.0, width: w, height: 0.0 };
+        for (r, scale, x0, x1, case) in [
+            (rect(10.0, 30.0), 1.0, 10, 40, "integer scale is exact"),
+            (rect(4.0, 8.0), 1.0, 4, 12, "an aligned rect is unchanged"),
+            (rect(10.4, 5.0), 1.5, 15, 24, "fractional scale rounds outward"),
+            (rect(3.0, 0.0), 2.0, 6, 6, "a zero-size rect keeps a zero-width box"),
+            (rect(-10.6, 5.0), 1.0, -11, -5, "negative coordinates floor and ceil"),
+        ] {
+            let p = snap_to_physical(r, scale);
+            assert_eq!((p.x0, p.x1), (x0, x1), "{case}");
+        }
     }
 
     /// Two nested nodes at the documented `scale = 64` maximum compose to 4096x, which puts an
@@ -196,25 +175,16 @@ mod tests {
     }
 
     #[test]
-    fn border_band_already_aligned_is_unchanged() {
-        assert_eq!(snap_border_band(4.0, 1.0, 1.0), (4.0, 1.0));
-    }
-
-    #[test]
-    fn border_band_rounds_each_edge_to_nearest() {
-        // Catches a function that snaps only one edge, or derives the far edge from the
-        // rounded near edge plus the unrounded thickness instead of rounding both.
-        assert_eq!(snap_border_band(10.3, 3.4, 1.0), (10.0, 4.0));
-    }
-
-    #[test]
-    fn border_band_thinner_than_a_pixel_is_forced_to_one_physical_pixel() {
-        assert_eq!(snap_border_band(10.1, 0.2, 1.0), (10.0, 1.0));
-    }
-
-    #[test]
-    fn border_band_snaps_correctly_at_fractional_scale() {
-        assert_eq!(snap_border_band(5.1, 1.0, 2.0), (5.0, 1.0));
+    fn border_band_snaps_each_edge() {
+        // Rounding both edges catches a near-edge-plus-unrounded-thickness shortcut.
+        for ((start, thickness, scale), expected, case) in [
+            ((4.0, 1.0, 1.0), (4.0, 1.0), "aligned"),
+            ((10.3, 3.4, 1.0), (10.0, 4.0), "each edge to nearest"),
+            ((10.1, 0.2, 1.0), (10.0, 1.0), "thinner than a pixel forced to one"),
+            ((5.1, 1.0, 2.0), (5.0, 1.0), "fractional scale"),
+        ] {
+            assert_eq!(snap_border_band(start, thickness, scale), expected, "{case}");
+        }
     }
 
     #[test]

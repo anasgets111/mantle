@@ -395,13 +395,16 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_unmarshallable_argument_is_a_config_error_naming_its_slot_and_queues_nothing() {
+    fn a_refused_argument_names_its_slot_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
-
-        let err = lua.load(r#"mantle.probe:set_app_volume("firefox", function() end)"#).exec().unwrap_err();
-
-        assert!(err.to_string().contains("argument 2"), "the error must name the offending slot: {err}");
-        assert!(rx.try_recv().is_err(), "a refused argument must not queue a half-built command");
+        for (call, needle) in [
+            (r#"mantle.probe:set_app_volume("firefox", function() end)"#, "argument 2"),
+            ("mantle.probe:set_app_volume(7, 'x')", "bad argument #2: expected a number, got string \"x\""),
+        ] {
+            let err = lua.load(call).exec().unwrap_err();
+            assert!(err.to_string().contains(needle), "{call}: the error must name the offending slot: {err}");
+            assert!(rx.try_recv().is_err(), "{call}: a refused argument must not queue a half-built command");
+        }
     }
 
     #[test]
@@ -438,14 +441,6 @@ pub(crate) mod tests {
             );
             assert!(first.contains(got), "{first}");
         }
-    }
-
-    #[test]
-    fn an_action_error_names_the_slot_and_queues_nothing() {
-        let (lua, _handle, mut rx) = lua_with_capability(0);
-        let err = lua.load("mantle.probe:set_app_volume(7, 'x')").exec().unwrap_err();
-        assert!(err.to_string().contains("bad argument #2: expected a number, got string \"x\""), "{err}");
-        assert!(rx.try_recv().is_err(), "a refused argument must not queue a command");
     }
 
     #[test]

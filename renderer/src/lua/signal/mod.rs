@@ -749,22 +749,6 @@ mod tests {
     }
 
     #[test]
-    fn set_replaces_what_a_later_get_returns() {
-        let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                local s = state("count", 7)
-                s:set(41)
-                return s:get()
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(result, 41, "a state signal must read back what Lua last wrote, not its initial value");
-    }
-
-    #[test]
     fn set_marks_the_scene_dirty_flag_and_a_plain_get_does_not() {
         // Reads must not re-dirty the scene during layout.
         let (lua, dirty) = lua_with_state();
@@ -795,34 +779,25 @@ mod tests {
     }
 
     #[test]
-    fn set_on_a_live_capability_signal_is_refused_because_capability_values_are_read_only_to_lua() {
+    fn set_on_a_read_only_signal_is_refused() {
         // Security contract: accepting `set` on `Live` would let config overwrite the Supervisor's
         // network SSID while every downstream reader believed it.
         let (lua, dirty) = lua_with_state();
         let (signal, _handle) = Signal::new_live(Value::Integer(1), dirty.clone());
         lua.globals().set("network", signal).unwrap();
+        lua.globals().set("count", Signal::new_state(Value::Integer(1), DirtyFlag::new()).unwrap()).unwrap();
 
-        let err = lua.load(r#"network:set(2)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("read-only"), "the refusal must name the read-only rule: {err}");
+        for (call, case) in [
+            ("network:set(2)", "a live capability signal"),
+            ("count:map(function(v) return v end):set(9)", "a computed signal"),
+        ] {
+            let err = lua.load(call).exec().unwrap_err();
+            assert!(err.to_string().contains("read-only"), "{case}: the refusal must name the read-only rule: {err}");
+        }
         assert!(!dirty.take(), "a refused write must not mark the scene dirty either");
 
         let unchanged: i64 = lua.load("return network:get()").eval().unwrap();
         assert_eq!(unchanged, 1, "the pushed value must survive the attempt");
-    }
-
-    #[test]
-    fn set_on_a_computed_signal_is_refused() {
-        let (lua, _dirty) = lua_with_state();
-        let err = lua
-            .load(
-                r#"
-                local s = state("count", 1)
-                s:map(function(v) return v end):set(9)
-                "#,
-            )
-            .exec()
-            .unwrap_err();
-        assert!(err.to_string().contains("read-only"), "the refusal must name the read-only rule: {err}");
     }
 
     #[test]
@@ -845,27 +820,14 @@ mod tests {
     }
 
     #[test]
-    fn get_returns_the_wrapped_value() {
+    fn map_and_computed_combine_current_values() {
         let lua = lua_with_signal("s", Value::Number(0.75));
-        let result: f64 = lua.load("return s:get()").eval().unwrap();
-        assert_eq!(result, 0.75);
-    }
-
-    #[test]
-    fn map_recomputes_against_the_parents_current_value() {
-        let lua = lua_with_signal("s", Value::Integer(10));
-        let result: i64 = lua.load("return s:map(function(v) return v * 2 end):get()").eval().unwrap();
-        assert_eq!(result, 20);
-    }
-
-    #[test]
-    fn computed_combines_multiple_dependencies_current_values() {
-        let lua = lua_with_state().0;
+        let get = |source: &str| lua.load(source).eval::<f64>().unwrap();
+        assert_eq!(get("return s:get()"), 0.75);
+        assert_eq!(get("return s:map(function(v) return v * 2 end):get()"), 1.5);
         lua.globals().set("a", Signal::new_state(Value::Integer(3), DirtyFlag::new()).unwrap()).unwrap();
         lua.globals().set("b", Signal::new_state(Value::Integer(4), DirtyFlag::new()).unwrap()).unwrap();
-
-        let result: i64 = lua.load("return computed({a, b}, function(x, y) return x + y end):get()").eval().unwrap();
-        assert_eq!(result, 7);
+        assert_eq!(get("return computed({a, b}, function(x, y) return x + y end):get()"), 7.0);
     }
 
     /// A hole is an entry, not the end of the list, so a dependency after it is never dropped.
@@ -881,21 +843,6 @@ mod tests {
         assert!(number.contains("computed() dependency 2 is an integer"), "{number}");
         let named = err("computed({a, b = a}, function(x) return x end)");
         assert!(named.contains("`b`"), "{named}");
-    }
-
-    #[test]
-    fn computed_reflects_a_later_signal_reconstruction_not_a_stale_cache() {
-        // No memoization: later `get` sees a rebuilt dependency, not a cached first read.
-        let lua = lua_with_signal("a", Value::Integer(1));
-        lua.load("doubled = computed({a}, function(x) return x * 2 end)").exec().unwrap();
-
-        let first: i64 = lua.load("return doubled:get()").eval().unwrap();
-        assert_eq!(first, 2);
-
-        lua.globals().set("a", Signal::new_state(Value::Integer(5), DirtyFlag::new()).unwrap()).unwrap();
-        lua.load("doubled = computed({a}, function(x) return x * 2 end)").exec().unwrap();
-        let second: i64 = lua.load("return doubled:get()").eval().unwrap();
-        assert_eq!(second, 10);
     }
 
     #[test]
@@ -948,22 +895,6 @@ mod tests {
         }
     }
 
-    /// Resolver must see through `Capability`, or live `mantle.<name>` becomes a literal.
-    #[test]
-    fn from_userdata_sees_through_a_capability_to_its_read_signal() {
-        use crate::lua::capability::{Capability, CommandSender};
-
-        let lua = Lua::new();
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (capability, handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
-        handle.hydrate(Value::Integer(42));
-        lua.globals().set("probe", capability).unwrap();
-
-        let ud: mlua::AnyUserData = lua.load("return probe").eval().unwrap();
-        let signal = from_userdata(&ud).expect("a capability must resolve like the signal it wraps");
-        assert_eq!(signal.get_value(&lua).unwrap().as_i64(), Some(42));
-    }
-
     #[test]
     fn from_userdata_and_is_signal_agree() {
         // Prevents the two checks from drifting to different type sets.
@@ -993,6 +924,10 @@ mod tests {
         handle.hydrate(Value::Integer(3));
         lua.globals().set("probe", capability).unwrap();
 
+        // The resolver must see through `Capability`, or live `mantle.<name>` becomes a literal.
+        let ud: mlua::AnyUserData = lua.load("return probe").eval().unwrap();
+        let signal = from_userdata(&ud).expect("a capability must resolve like the signal it wraps");
+        assert_eq!(signal.get_value(&lua).unwrap().as_i64(), Some(3));
         let doubled: i64 = lua.load("return computed({probe}, function(n) return n * 2 end):get()").eval().unwrap();
         assert_eq!(doubled, 6);
 

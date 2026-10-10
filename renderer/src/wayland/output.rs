@@ -422,40 +422,27 @@ mod tests {
     }
 
     #[test]
-    fn a_screens_entry_reports_the_logical_size_in_preference_to_the_current_modes_dimensions() {
-        // A 3840x2160 panel driven at scale 2 is 1920x1080 of compositor space, which is the
-        // coordinate system a layer surface's own geometry is in, so the mode's raw dimensions
-        // would put a config's own arithmetic on a different grid than the engine's.
-        let mut facts = facts(Some("eDP-1"));
-        facts.logical_size = Some((1920, 1080));
-        facts.current_mode = Some(((3840, 2160), 60_000));
-        facts.scale_factor = 2;
-
-        let screen = screen_entry(0, &facts).expect("a logical size is enough on its own");
-        assert_eq!((screen.width, screen.height), (1920, 1080));
-        assert_eq!(screen.scale, 2);
-    }
-
-    #[test]
-    fn a_screens_entry_falls_back_to_the_current_modes_dimensions_when_no_logical_size_is_reported() {
-        // A compositor below wl_output v4, or one that has not sent an xdg_output yet.
-        let mut facts = facts(Some("eDP-1"));
-        facts.logical_size = None;
-        facts.current_mode = Some(((1366, 768), 60_000));
-
-        let screen = screen_entry(0, &facts).expect("the current mode is the documented fallback");
-        assert_eq!((screen.width, screen.height), (1366, 768));
-    }
-
-    #[test]
-    fn an_output_reporting_neither_a_logical_size_nor_a_current_mode_yields_no_screen_at_all() {
-        // Not defaulted to some invented size: every surface on that monitor would then resolve
-        // against a fiction, and the caller logs the miss instead.
-        let mut facts = facts(Some("eDP-1"));
-        facts.logical_size = None;
-        facts.current_mode = None;
-
-        assert!(screen_entry(0, &facts).is_none());
+    fn a_screens_size_comes_from_the_logical_size_then_the_current_mode_then_nowhere() {
+        // A 3840x2160 panel driven at scale 2 is 1920x1080 of compositor space, the coordinate system
+        // a layer surface's geometry is in, so the mode's raw dimensions would put a config's own
+        // arithmetic on a different grid. Below wl_output v4, or before an xdg_output arrives, the
+        // current mode is the documented fallback. With neither there is no screen at all: not an
+        // invented size every surface on that monitor would resolve against.
+        for (logical, mode, scale, expected, case) in [
+            (Some((1920, 1080)), Some(((3840, 2160), 60_000)), 2, Some((1920, 1080)), "logical size wins"),
+            (None, Some(((1366, 768), 60_000)), 1, Some((1366, 768)), "the current mode is the fallback"),
+            (None, None, 1, None, "neither yields no screen"),
+        ] {
+            let mut facts = facts(Some("eDP-1"));
+            facts.logical_size = logical;
+            facts.current_mode = mode;
+            facts.scale_factor = scale;
+            let screen = screen_entry(0, &facts);
+            assert_eq!(screen.as_ref().map(|s| (s.width, s.height)), expected, "{case}");
+            if let Some(screen) = screen {
+                assert_eq!(screen.scale, scale, "{case}");
+            }
+        }
     }
 
     #[test]
@@ -467,15 +454,12 @@ mod tests {
         let mut odd = facts(Some("DP-1"));
         odd.current_mode = Some(((2560, 1440), 143_868));
         assert_eq!(screen_entry(0, &odd).unwrap().refresh, 143.868);
-    }
 
-    #[test]
-    fn a_screen_sized_from_its_logical_size_alone_reports_a_refresh_of_zero() {
-        // `Mode`'s own docs allow a zero refresh rate for a virtual output, so zero is already this
-        // field's "no real answer" value, and an output with no current mode reads the same way.
-        let mut facts = facts(Some("HEADLESS-1"));
-        facts.current_mode = None;
-        assert_eq!(screen_entry(0, &facts).unwrap().refresh, 0.0);
+        // `Mode`'s docs allow a zero refresh for a virtual output, so zero is this field's "no real
+        // answer", and an output with no current mode reads the same way.
+        let mut headless = facts(Some("HEADLESS-1"));
+        headless.current_mode = None;
+        assert_eq!(screen_entry(0, &headless).unwrap().refresh, 0.0);
     }
 
     #[test]
@@ -506,28 +490,23 @@ mod tests {
     }
 
     #[test]
-    fn fractional_scale_is_derived_from_the_current_mode_over_the_logical_size() {
-        let mut facts = facts(Some("eDP-1"));
-        facts.current_mode = Some(((2880, 1620), 60_000));
-        facts.logical_size = Some((1920, 1080));
+    fn fractional_scale_is_the_mode_over_the_logical_size_like_axes_to_like_axes() {
+        let mut scaled = facts(Some("eDP-1"));
+        scaled.current_mode = Some(((2880, 1620), 60_000));
+        scaled.logical_size = Some((1920, 1080));
 
-        assert_eq!(screen_entry(0, &facts).unwrap().fractional_scale, 1.5);
-    }
+        assert_eq!(screen_entry(0, &scaled).unwrap().fractional_scale, 1.5);
 
-    #[test]
-    fn fractional_scale_accounts_for_a_rotated_transform_swapping_mode_dimensions() {
         // xdg-output-unstable-v1's own worked example: a 1920x1080 mode turned 90 degrees reports
         // a logical size of 1080x1920, so the ratio must compare like axes, not raw width to width.
-        let mut facts = facts(Some("eDP-1"));
-        facts.current_mode = Some(((1920, 1080), 60_000));
-        facts.logical_size = Some((1080, 1920));
-        facts.transform = wl_output::Transform::_90;
+        let mut rotated = facts(Some("eDP-1"));
+        rotated.current_mode = Some(((1920, 1080), 60_000));
+        rotated.logical_size = Some((1080, 1920));
+        rotated.transform = wl_output::Transform::_90;
 
-        assert_eq!(screen_entry(0, &facts).unwrap().fractional_scale, 1.0);
-    }
+        assert_eq!(screen_entry(0, &rotated).unwrap().fractional_scale, 1.0);
 
-    #[test]
-    fn fractional_scale_falls_back_to_the_integer_scale_factor_without_a_mode_or_logical_size() {
+        // Without a mode or a logical size it falls back to the integer scale factor.
         let mut no_mode = facts(Some("eDP-1"));
         no_mode.current_mode = None;
         no_mode.scale_factor = 2;

@@ -573,6 +573,7 @@ mod tests {
     use super::super::tests::{PIL_2X2_RGBA_PNG, key};
     use super::super::{FileVersion, STARTING_TEXTURE_BUDGET};
     use super::*;
+    use gif::DisposalMethod::{Background, Keep, Previous};
 
     #[test]
     fn only_svg_is_rasterized_by_size() {
@@ -613,7 +614,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("not-really.png");
         std::fs::write(&fake, b"<svg/>").unwrap();
-        assert!(decode_raster(&fake, (8, 8), None, Charge::Free, &|| true).is_err());
+        let err = decode_raster(&fake, (8, 8), None, Charge::Free, &|| true).unwrap_err();
+        assert!(err.contains("Invalid PNG signature"), "the decoder's own reason, not a bare failure: {err}");
     }
 
     #[test]
@@ -743,17 +745,6 @@ mod tests {
     }
 
     #[test]
-    fn a_large_png_decodes_to_its_box_and_a_small_one_to_itself() {
-        let dir = tempfile::tempdir().unwrap();
-        let big = dir.path().join("big.png");
-        ::image::RgbaImage::from_pixel(400, 200, ::image::Rgba([10, 20, 30, 255])).save(&big).unwrap();
-        let (_, width, height) = decode_raster(&big, (100, 100), None, Charge::Free, &|| true).unwrap();
-        assert_eq!((width, height), (200, 100));
-        let (_, width, height) = decode_raster(&big, (1000, 1000), None, Charge::Free, &|| true).unwrap();
-        assert_eq!((width, height), (400, 200));
-    }
-
-    #[test]
     fn a_pool_decode_leaves_a_thumbnail_behind_and_the_next_one_reads_it_instead_of_the_file() {
         let dir = tempfile::tempdir().unwrap();
         let big = dir.path().join("big.png");
@@ -825,6 +816,20 @@ mod tests {
         encoder.write_frame(&frame).unwrap();
     }
 
+    type Frame = ((u16, u16, u16, u16), [u8; 4], gif::DisposalMethod);
+
+    /// A GIF of `size` holding `frames` (rect, colour, disposal), each shown 5 centiseconds.
+    fn gif_fixture(dir: &Path, name: &str, size: (u16, u16), frames: &[Frame]) -> std::path::PathBuf {
+        let path = dir.join(name);
+        let mut file = std::fs::File::create(&path).unwrap();
+        let mut encoder = gif::Encoder::new(&mut file, size.0, size.1, &[]).unwrap();
+        for &(rect, rgba, dispose) in frames {
+            write_frame(&mut encoder, rect, rgba, dispose, 5);
+        }
+        drop(encoder);
+        path
+    }
+
     /// ADR-0235. Every disposal method decides what the *next* frame's transparent pixels show
     /// through to, never the current one's own draw -- `Keep` carries a frame's pixels forward,
     /// `Background` clears its rect to transparent first, `Previous` undoes the draw entirely. A
@@ -833,26 +838,40 @@ mod tests {
     #[test]
     fn disposal_methods_replay_to_the_same_pixels_a_full_recomposite_gives() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("dispose.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            // Background: its green square must not still show once this frame is gone.
-            write_frame(&mut encoder, (0, 0, 2, 2), [0, 255, 0, 255], gif::DisposalMethod::Background, 5);
-            // Transparent over a `Background`-disposed rect shows through to nothing, not to the
-            // red frame 0 underneath it.
-            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 0, 0], gif::DisposalMethod::Keep, 5);
-            // Previous: its blue square must not still show once this frame is gone either.
-            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 255, 255], gif::DisposalMethod::Previous, 5);
-            write_frame(&mut encoder, (0, 0, 2, 2), [0, 0, 0, 0], gif::DisposalMethod::Keep, 5);
-        }
+        // Background's green square and Previous's blue one must not show once their frame is gone.
+        let path = gif_fixture(
+            dir.path(),
+            "dispose.gif",
+            (4, 4),
+            &[
+                ((0, 0, 4, 4), [255, 0, 0, 255], Keep),
+                ((0, 0, 2, 2), [0, 255, 0, 255], Background),
+                ((0, 0, 2, 2), [0, 0, 0, 0], Keep),
+                ((0, 0, 2, 2), [0, 0, 255, 255], Previous),
+                ((0, 0, 2, 2), [0, 0, 0, 0], Keep),
+            ],
+        );
 
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!(decoded.deltas.len(), 4, "5 frames, the first is the base");
         assert!(decoded.deltas.iter().all(|delta| delta.rect == (0, 0, 2, 2)), "the native rect, not the full canvas");
 
         assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
+
+        // A disposal outside the next frame's rect is still a change that frame's delta must carry.
+        let moving = gif_fixture(
+            dir.path(),
+            "moving.gif",
+            (4, 4),
+            &[
+                ((0, 0, 4, 4), [255, 0, 0, 255], Keep),
+                ((0, 0, 2, 2), [0, 255, 0, 255], Background),
+                ((2, 2, 2, 2), [0, 0, 255, 255], Previous),
+                ((0, 2, 1, 1), [255, 255, 0, 255], Keep),
+            ],
+        );
+        let decoded = decode_gif(&moving, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
+        assert_replays_like_a_full_recomposite(&moving, &decoded, |frame| frame.as_raw().clone());
     }
 
     /// Replays `decoded`'s deltas over its base and compares every frame against `image`'s own
@@ -876,37 +895,14 @@ mod tests {
         }
     }
 
-    /// A disposal outside the next frame's rect is still a change that frame's delta must carry.
-    #[test]
-    fn a_disposed_rect_outside_the_next_frame_is_part_of_its_delta() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("moving.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (0, 0, 2, 2), [0, 255, 0, 255], gif::DisposalMethod::Background, 5);
-            write_frame(&mut encoder, (2, 2, 2, 2), [0, 0, 255, 255], gif::DisposalMethod::Previous, 5);
-            write_frame(&mut encoder, (0, 2, 1, 1), [255, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-        }
-        let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
-        assert_replays_like_a_full_recomposite(&path, &decoded, |frame| frame.as_raw().clone());
-    }
-
     /// ADR-0235. The frame that would push the kept deltas past their byte budget is dropped
     /// rather than collapsing the whole animation to a still: playback loops over what fit.
     #[test]
     fn a_delta_past_its_byte_budget_is_dropped_and_the_rest_still_play() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("many.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            for n in 0..4u8 {
-                write_frame(&mut encoder, (0, 0, 2, 2), [0, n * 50, 0, 255], gif::DisposalMethod::Keep, 5);
-            }
-        }
+        let mut frames = vec![((0, 0, 4, 4), [255, 0, 0, 255], Keep)];
+        frames.extend((0..4u8).map(|n| ((0, 0, 2, 2), [0, n * 50, 0, 255], Keep)));
+        let path = gif_fixture(dir.path(), "many.gif", (4, 4), &frames);
         // Each 2x2 delta is 16 bytes; a 32-byte budget keeps exactly two.
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, 32).unwrap();
         assert_eq!(decoded.deltas.len(), 2, "a third 16-byte delta would total 48 bytes, past the 32-byte budget");
@@ -918,13 +914,12 @@ mod tests {
     #[test]
     fn a_scaled_gif_keeps_the_changed_rect_rather_than_a_whole_stored_frame() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("scaled.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 8, 8, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 8, 8), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (4, 4, 4, 4), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-        }
+        let path = gif_fixture(
+            dir.path(),
+            "scaled.gif",
+            (8, 8),
+            &[((0, 0, 8, 8), [255, 0, 0, 255], Keep), ((4, 4, 4, 4), [0, 255, 0, 255], Keep)],
+        );
 
         let decoded = decode_gif(&path, (4, 4), false, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (4, 4), "8x8 halved into a 4x4 box");
@@ -939,15 +934,17 @@ mod tests {
     #[test]
     fn a_scaled_and_cropped_gif_replays_like_scaling_each_whole_frame() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("moving.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 24, 16, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 24, 16), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (9, 5, 3, 3), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (0, 13, 5, 3), [0, 0, 255, 255], gif::DisposalMethod::Background, 5);
-            write_frame(&mut encoder, (17, 0, 1, 1), [255, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-        }
+        let path = gif_fixture(
+            dir.path(),
+            "moving.gif",
+            (24, 16),
+            &[
+                ((0, 0, 24, 16), [255, 0, 0, 255], Keep),
+                ((9, 5, 3, 3), [0, 255, 0, 255], Keep),
+                ((0, 13, 5, 3), [0, 0, 255, 255], Background),
+                ((17, 0, 1, 1), [255, 255, 0, 255], Keep),
+            ],
+        );
         // 24x16 covers a 10x10 box at 15x10, then crops to 10x10.
         let decoded = decode_gif(&path, (10, 10), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (10, 10));
@@ -963,13 +960,12 @@ mod tests {
     #[test]
     fn a_gif_whose_cover_size_rounds_up_scales_to_exactly_that_size() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wide.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 10, 7, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 10, 7), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (6, 4, 4, 3), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-        }
+        let path = gif_fixture(
+            dir.path(),
+            "wide.gif",
+            (10, 7),
+            &[((0, 0, 10, 7), [255, 0, 0, 255], Keep), ((6, 4, 4, 3), [0, 255, 0, 255], Keep)],
+        );
 
         let decoded = decode_gif(&path, (3, 3), true, Charge::Free, STARTING_TEXTURE_BUDGET).unwrap();
         assert_eq!((decoded.width, decoded.height), (3, 3));
@@ -984,13 +980,12 @@ mod tests {
     #[test]
     fn source_blur_is_ignored_on_an_animated_gif() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("animated.gif");
-        {
-            let mut file = std::fs::File::create(&path).unwrap();
-            let mut encoder = gif::Encoder::new(&mut file, 4, 4, &[]).unwrap();
-            write_frame(&mut encoder, (0, 0, 4, 4), [255, 0, 0, 255], gif::DisposalMethod::Keep, 5);
-            write_frame(&mut encoder, (0, 0, 4, 4), [0, 255, 0, 255], gif::DisposalMethod::Keep, 5);
-        }
+        let path = gif_fixture(
+            dir.path(),
+            "animated.gif",
+            (4, 4),
+            &[((0, 0, 4, 4), [255, 0, 0, 255], Keep), ((0, 0, 4, 4), [0, 255, 0, 255], Keep)],
+        );
         let sharp = key(&path, 4, FileVersion::read(&path));
         let blurred = CacheKey { blur_px: 50, ..sharp.clone() };
 

@@ -622,33 +622,6 @@ mod tests {
         assert_eq!((before, after), (2, 42));
     }
 
-    /// ADR-0157. `node::resolve_declared` reads one property at a time, so before the pass owned
-    /// the memo this shared computed ran once for every property of every node that reached it --
-    /// measured live at 1.35ms of CPU for a single cold getter, against a 2.5ms cap.
-    #[test]
-    fn a_computed_read_by_two_properties_in_one_pass_runs_its_body_once() {
-        let (lua, _dirty) = lua_with_state();
-        let runs: i64 = {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
-            lua.load(
-                r#"
-                runs = 0
-                local n = state("n", 1)
-                shared = computed({ n }, function(v) runs = runs + 1 return v end)
-                "#,
-            )
-            .exec()
-            .unwrap();
-            // Two reads the way two properties of two nodes reach one signal, not one Lua chunk:
-            // each is its own outermost `get_value`, which is what used to open its own memo.
-            for _ in 0..4 {
-                lua.load("shared:get()").exec().unwrap();
-            }
-            lua.globals().get("runs").unwrap()
-        };
-        assert_eq!(runs, 1, "four outermost reads inside one pass are one evaluation");
-    }
-
     /// A computed that failed gives every reader in the pass its error, an overrun or a Lua error
     /// alike. Re-running it per reader spent the 2.5ms cap again each time: under load, resolve
     /// went from 135 to 740 ms/s. The answer is the pass's, so the next pass reads the fixed state.
@@ -756,7 +729,12 @@ mod tests {
 
         let first: i64 = {
             let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
-            lua.load("shared:get() shared:get()").exec().unwrap();
+            // ADR-0157. `node::resolve_declared` reads one property at a time, so each read is its
+            // own outermost `get_value`, which used to open its own memo: measured live at 1.35ms
+            // of CPU for one cold getter, against a 2.5ms cap. Four reads, one evaluation.
+            for _ in 0..4 {
+                lua.load("shared:get()").exec().unwrap();
+            }
             lua.globals().get("runs").unwrap()
         };
         lua.load("n:set(21)").exec().unwrap();
@@ -765,7 +743,7 @@ mod tests {
             lua.load("return shared:get()").eval().unwrap()
         };
 
-        assert_eq!(first, 1, "the first pass evaluates once");
+        assert_eq!(first, 1, "four reads in the first pass evaluate once");
         assert_eq!(second, 21, "the second pass sees the write, rather than the memo from the first");
     }
 
@@ -885,56 +863,37 @@ mod tests {
     }
 
     /// A clock text mapped from a snapshot pushed every second: a push that leaves the minute alone
-    /// dirties no instance and leaves the node's memo holding.
+    /// dirties no instance and leaves the node's memo holding, for a scalar and for a table that is
+    /// equal entry for entry alike.
     #[test]
     fn a_source_write_that_leaves_the_mapped_output_alone_re_resolves_nothing() {
-        let (lua, dirty) = lua_with_state();
-        lua.load(r#"sys = state("sys", { t = 60 }) clock = sys:map(function(s) return s.t // 60 end)"#).exec().unwrap();
-        let (stamp, cells) = {
-            let _pass = LayoutPassBudget::enter(&lua).unwrap();
-            begin_instance_resolve(&lua, "bar");
-            let stamp = write_clock(&lua);
-            let frame = ComputedFrame::enter(&lua);
-            lua.load("clock:get()").exec().unwrap();
-            end_instance_resolve(&lua);
-            (stamp, frame.finish())
-        };
+        for (map, case) in [("s.t // 60", "scalar"), ("{ { text = s.t // 60, bold = true } }", "table")] {
+            let (lua, dirty) = lua_with_state();
+            lua.load(format!(r#"sys = state("sys", {{ t = 60 }}) clock = sys:map(function(s) return {map} end)"#))
+                .exec()
+                .unwrap();
+            let (stamp, cells) = {
+                let _pass = LayoutPassBudget::enter(&lua).unwrap();
+                begin_instance_resolve(&lua, "bar");
+                let stamp = write_clock(&lua);
+                let frame = ComputedFrame::enter(&lua);
+                lua.load("clock:get()").exec().unwrap();
+                end_instance_resolve(&lua);
+                (stamp, frame.finish())
+            };
 
-        lua.load("sys:set({ t = 61 })").exec().unwrap();
-        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean);
-        assert!(!written_since(stamp, &cells), "the node's memo still holds");
+            lua.load("sys:set({ t = 61 })").exec().unwrap();
+            assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean, "{case}");
+            assert!(!written_since(stamp, &cells), "{case}: the node's memo still holds");
 
-        lua.load("sys:set({ t = 120 })").exec().unwrap();
-        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
-        assert!(written_since(stamp, &cells));
+            lua.load("sys:set({ t = 120 })").exec().unwrap();
+            assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]), "{case}");
+            assert!(written_since(stamp, &cells), "{case}");
 
-        // A handler reading the change first leaves nothing for the take to rerun, yet it counts.
-        lua.load("sys:set({ t = 180 }) clock:get()").exec().unwrap();
-        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
-    }
-
-    #[test]
-    fn a_mapped_table_equal_entry_for_entry_re_resolves_nothing() {
-        let (lua, dirty) = lua_with_state();
-        lua.load(r#"sys = state("sys", { t = 60 }) clock = sys:map(function(s) return { { text = s.t // 60, bold = true } } end)"#)
-            .exec()
-            .unwrap();
-        let (stamp, cells) = {
-            let _pass = LayoutPassBudget::enter(&lua).unwrap();
-            begin_instance_resolve(&lua, "bar");
-            let stamp = write_clock(&lua);
-            let frame = ComputedFrame::enter(&lua);
-            lua.load("clock:get()").exec().unwrap();
-            end_instance_resolve(&lua);
-            (stamp, frame.finish())
-        };
-
-        lua.load("sys:set({ t = 61 })").exec().unwrap();
-        assert_eq!(dirty.take_scope(&lua), DirtyScope::Clean);
-        assert!(!written_since(stamp, &cells), "a fresh but equal table is no change");
-
-        lua.load("sys:set({ t = 120 })").exec().unwrap();
-        assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]));
+            // A handler reading the change first leaves nothing for the take to rerun, yet it counts.
+            lua.load("sys:set({ t = 180 }) clock:get()").exec().unwrap();
+            assert_eq!(dirty.take_scope(&lua), DirtyScope::Instances(vec!["bar".into()]), "{case}");
+        }
     }
 
     #[test]

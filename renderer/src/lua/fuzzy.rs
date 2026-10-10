@@ -425,17 +425,22 @@ mod tests {
         score(haystack, needle).expect("expected a match").0
     }
 
-    /// The case the five-tier scorer this replaced got wrong: initials all land on word boundaries,
-    /// which is worth more than the same letters buried mid-word. The old tiers put both candidates
-    /// in the same bucket and then preferred the shorter name, which is the wrong one.
     #[test]
-    fn initials_on_word_boundaries_beat_the_same_letters_found_mid_word() {
-        assert!(scored("Visual Studio Code", "vsc") > scored("Advanced Settings Configurator", "vsc"));
-    }
-
-    #[test]
-    fn a_prefix_beats_the_same_run_found_later_in_the_name() {
-        assert!(scored("Files", "fil") > scored("Profile Editor", "fil"));
+    fn the_better_match_scores_higher() {
+        for (better, worse, needle, case) in [
+            // The five-tier scorer put both in one bucket, then preferred the shorter name.
+            (
+                "Visual Studio Code",
+                "Advanced Settings Configurator",
+                "vsc",
+                "initials on word boundaries beat the same letters mid-word",
+            ),
+            ("Files", "Profile Editor", "fil", "a prefix beats the same run found later"),
+            ("firefox", "fine resolver", "fire", "a consecutive run beats the same characters spread apart"),
+            ("GnuCash", "genuine cash", "gc", "a camel hump is a match position the way a space is"),
+        ] {
+            assert!(scored(better, needle) > scored(worse, needle), "{case}");
+        }
     }
 
     /// The DP window once ended at the earliest complete subsequence, so a literal run past it was
@@ -453,16 +458,6 @@ mod tests {
     fn a_long_exact_match_keeps_its_score() {
         let long = "a".repeat(4000);
         assert!(scored(&long, &long) > scored(&long[..2000], &long[..2000]));
-    }
-
-    #[test]
-    fn a_consecutive_run_beats_the_same_characters_spread_apart() {
-        assert!(scored("firefox", "fire") > scored("fine resolver", "fire"));
-    }
-
-    #[test]
-    fn a_camel_hump_is_a_match_position_the_way_a_space_is() {
-        assert!(scored("GnuCash", "gc") > scored("genuine cash", "gc"));
     }
 
     #[test]
@@ -499,16 +494,13 @@ mod tests {
         assert!(score("Дисковая утилита", "ди").is_some());
     }
 
-    /// `start` is a config's first tiebreaker, so it has to be the first matched position.
+    /// `start` is a config's first tiebreaker: the first matched position, as a byte offset on the
+    /// greedy path too, or `string.sub` slices mid-codepoint.
     #[test]
-    fn start_is_where_the_match_begins() {
-        assert_eq!(score("a Firefox", "fire").map(|(_, start)| start), Some(2));
-    }
-
-    /// A byte offset on the greedy path too, or `string.sub` slices mid-codepoint.
-    #[test]
-    fn a_non_ascii_start_is_a_byte_offset_into_the_original_haystack() {
-        assert_eq!(score("Дисковая Утилита", "ут").map(|(_, start)| start), Some("Дисковая ".len()));
-        assert_eq!(score("İİ ab", "ab").map(|(_, start)| start), Some("İİ ".len()));
+    fn start_is_the_byte_offset_where_the_match_begins() {
+        let start = |haystack, needle| score(haystack, needle).map(|(_, start)| start);
+        assert_eq!(start("a Firefox", "fire"), Some(2));
+        assert_eq!(start("Дисковая Утилита", "ут"), Some("Дисковая ".len()));
+        assert_eq!(start("İİ ab", "ab"), Some("İİ ".len()));
     }
 }

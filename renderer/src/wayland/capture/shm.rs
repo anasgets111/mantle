@@ -83,7 +83,7 @@ mod tests {
     }
 
     #[test]
-    fn a_later_unsupported_shm_format_does_not_overwrite_an_earlier_supported_one() {
+    fn keep_supported_never_overwrites_a_supported_format_with_an_unsupported_one() {
         let first = keep_supported(None, wl_shm::Format::Xrgb8888, true);
         assert_eq!(first, Some(wl_shm::Format::Xrgb8888));
         assert_eq!(keep_supported(first, wl_shm::Format::Bgr888, true), Some(wl_shm::Format::Xrgb8888));
@@ -91,12 +91,9 @@ mod tests {
         assert_eq!(alpha, Some(wl_shm::Format::Argb8888));
         assert_eq!(keep_supported(alpha, wl_shm::Format::Xrgb8888, false), alpha);
         assert_eq!(keep_supported(alpha, wl_shm::Format::Bgr888, false), alpha);
-    }
-
-    #[test]
-    fn an_unsupported_first_format_still_lets_a_later_supported_one_through() {
-        let first = keep_supported(None, wl_shm::Format::Bgr888, true);
-        assert_eq!(first, None);
-        assert_eq!(keep_supported(first, wl_shm::Format::Argb8888, true), Some(wl_shm::Format::Argb8888));
+        // An unsupported first format still lets a later supported one through.
+        let none = keep_supported(None, wl_shm::Format::Bgr888, true);
+        assert_eq!(none, None);
+        assert_eq!(keep_supported(none, wl_shm::Format::Argb8888, true), Some(wl_shm::Format::Argb8888));
     }
 }

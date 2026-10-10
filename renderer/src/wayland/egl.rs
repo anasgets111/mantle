@@ -194,40 +194,23 @@ mod tests {
     }
 
     #[test]
-    fn accepts_exact_window_gles3_argb8888_config() {
-        assert!(satisfies_requirements(full_match()));
-    }
-
-    #[test]
-    fn accepts_config_with_extra_bits_set() {
-        let mut attrs = full_match();
-        attrs.surface_type |= egl::PBUFFER_BIT;
-        attrs.renderable_type |= egl::OPENGL_ES2_BIT;
-        assert!(satisfies_requirements(attrs));
-    }
-
-    #[test]
-    fn rejects_missing_window_bit() {
-        let mut attrs = full_match();
-        attrs.surface_type = egl::PBUFFER_BIT;
-        assert!(!satisfies_requirements(attrs));
-    }
-
-    #[test]
-    fn rejects_missing_gles3_bit() {
-        let mut attrs = full_match();
-        attrs.renderable_type = egl::OPENGL_ES2_BIT;
-        assert!(!satisfies_requirements(attrs));
-    }
-
-    #[test]
-    fn rejects_non_8_bit_channel() {
-        let mut attrs = full_match();
-        attrs.red_size = 5;
-        assert!(!satisfies_requirements(attrs));
-
-        let mut attrs = full_match();
-        attrs.alpha_size = 0;
-        assert!(!satisfies_requirements(attrs));
+    fn satisfies_requirements_checks_each_field() {
+        let tweak = |edit: fn(&mut ConfigAttribs)| {
+            let mut attrs = full_match();
+            edit(&mut attrs);
+            satisfies_requirements(attrs)
+        };
+        assert!(satisfies_requirements(full_match()), "the exact window gles3 argb8888 config");
+        assert!(
+            tweak(|a| {
+                a.surface_type |= egl::PBUFFER_BIT;
+                a.renderable_type |= egl::OPENGL_ES2_BIT;
+            }),
+            "extra bits set"
+        );
+        assert!(!tweak(|a| a.surface_type = egl::PBUFFER_BIT), "missing window bit");
+        assert!(!tweak(|a| a.renderable_type = egl::OPENGL_ES2_BIT), "missing gles3 bit");
+        assert!(!tweak(|a| a.red_size = 5), "non-8-bit channel");
+        assert!(!tweak(|a| a.alpha_size = 0), "no alpha");
     }
 }

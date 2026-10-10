@@ -669,26 +669,22 @@ mod tests {
     }
 
     #[test]
-    fn state_returns_a_signal_reading_back_the_initial_value_it_was_given() {
+    fn an_unedited_literal_keeps_the_live_value() {
+        // ADR-0044 decision 5: reload preserves the user's last click, not the literal. A table
+        // cannot be compared (a popup's anchor rect would snap to the corner on every reload), and
+        // Lua `==` says `0 == 0.0`, so reformatting a number is not an edit.
         let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua.load(r#"return state("count", 7):get()"#).eval().unwrap();
-        assert_eq!(result, 7);
-    }
-
-    #[test]
-    fn the_same_state_name_and_the_same_initial_keeps_the_value_written_since() {
-        // ADR-0044 decision 5: reload preserves the user's last click, not the literal.
-        let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                state("open", 0):set(5)
-                return state("open", 0):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(result, 5, "an unedited literal must keep the current value, not reset to the initial");
+        for (first, again, case) in [
+            ("0", "0", "the same literal"),
+            ("{ x = 0 }", "{ x = 0 }", "a table literal"),
+            ("0", "0.0", "an integer rewritten as a float"),
+        ] {
+            let result: i64 = lua
+                .load(format!(r#"state("{case}", {first}):set(5) return state("{case}", {again}):get()"#))
+                .eval()
+                .unwrap();
+            assert_eq!(result, 5, "{case}: an unedited literal must keep the current value, not reset");
+        }
     }
 
     #[test]
@@ -725,39 +721,6 @@ mod tests {
         assert!(err.contains(r#"state("mode", ...) is declared twice in this evaluation"#), "{err}");
         begin_evaluation(&lua);
         lua.load(r#"state("mode", "s") state("mode", "s")"#).exec().expect("the same seed twice agrees");
-    }
-
-    #[test]
-    fn a_table_initial_never_counts_as_edited() {
-        // A popup's anchor rect: fresh table pointers would make every reload an edit and snap the
-        // popup to the corner.
-        let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                state("anchor", { x = 0 }):set(5)
-                return state("anchor", { x = 0 }):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(result, 5, "a table literal must keep the live value, since it cannot be compared");
-    }
-
-    #[test]
-    fn rewriting_an_integer_literal_as_a_float_is_not_an_edit() {
-        // Lua `==` says `0 == 0.0`; reformatting a number is not an edit.
-        let (lua, _dirty) = lua_with_state();
-        let result: i64 = lua
-            .load(
-                r#"
-                state("count", 0):set(5)
-                return state("count", 0.0):get()
-                "#,
-            )
-            .eval()
-            .unwrap();
-        assert_eq!(result, 5, "0 and 0.0 are the same literal");
     }
 
     #[test]

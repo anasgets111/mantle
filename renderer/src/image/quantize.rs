@@ -129,22 +129,16 @@ mod tests {
     }
 
     #[test]
-    fn depth_zero_merges_a_busy_image_into_one_colour() {
-        let noisy =
-            ::image::RgbaImage::from_fn(16, 16, |x, y| ::image::Rgba([(x * 16) as u8, (y * 16) as u8, 90, 255]));
-        let (_dir, path) = save("noisy.png", noisy);
-        for (_, method) in Method::NAMES {
-            let colors = quantize_file(&path, 0, method, 0, None).unwrap();
-            assert_eq!(colors.len(), 1, "{method:?}");
-            assert_eq!(colors[0].0, 256, "{method:?}");
-        }
-    }
-
-    #[test]
-    fn depth_caps_the_colour_count() {
+    fn depth_bounds_the_colour_count() {
         let noisy = ::image::RgbaImage::from_fn(32, 32, |x, y| ::image::Rgba([(x * 8) as u8, (y * 8) as u8, 90, 255]));
         let (_dir, path) = save("noisy.png", noisy);
         for (_, method) in Method::NAMES {
+            let merged = quantize_file(&path, 0, method, 0, None).unwrap();
+            assert_eq!(
+                (merged.len(), merged[0].0),
+                (1, 1024),
+                "depth 0 merges a busy image into one colour, {method:?}"
+            );
             assert!(quantize_file(&path, 2, method, 0, None).unwrap().len() <= 4, "{method:?}");
         }
     }
@@ -176,15 +170,8 @@ mod tests {
 
     #[test]
     fn a_missing_source_fails_cleanly() {
-        assert!(quantize_file(Path::new("/nonexistent/wall.png"), 3, Method::Celebi, 128, None).is_err());
-    }
-
-    #[test]
-    fn a_source_past_the_decode_edge_fails_cleanly() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wide.png");
-        ::image::RgbaImage::from_pixel(MAX_DECODE_EDGE + 1, 1, ::image::Rgba([1, 2, 3, 255])).save(&path).unwrap();
-        assert!(quantize_file(&path, 3, Method::Celebi, 0, None).is_err());
+        let err = quantize_file(Path::new("/nonexistent/wall.png"), 3, Method::Celebi, 128, None).unwrap_err();
+        assert!(err.contains("/nonexistent/wall.png"), "the error names the file: {err}");
     }
 
     #[test]

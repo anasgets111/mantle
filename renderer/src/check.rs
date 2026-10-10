@@ -174,54 +174,12 @@ mod tests {
         assert!(report.contains("panel   bar"), "the bar must be in the report:\n{report}");
     }
 
-    fn check_err(lua: &str) -> String {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("shell.lua"), lua).unwrap();
-        super::run(dir.path()).unwrap_err()
-    }
-
-    #[test]
-    fn an_unknown_root_property_is_not_called_a_top_level_return_error() {
-        let err = check_err("\nreturn panel { id = \"bar\", layer = \"top\", paddng = 1 }\n");
-        assert!(err.contains("shell.lua:2:") && err.contains("padding"), "{err}");
-        assert!(!err.contains("top-level return"), "{err}");
-    }
-
     #[test]
     fn a_directory_with_no_shell_lua_says_so_and_names_the_fix() {
         let dir = tempfile::tempdir().unwrap();
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.contains("no shell.lua"), "{err}");
         assert!(err.contains("mantle init"), "an error a new user hits should name the way out: {err}");
-    }
-
-    #[test]
-    fn a_config_that_does_not_evaluate_reports_the_lua_error() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("shell.lua"), "return { panel { id = 1 } }\n").unwrap();
-        let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains("shell.lua"), "the error must name the file: {err}");
-    }
-
-    /// The config directory once, then Lua's own `file:line`, named relative to it.
-    #[test]
-    fn an_error_in_a_required_module_names_the_directory_once_and_the_module_by_its_relative_path() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("widgets")).unwrap();
-        std::fs::write(
-            dir.path().join("widgets/bar.lua"),
-            "local M = {}\nfunction M.build() return nil + 1 end\nreturn M\n",
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("shell.lua"), "local built = require(\"widgets.bar\").build()\nreturn built\n")
-            .unwrap();
-
-        let err = super::run(dir.path()).unwrap_err();
-
-        let head =
-            format!("{}: widgets/bar.lua:2: attempt to perform arithmetic on a nil value\n", dir.path().display());
-        assert!(err.starts_with(&head), "{err}");
-        assert_eq!(err.matches(&dir.path().display().to_string()).count(), 1, "{err}");
     }
 
     /// Every row is a config that fails `mantle check`; the substrings pin the parts an author reads.
@@ -586,39 +544,17 @@ mod tests {
                 assert!(err.contains(want), "{name}: missing {want:?} in:\n{err}");
             }
             assert_eq!(err.matches(&dir_name).count(), 1, "{name}: the config dir is named once:\n{err}");
+            assert!(err.starts_with(&format!("{dir_name}: ")), "{name}: the config dir heads the error:\n{err}");
+            assert!(!err.contains("[C]: in metamethod"), "{name}: the error handler's own frame is noise:\n{err}");
+            if !must.iter().any(|want| want.contains("top-level return")) {
+                assert!(!err.contains("top-level return"), "{name}: not a top-level return error:\n{err}");
+            }
             for rust_form in
                 ["String(", "Integer(", "usize", "f64", "i64", "i32", "u32", "u64", "converting", "C modules", "..="]
             {
                 assert!(!err.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
             }
         }
-    }
-
-    /// A getter's failure names the line that made the signal, not only the line inside its function.
-    #[test]
-    fn a_failing_map_names_where_the_signal_was_created() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("shell.lua"),
-            "local count = state(\"count\", 1)\n\
-             local label = count:map(function(n)\n\
-             \x20 return n.missing\n\
-             end)\n\
-             return panel { id = \"p\", layer = \"top\", child = text { content = label } }\n",
-        )
-        .unwrap();
-
-        let err = super::run(dir.path()).unwrap_err();
-
-        assert!(
-            err.contains(
-                "shell.lua:5: text: invalid value for `content`: Signal getter on a `text` node failed: signal created at shell.lua:2: \
-                 shell.lua:3: attempt to index a number value (local 'n') (at panel (shell.lua:5) on `p@DP-1`)\n\
-                 stack traceback:\n\tshell.lua:3: in function <shell.lua:2>"
-            ),
-            "{err}"
-        );
-        assert!(!err.contains("[C]: in metamethod"), "the error handler's own frame is noise: {err}");
     }
 
     /// mlua's userdata dispatch adds `[C]: in upvalue '__index'` and `__mlua_index:31` frames above

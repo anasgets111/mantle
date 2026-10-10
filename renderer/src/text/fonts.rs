@@ -357,34 +357,21 @@ mod tests {
         }
     }
 
-    /// A family nothing on the system answers is a diagnostic, not a failure: the node draws in the
-    /// declared chain, so the database must come back untouched rather than half-loaded.
+    /// A family nothing answers is a diagnostic, not a failure: the node draws in the declared
+    /// chain, so the database comes back untouched. A family the chain already loaded must not
+    /// map its file a second time.
     #[test]
-    fn a_named_family_nothing_answers_leaves_the_database_alone() {
+    fn load_family_leaves_the_database_unchanged_for_known_and_unknown_families() {
         if !fc_match_available() || !fc_lists(TEST_FAMILY) {
             eprintln!("fc-match or {TEST_FAMILY:?} not available, skip");
             return;
         }
-        let mut resolved = resolve_chain(&[TEST_FAMILY]);
-        let before = resolved.db.faces().count();
-        assert_eq!(load_family(&mut resolved.db, "ZZ No Such Family 9184", &mut resolved.loaded_paths), None);
-        assert_eq!(resolved.db.faces().count(), before);
-    }
-
-    /// Naming a family the chain already loaded must not map its file a second time.
-    #[test]
-    fn naming_a_family_the_chain_already_loaded_reuses_its_file() {
-        if !fc_match_available() || !fc_lists(TEST_FAMILY) {
-            eprintln!("fc-match or {TEST_FAMILY:?} not available, skip");
-            return;
+        for (family, expected) in [("ZZ No Such Family 9184", None), (TEST_FAMILY, Some(TEST_FAMILY))] {
+            let mut resolved = resolve_chain(&[TEST_FAMILY]);
+            let before = resolved.db.faces().count();
+            assert_eq!(load_family(&mut resolved.db, family, &mut resolved.loaded_paths).as_deref(), expected);
+            assert_eq!(resolved.db.faces().count(), before, "{family:?} must not change the database");
         }
-        let mut resolved = resolve_chain(&[TEST_FAMILY]);
-        let before = resolved.db.faces().count();
-        assert_eq!(
-            load_family(&mut resolved.db, TEST_FAMILY, &mut resolved.loaded_paths).as_deref(),
-            Some(TEST_FAMILY)
-        );
-        assert_eq!(resolved.db.faces().count(), before, "the same file must not load twice");
     }
 
     /// A machine with no font files at all -- the case `system_fallback` reaches when even the

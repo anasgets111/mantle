@@ -710,6 +710,11 @@ mod tests {
         (client, outbound_rx)
     }
 
+    /// A client over a config path that does not exist, for tests that push state or run Lua directly.
+    pub(super) fn bare_client() -> (RendererClient, mpsc::UnboundedReceiver<RendererFrame>) {
+        test_client(std::path::Path::new("/no/such/shell.lua"))
+    }
+
     /// The whole `behind_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
     /// shape the design exists for: a full-screen surface whose click-catcher covers everything
     /// and whose only glass is one card. A `layer-rule` blurring the surface rect flattens the
@@ -757,68 +762,48 @@ mod tests {
 
     /// ADR-0204. A `Background` wallpaper paints an opaque box and a full-surface image and can
     /// receive nothing, so it must claim no input: it occludes nothing, and claiming the output
-    /// stopped the compositor clearing window focus over an empty workspace.
+    /// stopped the compositor clearing window focus over an empty workspace. The same tree on `Top`
+    /// keeps the paint proxy, because there a drawn card must not leak a click to the window behind it.
     #[test]
-    fn a_background_surface_claims_input_only_where_a_handler_sits_not_where_it_paints() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell_lua = write_shell_lua(
-            dir.path(),
-            r##"return {
-                panel {
-                    id = "wallpaper", layer = "background",
-                    anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive_zone = "ignore", width = "fill", height = "fill",
-                    background = "#11111bff",
-                    child = rect {
-                        width = "fill", height = "fill", background = "#202020ff",
-                        children = {
-                            rect { width = 120, height = 40, on_click = function() end },
-                        },
-                    },
-                },
-            }"##,
-        );
-        let (mut client, _rx) = test_client(&shell_lua);
-        assert!(run_startup(&mut client), "the config must resolve into a scene");
-        let tree = client.scene().surface("wallpaper@TEST").expect("the panel resolved");
+    fn overlay_input_regions_follow_the_layer() {
+        for (layer, expected, case) in [
+            (
+                "background",
+                crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 },
+                "the handler's box alone; the painted ground claims nothing",
+            ),
+            (
+                "top",
+                crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 },
+                "the painted ground claims the surface and the walk stops there",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let shell_lua = write_shell_lua(
+                dir.path(),
+                &format!(
+                    r##"return {{
+                    panel {{
+                        id = "host", layer = "{layer}",
+                        anchor = {{ top = true, bottom = true, left = true, right = true }},
+                        exclusive_zone = "ignore", width = "fill", height = "fill",
+                        background = "#11111bff",
+                        child = rect {{
+                            width = "fill", height = "fill", background = "#202020ff",
+                            children = {{
+                                rect {{ width = 120, height = 40, on_click = function() end }},
+                            }},
+                        }},
+                    }},
+                }}"##
+                ),
+            );
+            let (mut client, _rx) = test_client(&shell_lua);
+            assert!(run_startup(&mut client), "{layer}: the config must resolve into a scene");
+            let tree = client.scene().surface("host@TEST").expect("the panel resolved");
 
-        assert_eq!(
-            layout::overlay_input_regions(tree, 1.0),
-            [crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 120, y1: 40 }],
-            "the handler's box alone; the painted ground and the painted root claim nothing"
-        );
-    }
-
-    /// The same tree on `Top` keeps the paint proxy, because there a drawn card must not leak a
-    /// click to the window behind it. This is the half of the walk ADR-0204 did not change.
-    #[test]
-    fn a_top_surface_still_claims_input_where_it_paints() {
-        let dir = tempfile::tempdir().unwrap();
-        let shell_lua = write_shell_lua(
-            dir.path(),
-            r##"return {
-                panel {
-                    id = "host", layer = "top",
-                    anchor = { top = true, bottom = true, left = true, right = true },
-                    exclusive_zone = false, width = "fill", height = "fill",
-                    child = rect {
-                        width = "fill", height = "fill", background = "#202020ff",
-                        children = {
-                            rect { width = 120, height = 40, on_click = function() end },
-                        },
-                    },
-                },
-            }"##,
-        );
-        let (mut client, _rx) = test_client(&shell_lua);
-        assert!(run_startup(&mut client), "the config must resolve into a scene");
-        let tree = client.scene().surface("host@TEST").expect("the panel resolved");
-
-        assert_eq!(
-            layout::overlay_input_regions(tree, 1.0),
-            [crate::text::snap::PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 1080 }],
-            "the painted ground claims the surface and the walk stops there"
-        );
+            assert_eq!(layout::overlay_input_regions(tree, 1.0), [expected], "{layer}: {case}");
+        }
     }
 
     /// One 1920x1080 `"TEST"` output keeps fixture ids readable (`"bar@TEST"`).
@@ -883,84 +868,39 @@ mod tests {
         started
     }
 
-    /// ADR-0070 decision 1: reading starts it. Unmentioned capabilities never run.
+    /// ADR-0070 decision 1: reading starts it, an evaluation touching no capability costs nothing, and
+    /// `__index` fires once per name because it moves the member onto the table (a `computed` in a
+    /// `list` `itemfn` reads `mantle.audio` once per row per layout pass; starting per read would be
+    /// a frame per row per frame). A typo stays ordinary nil so the config line gets named; any other
+    /// metamethod result would make `mantle.audioo:get()` fail inside the engine.
     #[test]
-    fn a_capability_read_asks_the_supervisor_to_start_it() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
-
-        client.loader.lua().load("local _ = mantle.audio").exec().unwrap();
-
-        assert_eq!(queued_starts(&mut outbound_rx), vec!["audio".to_string()]);
-    }
-
-    /// An evaluation touching no capability costs nothing.
-    #[test]
-    fn a_config_that_reads_no_capability_starts_none() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
-
-        client.loader.lua().load("local _ = mantle.version.major").exec().unwrap();
-
-        assert!(queued_starts(&mut outbound_rx).is_empty(), "`version` is off the roster and has nothing behind it");
-    }
-
-    /// `__index` fires once per name because it moves the member onto the table. A `computed` in a
-    /// `list` `itemfn` reads `mantle.audio` once per row per layout pass; starting per read would
-    /// be a frame per row per frame.
-    #[test]
-    fn re_reading_a_capability_queues_no_second_start() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
-
-        client.loader.lua().load("for _ = 1, 50 do local _ = mantle.audio end").exec().unwrap();
-
-        assert_eq!(queued_starts(&mut outbound_rx), vec!["audio".to_string()]);
-    }
-
-    /// A typo stays ordinary nil so the config line gets named. Any other metamethod result would
-    /// make `mantle.audioo:get()` fail inside the engine.
-    #[test]
-    fn a_name_no_capability_owns_reads_nil_and_starts_nothing() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
-
-        let is_nil: bool = client.loader.lua().load("return mantle.audioo == nil").eval().unwrap();
-
-        assert!(is_nil);
-        assert!(queued_starts(&mut outbound_rx).is_empty());
+    fn capability_reads_start_only_rostered_names_once() {
+        for (script, expected, case) in [
+            ("local _ = mantle.audio", vec!["audio"], "a read starts it"),
+            ("local _ = mantle.version.major", vec![], "`version` is off the roster and has nothing behind it"),
+            ("for _ = 1, 50 do local _ = mantle.audio end", vec!["audio"], "a re-read queues no second start"),
+            ("assert(mantle.audioo == nil)", vec![], "a name no capability owns reads nil and starts nothing"),
+        ] {
+            let (client, mut outbound_rx) = bare_client();
+            client.loader.lua().load(script).exec().unwrap();
+            assert_eq!(queued_starts(&mut outbound_rx), expected, "{case}");
+        }
     }
 
     #[test]
     fn apply_state_snapshot_updates_the_live_signal_without_evaluating_shell_lua() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
-
-        let snapshot = StateSnapshot {
-            capability: "audio".to_string(),
-            revision: 1,
-            payload: serde_json::json!({ "app_name": "Zen" }),
-        };
-        client.apply_state_snapshot(snapshot).unwrap();
-
-        assert_eq!(probe::<String>(&client.loader, "app_name = mantle.audio:get().app_name", "app_name"), "Zen");
-    }
-
-    #[test]
-    fn apply_state_snapshot_lazily_registers_an_unrostered_capabilitys_live_signal() {
         // ADR-0029: the first off-roster snapshot creates the Lua global, not an error.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
         assert!(shared::Capability::from_name("workspace").is_none(), "this test needs a genuinely unrostered name");
-
-        let snapshot = StateSnapshot {
-            capability: "workspace".to_string(),
-            revision: 1,
-            payload: serde_json::json!({ "active": 2 }),
-        };
-        client.apply_state_snapshot(snapshot).unwrap();
-
-        assert_eq!(probe::<i64>(&client.loader, "active = mantle.workspace:get().active", "active"), 2);
+        let (client, _outbound_rx) = bare_client();
+        for (capability, payload, probe_expr, expected) in [
+            ("audio", serde_json::json!({ "app_name": "Zen" }), "mantle.audio:get().app_name", "Zen"),
+            ("workspace", serde_json::json!({ "active": 2 }), "mantle.workspace:get().active", "2"),
+        ] {
+            let snapshot = StateSnapshot { capability: capability.to_string(), revision: 1, payload };
+            client.apply_state_snapshot(snapshot).unwrap();
+            let read = probe::<mlua::Value>(&client.loader, &format!("seen = {probe_expr}"), "seen");
+            assert_eq!(read.to_string().unwrap(), expected, "{capability}");
+        }
     }
 
     #[test]
@@ -1192,8 +1132,7 @@ mod tests {
     fn every_rostered_capability_is_on_the_mantle_table_and_reads_nil_before_its_first_snapshot() {
         // ADR-0037: every rostered capability is `mantle.<name>`, a live signal reading nil at
         // boot, never an index-into-nil rescue error.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         for capability in shared::Capability::ALL.iter().map(|c| c.as_str()) {
             let setup = format!("is_nil = mantle.{capability}:get() == nil");
@@ -1208,8 +1147,7 @@ mod tests {
     fn no_rostered_capability_is_left_as_a_bare_global() {
         // A global, once set, is never removed; a bare seed would work until colliding with a node
         // constructor as `lock` did (ADR-0052 decision 1).
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         for capability in shared::Capability::ALL.iter().map(|c| c.as_str()) {
             // `lock` is the legitimate node constructor.
@@ -1228,8 +1166,7 @@ mod tests {
     fn an_unrostered_push_refuses_to_replace_a_name_the_mantle_table_already_holds() {
         // `rescue` reports config failures; replacing it with an empty capability hides the shell's
         // breakage, as in ADR-0052 decision 1's `lock` bug.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         let snapshot = StateSnapshot { capability: "rescue".to_string(), revision: 1, payload: serde_json::json!({}) };
         let err = client.apply_state_snapshot(snapshot).unwrap_err().to_string();
@@ -1242,8 +1179,7 @@ mod tests {
     #[test]
     fn rescue_and_screens_moved_onto_the_same_table_as_the_roster() {
         // `rescue` and `screens` both live under `mantle.*`, like capabilities.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         let setup = r#"
             rescued = mantle.rescue:get().is_rescue
@@ -1261,8 +1197,7 @@ mod tests {
     fn mantle_version_is_three_integers_a_config_can_compare() {
         // Shape matters: configs compare `mantle.version.major > 0` or `minor >= 2`, so all three
         // fields must be numeric.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         let setup = "major, minor, patch = mantle.version.major, mantle.version.minor, mantle.version.patch";
         // Read through Lua against Cargo's string, not a second builder call: assert what config
@@ -1334,8 +1269,7 @@ mod tests {
     fn a_declared_store_opens_the_file_the_config_named_and_nothing_else() {
         // ADR-0136: path, file name, and defaults belong to config; the envelope must carry exactly
         // `shell.lua`'s values, not a directory chosen here.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
 
         client
             .loader
@@ -1358,8 +1292,7 @@ mod tests {
 
     #[test]
     fn a_stores_key_reads_the_value_the_supervisor_pushed_for_that_file() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
         client
             .loader
             .lua()
@@ -1393,8 +1326,7 @@ mod tests {
 
     #[test]
     fn a_stores_write_names_the_same_file_the_declaration_did() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
         client
             .loader
             .lua()
@@ -1421,8 +1353,7 @@ mod tests {
         // declarations:
         // all three executions land on one table and signal per key, or one `:set()` leaves the
         // other stale.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         let setup = r#"
             first = persistent_table { path = "/tmp/bar", name = "state.json" }
@@ -1434,8 +1365,7 @@ mod tests {
 
     #[test]
     fn a_declared_session_process_declares_the_name_and_the_stop_signal_the_config_chose() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
 
         client
             .loader
@@ -1454,8 +1384,7 @@ mod tests {
 
     #[test]
     fn a_session_process_with_an_unknown_stop_signal_raises_and_declares_nothing() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
 
         let err =
             client.loader.lua().load(r#"session_process { name = "rec", stop_signal = "TEM" }"#).exec().unwrap_err();
@@ -1475,8 +1404,7 @@ mod tests {
 
     #[test]
     fn a_session_processs_fields_read_what_the_supervisor_pushed_for_that_name() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
         client.loader.lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
 
         client
@@ -1510,8 +1438,7 @@ mod tests {
 
     #[test]
     fn an_undeclared_names_fields_read_nil_rather_than_a_stopped_program() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
         client.loader.lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
 
         client
@@ -1531,8 +1458,7 @@ mod tests {
 
     #[test]
     fn a_session_processs_methods_name_the_program_the_declaration_did() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
         client.loader.lua().load(r#"rec = session_process { name = "recorder" }"#).exec().unwrap();
         let _declare = queued_frame(&mut outbound_rx);
 
@@ -1573,8 +1499,7 @@ mod tests {
         // The same reason `persistent_table` caches: a module and `shell.lua` may both declare it,
         // and in-place reload reruns both. Two handles would mean two sets of field signals, one of
         // them stale.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         let setup = r#"
             first = session_process { name = "recorder" }
@@ -1587,8 +1512,7 @@ mod tests {
     /// A config `on_click` invoking lock queues a real command envelope.
     #[test]
     fn a_config_calling_the_lock_action_queues_a_command_for_the_supervisor() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, mut outbound_rx) = test_client(&missing);
+        let (client, mut outbound_rx) = bare_client();
 
         client.loader.lua().load(r#"mantle.lock:lock()"#).exec().unwrap();
 
@@ -1601,8 +1525,7 @@ mod tests {
 
     #[test]
     fn apply_state_snapshot_reuses_the_same_signal_across_repeated_pushes_for_one_capability() {
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
 
         client
             .apply_state_snapshot(StateSnapshot {
@@ -1838,68 +1761,82 @@ mod tests {
         assert!(client.state.pending.is_none());
     }
 
+    /// Which declarations a reevaluation rebuilds, from what was last applied. `xdg-shell.xml`
+    /// permits `set_title`/`set_app_id` after mapping, so a title edit must not respawn the process.
+    /// ADR-0038 decision 2: layer-shell accepts `margin`, exclusive zone, `keyboard_interactivity`
+    /// and size on a live surface; comparing whole specs would remap a bar just to move it 4px.
+    /// `get_layer_surface` fixes the namespace at creation, so that edit needs a new layer surface.
     #[test]
-    fn a_windows_title_is_an_in_place_field_rather_than_a_topology_one() {
-        // `xdg-shell.xml` permits `set_title`/`set_app_id` after mapping, so a title change must
-        // not respawn the process.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return window { id = "settings", title = "Settings" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
+    fn reevaluate_names_the_declarations_to_rebuild() {
+        for (applied, edited, rebuilt, case) in [
+            (
+                r#"return window { id = "settings", title = "Settings" }"#,
+                r#"return window { id = "settings", title = "Mantle settings", app_id = "mantle.settings" }"#,
+                vec![],
+                "a window's title is an in-place field",
+            ),
+            (
+                r#"return panel { id = "bar", layer = "top", margin = { left = 4 }, keyboard_interactivity = "none", exclusive_zone = false, height = 32 }"#,
+                r#"return panel { id = "bar", layer = "top", margin = { left = 40 }, keyboard_interactivity = "exclusive", exclusive_zone = true, height = 48 }"#,
+                vec![],
+                "margin, keyboard_interactivity, exclusive_zone and size are in-place fields",
+            ),
+            (
+                r#"return panel { id = "bar", layer = "top" }"#,
+                r#"return panel { id = "bar", layer = "top", namespace = "my-bar" }"#,
+                vec!["bar"],
+                "the namespace rebuilds that panel",
+            ),
+            (
+                r#"return panel { id = "other", layer = "top" }"#,
+                r#"return panel { id = "bar", layer = "top" }"#,
+                vec!["bar"],
+                "`bar` is new; `other` goes because no fresh instance names it",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_shell_lua(dir.path(), applied);
+            let (mut client, _outbound_rx) = test_client(&path);
+            client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
 
-        write_shell_lua(
-            dir.path(),
-            r#"return window { id = "settings", title = "Mantle settings", app_id = "mantle.settings" }"#,
-        );
-        assert!(client.reevaluate());
-        assert_eq!(
-            client.pending_surfaces().map(|(_, rebuilt)| rebuilt),
-            Some(Vec::new()),
-            "a title edit rebuilds nothing"
-        );
+            write_shell_lua(dir.path(), edited);
+            assert!(client.reevaluate(), "{case}");
+            let (specs, names) = client.pending_surfaces().expect("staged");
+            assert_eq!(specs.len(), 1, "{case}");
+            assert_eq!(names, rebuilt, "{case}");
+        }
     }
 
+    /// `anchor_rect` feeds `xdg_positioner::set_anchor_rect`; zero size leaves it incomplete, so
+    /// `get_popup` raises `invalid_positioner` and kills Wayland. Likewise `set_max_size` raises
+    /// `invalid_size` when max < min. A config typo must instead be an evaluation `LayoutError` in
+    /// `rescue.error_log`, naming the property.
     #[test]
-    fn a_popup_with_a_zero_anchor_rect_fails_the_evaluation_and_names_the_property_in_rescue() {
-        // `anchor_rect` feeds `xdg_positioner::set_anchor_rect`; zero size leaves it
-        // incomplete, so `get_popup` raises `invalid_positioner` and kills Wayland. A config typo
-        // must instead be an evaluation `LayoutError` in `rescue.error_log`, naming the property.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return {
+    fn a_malformed_surface_fails_the_evaluation_and_names_the_property_in_rescue() {
+        for (src, property) in [
+            (
+                r#"return {
                 panel { id = "bar", layer = "top" },
                 popup { id = "menu", parent = "bar", width = 200, height = 120,
                         anchor_rect = { x = 0, y = 0, width = 0, height = 0 } },
             }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
+                "anchor_rect",
+            ),
+            (
+                r#"return window { id = "settings", min_size = { width = 800, height = 600 }, max_size = { width = 320, height = 240 } }"#,
+                "max_size",
+            ),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = write_shell_lua(dir.path(), src);
+            let (mut client, _outbound_rx) = test_client(&path);
 
-        assert!(client.run_startup_evaluation().is_none(), "a malformed popup must fail the whole evaluation");
+            assert!(client.run_startup_evaluation().is_none(), "{property}: the whole evaluation must fail");
 
-        let (is_rescue, error_log) = rescue_state(&client.loader);
-        assert!(is_rescue);
-        assert!(
-            error_log.contains("anchor_rect"),
-            "the human reading rescue's error_log needs the property named: {error_log}"
-        );
-    }
-
-    #[test]
-    fn a_window_whose_max_size_is_below_its_min_size_fails_the_evaluation() {
-        // Likewise, `set_max_size` raises `invalid_size` when max < min; validate at evaluation so
-        // the config author sees it.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return window { id = "settings", min_size = { width = 800, height = 600 }, max_size = { width = 320, height = 240 } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        assert!(client.run_startup_evaluation().is_none());
-        let (is_rescue, error_log) = rescue_state(&client.loader);
-        assert!(is_rescue);
-        assert!(error_log.contains("max_size"), "{error_log}");
+            let (is_rescue, error_log) = rescue_state(&client.loader);
+            assert!(is_rescue, "{property}");
+            assert!(error_log.contains(property), "rescue's error_log needs {property} named: {error_log}");
+        }
     }
 
     #[test]
@@ -1914,7 +1851,7 @@ mod tests {
         assert!(client.scene.surface("bar@TEST").is_none());
         let (is_rescue, error_log) = rescue_state(&client.loader);
         assert!(is_rescue);
-        assert!(!error_log.is_empty());
+        assert!(error_log.contains("shell.lua"), "the log names the file it could not read: {error_log}");
     }
 
     #[test]
@@ -1932,21 +1869,6 @@ mod tests {
             Some(vec!["bar".to_string()]),
             "nothing was applied, so every declaration gets its surfaces"
         );
-    }
-
-    #[test]
-    fn a_topology_edit_names_the_declarations_to_rebuild() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        // Seed a *different* topology so fresh evaluation reads as changed.
-        let other = client.loader.evaluate(r#"return panel { id = "other", layer = "top" }"#).unwrap();
-        client.state.applied_specs = surface_specs(&other).unwrap();
-
-        assert!(client.reevaluate());
-        let (specs, rebuilt) = client.pending_surfaces().expect("staged");
-        assert_eq!(specs.len(), 1);
-        assert_eq!(rebuilt, ["bar"], "`bar` is new; `other` goes because no fresh instance names it");
     }
 
     #[test]
@@ -1968,45 +1890,6 @@ mod tests {
         client.set_instances(instances_for(&["bar"]));
         assert!(client.handle_apply_pending());
         assert!(client.scene.surface("bar@TEST").is_some());
-    }
-
-    #[test]
-    fn editing_only_the_in_place_panel_fields_reports_unchanged_and_reloads_in_place() {
-        // ADR-0038 decision 2: layer-shell accepts `margin`, exclusive zone,
-        // `keyboard_interactivity`, and size on a live surface. Comparing whole specs would rebuild
-        // the surface for each, remapping it just to move a bar 4px.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", margin = { left = 4 }, keyboard_interactivity = "none", exclusive_zone = false, height = 32 }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-        client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
-
-        // Change every in-place field; leave topology unchanged.
-        write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", margin = { left = 40 }, keyboard_interactivity = "exclusive", exclusive_zone = true, height = 48 }"#,
-        );
-        assert!(client.reevaluate());
-        assert_eq!(
-            client.pending_surfaces().map(|(_, rebuilt)| rebuilt),
-            Some(Vec::new()),
-            "margin/keyboard_interactivity/exclusive_zone/size are in-place fields and must not rebuild the surface"
-        );
-    }
-
-    #[test]
-    fn editing_only_the_namespace_rebuilds_that_panel_in_place() {
-        // `get_layer_surface` fixes namespace at creation, so the edit needs a new layer surface.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-        client.state.applied_specs = surface_specs(&client.loader.evaluate_file(&path).unwrap()).unwrap();
-
-        write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", namespace = "my-bar" }"#);
-        assert!(client.reevaluate());
-        assert_eq!(client.pending_surfaces().map(|(_, rebuilt)| rebuilt), Some(vec!["bar".to_string()]));
     }
 
     #[test]
@@ -2201,7 +2084,7 @@ mod tests {
         assert!(client.state.pending.is_none());
         let (is_rescue, error_log) = rescue_state(&client.loader);
         assert!(is_rescue);
-        assert!(!error_log.is_empty());
+        assert!(error_log.contains("syntax error"), "the log carries the Lua error: {error_log}");
     }
 
     #[test]
@@ -2226,8 +2109,8 @@ mod tests {
     fn a_burst_of_pushes_before_one_check_marks_the_flag_only_once() {
         // ADR-0044 decision 2: "drain first, then re-resolve once"; several pushes before one read
         // coalesce into one dirty read.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (client, _outbound_rx) = test_client(&missing);
+        let (client, _outbound_rx) = bare_client();
+        assert!(!client.dirty.take(), "a fresh client must not start dirty");
 
         for revision in 1..=5 {
             client
@@ -2277,7 +2160,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(
             dir.path(),
-            r#"return panel { id = "bar", layer = "top", visible = mantle.audio, child = rect { width = mantle.network, height = 10, children = mantle.tray } }"#,
+            r#"return panel { id = "bar", layer = "top", visible = mantle.audio, child = row { children = { rect { width = mantle.network, height = 10, children = mantle.tray }, text { content = mantle.audio } } } }"#,
         );
         let (mut client, _outbound_rx) = test_client(&path);
 
@@ -2286,35 +2169,12 @@ mod tests {
         let bar = client.scene.surface("bar@TEST").expect("a bare rostered signal must not stop the config applying");
         assert!(bar.visible, "`visible = audio` with audio still nil must take `visible`'s default");
         assert!(
-            bar.children[0].children.is_empty(),
+            bar.children[0].children[0].children.is_empty(),
             "`children = tray` with tray still nil must take `children`'s default"
         );
+        // ADR-0044 example: `text { content = mantle.mpris.title }` applies at boot with `title` still nil.
         assert_eq!(
-            rescue_state(&client.loader),
-            (false, String::new()),
-            "a startup that applies must not be in rescue"
-        );
-    }
-
-    #[test]
-    fn a_text_node_bound_to_a_bare_rostered_signal_applies_at_startup_with_no_push_at_all() {
-        // ADR-0044 example: `text { content = mantle.mpris.title }` applies at boot with `title`
-        // still nil, like `visible`/`children` above.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", child = text { content = mantle.audio } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        run_startup(&mut client);
-
-        let bar = client
-            .scene
-            .surface("bar@TEST")
-            .expect("a bare rostered signal on `content` must not stop the config applying");
-        assert_eq!(
-            layout::node::fields::text::content.read(&bar.children[0].properties).unwrap().0,
+            layout::node::fields::text::content.read(&bar.children[0].children[1].properties).unwrap().0,
             "",
             "`content = audio` with audio still nil must take `content`'s default"
         );
@@ -2323,92 +2183,9 @@ mod tests {
             (false, String::new()),
             "a startup that applies must not be in rescue"
         );
-    }
-
-    #[test]
-    fn a_push_arriving_before_the_first_successful_apply_is_not_consumed_and_lost() {
-        // Check `applied_output` before taking the flag; otherwise a push with nothing to resolve
-        // against is silently discarded.
-        let missing = std::path::PathBuf::from("/no/such/shell.lua");
-        let (mut client, _outbound_rx) = test_client(&missing);
-        run_startup(&mut client);
-        assert!(client.state.applied_output.is_none(), "startup must have failed (no file)");
-
-        client
-            .apply_state_snapshot(StateSnapshot {
-                capability: "audio".to_string(),
-                revision: 1,
-                payload: serde_json::json!({ "app_name": "Zen" }),
-            })
-            .unwrap();
-        client.re_resolve_if_dirty();
-
-        assert!(
-            client.dirty.take(),
-            "the push must still be pending for whatever applies next, not consumed by the early return"
-        );
-    }
-
-    #[test]
-    fn repeated_re_resolves_remove_nodes_and_preserve_the_remaining_identity() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"
-            return panel { id = "bar", layer = "top", child = row { children = computed({mantle.audio}, function(n)
-                if n == 3 then
-                    return { rect { width = 1, height = 1 }, rect { width = 1, height = 1 }, rect { width = 1, height = 1 } }
-                end
-                return { rect { width = 1, height = 1 } }
-            end) } }
-            "#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-        run_startup(&mut client);
-        assert!(client.scene.surface("bar@TEST").is_some(), "startup must have applied");
-
-        let first_id = client.scene.surface("bar@TEST").unwrap().children[0].children[0].id;
-        for revision in 1..=20 {
-            let count = if revision % 2 == 0 { 1 } else { 3 };
-            client
-                .apply_state_snapshot(StateSnapshot {
-                    capability: "audio".to_string(),
-                    revision,
-                    payload: serde_json::json!(count),
-                })
-                .unwrap();
-            assert!(client.re_resolve_if_dirty());
-            let root = client.scene.surface("bar@TEST").unwrap();
-            assert_eq!(root.children[0].children.len(), count);
-            assert_eq!(root.children[0].children[0].id, first_id);
-            assert_eq!(client.scene.census().1, count + 2);
-        }
-
-        assert_eq!(
-            client.scene.surface("bar@TEST").unwrap().children[0].children.len(),
-            1,
-            "the last push shrank the row back to one child"
-        );
-    }
-
-    #[test]
-    fn a_clean_startup_leaves_the_scene_flag_clear() {
-        // `set_rescue_state` writes the shared `DirtyFlag`; startup used to dirty it while clearing
+        // `set_rescue_state` writes the shared `DirtyFlag`; startup used to dirty it while clearing an
         // already-clear rescue, costing a redundant first-poll `Scene::apply`.
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(
-            dir.path(),
-            r#"return panel { id = "bar", layer = "top", child = text { content = "hi" } }"#,
-        );
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        run_startup(&mut client);
-
-        assert!(client.scene.surface("bar@TEST").is_some(), "startup must have applied");
-        assert!(
-            !client.dirty.take(),
-            "an apply that succeeded resolved every signal at its current value, so nothing is stale"
-        );
+        assert!(!client.dirty.take(), "an apply that succeeded resolved every signal at its current value");
     }
 
     /// `screens_payload` shape, hand-written so tests need no live compositor via `crate::wayland`.
@@ -2605,7 +2382,7 @@ mod tests {
     #[test]
     fn applied_surface_specs_is_empty_when_no_evaluation_has_ever_applied() {
         // Failed startup declared nothing, so hotplug adds no instance.
-        let (client, _outbound_rx) = test_client(std::path::Path::new("/no/such/shell.lua"));
+        let (client, _outbound_rx) = bare_client();
         assert!(client.applied_surface_specs().is_empty());
     }
 

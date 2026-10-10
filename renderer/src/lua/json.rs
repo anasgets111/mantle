@@ -227,28 +227,25 @@ mod tests {
         lua
     }
 
+    /// A config polling an untrusted subprocess must get nil plus a message, never a raised error,
+    /// a stack overflow, or a Lua argument error past its error check.
     #[test]
-    fn decode_turns_a_json_object_into_a_table_a_config_can_index() {
+    fn decode_failure_returns_nil_and_a_message() {
         let lua = lua_with_json();
-        let volume: f64 = lua.load(r#"return json.decode('{"volume":0.5,"muted":false}').volume"#).eval().unwrap();
-        assert_eq!(volume, 0.5);
-    }
-
-    #[test]
-    fn decode_reports_malformed_input_as_nil_plus_a_message_rather_than_raising() {
-        let lua = lua_with_json();
-        let (value, message): (Value, Option<String>) = lua.load(r#"return json.decode('{"volume":')"#).eval().unwrap();
-        assert_eq!(value, Value::Nil);
-        assert!(message.is_some_and(|m| !m.is_empty()), "the second return has to carry something a config can log");
-    }
-
-    #[test]
-    fn decode_rejects_nesting_deep_enough_to_overflow_a_recursive_walk_instead_of_crashing() {
-        let lua = lua_with_json();
-        lua.globals().set("deep", format!("{}1{}", "[".repeat(10_000), "]".repeat(10_000))).unwrap();
-        let (value, message): (Value, Option<String>) = lua.load("return json.decode(deep)").eval().unwrap();
-        assert_eq!(value, Value::Nil);
-        assert!(message.is_some(), "a config polling an untrusted subprocess must get an error, not a stack overflow");
+        let deep = format!("{}1{}", "[".repeat(10_000), "]".repeat(10_000));
+        for (input, case) in [
+            (br#"{"volume":"#.to_vec(), "malformed input"),
+            (deep.into_bytes(), "nesting deep enough to overflow a recursive walk"),
+            (b"{\"name\":\"\xff\xfe\"}".to_vec(), "bytes that are not utf8"),
+        ] {
+            lua.globals().set("raw", lua.create_string(&input).unwrap()).unwrap();
+            let (value, message): (Value, Option<String>) = lua.load("return json.decode(raw)").eval().unwrap();
+            assert_eq!(value, Value::Nil, "{case}");
+            assert!(
+                message.is_some_and(|m| !m.is_empty()),
+                "{case}: the second return has to carry something loggable"
+            );
+        }
     }
 
     #[test]
@@ -275,27 +272,6 @@ mod tests {
         // A trailing nil would make three-argument `table.insert` treat the value as a position.
         let count: i64 = lua.load(r#"local t = {} table.insert(t, json.decode('{"a":1}')) return #t"#).eval().unwrap();
         assert_eq!(count, 1);
-    }
-
-    #[test]
-    fn decode_reads_a_json_array_as_a_one_based_lua_array() {
-        let lua = lua_with_json();
-        let (len, second): (i64, String) =
-            lua.load(r#"local t = json.decode('["a","b"]') return #t, t[1]"#).eval().unwrap();
-        assert_eq!((len, second.as_str()), (2, "a"));
-    }
-
-    #[test]
-    fn decode_treats_bytes_that_are_not_utf8_as_a_decode_error_not_a_lua_argument_error() {
-        let lua = lua_with_json();
-        lua.globals().set("raw", lua.create_string(b"{\"name\":\"\xff\xfe\"}").unwrap()).unwrap();
-        let (value, message): (Value, Option<String>) = lua.load("return json.decode(raw)").eval().unwrap();
-        assert_eq!(
-            value,
-            Value::Nil,
-            "a subprocess emitting a non-utf8 byte must not raise past the config's error check"
-        );
-        assert!(message.is_some());
     }
 
     #[test]

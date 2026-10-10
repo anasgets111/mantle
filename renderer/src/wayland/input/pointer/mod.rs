@@ -1161,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn a_release_fires_only_over_the_same_surface_and_the_same_rect_the_press_armed() {
+    fn a_release_fires_only_over_the_same_surface_rect_and_button_the_press_armed() {
         let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
         let moved = LogicalRect { x: 11.0, y: 4.0, width: 40.0, height: 24.0 };
         let armed = ArmedClick { instance_id: "bar@eDP-1".to_string(), rect, link: None, button: BTN_LEFT };
@@ -1175,6 +1175,13 @@ mod tests {
         assert!(!release_completes_click(Some(&armed), "notification_area@eDP-1", Some((rect, None)), BTN_LEFT));
         // A release with nothing armed (a press that hit no clickable node, or a `leave` in between).
         assert!(!release_completes_click(None, "bar@eDP-1", Some((rect, None)), BTN_LEFT));
+
+        // Press right, release left, on the same node: two clicks interleaved, neither complete. A
+        // mouse can hold more than one button down at a time, so this is a real sequence.
+        let right = ArmedClick { button: BTN_RIGHT, ..armed };
+        assert!(release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_RIGHT));
+        assert!(!release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
+        assert!(!release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_MIDDLE));
     }
 
     #[test]
@@ -1202,19 +1209,6 @@ mod tests {
         // Ending it does not depend on it having fired: dragging off the node and releasing the
         // same button is over too, and the slot has to go.
         assert!(!release_ends_press(None, BTN_RIGHT));
-    }
-
-    #[test]
-    fn a_release_fires_only_for_the_button_the_press_armed() {
-        // Press right, release left, on the same node: two different clicks interleaved, and
-        // neither completed. A mouse can hold more than one button down at a time, so this is a
-        // real sequence rather than a hypothetical one.
-        let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        let armed = ArmedClick { instance_id: "bar@eDP-1".to_string(), rect, link: None, button: BTN_RIGHT };
-
-        assert!(release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_RIGHT));
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_MIDDLE));
     }
 
     /// A paragraph holding two links is one rect (ADR-0106): pressing one and releasing over the
@@ -1253,22 +1247,12 @@ mod tests {
     }
 
     #[test]
-    fn on_clicks_argument_is_the_buttons_rect_as_four_named_fields() {
-        let lua = Lua::new();
-        let table = rect_table(&lua, LogicalRect { x: 10.5, y: 4.0, width: 40.0, height: 24.0 }).unwrap();
-        assert_eq!(table.get::<f32>("x").unwrap(), 10.5);
-        assert_eq!(table.get::<f32>("y").unwrap(), 4.0);
-        assert_eq!(table.get::<f32>("width").unwrap(), 40.0);
-        assert_eq!(table.get::<f32>("height").unwrap(), 24.0);
-    }
-
-    #[test]
     fn on_click_takes_the_button_name_as_a_second_argument_beside_the_rect() {
         // Second argument, not a fifth field on the rect table: every handler written against the
         // one-argument form keeps working, since Lua drops arguments a function does not declare.
         let lua = Lua::new();
         let seen: Function = lua
-            .load(r#"seen = {} return function(rect, button, pointer) seen.x, seen.w, seen.button, seen.px, seen.py = rect.x, rect.width, button, pointer.x, pointer.y end"#)
+            .load(r#"seen = {} return function(rect, button, pointer) seen.x, seen.y, seen.w, seen.h, seen.button, seen.px, seen.py = rect.x, rect.y, rect.width, rect.height, button, pointer.x, pointer.y end"#)
             .eval()
             .unwrap();
         call_on_click(
@@ -1283,9 +1267,18 @@ mod tests {
 
         let recorded: Table = lua.globals().get("seen").unwrap();
         assert_eq!(recorded.get::<f32>("x").unwrap(), 12.0);
+        assert_eq!(recorded.get::<f32>("y").unwrap(), 4.0);
         assert_eq!(recorded.get::<f32>("w").unwrap(), 40.0);
+        assert_eq!(recorded.get::<f32>("h").unwrap(), 24.0);
         assert_eq!(recorded.get::<String>("button").unwrap(), "right");
         assert_eq!((recorded.get::<f32>("px").unwrap(), recorded.get::<f32>("py").unwrap()), (8.0, 6.0), "node-local");
+
+        // ADR-0050 decision 3's worked example, which every config in the tree uses: a one-argument handler.
+        let anchor: Function = lua.load(r#"return function(rect) anchor = rect end"#).eval().unwrap();
+        let rect = LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 };
+        call_on_click(&lua, &anchor, rect, "left", pt(1.0, 1.0), [false; 4]).unwrap();
+        let anchor: Table = lua.globals().get("anchor").unwrap();
+        assert_eq!((anchor.get::<f32>("x").unwrap(), anchor.get::<f32>("height").unwrap()), (40.0, 24.0));
     }
 
     #[test]
@@ -1312,26 +1305,6 @@ mod tests {
         let seen: Table = lua.globals().get("seen").unwrap();
         let read = |name: &str| seen.get::<String>(name).unwrap();
         assert_eq!([read("press"), read("click"), read("drag"), read("idle")], ["c-", "cs", "-s", "--"]);
-    }
-
-    #[test]
-    fn a_one_argument_on_click_still_runs_unchanged() {
-        // ADR-0050 decision 3's exact worked example, which every config in the tree uses.
-        let lua = Lua::new();
-        let anchor: Function = lua.load(r#"anchor = nil return function(rect) anchor = rect end"#).eval().unwrap();
-        call_on_click(
-            &lua,
-            &anchor,
-            LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 },
-            "left",
-            pt(1.0, 1.0),
-            [false; 4],
-        )
-        .unwrap();
-
-        let recorded: Table = lua.globals().get("anchor").unwrap();
-        assert_eq!(recorded.get::<f32>("x").unwrap(), 40.0);
-        assert_eq!(recorded.get::<f32>("height").unwrap(), 24.0);
     }
 
     /// A plain field as [`focused_field`] hands one back: a callback is what makes it plain. Each

@@ -538,7 +538,7 @@ mod tests {
         lua.load(
             r#"
             idle:register_threshold(5, function()
-                idle:register_threshold(10, function() end, function() end)
+                idle:register_threshold(10, function() nested_ran = true end, function() end)
             end, function() end)
             "#,
         )
@@ -546,6 +546,9 @@ mod tests {
         .unwrap();
 
         registry.dispatch_event(5, IdleState::Idled);
+        registry.dispatch_event(10, IdleState::Idled);
+
+        assert!(lua.load("return nested_ran").eval::<bool>().unwrap(), "the threshold registered mid-dispatch is live");
     }
 
     #[test]

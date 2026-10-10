@@ -541,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn layer_extent_maps_fill_to_the_protocols_zero_and_resolves_a_percent() {
+    fn layer_extent_maps_each_size_mode_to_the_protocols_extent() {
         assert_eq!(
             layer_extent_for(SizeMode::Fill, 1920.0, 300.0, false),
             0,
@@ -549,10 +549,7 @@ mod tests {
         );
         assert_eq!(layer_extent_for(SizeMode::Pixels(32.0), 1920.0, 300.0, false), 32);
         assert_eq!(layer_extent_for(SizeMode::Percent(0.5), 1920.0, 300.0, false), 960);
-    }
-
-    #[test]
-    fn a_content_axis_asks_for_what_the_tree_measured_unless_the_surface_spans_it() {
+        // A content axis asks for what the tree measured unless the surface spans it.
         assert_eq!(
             layer_extent_for(SizeMode::Content, 1920.0, 252.48, false),
             253,
@@ -691,8 +688,9 @@ mod tests {
     }
 
     #[test]
-    fn a_re_resolve_that_changed_nothing_sends_no_requests_at_all() {
+    fn each_in_place_field_is_pushed_on_its_own_and_only_when_it_moved() {
         let applied = panel("bar");
+
         assert_eq!(
             spec_update(
                 &applied,
@@ -701,13 +699,9 @@ mod tests {
                 output_1080p(),
                 nothing_measured()
             ),
-            SpecUpdate::default()
+            SpecUpdate::default(),
+            "a re-resolve that changed nothing sends no requests at all"
         );
-    }
-
-    #[test]
-    fn each_in_place_field_is_pushed_on_its_own_and_only_when_it_moved() {
-        let applied = panel("bar");
 
         let mut moved_margin = applied.clone();
         moved_margin.margin = node::EdgeInsets { top: 12.0, right: 12.0, bottom: 0.0, left: 0.0 };

@@ -295,91 +295,51 @@ mod tests {
     }
 
     #[test]
-    fn a_self_referential_computed_is_rejected_with_a_nesting_depth_error_not_an_abort() {
-        // Self-reference recurses through `get_value` beyond what CPU cap can stop; before this cap
-        // the exact case ended in `fatal runtime error: stack overflow`.
-        let lua = lua_with_state().0;
-        let start = Instant::now();
-        let result: mlua::Result<i64> = lua
-            .load(
-                r#"
-                local loop
-                loop = computed({}, function() return loop:get() end)
-                return loop:get()
-                "#,
-            )
-            .eval();
-        let elapsed = start.elapsed();
+    fn a_recursive_computed_is_rejected_with_a_nesting_depth_error_not_an_abort() {
+        // Self-reference recurses through `get_value` beyond what the CPU cap can stop; before the
+        // depth cap the exact case ended in `fatal runtime error: stack overflow`.
+        for (source, case) in [
+            ("local loop loop = computed({}, function() return loop:get() end) return loop:get()", "self-referential"),
+            (
+                "local a, b a = computed({}, function() return b:get() end) b = computed({}, function() return a:get() end) return a:get()",
+                "mutually recursive",
+            ),
+        ] {
+            let lua = lua_with_state().0;
+            let start = Instant::now();
+            let result: mlua::Result<i64> = lua.load(source).eval();
+            let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "a self-referential computed must error, not abort the process");
-        assert!(elapsed < Duration::from_secs(1), "the depth cap must trip well under a second, took {elapsed:?}");
+            assert!(result.is_err(), "a {case} computed must error, not abort the process");
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "{case}: the depth cap must trip well under a second, took {elapsed:?}"
+            );
+        }
     }
 
-    #[test]
-    fn a_mutually_recursive_computed_pair_is_rejected_with_a_nesting_depth_error_not_an_abort() {
-        let lua = lua_with_state().0;
-        let start = Instant::now();
-        let result: mlua::Result<i64> = lua
-            .load(
-                r#"
-                local a, b
-                a = computed({}, function() return b:get() end)
-                b = computed({}, function() return a:get() end)
-                return a:get()
-                "#,
-            )
-            .eval();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_err(), "a mutually recursive computed pair must error, not abort the process");
-        assert!(elapsed < Duration::from_secs(1), "the depth cap must trip well under a second, took {elapsed:?}");
+    /// `step` applied to `s` `links` deep over signal `a`.
+    fn chain_source(step: &str, links: usize) -> String {
+        format!("local s = a for _ = 1, {links} do s = {step} end return s:get()")
     }
 
-    /// `s:map(f):map(f):...` `links` deep over signal `a`.
     fn map_chain_source(links: usize) -> String {
-        format!(
-            r#"
-            local s = a
-            for _ = 1, {links} do s = s:map(function(v) return v end) end
-            return s:get()
-            "#
-        )
+        chain_source("s:map(function(v) return v end)", links)
     }
 
     #[test]
-    fn a_long_map_dependency_chain_is_rejected_by_the_nesting_cap_not_a_stack_overflow() {
-        // Dependency chains nest `get_value` without Lua calls. Before the deadline wrapped
-        // resolution, this chain ended in `fatal runtime error: stack overflow`; cap saw depth 1.
-        let lua = lua_with_signal("a", Value::Integer(1));
-        let err = lua.load(map_chain_source(200)).eval::<i64>().unwrap_err();
-        assert!(
-            err.to_string().contains("signal nesting exceeded"),
-            "a 200-link map chain must trip the nesting cap: {err}"
-        );
-    }
-
-    /// `delay(delay(...))` / `pulse(pulse(...))` `links` deep over signal `a`.
-    fn hold_chain_source(builder: &str, links: usize) -> String {
-        format!(
-            r#"
-            local s = a
-            for _ = 1, {links} do s = {builder}(s, 1) end
-            return s:get()
-            "#
-        )
-    }
-
-    #[test]
-    fn a_long_delay_or_pulse_chain_is_rejected_by_the_nesting_cap_not_a_stack_overflow() {
-        // A delay or pulse chain nests `get_value` the way a map chain does. Unguarded, 10,000
-        // links ended `mantle check` in `fatal runtime error: stack overflow`: SIGABRT, which no
-        // config author can read.
-        for builder in ["delay", "pulse"] {
+    fn a_long_dependency_chain_is_rejected_by_the_nesting_cap_not_a_stack_overflow() {
+        // Dependency chains nest `get_value` without Lua calls. Unguarded, 10,000 delay links ended
+        // `mantle check` in `fatal runtime error: stack overflow`: SIGABRT, which no config author
+        // can read.
+        for (kind, step) in
+            [("map", "s:map(function(v) return v end)"), ("delay", "delay(s, 1)"), ("pulse", "pulse(s, 1)")]
+        {
             let lua = lua_with_signal("a", Value::Integer(1));
-            let err = lua.load(hold_chain_source(builder, 200)).eval::<Value>().unwrap_err();
+            let err = lua.load(chain_source(step, 200)).eval::<Value>().unwrap_err();
             assert!(
                 err.to_string().contains("signal nesting exceeded"),
-                "a 200-link {builder} chain must trip the nesting cap: {err}"
+                "a 200-link {kind} chain must trip the nesting cap: {err}"
             );
         }
     }

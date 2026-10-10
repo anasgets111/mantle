@@ -183,38 +183,25 @@ mod tests {
     }
 
     #[test]
-    fn check_number_rejects_nan_and_infinity() {
-        assert_eq!(check_number(f64::NAN), Err(MarshalError::NotFinite));
-        assert_eq!(check_number(f64::INFINITY), Err(MarshalError::NotFinite));
-        assert_eq!(check_number(f64::NEG_INFINITY), Err(MarshalError::NotFinite));
-    }
-
-    #[test]
-    fn check_number_accepts_finite_values() {
+    fn check_number_bounds() {
+        for value in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(check_number(value), Err(MarshalError::NotFinite), "{value}");
+        }
         assert_eq!(check_number(0.75), Ok(0.75));
     }
 
     #[test]
-    fn check_integer_rejects_outside_the_2_pow_53_safe_range() {
+    fn check_integer_bounds() {
         assert_eq!(check_integer(MAX_SAFE_INTEGER + 1), Err(MarshalError::IntegerOutOfRange));
         assert_eq!(check_integer(MIN_SAFE_INTEGER - 1), Err(MarshalError::IntegerOutOfRange));
-    }
-
-    #[test]
-    fn check_integer_accepts_the_safe_range_boundary() {
         assert_eq!(check_integer(MAX_SAFE_INTEGER), Ok(MAX_SAFE_INTEGER));
         assert_eq!(check_integer(MIN_SAFE_INTEGER), Ok(MIN_SAFE_INTEGER));
     }
 
     #[test]
-    fn check_string_rejects_over_64kb() {
+    fn check_string_bounds() {
         let oversized = "a".repeat(MAX_STRING_BYTES + 1);
         assert_eq!(check_string(&oversized), Err(MarshalError::StringTooLong { len: MAX_STRING_BYTES + 1 }));
-    }
-
-    #[test]
-    fn check_string_accepts_exactly_64kb() {
-        let exact = "a".repeat(MAX_STRING_BYTES);
-        assert!(check_string(&exact).is_ok());
+        assert!(check_string(&"a".repeat(MAX_STRING_BYTES)).is_ok());
     }
 }

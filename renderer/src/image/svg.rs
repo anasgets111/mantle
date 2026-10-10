@@ -334,18 +334,20 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_gradient_stop_is_not_a_colour_declaration() {
-        // `stop-color:` contains `color:`; rewriting it flattens every gradient.
-        let out = rewrite_color_declarations("stop-color:#ff0000;color:#232629;flood-color:#00ff00", "#cdd6f4");
-        assert_eq!(out, "stop-color:#ff0000;color:#cdd6f4;flood-color:#00ff00");
+    fn color_declarations_are_replaced_whole_and_a_gradient_stop_is_left_alone() {
+        // `stop-color:` contains `color:`; rewriting it flattens every gradient. The value runs to
+        // its terminator, so `color: #232629 ` is replaced whole, with no trimming rules.
+        for (input, expected) in [
+            (
+                "stop-color:#ff0000;color:#232629;flood-color:#00ff00",
+                "stop-color:#ff0000;color:#cdd6f4;flood-color:#00ff00",
+            ),
+            ("{ color: #232629 }", "{ color:#cdd6f4}"),
+        ] {
+            assert_eq!(rewrite_color_declarations(input, "#cdd6f4"), expected, "{input}");
+        }
     }
 
-    #[test]
-    fn a_spaced_declaration_is_replaced_whole_rather_than_prefixed() {
-        // The value runs to its terminator, so `color: #232629 ` is replaced whole; CSS ignores
-        // the internal whitespace and needs no trimming rules.
-        assert_eq!(rewrite_color_declarations("{ color: #232629 }", "#cdd6f4"), "{ color:#cdd6f4}");
-    }
     #[test]
     fn a_tint_packs_to_rgb_and_drops_alpha() {
         assert_eq!(packed_rgb(Rgba { r: 1.0, g: 0.0, b: 0.0, a: 0.25 }), 0xff0000);

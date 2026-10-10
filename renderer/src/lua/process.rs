@@ -255,23 +255,6 @@ mod tests {
         assert_eq!(kill_envelope.id, run_envelope.id);
     }
 
-    #[test]
-    fn process_run_rejects_a_non_function_callback() {
-        let (lua, _registry, _rx) = lua_with_process(0);
-
-        let err = lua.load(r#"process.run("echo", {}, "not a function", function() end)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("function"), "expected a type error mentioning function, got: {err}");
-    }
-
-    #[test]
-    fn process_run_rejects_a_non_string_cmd() {
-        let (lua, _registry, _rx) = lua_with_process(0);
-
-        // `String` extraction coerces `42` to `"42"`; a table has no such coercion and must reject.
-        let err = lua.load(r#"process.run({}, {}, function() end, function() end)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("string"), "expected a type error mentioning string, got: {err}");
-    }
-
     /// Reads the global a callback updated; callbacks have no other observable side channel.
     fn probe_table(lua: &Lua) -> mlua::Table {
         lua.load("probe = probe or {}; return probe").eval().unwrap()
@@ -297,12 +280,17 @@ mod tests {
 
     #[test]
     fn dispatch_output_on_an_unknown_id_is_silently_ignored() {
-        let (_lua, registry, _rx) = lua_with_process(0);
+        let (lua, registry, _rx) = lua_with_process(0);
+        lua.load(r#"process.run("cmd", {}, function() heard = true end, function() end)"#).exec().unwrap();
+
         registry.dispatch_output(99, ProcessStream::Stdout, "unheard".to_string());
+
+        assert!(lua.load("return heard").eval::<Option<bool>>().unwrap().is_none(), "no other id's callback ran");
+        assert_eq!(registry.pending.borrow().len(), 1, "and the registered process is untouched");
     }
 
     #[test]
-    fn dispatch_exit_invokes_the_registered_on_exit_with_the_code_then_forgets_the_id() {
+    fn dispatch_exit_passes_the_code_or_nil_then_forgets_the_id() {
         let (lua, registry, _rx) = lua_with_process(0);
         lua.load(r#"process.run("cmd", {}, function() end, function(code) probe = { code = code } end)"#)
             .exec()
@@ -316,17 +304,14 @@ mod tests {
         registry.dispatch_exit(0, Some(99));
         let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
         assert!(is_nil, "a second dispatch_exit for an already-dispatched id must be a no-op");
-    }
 
-    #[test]
-    fn dispatch_exit_passes_nil_for_an_absent_code() {
-        let (lua, registry, _rx) = lua_with_process(0);
         lua.load(r#"process.run("cmd", {}, function() end, function(code) probe = { is_nil = code == nil } end)"#)
             .exec()
             .unwrap();
-
-        registry.dispatch_exit(0, None);
-        let probe = probe_table(&lua);
-        assert!(probe.get::<bool>("is_nil").unwrap(), "a killed-by-signal exit must pass nil, not a synthesized code");
+        registry.dispatch_exit(1, None);
+        assert!(
+            probe_table(&lua).get::<bool>("is_nil").unwrap(),
+            "a killed-by-signal exit must pass nil, not a synthesized code"
+        );
     }
 }

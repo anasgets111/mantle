@@ -292,22 +292,17 @@ mod tests {
     }
 
     #[test]
-    fn method_picks_the_quantizer_and_an_unknown_one_lists_the_valid_names() {
+    fn method_picks_the_quantizer_and_a_refused_option_is_a_config_error() {
         let (lua, _registry) = lua_with_palette();
         for name in ["celebi", "wu"] {
             lua.load(format!(r#"palette.quantize("x.png", {{ method = "{name}" }}, function() end)"#)).exec().unwrap();
         }
-        let err = lua.load(r#"palette.quantize("x.png", { method = "median" }, function() end)"#).exec().unwrap_err();
-        assert!(err.to_string().contains("`celebi`, `wu`"), "expected the valid names in the error, got: {err}");
-    }
-
-    #[test]
-    fn depth_out_of_range_is_a_config_error() {
-        let (lua, _registry) = lua_with_palette();
-        let err = lua.load(r#"palette.quantize("x.png", { depth = 9 }, function() end)"#).exec().unwrap_err();
-        assert!(
-            err.to_string().contains("must be within [0, 8], got integer 9"),
-            "expected the depth range in the error, got: {err}"
-        );
+        for (opts, needle) in
+            [(r#"method = "median""#, "`celebi`, `wu`"), ("depth = 9", "must be within [0, 8], got integer 9")]
+        {
+            let err =
+                lua.load(format!(r#"palette.quantize("x.png", {{ {opts} }}, function() end)"#)).exec().unwrap_err();
+            assert!(err.to_string().contains(needle), "{opts}: expected {needle:?} in the error, got: {err}");
+        }
     }
 }

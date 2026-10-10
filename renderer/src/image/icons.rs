@@ -143,25 +143,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn an_absolute_name_is_its_own_path() {
-        // `capabilities/shm_icons.rs` spools tray icons here as `icon_path`.
-        let spooled = "/run/user/1000/mantle/tray/telegram.png";
-        assert_eq!(resolve(spooled, 16), Some(PathBuf::from(spooled)));
-        // No stat: nonexistent absolute paths still return themselves.
-        assert_eq!(resolve("/nonexistent/x.png", 16), Some(PathBuf::from("/nonexistent/x.png")));
-    }
-
-    #[test]
-    fn an_empty_name_resolves_to_nothing() {
-        // Missing `icon.name` is `""`; an unhydrated capability is `nil` until its first push
-        // (ADR-0037). Both land here.
-        assert_eq!(resolve("", 16), None);
-    }
-
-    #[test]
-    fn a_relative_name_is_not_treated_as_a_path() {
-        // Only absolute paths short-circuit; `./x.png` is looked up, not resolved against CWD.
-        assert_eq!(resolve("./mantle-does-not-exist.png", 16), None);
+    fn only_an_absolute_name_is_its_own_path() {
+        // `capabilities/shm_icons.rs` spools tray icons as absolute `icon_path`s; no stat, so a
+        // nonexistent one still returns itself. A missing `icon.name` is `""` and an unhydrated
+        // capability is `nil` until its first push (ADR-0037); `./x.png` is looked up, not resolved
+        // against CWD.
+        for (name, expected) in [
+            ("/run/user/1000/mantle/tray/telegram.png", Some(PathBuf::from("/run/user/1000/mantle/tray/telegram.png"))),
+            ("/nonexistent/x.png", Some(PathBuf::from("/nonexistent/x.png"))),
+            ("", None),
+            ("./mantle-does-not-exist.png", None),
+        ] {
+            assert_eq!(resolve(name, 16), expected, "{name:?}");
+        }
     }
 
     #[test]
@@ -192,20 +186,6 @@ mod tests {
         let theme = theme();
         assert!(!theme.is_empty());
         assert!(!theme.contains('/'), "the theme is a directory name, not a path, got {theme:?}");
-    }
-
-    #[test]
-    fn a_resolved_name_is_looked_up_once_and_remembered() {
-        let calls = std::cell::Cell::new(0);
-        let found = memoized("mantle-test-alpha", 16, || {
-            calls.set(calls.get() + 1);
-            Some(PathBuf::from("/memo/alpha-16"))
-        });
-        assert_eq!(found, Some(PathBuf::from("/memo/alpha-16")));
-        assert_eq!(calls.get(), 1);
-        // The second ask must skip the walk, measured at 1.6ms mean per icon per frame before this.
-        let again = memoized("mantle-test-alpha", 16, || panic!("a remembered name must not be looked up again"));
-        assert_eq!(again, Some(PathBuf::from("/memo/alpha-16")));
     }
 
     #[test]

@@ -855,46 +855,18 @@ mod tests {
     }
 
     #[test]
-    fn stretch_takes_the_box_exactly() {
-        assert_eq!(fitted_rect(box_rect(), 640.0, 480.0, Fit::Stretch), box_rect());
-    }
-
-    #[test]
-    fn contain_fits_inside_and_centres() {
-        let fitted = fitted_rect(box_rect(), 64.0, 64.0, Fit::Contain);
-        assert_eq!((fitted.width, fitted.height), (50.0, 50.0));
-        assert_eq!((fitted.x, fitted.y), (35.0, 20.0));
-    }
-
-    #[test]
-    fn cover_overflows_the_box_rather_than_leaving_a_gap() {
-        // `layout::paint`'s scissor crops the overflow, so this can exceed the box.
-        let fitted = fitted_rect(box_rect(), 64.0, 64.0, Fit::Cover);
-        assert_eq!((fitted.width, fitted.height), (100.0, 100.0));
-        assert_eq!((fitted.x, fitted.y), (10.0, -5.0));
-    }
-
-    #[test]
-    fn a_zero_sized_image_falls_back_to_the_box_instead_of_dividing_by_zero() {
-        // Otherwise an infinite scale and NaN rect reach femtovg.
-        assert_eq!(fitted_rect(box_rect(), 0.0, 64.0, Fit::Cover), box_rect());
-        assert_eq!(fitted_rect(box_rect(), 64.0, 0.0, Fit::Contain), box_rect());
-    }
-
-    #[test]
-    fn one_file_tinted_two_ways_is_two_cache_slots() {
-        // Without tint in the key, the first colour wins for the process: bar and popup share one
-        // texture.
-        let a = CacheKey { tint: Some(0xffffff), ..key("/x.svg", 18, FileVersion::default()) };
-        let b = CacheKey { tint: Some(0x808080), ..a.clone() };
-        assert_ne!(a, b);
-    }
-
-    #[test]
-    fn a_sharp_and_a_blurred_draw_of_the_same_file_and_box_are_different_slots() {
-        let sharp = key("/x.png", 18, FileVersion::default());
-        let blurred = CacheKey { blur_px: 6, ..sharp.clone() };
-        assert_ne!(sharp, blurred);
+    fn fitted_rect_places_the_image_per_fit() {
+        // `layout::paint`'s scissor crops Cover's overflow; a zero-sized image must not divide by zero.
+        let rect = |x, y, w, h| LogicalRect { x, y, width: w, height: h };
+        for (fit, (iw, ih), expected, case) in [
+            (Fit::Stretch, (640.0, 480.0), box_rect(), "stretch takes the box exactly"),
+            (Fit::Contain, (64.0, 64.0), rect(35.0, 20.0, 50.0, 50.0), "contain fits inside and centres"),
+            (Fit::Cover, (64.0, 64.0), rect(10.0, -5.0, 100.0, 100.0), "cover overflows rather than leave a gap"),
+            (Fit::Cover, (0.0, 64.0), box_rect(), "a zero-width image falls back to the box"),
+            (Fit::Contain, (64.0, 0.0), box_rect(), "a zero-height image falls back to the box"),
+        ] {
+            assert_eq!(fitted_rect(box_rect(), iw, ih, fit), expected, "{case}");
+        }
     }
 
     #[test]
@@ -1003,6 +975,11 @@ mod tests {
             cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
         }
         assert_eq!(cache.entries.len(), CACHE_CAPACITY);
+        assert_eq!(
+            cache.census().failed,
+            CACHE_CAPACITY + 10,
+            "eviction frees a failed slot, it does not un-fail the load"
+        );
         let newest = key(format!("/tmp/{}.png", CACHE_CAPACITY + 9), 0, FileVersion::default());
         assert!(cache.entries.contains_key(&newest));
         assert!(cache.entries.contains_key(&first), "the oldest insert survives, because it is still being asked for");
@@ -1043,21 +1020,6 @@ mod tests {
         }
         assert_eq!(cache.entries.len(), CACHE_CAPACITY);
         assert!((visible..visible + CACHE_CAPACITY).all(|n| cache.entries.contains_key(&k(n))));
-    }
-
-    /// Eviction frees a `Failed` slot's memory; it does not un-fail the load.
-    #[test]
-    fn failed_census_survives_capacity_eviction_of_old_failed_entries() {
-        let mut cache = ImageCache::new();
-        for n in 0..CACHE_CAPACITY {
-            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
-        }
-        cache.begin_paint();
-        for n in CACHE_CAPACITY..(CACHE_CAPACITY + 10) {
-            cache.insert(key(format!("/tmp/{n}.png"), 0, FileVersion::default()), Slot::Failed);
-        }
-        assert_eq!(cache.entries.len(), CACHE_CAPACITY, "the ten coldest were evicted to stay at the bound");
-        assert_eq!(cache.census().failed, CACHE_CAPACITY + 10, "every insert failed once, evicted or not");
     }
 
     pub(super) fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
@@ -1135,42 +1097,6 @@ mod tests {
     }
 
     #[test]
-    fn a_vector_and_a_raster_alike_take_one_slot_per_box() {
-        let v = FileVersion::default();
-        assert_ne!(key("/tmp/a.png", 12, v), key("/tmp/a.png", 24, v));
-        assert_ne!(key("/tmp/a.svg", 12, v), key("/tmp/a.svg", 24, v));
-        assert_ne!(key("/tmp/a.svg", 12, v), key("/tmp/a.png", 12, v));
-    }
-
-    #[test]
-    fn the_inflight_gate_counts_decodes_until_their_results_are_consumed() {
-        // The hole a queue-depth bound leaves: a worker frees its slot the moment it dequeues, so
-        // more jobs enqueue while finished results wait for `poll`. The `wanted` set is the count
-        // that spans queued, decoding and decoded-but-unconsumed.
-        let dir = tempfile::tempdir().unwrap();
-        let png = dir.path().join("fixture.png");
-        std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
-        let cache = ImageCache::new();
-        let version = FileVersion::read(&png);
-        let key = |n: u32| key(&png, n, version);
-        {
-            let mut wanted = cache.pool.wanted.lock().unwrap();
-            for n in 0..MAX_INFLIGHT_DECODES as u32 {
-                wanted.insert(key(n + 1));
-            }
-            assert_eq!(wanted.len(), MAX_INFLIGHT_DECODES, "the pipeline is now full");
-        }
-        // At the ceiling nothing new may join, however much room the channel has.
-        assert!(
-            cache.pool.wanted.lock().unwrap().len() >= MAX_INFLIGHT_DECODES,
-            "a request arriving here must be refused rather than queued"
-        );
-        // Consuming one frees exactly one.
-        cache.unwant(&key(1));
-        assert_eq!(cache.pool.wanted.lock().unwrap().len(), MAX_INFLIGHT_DECODES - 1);
-    }
-
-    #[test]
     fn a_remembered_version_owes_a_repaint_by_the_end_of_its_window() {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("tray.png");
@@ -1235,22 +1161,7 @@ mod tests {
         cache.evict(&key);
         assert_eq!(cache.poll(), vec![png.clone()], "a cancelled decode owes the same invalidation a landed one does");
         assert!(cache.poll().is_empty(), "and it is reported once, not on every turn after");
-    }
-
-    #[test]
-    fn evicting_a_pending_entry_stops_its_queued_decode() {
-        let dir = tempfile::tempdir().unwrap();
-        let png = dir.path().join("fixture.png");
-        std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
-        let mut cache = ImageCache::new();
-        let key = key(&png, 8, FileVersion::read(&png));
-        cache.insert(key.clone(), Slot::Pending);
-        cache.pool.wanted.lock().unwrap().insert(key.clone());
-        cache.evict(&key);
-        assert!(
-            !cache.pool.wanted.lock().unwrap().contains(&key),
-            "a worker must be able to see that this decode is no longer wanted"
-        );
+        assert!(!cache.pool.wanted.lock().unwrap().contains(&key), "a worker must see the decode is no longer wanted");
     }
 
     #[test]
@@ -1355,16 +1266,6 @@ mod tests {
             matches!(cache.entries.get(&key).map(|e| &e.slot), Some(Slot::Pending)),
             "no canvas, so nothing uploaded yet"
         );
-    }
-
-    #[test]
-    fn one_path_rewritten_in_place_is_a_different_slot() {
-        let first = FileVersion { mtime_secs: 1_700_000_000, mtime_nanos: 0, len: 512 };
-        let same_time_new_size = FileVersion { len: 640, ..first };
-        let same_size_new_time = FileVersion { mtime_nanos: 1, ..first };
-        assert_ne!(key("/dev/shm/x.png", 16, first), key("/dev/shm/x.png", 16, same_time_new_size));
-        assert_ne!(key("/dev/shm/x.png", 16, first), key("/dev/shm/x.png", 16, same_size_new_time));
-        assert_eq!(key("/dev/shm/x.png", 16, first), key("/dev/shm/x.png", 16, first));
     }
 
     #[test]

@@ -176,9 +176,12 @@ mod tests {
     }
 
     #[test]
-    fn the_first_report_has_no_step_or_drift_columns_to_show() {
-        let line = render(Duration::from_secs(60), &census(1024, 0), None, None);
+    fn the_first_report_has_no_step_or_drift_columns_and_splits_in_use_from_free() {
+        let line = render(Duration::from_secs(60), &census(20 * 1024 * 1024, 0), None, None);
         assert!(line.contains("t=60s"), "{line}");
+        // A flat `in_use` beside a growing `free` is retention a trim returns; the reverse is a
+        // live leak. One combined number would hide which of the two is happening.
+        assert!(line.contains("malloc arena=50.0 in_use=20.0 free=1.0"), "{line}");
         assert!(!line.contains("step"), "{line}");
         assert!(!line.contains("since_start"), "{line}");
     }
@@ -220,13 +223,5 @@ mod tests {
         let line = render_surfaces(Duration::from_secs(60), &surfaces);
         assert!(line.contains("top surfaces s8=80 s7=70 s6=60 s5=50 s4=40"), "{line}");
         assert!(!line.contains("s3="), "only the head of the list is worth printing: {line}");
-    }
-
-    #[test]
-    fn in_use_and_free_are_reported_separately_because_their_fixes_differ() {
-        // A flat `in_use` beside a growing `free` is retention a trim returns; the reverse is a
-        // live leak. One combined number would hide which of the two is happening.
-        let line = render(Duration::from_secs(60), &census(20 * 1024 * 1024, 0), None, None);
-        assert!(line.contains("malloc arena=50.0 in_use=20.0 free=1.0"), "{line}");
     }
 }

@@ -129,13 +129,9 @@ mod tests {
         assert_eq!(wheel_delta(0.0, 120), WHEEL_STEP_PIXELS, "one notch is one step");
         assert_eq!(wheel_delta(0.0, -240), -2.0 * WHEEL_STEP_PIXELS, "two notches up");
         assert_eq!(wheel_delta(0.0, 60), WHEEL_STEP_PIXELS / 2.0, "high-resolution wheels send fractions of a notch");
-    }
-
-    /// A compositor that sends both is sending the same motion twice, so the distance wins and the
-    /// step count is not added on top of it.
-    #[test]
-    fn a_step_count_is_ignored_when_a_distance_came_with_it() {
+        // A compositor sending both is sending the same motion twice: the distance wins.
         assert_eq!(wheel_delta(17.5, 120), 17.5);
+        assert_eq!(wheel_delta(0.0, 0), 0.0, "an event carrying no motion scrolls nothing");
     }
 
     #[test]
@@ -154,11 +150,6 @@ mod tests {
         assert_eq!(wheel_steps(15.0, 120), -1.0, "value120 wins over pixels sent with it");
     }
 
-    #[test]
-    fn a_wheel_event_carrying_no_motion_scrolls_nothing() {
-        assert_eq!(wheel_delta(0.0, 0), 0.0);
-    }
-
     /// The `value120` that would have been silently dropped by narrowing it to an `i16` first.
     ///
     /// Reachable rather than absurd: `AxisScroll::merge` sums `value120` across every axis event
@@ -169,6 +160,6 @@ mod tests {
     /// already behind.
     #[test]
     fn an_implausibly_large_step_count_still_scrolls_rather_than_becoming_zero() {
-        assert!(wheel_delta(0.0, 120 * 400) > 0.0);
+        assert_eq!(wheel_delta(0.0, 120 * 400), 400.0 * WHEEL_STEP_PIXELS);
     }
 }

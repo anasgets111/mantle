@@ -1056,6 +1056,8 @@ mod tests {
         let second = handle.shape(req("network access point 1", 13.0));
         assert_eq!(handle.cached_len(), 1, "asking again must not add a second entry");
         assert_eq!(first, second);
+        // A cold handle proves the cached answer is the worker's, not merely some answer.
+        assert_eq!(second, ShapingHandle::spawn().shape(req("network access point 1", 13.0)));
     }
 
     /// The bug a subset key would cause: a hit that returns another request's box. Each of these
@@ -1106,39 +1108,15 @@ mod tests {
         );
     }
 
-    /// Cheap to hold and worth pinning: a cached answer has to be the answer the worker gave, not
-    /// merely some answer. Compared against a second handle, whose cache is cold.
     #[test]
-    fn a_cached_measurement_equals_what_the_worker_returns_cold() {
-        let warm = ShapingHandle::spawn();
-        let first = warm.shape(req("Mantle", 14.0));
-        let cached = warm.shape(req("Mantle", 14.0));
-        let cold = ShapingHandle::spawn().shape(req("Mantle", 14.0));
-        assert_eq!(cached, first);
-        assert_eq!(cached, cold);
-    }
-
-    #[test]
-    fn shapes_nonempty_text_to_a_nonzero_box() {
+    fn measures_text_width_and_height() {
         let handle = ShapingHandle::spawn();
-        let result = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle", 14.0) });
-        assert!(result.width > 0.0, "expected nonzero width, got {}", result.width);
-        assert_eq!(result.height, 18.0);
-    }
-
-    #[test]
-    fn empty_text_measures_to_zero_width() {
-        let handle = ShapingHandle::spawn();
-        let result = handle.shape(ShapeRequest { line_height: 18.0, ..req("", 14.0) });
-        assert_eq!(result.width, 0.0);
-    }
-
-    #[test]
-    fn longer_text_measures_wider_than_shorter_text() {
-        let handle = ShapingHandle::spawn();
-        let short = handle.shape(ShapeRequest { line_height: 18.0, ..req("O", 14.0) });
-        let long = handle.shape(ShapeRequest { line_height: 18.0, ..req("Mantle Engine", 14.0) });
+        let measure = |text| handle.shape(ShapeRequest { line_height: 18.0, ..req(text, 14.0) });
+        let (short, long) = (measure("O"), measure("Mantle Engine"));
+        assert!(short.width > 0.0, "expected nonzero width, got {}", short.width);
+        assert_eq!(short.height, 18.0);
         assert!(long.width > short.width);
+        assert_eq!(measure("").width, 0.0);
     }
 
     #[test]
@@ -1216,19 +1194,6 @@ mod tests {
         );
     }
 
-    /// Height is the line count times the step, so the two have to be derived from the same walk
-    /// rather than counted twice.
-    #[test]
-    fn the_measured_height_is_the_lines_it_reports() {
-        let handle = ShapingHandle::spawn();
-        let result = handle.shape(ShapeRequest {
-            line_height: 18.0,
-            max_width: Some(40.0),
-            ..req("Mantle Engine Renderer", 14.0)
-        });
-        assert_eq!(result.height, result.lines.len() as f32 * 18.0);
-    }
-
     /// A hard newline is a break the shaper already honoured for measurement and paint ignored,
     /// drawing the `\n` as a glyph. It arrives as two lines like any other break.
     #[test]
@@ -1249,5 +1214,7 @@ mod tests {
         });
         assert!(wrapped.height > unconstrained.height, "wrapping onto more lines must grow the measured height");
         assert!(wrapped.width <= unconstrained.width, "a wrapped line can't be wider than the unconstrained text");
+        // Height is the line count times the step: one walk, not two counts.
+        assert_eq!(wrapped.height, wrapped.lines.len() as f32 * 18.0);
     }
 }

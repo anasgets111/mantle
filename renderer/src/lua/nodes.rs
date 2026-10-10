@@ -173,15 +173,6 @@ mod tests {
     }
 
     #[test]
-    fn a_node_constructor_tags_the_props_table_with_its_kind() {
-        let lua = lua_with_constructors();
-        let table: Table =
-            lua.load(r##"return rect { background = "#11111B", width = "fill", height = 32 }"##).eval().unwrap();
-        assert_eq!(table.get::<String>("kind").unwrap(), "rect");
-        assert_eq!(table.get::<String>("background").unwrap(), "#11111B");
-    }
-
-    #[test]
     fn the_removed_button_constructor_raises_the_fix() {
         let lua = lua_with_constructors();
         let err = lua.load(r#"return button { on_click = function() end }"#).eval::<Table>().unwrap_err();
@@ -201,6 +192,8 @@ mod tests {
             (r#"return panel { align_h = "end" }"#, "align_h"),
             (r#"return lock { align_v = "end" }"#, "align_v"),
             // Removed for `shadows`; a stale config must fail, not silently lose its shadow.
+            // ADR-0260: only a box has a box to cast, so text's shadow is always its content's.
+            (r#"return text { shadow_mode = "box" }"#, "shadow_mode"),
             ("return rect { shadow_blur = 8 }", "shadow_blur"),
             ("return rect { content_blur = 2 }", "content_blur"),
             ("return rect { backdrop_blur = 2 }", "backdrop_blur"),
@@ -212,19 +205,13 @@ mod tests {
                 "{source}: {err}"
             );
         }
-        let table: mlua::Table = lua.load("return panel { margin = 4 }").eval().unwrap();
-        assert!(deserialize_lua_table(&table).is_ok(), "a panel's `margin` offsets it from its anchored edges");
-    }
-
-    /// ADR-0260: only a box has a box to cast, so text's shadow is always its content's.
-    #[test]
-    fn shadow_mode_is_a_box_property() {
-        let lua = lua_with_constructors();
-        let table: mlua::Table = lua.load(r#"return text { shadow_mode = "box" }"#).eval().unwrap();
-        let err = deserialize_lua_table(&table).unwrap_err().to_string();
-        assert!(err.contains("no property `shadow_mode`"), "{err}");
-        let table: mlua::Table = lua.load(r#"return rect { shadow_mode = "content" }"#).eval().unwrap();
-        assert!(deserialize_lua_table(&table).is_ok());
+        for (source, why) in [
+            ("return panel { margin = 4 }", "a panel's `margin` offsets it from its anchored edges"),
+            (r#"return rect { shadow_mode = "content" }"#, "a box takes `shadow_mode`"),
+        ] {
+            let table: mlua::Table = lua.load(source).eval().unwrap();
+            assert!(deserialize_lua_table(&table).is_ok(), "{why}");
+        }
     }
 
     /// A surface root takes the base and box properties, like `rect` paint.
@@ -235,7 +222,10 @@ mod tests {
             .load(r##"return panel { id = "bar", layer = "top", padding = { top = 4 }, radius = 8, opacity = 0.5 }"##)
             .eval()
             .unwrap();
-        assert!(deserialize_lua_table(&table).is_ok());
+        let node = deserialize_lua_table(&table).unwrap();
+        for name in ["padding", "radius", "opacity"] {
+            assert!(node.properties.contains_key(name), "`{name}` must reach the node");
+        }
     }
 
     #[test]

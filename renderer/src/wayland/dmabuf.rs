@@ -346,15 +346,11 @@ mod tests {
     }
 
     #[test]
-    fn an_unpreferred_shared_format_is_still_picked() {
+    fn only_a_format_both_sides_share_is_picked() {
         let weird = fm(0x1234_5678, 7);
-        assert_eq!(pick_dmabuf_format(&[weird], &[weird], true), Some(weird));
-    }
-
-    #[test]
-    fn nothing_shared_is_no_format() {
+        assert_eq!(pick_dmabuf_format(&[weird], &[weird], true), Some(weird), "an unpreferred shared format");
         let offered = [fm(gbm::Format::Xrgb8888 as u32, 1)];
         let importable = [fm(gbm::Format::Xrgb8888 as u32, 2)];
-        assert_eq!(pick_dmabuf_format(&offered, &importable, true), None);
+        assert_eq!(pick_dmabuf_format(&offered, &importable, true), None, "nothing shared is no format");
     }
 }

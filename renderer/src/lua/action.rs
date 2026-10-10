@@ -134,13 +134,6 @@ mod tests {
     }
 
     #[test]
-    fn a_declared_action_runs_and_its_return_comes_back_as_json() {
-        let lua = lua();
-        lua.load(r#"action("rec.toggle", function() return "recording" end)"#).exec().unwrap();
-        assert_eq!(dispatch(&lua, "rec.toggle", &[]), shared::CallOutcome::Returned(serde_json::json!("recording")));
-    }
-
-    #[test]
     fn arguments_arrive_in_order_and_the_answer_may_be_any_json() {
         let lua = lua();
         lua.load(r#"action("sum", function(a, b) return { total = a + b } end)"#).exec().unwrap();
@@ -178,7 +171,8 @@ mod tests {
         // A function has no JSON form. Answering `null` would report success for a config that
         // returned something it cannot send.
         lua.load(r#"action("fn", function() return function() end end)"#).exec().unwrap();
-        failure(dispatch(&lua, "fn", &[]));
+        let why = failure(dispatch(&lua, "fn", &[]));
+        assert!(why.contains("does not convert to JSON"), "{why}");
     }
 
     #[test]
@@ -222,7 +216,8 @@ mod tests {
     #[test]
     fn an_empty_name_is_refused_because_nothing_could_ask_for_it() {
         let lua = lua();
-        assert!(lua.load(r#"action("", function() end)"#).exec().is_err());
+        let err = lua.load(r#"action("", function() end)"#).exec().unwrap_err().to_string();
+        assert!(err.contains("needs a name"), "{err}");
     }
 
     #[test]

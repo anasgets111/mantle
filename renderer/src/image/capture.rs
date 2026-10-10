@@ -401,42 +401,20 @@ mod tests {
     }
 
     #[test]
-    fn no_damage_reported_uploads_the_whole_buffer() {
+    fn upload_plan_covers_the_damage_within_the_frame() {
         let full = DamageRect::full(200, 100);
-        assert_eq!(upload_plan(&[], full), vec![full]);
-    }
-
-    #[test]
-    fn a_few_rects_upload_individually() {
-        let full = DamageRect::full(200, 100);
-        let rects =
-            vec![DamageRect { x: 0, y: 0, width: 10, height: 10 }, DamageRect { x: 50, y: 50, width: 5, height: 5 }];
-        assert_eq!(upload_plan(&rects, full), rects);
-    }
-
-    #[test]
-    fn past_the_cap_rects_merge_to_their_bounding_box() {
-        let full = DamageRect::full(200, 100);
-        let rects: Vec<DamageRect> =
-            (0..=MERGE_ABOVE).map(|i| DamageRect { x: i as u32, y: 0, width: 1, height: 1 }).collect();
-        let plan = upload_plan(&rects, full);
-        assert_eq!(plan, vec![DamageRect { x: 0, y: 0, width: MERGE_ABOVE as u32 + 1, height: 1 }]);
-    }
-
-    #[test]
-    fn rects_past_the_frame_are_clipped_to_it() {
-        let full = DamageRect::full(200, 100);
-        let rects = vec![
-            DamageRect { x: 190, y: 90, width: 50, height: 50 },
-            DamageRect { x: 200, y: 0, width: 1, height: 1 },
-            DamageRect { x: 0, y: u32::MAX, width: u32::MAX, height: u32::MAX },
-        ];
-        assert_eq!(upload_plan(&rects, full), vec![DamageRect { x: 190, y: 90, width: 10, height: 10 }]);
-    }
-
-    #[test]
-    fn union_of_nothing_is_none() {
-        assert_eq!(union(&[]), None);
+        let dmg = |x, y, width, height| DamageRect { x, y, width, height };
+        let few = vec![dmg(0, 0, 10, 10), dmg(50, 50, 5, 5)];
+        let many: Vec<DamageRect> = (0..=MERGE_ABOVE).map(|i| dmg(i as u32, 0, 1, 1)).collect();
+        let past_the_frame = vec![dmg(190, 90, 50, 50), dmg(200, 0, 1, 1), dmg(0, u32::MAX, u32::MAX, u32::MAX)];
+        for (rects, expected, case) in [
+            (vec![], vec![full], "no damage reported uploads the whole buffer"),
+            (few.clone(), few, "a few rects upload individually"),
+            (many, vec![dmg(0, 0, MERGE_ABOVE as u32 + 1, 1)], "past the cap rects merge to their bounding box"),
+            (past_the_frame, vec![dmg(190, 90, 10, 10)], "rects past the frame are clipped to it"),
+        ] {
+            assert_eq!(upload_plan(&rects, full), expected, "{case}");
+        }
     }
 
     #[test]
@@ -444,31 +422,27 @@ mod tests {
         let rects =
             vec![DamageRect { x: 0, y: 0, width: 10, height: 10 }, DamageRect { x: 40, y: 5, width: 10, height: 10 }];
         assert_eq!(union(&rects), Some(DamageRect { x: 0, y: 0, width: 50, height: 15 }));
+        assert_eq!(union(&[]), None);
     }
 
     #[test]
-    fn a_lone_capture_fits_even_past_the_budget() {
-        assert!(fits_budget(0, 100, 10));
-    }
-
-    #[test]
-    fn a_second_capture_is_refused_once_the_budget_is_full() {
+    fn the_budget_admits_a_lone_capture_but_refuses_a_second_once_full() {
+        assert!(fits_budget(0, 100, 10), "a lone capture fits even past the budget");
         assert!(fits_budget(5, 5, 10));
         assert!(!fits_budget(6, 5, 10));
+        let mut cache = CaptureCache::default();
+        cache.set_texture_budget(10);
+        assert!(cache.admits(crate::layout::scene::NodeId::test(1), 100, 5, 5));
     }
 
     #[test]
-    fn an_argb_window_keeps_its_premultiplied_alpha() {
-        let mut pixels = [10, 20, 30, 40, 0, 0, 0, 0];
-        bgrx_to_rgba(&mut pixels, false);
-        assert_eq!(pixels, [30, 20, 10, 40, 0, 0, 0, 0]);
-    }
-
-    #[test]
-    fn bgrx_to_rgba_swaps_the_colour_channels_and_forces_opaque() {
-        let mut pixels = vec![0x10, 0x20, 0x30, 0x00, 0xAA, 0xBB, 0xCC, 0x7F];
-        bgrx_to_rgba(&mut pixels, true);
-        assert_eq!(pixels, vec![0x30, 0x20, 0x10, 0xFF, 0xCC, 0xBB, 0xAA, 0xFF]);
+    fn bgrx_to_rgba_swaps_the_colour_channels_and_forces_opaque_only_for_bgrx() {
+        let mut argb = [10, 20, 30, 40, 0, 0, 0, 0];
+        bgrx_to_rgba(&mut argb, false);
+        assert_eq!(argb, [30, 20, 10, 40, 0, 0, 0, 0], "an ARGB window keeps its premultiplied alpha");
+        let mut bgrx = vec![0x10, 0x20, 0x30, 0x00, 0xAA, 0xBB, 0xCC, 0x7F];
+        bgrx_to_rgba(&mut bgrx, true);
+        assert_eq!(bgrx, vec![0x30, 0x20, 0x10, 0xFF, 0xCC, 0xBB, 0xAA, 0xFF]);
     }
 
     fn rect(x: f32, y: f32, width: f32, height: f32) -> LogicalRect {
@@ -525,12 +499,5 @@ mod tests {
             let one_and_a_half = corners(placement(box_rect, 5160, 2160, crop, fit).unwrap());
             assert!(one_x.iter().zip(one_and_a_half).all(|(a, b)| (a - b).abs() < 1e-3), "{fit:?}");
         }
-    }
-
-    #[test]
-    fn a_lone_capture_still_fits_past_the_budget() {
-        let mut cache = CaptureCache::default();
-        cache.set_texture_budget(10);
-        assert!(cache.admits(crate::layout::scene::NodeId::test(1), 100, 5, 5));
     }
 }

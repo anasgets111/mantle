@@ -414,5 +414,6 @@ mod tests {
     fn a_zero_length_window_reports_rather_than_dividing_by_zero() {
         let line = render(Duration::ZERO, &counters(1, 0), Cpu { process: 0.0, thread: 0.0 });
         assert!(line.contains("turns=1"), "{line}");
+        assert!(!line.contains("inf") && !line.contains("NaN"), "{line}");
     }
 }
