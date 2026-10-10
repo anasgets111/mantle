@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::capabilities::workspaces::{hyprland, niri, sway};
+use crate::capabilities::workspaces::{hyprland, mango, niri, sway};
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::wlr;
@@ -95,6 +95,7 @@ impl WindowsController {
             Backend::Ipc(CompositorKind::Niri) => niri::focus_window(id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::focus_window(id),
             Backend::Ipc(CompositorKind::Sway) => sway::focus_window(id),
+            Backend::Ipc(CompositorKind::Mango) => mango::focus_window(id),
             Backend::Wlr(handle) => wlr::activate(handle, id),
             Backend::None => debug!("focus({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -105,6 +106,7 @@ impl WindowsController {
             Backend::Ipc(CompositorKind::Niri) => niri::close_window(id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::close_window(id),
             Backend::Ipc(CompositorKind::Sway) => sway::close_window(id),
+            Backend::Ipc(CompositorKind::Mango) => mango::close_window(id),
             Backend::Wlr(handle) => wlr::close(handle, id),
             Backend::None => debug!("close({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -122,6 +124,11 @@ impl WindowsController {
                 }
             }
             Backend::Ipc(CompositorKind::Sway) => sway::set_fullscreen(id, fullscreen),
+            Backend::Ipc(CompositorKind::Mango) => {
+                if self.differs(id, |w| w.fullscreen, fullscreen) {
+                    mango::toggle_window_fullscreen(id);
+                }
+            }
             Backend::Wlr(handle) => wlr::set_fullscreen(handle, id, fullscreen),
             Backend::None => {
                 debug!(
@@ -148,7 +155,7 @@ impl WindowsController {
                 }
             }
             Backend::Wlr(handle) => wlr::set_maximized(handle, id, maximized),
-            Backend::Ipc(CompositorKind::Niri | CompositorKind::Sway) | Backend::None => {
+            Backend::Ipc(CompositorKind::Niri | CompositorKind::Sway | CompositorKind::Mango) | Backend::None => {
                 debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
             }
         }
@@ -159,6 +166,9 @@ impl WindowsController {
             Backend::Ipc(CompositorKind::Niri) => niri::move_window_to_workspace(id, workspace_id),
             Backend::Ipc(CompositorKind::Hyprland) => hyprland::move_window_to_workspace(id, workspace_id),
             Backend::Ipc(CompositorKind::Sway) => sway::move_window_to_workspace(id, workspace_id),
+            Backend::Ipc(CompositorKind::Mango) => {
+                debug!("move_to_workspace({id:?}, {workspace_id}) is not supported on mango; ignored")
+            }
             Backend::Wlr(_) => {
                 debug!("move_to_workspace({id:?}, {workspace_id}) called on wlr backend; ignored")
             }

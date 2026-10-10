@@ -25,13 +25,13 @@ list {
 
 `mantle.windows:get()` returns `WindowsState`, `nil` before the first push. A field marked `?` may be absent.
 
-`mantle.windows` payload; `nil` with no niri, Hyprland, sway or wlr-foreign-toplevel
+`mantle.windows` payload; `nil` with no niri, Hyprland, sway, mango or wlr-foreign-toplevel
 backend.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `source` | `string` | `"niri"`, `"hyprland"`, `"sway"`, or `"wlr_foreign_toplevel"`. |
-| `windows` | `WindowEntry[]` | Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`) or none come last, in backend order. |
+| `source` | `string` | `"niri"`, `"hyprland"`, `"sway"`, `"mango"`, or `"wlr_foreign_toplevel"`. |
+| `windows` | `WindowEntry[]` | Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`, mango's `DP-1:3`) or none come last, in backend order. |
 
 ### `WindowEntry`
 
@@ -61,12 +61,12 @@ Call each as `mantle.windows:<action>(arguments...)`; `?` marks an argument you 
 | `close` | `id: string` | Asks the compositor to close the window. |
 | `set_fullscreen` | `id: string, fullscreen: boolean` | Sets fullscreen on or off; no-op on niri. |
 | `set_minimized` | `id: string, minimized: boolean` | Sets minimized on or off; wlr only. |
-| `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri and sway. |
+| `set_maximized` | `id: string, maximized: boolean` | Sets maximized on or off; no-op on niri, sway and mango. |
 | `move_to_workspace` | `id: string, workspace_id: string` | Moves a window to a workspace. |
 
 ## Backend
 
-niri, Hyprland and sway share the `workspaces` reader; any other compositor needs
+niri, Hyprland, sway and mango share the `workspaces` reader; any other compositor needs
 `zwlr_foreign_toplevel_manager_v1` ([backend table](workspaces.md#backend)).
 
 | Backend | Reports | Writes |
@@ -74,7 +74,10 @@ niri, Hyprland and sway share the `workspaces` reader; any other compositor need
 | niri | `floating` | `focus`, `close`, `move_to_workspace` |
 | Hyprland | `floating`, `fullscreen`, `maximized` | `focus`, `close`, `set_fullscreen`, `set_maximized`, `move_to_workspace` |
 | sway | `floating`, `fullscreen` | `focus`, `close`, `set_fullscreen`, `move_to_workspace` |
+| mango | `floating`, `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen` |
 | wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen`, `set_minimized`, `set_maximized` |
+
+A mango window's `workspace_id` is its lowest tag on its output (`nil` on the special tag).
 
 A flag a backend does not report is `nil`; an action it lacks is logged at debug level and dropped.
 On Hyprland, a window's `id` also feeds [`capture { window = id }`](../nodes/capture.md).

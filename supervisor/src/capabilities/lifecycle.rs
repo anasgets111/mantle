@@ -169,6 +169,9 @@ impl Capabilities {
                     CompositorKind::Sway => {
                         workspaces::sway::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
                     }
+                    CompositorKind::Mango => {
+                        workspaces::mango::spawn_reader(workspaces_publisher, windows_publisher, keyboard)
+                    }
                 }
             }
         }

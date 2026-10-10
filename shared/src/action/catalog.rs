@@ -488,7 +488,7 @@ pub struct UpdateCandidate {
 #[serde(rename_all = "snake_case")]
 pub enum WorkspacesAction {
     /// Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number and sway a missing name;
-    /// niri ignores it.
+    /// niri ignores it. mango shows only that tag on its output and focuses the output.
     Focus { id: String },
     /// Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
     ToggleSpecial {
@@ -524,7 +524,7 @@ pub enum WindowsAction {
         id: String,
         minimized: bool,
     },
-    /// Sets maximized on or off; no-op on niri and sway.
+    /// Sets maximized on or off; no-op on niri, sway and mango.
     SetMaximized {
         #[serde(deserialize_with = "super::non_empty")]
         id: String,

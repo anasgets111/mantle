@@ -19,7 +19,7 @@ list {
 
 ## Backend
 
-niri, Hyprland and sway share the `workspaces` reader; any other compositor needs
+niri, Hyprland, sway and mango share the `workspaces` reader; any other compositor needs
 `zwlr_foreign_toplevel_manager_v1` ([backend table](workspaces.md#backend)).
 
 | Backend | Reports | Writes |
@@ -27,7 +27,10 @@ niri, Hyprland and sway share the `workspaces` reader; any other compositor need
 | niri | `floating` | `focus`, `close`, `move_to_workspace` |
 | Hyprland | `floating`, `fullscreen`, `maximized` | `focus`, `close`, `set_fullscreen`, `set_maximized`, `move_to_workspace` |
 | sway | `floating`, `fullscreen` | `focus`, `close`, `set_fullscreen`, `move_to_workspace` |
+| mango | `floating`, `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen` |
 | wlr foreign-toplevel | `fullscreen`, `maximized`, `minimized` | `focus`, `close`, `set_fullscreen`, `set_minimized`, `set_maximized` |
+
+A mango window's `workspace_id` is its lowest tag on its output (`nil` on the special tag).
 
 A flag a backend does not report is `nil`; an action it lacks is logged at debug level and dropped.
 On Hyprland, a window's `id` also feeds [`capture { window = id }`](../nodes/capture.md).

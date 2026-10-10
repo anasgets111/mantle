@@ -14,6 +14,7 @@
 
 pub mod controller;
 pub mod hyprland;
+pub mod mango;
 pub mod niri;
 pub mod sway;
 

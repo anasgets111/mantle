@@ -31,7 +31,7 @@ pub struct LayoutSink {
 }
 
 impl LayoutSink {
-    fn write(&self, active_layout: String, active_layout_index: u32, layout_count: u32) {
+    pub fn write(&self, active_layout: String, active_layout_index: u32, layout_count: u32) {
         {
             let mut guard = self.state.lock().expect("mutex poisoned");
             guard.active_layout = active_layout;

@@ -2,11 +2,11 @@
 
 use serde::Serialize;
 
-/// `mantle.workspaces` payload; `nil` without niri, Hyprland or sway.
+/// `mantle.workspaces` payload; `nil` without niri, Hyprland, sway or mango.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct WorkspacesState {
-    /// `"niri"`, `"hyprland"` or `"sway"` (ADR-0119).
+    /// `"niri"`, `"hyprland"`, `"sway"` or `"mango"` (ADR-0119).
     pub compositor: String,
     /// One entry per output, sorted by connector name.
     pub outputs: Vec<OutputWorkspaces>,
@@ -52,7 +52,8 @@ pub struct OutputWorkspaces {
     /// `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub focused_workspace: Option<String>,
-    /// Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name.
+    /// Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named
+    /// ones by name; mango's tags by number.
     pub workspaces: Vec<WorkspaceEntry>,
 }
 
@@ -63,14 +64,15 @@ pub struct WorkspaceEntry {
     /// Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in
     /// decimal, so a numbered workspace's id is its number and focusing an unlisted number
     /// creates it; named workspaces have negative ids. niri's id in decimal; sway's workspace
-    /// name.
+    /// name; mango's tag on its output, `"<output>:<tag>"` (`"DP-1:3"`).
     pub id: String,
     /// The number a keybind targets: niri's 1-based position on the output, renumbered on
-    /// reorder; Hyprland's workspace number; sway's leading number. `nil` for a Hyprland named or
-    /// non-numeric sway workspace.
+    /// reorder; Hyprland's workspace number; sway's leading number; mango's tag number. `nil` for
+    /// a Hyprland named or non-numeric sway workspace.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub number: Option<u32>,
-    /// Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
+    /// Workspace name; `nil` when unnamed, always on mango, or on Hyprland when the name is just
+    /// the number.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Whether a window sits here (ADR-0117).

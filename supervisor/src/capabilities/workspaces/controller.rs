@@ -18,7 +18,7 @@ use crate::capabilities::publish;
 
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
-use super::{hyprland, niri, sway};
+use super::{hyprland, mango, niri, sway};
 
 /// One compositor workspace reduced to [`derive_state`]'s input fields; owned by neither adaptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,6 +175,7 @@ impl WorkspacesController {
             Some(CompositorKind::Niri) => niri::focus(id),
             Some(CompositorKind::Hyprland) => hyprland::focus(id),
             Some(CompositorKind::Sway) => sway::focus(id),
+            Some(CompositorKind::Mango) => mango::focus(id),
             None => debug!("focus({id:?}) called but this session has no workspace implementor; ignored"),
         }
     }
@@ -184,7 +185,7 @@ impl WorkspacesController {
     pub fn toggle_special(&self, name: &str) {
         match self.compositor {
             Some(CompositorKind::Hyprland) => hyprland::toggle_special(name),
-            Some(CompositorKind::Niri | CompositorKind::Sway) | None => {
+            Some(CompositorKind::Niri | CompositorKind::Sway | CompositorKind::Mango) | None => {
                 debug!(
                     "toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored"
                 )

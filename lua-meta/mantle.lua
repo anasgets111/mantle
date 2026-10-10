@@ -230,7 +230,7 @@
 ---@field active_workspace string `WorkspaceEntry.id` shown on this output.
 ---@field focused_workspace? string `WorkspaceEntry.id` with focus, present only on the focused output (ADR-0056).
 ---@field name string Connector name, e.g. `"eDP-1"`, as in `mantle.screens` and a panel's `output`.
----@field workspaces WorkspaceEntry[] Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name.
+---@field workspaces WorkspaceEntry[] Workspaces on this output: niri by position, Hyprland numbered ones by `number`, then named ones by name; mango's tags by number.
 
 ---@class PairedDevice
 ---@field blocked boolean BlueZ refuses every connection to or from the device until it is unblocked.
@@ -466,9 +466,9 @@
 ---@class WorkspaceEntry
 ---One workspace. Draw `number` or `name`, send `id`.
 ---@field app_id? string `app_id` of a window here (ADR-0117): Hyprland's most recently focused one with an `app_id`; on niri the focused one, else the lowest id, `nil` if that one has no `app_id`. `nil` when empty.
----@field id string Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in decimal, so a numbered workspace's id is its number and focusing an unlisted number creates it; named workspaces have negative ids. niri's id in decimal; sway's workspace name.
----@field name? string Workspace name; `nil` when unnamed, or on Hyprland when the name is just the number.
----@field number? integer The number a keybind targets: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number; sway's leading number. `nil` for a Hyprland named or non-numeric sway workspace.
+---@field id string Opaque string, only passed back to actions such as `"focus"`. Hyprland's workspace id in decimal, so a numbered workspace's id is its number and focusing an unlisted number creates it; named workspaces have negative ids. niri's id in decimal; sway's workspace name; mango's tag on its output, `"<output>:<tag>"` (`"DP-1:3"`).
+---@field name? string Workspace name; `nil` when unnamed, always on mango, or on Hyprland when the name is just the number.
+---@field number? integer The number a keybind targets: niri's 1-based position on the output, renumbered on reorder; Hyprland's workspace number; sway's leading number; mango's tag number. `nil` for a Hyprland named or non-numeric sway workspace.
 ---@field populated boolean Whether a window sits here (ADR-0117).
 ---@field urgent boolean Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`.
 ---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
@@ -661,18 +661,18 @@
 ---@field reboot_required boolean `/run/mantle-reboot-required` exists, watched live. Mantle never writes it; anything you set up may, a pacman hook for example, and `/run` empties on reboot.
 
 ---@class WorkspacesState
----`mantle.workspaces` payload; `nil` without niri, Hyprland or sway.
+---`mantle.workspaces` payload; `nil` without niri, Hyprland, sway or mango.
 ---@field active_client? ActiveClient The focused window, or `nil` when none has focus. One per session, not per output.
----@field compositor string `"niri"`, `"hyprland"` or `"sway"` (ADR-0119).
+---@field compositor string `"niri"`, `"hyprland"`, `"sway"` or `"mango"` (ADR-0119).
 ---@field outputs OutputWorkspaces[] One entry per output, sorted by connector name.
 ---@field overview_open? boolean Whether niri's overview is open; `nil` on Hyprland, which has none.
 ---@field special? SpecialWorkspace[] Hyprland special workspaces, sorted by name (ADR-0119). `nil` on niri; empty means none exist.
 
 ---@class WindowsState
----`mantle.windows` payload; `nil` with no niri, Hyprland, sway or wlr-foreign-toplevel
+---`mantle.windows` payload; `nil` with no niri, Hyprland, sway, mango or wlr-foreign-toplevel
 ---backend.
----@field source string `"niri"`, `"hyprland"`, `"sway"`, or `"wlr_foreign_toplevel"`.
----@field windows WindowEntry[] Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`) or none come last, in backend order.
+---@field source string `"niri"`, `"hyprland"`, `"sway"`, `"mango"`, or `"wlr_foreign_toplevel"`.
+---@field windows WindowEntry[] Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`, mango's `DP-1:3`) or none come last, in backend order.
 
 --- Capabilities -------------------------------------------------------------------------------
 
@@ -852,7 +852,7 @@ local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/workspaces.html)
 ---@class WorkspacesCapability: Capability<WorkspacesState>, userdata
----@field focus fun(self: WorkspacesCapability, id: string) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number and sway a missing name; niri ignores it.
+---@field focus fun(self: WorkspacesCapability, id: string) Focuses a `WorkspaceEntry.id`. Hyprland creates a missing number and sway a missing name; niri ignores it. mango shows only that tag on its output and focuses the output.
 ---@field toggle_special fun(self: WorkspacesCapability, name: string) Shows or hides a `special[].name` on Hyprland, creating an unknown one; no-op on niri.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/windows.html)
@@ -861,7 +861,7 @@ local PrivacyCapability = {}
 ---@field close fun(self: WindowsCapability, id: string) Asks the compositor to close the window.
 ---@field set_fullscreen fun(self: WindowsCapability, id: string, fullscreen: boolean) Sets fullscreen on or off; no-op on niri.
 ---@field set_minimized fun(self: WindowsCapability, id: string, minimized: boolean) Sets minimized on or off; wlr only.
----@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri and sway.
+---@field set_maximized fun(self: WindowsCapability, id: string, maximized: boolean) Sets maximized on or off; no-op on niri, sway and mango.
 ---@field move_to_workspace fun(self: WindowsCapability, id: string, workspace_id: string) Moves a window to a workspace.
 
 --- Off-roster members ---------------------------------------------------------------------------

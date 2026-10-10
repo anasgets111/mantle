@@ -74,6 +74,10 @@ impl KeyboardController {
             },
             Some(CompositorKind::Niri) => Some(Box::new(NiriLink)),
             Some(CompositorKind::Sway) => Some(Box::new(SwayLink)),
+            Some(CompositorKind::Mango) => {
+                debug!("mango has no indexed layout switch; switch_layout disabled for this run");
+                None
+            }
             None => {
                 debug!("{}; layout reporting disabled for this run", unsupported_session_report());
                 None
