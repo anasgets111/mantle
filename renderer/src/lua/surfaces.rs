@@ -12,7 +12,7 @@ use crate::lua::nodes::properties::closable;
 use crate::lua::{LoadOutput, Loader, LoaderError};
 
 /// Parses every declared root role and returns the roster. Field type errors are
-/// [`LoaderError::InvalidTopology`], distinct from top-level shape errors.
+/// [`LoaderError::Invalid`], distinct from top-level shape errors.
 ///
 /// **Parse every role, including unused-path properties.** Role violations become protocol errors
 /// (`invalid_positioner` for zero `anchor_rect`, `invalid_size` for `max_size < min_size`) that
@@ -31,13 +31,10 @@ use crate::lua::{LoadOutput, Loader, LoaderError};
 /// scene, so
 /// [`lock_spec`](layout::node::lock_spec) reads no field through `Bound`, so defers nothing.
 pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, LoaderError> {
-    let at = |site: Option<Site>, text: String| match site {
-        Some(site) => format!("{site}: surface topology is invalid: {text}"),
-        None => format!("surface topology is invalid: {text}"),
-    };
+    let at = |site: Option<Site>, text: String| Site::lead(site, format!("surface topology is invalid: {text}"));
     let mut specs = Vec::with_capacity(output.surfaces.len());
     for surface in &output.surfaces {
-        let invalid = |err: layout::node::LayoutError| LoaderError::InvalidTopology(at(surface.site, err.to_string()));
+        let invalid = |err: layout::node::LayoutError| LoaderError::Invalid(at(surface.site, err.to_string()));
         specs.push(match surface.kind {
             "panel" => SurfaceSpec::Panel(layout::node::panel_spec(&surface.properties).map_err(invalid)?),
             "window" => SurfaceSpec::Window(layout::node::window_spec(&surface.properties).map_err(invalid)?),
@@ -45,11 +42,11 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
             "lock" => SurfaceSpec::Lock(layout::node::lock_spec(&surface.properties).map_err(invalid)?),
             // `lua::require_surface` admits exactly four roles; keep this arm explicit so a fifth
             // cannot reach a generation unvalidated.
-            other => return Err(LoaderError::InvalidTopology(at(None, format!("`{other}` is not a surface role")))),
+            other => return Err(LoaderError::Invalid(at(None, format!("`{other}` is not a surface role")))),
         });
         if surface.kind != "lock" {
             let id = specs.last().map_or("", SurfaceSpec::declared_id);
-            let named = |err| LoaderError::InvalidTopology(at(surface.site, format!("surface `{id}`: {err}")));
+            let named = |err| LoaderError::Invalid(at(surface.site, format!("surface `{id}`: {err}")));
             closable::reset_on_close.read(&surface.properties).map_err(named)?;
         }
     }
@@ -59,7 +56,7 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     if let Some((duplicate, second)) = ids_by_site().find(|(id, _)| !ids.insert(*id)) {
         let first = ids_by_site().find(|(id, _)| id == &duplicate).and_then(|(_, surface)| surface.site);
         let first = first.map_or(String::new(), |site| format!(" (first at {site})"));
-        return Err(LoaderError::InvalidTopology(at(
+        return Err(LoaderError::Invalid(at(
             second.site,
             format!(
                 "invalid value for `id`: two surfaces declare `{duplicate}`{first}, expected each surface id to be unique"
@@ -76,7 +73,7 @@ pub(crate) fn surface_specs(output: &LoadOutput) -> Result<Vec<SurfaceSpec>, Loa
     // `lock` has no `output` and one surface per output, so two screens have no valid layout.
     let locks = specs.iter().filter(|spec| matches!(spec, SurfaceSpec::Lock(_))).count();
     if locks > 1 {
-        return Err(LoaderError::InvalidTopology(at(
+        return Err(LoaderError::Invalid(at(
             None,
             format!(
                 "this config declares {locks} `lock` surfaces; a `lock` has no `output` and exactly one surface per output, so a config may \

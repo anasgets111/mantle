@@ -171,13 +171,10 @@ pub enum LoaderError {
     /// [`Loader::evaluate_file`] could not read `shell.lua` (missing file, permissions).
     #[error("failed to read shell.lua: {0}")]
     Io(#[from] std::io::Error),
-    /// A top-level node with a property error of its own, already prefixed with its `file:line`.
+    /// A top-level node with a property or topology error of its own (`id`/`layer`/`anchor`/`output`),
+    /// already prefixed with its `file:line`; distinct from [`Self::InvalidTopLevelReturn`].
     #[error("{0}")]
-    InvalidProperty(String),
-    /// A valid top-level surface had a mistyped topology field (`id`/`layer`/`anchor`/`output`),
-    /// distinct from [`Self::InvalidTopLevelReturn`].
-    #[error("{0}")]
-    InvalidTopology(String),
+    Invalid(String),
 }
 
 /// One `Loader::evaluate` result: top-level `panel` nodes with topology
@@ -366,7 +363,7 @@ fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
     let node = nodes::deserialize_lua_table(table).map_err(|err| match err {
         nodes::DeserializeError::UnsupportedKind(kind) => not_a_surface(&kind),
         err @ nodes::DeserializeError::UnknownProperty { .. } => {
-            LoaderError::InvalidProperty(nodes::at_site(table, err.to_string()))
+            LoaderError::Invalid(nodes::at_site(table, err.to_string()))
         }
         other => LoaderError::InvalidTopLevelReturn(nodes::at_site(table, other.to_string())),
     })?;

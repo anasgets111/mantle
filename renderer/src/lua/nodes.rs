@@ -73,10 +73,7 @@ const SITE: &str = "__site";
 /// `detail` behind the line that built `table`, `shell.lua:12: detail`, the way Lua prefixes its own
 /// errors. For a table the loader refused, so no [`VirtualNode`] carries the site.
 pub(crate) fn at_site(table: &Table, detail: String) -> String {
-    match table.raw_get::<Value>(SITE).ok().as_ref().and_then(Site::from_lua) {
-        Some(site) => format!("{site}: {detail}"),
-        None => detail,
-    }
+    Site::lead(table.raw_get::<Value>(SITE).ok().as_ref().and_then(Site::from_lua), detail)
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,8 +113,7 @@ pub fn register_node_constructors(lua: &Lua) -> mlua::Result<()> {
     lua.globals().set(
         removed,
         lua.create_function(move |lua, _: mlua::MultiValue| -> mlua::Result<()> {
-            let site = Site::of_caller(lua).map(|site| format!("{site}: ")).unwrap_or_default();
-            Err(mlua::Error::runtime(format!("{site}{removed} was removed: {fix}")))
+            Err(mlua::Error::runtime(Site::lead(Site::of_caller(lua), format!("{removed} was removed: {fix}"))))
         })?,
     )
 }

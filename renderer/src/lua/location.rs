@@ -207,6 +207,11 @@ impl Site {
         .flatten()
     }
 
+    /// `msg` behind `site`, `shell.lua:12: msg`, the way Lua prefixes its own errors.
+    pub(crate) fn lead(site: Option<Site>, msg: impl std::fmt::Display) -> String {
+        site.map_or_else(|| msg.to_string(), |site| format!("{site}: {msg}"))
+    }
+
     /// The Lua value a table or user value stores it as.
     pub(crate) fn to_lua(site: Option<Site>) -> Option<i64> {
         site.map(|site| site.0)
