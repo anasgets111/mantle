@@ -15,17 +15,18 @@ pub(crate) trait ArgNames {
 
 /// A function's typed arguments. Converting is mlua's own stack path, so a call costs nothing
 /// over a bare tuple; only a failure is reworded, as the author reads it:
-/// `file:3: fonts: bad argument #1 (chain): expected a table, got integer`.
-pub(crate) struct Args<T, N>(pub T, pub PhantomData<N>);
+/// `file:3: fonts: bad argument #1 (chain): expected a table, got integer`. A conversion error is
+/// held in `.0` for the body to raise, as mlua gives no `&Lua` to locate it with here.
+pub(crate) struct Args<T, N>(pub mlua::Result<T>, pub PhantomData<N>);
 
 impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
     fn from_lua_multi(values: mlua::MultiValue, lua: &Lua) -> mlua::Result<Self> {
-        T::from_lua_multi(values, lua).map(|args| Self(args, PhantomData))
+        Ok(Self(T::from_lua_multi(values, lua), PhantomData))
     }
 
     unsafe fn from_stack_multi(nvals: std::ffi::c_int, lua: &mlua::state::RawLua) -> mlua::Result<Self> {
         // SAFETY: mlua's own arguments, forwarded unchanged.
-        unsafe { T::from_stack_multi(nvals, lua) }.map(|args| Self(args, PhantomData))
+        Ok(Self(unsafe { T::from_stack_multi(nvals, lua) }, PhantomData))
     }
 
     unsafe fn from_stack_args(
@@ -35,14 +36,11 @@ impl<T: mlua::FromLuaMulti, N: ArgNames> mlua::FromLuaMulti for Args<T, N> {
         lua: &mlua::state::RawLua,
     ) -> mlua::Result<Self> {
         // SAFETY: mlua's own arguments, forwarded unchanged.
-        unsafe { T::from_stack_args(nargs, index, to, lua) }
-            .map(|args| Self(args, PhantomData))
-            .map_err(|err| bad_argument(N::FUNCTION, N::NAMES, err))
+        let args = unsafe { T::from_stack_args(nargs, index, to, lua) };
+        Ok(Self(args.map_err(|err| bad_argument(N::FUNCTION, N::NAMES, err)), PhantomData))
     }
 }
 
-// ponytail: mlua converts arguments before our code runs and gives no `&Lua`, so a `pcall`-caught error has no
-// `file:N:` lead; `describe` hoists it for logs. Upgrade: an mlua API exposing `RawLua::lua()`, or `unsafe Lua::get_or_init_from_ptr`.
 fn bad_argument(function: &str, names: &[&str], err: mlua::Error) -> mlua::Error {
     let mlua::Error::BadArgument { pos, cause, .. } = &err else { return err };
     let mlua::Error::FromLuaConversionError { from, to, message } = &**cause else { return err };
@@ -471,9 +469,12 @@ macro_rules! lua_fn {
                 const FUNCTION: &'static str = $path;
                 const NAMES: &'static [&'static str] = &[$(stringify!($name)),*];
             }
-            $lua.create_function(move |$l, $crate::lua::luacats::Args(($($name,)*), _): $crate::lua::luacats::Args<($($ty,)*), Names>|
+            $lua.create_function(move |$l, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Args<($($ty,)*), Names>|
                     -> mlua::Result<$out> {
-                let run = || -> mlua::Result<$out> { $body };
+                let run = || -> mlua::Result<$out> {
+                    let ($($name,)*) = args?;
+                    $body
+                };
                 run().map_err(|err| $crate::lua::location::located($l, err))
             })?
         }

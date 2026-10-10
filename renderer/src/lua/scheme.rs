@@ -16,8 +16,8 @@ use mlua::{IntoLua, Lua, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, lua_shape, spelled};
 use super::palette::PaletteSwatch;
-use crate::layout::node::preview_for_error;
 use crate::layout::node::prop::Color;
+use crate::layout::node::{preview_for_error, preview_str};
 
 /// The crate's variants but `Cmf`, which takes a second source colour.
 const VARIANTS: [(&str, M3Variant); 9] = [
@@ -152,7 +152,7 @@ fn options(opts: Option<Table>) -> Result<(bool, M3Variant, f64), String> {
 
 fn swatch(entry: &Table) -> Result<(Rgb, f64), String> {
     let color: String = entry.get("color").map_err(|_| "`color` must be a string".to_string())?;
-    let rgb = parse(&color).ok_or_else(|| format!("`color` must be #RRGGBB, got string {color:?}"))?;
+    let rgb = parse(&color).ok_or_else(|| format!("`color` must be #RRGGBB, got {}", preview_str(&color)))?;
     let share: f64 = entry.get("share").map_err(|_| "`share` must be a number".to_string())?;
     if !(share.is_finite() && share > 0.0) {
         return Err(format!("`share` must be above 0, got {}", super::marshal::number_word(share)));
@@ -174,7 +174,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             opts: As<Option<Table>, Option<Options>>,
         ) -> Roles {
             let rgb = parse(&seed.0).ok_or_else(|| {
-                mlua::Error::runtime(format!("palette.scheme: seed must be #RRGGBB, got string {:?}", seed.0))
+                mlua::Error::runtime(format!("palette.scheme: seed must be #RRGGBB, got {}", preview_str(&seed.0)))
             })?;
             let (dark, variant, contrast) =
                 options(opts.0).map_err(|detail| mlua::Error::runtime(format!("palette.scheme: options: {detail}")))?;
@@ -191,7 +191,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             color: As<String, Color>,
         ) -> PaletteHct {
             let rgb = parse(&color.0).ok_or_else(|| {
-                mlua::Error::runtime(format!("palette.hct: color must be #RRGGBB, got string {:?}", color.0))
+                mlua::Error::runtime(format!("palette.hct: color must be #RRGGBB, got {}", preview_str(&color.0)))
             })?;
             let hct = Hct::new(rgb);
             Ok(PaletteHct { hue: hct.get_hue(), chroma: hct.get_chroma(), tone: hct.get_tone() })

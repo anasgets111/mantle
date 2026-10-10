@@ -642,7 +642,7 @@ impl Prop for Effects {
                 if !shader.source.is_absolute() {
                     return Err(invalid(
                         "effect.shader.source",
-                        format!("expected an absolute path, got `{}`", shader.source.display()),
+                        format!("expected an absolute path, got {}", preview_str(&shader.source.to_string_lossy())),
                     ));
                 }
                 Some(ShaderKeys {

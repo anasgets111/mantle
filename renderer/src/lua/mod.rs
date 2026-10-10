@@ -382,7 +382,8 @@ fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
 /// The catch-all teaches the roster; omitting `lock` reads as "not built yet".
 fn not_a_surface(kind: &str) -> LoaderError {
     LoaderError::InvalidTopLevelReturn(format!(
-        "top-level node must be `panel`, `window`, `popup` or `lock`, got `{kind}`"
+        "top-level node must be `panel`, `window`, `popup` or `lock`, got {}",
+        crate::layout::node::preview_str(kind)
     ))
 }
 

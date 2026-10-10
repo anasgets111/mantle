@@ -42,7 +42,8 @@ pub fn run(config_dir: &Path) -> Result<String, String> {
 }
 
 /// Lays out with every capability `nil`, then after [`push_samples`] of each sample set; each
-/// failing pass is one `<pass>: <error>` entry, which may span lines.
+/// failing pass is one `<error>` entry, which may span lines, then `(<passes>)` on its own line,
+/// unless every pass failed alike: a static error does not depend on the data.
 fn lay_out_passes(
     output: &LoadOutput,
     specs: &[SurfaceSpec],
@@ -51,8 +52,7 @@ fn lay_out_passes(
     shaping: &ShapingHandle,
     size: LogicalSize,
 ) -> Result<(), Vec<String>> {
-    let mut errors: Vec<String> = Vec::new();
-    let mut failures = Vec::new();
+    let mut failures: Vec<(String, Vec<&str>)> = Vec::new();
     let passes = [
         ("before capability data", None),
         ("with sample capability data", Some("first")),
@@ -63,15 +63,17 @@ fn lay_out_passes(
         if let Some(set) = set {
             push_samples(namespace, loader, set).map_err(|err| vec![format!("{pass}: {err}")])?;
         }
-        // A static layout error fails every pass alike; name it once, under the first.
-        if let Err(err) = lay_out(output, specs, loader, shaping, size)
-            && !errors.contains(&err)
-        {
-            failures.push(format!("{err}\n  ({pass})"));
-            errors.push(err);
+        if let Err(err) = lay_out(output, specs, loader, shaping, size) {
+            match failures.iter_mut().find(|(seen, _)| *seen == err) {
+                Some((_, in_passes)) => in_passes.push(pass),
+                None => failures.push((err, vec![pass])),
+            }
         }
     }
-    if failures.is_empty() { Ok(()) } else { Err(failures) }
+    let each = |(err, in_passes): (String, Vec<&str>)| {
+        if in_passes.len() == passes.len() { err } else { format!("{err}\n({})", in_passes.join(", ")) }
+    };
+    if failures.is_empty() { Ok(()) } else { Err(failures.into_iter().map(each).collect()) }
 }
 
 /// Lays the evaluated scene out through the production `Scene::apply_locked` on one `size` output
@@ -285,11 +287,7 @@ mod tests {
             (
                 "bad window value",
                 &[("shell.lua", "\nreturn window { id = \"w\", width = \"wide\" }\n")],
-                &[
-                    "shell.lua:2: window: invalid value for `width`",
-                    "got string \"wide\"",
-                    "(on `w`)\n  (before capability data)",
-                ],
+                &["shell.lua:2: window: invalid value for `width`", "got string \"wide\"", "(on `w`)"],
             ),
             (
                 "bad popup value",
@@ -372,7 +370,7 @@ mod tests {
             (
                 "text at the top level",
                 &[("shell.lua", "return text { content = \"hi\" }\n")],
-                &["shell.lua's top-level return must be", "got `text`"],
+                &["shell.lua's top-level return must be", "got string \"text\""],
             ),
             // quoted in docs/guide/cli.md
             (
@@ -442,8 +440,75 @@ mod tests {
             ),
             (
                 "a caught raise keeps the caller's line",
-                &[("shell.lua", "local ok, msg = pcall(function()\n  timer(0, function() end)\nend)\nerror(msg, 0)\n")],
+                &[(
+                    "shell.lua",
+                    "local ok, msg = pcall(function()\n  timer(0, function() end)\nend)\nif not tostring(msg):find(\"shell.lua:2: timer\", 1, true) then error(\"unlocated: \" .. tostring(msg)) end\nerror(msg, 0)\n",
+                )],
                 &["shell.lua:2: timer: ms must be within [1, 86400000], got integer 0"],
+            ),
+            (
+                "a caught bad argument keeps the caller's line",
+                &[(
+                    "shell.lua",
+                    "local ok, msg = pcall(function()\n  fonts(1)\nend)\nif not tostring(msg):find(\"shell.lua:2: fonts\", 1, true) then error(\"unlocated: \" .. tostring(msg)) end\nerror(msg, 0)\n",
+                )],
+                &["shell.lua:2: fonts: bad argument #1 (chain): expected a table, got integer"],
+            ),
+            (
+                "action argument NaN",
+                &[("shell.lua", "\nmantle.audio:set_volume(0 / 0)\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: bad argument #1: expected a finite number, got number nan"],
+            ),
+            (
+                "action argument nil before another",
+                &[("shell.lua", "\nmantle.files:watch(nil, { \"a\" })\nreturn {}\n")],
+                &["shell.lua:2: mantle.files:watch: bad argument #1: expected a string, got nil"],
+            ),
+            (
+                "action argument that quotes serde",
+                &[("shell.lua", "\nmantle.keyboard:switch_layout(\"a, expected b\")\nreturn {}\n")],
+                &["bad argument #1: expected a non-negative integer, got string \"a, expected b\""],
+            ),
+            (
+                "a plain-table child leads with its parent's line",
+                &[(
+                    "shell.lua",
+                    "\nreturn panel { id = \"p\", layer = \"top\",\n  child = { kind = \"text\", contnet = \"x\" } }\n",
+                )],
+                &["shell.lua:2: text: no property `contnet`; did you mean `content`? (on `p@DP-1`)"],
+            ),
+            (
+                "a plain-table child without a kind",
+                &[("shell.lua", "\nreturn panel { id = \"p\", layer = \"top\",\n  child = { content = \"x\" } }\n")],
+                &["shell.lua:2: child: node table has no `kind` field (on `p@DP-1`)"],
+            ),
+            (
+                "a plain-table child in children",
+                &[(
+                    "shell.lua",
+                    "\nreturn panel { id = \"p\", layer = \"top\", child = column {\n  children = { text { content = \"a\" }, { content = \"x\" } } } }\n",
+                )],
+                &["shell.lua:2: children[2]: node table has no `kind` field (at panel (shell.lua:2) on `p@DP-1`)"],
+            ),
+            (
+                "a typo in an itemfn row",
+                &[(
+                    "shell.lua",
+                    "\nreturn panel { id = \"p\", layer = \"top\", child = list {\n  source = { 1, 2, 3, 4 },\n  itemfn = function(n) if n == 4 then return text { contnet = \"x\" } end return text { content = \"x\" } end } }\n",
+                )],
+                &[
+                    "shell.lua:4: text: no property `contnet`; did you mean `content`? (at panel (shell.lua:2) > list (shell.lua:2) on `p@DP-1`)",
+                ],
+            ),
+            (
+                "delay of a plain value",
+                &[("shell.lua", "\nlocal d = delay(5, 10)\nreturn {}\n")],
+                &["shell.lua:2: delay: source must be a Signal or a `mantle` capability, got integer 5"],
+            ),
+            (
+                "state declared twice with different seeds",
+                &[("shell.lua", "state(\"a\", 1)\nstate(\"a\", 0 / 0)\nreturn {}\n")],
+                &["shell.lua:2: state(\"a\", ...) is declared twice", "integer 1 then number nan"],
             ),
             (
                 "action argument nested in a table",
@@ -541,7 +606,7 @@ mod tests {
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.starts_with(&format!("{}: shell.lua:1: rect: invalid value", dir.path().display())), "{err}");
-        assert!(err.ends_with("on `bar@HDMI-A-1`)\n  (before capability data)"), "{err}");
+        assert!(err.ends_with("on `bar@HDMI-A-1`)"), "a static error fails every pass and names none: {err}");
     }
 
     /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until
@@ -615,7 +680,7 @@ mod tests {
             .unwrap();
             let err = super::run(dir.path()).unwrap_err();
             assert!(err.starts_with(&format!("{}: shell.lua:", dir.path().display())), "{source}: {err}");
-            assert!(err.ends_with(&format!("\n  ({pass})")), "{source}: {err}");
+            assert!(err.ends_with(&format!("\n({pass})")), "{source}: {err}");
             assert_eq!(err.matches("contnet").count(), 1, "{source}: {err}");
         }
     }

@@ -328,7 +328,7 @@ impl Prop for MaxLines {
         let n = value_as_f32(row.name, value)?
             .ok_or_else(|| invalid(row.name, format!("expected a number, got {}", preview_for_error(value))))?;
         if n < 0.0 {
-            return Err(invalid(row.name, format!("must not be negative, got {n}")));
+            return Err(invalid(row.name, format!("must not be negative, got {}", marshal::number_word(n))));
         }
         Ok((n >= 1.0).then_some(n as usize))
     }

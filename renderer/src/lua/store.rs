@@ -13,6 +13,7 @@ use std::collections::HashMap;
 
 use mlua::{AnyUserData, IntoLua, Lua, ObjectLike, Table, Value};
 
+use crate::layout::node::preview_str;
 use crate::lua::luacats::{As, LuaType, lua_fn, spelled};
 use crate::lua::signal::{Signal, from_userdata};
 
@@ -103,13 +104,15 @@ impl LuaType for PersistentTable {
 fn join(path: &str, name: &str) -> mlua::Result<String> {
     if !path.starts_with('/') {
         return Err(mlua::Error::runtime(format!(
-            "persistent_table: path must be absolute, got string {path:?}; a relative one resolves against the \
-             Supervisor's working directory, which nothing sets"
+            "persistent_table: path must be absolute, got {}; a relative one resolves against the \
+             Supervisor's working directory, which nothing sets",
+            preview_str(path)
         )));
     }
     if name.is_empty() || name.contains('/') {
         return Err(mlua::Error::runtime(format!(
-            "persistent_table: name must be one file name, not a path, got string {name:?}"
+            "persistent_table: name must be one file name, not a path, got {}",
+            preview_str(name)
         )));
     }
     Ok(format!("{}/{name}", path.trim_end_matches('/')))

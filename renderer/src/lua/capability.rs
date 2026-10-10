@@ -20,6 +20,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::layout::node::preview_for_error;
 use crate::lua::fuzzy::{closest, hint};
 use crate::lua::luacats::rust_type_in_lua;
+use crate::lua::marshal::number_word;
 use crate::lua::signal::{CpuBudget, DirtyFlag, LiveSignalHandle, Signal};
 use crate::lua::warn_raised;
 
@@ -256,6 +257,16 @@ impl Capability {
         }
         let mut arguments = Vec::with_capacity(args.len());
         for (index, value) in args.into_iter().enumerate() {
+            if let Value::Number(n) = value
+                && !n.is_finite()
+            {
+                return Err(mlua::Error::runtime(format!(
+                    "mantle.{}:{action}: bad argument #{}: expected a finite number, got {}",
+                    self.name,
+                    index + 1,
+                    number_word(n)
+                )));
+            }
             // A function or userdata has no JSON form, so only here can the error name its slot.
             let json = lua.from_value::<serde_json::Value>(value).map_err(|err| {
                 mlua::Error::runtime(format!(
@@ -285,7 +296,7 @@ fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Val
     let text = err.to_string();
     let slot = text.strip_prefix("argument ").and_then(|rest| rest.split_once(": "));
     let Some((slot, text)) = slot.and_then(|(n, rest)| Some((n.parse::<usize>().ok()?, rest))) else {
-        let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.split_once(", expected "))
+        let Some((got, want)) = text.strip_prefix("invalid length ").and_then(|rest| rest.rsplit_once(", expected "))
         else {
             return text;
         };
@@ -296,7 +307,7 @@ fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Val
             None => text,
         };
     };
-    let invalid = |prefix| text.strip_prefix(prefix)?.split_once(", expected ");
+    let invalid = |prefix| text.strip_prefix(prefix)?.rsplit_once(", expected ");
     let (range, (got, want)) = match (invalid("invalid type: "), invalid("invalid value: ")) {
         (Some(pair), _) => (false, pair),
         (_, Some(pair)) => (true, pair),
@@ -305,7 +316,11 @@ fn in_lua_words(lua: &Lua, err: &serde_json::Error, arguments: &[serde_json::Val
     let note =
         if range && (got.starts_with("integer") || got.starts_with("floating point")) { " (out of range)" } else { "" };
     // Back from JSON, which keeps a string, an integer or a float as Lua sent it.
-    let value = arguments.get(slot - 1).and_then(|json| lua.to_value(json).ok()).unwrap_or(Value::Nil);
+    let value = arguments
+        .get(slot - 1)
+        .filter(|json| !json.is_null())
+        .and_then(|json| lua.to_value(json).ok())
+        .unwrap_or(Value::Nil);
     let got = if matches!(value, Value::Table(_)) && !matches!(got, "sequence" | "map") {
         got.replace('`', "").replace("floating point", "number")
     } else {

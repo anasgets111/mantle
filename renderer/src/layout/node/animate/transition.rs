@@ -6,7 +6,7 @@ use mlua::Value;
 use super::easing::Easing;
 use crate::layout::node::input::required_duration;
 use crate::layout::node::prop::Prop;
-use crate::layout::node::{LayoutError, invalid, preview_for_error, value_as_f32};
+use crate::layout::node::{LayoutError, invalid, preview_for_error, preview_str, value_as_f32};
 use crate::lua::luacats::{lua_shape, spelled};
 use crate::lua::nodes::properties::Property;
 
@@ -78,7 +78,10 @@ impl TransitionInput {
         if let Some(path) = &shader
             && !path.is_absolute()
         {
-            return Err(invalid("transition.shader", format!("expected an absolute path, got `{}`", path.display())));
+            return Err(invalid(
+                "transition.shader",
+                format!("expected an absolute path, got {}", preview_str(&path.to_string_lossy())),
+            ));
         }
         let params = parse_shader_params("transition.params", &params)?;
         if shader.is_none() && !params.is_empty() {
@@ -151,7 +154,10 @@ pub(in crate::layout::node) fn parse_shader_params(what: &str, value: &Value) ->
             Value::Table(list) => {
                 let len = list.raw_len();
                 if !(1..=MAX_PARAM_NUMBERS).contains(&len) {
-                    return Err(invalid(field, format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got {len}")));
+                    return Err(invalid(
+                        field,
+                        format!("expected 1 to {MAX_PARAM_NUMBERS} numbers, got a list of {len}"),
+                    ));
                 }
                 (1..=len)
                     .map(|index| finite(&list.raw_get(index).map_err(|e| invalid(field, e.to_string()))?))
@@ -197,7 +203,7 @@ pub(in crate::layout::node) fn parse_shader_images(what: &str, value: &Value) ->
         }
         let path = path.to_str().map_err(|e| invalid(field, e.to_string()))?.to_string();
         if !path.starts_with('/') {
-            return Err(invalid(field, format!("expected an absolute path, got `{path}`")));
+            return Err(invalid(field, format!("expected an absolute path, got {}", preview_str(&path))));
         }
         // No GIF: an animated sampler has no frame tick.
         let raster = std::path::Path::new(&path)

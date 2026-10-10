@@ -9,7 +9,7 @@ use mlua::{Function, Value};
 
 use super::{
     LayoutError, PropMap, Rgba, checked_string, invalid, lua_hex_color, parse_hex_color, preview_for_error,
-    reject_signal_in_structural_field, value_as_f32,
+    preview_str, reject_signal_in_structural_field, value_as_f32,
 };
 use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal::{number_word, out_of_range};
@@ -214,12 +214,10 @@ pub(crate) fn within_range(name: &str, (low, high): (f32, f32), n: f32) -> Resul
 
 /// [`within`] for a number read from `value`, so the error says `integer 2`, not `number 2.0`.
 pub(crate) fn within_value(row: &Property, n: f32, value: &Value) -> Result<f32, LayoutError> {
-    match row.range {
-        Some((low, high)) if !(low..=high).contains(&n) => {
-            Err(invalid(row.name, out_of_range(low, high, preview_for_error(value))))
-        }
-        _ => Ok(n),
-    }
+    within(row, n).map_err(|_| {
+        let (low, high) = row.range.unwrap_or_default();
+        invalid(row.name, out_of_range(low, high, preview_for_error(value)))
+    })
 }
 
 /// A boolean, the row's default when absent.
@@ -278,7 +276,7 @@ impl Prop for Path {
     fn read(row: &Property, value: Option<&Value>) -> Result<String, LayoutError> {
         let path = Text::read(row, value)?;
         if !path.is_empty() && !path.starts_with('/') {
-            return Err(invalid(row.name, format!("expected an absolute path, got `{path}`")));
+            return Err(invalid(row.name, format!("expected an absolute path, got {}", preview_str(&path))));
         }
         Ok(path)
     }

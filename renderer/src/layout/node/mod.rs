@@ -301,9 +301,14 @@ pub struct Trail {
 /// it closes the problem's first line, ahead of any traceback. An empty `property` has no header.
 fn invalid_property(property: &str, detail: &str, at: Option<&Trail>) -> String {
     let (steps, surface) = at.map_or((&[][..], None), |at| (&at.steps[..], at.surface.as_deref()));
-    let (lead, above) = match steps.split_first() {
-        Some((step @ Step { site: Some(site), .. }, above)) => (format!("{site}: {step}: "), above),
-        _ => (String::new(), steps),
+    // A node built from a plain table has no site; the nearest ancestor's line leads and leaves the path.
+    let (lead, above): (String, Vec<&Step>) = match steps.iter().enumerate().find_map(|(i, step)| Some((i, step.site?)))
+    {
+        Some((near, site)) => {
+            let above = steps.iter().enumerate().filter(|&(i, _)| i != 0 && i != near).map(|(_, step)| step);
+            (format!("{site}: {}: ", steps[0]), above.collect())
+        }
+        None => (String::new(), steps.iter().collect()),
     };
     let path = above.iter().rev().map(|step| match step.site {
         Some(site) => format!("{step} ({site})"),
@@ -464,20 +469,28 @@ pub(crate) fn preview_for_error(value: &Value) -> String {
         Value::Number(n) => marshal::number_word(n),
         Value::String(s) => {
             // Borrow the Lua buffer and measure before formatting: this is O(1) and copies nothing.
-            let bytes = s.as_bytes();
-            let total_len = bytes.len();
-            if total_len <= MAX_ERROR_VALUE_PREVIEW_BYTES {
+            if s.as_bytes().len() <= MAX_ERROR_VALUE_PREVIEW_BYTES {
                 return format!("string {s:?}");
             }
-            // Slice before formatting, so a 20 MB string costs O(200 bytes), not O(len). Lossy rendering
-            // is intentional: this is a log preview, and the byte boundary may split a codepoint.
-            let prefix = String::from_utf8_lossy(&bytes[..MAX_ERROR_VALUE_PREVIEW_BYTES]);
-            format!(
-                "string {prefix:?}... -- {total_len} bytes total, truncated to the first {MAX_ERROR_VALUE_PREVIEW_BYTES} here"
-            )
+            oversized(&s.as_bytes())
         }
         other => other.type_name().into(),
     }
+}
+
+/// [`preview_for_error`] for a string Rust already holds.
+pub(crate) fn preview_str(s: &str) -> String {
+    if s.len() <= MAX_ERROR_VALUE_PREVIEW_BYTES { format!("string {s:?}") } else { oversized(s.as_bytes()) }
+}
+
+/// Slice before formatting, so a 20 MB string costs O(200 bytes), not O(len). Lossy rendering is
+/// intentional: this is a log preview, and the byte boundary may split a codepoint.
+fn oversized(bytes: &[u8]) -> String {
+    let prefix = String::from_utf8_lossy(&bytes[..MAX_ERROR_VALUE_PREVIEW_BYTES]);
+    let total_len = bytes.len();
+    format!(
+        "string {prefix:?}... -- {total_len} bytes total, truncated to the first {MAX_ERROR_VALUE_PREVIEW_BYTES} here"
+    )
 }
 
 /// Applies the Lua numeric checks before parser ranges, then checks the narrowed `f32`. This covers
@@ -1222,6 +1235,13 @@ mod tests {
             detail.contains(&(20 * 1024 * 1024).to_string()),
             "must state the real length, or a truncated preview reads as the whole value: {detail}"
         );
+    }
+
+    #[test]
+    fn a_rust_string_previews_like_a_lua_one_and_is_capped() {
+        assert_eq!(preview_str("#12"), "string \"#12\"");
+        let long = preview_str(&"Q".repeat(1 << 20));
+        assert!(long.len() < 400 && long.contains("1048576 bytes total"), "{long}");
     }
 
     #[test]

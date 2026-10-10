@@ -5,6 +5,7 @@ use std::time::Duration;
 
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
+use crate::layout::node::preview_for_error;
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
 use crate::lua::marshal::{Num, a_type, list_entries, out_of_range, rect_table};
 use crate::text::snap::LogicalRect;
@@ -222,6 +223,16 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
     lua.app_data_mut::<LayoutChanged>().map(|mut moved| std::mem::take(&mut moved.0)).unwrap_or_default()
 }
 
+/// A `delay` or `pulse` source: a Signal or capability, anything else named by its Lua type.
+fn signal_source(function: &str, value: &Value) -> mlua::Result<(AnyUserData, Signal)> {
+    value.as_userdata().and_then(|ud| Some((ud.clone(), from_userdata(ud)?))).ok_or_else(|| {
+        mlua::Error::runtime(format!(
+            "{function}: source must be a Signal or a `mantle` capability, got {}",
+            preview_for_error(value)
+        ))
+    })
+}
+
 /// The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
 ///
 /// Bounded on what the caller actually gets rather than on the number it wrote: `0.1` clears a
@@ -293,16 +304,12 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         fn delay(
             lua,
             /// A signal or capability; anything else raises.
-            source: SignalOf<Generic, AnyUserData>,
+            source: SignalOf<Generic, Value>,
             /// `[1, 60000]`, rounded to whole milliseconds; outside raises.
             ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<Generic, AnyUserData> {
-            let source_ud = source.0;
-            let source = from_userdata(&source_ud)
-                .ok_or_else(|| {
-                    mlua::Error::runtime("delay: source must be a Signal or a `mantle` capability, got userdata")
-                })?;
+            let (source_ud, source) = signal_source("delay", &source.0)?;
             let hold = parse_hold("delay", ms.0)?;
             let held = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
@@ -319,16 +326,12 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         fn pulse(
             lua,
             /// A signal or capability; anything else raises.
-            source: SignalOf<Value, AnyUserData>,
+            source: SignalOf<Value, Value>,
             /// `[1, 60000]`, rounded to whole milliseconds; outside raises. At least as long as what it drives.
             ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<bool, AnyUserData> {
-            let source_ud = source.0;
-            let source = from_userdata(&source_ud)
-                .ok_or_else(|| {
-                    mlua::Error::runtime("pulse: source must be a Signal or a `mantle` capability, got userdata")
-                })?;
+            let (source_ud, source) = signal_source("pulse", &source.0)?;
             let hold = parse_hold("pulse", ms.0)?;
             let seen = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
@@ -361,7 +364,9 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 if literal_was_edited(&initial, &seeded) == Some(true) {
                     if repeated {
                         return Err(mlua::Error::runtime(format!(
-                            "state(\"{name}\", ...) is declared twice in this evaluation with different initial values, {seeded:?} then {initial:?}; expected one seed per name"
+                            "state(\"{name}\", ...) is declared twice in this evaluation with different initial values, {} then {}; expected one seed per name",
+                            preview_for_error(&seeded),
+                            preview_for_error(&initial)
                         )));
                     }
                     signal.reseed(initial.clone()).map_err(|err| {

@@ -18,6 +18,7 @@ use mlua::{IntoLua, Lua, LuaSerdeExt, ObjectLike, Table, Value};
 
 use super::luacats::{As, LuaType, lua_fn, spelled};
 use super::store::{capability, index_entry_signals};
+use crate::layout::node::preview_for_error;
 
 /// Handles keyed by declared name, so two declarations of one program share a table and its
 /// signals. Survives VM re-evaluation (ADR-0044 decision 4), so a reload hands back the same one.
@@ -49,14 +50,10 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             }
             let stop_signal: Value = spec.get("stop_signal")?;
 
-            lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone()).map_err(|err| {
-                let got = crate::layout::node::preview_for_error(&stop_signal);
-                let err = err.to_string();
-                let names = err.split_once(", expected one of ").map(|(_, n)| format!("; the names are {n}"));
-                mlua::Error::runtime(format!(
-                    "session_process: stop_signal: expected a signal name, got {got}{}",
-                    names.unwrap_or_default()
-                ))
+            lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone()).map_err(|_| {
+                let given = stop_signal.as_string().map(|name| name.to_string_lossy()).unwrap_or_default();
+                let got = super::marshal::expected_one_of(SIGNALS, &given, &preview_for_error(&stop_signal));
+                mlua::Error::runtime(format!("session_process: stop_signal: expected a signal name, {got}"))
             })?;
             let processes = capability(lua, "session_process", "processes")?;
             // Sent every evaluation, like `storage:open`: the Supervisor keeps the entry it has
@@ -74,6 +71,9 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         }
     )
 }
+
+/// `shared::action::SignalName`'s names; `signal_names_match_the_wire_enum` keeps them in step.
+const SIGNALS: &[&str] = &["TERM", "INT", "HUP", "QUIT", "USR1", "USR2", "KILL", "STOP", "CONT"];
 
 /// `session_process`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
@@ -156,4 +156,16 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 
     index_entry_signals(lua, &handle, &processes, "sessions", name)?;
     Ok(handle)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn signal_names_match_the_wire_enum() {
+        let lua = mlua::Lua::new();
+        for name in super::SIGNALS {
+            let value = mlua::LuaSerdeExt::to_value(&lua, name).unwrap();
+            mlua::LuaSerdeExt::from_value::<shared::action::SignalName>(&lua, value).expect(name);
+        }
+    }
 }

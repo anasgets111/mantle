@@ -95,8 +95,10 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
 fn location(line: &str) -> Option<&str> {
     let (head, _) = line.split_once(": ")?;
     let (chunk, n) = head.rsplit_once(':')?;
-    // A quote only belongs to a `[string "..."]` chunk name.
-    let named = !chunk.is_empty() && (chunk.starts_with('[') || !chunk.contains('"'));
+    // A quote belongs only to a `[string "..."]` chunk name, a space also to a `.lua` path (`signal
+    // created at a.lua:3`); `ms 10:30: x` is neither.
+    let named = !chunk.is_empty()
+        && (chunk.starts_with('[') || (!chunk.contains('"') && (!chunk.contains(' ') || chunk.ends_with(".lua"))));
     (named && !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())).then_some(head)
 }
 
@@ -316,6 +318,7 @@ mod tests {
         assert_eq!(super::location("got string \"10:30: x\""), None, "a clock inside a value is not a position");
         assert_eq!(super::location("[string \"cfg\"]:3: x"), Some("[string \"cfg\"]:3"));
         assert_eq!(super::location("mantle.x:go: 10: x"), None);
+        assert_eq!(super::location("ms 10:30: x"), None);
     }
 
     /// `error` raised in the main chunk, and a failing `computed` read through `:get()`, which
