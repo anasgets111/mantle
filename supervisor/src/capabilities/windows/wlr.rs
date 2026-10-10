@@ -1,4 +1,4 @@
-//! `windows`' fallback implementor for compositors without niri/Hyprland IPC:
+//! `windows`' fallback for compositors with no `crate::compositor` module:
 //! `zwlr_foreign_toplevel_management_v1` on its own dedicated Wayland connection, hand-dispatched
 //! like `idle::notify`. `id` is this connection's own creation-order counter.
 //!

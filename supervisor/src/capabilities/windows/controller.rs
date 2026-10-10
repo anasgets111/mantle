@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{CompositorKind, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
 
 use super::wlr;
 
@@ -37,11 +37,10 @@ impl StatePublisher {
     }
 }
 
-/// `Ipc` shares its state with `workspaces`; `Wlr` owns its own dedicated Wayland connection.
+/// `Compositor` shares its state with `workspaces`; `Wlr` owns its own Wayland connection.
 enum Backend {
-    Ipc(CompositorKind),
+    Compositor(&'static dyn Compositor),
     Wlr(wlr::Handle),
-    None,
 }
 
 /// No `Clone`: `Wlr` owns a dedicated Wayland connection and dispatch thread, like `idle`.
@@ -51,7 +50,7 @@ pub struct WindowsController {
 }
 
 impl WindowsController {
-    /// `state`/`compositor` come from the shared niri/Hyprland/sway reader; with neither, this tries
+    /// `state`/`compositor` come from the shared compositor reader; without one, this tries
     /// `zwlr_foreign_toplevel_manager_v1` on its own connection before giving up.
     ///
     /// A reader that was already running wrote `state` and signalled before this controller
@@ -63,12 +62,12 @@ impl WindowsController {
         events: UnboundedSender<()>,
     ) -> Self {
         let controller = match compositor {
-            Some(kind) => Self { state, backend: Backend::Ipc(kind) },
+            Some(kind) => Self { state, backend: Backend::Compositor(kind.backend()) },
             None => match wlr::connect(events.clone(), Arc::clone(&state)).await {
                 Some(handle) => Self { state, backend: Backend::Wlr(handle) },
                 None => {
                     debug!("{}; window reporting disabled for this run", unsupported_session_report());
-                    Self { state, backend: Backend::None }
+                    Self { state, backend: Backend::Compositor(&Unsupported) }
                 }
             },
         };
@@ -90,36 +89,31 @@ impl WindowsController {
 
     pub fn focus(&self, id: &str) {
         match &self.backend {
-            Backend::Ipc(kind) => kind.backend().focus_window(id),
+            Backend::Compositor(compositor) => compositor.focus_window(id),
             Backend::Wlr(handle) => wlr::activate(handle, id),
-            Backend::None => debug!("focus({id:?}) called but this session has no window implementor; ignored"),
         }
     }
 
     pub fn close(&self, id: &str) {
         match &self.backend {
-            Backend::Ipc(kind) => kind.backend().close_window(id),
+            Backend::Compositor(compositor) => compositor.close_window(id),
             Backend::Wlr(handle) => wlr::close(handle, id),
-            Backend::None => debug!("close({id:?}) called but this session has no window implementor; ignored"),
         }
     }
 
     pub fn set_fullscreen(&self, id: &str, fullscreen: bool) {
         match &self.backend {
-            Backend::Ipc(kind) => kind.backend().set_fullscreen(id, fullscreen, self.current(id, |w| w.fullscreen)),
-            Backend::Wlr(handle) => wlr::set_fullscreen(handle, id, fullscreen),
-            Backend::None => {
-                debug!(
-                    "set_fullscreen({id:?}, {fullscreen}) called but this session has no window implementor; ignored"
-                )
+            Backend::Compositor(compositor) => {
+                compositor.set_fullscreen(id, fullscreen, self.current(id, |w| w.fullscreen))
             }
+            Backend::Wlr(handle) => wlr::set_fullscreen(handle, id, fullscreen),
         }
     }
 
     pub fn set_minimized(&self, id: &str, minimized: bool) {
         match &self.backend {
             Backend::Wlr(handle) => wlr::set_minimized(handle, id, minimized),
-            Backend::Ipc(_) | Backend::None => {
+            Backend::Compositor(_) => {
                 debug!("set_minimized({id:?}, {minimized}) called but this backend has no minimize concept; ignored")
             }
         }
@@ -127,25 +121,17 @@ impl WindowsController {
 
     pub fn set_maximized(&self, id: &str, maximized: bool) {
         match &self.backend {
-            Backend::Ipc(kind) => kind.backend().set_maximized(id, maximized, self.current(id, |w| w.maximized)),
-            Backend::Wlr(handle) => wlr::set_maximized(handle, id, maximized),
-            Backend::None => {
-                debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
+            Backend::Compositor(compositor) => {
+                compositor.set_maximized(id, maximized, self.current(id, |w| w.maximized))
             }
+            Backend::Wlr(handle) => wlr::set_maximized(handle, id, maximized),
         }
     }
 
     pub fn move_to_workspace(&self, id: &str, workspace_id: &str) {
         match &self.backend {
-            Backend::Ipc(kind) => kind.backend().move_window(id, workspace_id),
-            Backend::Wlr(_) => {
-                debug!("move_to_workspace({id:?}, {workspace_id}) called on wlr backend; ignored")
-            }
-            Backend::None => {
-                debug!(
-                    "move_to_workspace({id:?}, {workspace_id}) called but this session has no window implementor; ignored"
-                )
-            }
+            Backend::Compositor(compositor) => compositor.move_window(id, workspace_id),
+            Backend::Wlr(_) => debug!("move_to_workspace({id:?}, {workspace_id}) called on wlr backend; ignored"),
         }
     }
 }

@@ -1,6 +1,6 @@
 //! `mantle.windows`: every open toplevel window, for taskbars, docks and alt-tab.
 //!
-//! niri and Hyprland share `workspaces`' event stream; other compositors use
+//! A `crate::compositor` module shares `workspaces`' event stream; other compositors use
 //! `zwlr_foreign_toplevel_management_v1` on their own connection.
 
 pub mod controller;

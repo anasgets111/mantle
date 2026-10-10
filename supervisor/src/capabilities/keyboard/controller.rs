@@ -5,7 +5,7 @@ pub use shared::state::keyboard::KeyboardState;
 
 use std::os::unix::fs::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use shared::{debug, error};
 use tokio::io::Interest;
@@ -13,7 +13,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use crate::compositor::{CompositorKind, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
 
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
@@ -31,7 +31,7 @@ struct LedBacklight {
 pub struct KeyboardController {
     state: Arc<Mutex<KeyboardState>>,
     backlight: Arc<Option<LedBacklight>>,
-    compositor: Option<CompositorKind>,
+    compositor: &'static dyn Compositor,
     system_bus: zbus::Connection,
     events: UnboundedSender<()>,
     pub(super) writes: super::super::LatestWrites,
@@ -63,17 +63,13 @@ impl KeyboardController {
             }
         }
         tokio::spawn(watch_locks(resolve_locks(leds_root, &state), Arc::clone(&state), events_tx.clone()));
-        let compositor = match compositor {
-            None => {
-                debug!("{}; layout reporting disabled for this run", unsupported_session_report());
-                None
-            }
-            some => some,
-        };
+        if compositor.is_none() {
+            debug!("{}; layout reporting disabled for this run", unsupported_session_report());
+        }
         Self {
             state,
             backlight: Arc::new(backlight),
-            compositor,
+            compositor: compositor.map_or(&Unsupported, CompositorKind::backend),
             system_bus,
             events: events_tx,
             writes: Default::default(),
@@ -98,13 +94,10 @@ impl KeyboardController {
         let _ = self.events.send(());
     }
 
-    /// `keyboard:switch_layout(index)`. Logs and returns without a supported compositor.
-    /// Synchronous because `Compositor::switch_layout` is synchronous fire-and-forget.
+    /// `keyboard:switch_layout(index)`; synchronous because `Compositor::switch_layout` is
+    /// fire-and-forget.
     pub fn switch_layout(&self, index: usize) {
-        match self.compositor {
-            Some(kind) => kind.backend().switch_layout(index),
-            None => debug!("switch_layout called but no supported compositor was detected; ignored"),
-        }
+        self.compositor.switch_layout(index);
     }
 
     pub fn snapshot(&self) -> KeyboardState {
@@ -281,6 +274,28 @@ async fn watch_locks(first: Option<evdev::EventStream>, state: Arc<Mutex<Keyboar
         stream = open_led_stream(&state);
         if stream.is_some() && events.send(()).is_err() {
             return;
+        }
+    }
+}
+
+/// `keyboard`'s state as the compositor reader sees it. The reader writes layout from its first
+/// event, and signals once `keyboard` has started and set `events`.
+#[derive(Clone, Default)]
+pub struct LayoutSink {
+    pub state: Arc<Mutex<KeyboardState>>,
+    pub events: Arc<OnceLock<UnboundedSender<()>>>,
+}
+
+impl LayoutSink {
+    pub fn write(&self, active_layout: String, active_layout_index: u32, layout_count: u32) {
+        {
+            let mut guard = self.state.lock().expect("mutex poisoned");
+            guard.active_layout = active_layout;
+            guard.active_layout_index = active_layout_index;
+            guard.layout_count = layout_count;
+        }
+        if let Some(events) = self.events.get() {
+            let _ = events.send(());
         }
     }
 }

@@ -1,7 +1,5 @@
-//! `mantle.workspaces`: per-output workspace state and focused window, from niri's IPC stream
-//! (ADR-0056), Hyprland's event and command sockets (ADR-0118), or sway's i3-compatible IPC.
-//!
-//! Top-level because this is a compositor Unix socket, not a device or D-Bus interface.
+//! `mantle.workspaces`: per-output workspace state and focused window, from the session's
+//! compositor (`crate::compositor`: niri, Hyprland, sway or mango).
 //!
 //! The protocol-specific seam is `crate::compositor::Compositor`: reads go through `StatePublisher`,
 //! writes through `CompositorKind::backend`. With no implementor, nothing pushes and
@@ -9,8 +7,7 @@
 //! mean no workspaces rather than no answer.
 //!
 //! `controller` holds the payload, reduction, and publish contract; each `crate::compositor`
-//! module owns its protocol's types and also feeds `mantle.windows`' full window list from the
-//! same events, through a second publisher.
+//! module owns its protocol's types and also feeds `mantle.windows` from the same events.
 
 pub mod controller;
 

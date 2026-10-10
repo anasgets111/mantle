@@ -7,19 +7,21 @@
 //! trait is stateless: a write opens a fresh connection, and anything a toggle needs (a window's
 //! current fullscreen state) arrives as an argument. ADR-0355 supersedes ADR-0056 decision 1.
 
+use std::os::unix::net::UnixStream;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use shared::{debug, warn};
 
-use crate::capabilities::keyboard::layout::LayoutSink;
+use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::StatePublisher as WindowsPublisher;
 use crate::capabilities::workspaces::controller::StatePublisher;
 use crate::capabilities::{RETRY_MAX, STABLE};
 
-pub mod hyprland;
-pub mod mango;
-pub mod niri;
-pub mod sway;
+mod hyprland;
+mod mango;
+mod niri;
+mod sway;
 
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
 /// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056).
@@ -42,39 +44,7 @@ impl CompositorKind {
             CompositorKind::Mango => "mango",
         }
     }
-}
 
-/// What a session's capabilities ask of its compositor. The defaults log a feature the compositor
-/// lacks; a write that cannot apply is dropped, never an error.
-pub trait Compositor: Sync {
-    /// Starts the one reader thread that feeds `workspaces`, `windows` and `keyboard`'s layout.
-    fn spawn_reader(&self, workspaces: StatePublisher, windows: WindowsPublisher, keyboard: LayoutSink);
-    fn focus_workspace(&self, id: &str);
-    fn toggle_special(&self, name: &str) {
-        debug!("toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored")
-    }
-    fn focus_window(&self, id: &str);
-    fn close_window(&self, id: &str);
-    /// `current` is the last published state; a compositor that only toggles writes on a change.
-    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>);
-    fn set_maximized(&self, id: &str, maximized: bool, _current: Option<bool>) {
-        debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
-    }
-    fn move_window(&self, id: &str, workspace_id: &str) {
-        debug!("move_to_workspace({id:?}, {workspace_id}) is not supported by this compositor; ignored")
-    }
-    fn switch_layout(&self, index: usize) {
-        debug!("switch_layout({index}) called but this compositor has no indexed layout switch; ignored")
-    }
-}
-
-/// Whether a toggle-only compositor must act: `current` is the last published state, unknown
-/// reads as off.
-fn toggle_needed(current: Option<bool>, want: bool) -> bool {
-    current.unwrap_or(false) != want
-}
-
-impl CompositorKind {
     pub fn backend(self) -> &'static dyn Compositor {
         match self {
             CompositorKind::Hyprland => &hyprland::Hyprland,
@@ -85,10 +55,63 @@ impl CompositorKind {
     }
 }
 
+/// What a session's capabilities ask of its compositor. The defaults log a feature the compositor
+/// lacks; a write that cannot apply is dropped, never an error.
+pub trait Compositor: Sync {
+    /// Starts the one reader thread that feeds `workspaces`, `windows` and `keyboard`'s layout.
+    fn spawn_reader(&self, workspaces: StatePublisher, windows: WindowsPublisher, keyboard: LayoutSink);
+    fn focus_workspace(&self, id: &str);
+    fn toggle_special(&self, name: &str) {
+        unsupported(format_args!("toggle_special({name:?})"))
+    }
+    fn focus_window(&self, id: &str);
+    fn close_window(&self, id: &str);
+    /// `current` is the last published state; a compositor that only toggles writes on a change.
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>);
+    fn set_maximized(&self, id: &str, maximized: bool, _current: Option<bool>) {
+        unsupported(format_args!("set_maximized({id:?}, {maximized})"))
+    }
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        unsupported(format_args!("move_window({id:?}, {workspace_id:?})"))
+    }
+    fn switch_layout(&self, index: usize) {
+        unsupported(format_args!("switch_layout({index})"))
+    }
+}
+
+fn unsupported(call: std::fmt::Arguments) {
+    debug!("{call} is not supported by this session's compositor; ignored")
+}
+
+/// Stands in when [`detect_compositor`] finds none: no reader, every write logged and dropped.
+pub struct Unsupported;
+
+impl Compositor for Unsupported {
+    fn spawn_reader(&self, _: StatePublisher, _: WindowsPublisher, _: LayoutSink) {}
+    fn focus_workspace(&self, id: &str) {
+        unsupported(format_args!("focus_workspace({id:?})"))
+    }
+    fn focus_window(&self, id: &str) {
+        unsupported(format_args!("focus_window({id:?})"))
+    }
+    fn close_window(&self, id: &str) {
+        unsupported(format_args!("close_window({id:?})"))
+    }
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
+        unsupported(format_args!("set_fullscreen({id:?}, {fullscreen})"))
+    }
+}
+
+/// Whether a toggle-only compositor must act: `current` is the last published state, unknown
+/// reads as off.
+fn toggle_needed(current: Option<bool>, want: bool) -> bool {
+    current.unwrap_or(false) != want
+}
+
 /// Env vars each compositor sets for every process in its session, in probe order.
 ///
-/// A table, so a third compositor is one data line and precedence is explicit. Order breaks ties if two vars are set; that case is unlikely and harmless because
-/// real sessions run one compositor.
+/// A table, so precedence is explicit. Order breaks ties if two vars are set; that case is unlikely
+/// and harmless because real sessions run one compositor.
 ///
 /// Entries are vars set *because the compositor is running*. `$XDG_CURRENT_DESKTOP` is only a name
 /// written by the launcher and remains set if the compositor never starts. It is useful to report
@@ -121,6 +144,20 @@ pub fn unsupported_session_report() -> String {
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// `var`'s socket path, or `None` when unset or empty.
+fn socket_var(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var).filter(|path| !path.is_empty()).map(PathBuf::from)
+}
+
+/// A connection whose reads and writes give up after [`REQUEST_TIMEOUT`], so a stalled compositor
+/// cannot wedge a reader or [`run_in_order`]'s thread.
+fn connect(path: &Path) -> std::io::Result<UnixStream> {
+    let stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    Ok(stream)
+}
+
 /// Runs `job` after every earlier one on a single shared thread, so rapid write actions reach the
 /// compositor in the order they were sent. Each job blocks for at most one IPC round trip.
 fn run_in_order(job: impl FnOnce() + Send + 'static) {
@@ -142,6 +179,13 @@ enum End {
     Lost,
     /// Nobody listens to either publisher.
     Unwanted,
+}
+
+/// Clears both published states after a lost stream; [`End::Unwanted`] once nobody listens.
+fn lost(workspaces: &mut StatePublisher, windows: &mut WindowsPublisher, overview_open: Option<bool>) -> End {
+    let workspaces_alive = workspaces.publish(&[], None, None, overview_open);
+    let windows_alive = windows.publish(Vec::new());
+    if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
 }
 
 /// Connects, runs `follow`, and reconnects after each loss with `RETRY_FIRST` doubling to

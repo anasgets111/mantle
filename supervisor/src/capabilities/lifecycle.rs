@@ -79,7 +79,7 @@ pub struct Capabilities {
     /// `run_privacy_task` ever reads.
     privacy_tx: Option<watch::Sender<PrivacySources>>,
     privacy_sources: watch::Receiver<PrivacySources>,
-    /// `workspaces`, `windows` and `keyboard`'s shared niri/Hyprland reader: whichever starts first
+    /// `workspaces`, `windows` and `keyboard`'s shared compositor reader: whichever starts first
     /// spawns it, the others attach instead of opening another connection.
     compositor_reader: CompositorReader,
 }
@@ -89,7 +89,7 @@ pub struct Capabilities {
 struct CompositorReader {
     workspaces: Arc<Mutex<workspaces::controller::WorkspacesState>>,
     windows: Arc<Mutex<windows::controller::WindowsState>>,
-    keyboard: keyboard::layout::LayoutSink,
+    keyboard: keyboard::controller::LayoutSink,
     compositor: Option<CompositorKind>,
     started: bool,
 }
@@ -141,7 +141,7 @@ impl Capabilities {
         (capabilities, signals)
     }
 
-    /// Spawns the niri/Hyprland/sway reader on the first call; later calls reuse it. Returns the
+    /// Spawns the compositor reader on the first call; later calls reuse it. Returns the
     /// detected compositor, if any.
     fn ensure_compositor_reader(&mut self) -> Option<CompositorKind> {
         if !self.compositor_reader.started {
@@ -405,7 +405,7 @@ impl Capabilities {
                     self.radio = Some(RadioController::new(Path::new("/dev/rfkill"), self.senders.radio.clone()));
                 }
             }
-            // niri/Hyprland IPC, shared with `windows` (ADR-0247); no implementor means no push.
+            // Compositor IPC, shared with `windows` (ADR-0247); no implementor means no push.
             Capability::Workspaces => {
                 if self.workspaces.is_none() {
                     let compositor = self.ensure_compositor_reader();

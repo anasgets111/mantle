@@ -9,14 +9,14 @@
 use std::io::{BufRead, Write};
 use std::io::{BufReader, Read};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order, toggle_needed};
+use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, lost, run_in_order, socket_var, toggle_needed};
 use crate::capabilities::RETRY_FIRST;
-use crate::capabilities::keyboard::layout::LayoutSink;
+use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
@@ -220,9 +220,7 @@ fn follow<R: Read>(
         }
     }
     keyboard.write(String::new(), 0, 0);
-    let workspaces_alive = publisher.publish(&[], None, None, None);
-    let windows_alive = windows_publisher.publish(Vec::new());
-    if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
+    lost(publisher, windows_publisher, None)
 }
 
 /// Connector names mango's monitor selector can carry. The selector is an unanchored PCRE2
@@ -256,12 +254,6 @@ fn dispatch_window(function: &str, id: &str) {
         Some(command) => mango_dispatch(command, "windows"),
         None => debug!("{function}({id:?}) is not a mango window id; ignored"),
     }
-}
-
-/// `$MANGO_INSTANCE_SIGNATURE`, the path of mango's IPC socket, or `None` when unset or empty.
-/// mango exports it only while its socket is bound and unsets it on exit.
-fn mango_socket() -> Option<PathBuf> {
-    std::env::var_os("MANGO_INSTANCE_SIGNATURE").filter(|path| !path.is_empty()).map(PathBuf::from)
 }
 
 /// Longest mango line read, matching the other compositor readers; a longer one is a lost stream.
@@ -301,7 +293,7 @@ fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
 /// A mango `dispatch` through [`run_in_order`], logging a refusal (`{"error":...}`) at debug level.
 fn mango_dispatch(command: String, capability: &'static str) {
     run_in_order(move || {
-        let Some(path) = mango_socket() else {
+        let Some(path) = socket_var("MANGO_INSTANCE_SIGNATURE") else {
             return debug!("{capability}: MANGO_INSTANCE_SIGNATURE is unset; `{command}` ignored");
         };
         match mango_request(&path, &format!("dispatch {command}")) {
@@ -324,9 +316,10 @@ impl Compositor for Mango {
         mut windows_publisher: WindowsPublisher,
         keyboard: LayoutSink,
     ) {
-        let Some(path) = mango_socket() else {
-            debug!("MANGO_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
-            return;
+        let Some(path) = socket_var("MANGO_INSTANCE_SIGNATURE") else {
+            return debug!(
+                "MANGO_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run"
+            );
         };
         std::thread::spawn(move || {
             keep_following(

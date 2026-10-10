@@ -5,14 +5,13 @@
 
 use std::collections::HashMap;
 use std::io::Write;
-use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use shared::{debug, warn};
 
-use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use super::{Compositor, End, connect, keep_following, lost, run_in_order, socket_var};
 use crate::capabilities::RETRY_FIRST;
-use crate::capabilities::keyboard::layout::LayoutSink;
+use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
@@ -142,11 +141,6 @@ fn follow(
     let mut read_event = socket.read_events();
     let mut parts = Parts::default();
     let mut layout_names = Vec::new();
-    let lost = |publisher: &mut StatePublisher, windows_publisher: &mut WindowsPublisher| {
-        let workspaces_alive = publisher.publish(&[], None, None, Some(false));
-        let windows_alive = windows_publisher.publish(Vec::new());
-        if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
-    };
     loop {
         let event = match read_event() {
             Ok(event) => event,
@@ -156,7 +150,7 @@ fn follow(
             }
             Err(err) => {
                 warn!("niri event stream ended: {err}");
-                return lost(publisher, windows_publisher);
+                return lost(publisher, windows_publisher, Some(false));
             }
         };
         if keyboard.apply_niri(&mut layout_names, &event) {
@@ -169,7 +163,7 @@ fn follow(
         );
         if !parts.apply(event) {
             warn!("niri event state went out of sync; restarting the event stream");
-            return lost(publisher, windows_publisher);
+            return lost(publisher, windows_publisher, Some(false));
         }
         if !moves_rows {
             continue;
@@ -200,6 +194,14 @@ fn workspace_reference(id: &str) -> Option<niri_ipc::WorkspaceReferenceArg> {
     parsed
 }
 
+fn window_id(id: &str) -> Option<u64> {
+    let parsed = id.parse().ok();
+    if parsed.is_none() {
+        debug!("{id:?} is not a niri window id; ignored");
+    }
+    parsed
+}
+
 /// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. Blocks on niri's
 /// reply, so callers run it off the main task.
 fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
@@ -212,13 +214,10 @@ fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
 }
 
 /// One niri request on a fresh connection (`read_events` shuts down the event-stream socket's
-/// write half), bounded by [`REQUEST_TIMEOUT`]: `niri_ipc::socket::Socket` has no timeout API, so a
-/// stalled niri would wedge [`run_in_order`]'s thread. The connect itself cannot stall on a unix
-/// socket short of a full backlog.
+/// write half), through [`connect`]'s timeouts: `niri_ipc::socket::Socket` has no timeout API.
+/// The connect itself cannot stall on a unix socket short of a full backlog.
 pub(super) fn niri_request(path: &Path, request: &niri_ipc::Request) -> std::io::Result<()> {
-    let mut stream = UnixStream::connect(path)?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    let mut stream = connect(path)?;
     let mut line = serde_json::to_string(request).map_err(std::io::Error::other)?;
     line.push('\n');
     stream.write_all(line.as_bytes())?;
@@ -230,10 +229,10 @@ pub(super) fn niri_request(path: &Path, request: &niri_ipc::Request) -> std::io:
 fn niri_action(action: niri_ipc::Action, capability: &'static str) {
     run_in_order(move || {
         let label = format!("{action:?}");
-        let Some(path) = std::env::var_os(niri_ipc::socket::SOCKET_PATH_ENV) else {
+        let Some(path) = socket_var(niri_ipc::socket::SOCKET_PATH_ENV) else {
             return debug!("{capability}: {} is unset; {label} ignored", niri_ipc::socket::SOCKET_PATH_ENV);
         };
-        if let Err(err) = niri_request(Path::new(&path), &niri_ipc::Request::Action(action)) {
+        if let Err(err) = niri_request(&path, &niri_ipc::Request::Action(action)) {
             debug!("{capability}: niri {label} request failed: {err}");
         }
     });
@@ -284,18 +283,12 @@ impl Compositor for Niri {
     }
 
     fn focus_window(&self, id: &str) {
-        let Ok(id) = id.parse::<u64>() else {
-            debug!("focus({id:?}) is not a niri window id; ignored");
-            return;
-        };
+        let Some(id) = window_id(id) else { return };
         niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
     }
 
     fn close_window(&self, id: &str) {
-        let Ok(id) = id.parse::<u64>() else {
-            debug!("close({id:?}) is not a niri window id; ignored");
-            return;
-        };
+        let Some(id) = window_id(id) else { return };
         niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
     }
 
@@ -306,10 +299,7 @@ impl Compositor for Niri {
 
     fn move_window(&self, id: &str, workspace_id: &str) {
         let Some(reference) = workspace_reference(workspace_id) else { return };
-        let Ok(id) = id.parse::<u64>() else {
-            debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
-            return;
-        };
+        let Some(id) = window_id(id) else { return };
         niri_action(
             niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false },
             "windows",

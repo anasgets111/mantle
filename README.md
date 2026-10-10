@@ -30,7 +30,7 @@ https://github.com/user-attachments/assets/d5a618ae-29a8-4483-b479-1eedd5ec9755
 ## Install
 
 Requires a Wayland compositor with `wlr-layer-shell-v1`. Workspaces and keyboard layout use
-niri or Hyprland; lock screens need `ext-session-lock-v1`.
+niri, Hyprland, sway or mango; lock screens need `ext-session-lock-v1`.
 
 | Platform | Install |
 | :--- | :--- |

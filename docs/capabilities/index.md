@@ -112,7 +112,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`tray`](tray.md) | Tray items, artwork, menus | Mantle hosts the StatusNotifierWatcher |
 | [`updates`](updates.md) | Pending packages, install progress, reboot needed | No schedule until `configure` |
 | [`windows`](windows.md) | Every toplevel: title, app ID, workspace, output, state | |
-| [`workspaces`](workspaces.md) | Per-output workspaces, specials, focused window | niri or Hyprland only |
+| [`workspaces`](workspaces.md) | Per-output workspaces, specials, focused window | niri, Hyprland, sway or mango only |
 
 ### Renderer members
 

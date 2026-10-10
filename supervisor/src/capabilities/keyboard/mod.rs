@@ -2,7 +2,6 @@
 //! one `Arc<Mutex<KeyboardState>>` and signal channel.
 
 pub mod controller;
-pub mod layout;
 pub mod locks;
 
 pub use controller::{KeyboardController, KeyboardState};

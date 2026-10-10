@@ -16,9 +16,9 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{CompositorKind, unsupported_session_report};
+use crate::compositor::{Compositor, CompositorKind, Unsupported, unsupported_session_report};
 
-/// One compositor workspace reduced to [`derive_state`]'s input fields; owned by neither adaptor.
+/// One compositor workspace reduced to [`derive_state`]'s input fields.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRow {
     pub id: String,
@@ -134,16 +134,14 @@ impl StatePublisher {
     }
 }
 
-/// No `Clone`: the reader owns an OS thread and moves only what it needs because niri's socket is
-/// a blocking `std::net::UnixStream`, not tokio-aware.
 pub struct WorkspacesController {
     state: Arc<Mutex<WorkspacesState>>,
-    compositor: Option<CompositorKind>,
+    compositor: &'static dyn Compositor,
 }
 
 impl WorkspacesController {
     /// `state` and `compositor` come from `Capabilities::ensure_compositor_reader` (ADR-0247
-    /// decision 2), which spawns the niri/Hyprland reader at most once and shares it with
+    /// decision 2), which spawns the compositor reader at most once and shares it with
     /// `windows`. `None` means no compositor implements this session, so nothing ever pushes
     /// (ADR-0056).
     ///
@@ -160,7 +158,7 @@ impl WorkspacesController {
         } else if *state.lock().expect("workspaces state mutex poisoned") != WorkspacesState::default() {
             let _ = events.send(());
         }
-        Self { state, compositor }
+        Self { state, compositor: compositor.map_or(&Unsupported, CompositorKind::backend) }
     }
 
     pub fn snapshot(&self) -> WorkspacesState {
@@ -169,23 +167,13 @@ impl WorkspacesController {
 
     /// `workspaces:focus(id)`.
     pub fn focus(&self, id: &str) {
-        match self.compositor {
-            Some(kind) => kind.backend().focus_workspace(id),
-            None => debug!("focus({id:?}) called but this session has no workspace implementor; ignored"),
-        }
+        self.compositor.focus_workspace(id);
     }
 
     /// `workspaces:toggle_special(name)`. Only Hyprland has specials; niri lacks the `special` key
     /// so configs can feature-test it.
     pub fn toggle_special(&self, name: &str) {
-        match self.compositor {
-            Some(kind) => kind.backend().toggle_special(name),
-            None => {
-                debug!(
-                    "toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored"
-                )
-            }
-        }
+        self.compositor.toggle_special(name);
     }
 }
 

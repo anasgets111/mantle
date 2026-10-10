@@ -1,20 +1,20 @@
 //! sway, reached over `$SWAYSOCK` (i3-compatible IPC).
 //!
 //! The only file that knows sway's JSON for workspaces, the tree and inputs. `workspaces/controller.rs`
-//! owns payload, reduction and publish in terms of `WorkspaceRow`/`FocusedWindow`; this maps sway's replies and
-//! drives the loop. A workspace's `id` is its name: sway focuses and moves by name, and a numeric
-//! id would not survive a rename or reorder.
+//! owns payload, reduction and publish in terms of `WorkspaceRow`/`FocusedWindow`; this maps
+//! sway's replies and drives the loop. A workspace's `id` is its name: sway focuses and moves by
+//! name, and a numeric id would not survive a rename or reorder.
 
 use std::io::{BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use super::{Compositor, End, connect, keep_following, lost, run_in_order, socket_var};
 use crate::capabilities::RETRY_FIRST;
-use crate::capabilities::keyboard::layout::LayoutSink;
+use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
 
@@ -164,8 +164,8 @@ fn refresh(
 }
 
 /// Connects and subscribes; a refusal is an error so [`keep_following`] retries.
-fn connect(path: &Path) -> std::io::Result<UnixStream> {
-    let mut stream = sway_connect(path)?;
+fn subscribe(path: &Path) -> std::io::Result<UnixStream> {
+    let mut stream = connect(path)?;
     sway_write(&mut stream, SWAY_SUBSCRIBE, br#"["workspace","window","input"]"#)?;
     let (_, reply) = sway_read(&mut stream)?;
     if serde_json::from_slice::<serde_json::Value>(&reply).map_err(std::io::Error::other)?["success"] != true {
@@ -229,9 +229,7 @@ fn follow(
         }
     };
     warn!("sway connection lost: {err}");
-    let workspaces_alive = publisher.publish(&[], None, None, None);
-    let windows_alive = windows_publisher.publish(Vec::new());
-    if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
+    lost(publisher, windows_publisher, None)
 }
 
 /// Words sway's `workspace` and `move` read as relative targets even when quoted (`strcasecmp`).
@@ -281,11 +279,6 @@ fn send(command: Option<String>, capability: &'static str) {
     }
 }
 
-/// `$SWAYSOCK`, or `None` when unset or empty.
-fn sway_socket() -> Option<PathBuf> {
-    std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()).map(PathBuf::from)
-}
-
 const SWAY_RUN_COMMAND: u32 = 0;
 const SWAY_GET_WORKSPACES: u32 = 1;
 const SWAY_SUBSCRIBE: u32 = 2;
@@ -322,17 +315,9 @@ fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
     Ok((kind, payload))
 }
 
-/// A connection to sway whose reads and writes give up after [`REQUEST_TIMEOUT`].
-fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
-    let stream = UnixStream::connect(socket_path)?;
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
-    Ok(stream)
-}
-
 /// One request on a fresh connection; the first frame back is the reply.
 fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
-    let mut stream = sway_connect(socket_path)?;
+    let mut stream = connect(socket_path)?;
     sway_write(&mut stream, kind, payload.as_bytes())?;
     Ok(sway_read(&mut stream)?.1)
 }
@@ -340,7 +325,7 @@ fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result
 /// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.
 fn sway_command(command: String, capability: &'static str) {
     run_in_order(move || {
-        let Some(path) = sway_socket() else {
+        let Some(path) = socket_var("SWAYSOCK") else {
             return debug!("{capability}: SWAYSOCK is unset; sway `{command}` ignored");
         };
         match sway_request(&path, SWAY_RUN_COMMAND, &command) {
@@ -403,15 +388,14 @@ impl Compositor for Sway {
         mut windows_publisher: WindowsPublisher,
         keyboard: LayoutSink,
     ) {
-        let Some(path) = sway_socket() else {
-            debug!("SWAYSOCK is unset; workspace and window reporting disabled for this run");
-            return;
+        let Some(path) = socket_var("SWAYSOCK") else {
+            return debug!("SWAYSOCK is unset or empty; workspace and window reporting disabled for this run");
         };
         std::thread::spawn(move || {
             keep_following(
                 "sway",
                 RETRY_FIRST,
-                || connect(&path),
+                || subscribe(&path),
                 |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
             );
         });
@@ -602,7 +586,7 @@ mod tests {
         let mut windows_publisher = WindowsPublisher::new(Arc::default(), win_tx, "sway");
         let keyboard = LayoutSink::default();
 
-        let stream = connect(&path).unwrap();
+        let stream = subscribe(&path).unwrap();
         let end = follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard);
 
         assert_eq!(end, End::Lost);

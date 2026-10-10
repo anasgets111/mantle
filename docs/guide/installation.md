@@ -88,9 +88,9 @@ capabilities your config uses. Each capability page says what happens when its b
 | [`battery`](../capabilities/battery.md#backend) | UPower |
 | [`power`](../capabilities/power.md#backend) | UPower, power-profiles-daemon |
 | [`brightness`](../capabilities/brightness.md#backend) | A `/sys/class/backlight` device, logind |
-| [`keyboard`](../capabilities/keyboard.md#backend) | Read access to the `/dev/input` keyboard; niri or Hyprland for layouts |
-| [`workspaces`](../capabilities/workspaces.md#backend) | niri or Hyprland |
-| [`windows`](../capabilities/windows.md#backend) | niri or Hyprland, else `wlr-foreign-toplevel-management-v1` |
+| [`keyboard`](../capabilities/keyboard.md#backend) | Read access to the `/dev/input` keyboard; niri, Hyprland, sway or mango for layouts |
+| [`workspaces`](../capabilities/workspaces.md#backend) | niri, Hyprland, sway or mango |
+| [`windows`](../capabilities/windows.md#backend) | niri, Hyprland, sway or mango, else `wlr-foreign-toplevel-management-v1` |
 | [`idle`](../capabilities/idle.md#backend) | `ext-idle-notify-v1`, logind |
 | [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the Mantle PAM stack ([system files](#system-files-for-source-installs)) |
 | [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |

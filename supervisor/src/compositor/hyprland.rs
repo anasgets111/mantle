@@ -43,8 +43,8 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{Compositor, REQUEST_TIMEOUT, run_in_order, toggle_needed};
-use crate::capabilities::keyboard::layout::LayoutSink;
+use super::{Compositor, connect, run_in_order, toggle_needed};
+use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
 use shared::{Capability, debug, error, warn};
@@ -415,17 +415,16 @@ fn read_state(socket_path: &Path) -> Option<State> {
     ))
 }
 
-/// One `dispatch` on the shared action thread. Hyprland answers `ok` or a reason; anything else is printed
-/// with the command. `capability` tags the log line for whichever capability asked.
-fn dispatch(what: String, capability: &'static str) {
+/// Runs `job` on the shared action thread with `.socket.sock`'s path.
+fn on_command_socket(job: impl FnOnce(&Path) + Send + 'static) {
     let Some(signature) = hyprland_signature() else {
-        debug!("`dispatch {what}` requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
-        return;
+        return debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; Hyprland write ignored");
     };
-    run_in_order(move || {
-        let socket_path = hyprland_socket_path(&signature, ".socket.sock");
-        hyprland_command(&socket_path, &format!("dispatch {what}"), capability);
-    });
+    run_in_order(move || job(&hyprland_socket_path(&signature, ".socket.sock")));
+}
+
+fn dispatch(what: String, capability: &'static str) {
+    on_command_socket(move |socket_path| hyprland_command(socket_path, &format!("dispatch {what}"), capability));
 }
 
 /// Hyprland reads a negative number as a relative move, so a named workspace goes by `name:`.
@@ -442,17 +441,12 @@ fn dispatch_to_workspace(id: &str, capability: &'static str, build: impl FnOnce(
     if parsed > 0 {
         return dispatch(build(id), capability);
     }
-    let Some(signature) = hyprland_signature() else {
-        debug!("workspace {id} requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
-        return;
-    };
-    run_in_order(move || {
-        let socket_path = hyprland_socket_path(&signature, ".socket.sock");
-        let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(&socket_path, "workspaces") else { return };
+    on_command_socket(move |socket_path| {
+        let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(socket_path, "workspaces") else { return };
         let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == parsed) else {
             return warn!("no Hyprland workspace has id {parsed}; ignored");
         };
-        hyprland_command(&socket_path, &format!("dispatch {}", build(&named_selector(&workspace.name))), capability);
+        hyprland_command(socket_path, &format!("dispatch {}", build(&named_selector(&workspace.name))), capability);
     });
 }
 
@@ -517,8 +511,7 @@ fn hyprland_signature() -> Option<String> {
 /// A socket in Hyprland's per-instance directory,
 /// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`. `"socket2.sock"` pushes
 /// newline-terminated `event>>payload` lines; `"socket.sock"` answers one plain-text command per
-/// connection (`j/workspaces` for JSON, `dispatch ...` for a write). Shared because `keyboard` and
-/// `workspaces` both open these files, and their path is a session-level fact.
+/// connection (`j/workspaces` for JSON, `dispatch ...` for a write).
 fn hyprland_socket_path(signature: &str, name: &str) -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     hyprland_socket_path_in(&runtime_dir, signature, name)
@@ -534,18 +527,15 @@ fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> Pa
 /// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
 /// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
 pub(super) fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
-    let mut stream = UnixStream::connect(socket_path)?;
-    // A stalled Hyprland must not wedge the reader or the shared action thread.
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
+    let mut stream = connect(socket_path)?;
     stream.write_all(command.as_bytes())?;
     let mut reply = String::new();
     stream.read_to_string(&mut reply)?;
     Ok(reply)
 }
 
-/// A write and its reply check, blocking. `capability` prefixes the log line, the only thing the
-/// two callers differ in. An unread reply makes a refusal silent: a bad device, an index out of
-/// range.
+/// A write and its reply check, blocking; `capability` prefixes the log line. An unread reply
+/// makes a refusal silent: a bad device, an index out of range.
 fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     match hyprland_request(socket_path, command) {
         Ok(reply) if reply.trim() == "ok" => {
@@ -623,10 +613,9 @@ impl Compositor for Hyprland {
         keyboard: LayoutSink,
     ) {
         let Some(signature) = hyprland_signature() else {
-            debug!(
+            return debug!(
                 "HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run"
             );
-            return;
         };
         let events_path = hyprland_socket_path(&signature, ".socket2.sock");
         let command_path = hyprland_socket_path(&signature, ".socket.sock");
@@ -727,13 +716,7 @@ impl Compositor for Hyprland {
     /// `switchxkblayout main <index>` over `.socket.sock`. `main` is also Hyprland's device target
     /// for that keyboard, so no device name is tracked here.
     fn switch_layout(&self, index: usize) {
-        let Some(signature) = hyprland_signature() else {
-            return debug!("switch_layout({index}) requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
-        };
-        run_in_order(move || {
-            let socket_path = hyprland_socket_path(&signature, ".socket.sock");
-            hyprland_command(&socket_path, &format!("switchxkblayout main {index}"), "keyboard");
-        });
+        on_command_socket(move |path| hyprland_command(path, &format!("switchxkblayout main {index}"), "keyboard"));
     }
 }
 
