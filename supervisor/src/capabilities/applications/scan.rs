@@ -200,35 +200,20 @@ mod tests {
         format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/usr/bin/{name}\n{extra}")
     }
 
-    /// Skipping `/usr/share` when `XDG_DATA_DIRS` is unset finds nothing on a normal system.
     #[test]
-    fn application_dirs_applies_the_xdg_data_dirs_default_when_it_is_unset() {
-        let dirs = application_dirs(None, None);
+    fn application_dirs_default_when_xdg_data_dirs_is_unset_or_empty_and_the_users_directory_comes_first() {
+        // Skipping `/usr/share` when `XDG_DATA_DIRS` is unset finds nothing on a normal system.
+        let default = vec![PathBuf::from("/usr/local/share/applications"), PathBuf::from("/usr/share/applications")];
+        assert_eq!(application_dirs(None, None), default);
+        assert_eq!(application_dirs(None, Some(String::new())), default, "an empty value is unset, not no directories");
+        // The user's own directory leads so an override wins; a relative entry is dropped.
         assert_eq!(
-            dirs,
-            vec![PathBuf::from("/usr/local/share/applications"), PathBuf::from("/usr/share/applications")]
-        );
-    }
-
-    #[test]
-    fn application_dirs_puts_the_users_own_directory_first_so_an_override_wins() {
-        let dirs = application_dirs(Some(PathBuf::from("/custom/data")), Some("/a:relative:/b".to_string()));
-        assert_eq!(
-            dirs,
+            application_dirs(Some(PathBuf::from("/custom/data")), Some("/a:relative:/b".to_string())),
             vec![
                 PathBuf::from("/custom/data/applications"),
                 PathBuf::from("/a/applications"),
                 PathBuf::from("/b/applications"),
             ]
-        );
-    }
-
-    #[test]
-    fn application_dirs_treats_an_empty_data_dirs_as_unset_rather_than_as_no_directories() {
-        let dirs = application_dirs(None, Some(String::new()));
-        assert!(
-            dirs.contains(&PathBuf::from("/usr/share/applications")),
-            "an empty XDG_DATA_DIRS must fall back to the default"
         );
     }
 
@@ -337,38 +322,19 @@ mod tests {
         );
     }
 
+    /// A toplevel's app_id reaches its entry by exact desktop file id, by the last segment of a
+    /// reverse-DNS id (`nautilus` for `org.gnome.Nautilus.desktop`), or by `StartupWMClass`.
     #[test]
-    fn an_app_id_matching_a_desktop_file_id_exactly_finds_its_entry() {
+    fn an_app_id_finds_its_entry_by_file_id_last_segment_or_startup_wm_class() {
         let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "org.gnome.Nautilus.desktop", &application("Files", ""));
-
-        let result = scan(&[dir.path().to_path_buf()]);
-        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
-
-        assert_eq!(name("org.gnome.Nautilus"), Some("Files"));
-    }
-
-    /// Common mismatch: a toplevel reports `nautilus` while the file is
-    /// `org.gnome.Nautilus.desktop`.
-    #[test]
-    fn an_app_id_matching_only_the_last_segment_of_a_reverse_dns_id_still_finds_its_entry() {
-        let dir = tempfile::tempdir().unwrap();
-        write_entry(dir.path(), "org.gnome.Nautilus.desktop", &application("Files", ""));
-
-        let result = scan(&[dir.path().to_path_buf()]);
-        let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
-
-        assert_eq!(name("nautilus"), Some("Files"));
-    }
-
-    #[test]
-    fn startup_wm_class_is_matched_because_it_is_the_key_written_for_this_question() {
-        let dir = tempfile::tempdir().unwrap();
         write_entry(dir.path(), "tg.desktop", &application("Telegram", "StartupWMClass=TelegramDesktop\n"));
 
         let result = scan(&[dir.path().to_path_buf()]);
         let name = |key: &str| result.by_app_id.get(key).map(|&index| result.entries[index - 1].name.as_str());
 
+        assert_eq!(name("org.gnome.Nautilus"), Some("Files"));
+        assert_eq!(name("nautilus"), Some("Files"));
         assert_eq!(name("TelegramDesktop"), Some("Telegram"));
     }
 

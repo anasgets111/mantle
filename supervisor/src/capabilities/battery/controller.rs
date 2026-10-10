@@ -265,16 +265,12 @@ mod tests {
             (4, BatteryStatus::FullyCharged),
             (5, BatteryStatus::PendingCharge),
             (6, BatteryStatus::PendingDischarge),
+            // An unknown future state degrades to unknown instead of dropping the payload.
+            (7, BatteryStatus::Unknown),
+            (u32::MAX, BatteryStatus::Unknown),
         ] {
             assert_eq!(from_upower(reported), expected, "State = {reported}");
         }
-    }
-
-    /// An unknown future state degrades to `"unknown"` instead of dropping the payload.
-    #[test]
-    fn a_state_number_this_build_does_not_know_reads_as_unknown() {
-        assert_eq!(from_upower(7), BatteryStatus::Unknown);
-        assert_eq!(from_upower(u32::MAX), BatteryStatus::Unknown);
     }
 
     /// These names are the wire format and config comparisons; renaming one is breaking.

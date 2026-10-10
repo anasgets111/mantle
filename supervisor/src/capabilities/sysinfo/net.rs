@@ -67,6 +67,7 @@ mod tests {
     #[test]
     fn parse_net_dev_keeps_interfaces_and_skips_lo() {
         let sample = parse_net_dev(SAMPLE_NET_DEV);
+        assert!(!sample.interfaces.contains_key("lo"));
         assert_eq!(sample.interfaces["wlo1"].0, 181_566_000);
         assert_eq!(sample.interfaces["eth0"].1, 200_000);
     }

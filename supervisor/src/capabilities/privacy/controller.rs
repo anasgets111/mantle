@@ -296,12 +296,6 @@ mod tests {
         VideoSourceApp { node_id: 1, pid, app_name: Some(app_name.to_string()) }
     }
 
-    #[test]
-    fn resolve_camera_users_is_empty_when_nobody_has_a_device_open() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0")], &[]).is_empty());
-    }
-
     /// Keeps scan and naming separate: a PipeWire snapshot can be answered without scanning. This
     /// root has no `/dev/video0` symlink, so an empty scan can still name the previous pid set.
     #[test]
@@ -321,58 +315,25 @@ mod tests {
     }
 
     #[test]
-    fn resolve_camera_users_prefers_the_pipewire_app_name_over_proc_comm() {
-        let root = tempfile::tempdir().unwrap();
-        let fd_dir = root.path().join("1234").join("fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink("/dev/video0", fd_dir.join("5")).unwrap();
-        std::fs::write(root.path().join("1234").join("comm"), "raw-binary-name\n").unwrap();
-
-        let users =
-            resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0")], &[video_source(1234, "Firefox")]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "Firefox".to_string() }]);
-    }
-
-    #[test]
-    fn resolve_camera_users_falls_back_to_proc_comm_when_pipewire_has_no_match() {
-        let root = tempfile::tempdir().unwrap();
-        let fd_dir = root.path().join("1234").join("fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink("/dev/video0", fd_dir.join("5")).unwrap();
-        std::fs::write(root.path().join("1234").join("comm"), "mpv\n").unwrap();
-
-        let users = resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0")], &[]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "mpv".to_string() }]);
-    }
-
-    #[test]
-    fn resolve_camera_users_falls_back_to_a_pid_placeholder_when_neither_source_resolves() {
-        let root = tempfile::tempdir().unwrap();
-        let fd_dir = root.path().join("1234").join("fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink("/dev/video0", fd_dir.join("5")).unwrap();
-        // No comm file written, no matching pipewire source.
-
-        let users = resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0")], &[]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "pid 1234".to_string() }]);
-    }
-
-    #[test]
-    fn resolve_camera_users_dedupes_a_pid_that_has_two_devices_open() {
-        let root = tempfile::tempdir().unwrap();
-        let fd_dir = root.path().join("1234").join("fd");
-        std::fs::create_dir_all(&fd_dir).unwrap();
-        std::os::unix::fs::symlink("/dev/video0", fd_dir.join("5")).unwrap();
-        std::os::unix::fs::symlink("/dev/video1", fd_dir.join("6")).unwrap();
-        std::fs::write(root.path().join("1234").join("comm"), "mpv\n").unwrap();
-
-        let users =
-            resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0"), PathBuf::from("/dev/video1")], &[]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "mpv".to_string() }]);
+    fn resolve_camera_users_names_by_source_priority() {
+        // (comm file, PipeWire sources, devices the pid has open, expected name)
+        let both = [PathBuf::from("/dev/video0"), PathBuf::from("/dev/video1")];
+        for (comm, sources, opened, expected) in [
+            (Some("raw-binary-name\n"), vec![video_source(1234, "Firefox")], &["/dev/video0"][..], "Firefox"),
+            (Some("mpv\n"), vec![], &["/dev/video0"][..], "mpv"),
+            (None, vec![], &["/dev/video0"][..], "pid 1234"),
+            (Some("mpv\n"), vec![], &["/dev/video0", "/dev/video1"][..], "mpv"),
+        ] {
+            let root = tempfile::tempdir().unwrap();
+            for (fd, device) in opened.iter().enumerate() {
+                write_fd_symlink(root.path(), 1234, fd as u32 + 5, device);
+            }
+            if let Some(comm) = comm {
+                std::fs::write(root.path().join("1234").join("comm"), comm).unwrap();
+            }
+            let users = resolve_camera_users(root.path(), &both, &sources);
+            assert_eq!(users, vec![PrivacyUser { app_name: expected.to_string() }], "{expected}");
+        }
     }
 
     fn capture(node_id: u32, pid: Option<i32>, app_name: Option<&str>) -> CaptureApp {
@@ -380,44 +341,25 @@ mod tests {
     }
 
     #[test]
-    fn a_capture_stream_is_named_by_the_name_its_client_published() {
-        let root = tempfile::tempdir().unwrap();
-        let users = name_capture_users(root.path(), &[capture(7, Some(1234), Some("Firefox"))]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "Firefox".to_string() }]);
-    }
-
-    #[test]
-    fn a_capture_stream_with_no_published_name_falls_back_to_the_processs_own() {
+    fn a_capture_stream_is_named_by_its_published_name_then_its_process_then_its_node() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(root.path().join("1234")).unwrap();
         std::fs::write(root.path().join("1234").join("comm"), "pw-cat\n").unwrap();
-
-        let users = name_capture_users(root.path(), &[capture(7, Some(1234), None)]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "pw-cat".to_string() }]);
-    }
-
-    /// Portal-created streams may lack `application.process.id`; node id is the last resort, not a
-    /// dropped capture.
-    #[test]
-    fn a_capture_stream_with_neither_a_name_nor_a_pid_is_named_by_its_node() {
-        let root = tempfile::tempdir().unwrap();
-        let users = name_capture_users(root.path(), &[capture(7, None, None)]);
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "node 7".to_string() }]);
-    }
-
-    /// One row per app, not per stream; a browser opens one node per tab.
-    #[test]
-    fn one_app_holding_several_streams_is_listed_once() {
-        let root = tempfile::tempdir().unwrap();
-        let users = name_capture_users(
-            root.path(),
-            &[capture(7, Some(1234), Some("Firefox")), capture(8, Some(1234), Some("Firefox"))],
-        );
-
-        assert_eq!(users, vec![PrivacyUser { app_name: "Firefox".to_string() }]);
+        // Portal-created streams may lack `application.process.id`; node id is the last resort, not a
+        // dropped capture. A browser opens one node per tab, so one app is one row.
+        for (case, streams, expected) in [
+            ("published name", vec![capture(7, Some(1234), Some("Firefox"))], "Firefox"),
+            ("process comm", vec![capture(7, Some(1234), None)], "pw-cat"),
+            ("node", vec![capture(7, None, None)], "node 7"),
+            (
+                "several streams of one app",
+                vec![capture(7, Some(1234), Some("Firefox")), capture(8, Some(1234), Some("Firefox"))],
+                "Firefox",
+            ),
+        ] {
+            let users = name_capture_users(root.path(), &streams);
+            assert_eq!(users, vec![PrivacyUser { app_name: expected.to_string() }], "{case}");
+        }
     }
 
     #[tokio::test]
@@ -526,23 +468,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_video_devices_still_sends_one_signal_so_the_empty_state_gets_announced() {
-        let dev_root = tempfile::tempdir().unwrap(); // empty -- no videoN entries.
-        let proc_root = tempfile::tempdir().unwrap();
-        let (_privacy_tx, sources) = watch::channel(PrivacySources::default());
-        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-
-        let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev_root.path(), sources, events_tx);
-
-        assert_eq!(
-            within(events_rx.recv()).await,
-            Some(()),
-            "must still announce an empty state when no camera hardware exists"
-        );
-        assert!(controller.snapshot().camera_users.is_empty());
-    }
-
-    #[tokio::test]
     async fn the_mixer_exiting_leaves_the_camera_watched() {
         let dev = tempfile::tempdir().unwrap();
         let device = dev.path().join("video0");
@@ -551,7 +476,7 @@ mod tests {
         let (privacy_tx, sources) = watch::channel(PrivacySources::default());
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev.path(), sources, events_tx);
-        assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
+        assert_eq!(within(events_rx.recv()).await, Some(()), "the empty seed");
 
         drop(privacy_tx);
         tokio::task::yield_now().await;
@@ -571,7 +496,12 @@ mod tests {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let controller = PrivacyController::new(proc_root.path().to_path_buf(), dev_root.path(), sources, events_tx);
-        assert_eq!(events_rx.recv().await, Some(()), "the empty seed");
+        assert_eq!(
+            within(events_rx.recv()).await,
+            Some(()),
+            "the empty state is announced even with no camera hardware"
+        );
+        assert!(controller.snapshot().camera_users.is_empty());
 
         privacy_tx
             .send(PrivacySources {

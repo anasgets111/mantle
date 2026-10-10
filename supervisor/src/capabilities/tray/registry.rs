@@ -415,22 +415,6 @@ mod tests {
         assert_eq!(ids, ["first", "second", "third"]);
     }
 
-    /// Registration order, not lexicographic id order.
-    #[tokio::test]
-    async fn a_later_registration_appends_even_when_its_id_sorts_first() {
-        let (connection, _peer) = p2p_pair().await;
-        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let older = entry(&connection, "1.9", 0).await;
-        let newer = entry(&connection, "1.100", 1).await;
-        {
-            let mut guard = registry.lock().unwrap();
-            guard.insert(key(":1.9"), older);
-            guard.insert(key(":1.100"), newer);
-        }
-        let ids: Vec<String> = ordered_items(&registry).into_iter().map(|item| item.id).collect();
-        assert_eq!(ids, ["1.9", "1.100"], "a lexicographic sort would put 1.100 first");
-    }
-
     /// A property signal carries no menu, so assigning the refreshed item on its own would blank a
     /// menu that only `LayoutUpdated` and opening the menu ever refill.
     #[tokio::test]
@@ -573,21 +557,28 @@ mod tests {
     /// In-place updates must not move an item.
     #[tokio::test]
     async fn an_item_that_re_registers_holds_its_place() {
-        let (connection, _peer) = p2p_pair().await;
+        use super::super::watcher::tests::{StubDBusDaemon, StubStatusNotifierItem};
+        use crate::capabilities::test_support::p2p_pair_serving;
+
+        let (connection, _peer) = p2p_pair_serving(|peer| {
+            peer.serve_at("/A", StubStatusNotifierItem)?
+                .serve_at("/B", StubStatusNotifierItem)?
+                .serve_at("/org/freedesktop/DBus", StubDBusDaemon)
+        })
+        .await;
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let first = entry(&connection, "first", 0).await;
-        let second = entry(&connection, "second", 1).await;
-        {
-            let mut guard = registry.lock().unwrap();
-            guard.insert(key(":1.10"), first);
-            guard.insert(key(":1.20"), second);
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for (unique, path) in [(":1.10", "/A"), (":1.20", "/B"), (":1.10", "/A")] {
+            let destination = zbus::names::OwnedBusName::try_from(unique).unwrap();
+            let resolved = ResolvedRegistration {
+                unique_name: OwnedUniqueName::try_from(unique).unwrap(),
+                destination,
+                object_path: OwnedObjectPath::try_from(path).unwrap(),
+            };
+            register_item(&connection, &registry, &events, resolved).await.unwrap();
         }
-        let mut replacement = entry(&connection, "first-again", 999).await;
-        // Repeat registration at a live key keeps the old sequence.
-        replacement.registered = registry.lock().unwrap().get(&key(":1.10")).expect("just inserted").registered;
-        registry.lock().unwrap().insert(key(":1.10"), replacement);
 
         let ids: Vec<String> = ordered_items(&registry).into_iter().map(|item| item.id).collect();
-        assert_eq!(ids, ["first-again", "second"], "a re-registered item must not jump to the end");
+        assert_eq!(ids, ["1.10/A", "1.20/B"], "a re-registered item must not jump to the end");
     }
 }

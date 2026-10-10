@@ -316,28 +316,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn defaults_fill_a_file_that_does_not_exist_yet() {
+    async fn defaults_fill_a_new_file_and_a_stored_key_wins_over_a_default() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json").to_string_lossy().into_owned();
+        let fresh = dir.path().join("fresh.json").to_string_lossy().into_owned();
+        let stored = dir.path().join("stored.json");
+        std::fs::write(&stored, r#"{ "theme": "latte" }"#).unwrap();
+        let stored = stored.to_string_lossy().into_owned();
         let (controller, _rx) = controller();
 
-        controller.open(&path, &json!({ "theme": "mocha", "dnd": false }));
-
-        assert_eq!(controller.snapshot().files[&path], json!({ "theme": "mocha", "dnd": false }));
-    }
-
-    #[tokio::test]
-    async fn a_stored_key_wins_over_a_default_and_a_new_default_is_added_beside_it() {
+        controller.open(&fresh, &json!({ "theme": "mocha", "dnd": false }));
         // Reload: an author adds a default after the config already ran.
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("settings.json");
-        std::fs::write(&path, r#"{ "theme": "latte" }"#).unwrap();
-        let path = path.to_string_lossy().into_owned();
-        let (controller, _rx) = controller();
+        controller.open(&stored, &json!({ "theme": "mocha", "dnd": true }));
 
-        controller.open(&path, &json!({ "theme": "mocha", "dnd": true }));
-
-        assert_eq!(controller.snapshot().files[&path], json!({ "theme": "latte", "dnd": true }));
+        assert_eq!(controller.snapshot().files[&fresh], json!({ "theme": "mocha", "dnd": false }));
+        assert_eq!(controller.snapshot().files[&stored], json!({ "theme": "latte", "dnd": true }));
     }
 
     #[tokio::test]
@@ -420,19 +412,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_write_to_a_file_no_config_declared_is_refused() {
+    async fn an_undeclared_or_relative_path_is_refused_rather_than_resolved() {
         let (controller, _rx) = controller();
 
         controller.set("/tmp/never-opened.json", "key", json!(1));
-
-        assert!(controller.snapshot().files.is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_relative_path_is_refused_rather_than_resolved_against_the_working_directory() {
-        let (controller, _rx) = controller();
-
-        controller.open("settings.json", &json!({ "theme": "mocha" }));
+        controller.open("settings.json", &json!({ "theme": "mocha" })); // not resolved against the working directory
 
         assert!(controller.snapshot().files.is_empty());
     }
@@ -455,19 +439,7 @@ mod tests {
 
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(written, json!({ "scroll": 5 }));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn saving_leaves_no_temporary_file_behind() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("state.json").to_string_lossy().into_owned();
-        let (controller, _rx) = controller();
-
-        controller.open(&path, &json!({ "a": 1 }));
-        tokio::time::sleep(SAVE_DEBOUNCE * 2).await;
-        tokio::task::yield_now().await;
-
-        let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        let leftovers: Vec<_> = std::fs::read_dir(file.parent().unwrap())
             .unwrap()
             .flatten()
             .map(|entry| entry.file_name().to_string_lossy().into_owned())
@@ -502,15 +474,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("state.json");
         let path = file.to_string_lossy().into_owned();
-        let ((first, _a), (second, mut b)) = (controller(), controller());
+        let ((first, mut a), (second, mut b)) = (controller(), controller());
         first.open(&path, &json!({}));
         second.open(&path, &json!({}));
         while b.try_recv().is_ok() {}
 
         first.set(&path, "wallpaper", json!("/w/1.jpg"));
         pushed(&mut b).await;
+        while a.try_recv().is_ok() {}
         second.set(&path, "theme", json!("latte"));
-        tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(300)).await;
+        pushed(&mut a).await; // the first shell saw the second's save land
 
         let written: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
         assert_eq!(written, json!({ "wallpaper": "/w/1.jpg", "theme": "latte" }));

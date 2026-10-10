@@ -424,36 +424,12 @@ mod tests {
     // ---- register_threshold_entry (threshold fan-out decision, TDD seam 1) ----
 
     #[test]
-    fn register_threshold_entry_creates_a_new_listener_for_the_first_registration() {
+    fn registrations_share_a_listener_per_duration_and_split_across_durations() {
         let mut fanout = HashMap::new();
-        let created = register_threshold_entry(&mut fanout, 1, 30);
-        assert!(created);
-        assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![1]));
-    }
-
-    #[test]
-    fn register_threshold_entry_shares_one_listener_across_generations_registering_the_same_sec() {
-        let mut fanout = HashMap::new();
-        let first_created = register_threshold_entry(&mut fanout, 1, 30);
-        let second_created = register_threshold_entry(&mut fanout, 2, 30);
-
-        assert!(first_created);
-        assert!(!second_created, "the second registration at the same duration must not need a new listener");
-        assert_eq!(
-            fanout.get(&Duration::from_secs(30)),
-            Some(&vec![1, 2]),
-            "both generations must appear in the same duration's fan-out list"
-        );
-    }
-
-    #[test]
-    fn register_threshold_entry_creates_a_distinct_listener_per_distinct_sec() {
-        let mut fanout = HashMap::new();
-        let thirty_created = register_threshold_entry(&mut fanout, 1, 30);
-        let sixty_created = register_threshold_entry(&mut fanout, 1, 60);
-
-        assert!(thirty_created);
-        assert!(sixty_created, "a different duration must always need its own listener");
+        assert!(register_threshold_entry(&mut fanout, 1, 30));
+        assert!(!register_threshold_entry(&mut fanout, 2, 30), "the same duration must not need a new listener");
+        assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![1, 2]));
+        assert!(register_threshold_entry(&mut fanout, 1, 60), "a different duration needs its own listener");
         assert_eq!(fanout.len(), 2);
     }
 
@@ -478,24 +454,13 @@ mod tests {
         Duration::from_secs(n)
     }
 
-    /// The whole point: the seat is idle, and the listener that honours inhibitors was not told.
     #[test]
-    fn a_threshold_the_input_listener_reached_and_the_gated_one_did_not_is_an_inhibitor() {
+    fn the_input_listener_reaching_a_threshold_the_gated_one_did_not_is_an_inhibitor() {
+        // An idle seat whose inhibitor-respecting listener was not told is inhibited; an active seat is
+        // no evidence either way, since a widget flipping on every keystroke is worse than a stale one.
         let input = HashSet::from([secs(1)]);
         assert_eq!(wayland_inhibited(&input, &HashSet::new()), Some(true));
-    }
-
-    #[test]
-    fn a_threshold_both_listeners_reached_is_an_ordinary_idle_seat() {
-        let both = HashSet::from([secs(1)]);
-        assert_eq!(wayland_inhibited(&both, &both), Some(false));
-    }
-
-    /// The divergence exists only while the seat is idle, so an active seat is no evidence either
-    /// way. A widget that flips to "nothing is holding this awake" on every keystroke is worse than
-    /// one briefly stale.
-    #[test]
-    fn an_active_seat_is_no_evidence_rather_than_evidence_of_nothing_held() {
+        assert_eq!(wayland_inhibited(&input, &input), Some(false));
         assert_eq!(wayland_inhibited(&HashSet::new(), &HashSet::new()), None);
     }
 
@@ -591,6 +556,8 @@ mod tests {
         register_threshold_entry(&mut fanout, 2, 30);
         register_threshold_entry(&mut fanout, 1, 60);
 
+        cleanup_generation_thresholds(&mut fanout, 99);
+        assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![1, 2]), "an unregistered generation is a no-op");
         cleanup_generation_thresholds(&mut fanout, 1);
 
         assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![2]), "generation 2's entry at 30s must survive");
@@ -660,15 +627,5 @@ mod tests {
 
         assert_eq!(fanout.get(&Duration::from_secs(1)), Some(&vec![1]));
         assert!(!created_new_listener, "the emptied duration keeps its listener, so the reload creates no second one");
-    }
-
-    #[test]
-    fn cleanup_generation_thresholds_is_a_no_op_for_an_unregistered_generation() {
-        let mut fanout = HashMap::new();
-        register_threshold_entry(&mut fanout, 1, 30);
-
-        cleanup_generation_thresholds(&mut fanout, 99);
-
-        assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![1]));
     }
 }

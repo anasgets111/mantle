@@ -229,10 +229,6 @@ mod tests {
     #[test]
     fn parse_markup_plain_text_is_a_single_unstyled_span() {
         assert_eq!(parse_markup("hello world"), vec![text("hello world", false, false, false, None)]);
-    }
-
-    #[test]
-    fn parse_markup_empty_input_is_empty() {
         assert_eq!(parse_markup(""), Vec::new());
     }
 
@@ -260,45 +256,29 @@ mod tests {
     }
 
     #[test]
-    fn parse_markup_strips_a_style_tag_and_its_content() {
-        let spans = parse_markup("before<style>.x{color:red}</style>after");
-        assert_eq!(spans, vec![text("beforeafter", false, false, false, None)]);
+    fn parse_markup_strips_disallowed_markup_but_keeps_the_surrounding_text() {
+        for (input, expected) in [
+            ("before<style>.x{color:red}</style>after", "beforeafter"),
+            (r#"before<img alt="no src">after"#, "beforeafter"),
+            ("before<a>no href</a>after", "beforeno hrefafter"),
+            ("before<div>middle</div>after", "beforemiddleafter"),
+        ] {
+            assert_eq!(parse_markup(input), vec![text(expected, false, false, false, None)], "{input}");
+        }
     }
 
     #[test]
-    fn parse_markup_drops_an_img_with_no_src() {
-        let spans = parse_markup(r#"before<img alt="no src">after"#);
-        assert_eq!(spans, vec![text("beforeafter", false, false, false, None)]);
-    }
-
-    #[test]
-    fn parse_markup_emits_an_image_span_for_a_self_closing_img() {
-        let spans = parse_markup(r#"<img src="/usr/share/icons/x.png" alt="x"/>"#);
-        assert_eq!(spans, vec![NotificationSpan::Image { image_path: "/usr/share/icons/x.png".to_string() }]);
-    }
-
-    #[test]
-    fn parse_markup_emits_an_image_span_for_a_non_self_closing_img() {
-        let spans = parse_markup(r#"<img src="/usr/share/icons/x.png">"#);
-        assert_eq!(spans, vec![NotificationSpan::Image { image_path: "/usr/share/icons/x.png".to_string() }]);
+    fn parse_markup_emits_an_image_span_for_an_img_with_a_src() {
+        for input in [r#"<img src="/usr/share/icons/x.png" alt="x"/>"#, r#"<img src="/usr/share/icons/x.png">"#] {
+            let image_path = "/usr/share/icons/x.png".to_string();
+            assert_eq!(parse_markup(input), vec![NotificationSpan::Image { image_path }], "{input}");
+        }
     }
 
     #[test]
     fn parse_markup_handles_an_anchor_with_href() {
         let spans = parse_markup(r#"<a href="https://example.com">link</a>"#);
         assert_eq!(spans, vec![text("link", false, false, false, Some("https://example.com"))]);
-    }
-
-    #[test]
-    fn parse_markup_drops_an_anchor_with_no_href() {
-        let spans = parse_markup("before<a>no href</a>after");
-        assert_eq!(spans, vec![text("beforeno hrefafter", false, false, false, None)]);
-    }
-
-    #[test]
-    fn parse_markup_strips_unrecognized_tags_but_keeps_their_surrounding_text() {
-        let spans = parse_markup("before<div>middle</div>after");
-        assert_eq!(spans, vec![text("beforemiddleafter", false, false, false, None)]);
     }
 
     #[test]

@@ -313,10 +313,12 @@ mod tests {
     }
 
     #[test]
-    fn urgency_from_hint_byte_maps_the_three_defined_values() {
+    fn urgency_from_hint_byte_maps_the_three_defined_values_and_defaults_to_normal() {
         assert_eq!(urgency_from_hint_byte(Some(0)), Urgency::Low);
         assert_eq!(urgency_from_hint_byte(Some(1)), Urgency::Normal);
         assert_eq!(urgency_from_hint_byte(Some(2)), Urgency::Critical);
+        assert_eq!(urgency_from_hint_byte(None), Urgency::Normal);
+        assert_eq!(urgency_from_hint_byte(Some(99)), Urgency::Normal);
     }
 
     #[test]
@@ -335,12 +337,6 @@ mod tests {
         assert_eq!(reply_placeholder_from_hint(Some("")), None);
         assert_eq!(reply_placeholder_from_hint(None), None);
         assert_eq!(reply_placeholder_from_hint(Some(&"é".repeat(100))).unwrap().len(), MAX_REPLY_PLACEHOLDER_BYTES);
-    }
-
-    #[test]
-    fn urgency_from_hint_byte_defaults_to_normal_when_absent_or_malformed() {
-        assert_eq!(urgency_from_hint_byte(None), Urgency::Normal);
-        assert_eq!(urgency_from_hint_byte(Some(99)), Urgency::Normal);
     }
 
     /// One hint with an off-spec signature must cost that hint and nothing else: a sender who

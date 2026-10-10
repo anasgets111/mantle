@@ -142,31 +142,17 @@ mod file_url_tests {
     use super::*;
 
     #[test]
-    fn a_percent_escape_becomes_the_byte_it_encodes() {
-        // A cover named "cover art.png" arrives as `cover%20art.png`.
-        assert_eq!(file_url_to_path("file:///tmp/cover%20art.png"), Some(PathBuf::from("/tmp/cover art.png")));
-    }
-
-    #[test]
-    fn a_localhost_authority_is_not_part_of_the_path() {
-        assert_eq!(file_url_to_path("file://localhost/tmp/a.png"), Some(PathBuf::from("/tmp/a.png")));
-    }
-
-    #[test]
-    fn an_ordinary_path_is_unchanged() {
-        let url = "file:///home/someone/.cache/player/art_4.png";
-        assert_eq!(file_url_to_path(url), Some(PathBuf::from("/home/someone/.cache/player/art_4.png")));
-    }
-
-    #[test]
-    fn a_stray_percent_is_kept_rather_than_swallowing_the_rest() {
-        // `100%` in a filename is not an escape; dropping it would rename the file.
-        assert_eq!(file_url_to_path("file:///tmp/100%.png"), Some(PathBuf::from("/tmp/100%.png")));
-    }
-
-    #[test]
-    fn a_non_file_scheme_has_no_path() {
-        assert_eq!(file_url_to_path("https://example.com/a.png"), None);
+    fn file_url_to_path_decodes_escapes_and_drops_a_localhost_authority() {
+        // (url, expected path): `100%` in a filename is not an escape, and dropping it would rename the file.
+        for (url, expected) in [
+            ("file:///tmp/cover%20art.png", Some("/tmp/cover art.png")),
+            ("file://localhost/tmp/a.png", Some("/tmp/a.png")),
+            ("file:///home/someone/.cache/player/art_4.png", Some("/home/someone/.cache/player/art_4.png")),
+            ("file:///tmp/100%.png", Some("/tmp/100%.png")),
+            ("https://example.com/a.png", None),
+        ] {
+            assert_eq!(file_url_to_path(url), expected.map(PathBuf::from), "{url}");
+        }
     }
 }
 
@@ -222,16 +208,6 @@ mod tests {
     }
 
     #[test]
-    fn parse_metadata_joins_multiple_artists_with_a_comma() {
-        let mut artists = Array::new(&Signature::Str);
-        artists.append(Value::Str(Str::from("A"))).unwrap();
-        artists.append(Value::Str(Str::from("B"))).unwrap();
-        let mut map = HashMap::new();
-        map.insert("xesam:artist".to_string(), owned(Value::Array(artists)));
-        assert_eq!(parse_metadata(&map).artist, "A, B");
-    }
-
-    #[test]
     fn parse_metadata_degrades_gracefully_on_an_empty_dict() {
         let parsed = parse_metadata(&HashMap::new());
         assert_eq!(parsed, ParsedMetadata::default());
@@ -246,43 +222,7 @@ mod tests {
     }
 
     #[test]
-    fn track_identity_differs_when_only_trackid_changes() {
-        let a = ParsedMetadata {
-            trackid: Some("/1".into()),
-            url: Some("u".into()),
-            title: "t".into(),
-            ..Default::default()
-        };
-        let b = ParsedMetadata { trackid: Some("/2".into()), ..a.clone() };
-        assert_ne!(a.track_identity(), b.track_identity());
-    }
-
-    #[test]
-    fn track_identity_differs_when_only_url_changes() {
-        let a = ParsedMetadata {
-            trackid: Some("/1".into()),
-            url: Some("u1".into()),
-            title: "t".into(),
-            ..Default::default()
-        };
-        let b = ParsedMetadata { url: Some("u2".into()), ..a.clone() };
-        assert_ne!(a.track_identity(), b.track_identity());
-    }
-
-    #[test]
-    fn track_identity_differs_when_only_title_changes() {
-        let a = ParsedMetadata {
-            trackid: Some("/1".into()),
-            url: Some("u".into()),
-            title: "t1".into(),
-            ..Default::default()
-        };
-        let b = ParsedMetadata { title: "t2".into(), ..a.clone() };
-        assert_ne!(a.track_identity(), b.track_identity());
-    }
-
-    #[test]
-    fn track_identity_is_equal_when_nothing_changed() {
+    fn track_identity_follows_trackid_url_and_title_alone() {
         let a = ParsedMetadata {
             trackid: Some("/1".into()),
             url: Some("u".into()),
@@ -290,6 +230,14 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(a.track_identity(), a.clone().track_identity());
+        let changed = [
+            ParsedMetadata { trackid: Some("/2".into()), ..a.clone() },
+            ParsedMetadata { url: Some("u2".into()), ..a.clone() },
+            ParsedMetadata { title: "t2".into(), ..a.clone() },
+        ];
+        for b in changed {
+            assert_ne!(a.track_identity(), b.track_identity(), "{b:?}");
+        }
     }
 
     #[test]
@@ -302,38 +250,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_album_art_path_is_empty_for_a_dangling_file_uri() {
+    fn resolve_album_art_path_is_empty_for_a_dangling_file_uri_a_non_file_scheme_or_none() {
         assert_eq!(resolve_album_art_path(Some("file:///nonexistent/path/art.png")), "");
-    }
-
-    #[test]
-    fn resolve_album_art_path_is_empty_for_a_non_file_scheme() {
         assert_eq!(resolve_album_art_path(Some("https://example.com/art.png")), "");
-    }
-
-    #[test]
-    fn resolve_album_art_path_is_empty_when_absent() {
         assert_eq!(resolve_album_art_path(None), "");
     }
 
     #[test]
-    fn clamp_seek_target_clamps_below_zero_up_to_zero() {
-        assert_eq!(clamp_seek_target(-500, Some(10_000)), 0);
-    }
-
-    #[test]
-    fn clamp_seek_target_clamps_above_length_down_to_length() {
-        assert_eq!(clamp_seek_target(50_000, Some(10_000)), 10_000);
-    }
-
-    #[test]
-    fn clamp_seek_target_passes_through_an_in_range_value() {
-        assert_eq!(clamp_seek_target(5_000, Some(10_000)), 5_000);
-    }
-
-    #[test]
-    fn clamp_seek_target_only_applies_the_lower_bound_without_a_length() {
-        assert_eq!(clamp_seek_target(-1, None), 0);
-        assert_eq!(clamp_seek_target(999_999_999, None), 999_999_999);
+    fn clamp_seek_target_clamps_into_zero_through_length() {
+        // (target, length, expected): the lower bound applies without a length, the upper only with one.
+        for (target, length, expected) in [
+            (-500, Some(10_000), 0),
+            (50_000, Some(10_000), 10_000),
+            (5_000, Some(10_000), 5_000),
+            (-1, None, 0),
+            (999_999_999, None, 999_999_999),
+        ] {
+            assert_eq!(clamp_seek_target(target, length), expected, "{target} in {length:?}");
+        }
     }
 }

@@ -180,75 +180,46 @@ mod tests {
     // ---- classify_service_arg ----
 
     #[test]
-    fn classify_service_arg_recognizes_an_object_path() {
-        assert_eq!(
-            classify_service_arg("/org/example/StatusNotifierItem"),
-            RegistrationTarget::ObjectPathFromSender { object_path: "/org/example/StatusNotifierItem".to_string() }
-        );
-    }
-
-    #[test]
-    fn classify_service_arg_recognizes_a_unique_name() {
-        assert_eq!(
-            classify_service_arg(":1.42"),
-            RegistrationTarget::UniqueName { unique_name: ":1.42".to_string(), object_path: None }
-        );
-    }
-
-    #[test]
-    fn classify_service_arg_recognizes_a_well_known_name() {
-        assert_eq!(
-            classify_service_arg("org.example.NmApplet"),
-            RegistrationTarget::WellKnownName {
-                well_known_name: "org.example.NmApplet".to_string(),
-                object_path: None
-            }
-        );
+    fn classify_service_arg_splits_a_name_from_an_optional_path() {
+        let path = |p: &str| p.to_string();
+        // A leading slash is a bare object path: nothing precedes it to take as a name.
+        // Chromium's case is verbatim from the log: Slack registered it and the whole string was read as a
+        // bus name, so the registration was rejected and Slack had no tray icon.
+        for (arg, expected) in [
+            (
+                "/org/example/StatusNotifierItem",
+                RegistrationTarget::ObjectPathFromSender { object_path: path("/org/example/StatusNotifierItem") },
+            ),
+            (":1.42", RegistrationTarget::UniqueName { unique_name: path(":1.42"), object_path: None }),
+            (
+                "org.example.NmApplet",
+                RegistrationTarget::WellKnownName { well_known_name: path("org.example.NmApplet"), object_path: None },
+            ),
+            (
+                "org.freedesktop.StatusNotifierItem-677302-1/StatusNotifierItem/1",
+                RegistrationTarget::WellKnownName {
+                    well_known_name: path("org.freedesktop.StatusNotifierItem-677302-1"),
+                    object_path: Some(path("/StatusNotifierItem/1")),
+                },
+            ),
+            (
+                ":1.42/StatusNotifierItem",
+                RegistrationTarget::UniqueName {
+                    unique_name: path(":1.42"),
+                    object_path: Some(path("/StatusNotifierItem")),
+                },
+            ),
+        ] {
+            assert_eq!(classify_service_arg(arg), expected, "{arg}");
+        }
     }
 
     // ---- sanitize_unique_name ----
 
     #[test]
-    fn chromium_sends_the_bus_name_and_object_path_concatenated() {
-        // Verbatim from the log: Slack registered this string and the whole of it was read as a
-        // bus name, so the registration was rejected and Slack had no tray icon.
-        assert_eq!(
-            classify_service_arg("org.freedesktop.StatusNotifierItem-677302-1/StatusNotifierItem/1"),
-            RegistrationTarget::WellKnownName {
-                well_known_name: "org.freedesktop.StatusNotifierItem-677302-1".to_string(),
-                object_path: Some("/StatusNotifierItem/1".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn a_unique_name_may_carry_a_path_too() {
-        assert_eq!(
-            classify_service_arg(":1.42/StatusNotifierItem"),
-            RegistrationTarget::UniqueName {
-                unique_name: ":1.42".to_string(),
-                object_path: Some("/StatusNotifierItem".to_string()),
-            }
-        );
-    }
-
-    #[test]
-    fn a_leading_slash_is_still_a_bare_object_path() {
-        // Nothing precedes the slash to take as a name, so the sender supplies the connection.
-        assert_eq!(
-            classify_service_arg("/StatusNotifierItem"),
-            RegistrationTarget::ObjectPathFromSender { object_path: "/StatusNotifierItem".to_string() }
-        );
-    }
-
-    #[test]
     fn sanitize_unique_name_strips_the_leading_colon() {
         assert_eq!(sanitize_unique_name(":1.234"), "1.234");
-    }
-
-    #[test]
-    fn sanitize_unique_name_is_a_no_op_without_a_leading_colon() {
-        assert_eq!(sanitize_unique_name("1.234"), "1.234");
+        assert_eq!(sanitize_unique_name("1.234"), "1.234", "no colon, no change");
     }
 
     /// A connection may export several items, and the unique name alone names all of them the

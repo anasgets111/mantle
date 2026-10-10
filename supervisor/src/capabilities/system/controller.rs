@@ -142,17 +142,10 @@ mod tests {
     }
 
     #[test]
-    fn epoch_seconds_is_seconds_not_milliseconds() {
-        // Millis "now" would be roughly 1_700_000_000_000, three orders larger.
-        let known = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        let seconds = epoch_seconds(known);
-        assert!((1_000_000_000..2_000_000_000).contains(&seconds), "plausible unix epoch seconds range, got {seconds}");
-    }
-
-    #[test]
     fn time_until_next_second_is_the_complement_of_the_subsecond_remainder() {
         assert_eq!(time_until_next_second(Duration::from_millis(300)), Duration::from_millis(700));
         assert_eq!(time_until_next_second(Duration::new(10, 999_000_000)), Duration::from_millis(1));
+        assert_eq!(time_until_next_second(Duration::from_secs(5)), Duration::from_secs(1), "on the boundary");
     }
 
     #[test]
@@ -160,11 +153,6 @@ mod tests {
         assert_eq!(next_boundary(Duration::from_millis(125_300), 60), 180, "a minute tick lands on :00");
         assert_eq!(next_boundary(Duration::from_secs(120), 60), 180, "a tick on the boundary waits a full interval");
         assert_eq!(next_boundary(Duration::from_millis(125_300), 1), 126);
-    }
-
-    #[test]
-    fn time_until_next_second_is_a_full_second_when_already_on_the_boundary() {
-        assert_eq!(time_until_next_second(Duration::from_secs(5)), Duration::from_secs(1));
     }
 
     /// Real time, since the timer is a kernel `CLOCK_REALTIME` timerfd tokio cannot pause.

@@ -177,22 +177,11 @@ Exec=firefox --new-window
     }
 
     #[test]
-    fn parse_group_skips_localized_keys_so_name_is_always_the_unlocalized_value() {
-        let group = parse_group("[Desktop Entry]\nName=Files\nName[de]=Dateien\n").unwrap();
-        assert_eq!(group.get("Name").map(String::as_str), Some("Files"));
-        assert!(!group.contains_key("Name[de]"));
-    }
-
-    #[test]
-    fn parse_group_returns_nothing_for_a_file_with_no_desktop_entry_group() {
-        assert!(parse_group("[Desktop Action foo]\nName=x\n").is_none());
-    }
-
-    #[test]
-    fn parse_group_ignores_comments_and_blank_lines() {
-        let group = parse_group("[Desktop Entry]\n# a comment\n\nName=Thing\n").unwrap();
-        assert_eq!(group.get("Name").map(String::as_str), Some("Thing"));
+    fn parse_group_skips_localized_keys_comments_and_blank_lines_and_needs_a_desktop_entry_group() {
+        let group = parse_group("[Desktop Entry]\n# a comment\n\nName=Thing\nName[de]=Ding\n").unwrap();
+        assert_eq!(group.get("Name").map(String::as_str), Some("Thing"), "always the unlocalized value");
         assert_eq!(group.len(), 1);
+        assert!(parse_group("[Desktop Action foo]\nName=x\n").is_none());
     }
 
     #[test]
@@ -204,72 +193,36 @@ Exec=firefox --new-window
     }
 
     #[test]
-    fn tokenize_exec_splits_on_whitespace() {
-        assert_eq!(
-            tokenize_exec("kitty --single-instance"),
-            Some(("kitty".to_string(), vec!["--single-instance".to_string()]))
-        );
-    }
-
-    /// `.desktop` quoting uses double quotes only; treating single quotes like a shell would split
-    /// this into three arguments instead of two.
-    #[test]
-    fn tokenize_exec_quotes_with_double_quotes_and_leaves_single_quotes_literal() {
-        assert_eq!(
-            tokenize_exec(r#"prog "one two" 'three"#),
-            Some(("prog".to_string(), vec!["one two".to_string(), "'three".to_string()]))
-        );
-    }
-
-    #[test]
-    fn tokenize_exec_honours_backslash_escapes_inside_quotes() {
-        assert_eq!(tokenize_exec(r#"prog "a\"b""#), Some(("prog".to_string(), vec![r#"a"b"#.to_string()])));
-    }
-
-    /// Field codes need a file, URL, or menu detail this launcher has not got. A code-only token
-    /// disappears instead of reaching argv as literal `%u` for the app to open.
-    #[test]
-    fn tokenize_exec_drops_standalone_field_codes() {
-        assert_eq!(tokenize_exec("firefox %u"), Some(("firefox".to_string(), Vec::new())));
-        assert_eq!(tokenize_exec("gimp %U %f %F"), Some(("gimp".to_string(), Vec::new())));
+    fn tokenize_exec_follows_desktop_entry_quoting_and_drops_field_codes() {
+        let argv =
+            |command: &str, args: &[&str]| Some((command.to_string(), args.iter().map(|a| a.to_string()).collect()));
+        // `.desktop` quoting uses double quotes only; shell-style single quotes would split this wrongly.
+        // Field codes need a file or URL this launcher has not got, so a code-only token disappears.
+        // An unknown percent escape is malformed: keep it visible rather than silently change the arguments.
+        for (exec, expected) in [
+            ("kitty --single-instance", argv("kitty", &["--single-instance"])),
+            (r#"prog "one two" 'three"#, argv("prog", &["one two", "'three"])),
+            (r#"prog "a\"b""#, argv("prog", &[r#"a"b"#])),
+            ("firefox %u", argv("firefox", &[])),
+            ("gimp %U %f %F", argv("gimp", &[])),
+            ("prog 100%%", argv("prog", &["100%"])),
+            ("prog %z", argv("prog", &["%z"])),
+            ("%f", None),
+            ("   ", None),
+        ] {
+            assert_eq!(tokenize_exec(exec), expected, "{exec:?}");
+        }
     }
 
     #[test]
-    fn tokenize_exec_unescapes_a_doubled_percent_into_a_literal_one() {
-        assert_eq!(tokenize_exec("prog 100%%"), Some(("prog".to_string(), vec!["100%".to_string()])));
-    }
-
-    #[test]
-    fn tokenize_exec_keeps_an_unknown_percent_escape_as_written() {
-        // Not a specified code, so the entry is malformed. Keep it visible to the app rather than
-        // silently changing its argument list.
-        assert_eq!(tokenize_exec("prog %z"), Some(("prog".to_string(), vec!["%z".to_string()])));
-    }
-
-    #[test]
-    fn tokenize_exec_returns_nothing_when_no_command_survives() {
-        assert_eq!(tokenize_exec("%f"), None);
-        assert_eq!(tokenize_exec("   "), None);
-    }
-
-    #[test]
-    fn desktop_file_id_turns_a_subdirectory_into_a_dash() {
+    fn desktop_file_id_turns_a_subdirectory_into_a_dash_and_rejects_other_files() {
         let base = Path::new("/usr/share/applications");
-        assert_eq!(
-            desktop_file_id(Path::new("/usr/share/applications/kde4/konsole.desktop"), base),
-            Some("kde4-konsole".to_string())
-        );
-        assert_eq!(
-            desktop_file_id(Path::new("/usr/share/applications/firefox.desktop"), base),
-            Some("firefox".to_string())
-        );
-    }
-
-    #[test]
-    fn desktop_file_id_rejects_a_file_that_is_not_a_desktop_entry() {
-        assert_eq!(
-            desktop_file_id(Path::new("/usr/share/applications/mimeinfo.cache"), Path::new("/usr/share/applications")),
-            None
-        );
+        for (path, id) in [
+            ("/usr/share/applications/kde4/konsole.desktop", Some("kde4-konsole")),
+            ("/usr/share/applications/firefox.desktop", Some("firefox")),
+            ("/usr/share/applications/mimeinfo.cache", None),
+        ] {
+            assert_eq!(desktop_file_id(Path::new(path), base), id.map(str::to_string), "{path}");
+        }
     }
 }

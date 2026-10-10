@@ -42,43 +42,19 @@ mod tests {
     }
 
     #[test]
-    fn a_block_mode_idle_inhibitor_is_listed() {
-        let listed = foreign_idle_inhibitors(vec![row("idle", "mpv", "Playing video", "block")]);
-        assert_eq!(listed, vec![IdleInhibitor { who: "mpv".into(), why: "Playing video".into() }]);
-    }
-
-    #[test]
-    fn a_delay_mode_inhibitor_does_not_stop_the_seat_idling_and_is_not_listed() {
-        assert!(foreign_idle_inhibitors(vec![row("idle", "mpv", "Playing video", "delay")]).is_empty());
-    }
-
-    #[test]
-    fn an_inhibitor_that_blocks_something_other_than_idle_is_not_listed() {
-        let rows = vec![row("handle-power-key:handle-lid-switch", "gdm", "", "block")];
-        assert!(foreign_idle_inhibitors(rows).is_empty());
-    }
-
-    #[test]
-    fn idle_is_found_inside_a_colon_separated_what() {
-        let listed = foreign_idle_inhibitors(vec![row("sleep:idle", "steam", "Game running", "block")]);
-        assert_eq!(listed, vec![IdleInhibitor { who: "steam".into(), why: "Game running".into() }]);
-    }
-
-    #[test]
-    fn this_shells_own_hold_is_excluded_because_the_config_already_knows_its_own_reasons() {
-        let rows = vec![row("idle", super::super::inhibit::INHIBIT_WHO, "manual + video", "block")];
-        assert!(foreign_idle_inhibitors(rows).is_empty());
-    }
-
-    #[test]
-    fn an_empty_why_is_kept_rather_than_dropping_the_holder() {
-        let listed = foreign_idle_inhibitors(vec![row("idle", "systemd-inhibit", "", "block")]);
-        assert_eq!(listed, vec![IdleInhibitor { who: "systemd-inhibit".into(), why: String::new() }]);
-    }
-
-    #[test]
-    fn a_holder_that_is_neither_block_mode_nor_idle_is_filtered_on_both_counts() {
-        let rows = vec![row("sleep", "backup", "Copying", "delay"), row("idle", "mpv", "Playing", "block")];
-        assert_eq!(foreign_idle_inhibitors(rows).len(), 1);
+    fn only_a_foreign_block_mode_idle_inhibitor_is_listed() {
+        let own = super::super::inhibit::INHIBIT_WHO;
+        // (case, what, who, why, mode, listed): this shell's own hold is excluded, an empty why is kept.
+        for (case, what, who, why, mode, listed) in [
+            ("block idle", "idle", "mpv", "Playing video", "block", true),
+            ("delay mode does not stop idling", "idle", "mpv", "Playing video", "delay", false),
+            ("blocks something other than idle", "handle-power-key:handle-lid-switch", "gdm", "", "block", false),
+            ("idle inside a colon-separated what", "sleep:idle", "steam", "Game running", "block", true),
+            ("own hold", "idle", own, "manual + video", "block", false),
+            ("empty why", "idle", "systemd-inhibit", "", "block", true),
+        ] {
+            let expected = if listed { vec![IdleInhibitor { who: who.into(), why: why.into() }] } else { vec![] };
+            assert_eq!(foreign_idle_inhibitors(vec![row(what, who, why, mode)]), expected, "{case}");
+        }
     }
 }

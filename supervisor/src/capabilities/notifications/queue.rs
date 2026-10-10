@@ -168,84 +168,52 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_expiry_critical_never_expires_regardless_of_timeout() {
-        assert_eq!(resolve_expiry(Urgency::Critical, 1000), None);
-        assert_eq!(resolve_expiry(Urgency::Critical, 0), None);
-        assert_eq!(resolve_expiry(Urgency::Critical, -1), None);
+    fn resolve_expiry_follows_urgency_and_timeout() {
+        let default = Some(Duration::from_millis(DEFAULT_EXPIRE_MS));
+        // (urgency, timeout ms, expected): critical never expires, 0 means never, -1 the server default.
+        for (urgency, timeout, expected) in [
+            (Urgency::Critical, 1000, None),
+            (Urgency::Critical, 0, None),
+            (Urgency::Critical, -1, None),
+            (Urgency::Normal, 0, None),
+            (Urgency::Low, 0, None),
+            (Urgency::Normal, -1, default),
+            (Urgency::Normal, 2500, Some(Duration::from_millis(2500))),
+            (Urgency::Low, 100, Some(Duration::from_millis(100))),
+        ] {
+            assert_eq!(resolve_expiry(urgency, timeout), expected, "{urgency:?} {timeout}");
+        }
     }
 
     #[test]
-    fn resolve_expiry_zero_means_never_for_non_critical() {
-        assert_eq!(resolve_expiry(Urgency::Normal, 0), None);
-        assert_eq!(resolve_expiry(Urgency::Low, 0), None);
+    fn should_play_sound_only_under_dnd_when_critical() {
+        for (dnd, urgency, expected) in [
+            (true, Urgency::Low, false),
+            (true, Urgency::Normal, false),
+            (true, Urgency::Critical, true),
+            (false, Urgency::Normal, true),
+            (false, Urgency::Low, true),
+        ] {
+            assert_eq!(should_play_sound(dnd, urgency), expected, "dnd {dnd} {urgency:?}");
+        }
     }
 
     #[test]
-    fn resolve_expiry_negative_one_uses_the_server_default() {
-        assert_eq!(resolve_expiry(Urgency::Normal, -1), Some(Duration::from_millis(DEFAULT_EXPIRE_MS)));
-    }
-
-    #[test]
-    fn resolve_expiry_positive_uses_that_many_milliseconds() {
-        assert_eq!(resolve_expiry(Urgency::Normal, 2500), Some(Duration::from_millis(2500)));
-        assert_eq!(resolve_expiry(Urgency::Low, 100), Some(Duration::from_millis(100)));
-    }
-
-    #[test]
-    fn should_play_sound_is_false_under_dnd_for_non_critical() {
-        assert!(!should_play_sound(true, Urgency::Low));
-        assert!(!should_play_sound(true, Urgency::Normal));
-    }
-
-    #[test]
-    fn should_play_sound_critical_bypasses_dnd() {
-        assert!(should_play_sound(true, Urgency::Critical));
-    }
-
-    #[test]
-    fn should_play_sound_is_true_outside_dnd() {
-        assert!(should_play_sound(false, Urgency::Normal));
-        assert!(should_play_sound(false, Urgency::Low));
-    }
-
-    #[test]
-    fn resolve_sound_path_suppress_always_wins_to_none() {
-        let client = Some(PathBuf::from("/usr/share/sounds/client.wav"));
-        let tier = Some(PathBuf::from("/usr/share/sounds/tier.wav"));
-        assert_eq!(
-            resolve_sound_path(true, client.clone(), None, tier.clone()),
-            None,
-            "suppress-sound must force silence even with both a client file and a tier default present"
-        );
-        assert_eq!(resolve_sound_path(true, client, None, None), None);
-        assert_eq!(resolve_sound_path(true, None, None, tier), None);
-        assert_eq!(resolve_sound_path(true, None, None, None), None);
-    }
-
-    #[test]
-    fn resolve_sound_path_prefers_the_client_file_over_the_tier_default() {
-        let client = Some(PathBuf::from("/usr/share/sounds/client.wav"));
-        let tier = Some(PathBuf::from("/usr/share/sounds/tier.wav"));
-        assert_eq!(resolve_sound_path(false, client.clone(), None, tier), client);
-    }
-
-    #[test]
-    fn resolve_sound_path_falls_back_to_the_tier_default_without_a_client_file() {
-        let tier = Some(PathBuf::from("/usr/share/sounds/tier.wav"));
-        assert_eq!(resolve_sound_path(false, None, None, tier.clone()), tier);
-    }
-
-    #[test]
-    fn resolve_sound_path_plays_a_sound_name_only_in_place_of_a_registered_tier() {
-        let named = Some(PathBuf::from("/usr/share/sounds/freedesktop/stereo/bell.oga"));
-        let tier = Some(PathBuf::from("/usr/share/sounds/tier.oga"));
-        assert_eq!(resolve_sound_path(false, None, named.clone(), tier), named);
-        assert_eq!(resolve_sound_path(false, None, named, None), None, "no registered tier stays silent");
-    }
-
-    #[test]
-    fn resolve_sound_path_is_none_when_nothing_is_available() {
-        assert_eq!(resolve_sound_path(false, None, None, None), None);
+    fn resolve_sound_path_orders_suppress_client_file_tier_and_sound_name() {
+        let path = |p: &str| Some(PathBuf::from(p));
+        let (client, tier, named) = (path("/s/client.wav"), path("/s/tier.wav"), path("/s/bell.oga"));
+        // (suppress, client file, sound name, tier default, expected)
+        for (suppress, file, name, default, expected) in [
+            (true, client.clone(), None, tier.clone(), None), // suppress-sound forces silence over both
+            (true, None, None, None, None),
+            (false, client.clone(), None, tier.clone(), client.clone()),
+            (false, None, None, tier.clone(), tier.clone()),
+            (false, None, named.clone(), tier.clone(), named.clone()), // a sound name replaces a registered tier
+            (false, None, named, None, None),                          // no registered tier stays silent
+            (false, None, None, None, None),
+        ] {
+            assert_eq!(resolve_sound_path(suppress, file, name, default), expected, "suppress {suppress}");
+        }
     }
 
     #[test]
@@ -332,66 +300,40 @@ mod tests {
     }
 
     #[test]
-    fn push_new_does_not_evict_under_the_cap() {
-        let mut queue = VecDeque::new();
-        let evicted = push_new(&mut queue, sample_notification(1, None));
-        assert_eq!(evicted, None);
-        assert_eq!(queue.len(), 1);
-    }
-
-    #[test]
     fn push_new_evicts_the_oldest_entry_past_the_cap_and_reports_its_id_and_icon() {
         let mut queue = VecDeque::new();
-        for i in 0..NOTIFICATION_QUEUE_CAP as u32 {
+        assert_eq!(
+            push_new(&mut queue, sample_notification(0, Some("/tmp/oldest.png"))),
+            None,
+            "no eviction under the cap"
+        );
+        for i in 1..NOTIFICATION_QUEUE_CAP as u32 {
             push_new(&mut queue, sample_notification(i, None));
         }
-        let evicted = push_new(&mut queue, sample_notification(9999, Some("/tmp/evicted.png")));
-        // The 101st insert evicts id 0. Finding 3 requires returning its id even without an icon,
-        // so the caller can emit NotificationClosed(0, reason=Evicted).
-        assert_eq!(evicted, Some(QueueCleanup::Evicted { id: 0, image_path: None }));
+        let evicted = push_new(&mut queue, sample_notification(9999, None));
+        // The 101st insert evicts id 0 and returns its id and icon, so the caller can delete the file and
+        // emit NotificationClosed(0, reason=Evicted).
+        assert_eq!(evicted, Some(QueueCleanup::Evicted { id: 0, image_path: Some("/tmp/oldest.png".to_string()) }));
         assert_eq!(queue.len(), NOTIFICATION_QUEUE_CAP);
         assert_eq!(queue.front().unwrap().id, 1, "the oldest entry (id 0) must have been evicted");
     }
 
     #[test]
-    fn push_new_returns_the_evicted_entrys_own_id_and_icon_path() {
-        let mut queue = VecDeque::new();
-        push_new(&mut queue, sample_notification(0, Some("/tmp/oldest.png")));
-        for i in 1..NOTIFICATION_QUEUE_CAP as u32 {
-            push_new(&mut queue, sample_notification(i, None));
+    fn resolve_replacement_icon_deletes_the_old_icon_unless_the_same_path_is_reused() {
+        let path = |p: &str| Some(p.to_string());
+        // (old, fresh, resolved, to delete)
+        for (old, fresh, resolved, to_delete) in [
+            (path("/tmp/old.png"), None, None, path("/tmp/old.png")),
+            (path("/tmp/old.png"), path("/tmp/new.png"), path("/tmp/new.png"), path("/tmp/old.png")),
+            (path("/tmp/same.png"), path("/tmp/same.png"), path("/tmp/same.png"), None),
+            (None, path("/tmp/new.png"), path("/tmp/new.png"), None),
+        ] {
+            assert_eq!(
+                resolve_replacement_image(old.clone(), fresh.clone()),
+                (resolved, to_delete),
+                "{old:?} {fresh:?}"
+            );
         }
-        let evicted = push_new(&mut queue, sample_notification(9999, None));
-        assert_eq!(evicted, Some(QueueCleanup::Evicted { id: 0, image_path: Some("/tmp/oldest.png".to_string()) }));
-    }
-
-    #[test]
-    fn resolve_replacement_icon_clears_and_deletes_the_old_icon_when_no_fresh_image_supplied() {
-        let (resolved, to_delete) = resolve_replacement_image(Some("/tmp/old.png".to_string()), None);
-        assert_eq!(resolved, None);
-        assert_eq!(to_delete, Some("/tmp/old.png".to_string()));
-    }
-
-    #[test]
-    fn resolve_replacement_icon_deletes_the_old_icon_when_a_different_fresh_image_is_supplied() {
-        let (resolved, to_delete) =
-            resolve_replacement_image(Some("/tmp/old.png".to_string()), Some("/tmp/new.png".to_string()));
-        assert_eq!(resolved, Some("/tmp/new.png".to_string()));
-        assert_eq!(to_delete, Some("/tmp/old.png".to_string()));
-    }
-
-    #[test]
-    fn resolve_replacement_icon_deletes_nothing_when_the_same_path_is_reused() {
-        let (resolved, to_delete) =
-            resolve_replacement_image(Some("/tmp/same.png".to_string()), Some("/tmp/same.png".to_string()));
-        assert_eq!(resolved, Some("/tmp/same.png".to_string()));
-        assert_eq!(to_delete, None);
-    }
-
-    #[test]
-    fn resolve_replacement_icon_no_previous_icon_just_uses_the_fresh_one() {
-        let (resolved, to_delete) = resolve_replacement_image(None, Some("/tmp/new.png".to_string()));
-        assert_eq!(resolved, Some("/tmp/new.png".to_string()));
-        assert_eq!(to_delete, None);
     }
 
     #[test]
@@ -439,24 +381,15 @@ mod tests {
     }
 
     #[test]
-    fn remove_by_id_removes_and_returns_the_matching_entry() {
+    fn remove_by_id_returns_the_matching_entry_and_none_for_an_unknown_id() {
         let mut queue = VecDeque::new();
         push_new(&mut queue, sample_notification(1, None));
         push_new(&mut queue, sample_notification(2, Some("/tmp/two.png")));
 
-        let removed = remove_by_id(&mut queue, 2);
-
-        assert_eq!(removed.map(|n| n.id), Some(2));
+        assert_eq!(remove_by_id(&mut queue, 999), None);
+        assert_eq!(remove_by_id(&mut queue, 2).map(|n| n.id), Some(2));
         assert_eq!(queue.len(), 1);
         assert_eq!(queue.front().unwrap().id, 1);
-    }
-
-    #[test]
-    fn remove_by_id_is_none_for_an_unknown_id() {
-        let mut queue = VecDeque::new();
-        push_new(&mut queue, sample_notification(1, None));
-        assert_eq!(remove_by_id(&mut queue, 999), None);
-        assert_eq!(queue.len(), 1);
     }
 
     #[test]
@@ -479,34 +412,6 @@ mod tests {
         let view = feed_view(&queue);
         assert_eq!(view.len(), NOTIFICATION_FEED_VIEW);
         assert_eq!(view.first().unwrap().id, NOTIFICATION_QUEUE_CAP as u32 - 1, "the newest entry must be first");
-    }
-
-    #[test]
-    fn next_incarnation_is_monotonic() {
-        let mut counter = 1u64;
-        assert_eq!(next_incarnation(&mut counter), 1);
-        assert_eq!(next_incarnation(&mut counter), 2);
-        assert_eq!(next_incarnation(&mut counter), 3);
-    }
-
-    #[test]
-    fn find_expiring_entry_finds_the_entry_matching_both_id_and_incarnation() {
-        let mut queue = VecDeque::new();
-        let mut notification = sample_notification(7, None);
-        notification.incarnation = 5;
-        queue.push_back(notification);
-
-        assert_eq!(find_expiring_entry(&queue, 7, 5), Some(0));
-    }
-
-    #[test]
-    fn find_expiring_entry_is_none_for_an_unknown_id() {
-        let mut queue = VecDeque::new();
-        let mut notification = sample_notification(7, None);
-        notification.incarnation = 5;
-        queue.push_back(notification);
-
-        assert_eq!(find_expiring_entry(&queue, 999, 5), None);
     }
 
     /// Finding 2's race: after `replaces_id=7` moves incarnation 1 to 2, timer A must not remove

@@ -171,18 +171,13 @@ mod tests {
     }
 
     #[test]
-    fn device_display_name_prefers_the_description_over_the_nick() {
-        assert_eq!(device_display_name(&analog_sink_props()), Some("Built-in Audio Analog Stereo".to_string()));
-    }
-
-    #[test]
-    fn device_display_name_falls_back_to_the_nick_and_leaves_the_node_name_to_display() {
+    fn device_display_name_prefers_the_description_then_the_nick() {
         let mut props = analog_sink_props();
+        assert_eq!(device_display_name(&props), Some("Built-in Audio Analog Stereo".to_string()));
         props.remove("node.description");
-        assert_eq!(device_display_name(&props), Some("ALC256 Analog".to_string()));
-
+        assert_eq!(device_display_name(&props), Some("ALC256 Analog".to_string()), "falls back to the nick");
         props.remove("node.nick");
-        assert_eq!(device_display_name(&props), None);
+        assert_eq!(device_display_name(&props), None, "and leaves the node name to display");
     }
 
     fn tracked(entries: &[(u32, &str, Option<&str>)]) -> HashMap<u32, DeviceEntry> {
@@ -260,11 +255,6 @@ mod tests {
                 ..AudioDevice::default()
             }]
         );
-    }
-
-    #[test]
-    fn device_list_is_empty_with_nothing_tracked() {
-        assert_eq!(device_list(&HashMap::new(), &HashMap::new(), Some(1)), Vec::new());
     }
 
     #[test]

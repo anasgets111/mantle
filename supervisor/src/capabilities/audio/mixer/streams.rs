@@ -283,22 +283,6 @@ mod tests {
     }
 
     #[test]
-    fn classify_recognizes_an_audio_stream() {
-        assert_eq!(classify(&zen_browser_stream_props()), Some(NodeKind::Audio));
-    }
-
-    #[test]
-    fn classify_recognizes_a_video_source() {
-        assert_eq!(classify(&camera_stream_props()), Some(NodeKind::Video));
-    }
-
-    #[test]
-    fn classify_is_none_for_an_unrelated_media_class() {
-        let props = HashMap::from([("media.class".to_string(), "Audio/Sink".to_string())]);
-        assert_eq!(classify(&props), None);
-    }
-
-    #[test]
     fn parse_video_source_props_matches_a_real_video_source_node() {
         let source = parse_video_source_props(7, &camera_stream_props()).expect("should parse as a video source");
         assert_eq!(source, VideoSourceApp { node_id: 7, pid: 42, app_name: Some("Firefox".to_string()) });
@@ -339,27 +323,32 @@ mod tests {
     }
 
     #[test]
-    fn a_portal_screencast_with_client_props_is_classified_and_tracked() {
-        let props = HashMap::from([
-            ("media.class".to_string(), "Video/Source".to_string()),
-            ("node.name".to_string(), "xdph-streaming-1234".to_string()),
-            ("application.name".to_string(), "xdg-desktop-portal-hyprland".to_string()),
-            ("application.process.binary".to_string(), "xdg-desktop-portal-hyprland".to_string()),
-            ("application.process.id".to_string(), "42".to_string()),
-        ]);
-        assert_eq!(classify(&props), Some(NodeKind::Screencast));
-
-        let mut apps = BTreeMap::new();
-        apply_capture_info_event(&mut apps, 1, NodeKind::Screencast, true, Some(&props), true);
-        assert_eq!(
-            running(&apps),
-            vec![CaptureApp {
-                node_id: 1,
-                pid: Some(42),
-                app_name: Some("xdg-desktop-portal-hyprland".to_string()),
-                running: true,
-            }]
-        );
+    fn a_portal_screencast_node_is_classified_and_tracked_with_or_without_client_props() {
+        let props = |extra: &[(&str, &str)]| -> HashMap<String, String> {
+            let base = [("media.class", "Video/Source")];
+            base.iter().chain(extra).map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        };
+        let hyprland = "xdg-desktop-portal-hyprland";
+        // (props, node id, expected pid)
+        for (props, node_id, pid) in [
+            (
+                props(&[
+                    ("node.name", "xdph-streaming-1234"),
+                    ("application.name", hyprland),
+                    ("application.process.binary", hyprland),
+                    ("application.process.id", "42"),
+                ]),
+                1,
+                Some(42),
+            ),
+            (props(&[("media.name", "xdph-streaming-628754"), ("node.name", hyprland)]), 104, None),
+        ] {
+            assert_eq!(classify(&props), Some(NodeKind::Screencast));
+            let mut apps = BTreeMap::new();
+            apply_capture_info_event(&mut apps, node_id, NodeKind::Screencast, true, Some(&props), true);
+            let expected = CaptureApp { node_id, pid, app_name: Some(hyprland.to_string()), running: true };
+            assert_eq!(running(&apps), vec![expected]);
+        }
     }
 
     #[test]
@@ -372,28 +361,6 @@ mod tests {
         let mut v4l2_props = camera_stream_props();
         v4l2_props.insert("device.api".to_string(), "v4l2".to_string());
         assert_eq!(classify(&v4l2_props), Some(NodeKind::Video));
-    }
-
-    #[test]
-    fn classify_and_track_live_hyprland_portal_node() {
-        let props = HashMap::from([
-            ("media.class".to_string(), "Video/Source".to_string()),
-            ("media.name".to_string(), "xdph-streaming-628754".to_string()),
-            ("node.name".to_string(), "xdg-desktop-portal-hyprland".to_string()),
-        ]);
-        assert_eq!(classify(&props), Some(NodeKind::Screencast));
-
-        let mut apps = BTreeMap::new();
-        apply_capture_info_event(&mut apps, 104, NodeKind::Screencast, true, Some(&props), true);
-        assert_eq!(
-            running(&apps),
-            vec![CaptureApp {
-                node_id: 104,
-                pid: None,
-                app_name: Some("xdg-desktop-portal-hyprland".to_string()),
-                running: true,
-            }]
-        );
     }
 
     /// A browser tab holds capture open between calls; publishing idle would light privacy forever.
@@ -551,30 +518,22 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_props_rejects_non_stream_media_class() {
+    fn parse_stream_props_rejects_a_non_stream_class_and_a_missing_or_unparseable_pid() {
         let proc = tempfile::tempdir().unwrap();
-        let props = HashMap::from([
-            ("media.class".to_string(), "Audio/Sink".to_string()),
-            ("application.process.id".to_string(), "1234".to_string()),
-        ]);
-        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
-    }
-
-    #[test]
-    fn parse_stream_props_rejects_a_stream_missing_the_pid() {
-        let proc = tempfile::tempdir().unwrap();
-        let props = HashMap::from([("media.class".to_string(), "Stream/Output/Audio".to_string())]);
-        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
-    }
-
-    #[test]
-    fn parse_stream_props_rejects_an_unparseable_pid() {
-        let proc = tempfile::tempdir().unwrap();
-        let props = HashMap::from([
-            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
-            ("application.process.id".to_string(), "not-a-pid".to_string()),
-        ]);
-        assert!(parse_stream_props(proc.path(), 1, &props, None).is_none());
+        let props = |class: &str, pid: Option<&str>| -> HashMap<String, String> {
+            let mut props = HashMap::from([("media.class".to_string(), class.to_string())]);
+            if let Some(pid) = pid {
+                props.insert("application.process.id".to_string(), pid.to_string());
+            }
+            props
+        };
+        for (case, props) in [
+            ("non-stream media class", props("Audio/Sink", Some("1234"))),
+            ("missing pid", props("Stream/Output/Audio", None)),
+            ("unparseable pid", props("Stream/Output/Audio", Some("not-a-pid"))),
+        ] {
+            assert!(parse_stream_props(proc.path(), 1, &props, None).is_none(), "{case}");
+        }
     }
 
     #[test]

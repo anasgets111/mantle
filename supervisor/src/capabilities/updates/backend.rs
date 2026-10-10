@@ -162,35 +162,17 @@ mod tests {
     }
 
     #[test]
-    fn a_program_is_found_in_a_directory_that_path_names() {
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::write(directory.path().join("fake-manager"), "").unwrap();
-
-        assert!(program_is_in(directory.path().as_os_str(), "fake-manager"));
-        assert!(!program_is_in(directory.path().as_os_str(), "some-other-manager"));
-    }
-
-    #[test]
-    fn a_directory_of_the_right_name_is_not_a_program() {
-        // `PATH` entries must be files, not a directory named `pacman`.
-        let directory = tempfile::tempdir().unwrap();
-        std::fs::create_dir(directory.path().join("pacman")).unwrap();
-
-        assert!(!program_is_in(directory.path().as_os_str(), "pacman"));
-    }
-
-    #[test]
-    fn a_program_is_found_in_the_second_of_several_path_entries() {
+    fn program_is_in_wants_a_file_on_some_path_entry() {
         let empty = tempfile::tempdir().unwrap();
         let real = tempfile::tempdir().unwrap();
-        std::fs::write(real.path().join("pacman"), "").unwrap();
+        std::fs::write(real.path().join("fake-manager"), "").unwrap();
+        // `PATH` entries must hold files, not a directory named like the program.
+        std::fs::create_dir(real.path().join("pacman")).unwrap();
         let path = std::env::join_paths([empty.path(), real.path()]).unwrap();
 
-        assert!(program_is_in(&path, "pacman"));
-    }
-
-    #[test]
-    fn an_empty_path_finds_nothing() {
-        assert!(!program_is_in(std::ffi::OsStr::new(""), "pacman"));
+        assert!(program_is_in(&path, "fake-manager"), "found in the second of several entries");
+        assert!(!program_is_in(&path, "some-other-manager"));
+        assert!(!program_is_in(&path, "pacman"), "a directory is not a program");
+        assert!(!program_is_in(std::ffi::OsStr::new(""), "pacman"), "an empty path finds nothing");
     }
 }

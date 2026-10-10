@@ -188,20 +188,13 @@ mod tests {
     }
 
     #[test]
-    fn validate_trusted_path_rejects_a_relative_path() {
-        assert_eq!(validate_trusted_path("relative/icon.png", &[PathBuf::from("/tmp")]), None);
-    }
-
-    #[test]
-    fn validate_trusted_path_rejects_a_bare_theme_name() {
-        assert_eq!(validate_trusted_path("battery-full", &[PathBuf::from("/tmp")]), None);
-    }
-
-    #[test]
-    fn validate_trusted_path_rejects_a_nonexistent_file() {
+    fn validate_trusted_path_rejects_a_relative_path_a_bare_name_a_missing_file_and_a_directory() {
         let dir = tempfile::tempdir().unwrap();
+        let roots = [dir.path().to_path_buf()];
         let missing = dir.path().join("missing.png");
-        assert_eq!(validate_trusted_path(missing.to_str().unwrap(), &[dir.path().to_path_buf()]), None);
+        for path in ["relative/icon.png", "battery-full", missing.to_str().unwrap(), dir.path().to_str().unwrap()] {
+            assert_eq!(validate_trusted_path(path, &roots), None, "{path}");
+        }
     }
 
     #[test]
@@ -241,18 +234,8 @@ mod tests {
     }
 
     #[test]
-    fn validate_trusted_path_rejects_a_directory() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(validate_trusted_path(dir.path().to_str().unwrap(), &[dir.path().to_path_buf()]), None);
-    }
-
-    #[test]
-    fn strip_file_uri_strips_the_scheme_when_present() {
+    fn strip_file_uri_strips_the_scheme_only_when_present() {
         assert_eq!(strip_file_uri("file:///usr/share/icons/x.png"), "/usr/share/icons/x.png");
-    }
-
-    #[test]
-    fn strip_file_uri_is_a_no_op_without_the_scheme() {
         assert_eq!(strip_file_uri("/usr/share/icons/x.png"), "/usr/share/icons/x.png");
     }
 
@@ -276,43 +259,27 @@ mod tests {
     }
 
     #[test]
-    fn image_data_is_valid_rejects_oversized_dimensions() {
-        assert!(!image_data_is_valid(&valid_rgba_image(MAX_IMAGE_DIMENSION + 1, 4)));
+    fn image_data_is_valid_rejects_malformed_images() {
+        let mut no_alpha = valid_rgba_image(4, 4);
+        no_alpha.has_alpha = false; // channels=4 mismatches
+        let mut bad_rowstride = valid_rgba_image(4, 4);
+        bad_rowstride.rowstride += 4;
+        let mut short_data = valid_rgba_image(4, 4);
+        short_data.data.pop();
+        let mut sixteen_bit = valid_rgba_image(4, 4);
+        sixteen_bit.bits_per_sample = 16;
+        for (case, image) in [
+            ("oversized", valid_rgba_image(MAX_IMAGE_DIMENSION + 1, 4)),
+            ("zero width", valid_rgba_image(0, 4)),
+            ("zero height", valid_rgba_image(4, 0)),
+            ("channels vs has_alpha", no_alpha),
+            ("rowstride", bad_rowstride),
+            ("data length", short_data),
+            ("non-8-bit sample", sixteen_bit),
+        ] {
+            assert!(!image_data_is_valid(&image), "{case}");
+        }
         assert!(image_data_is_valid(&valid_rgba_image(MAX_IMAGE_DIMENSION, MAX_IMAGE_DIMENSION)));
-    }
-
-    #[test]
-    fn image_data_is_valid_rejects_a_channel_count_mismatched_with_has_alpha() {
-        let mut image = valid_rgba_image(4, 4);
-        image.has_alpha = false;
-        assert!(!image_data_is_valid(&image), "has_alpha=false but channels=4 must be rejected");
-    }
-
-    #[test]
-    fn image_data_is_valid_rejects_a_rowstride_mismatch() {
-        let mut image = valid_rgba_image(4, 4);
-        image.rowstride += 4;
-        assert!(!image_data_is_valid(&image));
-    }
-
-    #[test]
-    fn image_data_is_valid_rejects_a_data_length_mismatch() {
-        let mut image = valid_rgba_image(4, 4);
-        image.data.pop();
-        assert!(!image_data_is_valid(&image));
-    }
-
-    #[test]
-    fn image_data_is_valid_rejects_non_positive_dimensions() {
-        assert!(!image_data_is_valid(&valid_rgba_image(0, 4)));
-        assert!(!image_data_is_valid(&valid_rgba_image(4, 0)));
-    }
-
-    #[test]
-    fn image_data_is_valid_rejects_a_non_8_bit_sample() {
-        let mut image = valid_rgba_image(4, 4);
-        image.bits_per_sample = 16;
-        assert!(!image_data_is_valid(&image));
     }
 
     #[test]
@@ -379,29 +346,15 @@ mod tests {
     }
 
     #[test]
-    fn resolve_image_input_prefers_image_data_over_everything() {
-        let resolved = resolve_image_input(Some(tiny_image()), Some("/path".to_string()), Some(tiny_image()));
-        assert_eq!(resolved, ImageInput::ImageData(tiny_image()));
-    }
-
-    #[test]
-    fn resolve_image_input_prefers_image_path_over_icon_data() {
-        let resolved = resolve_image_input(None, Some("/path".to_string()), Some(tiny_image()));
-        assert_eq!(resolved, ImageInput::ImagePath("/path".to_string()));
-    }
-
-    #[test]
-    fn resolve_image_input_falls_back_to_icon_data() {
+    fn resolve_image_input_prefers_data_then_path_then_icon_data_and_treats_an_empty_path_as_absent() {
+        let path = || Some("/path".to_string());
+        assert_eq!(
+            resolve_image_input(Some(tiny_image()), path(), Some(tiny_image())),
+            ImageInput::ImageData(tiny_image())
+        );
+        assert_eq!(resolve_image_input(None, path(), Some(tiny_image())), ImageInput::ImagePath("/path".to_string()));
         assert_eq!(resolve_image_input(None, None, Some(tiny_image())), ImageInput::IconData(tiny_image()));
-    }
-
-    #[test]
-    fn resolve_image_input_is_none_when_nothing_is_supplied() {
         assert_eq!(resolve_image_input(None, None, None), ImageInput::None);
-    }
-
-    #[test]
-    fn resolve_image_input_treats_an_empty_image_path_as_absent() {
         assert_eq!(resolve_image_input(None, Some(String::new()), None), ImageInput::None);
     }
 
@@ -417,9 +370,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_app_icon_is_none_for_absent_or_empty() {
-        assert_eq!(resolve_app_icon(None, &[]), None);
-        assert_eq!(resolve_app_icon(Some(String::new()), &[]), None);
+    fn resolve_app_icon_refuses_absent_empty_and_relative_icons() {
+        // A relative path is neither a theme name nor a validatable path.
+        for icon in [None, Some(String::new()), Some("../../etc/passwd".to_string()), Some("icons/app.png".to_string())]
+        {
+            assert_eq!(resolve_app_icon(icon.clone(), &[]), None, "{icon:?}");
+        }
     }
 
     /// A path still has to earn it, by the same rule every other client-supplied path follows.
@@ -435,13 +391,5 @@ mod tests {
         assert_eq!(resolve_app_icon(Some(format!("file://{}", icon.display())), &roots), Some(canonical));
 
         assert_eq!(resolve_app_icon(Some("/etc/passwd".to_string()), &roots), None, "outside every trusted root");
-    }
-
-    /// A relative path is neither a theme name nor a validatable path, and must not slip through
-    /// as the former just because it is not absolute.
-    #[test]
-    fn resolve_app_icon_refuses_a_relative_path_rather_than_calling_it_a_name() {
-        assert_eq!(resolve_app_icon(Some("../../etc/passwd".to_string()), &[]), None);
-        assert_eq!(resolve_app_icon(Some("icons/app.png".to_string()), &[]), None);
     }
 }

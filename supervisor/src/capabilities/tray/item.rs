@@ -215,12 +215,8 @@ mod tests {
     // ---- resolve_display_name ----
 
     #[test]
-    fn resolve_display_name_prefers_title() {
+    fn resolve_display_name_prefers_the_title_and_falls_back_to_the_id() {
         assert_eq!(resolve_display_name("Discord", "discord"), "Discord");
-    }
-
-    #[test]
-    fn resolve_display_name_falls_back_to_id_when_title_is_empty() {
         assert_eq!(resolve_display_name("", "discord"), "discord");
     }
 
@@ -254,23 +250,15 @@ mod tests {
     // ---- flatten_tooltip ----
 
     #[test]
-    fn flatten_tooltip_is_none_when_both_are_empty() {
-        assert_eq!(flatten_tooltip("", ""), None);
-    }
-
-    #[test]
-    fn flatten_tooltip_uses_title_alone() {
-        assert_eq!(flatten_tooltip("Battery", ""), Some("Battery".to_string()));
-    }
-
-    #[test]
-    fn flatten_tooltip_uses_text_alone() {
-        assert_eq!(flatten_tooltip("", "80% charged"), Some("80% charged".to_string()));
-    }
-
-    #[test]
-    fn flatten_tooltip_joins_title_and_text() {
-        assert_eq!(flatten_tooltip("Battery", "80% charged"), Some("Battery\n80% charged".to_string()));
+    fn flatten_tooltip_joins_the_non_empty_parts() {
+        for (title, text, expected) in [
+            ("", "", None),
+            ("Battery", "", Some("Battery")),
+            ("", "80% charged", Some("80% charged")),
+            ("Battery", "80% charged", Some("Battery\n80% charged")),
+        ] {
+            assert_eq!(flatten_tooltip(title, text).as_deref(), expected, "{title:?} {text:?}");
+        }
     }
 
     /// A title/tooltip/status signal reads four properties and keeps the icon fields, so no pixmap is decoded.

@@ -69,13 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lock_leds_is_none_when_any_one_led_is_missing() {
+    fn resolve_lock_leds_is_none_when_any_led_is_missing_or_the_root_is() {
         let root = tempfile::tempdir().unwrap();
+        assert_eq!(resolve_lock_leds(root.path()), None, "empty root");
+        assert_eq!(resolve_lock_leds(&root.path().join("does-not-exist")), None);
         write_led(root.path(), "input3::capslock", "0");
         write_led(root.path(), "input3::numlock", "1");
-        // scrolllock deliberately absent.
-
-        assert_eq!(resolve_lock_leds(root.path()), None);
+        assert_eq!(resolve_lock_leds(root.path()), None, "scrolllock absent");
     }
 
     #[test]
@@ -91,36 +91,12 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lock_leds_is_none_against_an_empty_or_nonexistent_root() {
+    fn read_led_on_reads_nonzero_as_on_and_malformed_as_off() {
         let root = tempfile::tempdir().unwrap();
-        assert_eq!(resolve_lock_leds(root.path()), None);
-        assert_eq!(resolve_lock_leds(&root.path().join("does-not-exist")), None);
-    }
-
-    #[test]
-    fn read_led_on_is_true_for_nonzero_brightness() {
-        let root = tempfile::tempdir().unwrap();
-        let led = write_led(root.path(), "input3::capslock", "1");
-        assert!(read_led_on(&led).unwrap());
-    }
-
-    #[test]
-    fn read_led_on_is_false_for_zero_brightness() {
-        let root = tempfile::tempdir().unwrap();
-        let led = write_led(root.path(), "input3::numlock", "0");
-        assert!(!read_led_on(&led).unwrap());
-    }
-
-    #[test]
-    fn read_led_on_treats_a_malformed_brightness_value_as_off_rather_than_erroring() {
-        let root = tempfile::tempdir().unwrap();
-        let led = write_led(root.path(), "input3::scrolllock", "not-a-number\n");
-        assert!(!read_led_on(&led).unwrap());
-    }
-
-    #[test]
-    fn read_led_on_errors_when_the_brightness_file_does_not_exist() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(read_led_on(root.path()).is_err());
+        for (brightness, on) in [("1", true), ("0", false), ("not-a-number\n", false)] {
+            let led = write_led(root.path(), &format!("input3::led{brightness}"), brightness);
+            assert_eq!(read_led_on(&led).unwrap(), on, "{brightness:?}");
+        }
+        assert!(read_led_on(&root.path().join("missing")).is_err());
     }
 }

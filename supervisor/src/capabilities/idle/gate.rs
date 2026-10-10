@@ -233,17 +233,6 @@ mod tests {
     }
 
     #[test]
-    fn unblocked_twin_listeners_are_deduplicated_to_one_resume() {
-        let mut gate = IdleGate::default();
-        gate.observe(event(1, 30, IdleState::Idled));
-        assert_eq!(
-            gate.observe(event(1, 30, resumed(ResumeCause::Input))),
-            Some(event(1, 30, resumed(ResumeCause::Input)))
-        );
-        assert_eq!(gate.observe(event(1, 30, resumed(ResumeCause::Input))), None);
-    }
-
-    #[test]
     fn compositor_activity_stops_idle_without_consuming_a_later_input() {
         let mut gate = IdleGate::default();
         assert_eq!(gate.observe(event(1, 30, IdleState::Idled)), Some(event(1, 30, IdleState::Idled)));

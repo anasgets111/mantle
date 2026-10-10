@@ -145,52 +145,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn connection_intent_treats_an_empty_secret_as_open() {
-        let intent = connection_intent("HomeWifi", false, &[]).unwrap();
-        assert_eq!(intent.psk, None);
-    }
-
-    #[test]
-    fn connection_intent_carries_a_non_empty_secret_as_the_psk() {
-        let intent = connection_intent("HomeWifi", false, b"hunter2").unwrap();
-        assert_eq!(intent.psk.as_ref().map(|psk| psk.as_str()), Some("hunter2"));
-    }
-
-    #[test]
-    fn connection_intent_rejects_non_utf8_secrets() {
+    fn connection_intent_treats_an_empty_secret_as_open_and_rejects_non_utf8() {
+        assert_eq!(connection_intent("HomeWifi", false, &[]).unwrap().psk, None);
+        let secured = connection_intent("HomeWifi", false, b"hunter2").unwrap();
+        assert_eq!(secured.psk.as_ref().map(|psk| psk.as_str()), Some("hunter2"));
         assert!(connection_intent("HomeWifi", false, &[0xFF, 0xFE]).is_err());
     }
 
     #[test]
-    fn build_connection_dict_omits_security_for_an_open_network() {
-        let intent = connection_intent("HomeWifi", false, &[]).unwrap();
-        let dict = build_connection_dict(&intent);
-        assert!(!dict.contains_key("802-11-wireless-security"));
-        assert!(!dict["802-11-wireless"].contains_key("hidden"));
-    }
+    fn build_connection_dict_carries_the_ssid_and_only_the_security_and_hidden_flags_asked_for() {
+        let intent = |ssid, hidden, secret: &[u8]| connection_intent(ssid, hidden, secret).unwrap();
+        let (open, secured, hidden) =
+            (intent("HomeWifi", false, &[]), intent("HomeWifi", false, b"hunter2"), intent("HiddenNet", true, &[]));
+        let (open, secured, hidden) =
+            (build_connection_dict(&open), build_connection_dict(&secured), build_connection_dict(&hidden));
+        assert!(!open.contains_key("802-11-wireless-security"));
+        assert!(!open["802-11-wireless"].contains_key("hidden"));
+        assert_eq!(Vec::<u8>::try_from(open["802-11-wireless"]["ssid"].clone()).unwrap(), b"HomeWifi".to_vec());
 
-    #[test]
-    fn build_connection_dict_sets_wpa_psk_for_a_secured_network() {
-        let intent = connection_intent("HomeWifi", false, b"hunter2").unwrap();
-        let dict = build_connection_dict(&intent);
-        let security = &dict["802-11-wireless-security"];
+        let security = &secured["802-11-wireless-security"];
         assert_eq!(String::try_from(security["key-mgmt"].clone()).unwrap(), "wpa-psk");
         assert_eq!(String::try_from(security["psk"].clone()).unwrap(), "hunter2");
-    }
 
-    #[test]
-    fn build_connection_dict_marks_hidden_for_a_hidden_network() {
-        let intent = connection_intent("HiddenNet", true, &[]).unwrap();
-        let dict = build_connection_dict(&intent);
-        let wireless = &dict["802-11-wireless"];
-        assert!(bool::try_from(wireless["hidden"].clone()).unwrap());
-    }
-
-    #[test]
-    fn build_connection_dict_carries_the_ssid_bytes() {
-        let intent = connection_intent("HomeWifi", false, &[]).unwrap();
-        let dict = build_connection_dict(&intent);
-        assert_eq!(Vec::<u8>::try_from(dict["802-11-wireless"]["ssid"].clone()).unwrap(), b"HomeWifi".to_vec());
+        assert!(bool::try_from(hidden["802-11-wireless"]["hidden"].clone()).unwrap());
     }
 
     #[test]
@@ -205,11 +182,7 @@ mod tests {
         assert_eq!(activation_verdict(Some(Err(None))), verdict("connection failed", false));
         assert_eq!(activation_verdict(None), verdict("connection timed out", false));
         assert_eq!(activation_verdict(Some(Ok(()))), (None, false));
-    }
-
-    #[test]
-    fn connect_error_text_falls_back_for_reasons_a_wifi_row_cannot_act_on() {
-        // 57 is `MODEM_FAILED`, a modem reason; 255 is not a reason at all.
+        // 57 is `MODEM_FAILED`, a modem reason a wifi row cannot act on; 255 is not a reason at all.
         assert_eq!(connect_error_text(57), "connection failed");
         assert_eq!(connect_error_text(255), "connection failed");
     }

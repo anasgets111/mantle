@@ -175,68 +175,23 @@ mod tests {
 
     // ---- apply_inhibit / apply_release_inhibit (inhibit refcount arithmetic, TDD seam 2) ----
 
-    #[test]
-    fn apply_inhibit_opens_the_fd_on_the_global_zero_to_one_transition() {
-        let mut counts = HashMap::new();
-        let transition = apply_inhibit(&mut counts, 1);
-        assert_eq!(transition, InhibitTransition { should_open_fd: true, should_close_fd: false });
-        assert_eq!(counts.get(&1), Some(&1));
-    }
+    const OPEN: InhibitTransition = InhibitTransition { should_open_fd: true, should_close_fd: false };
+    const CLOSE: InhibitTransition = InhibitTransition { should_open_fd: false, should_close_fd: true };
+    const NONE: InhibitTransition = InhibitTransition { should_open_fd: false, should_close_fd: false };
 
     #[test]
-    fn apply_inhibit_does_not_reopen_the_fd_for_a_second_concurrent_generation() {
+    fn the_fd_opens_on_the_first_hold_and_closes_on_the_last_release() {
         let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-        let transition = apply_inhibit(&mut counts, 2);
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: false });
-        assert_eq!(counts.get(&1), Some(&1));
-        assert_eq!(counts.get(&2), Some(&1));
-    }
-
-    #[test]
-    fn apply_release_inhibit_closes_the_fd_on_the_global_one_to_zero_transition() {
-        let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-        let transition = apply_release_inhibit(&mut counts, 1);
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: true });
-        assert_eq!(counts.get(&1), Some(&0));
-    }
-
-    #[test]
-    fn apply_release_inhibit_from_one_generation_does_not_close_while_another_still_holds() {
-        let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-        apply_inhibit(&mut counts, 2);
-
-        let transition = apply_release_inhibit(&mut counts, 1);
-
-        assert_eq!(
-            transition,
-            InhibitTransition { should_open_fd: false, should_close_fd: false },
-            "generation 2 still holds an inhibit"
-        );
+        assert_eq!(apply_inhibit(&mut counts, 1), OPEN);
+        assert_eq!(apply_inhibit(&mut counts, 2), NONE, "a second concurrent generation does not reopen");
+        assert_eq!(apply_release_inhibit(&mut counts, 1), NONE, "generation 2 still holds an inhibit");
         assert_eq!(counts.get(&1), Some(&0));
         assert_eq!(counts.get(&2), Some(&1));
-    }
-
-    #[test]
-    fn apply_release_inhibit_on_an_already_zero_generation_is_a_silent_no_op() {
-        let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-        apply_release_inhibit(&mut counts, 1);
-
-        let transition = apply_release_inhibit(&mut counts, 1);
-
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: false });
+        assert_eq!(apply_release_inhibit(&mut counts, 1), NONE);
         assert_eq!(counts.get(&1), Some(&0), "must not underflow below zero");
-    }
-
-    #[test]
-    fn apply_release_inhibit_on_a_never_registered_generation_is_a_silent_no_op() {
-        let mut counts = HashMap::new();
-        let transition = apply_release_inhibit(&mut counts, 42);
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: false });
+        assert_eq!(apply_release_inhibit(&mut counts, 42), NONE);
         assert!(!counts.contains_key(&42));
+        assert_eq!(apply_release_inhibit(&mut counts, 2), CLOSE);
     }
 
     // ---- ScreenSaver holds (ADR-0231): the inbound half, sharing one fd with the config's ----
@@ -323,38 +278,17 @@ mod tests {
     // ---- cleanup_generation_inhibit (TDD seam 5, inhibit half) ----
 
     #[test]
-    fn cleanup_generation_inhibit_zeros_only_the_named_generation_and_closes_if_it_was_the_last() {
-        let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-
-        let transition = cleanup_generation_inhibit(&mut counts, 1);
-
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: true });
-        assert!(!counts.contains_key(&1));
-    }
-
-    #[test]
-    fn cleanup_generation_inhibit_does_not_close_while_another_generation_still_holds() {
+    fn cleanup_generation_inhibit_drops_only_the_named_generation_and_closes_on_the_last() {
         let mut counts = HashMap::new();
         apply_inhibit(&mut counts, 1);
         apply_inhibit(&mut counts, 2);
 
-        let transition = cleanup_generation_inhibit(&mut counts, 1);
-
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: false });
+        assert_eq!(cleanup_generation_inhibit(&mut counts, 99), NONE, "untracked generation");
+        assert_eq!(cleanup_generation_inhibit(&mut counts, 1), NONE);
         assert!(!counts.contains_key(&1));
         assert_eq!(counts.get(&2), Some(&1), "generation 2's own count must be untouched");
-    }
-
-    #[test]
-    fn cleanup_generation_inhibit_on_an_untracked_generation_is_a_silent_no_op() {
-        let mut counts = HashMap::new();
-        apply_inhibit(&mut counts, 1);
-
-        let transition = cleanup_generation_inhibit(&mut counts, 99);
-
-        assert_eq!(transition, InhibitTransition { should_open_fd: false, should_close_fd: false });
-        assert_eq!(counts.get(&1), Some(&1));
+        assert_eq!(cleanup_generation_inhibit(&mut counts, 2), CLOSE);
+        assert!(counts.is_empty());
     }
 
     // ---- Login1ManagerProxy::inhibit (TDD seam 3: real D-Bus call, p2p pattern) ----

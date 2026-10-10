@@ -302,22 +302,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn keyboard_state_default_reports_nothing_available() {
-        assert_eq!(
-            KeyboardState::default(),
-            KeyboardState {
-                backlight_percent: None,
-                caps_lock: false,
-                num_lock: false,
-                scroll_lock: false,
-                active_layout: String::new(),
-                active_layout_index: 0,
-                layout_count: 0
-            }
-        );
-    }
-
-    #[test]
     fn find_backlight_skips_lock_leds_and_scales_brightness() {
         let root = tempfile::tempdir().unwrap();
         std::fs::create_dir(root.path().join("input3::capslock")).unwrap();

@@ -156,40 +156,19 @@ mod tests {
         assert_eq!(Capability::from_name("audio"), Some(Capability::Audio));
         assert_eq!(Capability::from_name("polkit"), Some(Capability::Polkit));
         assert_eq!(Capability::from_name("idle"), Some(Capability::Idle), "on the roster since ADR-0141");
-    }
-
-    #[test]
-    fn startable_rejects_a_name_this_supervisor_builds_nothing_for() {
-        // `process` is command-addressable but never started; it must not resolve to a silent
-        // start.
+        // `process` is command-addressable but never started; it must not resolve to a silent start.
         assert_eq!(Capability::from_name("process"), None);
         assert_eq!(Capability::from_name("screens"), None);
         assert_eq!(Capability::from_name(""), None);
     }
 
     #[test]
-    fn truncate_utf8_bytes_is_a_no_op_under_the_cap() {
-        assert_eq!(truncate_utf8_bytes("hello", 64), "hello");
-    }
-
-    #[test]
-    fn truncate_utf8_bytes_truncates_ascii_at_the_exact_cap() {
-        assert_eq!(truncate_utf8_bytes("hello world", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_utf8_bytes_never_splits_a_multibyte_char() {
-        // "héllo" -- 'é' is 2 bytes (0xc3 0xa9); a byte cap landing mid-character must back off.
-        let input = "héllo";
-        assert_eq!(input.len(), 6);
-        // Cap of 2 bytes lands right in the middle of 'é' (byte 1 is not a char boundary).
-        let truncated = truncate_utf8_bytes(input, 2);
-        assert_eq!(truncated, "h");
-        assert!(truncated.len() <= 2);
-    }
-
-    #[test]
-    fn truncate_utf8_bytes_handles_a_cap_of_zero() {
-        assert_eq!(truncate_utf8_bytes("hello", 0), "");
+    fn truncate_utf8_bytes_caps_on_a_char_boundary() {
+        // 'é' is 2 bytes, so a cap of 2 in "héllo" lands mid-character and must back off.
+        for (input, cap, expected) in
+            [("hello", 64, "hello"), ("hello world", 5, "hello"), ("héllo", 2, "h"), ("hello", 0, "")]
+        {
+            assert_eq!(truncate_utf8_bytes(input, cap), expected, "{input:?} cap {cap}");
+        }
     }
 }

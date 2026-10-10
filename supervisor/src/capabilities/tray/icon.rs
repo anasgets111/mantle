@@ -177,40 +177,22 @@ mod tests {
         assert_eq!(theme_path_file(dir.path().to_str().unwrap(), "sub/real"), None);
     }
 
-    #[test]
-    fn no_theme_path_and_no_name_still_reaches_the_pixmap() {
-        // Empty theme paths must not shadow Chromium's pixmap branch.
-        let pixmaps = vec![IconPixmap { width: 2, height: 2, bytes: vec![0; 16] }];
-        assert_eq!(resolve_icon_source("", &pixmaps, ""), IconSource::Pixmap);
-    }
-
     // ---- pixmap_is_valid ----
 
     #[test]
-    fn pixmap_is_valid_accepts_a_well_formed_square_pixmap() {
-        assert!(pixmap_is_valid(2, 2, 2 * 2 * 4));
-    }
-
-    #[test]
-    fn pixmap_is_valid_rejects_a_non_square_pixmap() {
-        assert!(!pixmap_is_valid(4, 2, 4 * 2 * 4));
-    }
-
-    #[test]
-    fn pixmap_is_valid_rejects_oversized_pixmaps() {
-        assert!(!pixmap_is_valid(129, 129, 129 * 129 * 4));
-        assert!(pixmap_is_valid(128, 128, 128 * 128 * 4));
-    }
-
-    #[test]
-    fn pixmap_is_valid_rejects_a_byte_length_mismatch() {
-        assert!(!pixmap_is_valid(2, 2, 10));
-    }
-
-    #[test]
-    fn pixmap_is_valid_rejects_non_positive_dimensions() {
-        assert!(!pixmap_is_valid(0, 0, 0));
-        assert!(!pixmap_is_valid(-1, -1, 4));
+    fn pixmap_is_valid_wants_a_positive_square_within_the_cap_and_a_matching_byte_length() {
+        // (width, height, bytes, valid)
+        for (width, height, len, valid) in [
+            (2, 2, 2 * 2 * 4, true),
+            (128, 128, 128 * 128 * 4, true),
+            (4, 2, 4 * 2 * 4, false),
+            (129, 129, 129 * 129 * 4, false),
+            (2, 2, 10, false),
+            (0, 0, 0, false),
+            (-1, -1, 4, false),
+        ] {
+            assert_eq!(pixmap_is_valid(width, height, len), valid, "{width}x{height} with {len} bytes");
+        }
     }
 
     // ---- largest_valid_pixmap ----
@@ -220,47 +202,27 @@ mod tests {
     }
 
     #[test]
-    fn largest_valid_pixmap_picks_the_biggest() {
+    fn largest_valid_pixmap_picks_the_biggest_valid_entry() {
         let pixmaps = vec![pixmap(16), pixmap(64), pixmap(32)];
         assert_eq!(largest_valid_pixmap(&pixmaps), Some(&pixmaps[1]));
-    }
 
-    #[test]
-    fn largest_valid_pixmap_ignores_invalid_entries() {
         let oversized = IconPixmap { width: 200, height: 200, bytes: vec![0u8; 200 * 200 * 4] };
-        let valid = pixmap(16);
-        let pixmaps = vec![oversized, valid.clone()];
+        let pixmaps = vec![oversized, pixmap(16)];
         assert_eq!(largest_valid_pixmap(&pixmaps), Some(&pixmaps[1]));
-        assert_eq!(pixmaps[1], valid);
-    }
 
-    #[test]
-    fn largest_valid_pixmap_is_none_when_every_entry_is_invalid() {
-        let pixmaps = vec![IconPixmap { width: 4, height: 2, bytes: vec![0u8; 32] }];
-        assert_eq!(largest_valid_pixmap(&pixmaps), None);
-    }
-
-    #[test]
-    fn largest_valid_pixmap_is_none_for_an_empty_list() {
+        let non_square = vec![IconPixmap { width: 4, height: 2, bytes: vec![0u8; 32] }];
+        assert_eq!(largest_valid_pixmap(&non_square), None);
         assert_eq!(largest_valid_pixmap(&[]), None);
     }
 
     // ---- resolve_icon_source ----
 
     #[test]
-    fn resolve_icon_source_prefers_icon_name_even_with_pixmaps_present() {
+    fn resolve_icon_source_prefers_the_name_then_the_pixmap_and_else_none() {
         let pixmaps = vec![pixmap(32)];
         assert_eq!(resolve_icon_source("battery-full", &pixmaps, ""), IconSource::Name("battery-full".to_string()));
-    }
-
-    #[test]
-    fn resolve_icon_source_falls_back_to_pixmap_when_icon_name_is_empty() {
-        let pixmaps = vec![pixmap(32)];
+        // Empty theme paths must not shadow Chromium's pixmap branch.
         assert_eq!(resolve_icon_source("", &pixmaps, ""), IconSource::Pixmap);
-    }
-
-    #[test]
-    fn resolve_icon_source_is_none_when_neither_is_usable() {
         assert_eq!(resolve_icon_source("", &[], ""), IconSource::None);
         let invalid = vec![IconPixmap { width: 4, height: 2, bytes: vec![0u8; 32] }];
         assert_eq!(resolve_icon_source("", &invalid, ""), IconSource::None);

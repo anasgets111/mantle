@@ -489,28 +489,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_manual_check_runs_with_no_schedule_configured_at_all() {
-        // Dormant mode answers `check_now`; a config may use a button without a timer.
-        let (controller, mut events_rx) = failing_controller().await;
-
-        controller.check_now();
-        await_one_check(&mut events_rx).await;
-
-        let snapshot = controller.snapshot();
-        assert!(!snapshot.checking, "checking must fall again once the answer is written");
-        assert!(snapshot.check_error.is_some(), "a db root with no local/ cannot be checked");
-        assert_eq!(snapshot.consecutive_check_failures, 1);
-        assert_eq!(snapshot.last_successful_check, None);
-    }
-
-    #[tokio::test]
     async fn failed_checks_count_up_and_leave_the_last_good_answer_alone() {
         let (controller, mut events_rx) = failing_controller().await;
+        let fresh = controller.snapshot();
+        assert_eq!(fresh.package_manager.as_deref(), Some("stub"));
+        assert!(fresh.packages.is_empty());
+        assert_eq!(fresh.last_successful_check, None, "naming the manager is not a check");
         // A count from an earlier good check, which a failure must not blank.
         controller.state.lock().unwrap().packages = vec![candidate(); 3];
 
+        // Dormant mode answers `check_now`; a config may use a button without a timer.
         controller.check_now();
         await_one_check(&mut events_rx).await;
+        let snapshot = controller.snapshot();
+        assert!(!snapshot.checking, "checking must fall again once the answer is written");
+        assert!(snapshot.check_error.is_some());
+        assert_eq!(snapshot.consecutive_check_failures, 1);
+        assert_eq!(snapshot.last_successful_check, None);
+
         controller.check_now();
         await_one_check(&mut events_rx).await;
 
@@ -520,35 +516,21 @@ mod tests {
     }
 
     #[test]
-    fn the_first_check_of_a_process_is_due_immediately() {
-        // The boot case, and the whole point of the change: a config asking for an hourly check
-        // wants to know what is pending now, not at the end of the first hour.
-        assert!(first_check_is_due(None, 1_800_000_000, Duration::from_secs(3600)));
-    }
-
-    #[test]
-    fn a_reconfigure_within_the_interval_waits_rather_than_syncing_again() {
-        // A config reload re-invokes `configure`, and the controller outlives the generation that
-        // did it. Without this, every save would be another sync against a mirror.
+    fn first_check_is_due_by_the_age_of_the_last_stamp() {
         let last = 1_800_000_000;
-        assert!(!first_check_is_due(Some(last), last + 60, Duration::from_secs(3600)));
-    }
-
-    #[test]
-    fn a_check_older_than_the_interval_is_due_again() {
-        let last = 1_800_000_000;
-        let interval = Duration::from_secs(3600);
-        assert!(first_check_is_due(Some(last), last + 3600, interval), "exactly one interval old is due");
-        assert!(first_check_is_due(Some(last), last + 7200, interval));
-    }
-
-    #[test]
-    fn a_last_check_stamped_in_the_future_does_not_underflow_into_due() {
-        // A clock stepped backwards (an NTP correction, a suspend across a timezone fix) leaves a
-        // stamp ahead of `now`. Saturating, so that reads as "checked recently", not as a negative
-        // age that compares below the interval by accident.
-        let last = 1_800_000_000;
-        assert!(!first_check_is_due(Some(last), last - 5000, Duration::from_secs(3600)));
+        let hour = Duration::from_secs(3600);
+        // (last stamp, now, due). A reload re-invokes `configure` on a controller that outlives the
+        // generation, so a reconfigure within the interval must not sync again.
+        for (stamp, now, due, case) in [
+            (None, last, true, "the first check of a process is due at once"),
+            (Some(last), last + 60, false, "a reconfigure within the interval waits"),
+            (Some(last), last + 3600, true, "exactly one interval old is due"),
+            (Some(last), last + 7200, true, "older than the interval"),
+            // A clock stepped backwards leaves a stamp ahead of `now`; it must read as recent, not underflow.
+            (Some(last), last - 5000, false, "a stamp in the future"),
+        ] {
+            assert_eq!(first_check_is_due(stamp, now, hour), due, "{case}");
+        }
     }
 
     #[tokio::test]
@@ -576,16 +558,6 @@ mod tests {
             "no action may write state on a machine there is no manager to act with"
         );
         assert_eq!(events_rx.try_recv().ok(), None, "and none of them may push");
-    }
-
-    #[tokio::test]
-    async fn a_detected_backend_names_itself_before_anything_has_been_checked() {
-        let (controller, _events_rx) = failing_controller().await;
-
-        let snapshot = controller.snapshot();
-        assert_eq!(snapshot.package_manager.as_deref(), Some("stub"));
-        assert!(snapshot.packages.is_empty());
-        assert_eq!(snapshot.last_successful_check, None, "naming the manager is not a check");
     }
 
     #[tokio::test]

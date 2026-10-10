@@ -680,13 +680,14 @@ mod position_tests {
     }
 
     #[test]
-    fn a_zero_on_a_new_track_is_published() {
-        // A track we were not already inside legitimately begins at zero, so the same reading is
-        // the truth rather than a player that has not caught up.
+    fn a_zero_is_published_on_a_new_track_or_with_nothing_to_fall_back_on() {
+        // A track we were not already inside legitimately begins at zero, and a first reading has no previous to keep.
         let state = previous_at(340_000_000);
         let (position, updated_at) = resolve_position(Ok(0), Some(&state), false, PlayState::Stopped, "test");
         assert_eq!(position, Some(0));
         assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
+        let (position, _) = resolve_position(Ok(0), None, true, PlayState::Stopped, "test");
+        assert_eq!(position, Some(0));
     }
 
     #[test]
@@ -706,13 +707,6 @@ mod position_tests {
         );
         let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&state), true, PlayState::Playing, "test");
         assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
-    }
-
-    #[test]
-    fn a_zero_with_nothing_to_fall_back_on_is_published() {
-        // The first reading of a player that really is at the start has no previous to keep.
-        let (position, _) = resolve_position(Ok(0), None, true, PlayState::Stopped, "test");
-        assert_eq!(position, Some(0));
     }
 
     #[test]
@@ -881,6 +875,30 @@ mod resync_tests {
         registry.lock().unwrap().get(NAME).map(|entry| entry.last_known.clone()).unwrap()
     }
 
+    /// Polls until `last_known` satisfies `done`, so a test reads state only once it has landed.
+    async fn until(registry: &PlayerRegistry, done: impl Fn(&PlayerState) -> bool) {
+        within(async {
+            while !done(&last_known(registry)) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
+    }
+
+    /// Position updates must not move a player under a config holding its index.
+    #[tokio::test]
+    async fn a_player_that_re_registers_holds_its_place() {
+        let (connection, _peer, _) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        for name in [NAME, "org.mpris.MediaPlayer2.other", NAME] {
+            register_player(&connection, &registry, &events, name.to_string()).await;
+        }
+
+        let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
+        assert_eq!(ids, ["fixture", "other"]);
+    }
+
     #[tokio::test]
     async fn every_concurrent_read_lands_in_its_own_field() {
         let (connection, _peer, _) = serve().await;
@@ -936,10 +954,10 @@ mod resync_tests {
             [("Volume", 0.25.into()), ("Rate", 1.25.into()), ("Shuffle", false.into()), ("LoopStatus", "None".into())];
         properties_changed(&peer, HashMap::from(changed)).await;
         seeked(&peer, 5_000_000).await;
-        settle().await;
+        until(&registry, |state| state.volume == 25.0 && state.position == Some(5_000_000)).await;
+        settle().await; // the upper bound on resyncs needs the quiet period
         assert!(reads() - before <= 3, "{} resyncs for one signal of 4 properties and a Seeked", reads() - before);
-        let state = last_known(&registry);
-        assert_eq!((state.position, state.volume, state.shuffle), (Some(5_000_000), 25.0, false));
+        assert!(!last_known(&registry).shuffle);
     }
 
     #[tokio::test]
@@ -955,12 +973,10 @@ mod resync_tests {
         settle().await;
         seeked(&peer, 300_000_000).await;
         properties_changed(&peer, HashMap::from([("Metadata", Value::from(track("/t/2", "Next")))])).await;
-        settle().await;
+        settle().await; // the batch must queue behind the stalled resync
         drop(stalled);
-        settle().await;
-        let state = last_known(&registry);
-        assert_eq!(state.title, "Next");
-        assert_ne!(state.position, Some(300_000_000), "the old track's seek target");
+        until(&registry, |state| state.title == "Next").await;
+        assert_ne!(last_known(&registry).position, Some(300_000_000), "the old track's seek target");
     }
 }
 
@@ -1011,26 +1027,5 @@ mod ordering_tests {
         }
         let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
         assert_eq!(ids, ["first", "second", "third"], "an alphabetical sort would answer the other way");
-    }
-
-    /// Position updates must not move a player under a config holding its index.
-    #[tokio::test]
-    async fn a_player_that_resyncs_holds_its_place() {
-        let (connection, _peer) = p2p_pair().await;
-        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let spotify = entry(&connection, "spotify", 0).await;
-        let firefox = entry(&connection, "firefox", 1).await;
-        {
-            let mut guard = registry.lock().unwrap();
-            guard.insert("spotify".to_string(), spotify);
-            guard.insert("firefox".to_string(), firefox);
-        }
-        let mut replacement = entry(&connection, "spotify-again", 999).await;
-        // Re-registration of a live bus name keeps its sequence, as `register_player` does.
-        replacement.registered = registry.lock().unwrap().get("spotify").expect("just inserted").registered;
-        registry.lock().unwrap().insert("spotify".to_string(), replacement);
-
-        let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
-        assert_eq!(ids, ["spotify-again", "firefox"]);
     }
 }

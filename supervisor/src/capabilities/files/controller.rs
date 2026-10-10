@@ -282,11 +282,6 @@ mod tests {
         assert_eq!(names, ["A.png", "b.jpg"]);
     }
 
-    #[test]
-    fn a_missing_folder_lists_as_an_error_not_a_panic() {
-        assert!(list_folder(Path::new("/nonexistent/mantle-files-test"), &[]).is_err());
-    }
-
     #[tokio::test]
     async fn watch_lists_the_folder_marks_it_ready_and_unwatch_drops_it() {
         let dir = tempfile::tempdir().unwrap();

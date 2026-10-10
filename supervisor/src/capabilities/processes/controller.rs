@@ -365,37 +365,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_redeclared_stop_signal_reaches_a_program_that_was_already_running() {
-        let (controller, _rx) = controller();
-        let ready = tempfile::tempdir().expect("tempdir");
-        let marker = ready.path().join("armed");
-        controller.declare("t", Signal::SIGTERM);
-        // Two statuses so the signal that arrived is readable: 11 is the one `supervise` used to
-        // capture at `start` and keep.
-        let (cmd, args) = trapping_shell("trap 'exit 11' TERM; trap 'exit 22' INT", &marker);
-        controller.start("t", &cmd, &args);
-        until_ready(&marker).await;
+    async fn a_redeclared_stop_signal_reaches_a_program_that_was_already_running_by_stop_and_by_shutdown() {
+        for shutdown in [false, true] {
+            let (controller, _rx) = controller();
+            let ready = tempfile::tempdir().expect("tempdir");
+            let marker = ready.path().join("armed");
+            controller.declare("t", Signal::SIGTERM);
+            // Two statuses so the signal that arrived is readable: 11 is the one `supervise` used to
+            // capture at `start` and keep.
+            let (cmd, args) = trapping_shell("trap 'exit 11' TERM; trap 'exit 22' INT", &marker);
+            controller.start("t", &cmd, &args);
+            until_ready(&marker).await;
 
-        // A reload re-sends every declaration. This one changed and the program did not restart.
-        controller.declare("t", Signal::SIGINT);
-        controller.stop("t");
-        until(&controller, "t", |s| !s.running).await;
-        assert_eq!(session(&controller, "t").exit_code, Some(22), "stop must use the declaration as it stands now");
-    }
-
-    #[tokio::test]
-    async fn the_shutdown_reap_also_uses_the_current_declaration() {
-        let (controller, _rx) = controller();
-        let ready = tempfile::tempdir().expect("tempdir");
-        let marker = ready.path().join("armed");
-        controller.declare("t", Signal::SIGTERM);
-        let (cmd, args) = trapping_shell("trap 'exit 11' TERM; trap 'exit 22' INT", &marker);
-        controller.start("t", &cmd, &args);
-        until_ready(&marker).await;
-
-        controller.declare("t", Signal::SIGINT);
-        controller.reap_all().await;
-        assert_eq!(session(&controller, "t").exit_code, Some(22), "shutdown is the other path the stale signal took");
+            // A reload re-sends every declaration. This one changed and the program did not restart.
+            controller.declare("t", Signal::SIGINT);
+            if shutdown {
+                controller.reap_all().await;
+            } else {
+                controller.stop("t");
+                until(&controller, "t", |s| !s.running).await;
+            }
+            assert_eq!(
+                session(&controller, "t").exit_code,
+                Some(22),
+                "stop and shutdown must use the declaration as it stands now (shutdown: {shutdown})"
+            );
+        }
     }
 
     #[tokio::test]

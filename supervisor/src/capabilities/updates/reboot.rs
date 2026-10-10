@@ -126,10 +126,12 @@ mod tests {
             events_tx,
         ));
 
+        // The neighbour comes first, so the one push below proves it was seen and ignored.
         std::fs::write(directory.path().join("something-else"), "").unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        std::fs::write(directory.path().join("reboot-required"), "").unwrap();
+        wait_for_reboot_required(&state, true).await;
 
-        assert!(!state.lock().unwrap().reboot_required);
+        assert_eq!(events_rx.recv().await, Some(()));
         assert!(events_rx.try_recv().is_err(), "an unrelated file must not push");
 
         watcher.abort();

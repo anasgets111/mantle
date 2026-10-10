@@ -144,29 +144,25 @@ mod tests {
         "gpu_util":"35%","temp":"52","mem_total":"6442450944","mem_used":"1610612736"}]"#;
 
     #[test]
-    fn parse_nvtop_intel_integrated() {
+    fn parse_nvtop_reads_intel_and_nvidia_cards_and_prefers_the_discrete_one() {
         let gpu = parse_nvtop(INTEL_NVTOP).unwrap();
         assert_eq!(gpu.name, "Raptor Lake-P (Iris Xe Graphics)");
         assert_eq!(gpu.util_percent, Some(19));
-        assert_eq!(gpu.temp, None);
-        assert_eq!(gpu.mem_used, None);
-        assert_eq!(gpu.mem_total, None);
-    }
+        assert_eq!((gpu.temp, gpu.mem_used, gpu.mem_total), (None, None, None));
 
-    #[test]
-    fn parse_nvtop_prefers_the_discrete_card_over_a_leading_igpu() {
-        let both = format!("[{},{}]", &INTEL_NVTOP[1..INTEL_NVTOP.len() - 1], &NVIDIA_NVTOP[1..NVIDIA_NVTOP.len() - 1]);
-        assert_eq!(parse_nvtop(&both).unwrap().name, "NVIDIA GeForce RTX 3060");
-    }
-
-    #[test]
-    fn parse_nvtop_nvidia_discrete() {
         let gpu = parse_nvtop(NVIDIA_NVTOP).unwrap();
         assert_eq!(gpu.name, "NVIDIA GeForce RTX 3060");
         assert_eq!(gpu.util_percent, Some(35));
         assert_eq!(gpu.temp, Some(52));
         assert_eq!(gpu.mem_used, Some(1610612736));
         assert_eq!(gpu.mem_total, Some(6442450944));
+
+        let both = format!("[{},{}]", &INTEL_NVTOP[1..INTEL_NVTOP.len() - 1], &NVIDIA_NVTOP[1..NVIDIA_NVTOP.len() - 1]);
+        assert_eq!(
+            parse_nvtop(&both).unwrap().name,
+            "NVIDIA GeForce RTX 3060",
+            "a leading iGPU loses to the discrete card"
+        );
     }
 
     #[test]

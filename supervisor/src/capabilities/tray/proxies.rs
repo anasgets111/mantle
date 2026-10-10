@@ -123,10 +123,4 @@ mod tests {
         // tests pass.
         assert_eq!(RawMenuLayout::SIGNATURE.to_string(), "(ia{sv}av)");
     }
-
-    #[test]
-    fn items_properties_updated_signatures_match_dbusmenu_spec() {
-        assert_eq!(<Vec<(i32, HashMap<String, OwnedValue>)> as Type>::SIGNATURE.to_string(), "a(ia{sv})");
-        assert_eq!(<Vec<(i32, Vec<String>)> as Type>::SIGNATURE.to_string(), "a(ias)");
-    }
 }

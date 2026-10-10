@@ -375,10 +375,6 @@ mod tests {
         ];
 
         assert_eq!(profile_names(&raw), ["balanced"]);
-    }
-
-    #[test]
-    fn profile_names_is_empty_for_an_empty_list() {
         assert_eq!(profile_names(&[]), Vec::<String>::new());
     }
 
@@ -392,10 +388,6 @@ mod tests {
         assert_eq!(json["energy_rate"], serde_json::json!(0.0));
         assert!(json.get("active_profile").is_none());
         assert!(json.get("profiles").is_none());
-    }
-
-    #[test]
-    fn a_host_that_answers_nothing_serializes_to_an_empty_object() {
         assert_eq!(serde_json::to_value(PowerState::default()).unwrap(), serde_json::json!({}));
     }
 }

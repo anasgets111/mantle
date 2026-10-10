@@ -190,6 +190,11 @@ mod tests {
         write_sensor(&chip_dir, 6, "Core 4", 78000);
 
         assert_eq!(read_temp_cores(&core_inputs(&chip_dir)), vec![57, 78, 65]);
+
+        let acpitz = dir.path().join("hwmon1");
+        std::fs::create_dir_all(&acpitz).unwrap();
+        write_sensor(&acpitz, 1, "", 92000); // unlabeled single zone
+        assert_eq!(core_inputs(&acpitz), Vec::<PathBuf>::new());
     }
 
     #[test]
@@ -210,35 +215,24 @@ mod tests {
     }
 
     #[test]
-    fn core_inputs_are_empty_for_a_chip_with_no_core_labeled_sensors() {
+    fn primary_input_is_the_lowest_numbered_input_regardless_of_label_or_write_order() {
         let dir = tempfile::tempdir().unwrap();
-        let chip_dir = dir.path().join("hwmon1");
-        std::fs::create_dir_all(&chip_dir).unwrap();
-        write_sensor(&chip_dir, 1, "", 92000); // acpitz: unlabeled, single zone
-        assert_eq!(core_inputs(&chip_dir), Vec::<PathBuf>::new());
-    }
-
-    #[test]
-    fn primary_input_is_the_lowest_numbered_input_regardless_of_label() {
-        let dir = tempfile::tempdir().unwrap();
-        let chip_dir = dir.path().join("hwmon1");
-        std::fs::create_dir_all(&chip_dir).unwrap();
-        // acpitz-shaped: one unlabeled captured sensor.
-        write_sensor(&chip_dir, 1, "", 92000);
-        assert_eq!(primary_input(&chip_dir), Some(chip_dir.join("temp1_input")));
-    }
-
-    #[test]
-    fn primary_input_picks_the_lowest_input_number_when_several_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        let chip_dir = dir.path().join("hwmon3");
-        std::fs::create_dir_all(&chip_dir).unwrap();
-        // nvme-shaped captured values, written out of numeric order.
-        write_sensor(&chip_dir, 3, "Sensor 2", 39850);
-        write_sensor(&chip_dir, 1, "Composite", 35850);
-        write_sensor(&chip_dir, 2, "Sensor 1", 35850);
-        // Lowest input is temp1 (Composite), 35850 milli-C = 35.85°C -> 36.
-        assert_eq!(primary_input(&chip_dir).as_deref().and_then(read_celsius), Some(36));
+        let chip = |name: &str| {
+            let chip_dir = dir.path().join(name);
+            std::fs::create_dir_all(&chip_dir).unwrap();
+            chip_dir
+        };
+        // acpitz-shaped: one unlabeled sensor.
+        let acpitz = chip("hwmon1");
+        write_sensor(&acpitz, 1, "", 92000);
+        assert_eq!(primary_input(&acpitz), Some(acpitz.join("temp1_input")));
+        // nvme-shaped, written out of numeric order: the lowest is temp1, 35850 milli-C -> 36.
+        let nvme = chip("hwmon3");
+        write_sensor(&nvme, 3, "Sensor 2", 39850);
+        write_sensor(&nvme, 1, "Composite", 35850);
+        write_sensor(&nvme, 2, "Sensor 1", 35850);
+        assert_eq!(primary_input(&nvme).as_deref().and_then(read_celsius), Some(36));
+        assert_eq!(primary_input(&chip("hwmon4")), None, "a chip with no sensors");
     }
 
     #[test]
@@ -252,63 +246,32 @@ mod tests {
     }
 
     #[test]
-    fn primary_input_is_none_for_a_chip_directory_with_no_sensors() {
-        let dir = tempfile::tempdir().unwrap();
-        let chip_dir = dir.path().join("hwmon4");
-        std::fs::create_dir_all(&chip_dir).unwrap();
-        assert_eq!(primary_input(&chip_dir), None);
-    }
-
-    #[test]
-    fn read_temp_cores_prefers_coretemp_over_acpitz() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon1", "acpitz");
-        write_sensor(&dir.path().join("hwmon1"), 1, "", 92000);
-        write_chip(dir.path(), "hwmon6", "coretemp");
-        write_sensor(&dir.path().join("hwmon6"), 1, "Package id 0", 92000);
-        write_sensor(&dir.path().join("hwmon6"), 2, "Core 0", 57000);
-
-        assert_eq!(resolve_and_read_temp_cores(dir.path()), vec![57]);
-    }
-
-    #[test]
-    fn read_temp_cores_falls_back_to_acpitz_as_a_one_element_array_when_no_cpu_chip_exists() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon1", "acpitz");
-        write_sensor(&dir.path().join("hwmon1"), 1, "", 92000);
-
-        assert_eq!(resolve_and_read_temp_cores(dir.path()), vec![92]);
-    }
-
-    #[test]
-    fn read_temp_cores_is_empty_when_neither_cpu_chip_nor_acpitz_exist() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon7", "mt7921_phy0");
-        assert_eq!(resolve_and_read_temp_cores(dir.path()), Vec::<i64>::new());
+    fn read_temp_cores_prefers_coretemp_then_acpitz_and_is_empty_without_either() {
+        let read = |chips: &[(&str, &str, &str, i64)]| {
+            let dir = tempfile::tempdir().unwrap();
+            for (dir_name, chip, label, milli_c) in chips {
+                write_chip(dir.path(), dir_name, chip);
+                write_sensor(&dir.path().join(dir_name), 2, label, *milli_c);
+            }
+            resolve_and_read_temp_cores(dir.path())
+        };
+        let acpitz = ("hwmon1", "acpitz", "", 92000);
+        assert_eq!(read(&[acpitz, ("hwmon6", "coretemp", "Core 0", 57000)]), vec![57]);
+        assert_eq!(read(&[acpitz]), vec![92], "acpitz is a one-element fallback");
+        assert_eq!(read(&[("hwmon7", "mt7921_phy0", "", 1000)]), Vec::<i64>::new());
     }
 
     #[test]
     fn read_temp_gpu_reads_the_matching_chips_primary_sensor() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon2", "amdgpu");
-        write_sensor(&dir.path().join("hwmon2"), 1, "edge", 45000);
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), Some(45));
-    }
-
-    #[test]
-    fn read_temp_gpu_reads_intel_arc_sensor() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon3", "xe");
-        write_sensor(&dir.path().join("hwmon3"), 1, "", 52000);
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), Some(52));
-    }
-
-    #[test]
-    fn read_temp_gpu_is_none_when_no_gpu_chip_is_present() {
-        // This machine has integrated graphics only, with no amdgpu/nouveau/nvidia chip.
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon6", "coretemp");
-        assert_eq!(resolve_and_read_temp_gpu(dir.path()), None);
+        // (chip name, label, milli-C, expected): this machine has integrated graphics only, so coretemp is no GPU.
+        for (chip, label, milli_c, expected) in
+            [("amdgpu", "edge", 45000, Some(45)), ("xe", "", 52000, Some(52)), ("coretemp", "", 60000, None)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            write_chip(dir.path(), "hwmon2", chip);
+            write_sensor(&dir.path().join("hwmon2"), 1, label, milli_c);
+            assert_eq!(resolve_and_read_temp_gpu(dir.path()), expected, "{chip}");
+        }
     }
 
     #[test]
@@ -325,32 +288,16 @@ mod tests {
     }
 
     #[test]
-    fn resolve_chip_finds_the_only_chip_matching_the_preference_list() {
+    fn resolve_chip_follows_the_preference_list_not_directory_order() {
         let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon0", "acpitz");
-        write_chip(dir.path(), "hwmon5", "coretemp");
-
-        let resolved = resolve_chip(dir.path(), &["k10temp", "coretemp"]).expect("coretemp should resolve");
-        assert_eq!(resolved, dir.path().join("hwmon5"));
-    }
-
-    #[test]
-    fn resolve_chip_prefers_earlier_preference_entries_over_directory_order() {
-        let dir = tempfile::tempdir().unwrap();
-        // hwmon0 is lexically earlier but lower preference; preference order must win.
         write_chip(dir.path(), "hwmon0", "coretemp");
         write_chip(dir.path(), "hwmon1", "k10temp");
-
-        let resolved = resolve_chip(dir.path(), &["k10temp", "coretemp"]).expect("k10temp should win");
-        assert_eq!(resolved, dir.path().join("hwmon1"));
-    }
-
-    #[test]
-    fn resolve_chip_returns_none_when_nothing_in_the_preference_list_is_present() {
-        let dir = tempfile::tempdir().unwrap();
-        write_chip(dir.path(), "hwmon0", "acpitz");
+        write_chip(dir.path(), "hwmon5", "acpitz");
         write_chip(dir.path(), "hwmon7", "mt7921_phy0");
 
+        // hwmon0 is lexically earlier but lower preference.
+        assert_eq!(resolve_chip(dir.path(), &["k10temp", "coretemp"]), Some(dir.path().join("hwmon1")));
+        assert_eq!(resolve_chip(dir.path(), &["acpitz"]), Some(dir.path().join("hwmon5")));
         assert_eq!(resolve_chip(dir.path(), &["amdgpu", "nouveau", "nvidia"]), None);
     }
 }

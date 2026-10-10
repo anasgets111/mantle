@@ -207,21 +207,12 @@ mod tests {
     }
 
     #[test]
-    fn connection_wants_autoconnect_defaults_true_when_the_key_is_absent() {
-        let settings: HashMap<String, HashMap<String, OwnedValue>> = HashMap::new();
-        assert!(connection_wants_autoconnect(&settings));
-    }
-
-    #[test]
-    fn connection_wants_autoconnect_is_false_only_when_explicitly_false() {
-        let settings = settings_with("connection", "autoconnect", OwnedValue::try_from(Value::from(false)).unwrap());
-        assert!(!connection_wants_autoconnect(&settings));
-    }
-
-    #[test]
-    fn connection_wants_autoconnect_is_true_when_explicitly_true() {
-        let settings = settings_with("connection", "autoconnect", OwnedValue::try_from(Value::from(true)).unwrap());
-        assert!(connection_wants_autoconnect(&settings));
+    fn only_an_explicit_false_declines_autoconnect() {
+        let setting =
+            |value: bool| settings_with("connection", "autoconnect", OwnedValue::try_from(Value::from(value)).unwrap());
+        assert!(connection_wants_autoconnect(&HashMap::new()), "an absent key defaults to true");
+        assert!(!connection_wants_autoconnect(&setting(false)));
+        assert!(connection_wants_autoconnect(&setting(true)));
     }
 
     #[test]

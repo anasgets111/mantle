@@ -224,25 +224,25 @@ mod tests {
     }
 
     #[test]
-    fn resolve_band_maps_each_spec_range() {
-        assert_eq!(resolve_band(2400), Some("2.4 GHz"));
-        assert_eq!(resolve_band(2450), Some("2.4 GHz"));
-        assert_eq!(resolve_band(2500), Some("2.4 GHz"));
-        assert_eq!(resolve_band(4900), Some("5 GHz"));
-        assert_eq!(resolve_band(5180), Some("5 GHz"));
-        assert_eq!(resolve_band(5900), Some("5 GHz"));
-        assert_eq!(resolve_band(5925), Some("6 GHz"));
-        assert_eq!(resolve_band(6200), Some("6 GHz"));
-        assert_eq!(resolve_band(7125), Some("6 GHz"));
-    }
-
-    #[test]
-    fn resolve_band_is_none_outside_every_range() {
-        assert_eq!(resolve_band(0), None);
-        assert_eq!(resolve_band(2399), None);
-        assert_eq!(resolve_band(2501), None, "the gap between 2.4 GHz and 5 GHz");
-        assert_eq!(resolve_band(5901), None, "the gap between 5 GHz and 6 GHz");
-        assert_eq!(resolve_band(7126), None);
+    fn resolve_band_maps_each_spec_range_and_is_none_outside_them() {
+        for (freq, band) in [
+            (2400, Some("2.4 GHz")),
+            (2450, Some("2.4 GHz")),
+            (2500, Some("2.4 GHz")),
+            (4900, Some("5 GHz")),
+            (5180, Some("5 GHz")),
+            (5900, Some("5 GHz")),
+            (5925, Some("6 GHz")),
+            (6200, Some("6 GHz")),
+            (7125, Some("6 GHz")),
+            (0, None),
+            (2399, None),
+            (2501, None), // the gap between 2.4 GHz and 5 GHz
+            (5901, None), // the gap between 5 GHz and 6 GHz
+            (7126, None),
+        ] {
+            assert_eq!(resolve_band(freq), band, "{freq} MHz");
+        }
     }
 
     #[test]

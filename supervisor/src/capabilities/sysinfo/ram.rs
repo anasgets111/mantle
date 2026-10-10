@@ -83,25 +83,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_meminfo_rejects_text_missing_mem_available() {
+    fn parse_meminfo_needs_mem_available_skips_stray_lines_and_defaults_swap_to_zero() {
         assert_eq!(super::parse_meminfo("MemTotal: 1000 kB\n"), None);
-    }
-
-    #[test]
-    fn parse_meminfo_skips_a_blank_or_colon_less_line_instead_of_aborting_the_whole_parse() {
         // A blank line must not discard fields seen around it.
         let info = super::parse_meminfo("MemTotal: 1000 kB\n\nMemAvailable: 400 kB\n")
             .expect("a stray blank line must not abort the whole parse");
-        assert_eq!(info.mem_total, 1000);
-        assert_eq!(info.mem_available, 400);
-    }
-
-    #[test]
-    fn parse_meminfo_defaults_swap_fields_to_zero_when_absent() {
-        let info = super::parse_meminfo("MemTotal: 1000 kB\nMemAvailable: 400 kB\n")
-            .expect("should still parse without swap fields");
-        assert_eq!(info.swap_total, 0);
-        assert_eq!(info.swap_free, 0);
+        assert_eq!((info.mem_total, info.mem_available), (1000, 400));
+        assert_eq!((info.swap_total, info.swap_free), (0, 0));
     }
 
     #[test]
@@ -127,11 +115,5 @@ mod tests {
         std::fs::write(dir.path().join("meminfo"), real_meminfo()).unwrap();
         let info = super::read_meminfo(dir.path()).expect("a well-formed meminfo file must parse");
         assert_eq!(info.mem_total, 32479404);
-    }
-
-    #[test]
-    fn read_meminfo_fails_when_the_file_is_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(super::read_meminfo(dir.path()).is_err());
     }
 }

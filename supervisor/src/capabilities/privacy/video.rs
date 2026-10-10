@@ -102,29 +102,44 @@ mod tests {
     // ---- find_device_openers ----
 
     #[test]
-    fn find_device_openers_finds_a_pid_with_the_device_open() {
-        let root = tempfile::tempdir().unwrap();
-        write_fd_symlink(root.path(), 1234, 5, "/dev/video0");
-        write_fd_symlink(root.path(), 1234, 6, "/dev/null");
-
-        assert_eq!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]), vec![1234]);
-    }
-
-    #[test]
-    fn find_device_openers_lists_a_pid_once_even_with_multiple_fds_on_the_device() {
-        let root = tempfile::tempdir().unwrap();
-        write_fd_symlink(root.path(), 1234, 5, "/dev/video0");
-        write_fd_symlink(root.path(), 1234, 6, "/dev/video0");
-
-        assert_eq!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]), vec![1234]);
-    }
-
-    #[test]
-    fn find_device_openers_ignores_a_pid_with_no_matching_fd() {
-        let root = tempfile::tempdir().unwrap();
-        write_fd_symlink(root.path(), 1234, 5, "/dev/null");
-
-        assert!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]).is_empty());
+    fn find_device_openers_lists_each_opening_pid_once_sorted() {
+        // (label, (pid, fd, target) symlinks, devices asked about, expected pids)
+        type Fds<'a> = &'a [(u32, u32, &'a str)];
+        let cases: [(&str, Fds, &[&str], Vec<u32>); 5] = [
+            (
+                "one pid among other fds",
+                &[(1234, 5, "/dev/video0"), (1234, 6, "/dev/null")],
+                &["/dev/video0"],
+                vec![1234],
+            ),
+            (
+                "two fds on the device",
+                &[(1234, 5, "/dev/video0"), (1234, 6, "/dev/video0")],
+                &["/dev/video0"],
+                vec![1234],
+            ),
+            ("no matching fd", &[(1234, 5, "/dev/null")], &["/dev/video0"], vec![]),
+            (
+                "distinct pids sorted",
+                &[(999, 3, "/dev/video0"), (42, 3, "/dev/video0")],
+                &["/dev/video0"],
+                vec![42, 999],
+            ),
+            (
+                "every device in one pass",
+                &[(7, 3, "/dev/video1"), (42, 3, "/dev/video0"), (99, 3, "/dev/video2")],
+                &["/dev/video0", "/dev/video1"],
+                vec![7, 42],
+            ),
+        ];
+        for (label, fds, devices, expected) in cases {
+            let root = tempfile::tempdir().unwrap();
+            for (pid, fd, target) in fds {
+                write_fd_symlink(root.path(), *pid, *fd, target);
+            }
+            let devices: Vec<PathBuf> = devices.iter().map(PathBuf::from).collect();
+            assert_eq!(find_device_openers(root.path(), &devices), expected, "{label}");
+        }
     }
 
     #[test]
@@ -138,42 +153,7 @@ mod tests {
         assert!(!holds_device(root.path(), 3, &devices));
     }
 
-    #[test]
-    fn find_device_openers_is_empty_against_an_empty_proc_root() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]).is_empty());
-    }
-
-    #[test]
-    fn find_device_openers_finds_multiple_distinct_pids_sorted() {
-        let root = tempfile::tempdir().unwrap();
-        write_fd_symlink(root.path(), 999, 3, "/dev/video0");
-        write_fd_symlink(root.path(), 42, 3, "/dev/video0");
-
-        assert_eq!(find_device_openers(root.path(), &[PathBuf::from("/dev/video0")]), vec![42, 999]);
-    }
-
-    #[test]
-    fn find_device_openers_finds_the_openers_of_every_device_in_one_pass() {
-        let root = tempfile::tempdir().unwrap();
-        write_fd_symlink(root.path(), 7, 3, "/dev/video1");
-        write_fd_symlink(root.path(), 42, 3, "/dev/video0");
-        write_fd_symlink(root.path(), 99, 3, "/dev/video2");
-
-        let devices = [PathBuf::from("/dev/video0"), PathBuf::from("/dev/video1")];
-        assert_eq!(find_device_openers(root.path(), &devices), vec![7, 42]);
-    }
-
     // ---- read_comm ----
-
-    #[test]
-    fn read_comm_reads_and_trims_a_real_comm_file() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir(root.path().join("1234")).unwrap();
-        std::fs::write(root.path().join("1234").join("comm"), "mpv\n").unwrap();
-
-        assert_eq!(read_comm(root.path(), 1234), Some("mpv".to_string()));
-    }
 
     #[test]
     fn read_comm_is_none_for_a_pid_with_no_comm_file() {

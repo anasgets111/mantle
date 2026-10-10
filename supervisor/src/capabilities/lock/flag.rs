@@ -88,29 +88,19 @@ mod tests {
     }
 
     #[test]
-    fn applying_the_same_change_twice_is_not_an_error() {
-        // Both directions repeat in ordinary use. Removing a file that isn't there must not be
-        // treated as a failure to clear.
+    fn repeated_and_unchanged_verdicts_are_not_errors_and_never_erase_a_lock() {
+        // Both directions repeat in ordinary use: removing a file that isn't there is not a failure to clear.
         let dir = tempfile::tempdir().unwrap();
         let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
         flag.apply(SessionLock::Released);
-        assert!(!flag.is_set());
-        flag.apply(SessionLock::Taken);
-        flag.apply(SessionLock::Taken);
-        assert!(flag.is_set());
-        flag.apply(SessionLock::Released);
-        flag.apply(SessionLock::Released);
-        assert!(!flag.is_set());
-    }
-
-    #[test]
-    fn an_unchanged_verdict_touches_nothing_in_either_direction() {
-        let dir = tempfile::tempdir().unwrap();
-        let flag = SessionLockedFlag::at(dir.path().join("session-locked"));
         flag.apply(SessionLock::Unchanged);
         assert!(!flag.is_set());
+        flag.apply(SessionLock::Taken);
         flag.apply(SessionLock::Taken);
         flag.apply(SessionLock::Unchanged);
         assert!(flag.is_set(), "a refusal after a real lock must not erase it");
+        flag.apply(SessionLock::Released);
+        flag.apply(SessionLock::Released);
+        assert!(!flag.is_set());
     }
 }

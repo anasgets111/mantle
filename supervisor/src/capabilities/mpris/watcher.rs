@@ -138,30 +138,22 @@ mod tests {
     }
 
     #[test]
-    fn is_trackable_player_accepts_a_real_player_bus_name() {
-        assert!(is_trackable_player("org.mpris.MediaPlayer2.firefox.instance_1_59239"));
+    fn is_trackable_player_accepts_real_players_and_rejects_playerctld_and_foreign_names() {
+        for (name, expected) in [
+            ("org.mpris.MediaPlayer2.firefox.instance_1_59239", true),
+            ("org.mpris.MediaPlayer2.playerctld", false),
+            ("org.freedesktop.DBus", false),
+            ("org.mpris.MediaPlayer2", false),
+        ] {
+            assert_eq!(is_trackable_player(name), expected, "{name}");
+        }
     }
 
     #[test]
-    fn is_trackable_player_rejects_playerctld() {
-        assert!(!is_trackable_player("org.mpris.MediaPlayer2.playerctld"));
-    }
-
-    #[test]
-    fn is_trackable_player_rejects_names_outside_the_prefix() {
-        assert!(!is_trackable_player("org.freedesktop.DBus"));
-        assert!(!is_trackable_player("org.mpris.MediaPlayer2"));
-    }
-
-    #[test]
-    fn player_id_strips_the_discovery_prefix() {
-        assert_eq!(player_id("org.mpris.MediaPlayer2.firefox.instance_1_59239"), "firefox.instance_1_59239");
-    }
-
-    #[test]
-    fn service_name_for_id_and_player_id_are_inverse_transforms() {
+    fn player_id_strips_the_discovery_prefix_and_service_name_for_id_restores_it() {
         let bus_name = "org.mpris.MediaPlayer2.mpv.instance-abc123";
         let id = player_id(bus_name);
+        assert_eq!(id, "mpv.instance-abc123");
         assert_eq!(service_name_for_id(id), bus_name);
     }
 }

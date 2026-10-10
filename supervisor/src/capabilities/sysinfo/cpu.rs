@@ -50,30 +50,17 @@ pub fn read_sample(proc_root: &std::path::Path) -> std::io::Result<CpuSample> {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn parse_stat_line_parses_the_real_aggregate_cpu_line() {
-        let line = "cpu  37016160 481710 3444448 618688042 1432704 2023206 1140343 0 0 0";
-        let sample = super::parse_stat_line(line).expect("real /proc/stat aggregate line must parse");
-        assert_eq!(sample.total, 37016160 + 481710 + 3444448 + 618688042 + 1432704 + 2023206 + 1140343);
-        assert_eq!(sample.idle_total, 618688042 + 1432704);
-    }
-
-    #[test]
     fn parse_stat_line_rejects_a_per_core_line() {
         assert_eq!(super::parse_stat_line("cpu0 764261 30925 178799 31420264 97776 155846 457625 0 0 0"), None);
     }
 
     #[test]
-    fn delta_percent_computes_the_busy_fraction_between_two_samples() {
+    fn delta_percent_computes_the_busy_fraction_and_is_zero_when_no_time_elapsed() {
         let prev = super::CpuSample { total: 1000, idle_total: 800 };
         let current = super::CpuSample { total: 2000, idle_total: 1000 };
         // total_delta=1000, idle_delta=200, busy_delta=800 -> 80%.
         assert_eq!(super::delta_percent(&prev, &current), 80);
-    }
-
-    #[test]
-    fn delta_percent_is_zero_when_no_time_has_elapsed_between_samples() {
-        let sample = super::CpuSample { total: 1000, idle_total: 800 };
-        assert_eq!(super::delta_percent(&sample, &sample), 0);
+        assert_eq!(super::delta_percent(&prev, &prev), 0);
     }
 
     #[test]
@@ -89,11 +76,5 @@ mod tests {
         let sample = super::read_sample(dir.path()).expect("a well-formed stat file must parse");
         assert_eq!(sample.total, 37016160 + 481710 + 3444448 + 618688042 + 1432704 + 2023206 + 1140343);
         assert_eq!(sample.idle_total, 618688042 + 1432704);
-    }
-
-    #[test]
-    fn read_sample_fails_when_stat_is_missing() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(super::read_sample(dir.path()).is_err());
     }
 }

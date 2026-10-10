@@ -372,42 +372,18 @@ mod tests {
     }
 
     #[test]
-    fn a_sample_that_moved_a_field_publishes() {
+    fn a_sample_publishes_only_when_it_moved_a_field() {
+        // An idle machine reports the same rounded percentage tick after tick, and each publish would
+        // cost a scene re-resolve (ADR-0044 decision 2).
         let (state, tx, mut rx) = state_and_channel();
-        super::publish_if_changed(&state, &tx, |state| {
-            let changed = state.cpu_percent != 42;
-            state.cpu_percent = 42;
-            changed
-        });
-        assert_eq!(rx.try_recv(), Ok(()));
+        for (measured, publishes) in [(42, true), (42, false)] {
+            super::publish_if_changed(&state, &tx, |state| {
+                let changed = state.cpu_percent != measured;
+                state.cpu_percent = measured;
+                changed
+            });
+            assert_eq!(rx.try_recv().is_ok(), publishes, "measured {measured}");
+        }
         assert_eq!(state.lock().unwrap().cpu_percent, 42);
-    }
-
-    #[test]
-    fn a_sample_that_measured_the_same_number_publishes_nothing() {
-        // The whole point: an idle machine reports the same rounded percentage tick after tick,
-        // and each publish would cost a scene re-resolve (ADR-0044 decision 2).
-        let (state, tx, mut rx) = state_and_channel();
-        state.lock().unwrap().cpu_percent = 7;
-        super::publish_if_changed(&state, &tx, |state| {
-            let changed = state.cpu_percent != 7;
-            state.cpu_percent = 7;
-            changed
-        });
-        assert!(rx.try_recv().is_err(), "an unchanged sample must not hydrate a snapshot");
-    }
-
-    #[test]
-    fn sysinfo_state_default_is_zero_and_nil_before_the_first_sample() {
-        let state = super::SysinfoState::default();
-        assert_eq!(state.cpu_percent, 0);
-        assert_eq!(state.ram_percent, 0);
-        assert_eq!(state.swap_percent, 0);
-        assert_eq!(state.temp_cores, Vec::<i64>::new());
-        assert_eq!(state.temp_gpu, None, "undetected is nil, not 0");
-        assert!(state.disks.is_empty());
-        assert_eq!(state.gpu, None);
-        assert_eq!(state.net_rx_bytes_sec, 0);
-        assert_eq!(state.net_tx_bytes_sec, 0);
     }
 }

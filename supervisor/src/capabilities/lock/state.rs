@@ -185,47 +185,22 @@ mod tests {
     }
 
     #[test]
-    fn losing_the_renderer_clears_active_so_a_replacement_may_request_the_lock_again() {
-        let mut state = locked_with_one_failure();
-
-        apply(&mut state, LockEvent::RendererLost);
-
-        assert!(!state.active, "the lock object died with the process that held it");
-        assert!(!state.requested, "a request nothing will answer must not stay pending forever");
-        // LockController::lock refuses while active. Without clearing it here, the replacement's
-        // re-acquisition is dropped before it reaches the wire (ADR-0058 decision 4).
-    }
-
-    #[test]
-    fn losing_the_renderer_rejects_a_pam_answer_that_was_already_in_flight() {
+    fn losing_the_renderer_frees_the_lock_for_a_replacement_and_rejects_an_in_flight_answer() {
         let mut state = locked_with_one_failure();
         let in_flight = state.acquisition;
 
         apply(&mut state, LockEvent::RendererLost);
 
+        // LockController::lock refuses while active, so the replacement's re-acquisition needs it cleared (ADR-0058 decision 4).
+        assert!(!state.active, "the lock object died with the process that held it");
+        assert!(!state.requested, "a request nothing will answer must not stay pending forever");
         assert!(
             !accepts_outcome(&state, in_flight),
             "a password answered against a lock whose holder has since died must not be applied: the unlock it would \
              order is an unlock nobody authenticated for"
         );
-    }
-
-    #[test]
-    fn losing_the_renderer_releases_the_authenticating_flag_it_was_holding() {
-        let mut state = locked_with_one_failure();
-
-        apply(&mut state, LockEvent::RendererLost);
-
         // A stranded authenticating flag would refuse every future attempt via may_authenticate.
         assert!(!state.authenticating, "the conversation's answer can no longer be applied, so its slot must be free");
-    }
-
-    #[test]
-    fn losing_the_renderer_does_not_renumber_the_acquisition() {
-        let mut state = locked_with_one_failure();
-
-        apply(&mut state, LockEvent::RendererLost);
-
         // Only a confirmed Locked moves acquisition; bumping here would number a lock never taken.
         assert_eq!(state.acquisition, 4);
     }

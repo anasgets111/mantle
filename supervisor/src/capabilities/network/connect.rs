@@ -266,7 +266,7 @@ pub(super) mod tests {
     use super::*;
     use crate::capabilities::network::NetworkState;
     use crate::capabilities::network::proxies::{DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy};
-    use crate::capabilities::test_support::p2p_pair_serving;
+    use crate::capabilities::test_support::{p2p_pair_serving, within};
 
     /// A controller bound to a peer serving what `serve` installs.
     pub(crate) async fn attempting<F>(
@@ -430,12 +430,12 @@ pub(super) mod tests {
         assert_eq!(state.connecting_ssid.as_deref(), Some("home"));
 
         controller.stash_connect_intent("next".into(), false, None);
-        entered_rx.await.unwrap();
-        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
+        within(entered_rx).await.unwrap();
+        assert_eq!(within(events.recv()).await, Some(NetworkSignal::Changed));
         assert!(tokio::time::timeout(std::time::Duration::from_millis(30), events.recv()).await.is_err());
         release_tx.send(()).unwrap();
-        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
-        assert_eq!(events.recv().await, Some(NetworkSignal::Changed));
+        assert_eq!(within(events.recv()).await, Some(NetworkSignal::Changed));
+        assert_eq!(within(events.recv()).await, Some(NetworkSignal::Changed));
         controller.join.lock().unwrap().overlay(&mut state);
         assert!(state.connect_error.is_some());
     }

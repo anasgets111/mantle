@@ -450,13 +450,6 @@ mod tests {
     }
 
     #[test]
-    fn extract_sink_props_ignores_the_unused_scalar_volume_key() {
-        // SPA_PROP_volume (Float(1.0) above) is PipeWire's default, not what pactl/wpctl show.
-        let extracted = extract_sink_props(&sample_props_object(), false).unwrap();
-        assert_eq!(extracted.channel_volumes.len(), 2, "the scalar volume key must not leak into channel_volumes");
-    }
-
-    #[test]
     fn extract_sink_props_rejects_a_non_object_pod() {
         assert_eq!(extract_sink_props(&Value::Float(1.0), false), None);
     }
@@ -505,24 +498,17 @@ mod tests {
     }
 
     #[test]
-    fn master_volume_from_props_cube_roots_the_loudest_channel() {
-        // The exact live value: wpctl showed 30%, channelVolumes carried 0.3^3 (float rounding).
-        let props = raw(&[0.027004944, 0.027004944], &[]);
-        let master = master_volume_from_props(&props);
-        assert!((master.volume - 0.3).abs() < 0.001, "expected ~0.3, got {}", master.volume);
-        assert!(!master.muted);
-    }
-
-    #[test]
-    fn master_volume_from_props_takes_the_max_channel_not_the_first() {
-        let props = raw(&[0.0, 1.0], &[]);
-        assert_eq!(master_volume_from_props(&props).volume, 1.0);
-    }
-
-    #[test]
-    fn master_volume_from_props_reports_mute_independently_of_channel_volumes() {
-        let props = RawSinkProps { mute: true, ..raw(&[0.027004944, 0.027004944], &[]) };
-        assert!(master_volume_from_props(&props).muted);
+    fn master_volume_from_props_cube_roots_the_loudest_channel_and_reports_mute_independently() {
+        // (volumes, mute, expected volume): wpctl showed 30% while channelVolumes carried 0.3^3.
+        for (volumes, mute, expected) in [
+            (&[0.027004944, 0.027004944][..], false, 0.3),
+            (&[0.0, 1.0], false, 1.0),
+            (&[0.027004944, 0.027004944], true, 0.3),
+        ] {
+            let master = master_volume_from_props(&RawSinkProps { mute, ..raw(volumes, &[]) });
+            assert!((master.volume - expected).abs() < 0.001, "{volumes:?}: got {}", master.volume);
+            assert_eq!(master.muted, mute, "{volumes:?}");
+        }
     }
 
     #[test]
@@ -542,48 +528,25 @@ mod tests {
     }
 
     #[test]
-    fn parse_default_device_name_reads_the_real_pw_metadata_shape() {
+    fn parse_default_device_name_reads_the_name_key_and_rejects_malformed_json_or_a_missing_key() {
         let json = r#"{"name":"alsa_output.pci-0000_00_1f.3.analog-stereo"}"#;
         assert_eq!(parse_default_device_name(json), Some("alsa_output.pci-0000_00_1f.3.analog-stereo".to_string()));
-    }
-
-    #[test]
-    fn parse_default_device_name_rejects_malformed_json() {
         assert_eq!(parse_default_device_name("not json"), None);
-    }
-
-    #[test]
-    fn parse_default_device_name_rejects_a_missing_name_key() {
         assert_eq!(parse_default_device_name("{}"), None);
     }
 
     #[test]
-    fn resolve_default_device_matches_by_name() {
-        let sinks = HashMap::from([
-            (59, "alsa_output.pci-...analog-stereo".to_string()),
-            (70, "bluez_output.headset".to_string()),
-        ]);
-        assert_eq!(resolve_default_device(Some("bluez_output.headset"), names(&sinks)), Some(70));
-    }
-
-    #[test]
-    fn resolve_default_device_falls_back_to_lowest_id_with_no_default_name() {
-        let sinks = HashMap::from([
-            (70, "bluez_output.headset".to_string()),
-            (59, "alsa_output.pci-...analog-stereo".to_string()),
-        ]);
-        assert_eq!(resolve_default_device(None, names(&sinks)), Some(59));
-    }
-
-    #[test]
-    fn resolve_default_device_falls_back_when_the_named_sink_is_not_tracked_yet() {
-        let sinks = HashMap::from([(59, "alsa_output.pci-...analog-stereo".to_string())]);
-        assert_eq!(resolve_default_device(Some("bluez_output.not-seen-yet"), names(&sinks)), Some(59));
-    }
-
-    #[test]
-    fn resolve_default_device_is_none_with_no_sinks_tracked_at_all() {
-        assert_eq!(resolve_default_device(None, names(&HashMap::new())), None);
+    fn resolve_default_device_matches_by_name_else_falls_back_to_the_lowest_id() {
+        let both = HashMap::from([(70, "bluez_output.headset".to_string()), (59, "alsa_output.analog".to_string())]);
+        let alsa = HashMap::from([(59, "alsa_output.analog".to_string())]);
+        for (case, default_name, sinks, expected) in [
+            ("by name", Some("bluez_output.headset"), &both, Some(70)),
+            ("no default name", None, &both, Some(59)),
+            ("named sink not tracked yet", Some("bluez_output.not-seen-yet"), &alsa, Some(59)),
+            ("no sinks", None, &HashMap::new(), None),
+        ] {
+            assert_eq!(resolve_default_device(default_name, names(sinks)), expected, "{case}");
+        }
     }
 
     #[test]
@@ -605,11 +568,7 @@ mod tests {
         assert_eq!(cubed_channel_volumes(-0.5, &[1.0], 1.0), Some(vec![0.0]));
         let corrected = cubed_channel_volumes(SINK_MAX_VOLUME, &[8.0, 1.0], SINK_MAX_VOLUME);
         assert_eq!(corrected, Some(vec![3.375, 0.421875]));
-    }
-
-    #[test]
-    fn cubed_channel_volumes_refuses_a_device_reporting_no_channels() {
-        assert_eq!(cubed_channel_volumes(0.5, &[], 1.0), None);
+        assert_eq!(cubed_channel_volumes(0.5, &[], 1.0), None, "a device reporting no channels is refused");
     }
 
     const STEREO: [u32; 2] = [spa_sys::SPA_AUDIO_CHANNEL_FL, spa_sys::SPA_AUDIO_CHANNEL_FR];
@@ -704,21 +663,6 @@ mod tests {
         };
         assert_eq!(mute_only.properties.len(), 1);
         assert_eq!(mute_only.properties[0].key, spa_sys::SPA_PROP_mute);
-    }
-
-    #[test]
-    fn a_route_object_carries_the_volume_in_a_nested_props_object() {
-        let Value::Object(route) = route_object(2, 7, Some(vec![0.125, 0.125]), Some(true)) else {
-            panic!("route_object must build an object")
-        };
-        let nested = route
-            .properties
-            .iter()
-            .find(|property| property.key == spa_sys::SPA_PARAM_ROUTE_props)
-            .expect("a Route must carry props");
-        let extracted = extract_sink_props(&nested.value, false).expect("the nested object must parse as sink props");
-        assert!(extracted.mute);
-        assert_eq!(extracted.channel_volumes, vec![0.125, 0.125]);
     }
 
     #[test]

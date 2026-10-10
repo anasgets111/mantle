@@ -222,101 +222,64 @@ mod tests {
     }
 
     #[test]
-    fn parse_menu_node_parses_a_leaf_standard_item() {
-        let value = menu_node_value(
-            7,
-            vec![
-                ("type", Value::Str(Str::from("standard"))),
-                ("label", Value::Str(Str::from("Quit"))),
-                ("enabled", Value::Bool(true)),
-            ],
-            vec![],
-        );
-
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.id, 7);
-        assert_eq!(item.menu_type, "standard");
-        assert_eq!(item.label, Some("Quit".to_string()));
-        assert!(item.enabled);
-        assert_eq!(item.icon_name, None);
-        assert_eq!(item.toggle_type, None);
-        assert_eq!(item.toggle_state, None);
-        assert!(item.children.is_empty());
+    fn parse_menu_node_reads_the_properties_and_defaults_the_absent_ones() {
+        let text = |s: &'static str| Value::Str(Str::from(s));
+        // (case, properties, (type, label, enabled, icon name, toggle type, toggle state))
+        let cases = [
+            (
+                "standard leaf",
+                vec![("type", text("standard")), ("label", text("Quit")), ("enabled", Value::Bool(true))],
+                ("standard", Some("Quit"), true, None, None, None),
+            ),
+            ("defaults", vec![], ("standard", None, true, None, None, None)),
+            ("separator", vec![("type", text("separator"))], ("separator", None, true, None, None, None)),
+            ("disabled", vec![("enabled", Value::Bool(false))], ("standard", None, false, None, None, None)),
+            (
+                "toggle type and state",
+                vec![("toggle-type", text("checkmark")), ("toggle-state", Value::I32(1))],
+                ("standard", None, true, None, Some("checkmark"), Some(1)),
+            ),
+            (
+                "toggle state defaults to -1",
+                vec![("toggle-type", text("radio"))],
+                ("standard", None, true, None, Some("radio"), Some(-1)),
+            ),
+            (
+                "icon name",
+                vec![("icon-name", text("edit-cut"))],
+                ("standard", None, true, Some("edit-cut"), None, None),
+            ),
+        ];
+        for (case, properties, expected) in cases {
+            let item = parse(&menu_node_value(7, properties, vec![]), 0).expect(case);
+            let got = (
+                item.menu_type.as_str(),
+                item.label.as_deref(),
+                item.enabled,
+                item.icon_name.as_deref(),
+                item.toggle_type.as_deref(),
+                item.toggle_state,
+            );
+            assert_eq!((item.id, got, item.children.is_empty()), (7, expected, true), "{case}");
+        }
     }
 
     #[test]
-    fn parse_menu_node_defaults_type_to_standard_and_enabled_to_true_when_absent() {
-        let value = menu_node_value(1, vec![], vec![]);
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.menu_type, "standard");
-        assert!(item.enabled);
-        assert_eq!(item.label, None);
-    }
-
-    #[test]
-    fn parse_menu_node_parses_a_separator() {
-        let value = menu_node_value(2, vec![("type", Value::Str(Str::from("separator")))], vec![]);
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.menu_type, "separator");
-    }
-
-    #[test]
-    fn parse_menu_node_respects_enabled_false() {
-        let value = menu_node_value(3, vec![("enabled", Value::Bool(false))], vec![]);
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert!(!item.enabled);
-    }
-
-    #[test]
-    fn parse_menu_node_parses_toggle_type_and_state() {
-        let value = menu_node_value(
-            4,
-            vec![("toggle-type", Value::Str(Str::from("checkmark"))), ("toggle-state", Value::I32(1))],
-            vec![],
-        );
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.toggle_type, Some("checkmark".to_string()));
-        assert_eq!(item.toggle_state, Some(1));
-    }
-
-    #[test]
-    fn parse_menu_node_defaults_toggle_state_to_negative_one_when_toggle_type_present_but_state_absent() {
-        let value = menu_node_value(5, vec![("toggle-type", Value::Str(Str::from("radio")))], vec![]);
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.toggle_type, Some("radio".to_string()));
-        assert_eq!(item.toggle_state, Some(-1));
-    }
-
-    #[test]
-    fn parse_menu_node_parses_icon_name() {
-        let value = menu_node_value(6, vec![("icon-name", Value::Str(Str::from("edit-cut")))], vec![]);
-        let item = parse(&value, 0).expect("must parse a well-formed node");
-        assert_eq!(item.icon_name, Some("edit-cut".to_string()));
-    }
-
-    #[test]
-    fn parse_menu_node_recurses_into_children() {
-        let child_a = menu_node_value(11, vec![("label", Value::Str(Str::from("Copy")))], vec![]);
-        let child_b = menu_node_value(12, vec![("label", Value::Str(Str::from("Paste")))], vec![]);
+    fn parse_menu_node_recurses_into_children_at_any_depth() {
+        let label = |text: &'static str| vec![("label", Value::Str(Str::from(text)))];
+        let grandchild = menu_node_value(21, label("Deep"), vec![]);
+        let child_a = menu_node_value(11, label("Copy"), vec![grandchild]);
+        let child_b = menu_node_value(12, label("Paste"), vec![]);
         let root = menu_node_value(0, vec![], vec![child_a, child_b]);
 
         let item = parse(&root, 0).expect("must parse a well-formed node");
         assert_eq!(item.children.len(), 2);
-        assert_eq!(item.children[0].id, 11);
-        assert_eq!(item.children[0].label, Some("Copy".to_string()));
-        assert_eq!(item.children[1].id, 12);
-        assert_eq!(item.children[1].label, Some("Paste".to_string()));
-    }
-
-    #[test]
-    fn parse_menu_node_recurses_multiple_levels_deep() {
-        let grandchild = menu_node_value(21, vec![("label", Value::Str(Str::from("Deep")))], vec![]);
-        let child = menu_node_value(11, vec![("label", Value::Str(Str::from("Submenu")))], vec![grandchild]);
-        let root = menu_node_value(0, vec![], vec![child]);
-
-        let item = parse(&root, 0).expect("must parse a well-formed node");
-        assert_eq!(item.children[0].children[0].id, 21);
-        assert_eq!(item.children[0].children[0].label, Some("Deep".to_string()));
+        assert_eq!((item.children[0].id, item.children[0].label.as_deref()), (11, Some("Copy")));
+        assert_eq!((item.children[1].id, item.children[1].label.as_deref()), (12, Some("Paste")));
+        assert_eq!(
+            (item.children[0].children[0].id, item.children[0].children[0].label.as_deref()),
+            (21, Some("Deep"))
+        );
     }
 
     #[test]
@@ -438,48 +401,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_menu_node_rejects_non_png_icon_data() {
-        init_test_spool();
-        let value = menu_node_value(11, vec![("icon-data", byte_array_value(b"not-a-png"))], vec![]);
-        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
-        assert_eq!(item.icon_name, None);
-    }
-
-    #[test]
-    fn parse_menu_node_rejects_oversized_icon_data() {
+    fn parse_menu_node_rejects_non_png_and_oversized_icon_data() {
         init_test_spool();
         let mut oversized = Vec::with_capacity(MAX_MENU_ICON_BYTES + 1);
         oversized.extend_from_slice(b"\x89PNG\r\n\x1a\n");
         oversized.resize(MAX_MENU_ICON_BYTES + 1, 0);
-        let value = menu_node_value(12, vec![("icon-data", byte_array_value(&oversized))], vec![]);
-        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
-        assert_eq!(item.icon_name, None);
+        for (case, bytes) in [("not a png", b"not-a-png".to_vec()), ("oversized", oversized)] {
+            let value = menu_node_value(11, vec![("icon-data", byte_array_value(&bytes))], vec![]);
+            let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+            assert_eq!(item.icon_name, None, "{case}");
+        }
     }
 
     #[test]
-    fn parse_menu_node_prefers_icon_name_over_icon_data() {
-        init_test_spool();
-        let png_bytes = b"\x89PNG\r\n\x1a\nfake_png_payload";
-        let value = menu_node_value(
-            13,
-            vec![("icon-name", Value::Str(Str::from("document-open"))), ("icon-data", byte_array_value(png_bytes))],
-            vec![],
-        );
-        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
-        assert_eq!(item.icon_name, Some("document-open".to_string()));
-    }
-
-    #[test]
-    fn parse_menu_node_uses_icon_data_when_icon_name_is_empty() {
+    fn parse_menu_node_prefers_a_non_empty_icon_name_over_icon_data() {
         init_test_spool();
         let png_bytes = b"\x89PNG\r\n\x1a\npayload";
-        let value = menu_node_value(
-            14,
-            vec![("icon-name", Value::Str(Str::from(""))), ("icon-data", byte_array_value(png_bytes))],
-            vec![],
-        );
-        let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
-        let path = item.icon_name.expect("spooled path must be set");
-        assert!(path.ends_with("test_app_menu_14.png"));
+        for (name, expected) in [("document-open", "document-open"), ("", "test_app_menu_13.png")] {
+            let value = menu_node_value(
+                13,
+                vec![("icon-name", Value::Str(Str::from(name))), ("icon-data", byte_array_value(png_bytes))],
+                vec![],
+            );
+            let item = parse_menu_node(&value, 0, &mut { MAX_MENU_NODES }, "test_app").expect("must parse");
+            assert!(item.icon_name.expect("an icon").ends_with(expected), "icon-name {name:?}");
+        }
     }
 }

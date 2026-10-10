@@ -265,47 +265,26 @@ mod tests {
     }
 
     #[test]
-    fn select_backlight_device_ties_broken_by_sorted_directory_name() {
-        let root = tempfile::tempdir().unwrap();
-        write_entry(root.path(), "raw_b", &[("type", "raw"), ("max_brightness", "10")]);
-        write_entry(root.path(), "raw_a", &[("type", "raw"), ("max_brightness", "20")]);
-
-        let (dir, _) = select_backlight_device(root.path()).expect("expected a device to be selected");
-        assert_eq!(dir, root.path().join("raw_a"));
-    }
-
-    #[test]
-    fn select_backlight_device_skips_a_device_with_non_positive_max_brightness() {
-        let root = tempfile::tempdir().unwrap();
-        write_entry(root.path(), "broken", &[("type", "raw"), ("max_brightness", "0")]);
-        write_entry(root.path(), "usable", &[("type", "raw"), ("max_brightness", "100")]);
-
-        let (dir, max) = select_backlight_device(root.path()).expect("expected the usable device to be selected");
-        assert_eq!(dir, root.path().join("usable"));
-        assert_eq!(max, 100);
-    }
-
-    #[test]
-    fn select_backlight_device_is_none_against_an_empty_or_nonexistent_root() {
+    fn select_backlight_device_breaks_ties_by_name_skips_non_positive_max_and_finds_nothing_in_an_empty_root() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(select_backlight_device(root.path()), None);
         assert_eq!(select_backlight_device(&root.path().join("does-not-exist")), None);
+        write_entry(root.path(), "broken", &[("type", "raw"), ("max_brightness", "0")]);
+        assert_eq!(select_backlight_device(root.path()), None, "a non-positive max is skipped");
+        write_entry(root.path(), "raw_b", &[("type", "raw"), ("max_brightness", "10")]);
+        write_entry(root.path(), "raw_a", &[("type", "raw"), ("max_brightness", "20")]);
+
+        assert_eq!(select_backlight_device(root.path()), Some((root.path().join("raw_a"), 20)));
     }
 
     #[test]
     fn read_percent_reads_the_requested_brightness_not_the_actual_one() {
         let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "intel_backlight", &[("brightness", "9600"), ("actual_brightness", "9601")]);
-
         assert_eq!(read_percent(&root.path().join("intel_backlight"), 19200), Some(50));
-    }
 
-    #[test]
-    fn read_percent_is_none_for_a_missing_or_unparseable_reading() {
-        let root = tempfile::tempdir().unwrap();
         write_entry(root.path(), "no_attr", &[]);
         assert_eq!(read_percent(&root.path().join("no_attr"), 100), None);
-
         write_entry(root.path(), "bad_attr", &[("brightness", "not-a-number")]);
         assert_eq!(read_percent(&root.path().join("bad_attr"), 100), None);
     }

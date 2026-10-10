@@ -178,28 +178,29 @@ mod tests {
     use crate::capabilities::test_support::within;
 
     #[test]
-    fn a_web_or_mail_url_is_openable_whatever_the_schemes_case() {
-        assert_eq!(openable_url("https://example.org/a?b=c#d"), Ok(()));
-        assert_eq!(openable_url("http://example.org"), Ok(()));
-        assert_eq!(openable_url("HTTPS://EXAMPLE.ORG"), Ok(()));
-        assert_eq!(openable_url("mailto:someone@example.org"), Ok(()));
-    }
-
-    #[test]
-    fn a_local_file_an_app_scheme_or_no_scheme_is_refused() {
-        assert!(openable_url("file:///etc/passwd").is_err());
-        assert!(openable_url("tg://resolve?domain=x").is_err());
-        assert!(openable_url("javascript:alert(1)").is_err());
-        assert!(openable_url("example.org").is_err());
-        assert!(openable_url("").is_err());
-    }
-
-    #[test]
-    fn whitespace_control_characters_and_length_are_refused() {
-        assert!(openable_url("https://example.org/a b").is_err());
-        assert!(openable_url("https://example.org/\n").is_err());
-        assert!(openable_url("https://example.org/\u{7f}").is_err());
-        assert!(openable_url(&format!("https://example.org/{}", "a".repeat(MAX_URL_BYTES))).is_err());
+    fn only_a_web_or_mail_url_without_whitespace_or_excess_length_is_openable() {
+        let too_long = format!("https://example.org/{}", "a".repeat(MAX_URL_BYTES));
+        for url in [
+            "https://example.org/a?b=c#d",
+            "http://example.org",
+            "HTTPS://EXAMPLE.ORG", // the scheme's case is irrelevant
+            "mailto:someone@example.org",
+        ] {
+            assert_eq!(openable_url(url), Ok(()), "{url}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "tg://resolve?domain=x",
+            "javascript:alert(1)",
+            "example.org",
+            "",
+            "https://example.org/a b",
+            "https://example.org/\n",
+            "https://example.org/\u{7f}",
+            &too_long,
+        ] {
+            assert!(openable_url(url).is_err(), "{url:?}");
+        }
     }
 
     /// A refused URL never reaches `xdg-open`.
@@ -271,34 +272,23 @@ mod tests {
         LaunchTarget { command: "/usr/bin/top".to_string(), args: vec!["-u".to_string()], terminal: true }
     }
 
-    /// Without an emulator, refuse rather than spawn into a session where it exits immediately.
     #[test]
-    fn a_terminal_entry_is_refused_when_the_environment_names_no_terminal() {
+    fn a_terminal_entry_needs_the_emulator_the_environment_names_and_others_spawn_directly() {
+        // Without an emulator, refuse rather than spawn into a session where it exits immediately.
         assert_eq!(command_line(None, console_program()), Err(LaunchError::NoTerminal));
         assert_eq!(
             command_line(Some(String::new()), console_program()),
             Err(LaunchError::NoTerminal),
             "an empty $TERMINAL is unset"
         );
-    }
-
-    #[test]
-    fn a_terminal_entry_is_wrapped_in_the_emulator_the_environment_names() {
         let (command, args) =
             command_line(Some("foot".to_string()), console_program()).expect("a named terminal must be accepted");
-
         assert_eq!(command, "foot");
         assert_eq!(args, vec!["-e".to_string(), "/usr/bin/top".to_string(), "-u".to_string()]);
-    }
 
-    #[test]
-    fn an_ordinary_entry_is_spawned_directly_whatever_the_environment_says() {
-        let target =
+        let graphical =
             LaunchTarget { command: "firefox".to_string(), args: vec!["--new-tab".to_string()], terminal: false };
-
-        let (command, args) =
-            command_line(Some("foot".to_string()), target).expect("a graphical entry needs no terminal");
-
+        let (command, args) = command_line(Some("foot".to_string()), graphical).expect("no terminal needed");
         assert_eq!(command, "firefox", "$TERMINAL must not wrap an entry that never asked for it");
         assert_eq!(args, vec!["--new-tab".to_string()]);
     }
@@ -313,10 +303,15 @@ mod tests {
         let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
         within(rx.recv()).await.unwrap();
 
+        // Then a real change: exactly one push before it lands proves the unchanged rescan pushed nothing.
         controller.refresh();
-
-        let second = tokio::time::timeout(std::time::Duration::from_millis(400), rx.recv()).await;
-        assert!(second.is_err(), "a rescan finding the same entries must not push a snapshot");
+        std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
+        let mut pushes = 0;
+        while controller.snapshot().entries.len() < 2 {
+            within(rx.recv()).await.unwrap();
+            pushes += 1;
+        }
+        assert_eq!(pushes, 1, "a rescan finding the same entries must not push a snapshot");
     }
 
     #[tokio::test]
@@ -375,10 +370,17 @@ mod tests {
         wait_for_entry(&controller, &mut rx, "A").await; // the watches are in place before this scan.
 
         std::fs::create_dir_all(&late).unwrap();
-        // Past the debounce, so the file lands only after the watches are rebuilt around `late`.
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-        std::fs::write(late.join("b.desktop"), runnable("B", "/bin/true")).unwrap();
-
-        wait_for_entry(&controller, &mut rx, "B").await;
+        // Rewritten until seen: a file landing before the watches are rebuilt around `late` is
+        // caught by the rebuild's rescan, one landing after by the watch.
+        within(async {
+            loop {
+                std::fs::write(late.join("b.desktop"), runnable("B", "/bin/true")).unwrap();
+                let seen = wait_for_entry(&controller, &mut rx, "B");
+                if tokio::time::timeout(std::time::Duration::from_millis(200), seen).await.is_ok() {
+                    break;
+                }
+            }
+        })
+        .await;
     }
 }

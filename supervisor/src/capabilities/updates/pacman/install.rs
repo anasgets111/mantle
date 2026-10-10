@@ -32,43 +32,27 @@ pub fn parse_install_step(line: &str) -> Option<InstallStep> {
 mod tests {
     use super::*;
 
-    // ---- parse_install_step ----
-
     #[test]
-    fn parse_install_step_reads_a_real_installing_line() {
-        let step = parse_install_step("(2/5) installing nss (3.127-1 -> 3.128-1)").expect("should parse");
-        assert_eq!(step, InstallStep { current: 2, total: 5, package: "nss".to_string() });
+    fn parse_install_step_reads_installing_upgrading_and_reinstalling_lines() {
+        for (line, current, total, package) in [
+            ("(2/5) installing nss (3.127-1 -> 3.128-1)", 2, 5, "nss"),
+            ("(1/3) upgrading ca-certificates-mozilla", 1, 3, "ca-certificates-mozilla"),
+            ("(1/1) reinstalling linux", 1, 1, "linux"),
+        ] {
+            let step = parse_install_step(line).expect(line);
+            assert_eq!(step, InstallStep { current, total, package: package.to_string() }, "{line}");
+        }
     }
 
     #[test]
-    fn parse_install_step_reads_an_upgrading_line() {
-        let step = parse_install_step("(1/3) upgrading ca-certificates-mozilla").expect("should parse");
-        assert_eq!(step, InstallStep { current: 1, total: 3, package: "ca-certificates-mozilla".to_string() });
-    }
-
-    #[test]
-    fn parse_install_step_reads_a_reinstalling_line() {
-        let step = parse_install_step("(1/1) reinstalling linux").expect("should parse");
-        assert_eq!(step, InstallStep { current: 1, total: 1, package: "linux".to_string() });
-    }
-
-    #[test]
-    fn parse_install_step_is_none_for_a_database_sync_line() {
-        assert!(parse_install_step(":: Synchronizing package databases...").is_none());
-    }
-
-    #[test]
-    fn parse_install_step_is_none_for_a_download_progress_line() {
-        assert!(parse_install_step("nss-3.128-1-x86_64  1811951 KiB  4.05 MiB/s 00:00:03 [#####] 100%").is_none());
-    }
-
-    #[test]
-    fn parse_install_step_is_none_for_a_blank_line() {
-        assert!(parse_install_step("").is_none());
-    }
-
-    #[test]
-    fn parse_install_step_is_none_for_malformed_counts() {
-        assert!(parse_install_step("(a/b) installing nss").is_none());
+    fn parse_install_step_is_none_for_lines_that_are_not_a_step() {
+        for line in [
+            ":: Synchronizing package databases...",
+            "nss-3.128-1-x86_64  1811951 KiB  4.05 MiB/s 00:00:03 [#####] 100%",
+            "",
+            "(a/b) installing nss",
+        ] {
+            assert!(parse_install_step(line).is_none(), "{line:?}");
+        }
     }
 }

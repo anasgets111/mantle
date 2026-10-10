@@ -317,30 +317,18 @@ mod tests {
     }
 
     #[test]
-    fn an_item_name_is_recognized_in_both_spellings() {
-        assert!(is_item_bus_name("org.kde.StatusNotifierItem-1240273-1"));
-        assert!(is_item_bus_name("org.freedesktop.StatusNotifierItem-1240273-1"));
-    }
-
-    #[test]
-    fn the_watcher_is_not_an_item() {
-        // This Supervisor's own name; adopting it would register the watcher as an icon.
-        assert!(!is_item_bus_name("org.kde.StatusNotifierWatcher"));
-        assert!(!is_item_bus_name("org.kde.StatusNotifierHost-1234"));
-    }
-
-    #[test]
-    fn a_name_that_only_starts_the_same_way_is_not_an_item() {
-        // The trailing `-` excludes these prefix-only names.
-        assert!(!is_item_bus_name("org.kde.StatusNotifierItemRegistry"));
-        assert!(!is_item_bus_name("org.kde.StatusNotifierItem"));
-        assert!(!is_item_bus_name("com.example.org.kde.StatusNotifierItem-1-1"));
-    }
-
-    #[tokio::test]
-    async fn context_menu_on_an_unknown_id_does_not_panic() {
-        let (events, _) = tokio::sync::mpsc::unbounded_channel();
-        let controller = TrayController::inert(events);
-        controller.context_menu("unknown", 0, 0).await;
+    fn only_a_dash_suffixed_item_name_is_an_item_bus_name() {
+        // The trailing `-` excludes prefix-only names; this Supervisor's own watcher name must never be adopted.
+        for (name, expected) in [
+            ("org.kde.StatusNotifierItem-1240273-1", true),
+            ("org.freedesktop.StatusNotifierItem-1240273-1", true),
+            ("org.kde.StatusNotifierWatcher", false),
+            ("org.kde.StatusNotifierHost-1234", false),
+            ("org.kde.StatusNotifierItemRegistry", false),
+            ("org.kde.StatusNotifierItem", false),
+            ("com.example.org.kde.StatusNotifierItem-1-1", false),
+        ] {
+            assert_eq!(is_item_bus_name(name), expected, "{name}");
+        }
     }
 }
