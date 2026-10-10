@@ -2214,7 +2214,7 @@ mod tests {
 
         assert!(!client.reevaluate());
         let (_, error) = rescue_state(&client.loader);
-        assert!(error.contains("topology"), "expected a topology-specific message, got: {error}");
+        assert!(error.contains("panel: invalid value for `anchor`"), "expected a field-specific message, got: {error}");
         assert!(
             !error.contains("top-level return"),
             "must not reuse the unrelated top-level-return message, got: {error}"

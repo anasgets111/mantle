@@ -97,7 +97,7 @@ fn lay_out(
     let mut scene = Scene::new();
     scene
         .apply_locked(&output.surfaces, &instances, shaping, loader.lua(), false, true)
-        .map_err(|err| format!("layout: {err}"))?;
+        .map_err(|err| err.to_string())?;
     Ok((scene, instances))
 }
 
@@ -322,7 +322,7 @@ mod tests {
             (
                 "bad root value",
                 &[("shell.lua", "\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n")],
-                &["shell.lua:2: surface topology is invalid", "invalid value for `height`", "got string \"tall\""],
+                &["shell.lua:2: panel: invalid value for `height`", "got string \"tall\""],
             ),
             (
                 "bad window value",
@@ -335,7 +335,7 @@ mod tests {
                     "shell.lua",
                     "\nreturn popup { id = \"p\", parent = \"bar\", anchor_rect = { x = 0, y = 0, width = 1, height = 1 }, width = \"wide\" }\n",
                 )],
-                &["shell.lua:2: surface topology is invalid", "invalid value for `width`", "got string \"wide\""],
+                &["shell.lua:2: popup: invalid value for `width`", "got string \"wide\""],
             ),
             (
                 "root built in a module",
@@ -343,7 +343,7 @@ mod tests {
                     ("shell.lua", "return require(\"widgets.bar\")\n"),
                     ("widgets/bar.lua", "\nreturn panel { id = \"bar\", layer = \"top\", height = \"tall\" }\n"),
                 ],
-                &["widgets/bar.lua:2: surface topology is invalid", "got string \"tall\""],
+                &["widgets/bar.lua:2: panel: invalid value for `height`", "got string \"tall\""],
             ),
             // quoted in docs/guide/cli.md
             (
@@ -390,7 +390,7 @@ mod tests {
             (
                 "nested key typo",
                 &[("shell.lua", "return panel { id = \"p\", layer = \"top\", anchor = { lefft = true } }\n")],
-                &["shell.lua:1: surface topology is invalid", "unknown key `lefft`; did you mean `left`?"],
+                &["shell.lua:1: panel:", "unknown key `lefft`; did you mean `left`?"],
             ),
             (
                 "nested key that is not a string",
@@ -403,7 +403,7 @@ mod tests {
                     "shell.lua",
                     "local a = panel { id = \"bar\", layer = \"top\" }\nreturn { a,\n panel { id = \"bar\", layer = \"top\" } }\n",
                 )],
-                &["shell.lua:3: surface topology is invalid", "two surfaces declare `bar` (first at shell.lua:1)"],
+                &["shell.lua:3: panel: invalid value for `id`", "two surfaces declare `bar` (first at shell.lua:1)"],
             ),
             (
                 "return a number",
@@ -541,7 +541,7 @@ mod tests {
         )
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
-        assert!(err.contains(&format!("{}: before capability data: layout:", dir.path().display())), "{err}");
+        assert!(err.contains(&format!("{}: before capability data: invalid value", dir.path().display())), "{err}");
     }
 
     /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until
@@ -917,7 +917,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
             }
             scene
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false, true)
-                .map_err(|err| format!("layout: {err}"))?;
+                .map_err(|err| err.to_string())?;
         }
         let start =
             instances.iter().filter_map(|instance| scene.surface(&instance.instance_id)).filter_map(last_start).max();

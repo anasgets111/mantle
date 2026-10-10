@@ -238,8 +238,8 @@ failing `:map` or `computed`, the line that created the signal:
 stack traceback:
 	widgets/bar.lua:4: in function 'widgets.bar.build'
 	shell.lua:2: in main chunk
-/home/me/.config/mantle: before capability data: layout: invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?
-/home/me/.config/mantle: before capability data: layout: invalid value for `content`: on `bar@DP-1`: panel (shell.lua:9) > text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')
+/home/me/.config/mantle: before capability data: invalid value for `children`: on `bar@DP-1`: panel (shell.lua:7) > row[0] (shell.lua:7) > children[0]: shell.lua:2: `text` has no property `contnet`; did you mean `content`?
+/home/me/.config/mantle: before capability data: invalid value for `content`: on `bar@DP-1`: panel (shell.lua:9) > text[0] (shell.lua:9) > Signal getter on a `text` node failed: signal created at shell.lua:3: shell.lua:4: attempt to index a number value (local 'n')
 stack traceback:
 	shell.lua:4: in function <shell.lua:3>
 ```

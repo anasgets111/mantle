@@ -7,7 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
-- Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do; an unknown property on one no longer reads as a top-level return error.
+- Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do, and reads `shell.lua:2: panel: invalid value for `height`: ...`; an unknown property on one no longer reads as a top-level return error. `mantle check` no longer repeats `layout:` after the pass name.
 - Changed: argument and value errors speak Lua and lead with the caller's `file:line`: `fonts: bad argument #1 (chain): expected a table, got integer`, `mantle.keyboard:switch_layout: argument 1 expects a non-negative integer, got string "x"`; a rejected property value of the wrong type reads `string "tall"` or `nil`.
 - Changed: every out-of-range number reads `must be within [a, b], got number 2`, including `timer`, `interval`, `delay`, `pulse`, `loops`, gradient stops and `idle:register_threshold`.
 - Changed: a config handler that raises logs where it was defined (`widgets/bar.lua:12`) and folds identical repeats into `raised again (N times)`; `error({...})` names the value type, and a missing `require` lists config-relative paths without the C-modules line.
