@@ -13,13 +13,11 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use crate::compositor::hyprland::hyprland_signature;
 use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::super::brightness::controller::Login1SessionProxy;
 use super::super::read_attr;
 use super::super::scale::{percent_from_raw, raw_from_percent};
-use super::layout::{CompositorLink, HyprlandLink, NiriLink, SwayLink};
 use super::locks::{find_leds, read_led_on, resolve_lock_leds};
 
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
@@ -33,7 +31,7 @@ struct LedBacklight {
 pub struct KeyboardController {
     state: Arc<Mutex<KeyboardState>>,
     backlight: Arc<Option<LedBacklight>>,
-    layout: Arc<Option<Box<dyn CompositorLink>>>,
+    compositor: Option<CompositorKind>,
     system_bus: zbus::Connection,
     events: UnboundedSender<()>,
     pub(super) writes: super::super::LatestWrites,
@@ -48,7 +46,7 @@ impl super::super::Writer for KeyboardController {
 impl KeyboardController {
     /// `system_bus` carries logind backlight writes. `leds_root` (default `/sys/class/leds`) is
     /// test-injected and holds the backlight and the sysfs lock fallback. `state` is shared with the
-    /// compositor reader, which writes layout; `compositor` picks the [`CompositorLink`] for
+    /// compositor reader, which writes layout; `compositor` picks the backend for
     /// `switch_layout`.
     pub fn new(
         system_bus: zbus::Connection,
@@ -65,29 +63,17 @@ impl KeyboardController {
             }
         }
         tokio::spawn(watch_locks(resolve_locks(leds_root, &state), Arc::clone(&state), events_tx.clone()));
-        let layout: Option<Box<dyn CompositorLink>> = match compositor {
-            Some(CompositorKind::Hyprland) => match hyprland_signature() {
-                Some(signature) => Some(Box::new(HyprlandLink::new(&signature))),
-                None => {
-                    debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; layout reporting disabled for this run");
-                    None
-                }
-            },
-            Some(CompositorKind::Niri) => Some(Box::new(NiriLink)),
-            Some(CompositorKind::Sway) => Some(Box::new(SwayLink)),
-            Some(CompositorKind::Mango) => {
-                debug!("mango has no indexed layout switch; switch_layout disabled for this run");
-                None
-            }
+        let compositor = match compositor {
             None => {
                 debug!("{}; layout reporting disabled for this run", unsupported_session_report());
                 None
             }
+            some => some,
         };
         Self {
             state,
             backlight: Arc::new(backlight),
-            layout: Arc::new(layout),
+            compositor,
             system_bus,
             events: events_tx,
             writes: Default::default(),
@@ -113,10 +99,10 @@ impl KeyboardController {
     }
 
     /// `keyboard:switch_layout(index)`. Logs and returns without a supported compositor.
-    /// Synchronous because `CompositorLink::switch_layout` is synchronous fire-and-forget.
+    /// Synchronous because `Compositor::switch_layout` is synchronous fire-and-forget.
     pub fn switch_layout(&self, index: usize) {
-        match self.layout.as_ref() {
-            Some(link) => link.switch_layout(index),
+        match self.compositor {
+            Some(kind) => kind.backend().switch_layout(index),
             None => debug!("switch_layout called but no supported compositor was detected; ignored"),
         }
     }

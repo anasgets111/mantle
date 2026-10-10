@@ -1,7 +1,7 @@
-//! `workspaces`' niri implementor, reached over `$NIRI_SOCKET`.
+//! niri, reached over `$NIRI_SOCKET`.
 //!
-//! The only file naming `niri_ipc`. `controller.rs` owns payload, reduction, and publish in terms
-//! of `WorkspaceRow`/`FocusedWindow`; this maps niri types and drives the loop.
+//! The only file naming `niri_ipc`. `workspaces/controller.rs` owns payload, reduction, and publish
+//! in terms of `WorkspaceRow`/`FocusedWindow`; this maps niri types and drives the loop.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use shared::{debug, warn};
 
-use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
@@ -186,28 +186,10 @@ fn follow(
     }
 }
 
-/// On an OS thread, connects, requests the event stream and runs [`keep_following`], so a stalled
-/// niri blocks the reader and not the caller. Also drives `mantle.windows` and `keyboard`'s layout
-/// from the same stream, rather than a second connection.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
-    std::thread::spawn(move || {
-        keep_following("niri", RETRY_FIRST, niri_event_stream, |socket| {
-            follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
-        });
-    });
-}
-
 /// A line niri sent but niri-ipc can't decode (a newer niri's event kind or shape), already
 /// consumed from the stream; socket end reads as `UnexpectedEof`, so it stays fatal.
 fn undecodable(err: &std::io::Error) -> bool {
     err.kind() == std::io::ErrorKind::InvalidData
-}
-
-/// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `number` shifts on reorder and
-/// could focus the wrong workspace.
-pub fn focus(id: &str) {
-    let Some(reference) = workspace_reference(id) else { return };
-    niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
 }
 
 fn workspace_reference(id: &str) -> Option<niri_ipc::WorkspaceReferenceArg> {
@@ -218,34 +200,9 @@ fn workspace_reference(id: &str) -> Option<niri_ipc::WorkspaceReferenceArg> {
     parsed
 }
 
-pub fn focus_window(id: &str) {
-    let Ok(id) = id.parse::<u64>() else {
-        debug!("focus({id:?}) is not a niri window id; ignored");
-        return;
-    };
-    niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
-}
-
-pub fn close_window(id: &str) {
-    let Ok(id) = id.parse::<u64>() else {
-        debug!("close({id:?}) is not a niri window id; ignored");
-        return;
-    };
-    niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
-}
-
-pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
-    let Some(reference) = workspace_reference(workspace_id) else { return };
-    let Ok(id) = id.parse::<u64>() else {
-        debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
-        return;
-    };
-    niri_action(niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false }, "windows");
-}
-
 /// `$NIRI_SOCKET` with its event stream requested, ready for `read_events`. Blocks on niri's
 /// reply, so callers run it off the main task.
-pub fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
+fn niri_event_stream() -> std::io::Result<niri_ipc::socket::Socket> {
     let mut socket = niri_ipc::socket::Socket::connect()?;
     match socket.send(niri_ipc::Request::EventStream)? {
         Ok(niri_ipc::Response::Handled) => Ok(socket),
@@ -270,7 +227,7 @@ pub(super) fn niri_request(path: &Path, request: &niri_ipc::Request) -> std::io:
 }
 
 /// One niri action, fire-and-forget through [`run_in_order`].
-pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
+fn niri_action(action: niri_ipc::Action, capability: &'static str) {
     run_in_order(move || {
         let label = format!("{action:?}");
         let Some(path) = std::env::var_os(niri_ipc::socket::SOCKET_PATH_ENV) else {
@@ -285,7 +242,7 @@ pub fn niri_action(action: niri_ipc::Action, capability: &'static str) {
 impl LayoutSink {
     /// Applies a niri layout event; `false` for any other. `names` carries the list between a
     /// `KeyboardLayoutsChanged` and the `KeyboardLayoutSwitched` events after it.
-    pub fn apply_niri(&self, names: &mut Vec<String>, event: &niri_ipc::Event) -> bool {
+    fn apply_niri(&self, names: &mut Vec<String>, event: &niri_ipc::Event) -> bool {
         let idx = match event {
             niri_ipc::Event::KeyboardLayoutsChanged { keyboard_layouts } => {
                 names.clone_from(&keyboard_layouts.names);
@@ -296,6 +253,78 @@ impl LayoutSink {
         };
         self.write(names.get(idx as usize).cloned().unwrap_or_default(), u32::from(idx), names.len() as u32);
         true
+    }
+}
+
+/// niri over `$NIRI_SOCKET`.
+pub struct Niri;
+
+impl Compositor for Niri {
+    /// On an OS thread, connects, requests the event stream and runs [`keep_following`], so a stalled
+    /// niri blocks the reader and not the caller. Also drives `mantle.windows` and `keyboard`'s layout
+    /// from the same stream, rather than a second connection.
+    fn spawn_reader(
+        &self,
+        mut publisher: StatePublisher,
+        mut windows_publisher: WindowsPublisher,
+        keyboard: LayoutSink,
+    ) {
+        std::thread::spawn(move || {
+            keep_following("niri", RETRY_FIRST, niri_event_stream, |socket| {
+                follow(socket, &mut publisher, &mut windows_publisher, &keyboard)
+            });
+        });
+    }
+
+    /// `workspaces:focus(id)`. `WorkspaceReferenceArg::Id`, not `Index`: `number` shifts on reorder and
+    /// could focus the wrong workspace.
+    fn focus_workspace(&self, id: &str) {
+        let Some(reference) = workspace_reference(id) else { return };
+        niri_action(niri_ipc::Action::FocusWorkspace { reference }, "workspaces");
+    }
+
+    fn focus_window(&self, id: &str) {
+        let Ok(id) = id.parse::<u64>() else {
+            debug!("focus({id:?}) is not a niri window id; ignored");
+            return;
+        };
+        niri_action(niri_ipc::Action::FocusWindow { id }, "windows");
+    }
+
+    fn close_window(&self, id: &str) {
+        let Ok(id) = id.parse::<u64>() else {
+            debug!("close({id:?}) is not a niri window id; ignored");
+            return;
+        };
+        niri_action(niri_ipc::Action::CloseWindow { id: Some(id) }, "windows");
+    }
+
+    // niri only toggles and never reports the state, so a toggle could undo the request.
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
+        debug!("set_fullscreen({id:?}, {fullscreen}) called but niri reports no fullscreen state; ignored")
+    }
+
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        let Some(reference) = workspace_reference(workspace_id) else { return };
+        let Ok(id) = id.parse::<u64>() else {
+            debug!("move_window_to_workspace({id:?}, {workspace_id}) is not a niri window id; ignored");
+            return;
+        };
+        niri_action(
+            niri_ipc::Action::MoveWindowToWorkspace { window_id: Some(id), reference, focus: false },
+            "windows",
+        );
+    }
+
+    fn switch_layout(&self, index: usize) {
+        // A command supplies an unbounded u64, while niri's wire protocol takes u8. Reject overflow
+        // instead of truncating 256 to 0.
+        let Ok(index) = u8::try_from(index) else {
+            debug!("switch_layout index {index} is out of range for niri (must fit in a u8); ignored");
+            return;
+        };
+        let layout = niri_ipc::LayoutSwitchTarget::Index(index);
+        niri_action(niri_ipc::Action::SwitchLayout { layout }, "keyboard");
     }
 }
 
@@ -498,6 +527,19 @@ mod tests {
         let closed: niri_ipc::Event = serde_json::from_str(r#"{"WindowClosed":{"id":9}}"#).unwrap();
 
         assert!(!parts.apply(closed), "niri-ipc would panic on a window it never saw");
+    }
+
+    #[test]
+    fn niri_switch_layout_index_validation_accepts_the_full_u8_range() {
+        assert_eq!(u8::try_from(0usize), Ok(0));
+        assert_eq!(u8::try_from(255usize), Ok(255));
+    }
+
+    #[test]
+    fn niri_switch_layout_index_validation_rejects_values_that_would_truncate() {
+        // Regression: 256 used to truncate to 0 via `as u8`.
+        assert!(u8::try_from(256usize).is_err());
+        assert!(u8::try_from(usize::MAX).is_err());
     }
 
     /// niri-ipc's `read_events` turns a serde error into an `io::Error`; skipping relies on an

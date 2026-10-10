@@ -1,7 +1,7 @@
-//! `workspaces`' sway implementor, reached over `$SWAYSOCK` (i3-compatible IPC).
+//! sway, reached over `$SWAYSOCK` (i3-compatible IPC).
 //!
-//! The only file that knows sway's JSON for workspaces and the tree. `controller.rs` owns payload,
-//! reduction and publish in terms of `WorkspaceRow`/`FocusedWindow`; this maps sway's replies and
+//! The only file that knows sway's JSON for workspaces, the tree and inputs. `workspaces/controller.rs`
+//! owns payload, reduction and publish in terms of `WorkspaceRow`/`FocusedWindow`; this maps sway's replies and
 //! drives the loop. A workspace's `id` is its name: sway focuses and moves by name, and a numeric
 //! id would not survive a rename or reorder.
 
@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
@@ -234,22 +234,6 @@ fn follow(
     if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
 }
 
-/// Runs [`keep_following`] on an OS thread; also drives `mantle.windows` and `keyboard`'s layout.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
-    let Some(path) = sway_socket() else {
-        debug!("SWAYSOCK is unset; workspace and window reporting disabled for this run");
-        return;
-    };
-    std::thread::spawn(move || {
-        keep_following(
-            "sway",
-            RETRY_FIRST,
-            || connect(&path),
-            |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
-        );
-    });
-}
-
 /// Words sway's `workspace` and `move` read as relative targets even when quoted (`strcasecmp`).
 const KEYWORDS: &[&str] =
     &["number", "next", "prev", "next_on_output", "prev_on_output", "back_and_forth", "current", "output", "gaps"];
@@ -297,44 +281,22 @@ fn send(command: Option<String>, capability: &'static str) {
     }
 }
 
-/// `workspaces:focus(id)`; sway creates a workspace it does not have.
-pub fn focus(id: &str) {
-    send(focus_workspace_command(id), "workspaces");
-}
-
-pub fn focus_window(id: &str) {
-    send(window_command(id, "focus"), "windows");
-}
-
-pub fn close_window(id: &str) {
-    send(window_command(id, "kill"), "windows");
-}
-
-/// Explicit `enable`/`disable`, so unlike a toggle it needs no read of the current state.
-pub fn set_fullscreen(id: &str, fullscreen: bool) {
-    send(window_command(id, if fullscreen { "fullscreen enable" } else { "fullscreen disable" }), "windows");
-}
-
-pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
-    send(move_command(id, workspace_id), "windows");
-}
-
 /// `$SWAYSOCK`, or `None` when unset or empty.
-pub fn sway_socket() -> Option<PathBuf> {
+fn sway_socket() -> Option<PathBuf> {
     std::env::var_os("SWAYSOCK").filter(|path| !path.is_empty()).map(PathBuf::from)
 }
 
-pub const SWAY_RUN_COMMAND: u32 = 0;
-pub const SWAY_GET_WORKSPACES: u32 = 1;
-pub const SWAY_SUBSCRIBE: u32 = 2;
-pub const SWAY_GET_TREE: u32 = 4;
-pub const SWAY_GET_INPUTS: u32 = 100;
+const SWAY_RUN_COMMAND: u32 = 0;
+const SWAY_GET_WORKSPACES: u32 = 1;
+const SWAY_SUBSCRIBE: u32 = 2;
+const SWAY_GET_TREE: u32 = 4;
+const SWAY_GET_INPUTS: u32 = 100;
 const SWAY_MAGIC: &[u8; 6] = b"i3-ipc";
 /// Far above a real `GET_TREE`; a corrupt length must not allocate gigabytes.
 const SWAY_MAX_PAYLOAD: usize = 64 << 20;
 
 /// Writes one i3-ipc frame.
-pub fn sway_write(stream: &mut impl Write, kind: u32, payload: &[u8]) -> std::io::Result<()> {
+fn sway_write(stream: &mut impl Write, kind: u32, payload: &[u8]) -> std::io::Result<()> {
     let mut frame = Vec::with_capacity(14 + payload.len());
     frame.extend_from_slice(SWAY_MAGIC);
     frame.extend_from_slice(&(payload.len() as u32).to_ne_bytes());
@@ -344,7 +306,7 @@ pub fn sway_write(stream: &mut impl Write, kind: u32, payload: &[u8]) -> std::io
 }
 
 /// Reads one frame as `(type, payload)`.
-pub fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
+fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
     let mut header = [0u8; 14];
     stream.read_exact(&mut header)?;
     if &header[..6] != SWAY_MAGIC {
@@ -361,7 +323,7 @@ pub fn sway_read(stream: &mut impl Read) -> std::io::Result<(u32, Vec<u8>)> {
 }
 
 /// A connection to sway whose reads and writes give up after [`REQUEST_TIMEOUT`].
-pub fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
+fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
     let stream = UnixStream::connect(socket_path)?;
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
@@ -369,14 +331,14 @@ pub fn sway_connect(socket_path: &Path) -> std::io::Result<UnixStream> {
 }
 
 /// One request on a fresh connection; the first frame back is the reply.
-pub fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
+fn sway_request(socket_path: &Path, kind: u32, payload: &str) -> std::io::Result<Vec<u8>> {
     let mut stream = sway_connect(socket_path)?;
     sway_write(&mut stream, kind, payload.as_bytes())?;
     Ok(sway_read(&mut stream)?.1)
 }
 
 /// One `RUN_COMMAND` on the shared action thread; sway answers `[{"success":bool,"error":..}]`.
-pub fn sway_command(command: String, capability: &'static str) {
+fn sway_command(command: String, capability: &'static str) {
     run_in_order(move || {
         let Some(path) = sway_socket() else {
             return debug!("{capability}: SWAYSOCK is unset; sway `{command}` ignored");
@@ -395,7 +357,7 @@ pub fn sway_command(command: String, capability: &'static str) {
 
 impl LayoutSink {
     /// One `GET_INPUTS` read, on sway's `input` events and once at reader start.
-    pub fn read_sway(&self, socket_path: &Path) {
+    fn read_sway(&self, socket_path: &Path) {
         let reply = match sway_request(socket_path, SWAY_GET_INPUTS, "") {
             Ok(reply) => reply,
             Err(err) => return debug!("sway `GET_INPUTS` request failed; layout not updated this round: {err}"),
@@ -428,6 +390,59 @@ fn parse_sway_inputs(json: &[u8]) -> Option<(String, u32, u32)> {
         .or_else(|| keyboard.xkb_layout_names.get(keyboard.xkb_active_layout_index as usize).cloned().flatten())
         .unwrap_or_default();
     Some((name, keyboard.xkb_active_layout_index, keyboard.xkb_layout_names.len() as u32))
+}
+
+/// sway over `$SWAYSOCK`.
+pub struct Sway;
+
+impl Compositor for Sway {
+    /// Runs [`keep_following`] on an OS thread; also drives `mantle.windows` and `keyboard`'s layout.
+    fn spawn_reader(
+        &self,
+        mut publisher: StatePublisher,
+        mut windows_publisher: WindowsPublisher,
+        keyboard: LayoutSink,
+    ) {
+        let Some(path) = sway_socket() else {
+            debug!("SWAYSOCK is unset; workspace and window reporting disabled for this run");
+            return;
+        };
+        std::thread::spawn(move || {
+            keep_following(
+                "sway",
+                RETRY_FIRST,
+                || connect(&path),
+                |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
+            );
+        });
+    }
+
+    /// `workspaces:focus(id)`; sway creates a workspace it does not have.
+    fn focus_workspace(&self, id: &str) {
+        send(focus_workspace_command(id), "workspaces");
+    }
+
+    fn focus_window(&self, id: &str) {
+        send(window_command(id, "focus"), "windows");
+    }
+
+    fn close_window(&self, id: &str) {
+        send(window_command(id, "kill"), "windows");
+    }
+
+    /// Explicit `enable`/`disable`, so unlike a toggle it needs no read of the current state.
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, _current: Option<bool>) {
+        send(window_command(id, if fullscreen { "fullscreen enable" } else { "fullscreen disable" }), "windows");
+    }
+
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        send(move_command(id, workspace_id), "windows");
+    }
+
+    /// `input type:keyboard xkb_switch_layout <index>` over sway's IPC.
+    fn switch_layout(&self, index: usize) {
+        sway_command(format!("input type:keyboard xkb_switch_layout {index}"), "keyboard");
+    }
 }
 
 #[cfg(test)]

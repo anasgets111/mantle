@@ -103,7 +103,7 @@ Call each as `mantle.workspaces:<action>(arguments...)`; `?` marks an argument y
 ## Backend
 
 The Supervisor picks the compositor once, from `$HYPRLAND_INSTANCE_SIGNATURE`, then `$NIRI_SOCKET`, then `$SWAYSOCK`, then `$MANGO_INSTANCE_SIGNATURE`
-([`compositor.rs`](../../supervisor/src/compositor.rs)). One reader feeds both `workspaces` and
+([`compositor/`](../../supervisor/src/compositor/mod.rs)). One reader feeds both `workspaces` and
 [`windows`](windows.md).
 
 | Capability | niri | Hyprland | sway | mango | None |

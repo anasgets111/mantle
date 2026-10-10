@@ -8289,3 +8289,19 @@ those scenarios was 15.8 to 16.8 MB, against 14.2 MB idle.
    capability publishes at 1 Hz, so the debounced trim fired about 22 times a minute, and both added
    5 to 10% idle wakeups.
 3. **Cost.** A trim holds the one arena's lock, so other threads' allocations wait for it.
+
+## 0355. Each compositor is one module behind a stateless `Compositor` trait
+
+Supersedes ADR-0056 decision 1, which deferred a trait until a second implementation justified it.
+With niri, Hyprland, sway and mango, a fifth compositor meant editing seven files and about 14
+match arms, plus a hand-written "ignored" arm for every operation it lacked.
+
+1. **One module per compositor** in `supervisor/src/compositor/`: its IPC, its one reader feeding
+   `workspaces`, `windows` and keyboard layout, its layout parsing and its writes. The boundary is
+   per compositor, not per capability, because one event stream feeds all three.
+2. **`trait Compositor: Sync`** with zero-sized impls; `CompositorKind::backend()` is the only
+   dispatch. Operations a compositor lacks (`toggle_special`, `set_maximized`, `move_window`,
+   `switch_layout`) default to a logged no-op. Toggle-only compositors get the last published state
+   as an argument, so the trait stays stateless.
+3. **Cost.** One indirection, and the trait grows with each new window or workspace action. A new
+   compositor is one module, one `PROBES` line and one `backend()` arm.

@@ -2,7 +2,7 @@
 //! reduction. See `workspaces/mod.rs`.
 //!
 //! [`derive_state`] knows no compositor type. It consumes [`WorkspaceRow`]s and a
-//! [`FocusedWindow`]; `niri` and `hyprland` reduce their IPC into those rows.
+//! [`FocusedWindow`]; the `crate::compositor` modules reduce their IPC into those rows.
 
 pub use shared::state::workspaces::{
     ActiveClient, OutputWorkspaces, SpecialWorkspace, WorkspaceEntry, WorkspacesState,
@@ -16,7 +16,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{CompositorKind, hyprland, mango, niri, sway, unsupported_session_report};
+use crate::compositor::{CompositorKind, unsupported_session_report};
 
 /// One compositor workspace reduced to [`derive_state`]'s input fields; owned by neither adaptor.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,7 +145,7 @@ impl WorkspacesController {
     /// `state` and `compositor` come from `Capabilities::ensure_compositor_reader` (ADR-0247
     /// decision 2), which spawns the niri/Hyprland reader at most once and shares it with
     /// `windows`. `None` means no compositor implements this session, so nothing ever pushes
-    /// (ADR-0056 decision 1).
+    /// (ADR-0056).
     ///
     /// A reader that was already running wrote `state` and signalled before this controller
     /// existed to catch it, so a non-default `state` here needs its own signal: otherwise this
@@ -167,13 +167,10 @@ impl WorkspacesController {
         self.state.lock().expect("workspaces state mutex poisoned").clone()
     }
 
-    /// `workspaces:focus(id)`, routed to the live adaptor; exhaustive like [`Self::new`].
+    /// `workspaces:focus(id)`.
     pub fn focus(&self, id: &str) {
         match self.compositor {
-            Some(CompositorKind::Niri) => niri::focus(id),
-            Some(CompositorKind::Hyprland) => hyprland::focus(id),
-            Some(CompositorKind::Sway) => sway::focus(id),
-            Some(CompositorKind::Mango) => mango::focus(id),
+            Some(kind) => kind.backend().focus_workspace(id),
             None => debug!("focus({id:?}) called but this session has no workspace implementor; ignored"),
         }
     }
@@ -182,8 +179,8 @@ impl WorkspacesController {
     /// so configs can feature-test it.
     pub fn toggle_special(&self, name: &str) {
         match self.compositor {
-            Some(CompositorKind::Hyprland) => hyprland::toggle_special(name),
-            Some(CompositorKind::Niri | CompositorKind::Sway | CompositorKind::Mango) | None => {
+            Some(kind) => kind.backend().toggle_special(name),
+            None => {
                 debug!(
                     "toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored"
                 )

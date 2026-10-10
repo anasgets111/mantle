@@ -1,20 +1,20 @@
-//! Which compositor this session is running, and the probe that answers it.
+//! Which compositor this session is running, the probe that answers it, and the one trait every
+//! compositor implements.
 //!
-//! Top-level because compositor identity belongs to the session, not a capability: `keyboard`
-//! and `workspaces` both need it, and **Compositor link** (`CONTEXT.md`) is scoped to keyboard
-//! layout.
-//!
-//! This owns detection and compositor IPC plumbing, with no adaptor. ADR-0056 decision 1 says
-//! `workspaces` gets no trait and `CompositorLink` does not grow one. The two capabilities share
-//! only this probe, the IPC connections and, since `workspaces::hyprland` (ADR-0118), the two
-//! socket locations.
+//! Compositor identity belongs to the session, not a capability. Each compositor module owns its
+//! IPC, its event reader (feeding `workspaces`, `windows` and `keyboard` from one stream), its
+//! layout parsing and its writes; [`CompositorKind::backend`] is the one dispatch point. The
+//! trait is stateless: a write opens a fresh connection, and anything a toggle needs (a window's
+//! current fullscreen state) arrives as an argument. ADR-0355 supersedes ADR-0056 decision 1.
 
 use std::time::Duration;
 
 use shared::{debug, warn};
 
-use crate::capabilities::RETRY_MAX;
-use crate::capabilities::STABLE;
+use crate::capabilities::keyboard::layout::LayoutSink;
+use crate::capabilities::windows::controller::StatePublisher as WindowsPublisher;
+use crate::capabilities::workspaces::controller::StatePublisher;
+use crate::capabilities::{RETRY_MAX, STABLE};
 
 pub mod hyprland;
 pub mod mango;
@@ -22,8 +22,7 @@ pub mod niri;
 pub mod sway;
 
 /// A compositor implemented here, narrower than "a compositor that exists". Other sessions yield
-/// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056
-/// decision 1).
+/// [`detect_compositor`]'s `None`; dependent capabilities degrade rather than guess (ADR-0056).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompositorKind {
     Hyprland,
@@ -41,6 +40,47 @@ impl CompositorKind {
             CompositorKind::Niri => "niri",
             CompositorKind::Sway => "sway",
             CompositorKind::Mango => "mango",
+        }
+    }
+}
+
+/// What a session's capabilities ask of its compositor. The defaults log a feature the compositor
+/// lacks; a write that cannot apply is dropped, never an error.
+pub trait Compositor: Sync {
+    /// Starts the one reader thread that feeds `workspaces`, `windows` and `keyboard`'s layout.
+    fn spawn_reader(&self, workspaces: StatePublisher, windows: WindowsPublisher, keyboard: LayoutSink);
+    fn focus_workspace(&self, id: &str);
+    fn toggle_special(&self, name: &str) {
+        debug!("toggle_special({name:?}) called but this session's compositor has no special workspaces; ignored")
+    }
+    fn focus_window(&self, id: &str);
+    fn close_window(&self, id: &str);
+    /// `current` is the last published state; a compositor that only toggles writes on a change.
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>);
+    fn set_maximized(&self, id: &str, maximized: bool, _current: Option<bool>) {
+        debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
+    }
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        debug!("move_to_workspace({id:?}, {workspace_id}) is not supported by this compositor; ignored")
+    }
+    fn switch_layout(&self, index: usize) {
+        debug!("switch_layout({index}) called but this compositor has no indexed layout switch; ignored")
+    }
+}
+
+/// Whether a toggle-only compositor must act: `current` is the last published state, unknown
+/// reads as off.
+fn toggle_needed(current: Option<bool>, want: bool) -> bool {
+    current.unwrap_or(false) != want
+}
+
+impl CompositorKind {
+    pub fn backend(self) -> &'static dyn Compositor {
+        match self {
+            CompositorKind::Hyprland => &hyprland::Hyprland,
+            CompositorKind::Niri => &niri::Niri,
+            CompositorKind::Sway => &sway::Sway,
+            CompositorKind::Mango => &mango::Mango,
         }
     }
 }
@@ -79,11 +119,11 @@ pub fn unsupported_session_report() -> String {
     }
 }
 
-pub(crate) const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Runs `job` after every earlier one on a single shared thread, so rapid write actions reach the
 /// compositor in the order they were sent. Each job blocks for at most one IPC round trip.
-pub fn run_in_order(job: impl FnOnce() + Send + 'static) {
+fn run_in_order(job: impl FnOnce() + Send + 'static) {
     type Job = Box<dyn FnOnce() + Send>;
     static QUEUE: std::sync::OnceLock<std::sync::mpsc::Sender<Job>> = std::sync::OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
@@ -96,7 +136,7 @@ pub fn run_in_order(job: impl FnOnce() + Send + 'static) {
 
 /// Why a compositor reader's `follow` stopped.
 #[derive(Debug, PartialEq)]
-pub enum End {
+enum End {
     /// The stream ended or its state desynced; the published state is cleared and a fresh stream's
     /// replay rebuilds every part.
     Lost,
@@ -108,7 +148,7 @@ pub enum End {
 /// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. The first connect retries
 /// too. `first_delay` is a parameter for tests.
 /// ponytail: a compositor that never comes up keeps one thread retrying every 30 s until exit; stop once the publishers are gone.
-pub fn keep_following<S>(
+fn keep_following<S>(
     compositor: &str,
     first_delay: Duration,
     mut connect: impl FnMut() -> std::io::Result<S>,

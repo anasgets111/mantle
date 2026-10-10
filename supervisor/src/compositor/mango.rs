@@ -1,4 +1,4 @@
-//! `workspaces`' mango implementor, reached over `$MANGO_INSTANCE_SIGNATURE` (a Unix socket path).
+//! mango, reached over `$MANGO_INSTANCE_SIGNATURE` (a Unix socket path).
 //!
 //! mango is dwl-style: each output has a fixed set of tags (1..=`tag_num`) and shows any subset of
 //! them. Each tag becomes one workspace with id `"<output>:<tag>"`. `watch all-monitors` pushes a
@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{End, REQUEST_TIMEOUT, keep_following, run_in_order};
+use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, run_in_order, toggle_needed};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
@@ -225,23 +225,6 @@ fn follow<R: Read>(
     if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
 }
 
-/// On an OS thread, so a stalled mango blocks the reader and not the caller. Also drives
-/// `mantle.windows` and `keyboard`'s layout name from the same stream.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
-    let Some(path) = mango_socket() else {
-        debug!("MANGO_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
-        return;
-    };
-    std::thread::spawn(move || {
-        keep_following(
-            "mango",
-            RETRY_FIRST,
-            || mango_send(&path, "watch all-monitors").map(BufReader::new),
-            |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
-        );
-    });
-}
-
 /// Connector names mango's monitor selector can carry. The selector is an unanchored PCRE2
 /// pattern, so the name is anchored and its dots escaped; anything else (a comma or colon would
 /// split the dispatch arguments) is refused rather than escaped.
@@ -262,14 +245,6 @@ fn focus_command(id: &str) -> Option<String> {
     Some(format!("viewcrossmon,{tag},{}", monitor_selector(output)?))
 }
 
-/// `workspaces:focus(id)`: `viewcrossmon` focuses the output, then shows only that tag.
-pub fn focus(id: &str) {
-    match focus_command(id) {
-        Some(command) => mango_dispatch(command, "workspaces"),
-        None => warn!("{id:?} is not a mango workspace id; ignored"),
-    }
-}
-
 /// Windows are addressed by mango's numeric client id through the `client,<id>` suffix.
 fn window_command(function: &str, id: &str) -> Option<String> {
     // mango reads the id as a C int and, for anything outside 1..=i32::MAX, acts on the focused window.
@@ -283,30 +258,18 @@ fn dispatch_window(function: &str, id: &str) {
     }
 }
 
-pub fn focus_window(id: &str) {
-    dispatch_window("focusid", id);
-}
-
-pub fn close_window(id: &str) {
-    dispatch_window("killclient", id);
-}
-
-pub fn toggle_window_fullscreen(id: &str) {
-    dispatch_window("togglefullscreen", id);
-}
-
 /// `$MANGO_INSTANCE_SIGNATURE`, the path of mango's IPC socket, or `None` when unset or empty.
 /// mango exports it only while its socket is bound and unsets it on exit.
-pub fn mango_socket() -> Option<PathBuf> {
+fn mango_socket() -> Option<PathBuf> {
     std::env::var_os("MANGO_INSTANCE_SIGNATURE").filter(|path| !path.is_empty()).map(PathBuf::from)
 }
 
 /// Longest mango line read, matching the other compositor readers; a longer one is a lost stream.
-pub const MANGO_LINE_MAX: u64 = 64 << 20;
+const MANGO_LINE_MAX: u64 = 64 << 20;
 
 /// Connects and sends one newline-terminated mango command. A newline inside `command` would
 /// smuggle a second command, so it is refused. A `watch` keeps the stream open for more lines.
-pub fn mango_send(socket_path: &Path, command: &str) -> std::io::Result<UnixStream> {
+fn mango_send(socket_path: &Path, command: &str) -> std::io::Result<UnixStream> {
     if command.contains(['\n', '\r']) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "newline in a mango command"));
     }
@@ -318,7 +281,7 @@ pub fn mango_send(socket_path: &Path, command: &str) -> std::io::Result<UnixStre
 
 /// One line of at most `max` bytes, `None` at end of stream. Lossy: mango copies window titles
 /// into its JSON raw, and a strict `read_line` would fail the stream on one that is not UTF-8.
-pub fn mango_read_line(reader: &mut impl BufRead, max: u64) -> std::io::Result<Option<String>> {
+fn mango_read_line(reader: &mut impl BufRead, max: u64) -> std::io::Result<Option<String>> {
     let mut line = Vec::new();
     let read = reader.take(max).read_until(b'\n', &mut line)?;
     if read as u64 == max && line.last() != Some(&b'\n') {
@@ -328,7 +291,7 @@ pub fn mango_read_line(reader: &mut impl BufRead, max: u64) -> std::io::Result<O
 }
 
 /// One mango `get` or `dispatch`: a single JSON line back, then mango closes the connection.
-pub fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
+fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
     let stream = mango_send(socket_path, command)?;
     // A stalled mango must not wedge the reader or the shared action thread.
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
@@ -336,7 +299,7 @@ pub fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<Strin
 }
 
 /// A mango `dispatch` through [`run_in_order`], logging a refusal (`{"error":...}`) at debug level.
-pub fn mango_dispatch(command: String, capability: &'static str) {
+fn mango_dispatch(command: String, capability: &'static str) {
     run_in_order(move || {
         let Some(path) = mango_socket() else {
             return debug!("{capability}: MANGO_INSTANCE_SIGNATURE is unset; `{command}` ignored");
@@ -347,6 +310,55 @@ pub fn mango_dispatch(command: String, capability: &'static str) {
             Err(err) => debug!("{capability}: mango `{command}` request failed: {err}"),
         }
     });
+}
+
+/// mango over `$MANGO_INSTANCE_SIGNATURE`'s socket.
+pub struct Mango;
+
+impl Compositor for Mango {
+    /// On an OS thread, so a stalled mango blocks the reader and not the caller. Also drives
+    /// `mantle.windows` and `keyboard`'s layout name from the same stream.
+    fn spawn_reader(
+        &self,
+        mut publisher: StatePublisher,
+        mut windows_publisher: WindowsPublisher,
+        keyboard: LayoutSink,
+    ) {
+        let Some(path) = mango_socket() else {
+            debug!("MANGO_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
+            return;
+        };
+        std::thread::spawn(move || {
+            keep_following(
+                "mango",
+                RETRY_FIRST,
+                || mango_send(&path, "watch all-monitors").map(BufReader::new),
+                |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
+            );
+        });
+    }
+
+    /// `workspaces:focus(id)`: `viewcrossmon` focuses the output, then shows only that tag.
+    fn focus_workspace(&self, id: &str) {
+        match focus_command(id) {
+            Some(command) => mango_dispatch(command, "workspaces"),
+            None => warn!("{id:?} is not a mango workspace id; ignored"),
+        }
+    }
+
+    fn focus_window(&self, id: &str) {
+        dispatch_window("focusid", id);
+    }
+
+    fn close_window(&self, id: &str) {
+        dispatch_window("killclient", id);
+    }
+
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>) {
+        if toggle_needed(current, fullscreen) {
+            dispatch_window("togglefullscreen", id);
+        }
+    }
 }
 
 #[cfg(test)]

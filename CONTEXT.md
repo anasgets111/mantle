@@ -87,7 +87,7 @@ cited as ADR-NNNN for the why behind behavior the code confirms.
 
 | Term | Meaning |
 | :--- | :--- |
-| **Compositor probe** | Session-level detection of a supported compositor (`CompositorKind`: niri, Hyprland), shared by `keyboard`, `workspaces` and `windows`; `windows` falls back to wlr-foreign-toplevel elsewhere (ADR-0075). |
-| **Compositor link** | The keyboard capability's per-compositor connection for layout state and switching (`CompositorLink`). |
+| **Compositor probe** | Session-level detection of a supported compositor (`CompositorKind`: niri, Hyprland, sway, mango), shared by `keyboard`, `workspaces` and `windows`; `windows` falls back to wlr-foreign-toplevel elsewhere (ADR-0075). |
+| **Compositor adaptor** | The `Compositor` trait (`supervisor/src/compositor/`), returned by `CompositorKind::backend()`: one stateless implementation per compositor for its reader, window and workspace writes, and layout switching. |
 | **Notification body span** | One allowlisted styled-text or validated-image run of a sanitized notification body (ADR-0033). |
 | **Track identity** | MPRIS track ID, URL and title combined, telling a new track from a refresh of the same one (ADR-0036). |

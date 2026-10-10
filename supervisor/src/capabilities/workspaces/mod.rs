@@ -3,14 +3,14 @@
 //!
 //! Top-level because this is a compositor Unix socket, not a device or D-Bus interface.
 //!
-//! Three compositors still use no trait (ADR-0056 decision 1, ADR-0075 decision 4, ADR-0118): the
-//! protocol-specific seam is `StatePublisher` for reads plus exhaustive write arms. With no
-//! implementor, nothing pushes and `mantle.workspaces` stays `nil`; the payload has no absence
-//! sentinel, and `outputs: []` would mean no workspaces rather than no answer.
+//! The protocol-specific seam is `crate::compositor::Compositor`: reads go through `StatePublisher`,
+//! writes through `CompositorKind::backend`. With no implementor, nothing pushes and
+//! `mantle.workspaces` stays `nil`; the payload has no absence sentinel, and `outputs: []` would
+//! mean no workspaces rather than no answer.
 //!
-//! `controller` holds the payload, reduction, and publish contract; `niri` owns `niri_ipc`,
-//! `hyprland` owns Hyprland JSON, and `sway` owns sway's. All also feed `mantle.windows`' full
-//! window list from the same events, through a second publisher.
+//! `controller` holds the payload, reduction, and publish contract; each `crate::compositor`
+//! module owns its protocol's types and also feeds `mantle.windows`' full window list from the
+//! same events, through a second publisher.
 
 pub mod controller;
 

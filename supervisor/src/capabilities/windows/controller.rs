@@ -10,7 +10,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::capabilities::publish;
 
-use crate::compositor::{CompositorKind, hyprland, mango, niri, sway, unsupported_session_report};
+use crate::compositor::{CompositorKind, unsupported_session_report};
 
 use super::wlr;
 
@@ -82,19 +82,15 @@ impl WindowsController {
         self.state.lock().expect("windows state mutex poisoned").clone()
     }
 
-    /// Whether `read`'s last known value for `id` disagrees with `desired`; niri and Hyprland only
-    /// toggle, so a write is sent only on a real change.
-    fn differs(&self, id: &str, read: impl Fn(&WindowEntry) -> Option<bool>, desired: bool) -> bool {
+    /// `read`'s last published value for `id`; a toggle-only compositor writes only on a real change.
+    fn current(&self, id: &str, read: impl Fn(&WindowEntry) -> Option<bool>) -> Option<bool> {
         let state = self.state.lock().expect("windows state mutex poisoned");
-        state.windows.iter().find(|window| window.id == id).and_then(read).unwrap_or(false) != desired
+        state.windows.iter().find(|window| window.id == id).and_then(read)
     }
 
     pub fn focus(&self, id: &str) {
         match &self.backend {
-            Backend::Ipc(CompositorKind::Niri) => niri::focus_window(id),
-            Backend::Ipc(CompositorKind::Hyprland) => hyprland::focus_window(id),
-            Backend::Ipc(CompositorKind::Sway) => sway::focus_window(id),
-            Backend::Ipc(CompositorKind::Mango) => mango::focus_window(id),
+            Backend::Ipc(kind) => kind.backend().focus_window(id),
             Backend::Wlr(handle) => wlr::activate(handle, id),
             Backend::None => debug!("focus({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -102,10 +98,7 @@ impl WindowsController {
 
     pub fn close(&self, id: &str) {
         match &self.backend {
-            Backend::Ipc(CompositorKind::Niri) => niri::close_window(id),
-            Backend::Ipc(CompositorKind::Hyprland) => hyprland::close_window(id),
-            Backend::Ipc(CompositorKind::Sway) => sway::close_window(id),
-            Backend::Ipc(CompositorKind::Mango) => mango::close_window(id),
+            Backend::Ipc(kind) => kind.backend().close_window(id),
             Backend::Wlr(handle) => wlr::close(handle, id),
             Backend::None => debug!("close({id:?}) called but this session has no window implementor; ignored"),
         }
@@ -113,21 +106,7 @@ impl WindowsController {
 
     pub fn set_fullscreen(&self, id: &str, fullscreen: bool) {
         match &self.backend {
-            // niri only toggles and never reports the state, so a toggle could undo the request.
-            Backend::Ipc(CompositorKind::Niri) => {
-                debug!("set_fullscreen({id:?}, {fullscreen}) called but niri reports no fullscreen state; ignored")
-            }
-            Backend::Ipc(CompositorKind::Hyprland) => {
-                if self.differs(id, |w| w.fullscreen, fullscreen) {
-                    hyprland::toggle_window_fullscreen(id);
-                }
-            }
-            Backend::Ipc(CompositorKind::Sway) => sway::set_fullscreen(id, fullscreen),
-            Backend::Ipc(CompositorKind::Mango) => {
-                if self.differs(id, |w| w.fullscreen, fullscreen) {
-                    mango::toggle_window_fullscreen(id);
-                }
-            }
+            Backend::Ipc(kind) => kind.backend().set_fullscreen(id, fullscreen, self.current(id, |w| w.fullscreen)),
             Backend::Wlr(handle) => wlr::set_fullscreen(handle, id, fullscreen),
             Backend::None => {
                 debug!(
@@ -148,13 +127,9 @@ impl WindowsController {
 
     pub fn set_maximized(&self, id: &str, maximized: bool) {
         match &self.backend {
-            Backend::Ipc(CompositorKind::Hyprland) => {
-                if self.differs(id, |w| w.maximized, maximized) {
-                    hyprland::toggle_window_maximized(id);
-                }
-            }
+            Backend::Ipc(kind) => kind.backend().set_maximized(id, maximized, self.current(id, |w| w.maximized)),
             Backend::Wlr(handle) => wlr::set_maximized(handle, id, maximized),
-            Backend::Ipc(CompositorKind::Niri | CompositorKind::Sway | CompositorKind::Mango) | Backend::None => {
+            Backend::None => {
                 debug!("set_maximized({id:?}, {maximized}) called but this backend has no maximize concept; ignored")
             }
         }
@@ -162,12 +137,7 @@ impl WindowsController {
 
     pub fn move_to_workspace(&self, id: &str, workspace_id: &str) {
         match &self.backend {
-            Backend::Ipc(CompositorKind::Niri) => niri::move_window_to_workspace(id, workspace_id),
-            Backend::Ipc(CompositorKind::Hyprland) => hyprland::move_window_to_workspace(id, workspace_id),
-            Backend::Ipc(CompositorKind::Sway) => sway::move_window_to_workspace(id, workspace_id),
-            Backend::Ipc(CompositorKind::Mango) => {
-                debug!("move_to_workspace({id:?}, {workspace_id}) is not supported on mango; ignored")
-            }
+            Backend::Ipc(kind) => kind.backend().move_window(id, workspace_id),
             Backend::Wlr(_) => {
                 debug!("move_to_workspace({id:?}, {workspace_id}) called on wlr backend; ignored")
             }

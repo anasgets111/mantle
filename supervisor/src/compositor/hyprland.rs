@@ -1,4 +1,4 @@
-//! `workspaces`' second implementor: Hyprland over its two instance-directory sockets (ADR-0118).
+//! Hyprland over its two instance-directory sockets (ADR-0118).
 //! Live against 0.56.2; the fixtures below still carry the shapes it was written to.
 //!
 //! 0.56 replaced the command socket's plain-text language with Lua: `dispatch <what>` is now
@@ -43,7 +43,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{REQUEST_TIMEOUT, run_in_order};
+use super::{Compositor, REQUEST_TIMEOUT, run_in_order, toggle_needed};
 use crate::capabilities::keyboard::layout::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
@@ -415,71 +415,6 @@ fn read_state(socket_path: &Path) -> Option<State> {
     ))
 }
 
-/// Connects to the event socket before the first state read, so an intervening change remains a
-/// line to process. One OS thread then re-reads once per burst with a trigger until socket end or
-/// no listener. Also drives `mantle.windows` from the same reads, and `keyboard`'s layout.
-pub fn spawn_reader(mut publisher: StatePublisher, mut windows_publisher: WindowsPublisher, keyboard: LayoutSink) {
-    let Some(signature) = hyprland_signature() else {
-        debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run");
-        return;
-    };
-    let events_path = hyprland_socket_path(&signature, ".socket2.sock");
-    let command_path = hyprland_socket_path(&signature, ".socket.sock");
-    let stream = match UnixStream::connect(&events_path) {
-        Ok(stream) => stream,
-        Err(err) => {
-            error!(
-                "failed to connect to Hyprland's event socket at {}; workspace and window reporting disabled for this run: {err}",
-                events_path.display()
-            );
-            return;
-        }
-    };
-
-    macro_rules! publish {
-        ($rows:expr, $focused:expr, $special:expr, $windows:expr) => {
-            let workspaces_alive = publisher.publish($rows, $focused, $special, None);
-            let windows_alive = windows_publisher.publish($windows);
-            if !workspaces_alive && !windows_alive {
-                return;
-            }
-        };
-    }
-
-    std::thread::spawn(move || {
-        let mut reader = BufReader::new(stream);
-        keyboard.read_hyprland(&command_path);
-        let mut last = read_state(&command_path);
-        let mut urgent = HashSet::new();
-        loop {
-            if let Some((rows, focused, special, windows)) = &last {
-                publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
-            }
-            let burst = match read_burst(&mut reader) {
-                Ok(Some(burst)) => burst,
-                Ok(None) => break,
-                Err(_) => {
-                    error!("Hyprland event socket read failed; workspaces and windows will no longer update");
-                    return;
-                }
-            };
-            if burst.layout {
-                keyboard.read_hyprland(&command_path);
-            }
-            urgent.extend(burst.urgent);
-            // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
-            if burst.reread {
-                let Some(mut state) = read_state(&command_path) else { continue };
-                mark_urgent(&mut state, &mut urgent);
-                last = Some(state);
-            } else if let Some(state) = &mut last {
-                burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
-            }
-        }
-        error!("Hyprland event socket closed; workspaces and windows will no longer update");
-    });
-}
-
 /// One `dispatch` on the shared action thread. Hyprland answers `ok` or a reason; anything else is printed
 /// with the command. `capability` tags the log line for whichever capability asked.
 fn dispatch(what: String, capability: &'static str) {
@@ -491,11 +426,6 @@ fn dispatch(what: String, capability: &'static str) {
         let socket_path = hyprland_socket_path(&signature, ".socket.sock");
         hyprland_command(&socket_path, &format!("dispatch {what}"), capability);
     });
-}
-
-/// `workspaces:focus(id)`; a new number creates the empty slot a strip can pad into.
-pub fn focus(id: &str) {
-    dispatch_to_workspace(id, Capability::Workspaces.as_str(), focus_command);
 }
 
 /// Hyprland reads a negative number as a relative move, so a named workspace goes by `name:`.
@@ -526,24 +456,6 @@ fn dispatch_to_workspace(id: &str, capability: &'static str, build: impl FnOnce(
     });
 }
 
-pub fn focus_window(id: &str) {
-    window_dispatch("hl.dsp.focus", id, None);
-}
-
-pub fn close_window(id: &str) {
-    window_dispatch("hl.dsp.window.close", id, None);
-}
-
-/// Hyprland only toggles; the caller checks this is a real change first.
-pub fn toggle_window_fullscreen(id: &str) {
-    window_dispatch("hl.dsp.window.fullscreen", id, None);
-}
-
-/// Same dispatcher as fullscreen, with `mode = "maximized"`.
-pub fn toggle_window_maximized(id: &str) {
-    window_dispatch("hl.dsp.window.fullscreen", id, Some("maximized"));
-}
-
 /// The table form, not `hl.dsp.focus(N)`: `focus` takes one table and reads the field, the same
 /// call that moves focus by `direction`. Parenthesised because Hyprland appends a "syntax might need
 /// to be updated" note to errors from a command with no `(` in it.
@@ -566,18 +478,6 @@ fn window_dispatch(dispatcher: &str, id: &str, mode: Option<&str>) {
 fn move_window_to_workspace_command(id: &str, selector: &str) -> String {
     let id = lua_escape(id);
     format!(r#"hl.dsp.window.move({{ window = "address:{id}", workspace = {selector}, follow = false }})"#)
-}
-
-pub fn move_window_to_workspace(id: &str, workspace_id: &str) {
-    let id = id.to_string();
-    dispatch_to_workspace(workspace_id, Capability::Windows.as_str(), move |selector| {
-        move_window_to_workspace_command(&id, selector)
-    });
-}
-
-/// `workspaces:toggle_special(name)`.
-pub fn toggle_special(name: &str) {
-    dispatch(toggle_special_command(name), Capability::Workspaces.as_str());
 }
 
 /// Strip `special:`; the unnamed `special` passes the empty string, which the dispatcher reads as
@@ -610,7 +510,7 @@ fn lua_escape(name: &str) -> String {
 /// [`super::detect_compositor`] probes with `var_os`, which accepts bytes `var` rejects, so a session
 /// detected as Hyprland can still have no usable signature. An empty one builds
 /// `$XDG_RUNTIME_DIR/hypr//.socket.sock`, which resolves and never connects.
-pub fn hyprland_signature() -> Option<String> {
+fn hyprland_signature() -> Option<String> {
     std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().filter(|signature| !signature.is_empty())
 }
 
@@ -619,7 +519,7 @@ pub fn hyprland_signature() -> Option<String> {
 /// newline-terminated `event>>payload` lines; `"socket.sock"` answers one plain-text command per
 /// connection (`j/workspaces` for JSON, `dispatch ...` for a write). Shared because `keyboard` and
 /// `workspaces` both open these files, and their path is a session-level fact.
-pub fn hyprland_socket_path(signature: &str, name: &str) -> PathBuf {
+fn hyprland_socket_path(signature: &str, name: &str) -> PathBuf {
     let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
     hyprland_socket_path_in(&runtime_dir, signature, name)
 }
@@ -633,7 +533,7 @@ fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> Pa
 
 /// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
 /// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
-pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
+pub(super) fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
     let mut stream = UnixStream::connect(socket_path)?;
     // A stalled Hyprland must not wedge the reader or the shared action thread.
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
@@ -646,7 +546,7 @@ pub fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<St
 /// A write and its reply check, blocking. `capability` prefixes the log line, the only thing the
 /// two callers differ in. An unread reply makes a refusal silent: a bad device, an index out of
 /// range.
-pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
+fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
     match hyprland_request(socket_path, command) {
         Ok(reply) if reply.trim() == "ok" => {
             debug!(2; "{capability}: Hyprland command `{command}` succeeded");
@@ -658,7 +558,7 @@ pub fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
 
 impl LayoutSink {
     /// One `j/devices` read, on Hyprland's `activelayout` event and once at reader start.
-    pub fn read_hyprland(&self, socket_path: &Path) {
+    fn read_hyprland(&self, socket_path: &Path) {
         let reply = match hyprland_request(socket_path, "j/devices") {
             Ok(reply) => reply,
             Err(err) => return debug!("Hyprland `devices` request failed; layout not updated this round: {err}"),
@@ -707,6 +607,134 @@ fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
         .filter(|k| !matches!(k.active_keymap.as_str(), "none" | "error"))
         .collect();
     parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
+}
+
+/// Hyprland over its two instance-directory sockets.
+pub struct Hyprland;
+
+impl Compositor for Hyprland {
+    /// Connects to the event socket before the first state read, so an intervening change remains a
+    /// line to process. One OS thread then re-reads once per burst with a trigger until socket end or
+    /// no listener. Also drives `mantle.windows` from the same reads, and `keyboard`'s layout.
+    fn spawn_reader(
+        &self,
+        mut publisher: StatePublisher,
+        mut windows_publisher: WindowsPublisher,
+        keyboard: LayoutSink,
+    ) {
+        let Some(signature) = hyprland_signature() else {
+            debug!(
+                "HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run"
+            );
+            return;
+        };
+        let events_path = hyprland_socket_path(&signature, ".socket2.sock");
+        let command_path = hyprland_socket_path(&signature, ".socket.sock");
+        let stream = match UnixStream::connect(&events_path) {
+            Ok(stream) => stream,
+            Err(err) => {
+                error!(
+                    "failed to connect to Hyprland's event socket at {}; workspace and window reporting disabled for this run: {err}",
+                    events_path.display()
+                );
+                return;
+            }
+        };
+
+        macro_rules! publish {
+            ($rows:expr, $focused:expr, $special:expr, $windows:expr) => {
+                let workspaces_alive = publisher.publish($rows, $focused, $special, None);
+                let windows_alive = windows_publisher.publish($windows);
+                if !workspaces_alive && !windows_alive {
+                    return;
+                }
+            };
+        }
+
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stream);
+            keyboard.read_hyprland(&command_path);
+            let mut last = read_state(&command_path);
+            let mut urgent = HashSet::new();
+            loop {
+                if let Some((rows, focused, special, windows)) = &last {
+                    publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
+                }
+                let burst = match read_burst(&mut reader) {
+                    Ok(Some(burst)) => burst,
+                    Ok(None) => break,
+                    Err(_) => {
+                        error!("Hyprland event socket read failed; workspaces and windows will no longer update");
+                        return;
+                    }
+                };
+                if burst.layout {
+                    keyboard.read_hyprland(&command_path);
+                }
+                urgent.extend(burst.urgent);
+                // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
+                if burst.reread {
+                    let Some(mut state) = read_state(&command_path) else { continue };
+                    mark_urgent(&mut state, &mut urgent);
+                    last = Some(state);
+                } else if let Some(state) = &mut last {
+                    burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
+                }
+            }
+            error!("Hyprland event socket closed; workspaces and windows will no longer update");
+        });
+    }
+
+    /// `workspaces:focus(id)`; a new number creates the empty slot a strip can pad into.
+    fn focus_workspace(&self, id: &str) {
+        dispatch_to_workspace(id, Capability::Workspaces.as_str(), focus_command);
+    }
+
+    fn focus_window(&self, id: &str) {
+        window_dispatch("hl.dsp.focus", id, None);
+    }
+
+    fn close_window(&self, id: &str) {
+        window_dispatch("hl.dsp.window.close", id, None);
+    }
+
+    /// Hyprland only toggles, so a write is sent only on a real change.
+    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>) {
+        if toggle_needed(current, fullscreen) {
+            window_dispatch("hl.dsp.window.fullscreen", id, None);
+        }
+    }
+
+    /// Same dispatcher as fullscreen, with `mode = "maximized"`.
+    fn set_maximized(&self, id: &str, maximized: bool, current: Option<bool>) {
+        if toggle_needed(current, maximized) {
+            window_dispatch("hl.dsp.window.fullscreen", id, Some("maximized"));
+        }
+    }
+
+    fn move_window(&self, id: &str, workspace_id: &str) {
+        let id = id.to_string();
+        dispatch_to_workspace(workspace_id, Capability::Windows.as_str(), move |selector| {
+            move_window_to_workspace_command(&id, selector)
+        });
+    }
+
+    /// `workspaces:toggle_special(name)`.
+    fn toggle_special(&self, name: &str) {
+        dispatch(toggle_special_command(name), Capability::Workspaces.as_str());
+    }
+
+    /// `switchxkblayout main <index>` over `.socket.sock`. `main` is also Hyprland's device target
+    /// for that keyboard, so no device name is tracked here.
+    fn switch_layout(&self, index: usize) {
+        let Some(signature) = hyprland_signature() else {
+            return debug!("switch_layout({index}) requested but HYPRLAND_INSTANCE_SIGNATURE is unset; ignored");
+        };
+        run_in_order(move || {
+            let socket_path = hyprland_socket_path(&signature, ".socket.sock");
+            hyprland_command(&socket_path, &format!("switchxkblayout main {index}"), "keyboard");
+        });
+    }
 }
 
 #[cfg(test)]
