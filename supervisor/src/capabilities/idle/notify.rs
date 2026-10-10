@@ -41,7 +41,8 @@ pub(crate) struct ListenerId {
 /// later. Any-of read that gap as a still-held inhibitor for the whole five minutes.
 ///
 /// `None` means no evidence, which is whenever the seat is in use. The caller keeps its last
-/// answer, so the published one has no staleness bound. Only a fresh idle period replaces it.
+/// answer, so the published one has no staleness bound. Only a fresh idle period, or a regular
+/// resume while the seat stays idle, replaces it.
 pub(crate) fn wayland_inhibited(input_idle: &HashSet<Duration>, gated_idle: &HashSet<Duration>) -> Option<bool> {
     input_idle.iter().min().map(|shortest| !gated_idle.contains(shortest))
 }
@@ -271,6 +272,10 @@ pub(crate) fn connect_wayland_idle()
     Ok((live, raw_events_rx))
 }
 
+/// How long a regular `resumed` waits for its input twin's. One input wakes both in the same
+/// compositor dispatch, so the gap is the channel's, microseconds; a hold waits this long to show.
+const TWIN_GRACE: Duration = Duration::from_millis(100);
+
 /// Sends one [`shared::IdleEvent`] per registered `generation_id` for relevant listener events
 /// (ADR-0032, ADR-0299), and tracks both listeners to answer [`wayland_inhibited`] (ADR-0160).
 pub(crate) fn spawn_idle_event_forwarder(
@@ -284,11 +289,15 @@ pub(crate) fn spawn_idle_event_forwarder(
     tokio::spawn(async move {
         let mut input_idle: HashSet<Duration> = HashSet::new();
         let mut gated_idle: HashSet<Duration> = HashSet::new();
-        while let Some(first) = raw_events_rx.recv().await {
-            // Drain what already arrived, so both halves of a pair are usually read together
-            // rather than showing "inhibited" in the gap between them. This narrows the window
-            // without closing it. An mpsc channel is not a compositor batch, so the consumer can
-            // run between the producer's two sends, and two timers can expire separately.
+        let mut carried = None;
+        while let Some(first) = match carried.take() {
+            Some(event) => Some(event),
+            None => raw_events_rx.recv().await,
+        } {
+            let mut resumed_alone = false;
+            // Drain what already arrived, so both halves of a pair are usually read together. An
+            // mpsc channel is not a compositor batch, so a regular resume can still arrive alone;
+            // `TWIN_GRACE` below covers that gap.
             let batch = std::iter::once(first).chain(std::iter::from_fn(|| raw_events_rx.try_recv().ok()));
 
             for (listener, raw_event) in batch {
@@ -297,11 +306,16 @@ pub(crate) fn spawn_idle_event_forwarder(
                         let seen = if listener.respects_inhibitors { &mut gated_idle } else { &mut input_idle };
                         seen.insert(listener.duration);
                     }
-                    // Either resume invalidates the pair's comparison. Clearing only its own half
-                    // made a regular resume look like a new inhibitor until the next idle period.
+                    // An input resume ends the pair's comparison. A regular resume alone is how
+                    // the compositor takes back `idled` when an inhibitor appears on an idle seat,
+                    // so the input twin's idle stays as the evidence.
                     RawIdleEvent::Resumed => {
                         gated_idle.remove(&listener.duration);
-                        input_idle.remove(&listener.duration);
+                        if !listener.respects_inhibitors {
+                            input_idle.remove(&listener.duration);
+                        } else if input_idle.contains(&listener.duration) {
+                            resumed_alone = true;
+                        }
                     }
                 }
 
@@ -332,6 +346,19 @@ pub(crate) fn spawn_idle_event_forwarder(
                     {
                         return;
                     }
+                }
+            }
+
+            // Input resumes both listeners, but the twin's event can trail the regular one's.
+            // Publish a hold only once the twin has had its chance, or every keystroke reads as one.
+            if resumed_alone {
+                match tokio::time::timeout(TWIN_GRACE, raw_events_rx.recv()).await {
+                    Ok(Some(next)) => {
+                        carried = Some(next);
+                        continue;
+                    }
+                    Ok(None) => return,
+                    Err(_) => {}
                 }
             }
 
@@ -491,27 +518,67 @@ mod tests {
         );
     }
 
-    /// The resume half, which the first version got wrong in a way no single-event test could show.
-    /// Waking clears both listeners. Clearing only the one that reported left the other's stale
-    /// idle behind, which reads as a held inhibitor, and the second `Resumed` is no evidence and
-    /// preserves whatever it finds. The false positive then lasted as long as the seat stayed busy.
-    #[test]
-    fn waking_clears_both_halves_whichever_one_reports_first() {
+    /// The forwarder with one live listener pair at 1s, both already idle. Inert proxies on an
+    /// unserved socket: the forwarder only looks them up, it never sends on them.
+    fn idle_seat()
+    -> (UnboundedSender<(ListenerId, RawIdleEvent)>, UnboundedReceiver<super::super::IdleState>, [ListenerId; 2]) {
+        use wayland_client::Proxy;
+        let (socket, _) = std::os::unix::net::UnixStream::pair().expect("socketpair");
+        let connection = Connection::from_socket(socket).expect("a client on an unserved socket");
+        let regular = ListenerId { duration: secs(1), respects_inhibitors: true };
+        let input = ListenerId { respects_inhibitors: false, ..regular };
+        let mut registry = NotifyRegistry::default();
+        for id in [regular, input] {
+            registry.listeners.insert(id, ExtIdleNotificationV1::inert(connection.backend().downgrade()));
+        }
+        let (raw_tx, raw_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (events_tx, _) = tokio::sync::mpsc::unbounded_channel();
+        let (state_tx, state_rx) = tokio::sync::mpsc::unbounded_channel();
+        spawn_idle_event_forwarder(
+            Arc::new(Mutex::new(registry)),
+            Arc::default(),
+            Arc::default(),
+            raw_rx,
+            events_tx,
+            state_tx,
+        );
+        for id in [regular, input] {
+            raw_tx.send((id, RawIdleEvent::Idled)).expect("forwarder alive");
+        }
+        (raw_tx, state_rx, [regular, input])
+    }
+
+    /// Media resumed from a phone while nobody touches the seat. The compositor answers a new
+    /// surface inhibitor by resuming only the listener that honours inhibitors; the input twin
+    /// stays idle. Clearing both on that resume hid the hold until input came and went.
+    #[tokio::test(start_paused = true)]
+    async fn a_hold_taken_while_the_seat_is_idle_is_seen_without_input() {
+        let (raw_tx, mut state_rx, [regular, _]) = idle_seat();
+
+        raw_tx.send((regular, RawIdleEvent::Resumed)).expect("forwarder alive");
+
+        let pushed = tokio::time::timeout(Duration::from_secs(5), state_rx.recv())
+            .await
+            .expect("the hold must be published without waiting for input")
+            .expect("forwarder alive");
+        assert!(pushed.inhibited);
+        assert!(!pushed.compositor_hold_stale, "the input twin is still idle, so this is a current answer");
+    }
+
+    /// Input wakes both listeners, but the regular one may arrive first and alone. Its twin
+    /// following moments later must not leave that gap published as a hold.
+    #[tokio::test(start_paused = true)]
+    async fn waking_is_not_a_hold_whichever_listener_reports_first() {
         for gated_first in [true, false] {
-            let mut input = HashSet::from([secs(1)]);
-            let mut gated = HashSet::from([secs(1)]);
-            let order = if gated_first { [true, false] } else { [false, true] };
-            for respects_inhibitors in order {
-                // What the forwarder does for a `Resumed`, in one order and then the other.
-                let _ = respects_inhibitors;
-                gated.remove(&secs(1));
-                input.remove(&secs(1));
-                assert_ne!(
-                    wayland_inhibited(&input, &gated),
-                    Some(true),
-                    "waking must never read as an inhibitor, in either order"
-                );
-            }
+            let (raw_tx, mut state_rx, [regular, input]) = idle_seat();
+            let order = if gated_first { [regular, input] } else { [input, regular] };
+
+            raw_tx.send((order[0], RawIdleEvent::Resumed)).expect("forwarder alive");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            raw_tx.send((order[1], RawIdleEvent::Resumed)).expect("forwarder alive");
+            tokio::time::sleep(Duration::from_secs(5)).await;
+
+            assert!(state_rx.try_recv().is_err(), "waking must never read as a hold, gated first: {gated_first}");
         }
     }
 

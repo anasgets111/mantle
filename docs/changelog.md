@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: `mantle.idle` reports a compositor hold taken while the seat is already idle, such as a video resumed from a phone; `inhibited` stayed false until input came and went.
+
 ## 0.5.4 - 2026-10-09
 
 - Fixed: `padding` on a `text` or `textfield` now insets its glyphs, caret, links and IME cursor; they drew from the box's corner, so padded labels sat off-centre.
