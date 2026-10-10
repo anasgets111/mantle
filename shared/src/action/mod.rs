@@ -27,9 +27,6 @@ impl<'de> serde::de::SeqAccess<'de> for Positional<'de> {
         let at = |err| serde::de::Error::custom(format_args!("argument {}: {err}", index + 1));
         seed.deserialize(value).map(Some).map_err(at)
     }
-    fn size_hint(&self) -> Option<usize> {
-        Some(self.0.len())
-    }
 }
 
 impl<'de> serde::de::EnumAccess<'de> for Invocation<'de> {

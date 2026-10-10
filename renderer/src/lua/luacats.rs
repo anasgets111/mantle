@@ -7,25 +7,15 @@ use std::marker::PhantomData;
 
 use mlua::{AnyUserData, FromLua, Function, IntoLua, Lua, LuaString, Table, Value, Variadic};
 
-/// How [`Args`] words a failed conversion; only a failure calls it.
-pub(crate) trait Reword {
-    fn reword(to: Option<&str>, err: mlua::Error) -> mlua::Error;
-}
-
 /// A function's typed arguments. Converting is mlua's own stack path, so a call costs nothing
-/// over a bare tuple; only a failure is reworded, as the author reads it:
-/// `file:3: fonts: bad argument #1 (chain): expected a table, got integer`. A conversion error is
-/// held in `.0` for the body to raise, as mlua gives no `&Lua` to locate it with here.
-pub(crate) struct Args<T, N>(pub mlua::Result<T>, pub PhantomData<N>);
+/// over a bare tuple. A conversion error is held in `.0` for the body to reword and raise, as
+/// mlua gives no `&Lua` to locate it with here:
+/// `file:3: fonts: bad argument #1 (chain): expected a table, got integer`.
+pub(crate) struct Args<T>(pub mlua::Result<T>);
 
-impl<T: mlua::FromLuaMulti, N: Reword> mlua::FromLuaMulti for Args<T, N> {
+impl<T: mlua::FromLuaMulti> mlua::FromLuaMulti for Args<T> {
     fn from_lua_multi(values: mlua::MultiValue, lua: &Lua) -> mlua::Result<Self> {
-        Ok(Self(T::from_lua_multi(values, lua), PhantomData))
-    }
-
-    unsafe fn from_stack_multi(nvals: std::ffi::c_int, lua: &mlua::state::RawLua) -> mlua::Result<Self> {
-        // SAFETY: mlua's own arguments, forwarded unchanged.
-        Ok(Self(unsafe { T::from_stack_multi(nvals, lua) }, PhantomData))
+        Ok(Self(T::from_lua_multi(values, lua)))
     }
 
     unsafe fn from_stack_args(
@@ -35,21 +25,16 @@ impl<T: mlua::FromLuaMulti, N: Reword> mlua::FromLuaMulti for Args<T, N> {
         lua: &mlua::state::RawLua,
     ) -> mlua::Result<Self> {
         // SAFETY: mlua's own arguments, forwarded unchanged.
-        let args = unsafe { T::from_stack_args(nargs, index, to, lua) };
-        Ok(Self(args.map_err(|err| N::reword(to, err)), PhantomData))
+        Ok(Self(unsafe { T::from_stack_args(nargs, index, to, lua) }))
     }
 }
 
-/// A userdata method's arguments, numbered without `self`.
-pub(crate) struct OnMethod;
-pub(crate) type Method<T> = Args<T, OnMethod>;
-
-impl Reword for OnMethod {
-    fn reword(to: Option<&str>, err: mlua::Error) -> mlua::Error {
-        // `to` is mlua's `Class.method`; the Rust class is not a name a config author writes.
-        let method = to.and_then(|to| to.split_once('.')).map_or("", |(_, method)| method);
-        bad_argument(&format!("method {method}"), &[], 2, err)
-    }
+/// [`bad_argument`] for a userdata method's arguments, numbered without `self`.
+pub(crate) fn bad_method_argument(err: mlua::Error) -> mlua::Error {
+    let mlua::Error::BadArgument { to, .. } = &err else { return err };
+    // `to` is mlua's `Class.method`; the Rust class is not a name a config author writes.
+    let method = to.as_deref().and_then(|to| to.split_once('.')).map_or("", |(_, method)| method);
+    bad_argument(&format!("method {method}"), &[], 2, err)
 }
 
 /// `first` is the position mlua counts the first argument at: 1 for a function, 2 after a method's `self`.
@@ -477,18 +462,11 @@ macro_rules! lua_fn {
         )
     }};
     (@value $lua:expr; $path:expr; (body $l:ident; $out:ty; $body:block); $($name:ident: $ty:ty),*) => {
-        {
-            struct Names;
-            impl $crate::lua::luacats::Reword for Names {
-                fn reword(_: Option<&str>, err: mlua::Error) -> mlua::Error {
-                    $crate::lua::luacats::bad_argument($path, &[$(stringify!($name)),*], 1, err)
-                }
-            }
-            $lua.create_function(move |$l, $crate::lua::luacats::Args(args, _): $crate::lua::luacats::Args<($($ty,)*), Names>|
-                    -> mlua::Result<$out> {
-                args.and_then(|($($name,)*)| -> mlua::Result<$out> { $body }).map_err(|err| $crate::lua::location::located($l, err))
-            })?
-        }
+        $lua.create_function(move |$l, $crate::lua::luacats::Args(args): $crate::lua::luacats::Args<($($ty,)*)>| -> mlua::Result<$out> {
+            args.map_err(|err| $crate::lua::luacats::bad_argument($path, &[$(stringify!($name)),*], 1, err))
+                .and_then(|($($name,)*)| -> mlua::Result<$out> { $body })
+                .map_err(|err| $crate::lua::location::located($l, err))
+        })?
     };
     (@value $lua:expr; $path:expr; (value $value:expr); $($name:ident: $ty:ty),*) => {
         $value

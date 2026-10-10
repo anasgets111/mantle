@@ -79,6 +79,7 @@ pub type PropMap = rustc_hash::FxHashMap<&'static str, Value>;
 
 use mlua::{Lua, Value};
 
+use crate::lua::location::Site;
 use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal;
 pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
@@ -285,7 +286,7 @@ pub enum LayoutError {
 struct Step {
     kind: String,
     index: Option<usize>,
-    site: Option<crate::lua::location::Site>,
+    site: Option<Site>,
 }
 
 /// Where an `InvalidProperty` happened: the nodes walked from the failing one up to its root, then
@@ -302,19 +303,14 @@ pub struct Trail {
 fn invalid_property(property: &str, detail: &str, at: Option<&Trail>) -> String {
     let (steps, surface) = at.map_or((&[][..], None), |at| (&at.steps[..], at.surface.as_deref()));
     // A node built from a plain table has no site; the nearest ancestor's line leads and leaves the path.
-    let (lead, above): (String, Vec<&Step>) = match steps.iter().enumerate().find_map(|(i, step)| Some((i, step.site?)))
-    {
-        Some((near, site)) => {
-            let above = steps.iter().enumerate().filter(|&(i, _)| i != 0 && i != near).map(|(_, step)| step);
-            (format!("{site}: {}: ", steps[0]), above.collect())
-        }
-        None => (String::new(), steps.iter().collect()),
-    };
-    let path = above.iter().rev().map(|step| step.site.map_or_else(|| step.to_string(), |at| format!("{step} ({at})")));
-    let path = (!above.is_empty()).then(|| format!("at {}", path.collect::<Vec<_>>().join(" > ")));
-    let context = [path, surface.map(|surface| format!("on `{surface}`"))].into_iter().flatten();
-    let context = context.collect::<Vec<_>>().join(" ");
-    let context = if context.is_empty() { context } else { format!(" ({context})") };
+    let near = steps.iter().enumerate().find_map(|(i, step)| Some((i, step.site?)));
+    let lead = near.map_or(String::new(), |(_, site)| format!("{site}: {}: ", steps[0]));
+    let above = steps.iter().enumerate().rev().filter(|&(i, _)| near.is_none_or(|(near, _)| i != 0 && i != near));
+    let path: Vec<String> =
+        above.map(|(_, step)| step.site.map_or_else(|| step.to_string(), |at| format!("{step} ({at})"))).collect();
+    let path = (!path.is_empty()).then(|| format!("at {}", path.join(" > ")));
+    let context: Vec<String> = [path, surface.map(|surface| format!("on `{surface}`"))].into_iter().flatten().collect();
+    let context = if context.is_empty() { String::new() } else { format!(" ({})", context.join(" ")) };
     let head = if property.is_empty() { String::new() } else { format!("invalid value for `{property}`: ") };
     let (first, rest) = detail.split_at(detail.find('\n').unwrap_or(detail.len()));
     format!("{lead}{head}{first}{context}{rest}")
@@ -375,12 +371,11 @@ impl LayoutError {
     /// Names the surface instance, added by `layout::scene::Scene::apply_admitting`: one property
     /// name alone left a config with a dozen surfaces to grep every one. Only `InvalidProperty`
     /// carries a [`Trail`]; the other variants already name the node kind or the whole pass.
-    pub(crate) fn on_surface(self, surface: &str) -> Self {
-        let Self::InvalidProperty { property, detail, mut at } = self else {
-            return self;
-        };
-        at.get_or_insert_default().surface = Some(surface.to_string());
-        Self::InvalidProperty { property, detail, at }
+    pub(crate) fn on_surface(mut self, surface: &str) -> Self {
+        if let Self::InvalidProperty { at, .. } = &mut self {
+            at.get_or_insert_default().surface = Some(surface.to_string());
+        }
+        self
     }
 
     /// Adds the next node up the walk that reached the failure, from `layout::scene`'s `prepare`
@@ -389,12 +384,11 @@ impl LayoutError {
     /// scene. `site` names the line that built the node, which an index cannot for a node a helper
     /// returned; `index`, a position among `children` (`None` for a lone `child`), tells apart
     /// siblings built on one line. A `list` renumbers its rows as its source changes.
-    pub(crate) fn in_node(self, kind: &str, index: Option<usize>, site: Option<crate::lua::location::Site>) -> Self {
-        let Self::InvalidProperty { property, detail, mut at } = self else {
-            return self;
-        };
-        at.get_or_insert_default().steps.push(Step { kind: kind.to_string(), index, site });
-        Self::InvalidProperty { property, detail, at }
+    pub(crate) fn in_node(mut self, kind: &str, index: Option<usize>, site: Option<Site>) -> Self {
+        if let Self::InvalidProperty { at, .. } = &mut self {
+            at.get_or_insert_default().steps.push(Step { kind: kind.to_string(), index, site });
+        }
+        self
     }
 }
 

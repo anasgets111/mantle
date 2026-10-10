@@ -224,13 +224,14 @@ pub fn take_layout_changed(lua: &Lua) -> Vec<CellId> {
 }
 
 /// A `delay` or `pulse` source: a Signal or capability, anything else named by its Lua type.
-fn signal_source(function: &str, value: &Value) -> mlua::Result<(AnyUserData, Signal)> {
-    value.as_userdata().and_then(|ud| Some((ud.clone(), from_userdata(ud)?))).ok_or_else(|| {
-        mlua::Error::runtime(format!(
+fn signal_source(function: &str, value: Value) -> mlua::Result<(AnyUserData, Signal)> {
+    match value {
+        Value::UserData(ud) if let Some(signal) = from_userdata(&ud) => Ok((ud, signal)),
+        other => Err(mlua::Error::runtime(format!(
             "{function}: source must be a Signal or a `mantle` capability, got {}",
-            preview_for_error(value)
-        ))
-    })
+            preview_for_error(&other)
+        ))),
+    }
 }
 
 /// The `ms` a `delay` or a `pulse` is given, as whole milliseconds.
@@ -309,7 +310,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<Generic, AnyUserData> {
-            let (source_ud, source) = signal_source("delay", &source.0)?;
+            let (source_ud, source) = signal_source("delay", source.0)?;
             let hold = parse_hold("delay", ms.0)?;
             let held = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Delayed { hold, due: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;
@@ -331,7 +332,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             ms: As<Num, f64>,
         ) -> /// Read-only.
         SignalOf<bool, AnyUserData> {
-            let (source_ud, source) = signal_source("pulse", &source.0)?;
+            let (source_ud, source) = signal_source("pulse", source.0)?;
             let hold = parse_hold("pulse", ms.0)?;
             let seen = source.get_value(lua)?;
             let ud = new_derived(lua, SignalKind::Pulse { hold, until: Rc::default(), cell: super::next_cell_id() }, None, vec![source_ud])?;

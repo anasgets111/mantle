@@ -406,8 +406,6 @@ pub(super) fn prepare(
 
     node.children.reserve(fresh_children.len());
     let mut failed = Vec::new();
-    // A `child =` has no position to name; `children` entries do.
-    let lone = node.properties.contains_key("child");
     // Indexed, not `into_iter().zip().enumerate()`: a debug build gives each adapter its own copy
     // of the 744-byte candidate in this frame, one per tree level.
     for index in 0..fresh_children.len() {
@@ -417,7 +415,9 @@ pub(super) fn prepare(
         };
         // Every failure below names this child, so the message that reaches a human is the path
         // down to the node rather than a property name and a surface (`LayoutError::in_node`).
-        let here = |err: LayoutError| err.in_node(child_kind, (!lone).then_some(index), site);
+        // A `child =` has no position to name; `children` entries do.
+        let here =
+            |err: LayoutError| err.in_node(child_kind, (!node.properties.contains_key("child")).then_some(index), site);
 
         // Before this child's own getters run, not after: resolving its property map calls back
         // into Lua, and a child the walk is about to refuse must not execute anything on the way

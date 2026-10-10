@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use mlua::{FromLuaMulti, IntoLuaMulti, Lua, Table, Value};
 
-use crate::lua::luacats::{Args, Method};
+use crate::lua::luacats::{Args, bad_method_argument};
 use shared::warn;
 
 /// Replaces Lua's file searcher, `package.searchers[2]`, with one that names the chunk as
@@ -83,19 +83,17 @@ pub(crate) fn describe(err: &mlua::Error) -> String {
     if lines.last() == Some(&"stack traceback:") {
         lines.pop();
     }
-    let mut text = lines.join("\n");
-    if location(lines.first().copied().unwrap_or_default()).is_none() {
-        let mut frames = lines.iter().skip_while(|line| **line != "stack traceback:");
-        if let Some(at) = frames.find_map(|frame| location(frame.trim_start())) {
-            text = format!("{at}: {text}");
-        }
+    let text = lines.join("\n");
+    let mut frames = lines.iter().skip_while(|line| **line != "stack traceback:");
+    match frames.find_map(|frame| location(frame.trim_start())) {
+        Some(at) if location(lines.first().copied().unwrap_or_default()).is_none() => format!("{at}: {text}"),
+        _ => text,
     }
-    text
 }
 
 /// The `chunk:N` that leads a line as Lua prefixes its errors; `timer: ms 0` and `got string "10:30: x"` have none.
 fn location(line: &str) -> Option<&str> {
-    let (head, _) = line.split_once(": ")?;
+    let (head, _) = line.lines().next()?.split_once(": ")?;
     let (chunk, n) = head.rsplit_once(':')?;
     // A quote belongs only to a `[string "..."]` chunk name, a space also to a `.lua` path (`signal
     // created at a.lua:3`); `ms 10:30: x` is neither.
@@ -122,8 +120,8 @@ pub(crate) trait LocatedMethods<T>: mlua::UserDataMethods<T> {
         name: &str,
         f: impl Fn(&Lua, &T, A) -> mlua::Result<R> + 'static,
     ) {
-        self.add_method(name, move |lua, this, Args(args, _): Method<A>| {
-            args.and_then(|args| f(lua, this, args)).map_err(|err| located(lua, err))
+        self.add_method(name, move |lua, this, Args(args): Args<A>| {
+            args.map_err(bad_method_argument).and_then(|args| f(lua, this, args)).map_err(|err| located(lua, err))
         });
     }
 
@@ -132,8 +130,8 @@ pub(crate) trait LocatedMethods<T>: mlua::UserDataMethods<T> {
         name: &str,
         f: impl Fn(&Lua, A) -> mlua::Result<R> + 'static,
     ) {
-        self.add_function(name, move |lua, Args(args, _): Method<A>| {
-            args.and_then(|args| f(lua, args)).map_err(|err| located(lua, err))
+        self.add_function(name, move |lua, Args(args): Args<A>| {
+            args.map_err(bad_method_argument).and_then(|args| f(lua, args)).map_err(|err| located(lua, err))
         });
     }
 }
@@ -194,32 +192,28 @@ pub(crate) fn report_raised(handler: &mlua::Function, head: String, err: &mlua::
 
 fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error, now: Instant) -> Option<String> {
     let message = describe(err);
+    let first = message.lines().next().unwrap_or_default();
     let info = handler.info();
-    let key = (head, message.lines().next().unwrap_or_default().to_string(), info.short_src.clone(), info.line_defined);
-    let (times, log) = RAISED.with_borrow_mut(|seen| {
+    let key = (head, first.to_string(), info.short_src, info.line_defined);
+    let times = RAISED.with_borrow_mut(|seen| {
         if seen.len() >= FOLD_CAP && !seen.contains_key(&key) {
             seen.clear();
         }
         let (times, logged) = seen.entry(key.clone()).or_insert((0, now));
         *times += 1;
-        let log = *times == 1 || times.is_power_of_two() || now.duration_since(*logged) >= REFOLD_AFTER;
-        if log {
+        // The 1st, 2nd, 4th, 8th...
+        let log = times.is_power_of_two() || now.duration_since(*logged) >= REFOLD_AFTER;
+        log.then(|| {
             *logged = now;
-        }
-        (*times, log)
-    });
-    let (head, ..) = key;
-    if times == 1 {
-        let at = match (info.short_src, info.line_defined) {
-            (Some(src), Some(line)) => format!(" (defined at {src}:{line})"),
-            _ => String::new(),
-        };
-        Some(format!("{head}: {message}{at}"))
-    } else if log {
-        Some(format!("{head}: raised again ({times} times): {}", message.lines().next().unwrap_or_default()))
-    } else {
-        None
-    }
+            *times
+        })
+    })?;
+    let (head, _, src, line) = key;
+    Some(match (times, src, line) {
+        (1, Some(src), Some(line)) => format!("{head}: {message} (defined at {src}:{line})"),
+        (1, ..) => format!("{head}: {message}"),
+        _ => format!("{head}: raised again ({times} times): {first}"),
+    })
 }
 
 /// A line of config code, `widgets/bar.lua:12` once displayed: where a node or derived signal was
@@ -347,6 +341,7 @@ mod tests {
         assert_eq!(super::location("[string \"cfg\"]:3: x"), Some("[string \"cfg\"]:3"));
         assert_eq!(super::location("mantle.x:go: 10: x"), None);
         assert_eq!(super::location("ms 10:30: x"), None);
+        assert_eq!(super::location("bad\nshell.lua:3: x"), None, "only the first line is a position");
     }
 
     /// `error` raised in the main chunk, and a failing `computed` read through `:get()`, which
