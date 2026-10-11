@@ -303,6 +303,10 @@ pub fn run(
             app.apply_resolved_surface_state_for(&[&scrolled]);
         }
         let passed = app.client.re_resolve_if_dirty();
+        if passed && app.image_cache.has_node_clocks() {
+            let live = app.client.scene().animated_image_nodes();
+            app.image_cache.forget_node_clocks(|node| live.contains(&node));
+        }
         let targeted_instances = if passed { app.client.take_last_resolved() } else { None };
         phases.mark_resolve();
         phases.mark_resolve_split(app.client.take_resolve_split());

@@ -490,6 +490,8 @@ props! {
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
         /// Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
+        /// `false` holds an animated GIF on its current frame, the first if it never played, and stops its frame requests; `true` resumes from there. Per node: another image showing the same file plays on, and a node keeps its place while scrolled out or resized. Stills ignore it.
+        playing: Bound<Flag> = absent(Bool(true));
         /// An `image_status(name)` signal; the engine writes the load of `source`: empty, loading, ready with the file's own size, or failed.
         ///
         /// Book: An [`image_status(name)`](../guide/signals.md#image_status-read-an-images-load) signal. The engine writes the load of `source`; see [load status](#load-status)

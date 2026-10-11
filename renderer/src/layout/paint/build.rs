@@ -466,7 +466,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
         // picture being crossed away from, otherwise the one the node is still covering a decoding
         // source with. One field because the node is never doing both: `displayed_source` has
         // already moved on to `source` by the time a dissolve starts.
-        PaintStyle::Image { source, fit, load, retain, transition, source_blur, radius, wants_size } => {
+        PaintStyle::Image { source, fit, load, retain, transition, source_blur, radius, wants_size, playing } => {
             (!source.is_empty()).then(|| {
                 // What goes under the draw. Dropped once the node draws what it names: an equal pair in
                 // the list would be one more thing to compare, and its disappearance ends the cover.
@@ -505,6 +505,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                     blur_px: physical_blur(*source_blur, scale),
                     radius: radius.clone() * scale,
                     wants_size: *wants_size,
+                    playing: *playing,
                 }
             })
         }

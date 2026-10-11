@@ -106,7 +106,7 @@ pub(crate) fn is_vector(path: &Path) -> bool {
 /// ponytail: GIF only, so an animated WebP or APNG draws its first frame like a still (and so, per
 /// [`ImageCache::image`](super::ImageCache::image), can carry a `source_blur`). Upgrade: match the sniffed format;
 /// `AnimationDecoder` covers both.
-pub(super) fn is_animated(path: &Path) -> bool {
+pub(crate) fn is_animated(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif"))
 }
 
@@ -603,7 +603,7 @@ pub(super) fn decode_within_limits<'a>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::super::tests::{PIL_2X2_RGBA_PNG, key};
     use super::super::{FileVersion, STARTING_TEXTURE_BUDGET};
     use super::*;
@@ -872,10 +872,15 @@ mod tests {
         encoder.write_frame(&frame).unwrap();
     }
 
-    type Frame = ((u16, u16, u16, u16), [u8; 4], gif::DisposalMethod);
+    pub(in crate::image) type Frame = ((u16, u16, u16, u16), [u8; 4], gif::DisposalMethod);
 
     /// A GIF of `size` holding `frames` (rect, colour, disposal), each shown 5 centiseconds.
-    fn gif_fixture(dir: &Path, name: &str, size: (u16, u16), frames: &[Frame]) -> std::path::PathBuf {
+    pub(in crate::image) fn gif_fixture(
+        dir: &Path,
+        name: &str,
+        size: (u16, u16),
+        frames: &[Frame],
+    ) -> std::path::PathBuf {
         let path = dir.join(name);
         let mut file = std::fs::File::create(&path).unwrap();
         let mut encoder = gif::Encoder::new(&mut file, size.0, size.1, &[]).unwrap();

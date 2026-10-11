@@ -439,6 +439,28 @@ impl Scene {
         }
     }
 
+    /// Every `image` node drawing an animated file, or crossing from one, for the image cache's
+    /// per-node playback.
+    ///
+    /// ponytail: O(nodes) after each pass while any GIF clock exists. Upgrade: the ids reconcile
+    /// removes, plus the images whose `source` changed.
+    pub fn animated_image_nodes(&self) -> std::collections::HashSet<NodeId> {
+        fn walk(node: &ResolvedNode, out: &mut std::collections::HashSet<NodeId>) {
+            let animated = |path: &str| crate::image::is_animated(std::path::Path::new(path));
+            if let Some(PaintStyle::Image { source, .. }) = &node.paint
+                && (animated(source)
+                    || node.displayed_source.as_deref().is_some_and(animated)
+                    || node.dissolve.as_ref().is_some_and(|dissolve| animated(&dissolve.from)))
+            {
+                out.insert(node.id);
+            }
+            node.children.iter().for_each(|child| walk(child, out));
+        }
+        let mut out = std::collections::HashSet::new();
+        self.surfaces.values().for_each(|tree| walk(tree, &mut out));
+        out
+    }
+
     /// One surface instance's resolved tree, by its `"{id}@{output}"` instance id
     /// (`layout::instance::SurfaceInstance::instance_id`), not by the declared `id` a config
     /// writes. `crate::wayland::App::paint_surface` looks a tree up with exactly the id its
@@ -637,6 +659,18 @@ pub(super) mod tests {
             available,
             measured_axes: (false, false),
         }
+    }
+
+    #[test]
+    fn only_an_image_on_a_gif_keeps_its_playback() {
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"path = state("path", "/w/a.gif")
+            return panel { id = "bar", child = image { width = 4, height = 4, source = path } }"#,
+        );
+        assert_eq!(scene.animated_image_nodes().len(), 1);
+        lua.load(r#"path:set("/w/a.png")"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(scene.animated_image_nodes().is_empty(), "a still frees the node's clocks");
     }
 
     #[test]

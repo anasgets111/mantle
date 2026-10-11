@@ -48,6 +48,7 @@ return { panel {
 | `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint |
+| `playing` | `boolean\|Bound` | `true` | `false` holds an animated GIF on its current frame, the first if it never played, and stops its frame requests; `true` resumes from there. Per node: another image showing the same file plays on, and a node keeps its place while scrolled out or resized. Stills ignore it |
 | `status` | `Bound` | None | An [`image_status(name)`](../guide/signals.md#image_status-read-an-images-load) signal. The engine writes the load of `source`; see [load status](#load-status) |
 <!-- End of the generated table. -->
 
@@ -87,6 +88,7 @@ size) or failed: see [image_status](../guide/signals.md#image_status-read-an-ima
 | Make a circular avatar | The same, with `radius` half the size ([paint](../guide/paint.md#circular-avatar)) |
 | Show many thumbnails without stutter | `async = true` on each, in a [`list`](list.md) |
 | Blur a wallpaper once | `source_blur = 20` |
+| Freeze an animated GIF until asked | `playing = live`, a boolean state the config turns on |
 | Show a file that ships with the config | `source = mantle.config_dir .. "/img/logo.png"` |
 | Fade in once decoded, show a load error or a resolution | [Load status](#load-status) |
 
@@ -116,6 +118,8 @@ image {
 | `source = "firefox"` draws nothing | `source` is a path. Use [`icon`](icon.md) for theme names |
 | A relative `source` draws nothing | It resolves against the Renderer's working directory, not the config. Build paths from `mantle.config_dir` |
 | `transition.params` or `transition.images` is refused | Both need a `shader` |
+| An animated GIF restarts from its first frame | Playback, `playing` included, is per node and file: a new `source`, or the node leaving the tree (its surface closes, a `list` drops it), starts it again |
+| Two nodes on one GIF show each other's frame | Past the texture budget, or eight nodes on one file and size, nodes share one texture |
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).
 

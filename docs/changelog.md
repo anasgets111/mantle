@@ -18,6 +18,7 @@ version is 0.x, a minor release can break the Lua API.
 - Added: `on_double_click(rect, button, pointer, modifiers)` fires after `on_click` on a second click on the same node with the same button within 400 ms and 4 px; it takes the innermost node with `on_double_click`, so single clicks still reach an ancestor's `on_click`. See [pointer](guide/input.md#pointer).
 - Added: `on_drag` takes a fifth argument, `velocity = { x, y }` in surface px per second over the last 100 ms of motion; on `"end"` it is the release velocity, or the last motion's when the pointer leaves the surface, for flick scrolling. See [pointer](guide/input.md#pointer).
 - Added: `image_status(name)`, bound as an image's `status`, reports the load of its `source`: `"empty"`, `"loading"`, `"ready"` with the file's own `width` and `height`, or `"failed"`. See [image_status](guide/signals.md#image_status-read-an-images-load).
+- Added: `image.playing`, default `true`: `false` holds an animated GIF on its current frame (the first, if it never played) and stops redrawing it; `true` resumes from that frame. Each image node pauses on its own.
 
 ## 0.7.0 - 2026-10-11
 

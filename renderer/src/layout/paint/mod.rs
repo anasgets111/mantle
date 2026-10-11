@@ -103,6 +103,8 @@ pub enum Draw {
         radius: node::Radii,
         /// The node binds `status`, which reports the source's size.
         wants_size: bool,
+        /// `image.playing`.
+        playing: bool,
     },
     /// An output or window's contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
     /// this carries what a draw places it with and what the capture registry paces a source by,
@@ -318,7 +320,7 @@ impl DisplayList {
                 };
                 out.extend(files.iter().map(|(_, path, _)| image::ImageRequest::sampler(std::path::Path::new(path))));
                 match &command.draw {
-                    Draw::Image { source, box_px, fit, blur_px, retained, .. } => {
+                    Draw::Image { node, source, box_px, fit, blur_px, retained, playing, .. } => {
                         for path in std::iter::once(source).chain(retained.iter()) {
                             out.push(image::ImageRequest {
                                 path: std::path::Path::new(path),
@@ -327,6 +329,7 @@ impl DisplayList {
                                 fit: *fit,
                                 blur_px: *blur_px,
                                 wants_size: false,
+                                clock: Some((*node, *playing)),
                             });
                         }
                     }

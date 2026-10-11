@@ -267,6 +267,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                         fit: Fit::Contain,
                         blur_px: 0,
                         wants_size: false,
+                        clock: None,
                     };
                     let draw =
                         FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: &node::Radii::default() };
@@ -289,6 +290,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 blur_px,
                 radius,
                 wants_size,
+                playing,
             } => {
                 let request = ImageRequest {
                     path: std::path::Path::new(source),
@@ -297,6 +299,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     fit: *fit,
                     blur_px: *blur_px,
                     wants_size: *wants_size,
+                    clock: Some((*node, *playing)),
                 };
                 let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius };
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));

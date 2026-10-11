@@ -38,12 +38,13 @@ use fit::cache_box;
 pub use fit::fitted_rect;
 
 use budget::{Budget, Charge};
-pub(crate) use decode::is_vector;
-use decode::{decode, is_animated};
+use decode::decode;
+pub(crate) use decode::{is_animated, is_vector};
 use svg::packed_rgb;
-use texture::{Animation, upload_or_log};
+use texture::{Animation, Clock, NodeClock, upload_or_log};
 
 use crate::layout::node::Rgba;
+use crate::layout::scene::NodeId;
 use crate::text::shaping::{FontDatabase, ShapingHandle};
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
@@ -151,6 +152,9 @@ pub(crate) struct ImageRequest<'a> {
     /// `status` reports it. Not part of the key: a slot decoded without it reads the header later,
     /// when [`ImageCache::loaded`] is asked with it.
     pub wants_size: bool,
+    /// The `image` node drawing it and its `playing`, which time its animation; `None` uses the
+    /// slot's own clock, always playing. Not part of the slot's key.
+    pub clock: Option<(NodeId, bool)>,
 }
 
 impl ImageRequest<'_> {
@@ -164,12 +168,13 @@ impl ImageRequest<'_> {
             fit: Fit::Stretch,
             blur_px: 0,
             wants_size: false,
+            clock: None,
         }
     }
 
     /// An image `mask`'s file, stretched over a box of `box_px`.
     pub(crate) fn mask(path: &Path, box_px: (u32, u32)) -> ImageRequest<'_> {
-        ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0, wants_size: false }
+        ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0, wants_size: false, clock: None }
     }
 }
 
@@ -234,9 +239,10 @@ enum Slot {
     /// plus the animation's host deltas, which nothing else would reclaim. `anim` is `None` for a
     /// still: nothing to replay onto it.
     Ready {
-        image: ImageId,
+        /// `None` for an animation until a draw without a node asks: nodes draw their own.
+        image: Option<ImageId>,
         bytes: usize,
-        start: Instant,
+        clock: Clock,
         anim: Option<Animation>,
         natural: Option<Natural>,
     },
@@ -334,6 +340,8 @@ pub struct ImageCache {
     /// Decodes taken by [`ImageCache::poll`] but not uploaded: `poll` runs in the main-loop turn,
     /// where no canvas is current.
     landed: Vec<(CacheKey, Result<Decoded, String>)>,
+    /// Each `image` node's playback of each animated file it draws (`texture::showing`).
+    clocks: HashMap<NodeId, Vec<NodeClock>>,
     /// What [`ImageCache::trim`] holds idle textures to, set from the displays by
     /// `wayland::output::texture_budget` (ADR-0182) and [`STARTING_TEXTURE_BUDGET`] until they are
     /// known.
@@ -407,6 +415,7 @@ impl ImageCache {
             texture_budget: STARTING_TEXTURE_BUDGET,
             pool: Pool::spawn(waker, max_workers),
             landed: Vec::new(),
+            clocks: HashMap::default(),
         }
     }
 
@@ -574,25 +583,36 @@ impl ImageCache {
     /// requests from mapped surfaces' last display lists, collected by `wayland::App`
     /// after paint. Compute it lazily because list walks matter only when evicting. Icons are not
     /// pinned: lists carry theme names, not paths; an icon costs a few KB and one inline reraster.
+    /// Node textures no list draws are freed here too, whatever the budget.
+    ///
+    /// ponytail: so while any node texture exists, every paint walks every painted list. Upgrade:
+    /// skip the walk when the lists and the node set are unchanged since the last one.
     pub fn trim<'a>(&mut self, pinned: impl FnOnce() -> Vec<ImageRequest<'a>>) {
-        if self.resident_bytes <= self.texture_budget {
+        let over = self.resident_bytes > self.texture_budget;
+        if !over && !self.clocks.values().flatten().any(|own| own.texture.is_some()) {
             return;
         }
         let pinned = pinned()
             .into_iter()
-            .filter_map(|request| {
+            .map(|request| {
                 let wanted = self.key_for(&request);
-                if self
+                let drawn = if self
                     .entries
                     .get(&wanted)
                     .is_some_and(|entry| matches!(entry.slot, Slot::Ready { .. } | Slot::Failed))
                 {
-                    Some(wanted)
+                    wanted
                 } else {
-                    self.stand_in_key(&wanted).or(Some(wanted))
-                }
+                    self.stand_in_key(&wanted).unwrap_or(wanted)
+                };
+                (request.clock.map(|(node, _)| node), drawn)
             })
             .collect::<Vec<_>>();
+        self.release_undrawn_node_textures(&pinned);
+        if !over {
+            return;
+        }
+        let pinned = pinned.into_iter().map(|(_, key)| key).collect::<Vec<_>>();
         let candidates = self.entries.iter().filter_map(|(key, entry)| match entry.slot {
             Slot::Ready { bytes, .. } => Some((key.clone(), bytes, entry.last_hit)),
             Slot::Pending | Slot::Failed => None,
@@ -617,7 +637,7 @@ impl ImageCache {
         self.tick += 1;
         if let Some(cached) = self.entries.get_mut(&key) {
             cached.last_hit = self.tick;
-            return self.showing(canvas, &key);
+            return self.showing(canvas, &key, request.clock);
         }
         if vector {
             self.refresh_fonts();
@@ -650,7 +670,7 @@ impl ImageCache {
                 let text = decoded.as_ref().is_ok_and(|decoded| decoded.text);
                 let slot = upload_or_log(canvas, &key.path, decoded);
                 self.insert(key.clone(), slot).text = text;
-                self.showing(canvas, &key)
+                self.showing(canvas, &key, request.clock)
             }
             Load::Background => {
                 // One gate for the whole pipeline, not just the queue: see `MAX_INFLIGHT_DECODES`.
@@ -761,7 +781,7 @@ impl ImageCache {
         let key = self.stand_in_key(&wanted)?;
         self.tick += 1;
         self.entries.get_mut(&key)?.last_hit = self.tick;
-        self.showing(canvas, &key)
+        self.showing(canvas, &key, request.clock)
     }
 
     /// Reserves a pipeline slot for `key`, answering whether the caller may queue it.
@@ -849,7 +869,7 @@ impl ImageCache {
         if let Some(entry) = self.entries.remove(key) {
             match &entry.slot {
                 Slot::Ready { image, bytes, .. } => {
-                    self.evicted.push(*image);
+                    self.evicted.extend(*image);
                     self.evicted_total += 1;
                     self.freed = true;
                     self.resident_bytes -= *bytes;
@@ -982,6 +1002,7 @@ mod tests {
             fit: Fit::Contain,
             blur_px: 0,
             wants_size: false,
+            clock: None,
         };
         let large = ImageRequest { box_px: (32, 32), ..small };
         let first = cache.image(painter.canvas_mut(), &small, Load::Inline).unwrap();
@@ -1043,7 +1064,7 @@ mod tests {
         let mut cache = ImageCache::new();
         cache.insert(
             ready.clone(),
-            Slot::Ready { image: image.unwrap(), bytes: 4, start: Instant::now(), anim: None, natural: None },
+            Slot::Ready { image: image.ok(), bytes: 4, clock: Clock::default(), anim: None, natural: None },
         );
         cache.insert(failed.clone(), Slot::Failed);
         cache.evict(&failed);
@@ -1204,8 +1225,15 @@ mod tests {
         let png = dir.path().join("tray.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let request =
-            ImageRequest { path: &png, box_px: (8, 8), tint: None, fit: Fit::Contain, blur_px: 0, wants_size: false };
+        let request = ImageRequest {
+            path: &png,
+            box_px: (8, 8),
+            tint: None,
+            fit: Fit::Contain,
+            blur_px: 0,
+            wants_size: false,
+            clock: None,
+        };
         let start = Instant::now();
         cache.key_for(&request);
         assert!(cache.take_deferred().is_none(), "a fresh stat owes nothing");
