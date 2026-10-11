@@ -40,7 +40,7 @@ return { panel {
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop |
+| `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop |
 | `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it |
 | `async` | `boolean\|Bound` | `false` | `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until the first decode lands. A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images |
 | `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` and a stable `id` |
@@ -56,7 +56,7 @@ return { panel {
 | :--- | :--- | :--- | :--- |
 | `duration` | ms, `[1, 60000]` | Required | Length of the cross |
 | `easing` | An [easing](../guide/animation.md) | `"in_out_quad"` | Drives `u_progress` |
-| `shader` | Absolute `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
+| `shader` | Absolute, or `~/` under `$HOME`, `.frag` path | Built-in cross-dissolve | Replaces the dissolve. Recompiled when the file changes |
 | `params` | `{ name = number \| { up to 4096 numbers } }` | `{}` | Uniforms for that shader, as on a [shader node](shader.md). Refused without `shader` |
 | `images` | `{ name = "/abs/path.png" }` | `{}` | Up to 8 rasters to sample by name, with the rules of a [shader node's `images`](shader.md#images); they take the units after `u_from` and `u_to`. Refused without `shader` |
 

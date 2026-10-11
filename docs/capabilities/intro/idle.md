@@ -67,11 +67,11 @@ rect {
             content = computed({ caffeine, mantle.idle }, function(held, idle)
                 if held then
                     return "awake (held)"
-                elseif idle and idle.inhibited then
+                elseif idle.inhibited then
                     return "awake (another app)"
                 end
                 return "idle allowed"
-            end),
+            end, "idle allowed"),
         },
     },
 }

@@ -36,7 +36,7 @@ return app_badge
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `name` | `string\|Bound` | `""` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an absolute image path, used as is. `""` or a name the theme lacks draws nothing |
+| `name` | `string\|Bound` | `""` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an image path (absolute, or `~/` under `$HOME`), used as is. `""` or a name the theme lacks draws nothing |
 | `size` | `number\|Bound` | `12` | The box is `size` × `size` px; not range-checked |
 | `foreground` | `Color\|Bound` | The file's own colours | Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons; a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it |
 <!-- End of the generated table. -->
@@ -63,7 +63,7 @@ change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP,
 
 | Trap | Fix |
 | :--- | :--- |
-| An icon draws nothing | The theme and its fallbacks lack the name; `mantle log` warns once with the theme. Check `/usr/share/icons/<theme>`, or pass an absolute path |
+| An icon draws nothing | The theme and its fallbacks lack the name; `mantle log` warns once with the theme. Check `/usr/share/icons/<theme>`, or pass an absolute path or `~/` under `$HOME` |
 | `foreground` does not change a colour icon | Only SVGs that use `currentColor` (symbolic icons) take it |
 | The wrong theme's icons appear | The theme comes from GTK settings, read at Renderer start. Set `gtk-icon-theme-name` and restart the shell |
 | An icon is smaller than its box | It draws at the shorter side of `width`/`height`. Keep them equal, or use `size` alone |

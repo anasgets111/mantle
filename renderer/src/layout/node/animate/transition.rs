@@ -23,7 +23,7 @@ lua_shape! {
         pub easing: Option<Easing>,
         // The config's own file: `layout::image_shader` compiles it and owns nothing about what it
         // draws.
-        /// Absolute `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
+        /// Absolute, or `~/` under `$HOME`, `.frag` path replacing the built-in dissolve, e.g. `mantle.config_dir .. "/shaders/wipe.frag"` (ADR-0184). Recompiled when the file changes.
         ///
         /// Shader contract. The engine prepends `#version 300 es`, `highp` precision, its declarations and `#line 1`; write `void main()`:
         /// - `v_uv`: box coordinates `0..1`, top-left origin, y down.
@@ -35,7 +35,7 @@ lua_shape! {
         pub shader: Option<PathBuf>,
         /// Uniform values by name: a finite number for `float`, a list of up to 4096 for `vec2`-`vec4` or an array of either, flattened. Missing uniforms are `0`; unknown names are ignored. Refused without `shader`.
         pub params: Value as Option<Params>,
-        /// Sampler names to absolute `.png`, `.jpg`, `.jpeg` or `.webp` paths, as `shader.images`; each declares `uniform sampler2D name` and `uniform vec2 name_size`. Refused without `shader`.
+        /// Sampler names to `.png`, `.jpg`, `.jpeg` or `.webp` paths, absolute or `~/` under `$HOME`, as `shader.images`; each declares `uniform sampler2D name` and `uniform vec2 name_size`. Refused without `shader`.
         pub images: Value as Option<Images>,
     }
 }
@@ -201,7 +201,8 @@ pub(in crate::layout::node) fn parse_shader_images(what: &str, value: &Value) ->
         if let Some(why) = sampler_name_error(name) {
             return Err(invalid(field, why));
         }
-        let path = path.to_str().map_err(|e| invalid(field, e.to_string()))?.to_string();
+        let path = path.to_str().map_err(|e| invalid(field, e.to_string()))?;
+        let path = crate::layout::node::prop::expand_tilde(field, &path)?;
         if !path.starts_with('/') {
             return Err(invalid(field, format!("expected an absolute path, got {}", preview_str(&path))));
         }
@@ -428,6 +429,15 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(spec.images, [("a".to_string(), "/a.png".to_string()), ("b".to_string(), "/b.png".to_string())]);
+        let tilde = parse(r#"{ duration = 100, shader = "~/s.frag", images = { a = "~/a.png" } }"#);
+        match (shared::expand_tilde("~/s.frag"), shared::expand_tilde("~/a.png")) {
+            (Ok(shader), Ok(image)) => {
+                let tilde = tilde.unwrap().unwrap();
+                assert_eq!(tilde.shader, Some(std::path::PathBuf::from(shader.into_owned())));
+                assert_eq!(tilde.images, [("a".to_string(), image.into_owned())]);
+            }
+            _ => assert!(tilde.is_err(), "no $HOME, no expansion"),
+        }
         for (src, property) in [
             (r#"{ duration = 100, images = { a = "/a.png" } }"#, "transition.images"),
             (r#"{ duration = 100, shader = "/s.frag", images = { u_a = "/a.png" } }"#, "transition.images.u_a"),

@@ -234,7 +234,7 @@ impl UserData for IdleMember {
         });
         methods.located_function("map", |lua, (ud, f, before): (mlua::AnyUserData, Function, mlua::Value)| {
             ud.borrow::<IdleMember>()?.announce();
-            crate::lua::capability::map_skipping_nil(lua, ud, f, before)
+            crate::lua::signal::Signal::mapped(lua, ud, f, before)
         });
         methods.located_method("on_change", |_, this, f: Function| {
             this.announce();
@@ -344,6 +344,23 @@ mod tests {
         handle.hydrate(mlua::Value::Table(pushed));
         let (held, calls): (bool, i64) = lua.load("return idle_now:get(), calls").eval().unwrap();
         assert_eq!((held, calls), (true, 1));
+    }
+
+    #[test]
+    fn computed_over_idle_skips_the_pre_push_nil() {
+        let lua = Lua::new();
+        crate::lua::signal::register(&lua, crate::lua::signal::DirtyFlag::new()).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let commands = crate::lua::capability::CommandSender::new(0, tx);
+        let (state, handle) = Capability::new("idle", crate::lua::signal::DirtyFlag::new(), commands);
+        lua.globals().set("idle", IdleRegistry::new(state).member()).unwrap();
+        lua.load("c = computed({ idle }, function(s) return s.idle end, 'wait')").exec().unwrap();
+        assert_eq!(lua.load("return c:get()").eval::<String>().unwrap(), "wait");
+
+        let pushed = lua.create_table().unwrap();
+        pushed.set("idle", true).unwrap();
+        handle.hydrate(mlua::Value::Table(pushed));
+        assert!(lua.load("return c:get()").eval::<bool>().unwrap());
     }
 
     /// One start per generation, not per call.

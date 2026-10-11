@@ -685,7 +685,7 @@ rect {
 
 | Key | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | `string` | required | Absolute `.frag` path; relative is refused |
+| `source` | `string` | required | Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused |
 | `input` | `"content"` or `"backdrop"` | `"content"` | What `u_input` holds: the node's painted subtree, or what the surface painted under the box (see [Backdrop input](#backdrop-input)) |
 | `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
 | `images` | `table<string, string>` | `{}` | Raster files to sample, by sampler name, with the rules, `<name>_size` and sampling of a [`shader` node's `images`](../nodes/shader.md#images). Clamped to the edge (`fract(uv)` tiles), premultiplied, sRGB as stored; `.png`, `.jpg`, `.jpeg` or `.webp` only, a side over 2048 px downscaled. They take the units after `u_input` and `u_input_blurred`, so a refraction can read a displacement map |

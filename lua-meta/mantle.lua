@@ -293,7 +293,7 @@
 ---@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
----@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:monotonic()` in seconds, so `mantle.clock:monotonic() - position_updated_at / 1e6` is the age.
+---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:now()` in seconds, so `mantle.clock:now() - position_updated_at / 1e6` is the age.
 ---@field rate number MPRIS playback rate.
 ---@field shuffle boolean MPRIS shuffle setting.
 ---@field title string Track title; empty when unset, normal between tracks.
@@ -535,7 +535,7 @@
 
 ---@class FoldersState
 ---`mantle.folders` payload (ADR-0120).
----@field watched table<string, Folder> One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
+---@field watched table<string, Folder> One entry per `"watch"`, keyed by its absolute `path` (`~/` expanded) minus trailing slashes; `nil` until watched.
 
 ---@class ProcessesState
 ---`mantle.processes` payload.
@@ -621,7 +621,7 @@
 
 ---@class ClockState
 ---`mantle.clock`'s payload, pushed on each tick of `interval`.
----@field monotonic number System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:monotonic()` reads it live.
+---@field monotonic number System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:now()` reads it live.
 ---@field time integer Unix epoch seconds, as `os.date` takes them.
 
 ---@class StorageState
@@ -738,8 +738,8 @@ local IdleCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/folders.html)
 ---@class FoldersCapability: Capability<FoldersState>, userdata
----@field watch fun(self: FoldersCapability, path: string, extensions?: string[]) Keeps `watched[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file.
----@field unwatch fun(self: FoldersCapability, path: string) Stops watching `path` and removes it from `watched`.
+---@field watch fun(self: FoldersCapability, path: string, extensions?: string[]) Keeps `watched[path]` listing a folder, absolute or `~/` under `$HOME`. `extensions` match case-insensitively, dot optional; omitted means every file.
+---@field unwatch fun(self: FoldersCapability, path: string) Stops watching `path` (absolute or `~/`) and removes it from `watched`.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/processes.html)
 ---@class ProcessesCapability: Capability<ProcessesState>, userdata
@@ -804,7 +804,7 @@ local SecretsCapability = {}
 ---@field dismiss fun(self: NotificationsCapability, id: integer) Removes a queued notification.
 ---@field invoke_action fun(self: NotificationsCapability, id: integer, key: string) Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident.
 ---@field reply fun(self: NotificationsCapability, id: integer, text: string) Sends reply text to a notification with `has_reply`; removes it unless it is resident.
----@field set_sound fun(self: NotificationsCapability, urgency: Urgency, path: string) Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored. Only Ogg Vorbis and 16-bit PCM WAV play.
+---@field set_sound fun(self: NotificationsCapability, urgency: Urgency, path: string) Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play.
 ---@field set_dnd fun(self: NotificationsCapability, enabled: boolean) Gates non-critical notification sounds.
 ---@field set_quiet fun(self: NotificationsCapability, enabled: boolean) Mutes non-critical sounds like `set_dnd`, without changing `dnd`.
 ---@field set_app_muted fun(self: NotificationsCapability, app: string, muted: boolean) Silences every sound from an app, critical included, matched exactly on `app_name` or `desktop_entry`.
@@ -824,13 +824,13 @@ local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/clock.html)
 ---@class ClockCapability: Capability<ClockState>, userdata
----@field monotonic fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.
+---@field now fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.
 ---@field configure fun(self: ClockCapability, settings: ClockConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
 ---@class StorageCapability: Capability<StorageState>, userdata
----@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
----@field set fun(self: StorageCapability, path: string, key: string, value?: any) Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
+---@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
+---@field set fun(self: StorageCapability, path: string, key: string, value?: any) Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
 ---@class PolkitCapability: Capability<PolkitState>, userdata

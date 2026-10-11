@@ -127,7 +127,7 @@ local PINNED = {
 local apps = computed({ mantle.applications, query }, function(a, q)
     local out = {}
     for k, id in ipairs(PINNED) do
-        local app = a and a.entries[a.by_app_id[id]]
+        local app = a.entries[a.by_app_id[id]]
         if app and not app.no_display then
             local score = fuzzy(app.name, q)
             if q == "" then score = -k end

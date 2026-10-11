@@ -24,14 +24,16 @@
 ---@return Signal<boolean>
 function elided(name) end
 
----A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
+---A signal of `fn` over its dependencies' values, recomputed on read. A capability that has not
+---pushed yet reads `nil`; `fn` is skipped and the signal holds `before`. `fn` must be side-effect free
 ---and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
 ---since typing them needs an overload per arity; prefer `:map` for one source.
 ---[docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
 ---@param dependencies any[] Signals, capabilities or plain values, in `fn`'s argument order; a plain value reaches `fn` unchanged, as a constant: a string, number, boolean or table.
 ---@param fn fun(...: any): any
+---@param before? any What the signal holds while a capability dependency has not pushed yet; `fn` is not called until then. Default `nil`.
 ---@return Signal<any> # Read-only.
-function computed(dependencies, fn) end
+function computed(dependencies, fn, before) end
 
 ---`source`'s value once a new value has held for `ms`; until then, the old one (ADR-0146). A source
 ---that returns to the old value first changes nothing. A trailing debounce, or a close-hold:
@@ -137,13 +139,13 @@ function scroll(name) end
 
 ---@class PersistentTable
 ---One JSON file. Every key but `set` reads as a signal of its stored value: the declared default until
----this file's first push, `nil` for a key the file lacks. `set(key, nil)` reads `nil` until the next evaluation restores the default.
+---this file's first push, and again for a key the file lacks, such as one `set(key, nil)` deleted; `nil` if it has no default.
 ---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
 ---@field [string] Signal<any>
 
 ---A JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
 ---`defaults` fills only missing keys, so adding one keeps the user's values.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
----@param spec { path: string, defaults?: table, [string]: "no such property" } `path` is an absolute file path, not ending in `/`; otherwise raises.
+---@param spec { path: string, defaults?: table, [string]: "no such property" } `path` is a file path, absolute or `~/` under `$HOME`, not ending in `/`; otherwise raises. The key in `mantle.storage`'s `contents` is the expanded absolute path.
 ---@return PersistentTable
 function persistent_table(spec) end

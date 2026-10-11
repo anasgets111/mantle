@@ -33,13 +33,8 @@ What each one keeps across a reload, a crash and a restart: [runtime](runtime.md
 A JSON object on disk, read as one signal per key and written one key at a time.
 
 ```lua
-local state_home = os.getenv("XDG_STATE_HOME")
-if not state_home or state_home == "" then
-    state_home = (os.getenv("HOME") or "") .. "/.local/state"
-end
-
 local settings = persistent_table {
-    path = state_home .. "/myshell/settings.json",
+    path = "~/.local/state/myshell/settings.json",
     defaults = { clock_24h = true, recorder = { fps = 60, audio = "desktop" } },
 }
 
@@ -60,10 +55,10 @@ return panel {
 | Part | Contract |
 | :--- | :--- |
 | Signature | `persistent_table { path, defaults? }` → store. Another key raises |
-| `path` | Absolute file path; relative, ending in `/`, or with an empty, `.` or `..` component raises. Its directory is created if missing. Build it from `os.getenv` or `mantle.config_dir` |
+| `path` | Absolute, or `~/` under `$HOME`; relative, ending in `/`, or with an empty, `.` or `..` component raises. Its directory is created if missing. `mantle.storage`'s `contents` is keyed by the expanded absolute path. Build it from `os.getenv` or `mantle.config_dir` for other roots |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
-| `store.<key>` | Signal for that key: its `defaults` entry (else `nil`) until `mantle.storage` pushes this file, then the stored value; a key the pushed file lacks is `nil` |
-| `store:set(key, value)` | Writes one key; `nil` deletes it: the signal reads `nil` until the next evaluation restores the default. The signal updates on the next push, not inside `set` |
+| `store.<key>` | Signal for that key: its `defaults` entry (else `nil`) until `mantle.storage` pushes this file, then the stored value; a key the pushed file lacks reads its `defaults` entry, else `nil` |
+| `store:set(key, value)` | Writes one key; `nil` deletes it, and the signal then reads its `defaults` entry (else `nil`). The signal updates on the next push, not inside `set`. The next evaluation writes the default back to the file |
 | Identity | One table per file: another call with the same `path` returns it, across reloads too |
 | Raw state | `mantle.storage` ([capabilities](../capabilities/storage.md)) |
 

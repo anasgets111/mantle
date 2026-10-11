@@ -295,7 +295,7 @@ function PaletteHandle:cancel() end
 ---Extracts an image's dominant colours off the Lua thread (ADR-0249). `on_done` gets them most common
 ---first, or `nil` on failure (logged). `on_done` runs unbudgeted.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
----@param path string A local raster file; no SVG or URL.
+---@param path string A local raster file, a path or `~/` under `$HOME`; no SVG or URL.
 ---@param opts? { depth?: integer, method?: "celebi"|"wu", rescale?: integer, [string]: "no such property" } `depth` 0 to 8, default 3: up to `2^depth` colours. `method` `"celebi"` (default) or `"wu"`. `rescale` caps the longest edge before counting, default 128, `0` for full size. Out of range raises.
 ---@param on_done fun(swatches: PaletteSwatch[]?)
 ---@return PaletteHandle

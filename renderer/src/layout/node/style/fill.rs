@@ -241,7 +241,7 @@ impl Mask {
                 return Err(invalid(property, "name exactly one of `source` or a gradient"));
             }
             (Some(path), false) if path.is_empty() => return Err(invalid(property, "`source` must not be empty")),
-            (Some(path), false) => MaskSource::Image(path),
+            (Some(path), false) => MaskSource::Image(super::super::prop::expand_tilde(property, &path)?),
             (None, true) => {
                 let (Some(gradient), Some(stops)) = (gradient, stops) else {
                     return Err(invalid(property, "a mask gradient needs both `gradient` and `stops`"));

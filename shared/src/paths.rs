@@ -1,6 +1,7 @@
 //! XDG paths shared by `supervisor` and `renderer`, so both resolve the control socket, session
 //! lock flag and config directory identically.
 
+use std::borrow::Cow;
 use std::ffi::OsString;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -124,6 +125,15 @@ pub enum ExpandHomeError {
     Relative,
 }
 
+/// `path` with a leading `~/` expanded under `$HOME`; anything else, relative included, as given, for
+/// callers whose own rules decide what a bare name means.
+pub fn expand_tilde(path: &str) -> Result<Cow<'_, str>, ExpandHomeError> {
+    if !path.starts_with("~/") {
+        return Ok(Cow::Borrowed(path));
+    }
+    expand_home(path).map(|expanded| Cow::Owned(expanded.to_string_lossy().into_owned()))
+}
+
 /// An absolute path, or `~/rest` under `$HOME`; an error for anything else, so a config's relative path
 /// never silently resolves against the renderer's working directory.
 pub fn expand_home(path: &str) -> Result<PathBuf, ExpandHomeError> {
@@ -157,6 +167,13 @@ mod tests {
         assert_eq!(expand_home_from("~x", home), Err(ExpandHomeError::Relative));
         assert_eq!(expand_home_from("~/a", Some("".into())), Err(ExpandHomeError::NoHome));
         assert_eq!(expand_home_from("~/a", None), Err(ExpandHomeError::NoHome));
+    }
+
+    #[test]
+    fn expand_tilde_passes_everything_but_a_leading_tilde_slash_through() {
+        for same in ["/etc/x", "rel/x", "~x", "a/~/b", "icon-name"] {
+            assert_eq!(expand_tilde(same).unwrap(), same);
+        }
     }
 
     #[test]

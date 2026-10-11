@@ -1344,7 +1344,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stores_declared_default_reads_before_the_first_push_then_the_stored_value() {
+    fn a_stores_declared_default_reads_before_the_first_push_and_whenever_the_file_lacks_the_key() {
         let (client, _outbound_rx) = bare_client();
         client
             .loader
@@ -1365,6 +1365,17 @@ mod tests {
             })
             .unwrap();
         assert_eq!(probe::<String>(&client.loader, setup, "theme"), "latte");
+
+        // `set("theme", nil)` deletes the key; the next push lacks it and the default shows again.
+        client
+            .apply_state_snapshot(StateSnapshot {
+                capability: "storage".to_string(),
+                revision: 2,
+                payload: serde_json::json!({ "contents": { "/tmp/bar/state.json": {} } }),
+            })
+            .unwrap();
+        assert_eq!(probe::<String>(&client.loader, setup, "theme"), "mocha");
+        assert_eq!(probe::<Option<String>>(&client.loader, setup, "other"), None);
     }
 
     #[test]

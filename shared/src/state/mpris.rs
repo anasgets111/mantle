@@ -66,8 +66,8 @@ pub struct PlayerState {
     /// elapsed time. `nil` when unknown (ADR-0036).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<i64>,
-    /// `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:monotonic()`
-    /// in seconds, so `mantle.clock:monotonic() - position_updated_at / 1e6` is the age.
+    /// `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:now()`
+    /// in seconds, so `mantle.clock:now() - position_updated_at / 1e6` is the age.
     pub position_updated_at: i64,
     /// Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
     #[serde(skip_serializing_if = "Option::is_none")]

@@ -14,8 +14,8 @@ use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 use crate::image::Fit;
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
-    Bound, Callback, Color, Field, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused, Resets,
-    Structural, Text,
+    Bound, Callback, Color, Field, FileText, Flag, Focus, Handle, Id, Name, Num, OneOf, Path, Pixels, Prop, Refused,
+    Resets, Structural, Text,
 };
 use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
@@ -253,7 +253,7 @@ props! {
         ///
         /// Book: Drop shadows, the first on top ([shadows](../guide/paint.md#shadows)). Each layer is `{ color, blur, offset, spread, inset, blend }`; at most 16. A layer draws when alpha > 0 and `blur`, `offset` or `spread` is set
         shadows: Bound<Shadows>;
-        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast, mask } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only; its `mask` (a `gradient` or `source` as on a node `mask`, no `node`) scales the glass's coverage, so the ground shows through where it is clear (a crossfade, not a variable blur). `shader = { source, input, params, images, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is an absolute `.frag` path, `input` is `"content"` (the default) or `"backdrop"` (what this surface painted under the box; the output replaces it before the node paints, so return `mantle_input(uv)` to leave a pixel; a box kind's only), `params` are uniforms by name and `images` are samplers by name, both as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop filters and a backdrop shader first, then the node over them, a content shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334), then `blend`. A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
+        /// Pixel filters, CSS `filter` and `backdrop-filter`: `{ blur, saturate, brightness, contrast, backdrop = { blur, saturate, brightness, contrast, mask } }`. A blur is a Gaussian sigma in px within `[0, 8192]`, default `0`; a colour filter is a factor within `[0, 8]`, default `1`, on straight sRGB as CSS's. The top level filters this node's painted subtree and is clipped like a shadow (ADR-0254); `backdrop` filters what this surface already painted under the box, never the desktop, cut to `radius`/`corner_shape` (ADR-0256), and is a box kind's only; its `mask` (a `gradient` or `source` as on a node `mask`, no `node`) scales the glass's coverage, so the ground shows through where it is clear (a crossfade, not a variable blur). `shader = { source, input, params, images, padding }` runs a fragment shader over the node's painted subtree (ADR-0336). `source` is a `.frag` path, absolute or `~/` under `$HOME`, `input` is `"content"` (the default) or `"backdrop"` (what this surface painted under the box; the output replaces it before the node paints, so return `mantle_input(uv)` to leave a pixel; a box kind's only), `params` are uniforms by name and `images` are samplers by name, both as on a `shader` node, and `padding` is logical px `[0, 512]` the program may read and draw past the box. Applied in a fixed order: the backdrop filters and a backdrop shader first, then the node over them, a content shader over that, then the blur and `saturate`, `brightness`, `contrast` (ADR-0334), then `blend`. A shader that fails to build logs once per revision and leaves the node as painted. Saving the `.frag` recompiles it.
         ///
         /// Book: Pixel filters: `blur` (sigma in px, `[0, 8192]`) and the colour filters `saturate`, `brightness`, `contrast` (`[0, 8]`, `1` is off), at the top level and in `backdrop` (whose `mask` fades the glass out; see [Progressive blur](../guide/paint.md#progressive-blur)), and a `shader` over the node's subtree or its backdrop; see [Blurs](../guide/paint.md#blurs) and [Shader effects](../guide/paint.md#shader-effects). `backdrop` and `input = "backdrop"` are for box kinds only
         effect: Bound<Effects>;
@@ -450,20 +450,20 @@ props! {
         on_link(href: String);
     }
     mod icon(ICON) {
-        /// Icon theme name, or an absolute image path (ADR-0054); `""` draws nothing.
+        /// Icon theme name, or an image path, absolute or `~/` under `$HOME` (ADR-0054); `""` draws nothing.
         ///
-        /// Book: An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an absolute image path, used as is. `""` or a name the theme lacks draws nothing
-        name: Bound<Text> = absent(Lua(r#""""#));
+        /// Book: An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an image path (absolute, or `~/` under `$HOME`), used as is. `""` or a name the theme lacks draws nothing
+        name: Bound<FileText> = absent(Lua(r#""""#));
         /// The box is `size` × `size` px; not range-checked.
         size: Bound<Num> = absent(Number(12.0));
         /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072); a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it.
         foreground: Bound<Color> = absent(Prose("the file's own colours"));
     }
     mod image(IMAGE) {
-        /// File path, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233).
+        /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233).
         ///
-        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop
-        source: Bound<Text> = absent(Lua(r#""""#));
+        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop
+        source: Bound<FileText> = absent(Lua(r#""""#));
         /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
         ///
         /// Book: `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it
@@ -504,9 +504,9 @@ props! {
     }
     /// A config fragment shader over the node's box, with no input textures (ADR-0253). No intrinsic size; without a pointer handler it is transparent to the pointer. Reads `v_uv`, `u_size` and `u_progress` as in `Transition.shader`, writes premultiplied `fragColor`; `opacity`, `shadows` and `effect.blur` apply.
     mod shader(SHADER) {
-        /// Absolute `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
+        /// Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused, `""` draws nothing. Saving the file recompiles it; one that fails to build logs once and draws nothing.
         ///
-        /// Book: Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file)
+        /// Book: Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file)
         source: Bound<Path> = absent(Lua(r#""""#));
         /// `u_progress`. There is no clock uniform: animate this for motion; the wide range lets a spring overshoot.
         ///
@@ -514,9 +514,9 @@ props! {
         progress: Bound<Num> = range(-8192.0, 8192.0).absent(Number(0.0));
         /// Uniforms by name: a finite number for `float`, a list for `vec2`-`vec4` or an array of either, flattened to at most 4096 numbers. Missing ones are `0`. Not tweened.
         params: Bound<Params> = absent(Lua("{}"));
-        /// Raster images a shader samples, by name: up to 8 absolute PNG, JPEG or WebP paths, each a `uniform sampler2D <name>` plus `uniform vec2 <name>_size` in pixels. The name is a GLSL identifier, not `u_*`, `mantle_*`, `gl_*` or `*_size`, and has no `__`. A missing or undecodable file samples transparent black and is logged once. Saving the file reloads it. Not tweened.
+        /// Raster images a shader samples, by name: up to 8 PNG, JPEG or WebP paths, absolute or `~/` under `$HOME`, each a `uniform sampler2D <name>` plus `uniform vec2 <name>_size` in pixels. The name is a GLSL identifier, not `u_*`, `mantle_*`, `gl_*` or `*_size`, and has no `__`. A missing or undecodable file samples transparent black and is logged once. Saving the file reloads it. Not tweened.
         ///
-        /// Book: Up to 8 absolute PNG, JPEG or WebP paths by sampler name: [images](#images). Missing ones sample transparent black. Not tweened
+        /// Book: Up to 8 PNG, JPEG or WebP paths, absolute or `~/` under `$HOME`, by sampler name: [images](#images). Missing ones sample transparent black. Not tweened
         images: Bound<Images> = absent(Lua("{}"));
     }
     /// A vector path in node-local logical pixels. Set width and height; there is no intrinsic size.

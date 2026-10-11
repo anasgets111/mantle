@@ -63,7 +63,7 @@ const POSITION_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_mi
 
 /// Cross-process-comparable `CLOCK_MONOTONIC` microseconds, matching the IDL's timestamp field;
 /// opaque `std::time::Instant` would not. Known gap (ADR-0036): the clock's `time` is 1 Hz, too
-/// coarse for this resolution; Lua reads `mantle.clock:monotonic()` instead.
+/// coarse for this resolution; Lua reads `mantle.clock:now()` instead.
 pub(super) fn monotonic_micros() -> i64 {
     let now: std::time::Duration = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
         .map(std::time::Duration::from)

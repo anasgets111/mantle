@@ -14,6 +14,13 @@ pub(crate) const MAX_STRING_BYTES: usize = 64 * 1024;
 
 /// The one wording for a value outside its closed range; `got` is the value as [`number_word`] or
 /// `preview_for_error` spells it.
+/// `path` with a leading `~/` expanded under `$HOME`, or a Lua error naming `what`.
+pub(crate) fn expand_path(what: &str, path: &str) -> mlua::Result<String> {
+    shared::expand_tilde(path)
+        .map(std::borrow::Cow::into_owned)
+        .map_err(|err| mlua::Error::runtime(format!("{what}: {err}, got {}", crate::layout::node::preview_str(path))))
+}
+
 pub(crate) fn out_of_range(
     low: impl std::fmt::Display,
     high: impl std::fmt::Display,

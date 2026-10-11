@@ -97,15 +97,15 @@ pub enum RadioAction {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FoldersAction {
-    /// Keeps `watched[path]` listing an absolute folder. `extensions` match case-insensitively,
-    /// dot optional; omitted means every file.
+    /// Keeps `watched[path]` listing a folder, absolute or `~/` under `$HOME`. `extensions` match
+    /// case-insensitively, dot optional; omitted means every file.
     Watch {
         #[serde(deserialize_with = "super::absolute")]
         path: String,
         #[serde(default, deserialize_with = "super::lua_list")]
         extensions: Vec<String>,
     },
-    /// Stops watching `path` and removes it from `watched`.
+    /// Stops watching `path` (absolute or `~/`) and removes it from `watched`.
     Unwatch {
         #[serde(deserialize_with = "super::absolute")]
         path: String,
@@ -314,7 +314,7 @@ pub enum NotificationsAction {
     /// Sends reply text to a notification with `has_reply`; removes it unless it is resident.
     Reply { id: u32, text: String },
     /// Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt`
-    /// or `$XDG_DATA_HOME`, else ignored. Only Ogg Vorbis and 16-bit PCM WAV play.
+    /// or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play.
     SetSound { urgency: Urgency, path: String },
     /// Gates non-critical notification sounds.
     SetDnd { enabled: bool },
@@ -378,14 +378,14 @@ pub struct SysinfoConfigure {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StorageAction {
-    /// Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from
+    /// Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from
     /// `defaults`. `persistent_table` sends this; stored values win over defaults.
     Open {
         path: String,
         #[serde(default)]
         defaults: Option<serde_json::Map<String, serde_json::Value>>,
     },
-    /// Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
+    /// Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write.
     Set {
         path: String,
         key: String,

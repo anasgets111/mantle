@@ -45,10 +45,10 @@ void main() {
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | `string\|Bound` | `""` | Absolute `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
+| `source` | `string\|Bound` | `""` | Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
 | `progress` | `number\|Bound`, `[-8192, 8192]` | `0` | Becomes `u_progress`. There is no clock uniform: [animate](../guide/animation.md) this for motion; the wide range lets a spring overshoot |
 | `params` | `table<string, number\|number[]>\|Bound` | `{}` | Uniforms by name: a finite number for `float`, a list for `vec2`-`vec4` or an array of either, flattened to at most 4096 numbers. Missing ones are `0`. Not tweened |
-| `images` | `table<string, string>\|Bound` | `{}` | Up to 8 absolute PNG, JPEG or WebP paths by sampler name: [images](#images). Missing ones sample transparent black. Not tweened |
+| `images` | `table<string, string>\|Bound` | `{}` | Up to 8 PNG, JPEG or WebP paths, absolute or `~/` under `$HOME`, by sampler name: [images](#images). Missing ones sample transparent black. Not tweened |
 <!-- End of the generated table. -->
 
 It has no intrinsic size: without `width` and `height` it draws nothing. `opacity`, transforms,
@@ -105,7 +105,7 @@ void main() {
 | :--- | :--- |
 | Declared for you | `uniform sampler2D <name>;` and `uniform vec2 <name>_size;` (pixels). Do not declare them |
 | Names | A GLSL identifier of up to 64 characters, not `u_*`, `mantle_*`, `gl_*`, `v_uv`, `fragColor`, `main` or a GLSL keyword or builtin such as `texture`, `float`, `vec2` or `mix`, with no `__` and not ending in `_size`. Others are refused |
-| Files | Absolute `.png`, `.jpg`, `.jpeg` or `.webp` (any case); at most 8 entries. GIF, SVG and other extensions are refused. A side over 2048 px is downscaled to 2048; each image is decoded in the frame that first draws it and held for the node's life, at most 16 MiB, so 128 MiB for eight |
+| Files | `.png`, `.jpg`, `.jpeg` or `.webp` (any case), absolute or `~/` under `$HOME`; at most 8 entries. GIF, SVG and other extensions are refused. A side over 2048 px is downscaled to 2048; each image is decoded in the frame that first draws it and held for the node's life, at most 16 MiB, so 128 MiB for eight |
 | Sampling | `texture(name, uv)` with `uv` in `0..1`, top-left origin like `v_uv`. Linear filter, no mipmaps. Clamped to the edge, so use `fract(uv)` to tile. Texels are premultiplied, as `fragColor` is, and in sRGB as stored: no linearising, so a normal map reads as written |
 | Missing or undecodable file | Samples `vec4(0.0)` with `name_size` of `vec2(1.0)`, logged once per path. The node still draws |
 | Changed file | A new modification time or length reloads it, as an `image` does |
@@ -128,7 +128,7 @@ void main() {
 
 | Trap | Fix |
 | :--- | :--- |
-| Draws nothing, and `check` passed | Read `mantle log` for the compile error. Check the node has a size and an absolute `source` |
+| Draws nothing, and `check` passed | Read `mantle log` for the compile error. Check the node has a size and an absolute or `~/` `source` |
 | The shader is static | There is no time uniform. Animate `progress` |
 | A `uniform int` refuses the shader | Declare it `float` and pass the integer as a number |
 | Colours glow too bright where alpha is low | `fragColor` is premultiplied: multiply RGB by alpha |

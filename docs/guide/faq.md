@@ -38,7 +38,7 @@ stays within one page is in that page's Gotchas table.
 
 | Symptom | Cause | Fix |
 | :--- | :--- | :--- |
-| A `computed` or `:get()` raises `attempt to index a nil value` at startup, or a capability reads `nil` | Every capability reads `nil` until its first push, for `mantle check`'s first pass, and for good when its backend is missing; `:map` skips the `nil` | [The one rule](signals.md#the-one-rule), [capabilities](../capabilities/index.md) |
+| A `:get()` raises `attempt to index a nil value` at startup, or a capability reads `nil` | Every capability reads `nil` until its first push, for `mantle check`'s first pass, and for good when its backend is missing; `:map` and `computed` skip the `nil` | [The one rule](signals.md#the-one-rule), [capabilities](../capabilities/index.md) |
 | A text never updates | It holds a `:get()` snapshot, not the signal | [The one rule](signals.md#the-one-rule) |
 | A setting is lost after the shell restarts | Named state lives in the Renderer and dies with it | [persistent_table](scripting.md#persistent_table) |
 | A switched view keeps old state, or snaps in without its animation | `visible = false` freezes the subtree in place; two id-less views of the same kind are reused | [Switching views](signals.md#switching-views), [nodes](../nodes/index.md) |

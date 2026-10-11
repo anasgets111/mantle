@@ -93,7 +93,7 @@ local function flatten(entries, depth, open, out)
 end
 
 local menu_rows = computed({ mantle.tray, menu_item, expanded }, function(tray, id, open)
-    for _, item in ipairs(tray and tray.items or {}) do
+    for _, item in ipairs(tray.items) do
         if item.id == id then
             return flatten(item.menu, 0, open, {})
         end

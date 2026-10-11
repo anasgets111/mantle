@@ -52,8 +52,9 @@ Click Next minute to update only the Live column. The screenshot captures that f
 
 A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
 until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.
-`:map(fn, before?)` never calls `fn` with that `nil`: until the first push the mapped signal holds
-`before` (default `nil`). `:get()`, `computed` and `on_change`'s `previous` still see `nil`. When a
+`:map(fn, before?)` and `computed(deps, fn, before?)` never call `fn` with that `nil`: until every
+capability among the dependencies has pushed, the derived signal holds `before` (default `nil`). `:get()`
+and `on_change`'s `previous` still see `nil`. When a
 signal resolves to `nil`, its property counts as absent and takes the property's default.
 
 For values your config writes, start with [named state](#named-state). To transform or
@@ -148,9 +149,8 @@ Use `computed` to combine two sources, here a capability and a state that a clic
 local show_seconds = state("show_seconds", false)
 
 local clock = computed({ mantle.clock, show_seconds }, function(system, seconds)
-  if not system then return "" end
   return os.date(seconds and "%H:%M:%S" or "%H:%M", system.time)
-end)
+end, "")
 
 rect {
   on_click = function() show_seconds:set(not show_seconds:get()) end,
@@ -333,7 +333,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `sig:scroll_to(px)`, `sig:scroll_by(px)` | nothing | `scroll` signals only; moves to an offset, or by a distance from where it is headed ([input](input.md#scroll)) |
 | `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
 | `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
-| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. A `nil`, function, userdata or named key raises, naming the entry |
+| `computed({ a, b, ... }, fn, before?)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. While a capability among them has not pushed, `fn` is skipped and the signal holds `before` (default `nil`). A `nil`, function, userdata or named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
 | `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
@@ -398,15 +398,14 @@ again after changing it in place is a write.
 
 ### Derive from two capabilities
 
-List every source in `computed`. Each one reads `nil` until its first push, and `fn` sees that `nil` (unlike `:map`).
+List every source in `computed`. Until every capability has pushed, `fn` is skipped and the signal holds `before`, here `"..."`.
 
 ```lua
 local status = computed({ mantle.network, mantle.audio }, function(network, audio)
-  if not network or not audio then return "..." end
   local net = network.connected and "online" or "offline"
   local sound = audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume or 0))
   return net .. " / " .. sound
-end)
+end, "...")
 
 text { content = status }
 ```
@@ -448,7 +447,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | Trap | Fix |
 | :--- | :--- |
 | `content = sig:get()` never updates | Pass `sig` or `sig:map(...)`; `:get()` is a snapshot |
-| A `computed` or `:get()` errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass. A capability's `:map` never calls `fn` with `nil`; `computed` and `:get()` still see it, so guard there |
+| A `computed` or `:get()` errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass. A capability's `:map` and `computed` never call `fn` with `nil`; `:get()` still sees it, so guard there |
 | `visible = cap:map(function(c) return c.on end)` shows the node before hydration | The signal holds `nil` until the first push, and `visible` defaults to `true`; pass `before`: `cap:map(fn, false)` |
 | `` `margin.left` is a Signal handle `` | The signal sits where it is not read: in a table a signal returned, under a metatable, or 8 tables deep. Return plain values from the map, or move the signal up |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |

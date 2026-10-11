@@ -32,7 +32,8 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
         fn persistent_table(
             lua,
-            /// `path` is an absolute file path, not ending in `/`; otherwise raises.
+            /// `path` is a file path, absolute or `~/` under `$HOME`, not ending in `/`; otherwise raises.
+            /// The key in `mantle.storage`'s `contents` is the expanded absolute path.
             spec: As<Table, Spec>,
         ) -> PersistentTable {
             let spec = spec.0;
@@ -93,7 +94,7 @@ impl LuaType for PersistentTable {
         out.push(
             r#"---@class PersistentTable
 ---One JSON file. Every key but `set` reads as a signal of its stored value: the declared default until
----this file's first push, `nil` for a key the file lacks. `set(key, nil)` reads `nil` until the next evaluation restores the default.
+---this file's first push, and again for a key the file lacks, such as one `set(key, nil)` deleted; `nil` if it has no default.
 ---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
 ---@field [string] Signal<any>
 "#
@@ -102,11 +103,12 @@ impl LuaType for PersistentTable {
     }
 }
 
-/// The config's `path` as the key config and Supervisor share: absolute and naming a file.
+/// The config's `path` as the key config and Supervisor share: `~/` expanded, absolute and naming a file.
 fn file_path(path: &str) -> mlua::Result<String> {
+    let path = &*super::marshal::expand_path("persistent_table", path)?;
     if !path.starts_with('/') {
         return Err(mlua::Error::runtime(format!(
-            "persistent_table: path must be absolute, got {}; a relative one resolves against the \
+            "persistent_table: path must be absolute or start with ~/, got {}; a relative one resolves against the \
              Supervisor's working directory, which nothing sets",
             preview_str(path)
         )));
@@ -138,8 +140,8 @@ pub(super) fn capability(lua: &Lua, caller: &str, name: &str) -> mlua::Result<An
 
 /// Answers every key `table` lacks with `payload[section][entry][key]` mapped over `capability`,
 /// cached with `rawset` so later reads are plain and each key has one signal. A store's `defaults`
-/// answer for every entry the payload lacks; a key missing from a present entry is `nil`, matching
-/// the property's documented default.
+/// answer for every entry the payload lacks and for every key a present entry lacks; without one a
+/// missing key is `nil`, matching the property's documented default.
 pub(super) fn index_entry_signals(
     lua: &Lua,
     table: &Table,
@@ -166,12 +168,17 @@ pub(super) fn index_entry_signals(
                     },
                     _ => Value::Nil,
                 };
-                match stored {
-                    Value::Table(stored) => stored.get::<Value>(field.as_str()),
-                    _ => defaults.as_ref().map_or(Ok(Value::Nil), |defaults| defaults.get(field.as_str())),
+                let value = match stored {
+                    Value::Table(stored) => stored.get::<Value>(field.as_str())?,
+                    _ => Value::Nil,
+                };
+                // A key the file lacks reads its default, as after `set(key, nil)`; the Supervisor's `open` refills the file.
+                if !value.is_nil() {
+                    return Ok(value);
                 }
+                defaults.as_ref().map_or(Ok(Value::Nil), |defaults| defaults.get(field.as_str()))
             })?;
-            let key_signal = Signal::mapped(lua, lua.create_userdata(signal.clone())?, read)?;
+            let key_signal = Signal::mapped(lua, lua.create_userdata(signal.clone())?, read, Value::Nil)?;
             table.raw_set(key, key_signal.clone())?;
             Ok(key_signal)
         })?,
@@ -200,6 +207,10 @@ mod tests {
     #[test]
     fn an_absolute_file_path_is_its_own_key() {
         assert_eq!(file_path("/home/u/.config/bar/settings.json").unwrap(), "/home/u/.config/bar/settings.json");
+        match shared::expand_tilde("~/bar/settings.json") {
+            Ok(expanded) => assert_eq!(file_path("~/bar/settings.json").unwrap(), expanded),
+            Err(_) => assert!(file_path("~/bar/settings.json").is_err(), "no $HOME, no expansion"),
+        }
     }
 
     #[test]

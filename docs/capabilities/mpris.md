@@ -79,7 +79,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
-| `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:monotonic()` in seconds, so `mantle.clock:monotonic() - position_updated_at / 1e6` is the age. |
+| `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:now()` in seconds, so `mantle.clock:now() - position_updated_at / 1e6` is the age. |
 | `rate` | `number` | MPRIS playback rate. |
 | `shuffle` | `boolean` | MPRIS shuffle setting. |
 | `title` | `string` | Track title; empty when unset, normal between tracks. |
@@ -165,14 +165,14 @@ One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`, `"stop"`.
 
 | Task | Answer |
 | :--- | :--- |
-| Show a live progress bar | Compare `position_updated_at / 1e6` with `mantle.clock:monotonic()`, or stamp each new report in `on_change` and add the seconds since: [Media player](../cookbook/media-player.md) |
+| Show a live progress bar | Compare `position_updated_at / 1e6` with `mantle.clock:now()`, or stamp each new report in `on_change` and add the seconds since: [Media player](../cookbook/media-player.md) |
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `position` stands still while playing | It is the offset at `position_updated_at`, not polled. Extrapolate, as above |
-| `position_updated_at` compared with `mantle.clock.monotonic` is off by a million | Same clock, different unit: microseconds against seconds. Divide by `1e6`; use `mantle.clock:monotonic()` for a live reading |
+| `position_updated_at` compared with `mantle.clock.monotonic` is off by a million | Same clock, different unit: microseconds against seconds. Divide by `1e6`; use `mantle.clock:now()` for a live reading |
 
 See also: [Media player](../cookbook/media-player.md) recipe.
 

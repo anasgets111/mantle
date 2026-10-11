@@ -151,7 +151,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
         fn palette.quantize(
             _lua,
-            /// A local raster file; no SVG or URL.
+            /// A local raster file, a path or `~/` under `$HOME`; no SVG or URL.
             path: String,
             /// `depth` 0 to 8, default 3: up to `2^depth` colours. `method` `"celebi"` (default) or `"wu"`. `rescale` caps the longest edge before
             /// counting, default 128, `0` for full size. Out of range raises.
@@ -174,6 +174,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
                 let range = out_of_range(0, u32::MAX, format!("integer {rescale}"));
                 return Err(mlua::Error::runtime(format!("palette.quantize: options: `rescale` {range}")));
             };
+            let path = super::marshal::expand_path("palette.quantize", &path)?;
             Ok(registry.quantize(path, depth, method, rescale, on_done))
         }
     )?;

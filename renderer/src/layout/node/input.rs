@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use mlua::Value;
 
-use super::prop::Keyword;
+use super::prop::{Keyword, expand_tilde};
 use super::{LayoutError, Rgba, checked_string, invalid, parse_hex_color, preview_for_error, value_as_f32};
 use crate::lua::luacats::LuaType;
 
@@ -110,7 +110,8 @@ impl Input for String {
 impl Input for PathBuf {
     fn from_value(property: &str, _: &str, value: &Value) -> Result<Option<Self>, LayoutError> {
         let Value::String(path) = value else { return Ok(None) };
-        Ok(Some(PathBuf::from(path.to_str().map_err(|e| invalid(property, e.to_string()))?.as_ref())))
+        let path = path.to_str().map_err(|e| invalid(property, e.to_string()))?;
+        expand_tilde(property, &path).map(|path| Some(PathBuf::from(path)))
     }
 }
 

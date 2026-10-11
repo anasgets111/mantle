@@ -265,7 +265,24 @@ impl Prop for Text {
     }
 }
 
-/// [`Text`] that is an absolute path or empty (ADR-0253): a relative one would resolve against
+/// `path` with a leading `~/` expanded under `$HOME`, so caches and decoders only see absolute paths.
+pub(crate) fn expand_tilde(property: &str, path: &str) -> Result<String, LayoutError> {
+    shared::expand_tilde(path).map(std::borrow::Cow::into_owned).map_err(|err| invalid(property, err.to_string()))
+}
+
+/// [`Text`] that names a file, or for an icon a theme name: a leading `~/` is expanded under `$HOME`.
+pub(crate) struct FileText;
+
+spelled!(FileText => String::lua());
+
+impl Prop for FileText {
+    type Out = String;
+    fn read(row: &Property, value: Option<&Value>) -> Result<String, LayoutError> {
+        expand_tilde(row.name, &Text::read(row, value)?)
+    }
+}
+
+/// [`FileText`] that is an absolute path or empty (ADR-0253): a relative one would resolve against
 /// whatever directory the Renderer started in.
 pub(crate) struct Path;
 
@@ -274,7 +291,7 @@ spelled!(Path => String::lua());
 impl Prop for Path {
     type Out = String;
     fn read(row: &Property, value: Option<&Value>) -> Result<String, LayoutError> {
-        let path = Text::read(row, value)?;
+        let path = FileText::read(row, value)?;
         if !path.is_empty() && !path.starts_with('/') {
             return Err(invalid(row.name, format!("expected an absolute path, got {}", preview_str(&path))));
         }

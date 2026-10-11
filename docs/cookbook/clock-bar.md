@@ -9,11 +9,8 @@ local show_date = state("clock_show_date", false)
 local clock_hover = hover("clock")
 
 local label = computed({ mantle.clock, show_date }, function(clock, date)
-    if clock == nil then
-        return "--:--" -- nil until the first push
-    end
     return os.date(date and "%A %d %B" or "%H:%M", clock.time)
-end)
+end, "--:--")
 
 local tooltip_text = mantle.clock:map(function(clock)
     return os.date("%A, %d %B %Y", clock.time)

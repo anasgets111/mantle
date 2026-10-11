@@ -431,8 +431,15 @@ impl Signal {
     /// `map(f)` as a one-dependency `Computed`, memoized per layout pass like any `Computed`.
     /// Shared by Lua and Rust so `lua::capability::Capability` makes `mantle.lock` read like bare
     /// capabilities.
-    pub(crate) fn mapped(lua: &Lua, source: mlua::AnyUserData, func: Function) -> mlua::Result<mlua::AnyUserData> {
-        new_derived(lua, SignalKind::Computed { out: Output::new(), arity: 1 }, Some(func), vec![source])
+    pub(crate) fn mapped(
+        lua: &Lua,
+        source: mlua::AnyUserData,
+        func: Function,
+        before: Value,
+    ) -> mlua::Result<mlua::AnyUserData> {
+        let ud = new_derived(lua, SignalKind::Computed { out: Output::new(), arity: 1 }, Some(func), vec![source])?;
+        ud.set_nth_user_value(before_slot(1), before)?;
+        Ok(ud)
     }
 
     /// Reads current value (ADR-0044 decision 1). `layout::node` uses it to resolve signal
@@ -459,6 +466,10 @@ const SITE_SLOT: usize = 1;
 /// User value holding a `Computed`'s function; its sources, or a `Delayed`/`Pulse` source, follow.
 const FUNCTION_SLOT: usize = 2;
 const FIRST_SOURCE_SLOT: usize = 3;
+/// A `Computed`'s `before`, after its sources: what it holds while a capability dependency has not pushed.
+const fn before_slot(arity: usize) -> usize {
+    FIRST_SOURCE_SLOT + arity
+}
 /// A `Delayed`'s held value or a `Pulse`'s last-seen one, after the source; then a pending value.
 const HELD_SLOT: usize = FIRST_SOURCE_SLOT + 1;
 const PENDING_SLOT: usize = HELD_SLOT + 1;
@@ -531,14 +542,25 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             let evaluation = Evaluation::enter(lua);
 
             let mut args = Vec::with_capacity(arity);
+            let mut waiting = false;
             for slot in FIRST_SOURCE_SLOT..FIRST_SOURCE_SLOT + arity {
-                args.push(source_at(ud, slot)?.get_value(lua)?);
+                let value = source_at(ud, slot)?.get_value(lua)?;
+                // A capability reads `nil` only before its first push (ADR-0359); `fn` never sees it.
+                if value.is_nil() && is_capability(&ud.nth_user_value::<mlua::AnyUserData>(slot)?) {
+                    waiting = true;
+                    break;
+                }
+                args.push(value);
             }
-            let func: Function = ud.nth_user_value(FUNCTION_SLOT)?;
-            let value = func.call::<Value>(MultiValue::from_vec(args)).and_then(|value| {
-                budget.check_not_exceeded()?;
-                Ok(value)
-            });
+            let value = if waiting {
+                ud.nth_user_value(before_slot(arity))
+            } else {
+                let func: Function = ud.nth_user_value(FUNCTION_SLOT)?;
+                func.call::<Value>(MultiValue::from_vec(args)).and_then(|value| {
+                    budget.check_not_exceeded()?;
+                    Ok(value)
+                })
+            };
             let value = match value {
                 Ok(value) => value,
                 Err(err) => {
@@ -585,7 +607,9 @@ impl UserData for Signal {
         // Functions, not methods: a derived signal's read needs the userdata its user values hang
         // off, which a method's `&Self` has lost.
         methods.add_function("get", |lua, ud: mlua::AnyUserData| read(lua, &ud));
-        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
+        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| {
+            Signal::mapped(lua, ud, f, Value::Nil)
+        });
         // ADR-0112: config requests a child, not a pixel offset; the pass owns pixels
         // (ADR-0069 decision 2).
         methods.located_method("reveal", |_, this, index: i64| {
@@ -659,7 +683,12 @@ pub(crate) fn read(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
 /// [`from_userdata`] without cloning; both must agree on signal types, tested by
 /// `from_userdata_and_is_signal_agree`.
 pub fn is_signal(ud: &mlua::AnyUserData) -> bool {
-    ud.is::<Signal>() || ud.is::<crate::lua::capability::Capability>() || ud.is::<crate::lua::idle::IdleMember>()
+    ud.is::<Signal>() || is_capability(ud)
+}
+
+/// A capability, `mantle.idle`'s wrapper included: the signals that read `nil` before their first push.
+fn is_capability(ud: &mlua::AnyUserData) -> bool {
+    ud.is::<crate::lua::capability::Capability>() || ud.is::<crate::lua::idle::IdleMember>()
 }
 
 #[cfg(test)]

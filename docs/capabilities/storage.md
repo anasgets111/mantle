@@ -24,12 +24,12 @@ Call each as `mantle.storage:<action>(arguments...)`; `?` marks an argument you 
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `open` | `path: string, defaults?: table<string, any>` | Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults. |
-| `set` | `path: string, key: string, value?: any` | Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write. |
+| `open` | `path: string, defaults?: table<string, any>` | Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults. |
+| `set` | `path: string, key: string, value?: any` | Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write. |
 
 ## Backend
 
-Plain JSON files at absolute paths, watched with inotify. A `set` pushes at once; the save follows
+Plain JSON files at absolute paths (`~/` is expanded before it reaches the Supervisor), watched with inotify. A `set` pushes at once; the save follows
 1 s later. Another writer's change, another shell's included, gets missing defaults refilled and
 pushes.
 

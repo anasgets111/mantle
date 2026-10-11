@@ -9,12 +9,12 @@ pub struct ClockState {
     /// Unix epoch seconds, as `os.date` takes them.
     pub time: i64,
     /// System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend.
-    /// Take durations from it, since NTP moves `time`. `mantle.clock:monotonic()` reads it live.
+    /// Take durations from it, since NTP moves `time`. `mantle.clock:now()` reads it live.
     // ponytail: suspend-inclusive timing wants a `CLOCK_BOOTTIME` field.
     pub monotonic: f64,
 }
 
-/// `CLOCK_MONOTONIC` in seconds, the clock `ClockState::monotonic` and `mantle.clock:monotonic()`
+/// `CLOCK_MONOTONIC` in seconds, the clock `ClockState::monotonic` and `mantle.clock:now()`
 /// share. Fractional so a sub-second elapsed term stays honest; f64 holds microseconds for decades.
 pub fn monotonic_seconds() -> f64 {
     let mut now = libc::timespec { tv_sec: 0, tv_nsec: 0 };

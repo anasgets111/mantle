@@ -1286,6 +1286,13 @@ mod tests {
         let under = under.unwrap();
         assert_eq!((under.shader.is_none(), under.backdrop_shader.as_ref().map(|s| s.padding)), (true, Some(4.0)));
         assert!(!under.layers());
+        let tilde = parse(r#"return { effect = { shader = { source = "~/s.frag" } } }"#);
+        match shared::expand_tilde("~/s.frag") {
+            Ok(expanded) => {
+                assert_eq!(tilde.unwrap().shader.unwrap().source, std::path::PathBuf::from(expanded.into_owned()))
+            }
+            Err(_) => assert!(tilde.is_err(), "no $HOME, no expansion"),
+        }
         for (src, property) in [
             (r#"return { effect = { shader = { source = "/s.frag", input = "behind" } } }"#, "effect.shader"),
             (r#"return { blend = "plus-lighter" }"#, "blend"),

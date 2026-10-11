@@ -22,7 +22,7 @@ text {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `monotonic` | `number` | System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:monotonic()` reads it live. |
+| `monotonic` | `number` | System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:now()` reads it live. |
 | `time` | `integer` | Unix epoch seconds, as `os.date` takes them. |
 
 ## Actions
@@ -45,12 +45,12 @@ Call each as `mantle.clock:<action>(arguments...)`; `?` marks an argument you ma
 
 `monotonic` is `CLOCK_MONOTONIC`: seconds since boot as a number with a fraction, the same clock
 in every process, and it excludes suspend. The field holds the reading from the last push, up to
-`interval` stale. `mantle.clock:monotonic()` reads the clock at that call, works before the first
+`interval` stale. `mantle.clock:now()` reads the clock at that call, works before the first
 push and sends nothing:
 
 ```lua,fragment
-local armed_at = mantle.clock:monotonic()
-local function elapsed() return mantle.clock:monotonic() - armed_at end
+local armed_at = mantle.clock:now()
+local function elapsed() return mantle.clock:now() - armed_at end
 ```
 
 ## Backend
@@ -59,7 +59,7 @@ The Supervisor's own clocks; nothing external. Pushes land on wall-clock multipl
 since the epoch (default `1`): `60` lands on each minute's `:00`; `3600` on UTC hours, not local
 ones in a half-hour timezone. A push due during suspend lands on resume, and a clock step (NTP,
 `settimeofday`) pushes at once and re-aligns. `0` stops pushes; the `time` and `monotonic` fields keep
-their last values, but `monotonic()` stays live. The interval lives in the Supervisor, so it outlasts reloads until the next
+their last values, but `now()` stays live. The interval lives in the Supervisor, so it outlasts reloads until the next
 `configure`, and every reader shares it.
 
 See also: [Clock bar](../cookbook/clock-bar.md) recipe.

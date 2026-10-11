@@ -13,8 +13,8 @@ use crate::text::snap::LogicalRect;
 use super::budget::install_hook;
 use super::tracking::Output;
 use super::{
-    CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, from_userdata, is_signal, literal_was_edited, new_derived,
-    next_cell_id,
+    CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, before_slot, from_userdata, is_signal, literal_was_edited,
+    new_derived, next_cell_id,
 };
 
 /// Applies an `mantle set`/`toggle` to named `state` (ADR-0112), using `set`'s marshalling and
@@ -268,7 +268,8 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     let scroll_dirty = dirty.clone();
     lua_fn!(
         lua,
-        /// A signal of `fn` over its dependencies' values, recomputed on read. `fn` must be side-effect free
+        /// A signal of `fn` over its dependencies' values, recomputed on read. A capability that has not
+        /// pushed yet reads `nil`; `fn` is skipped and the signal holds `before`. `fn` must be side-effect free
         /// and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
         /// since typing them needs an overload per arity; prefer `:map` for one source.
         /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
@@ -278,6 +279,9 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             /// unchanged, as a constant: a string, number, boolean or table.
             dependencies: As<Table, Vec<Value>>,
             r#fn: fn(values: Variadic<Value>) -> Value,
+            /// What the signal holds while a capability dependency has not pushed yet; `fn` is not
+            /// called until then. Default `nil`.
+            before: Option<Value>,
         ) -> /// Read-only.
         SignalOf<Value, AnyUserData> {
             let entries = list_entries(&dependencies.0)
@@ -300,7 +304,10 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
             let kind = SignalKind::Computed { out: Output::new(), arity: collected.len() };
-            new_derived(lua, kind, Some(r#fn.0), collected).map(SignalOf::new)
+            let arity = collected.len();
+            let ud = new_derived(lua, kind, Some(r#fn.0), collected)?;
+            ud.set_nth_user_value(before_slot(arity), before.unwrap_or(Value::Nil))?;
+            Ok(SignalOf::new(ud))
         }
     )?;
     lua_fn!(

@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct FoldersState {
-    /// One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
+    /// One entry per `"watch"`, keyed by its absolute `path` (`~/` expanded) minus trailing slashes; `nil` until watched.
     pub watched: BTreeMap<String, Folder>,
 }
 

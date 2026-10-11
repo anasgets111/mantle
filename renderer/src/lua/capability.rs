@@ -208,7 +208,7 @@ impl UserData for Capability {
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
         // `fn` never sees the pre-push `nil`: the mapped signal holds `before` until the first push.
         methods.located_function("map", |lua, (ud, f, before): (mlua::AnyUserData, Function, Value)| {
-            map_skipping_nil(lua, ud, f, before)
+            Signal::mapped(lua, ud, f, before)
         });
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,
         // with new and old payloads, and input-callback powers (actions, `process.run`, state).
@@ -220,9 +220,9 @@ impl UserData for Capability {
         // `__index`; `every_roster_action_is_a_method_no_builtin_shadows` keeps names clear of them.
         // An unknown key raises rather than reading `nil`, so `mantle.audio.volume` names the fix.
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| {
-            // `mantle.clock:monotonic()` reads the system-wide clock here, so it is live between pushes.
-            if this.name == "clock" && key == "monotonic" {
-                const CACHED: &str = "mantle.clock.monotonic";
+            // `mantle.clock:now()` reads the system-wide clock here, so it is live between pushes.
+            if this.name == "clock" && key == "now" {
+                const CACHED: &str = "mantle.clock.now";
                 if let Ok(Value::Function(cached)) = lua.named_registry_value::<Value>(CACHED) {
                     return Ok(Value::Function(cached));
                 }
@@ -293,6 +293,11 @@ impl Capability {
             })?;
             arguments.push(json);
         }
+        if let Some(slot) = path_slot(&self.name, action)
+            && let Some(serde_json::Value::String(path)) = arguments.get_mut(slot)
+        {
+            *path = super::marshal::expand_path(&format!("mantle.{}:{action}", self.name), path)?;
+        }
         // The Supervisor decodes again (ADR-0291); this one is for the config line that sent it.
         let roster = shared::Capability::from_name(&self.name).expect("an action resolves only on a roster name");
         shared::action::check(roster, action, &arguments).map_err(|err| {
@@ -303,19 +308,14 @@ impl Capability {
     }
 }
 
-/// A capability's `:map`, `mantle.idle`'s too: `f` never sees the pre-push `nil` (ADR-0359).
-pub(crate) fn map_skipping_nil(
-    lua: &Lua,
-    source: mlua::AnyUserData,
-    f: Function,
-    before: Value,
-) -> mlua::Result<mlua::AnyUserData> {
-    let skip = lua.create_function(
-        move |_, value: Value| {
-            if value.is_nil() { Ok(before.clone()) } else { f.call::<Value>(value) }
-        },
-    )?;
-    Signal::mapped(lua, source, skip)
+/// The argument that names a file or folder, which the Supervisor only ever sees absolute.
+// ponytail: listed by hand; a new action taking a path must be added here (upgrade: mark it in the catalog).
+fn path_slot(capability: &str, action: &str) -> Option<usize> {
+    match (capability, action) {
+        ("folders", "watch" | "unwatch") | ("storage", "open" | "set") => Some(0),
+        ("notifications", "set_sound") => Some(1),
+        _ => None,
+    }
 }
 
 /// `shared::action`'s `argument 1: invalid type: string "x", expected usize` as `bad argument #1:
@@ -519,19 +519,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn clock_monotonic_reads_the_live_system_clock_before_any_push() {
+    fn clock_now_reads_the_live_system_clock_before_any_push() {
         let lua = Lua::new();
         let (tx, mut rx) = mpsc::unbounded_channel();
         let (clock, _) = Capability::new("clock", DirtyFlag::new(), CommandSender::new(0, tx));
         lua.globals().set("clock", clock).unwrap();
         let before = shared::state::clock::monotonic_seconds();
 
-        let read: f64 = lua.load("return clock:monotonic()").eval().unwrap();
+        let read: f64 = lua.load("return clock:now()").eval().unwrap();
 
         assert!(read >= before && read <= shared::state::clock::monotonic_seconds());
         assert!(queued_command(&mut rx).is_none(), "a read sends nothing");
-        assert!(lua.load("return clock.monotonic == clock.monotonic").eval::<bool>().unwrap(), "built once");
+        assert!(lua.load("return clock.now == clock.now").eval::<bool>().unwrap(), "built once");
         assert!(lua.load("return clock:nope()").exec().is_err(), "other keys still raise");
+        assert!(lua.load("return clock:monotonic()").exec().is_err(), "the old name is an unknown member");
     }
 
     /// mlua resolves `get`/`map`/`on_change` before `__index`, so an action by one of those names
@@ -544,10 +545,10 @@ pub(crate) mod tests {
         for capability in shared::Capability::ALL {
             let (member, _) = Capability::new(capability.as_str(), DirtyFlag::new(), commands.clone());
             lua.globals().set("cap", member).unwrap();
-            // `__index` answers `clock:monotonic` itself, ahead of the roster.
+            // `__index` answers `clock:now` itself, ahead of the roster.
             assert!(
-                capability.as_str() != "clock" || !capability.actions().contains(&"monotonic"),
-                "a clock action named monotonic would be shadowed"
+                capability.as_str() != "clock" || !capability.actions().contains(&"now"),
+                "a clock action named now would be shadowed"
             );
             for action in capability.actions() {
                 // Most actions refuse no arguments; the refusal naming the action proves it reached `send_action`.
@@ -681,5 +682,57 @@ pub(crate) mod tests {
 
         let (seeded, bare, calls): (i64, i64, i64) = lua.load("return seeded:get(), bare:get(), calls").eval().unwrap();
         assert_eq!((seeded, bare, calls), (3, 3, 1));
+    }
+
+    #[test]
+    fn a_path_argument_starting_with_tilde_slash_reaches_the_supervisor_expanded() {
+        let expand = |rest: &str| shared::expand_tilde(&format!("~/{rest}")).map(std::borrow::Cow::into_owned);
+        let lua = Lua::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let commands = CommandSender::new(0, tx);
+        for name in ["folders", "storage", "notifications"] {
+            let (member, _) = Capability::new(name, DirtyFlag::new(), commands.clone());
+            lua.globals().set(name, member).unwrap();
+        }
+        if expand("x").is_err() {
+            assert!(lua.load(r#"folders:watch("~/Pictures")"#).exec().is_err(), "no $HOME, no expansion");
+            return;
+        }
+        lua.load(
+            r#"folders:watch("~/Pictures") storage:set("~/s.json", "k", 1) notifications:set_sound("normal", "~/a.ogg")"#,
+        )
+        .exec()
+        .unwrap();
+        let sent: Vec<_> = std::iter::from_fn(|| queued_command(&mut rx)).map(|e| e.params.arguments).collect();
+        assert_eq!(sent[0][0], serde_json::json!(expand("Pictures").unwrap()));
+        assert_eq!(sent[1][0], serde_json::json!(expand("s.json").unwrap()));
+        assert_eq!(sent[2][1], serde_json::json!(expand("a.ogg").unwrap()));
+    }
+
+    #[test]
+    fn computed_skips_its_function_until_every_capability_dependency_has_pushed() {
+        let (lua, handle, _rx) = lua_with_capability(0);
+        crate::lua::signal::register(&lua, DirtyFlag::new()).unwrap();
+        lua.load(
+            r#"
+            calls = 0
+            sum = computed({ mantle.probe, 10 }, function(s, k) calls = calls + 1 return s.n + k end, -1)
+            bare = computed({ mantle.probe }, function(s) return s.n end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let (held, bare_nil, calls): (i64, bool, i64) =
+            lua.load("return sum:get(), bare:get() == nil, calls").eval().unwrap();
+        assert_eq!((held, bare_nil, calls), (-1, true, 0), "fn must not run on the pre-push nil");
+
+        let pushed = lua.create_table().unwrap();
+        pushed.set("n", 3).unwrap();
+        handle.hydrate(Value::Table(pushed));
+
+        let (sum, calls): (i64, i64) = lua.load("return sum:get(), calls").eval().unwrap();
+        assert_eq!((sum, calls), (13, 1));
+        assert!(lua.load("return mantle.probe:get() ~= nil").eval::<bool>().unwrap(), ":get() is unchanged");
     }
 }

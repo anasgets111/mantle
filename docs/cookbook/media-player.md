@@ -71,8 +71,7 @@ local position = computed({ player, position_mark, mantle.clock }, function(curr
         return nil
     end
     local elapsed = 0
-    -- An unstamped report, such as one before the first clock push, adds nothing.
-    if current.play_state == "playing" and clock and mark.key == report_key(current) then
+    if current.play_state == "playing" and mark.key == report_key(current) then
         elapsed = (clock.monotonic - mark.at) * 1000000
     end
     local rate = current.rate or 1

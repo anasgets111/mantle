@@ -31,7 +31,7 @@ end
 
 local matches = computed({ mantle.applications, query }, function(applications, needle)
     local scored = {}
-    for _, entry in ipairs(applications and applications.entries or {}) do
+    for _, entry in ipairs(applications.entries) do
         local score, start = score_of(entry, needle)
         if not entry.no_display and score then
             scored[#scored + 1] = { entry = entry, score = score, start = start }
@@ -47,7 +47,7 @@ local matches = computed({ mantle.applications, query }, function(applications, 
         out[index] = scored[index].entry
     end
     return out
-end)
+end, {})
 
 local function launch(entry)
     if entry then

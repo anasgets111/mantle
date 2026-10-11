@@ -94,7 +94,7 @@ Call each as `mantle.notifications:<action>(arguments...)`; `?` marks an argumen
 | `dismiss` | `id: integer` | Removes a queued notification. |
 | `invoke_action` | `id: integer, key: string` | Invokes an `actions[].key`, or `"default"`; removes the notification unless it is resident. |
 | `reply` | `id: integer, text: string` | Sends reply text to a notification with `has_reply`; removes it unless it is resident. |
-| `set_sound` | `urgency: Urgency, path: string` | Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored. Only Ogg Vorbis and 16-bit PCM WAV play. |
+| `set_sound` | `urgency: Urgency, path: string` | Sets an urgency tier's sound: an existing file under `/usr/share`, `/usr/local/share`, `/opt` or `$XDG_DATA_HOME`, else ignored; `path` may start with `~/`. Only Ogg Vorbis and 16-bit PCM WAV play. |
 | `set_dnd` | `enabled: boolean` | Gates non-critical notification sounds. |
 | `set_quiet` | `enabled: boolean` | Mutes non-critical sounds like `set_dnd`, without changing `dnd`. |
 | `set_app_muted` | `app: string, muted: boolean` | Silences every sound from an app, critical included, matched exactly on `app_name` or `desktop_entry`. |

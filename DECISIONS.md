@@ -8367,9 +8367,26 @@ the file's first push.
 
 ## 0360. `clock.monotonic` is the system `CLOCK_MONOTONIC`, read live by `mantle.clock:monotonic()` (amends ADR-0202)
 
+Amended by ADR-0361: the live read is `mantle.clock:now()`.
+
 Decision 1 of ADR-0202 changes: `monotonic` is `CLOCK_MONOTONIC` seconds since boot, fractional,
 not seconds since the capability started. A per-capability origin could not join a stamp from
 another process (the wall ADR-0202's amendment hit for recording); now `mpris`
 `position_updated_at` (microseconds) compares directly. `mantle.clock:monotonic()` reads the same
 clock synchronously in the Renderer, before the first push, because the field is only as fresh as
 `interval`. The push gating and suspend exclusion are unchanged.
+
+## 0361. `computed` skips a capability's pre-push `nil`; `~/` paths; `clock:now()` (amends ADR-0359, ADR-0360)
+
+1. `computed(deps, fn, before?)` holds `before` and skips `fn` while any capability dependency reads
+   its pre-push `nil`, as `:map(fn, before?)` does; both build on `Signal::mapped`. A `fn` mixing a
+   capability with other signals never runs if that capability never pushes. `:get()` and
+   `on_change` still see `nil`.
+2. A leading `~/` in a config-supplied filesystem path expands under `$HOME` once, in the Renderer:
+   node properties in their parsers, capability actions through a hand list of path arguments.
+   `mantle.storage`'s `contents` and `mantle.folders`' `watched` are keyed by the expanded path.
+   Relative paths are refused as before; `process.run`'s `cmd` stays a `PATH` lookup.
+3. ADR-0360's live read is `mantle.clock:now()`. The pushed field stays `monotonic`, so `.` and `:`
+   no longer give two values under one name.
+4. A `persistent_table` key its file lacks reads the declared default, so `set(key, nil)` reads it
+   at once. The Supervisor still fills declared defaults into the file on `open` (ADR-0136).

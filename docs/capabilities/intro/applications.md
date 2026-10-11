@@ -1,13 +1,13 @@
 ```lua
 text {
     content = computed({ mantle.workspaces, mantle.applications }, function(workspaces, applications)
-        local client = workspaces and workspaces.active_client
-        if client == nil or applications == nil then
+        local client = workspaces.active_client
+        if client == nil then
             return ""
         end
         local index = applications.by_app_id[client.app_id]
         return index and applications.entries[index].name or client.app_id
-    end),
+    end, ""),
 }
 ```
 

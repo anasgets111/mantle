@@ -990,7 +990,7 @@ mod tests {
             (
                 serde_json::json!({ "connected": true }),
                 true,
-                Some(2),
+                Some(1),
                 "the body runs exactly once across take_scope and the layout pass",
             ),
             (serde_json::Value::Null, false, None, "unmodified state does not re-resolve"),
@@ -1002,14 +1002,18 @@ mod tests {
                 runs = 0
                 local sig = computed({mantle.network}, function(net)
                     runs = runs + 1
-                    return net and net.connected and "online" or "offline"
+                    return net.connected and "online" or "offline"
                 end)
                 return panel { id = "status", layer = "top", child = text { content = sig } }
                 "#,
             );
             let (mut client, _) = test_client(&path);
             run_startup(&mut client);
-            assert_eq!(client.loader.lua().globals().get::<i64>("runs").unwrap(), 1, "startup evaluates it once");
+            assert_eq!(
+                client.loader.lua().globals().get::<i64>("runs").unwrap(),
+                0,
+                "the pre-push nil never reaches the body"
+            );
 
             client
                 .apply_state_snapshot(StateSnapshot { capability: "network".to_string(), revision: 1, payload })

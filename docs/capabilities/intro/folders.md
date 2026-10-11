@@ -30,7 +30,7 @@ or moved away does the same, and lists again when it comes back.
 
 | Trap | Fix |
 | :--- | :--- |
-| `watch("~/Pictures")` does nothing | Only absolute paths pass; `~` is not expanded. Build the path from `os.getenv("HOME")` |
+| `watched["~/Pictures"]` is `nil` after `watch("~/Pictures")` | `watched` is keyed by the expanded absolute path: `watched[os.getenv("HOME") .. "/Pictures"]` |
 | `watched[path]` is `nil` after a `watch` | The key drops trailing slashes: `watch("/walls/")` lands at `watched["/walls"]` |
 | `error` is set but the folder exists | It is set while the folder is missing and clears on the next listing, up to 200 ms after the folder appears |
 

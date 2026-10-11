@@ -6,6 +6,6 @@ there.
 
 ## Backend
 
-Plain JSON files at absolute paths, watched with inotify. A `set` pushes at once; the save follows
+Plain JSON files at absolute paths (`~/` is expanded before it reaches the Supervisor), watched with inotify. A `set` pushes at once; the save follows
 1 s later. Another writer's change, another shell's included, gets missing defaults refilled and
 pushes.

@@ -28,7 +28,7 @@ list {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `watched` | `table<string, Folder>` | One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched. |
+| `watched` | `table<string, Folder>` | One entry per `"watch"`, keyed by its absolute `path` (`~/` expanded) minus trailing slashes; `nil` until watched. |
 
 ### `FileEntry`
 
@@ -52,8 +52,8 @@ Call each as `mantle.folders:<action>(arguments...)`; `?` marks an argument you 
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `watch` | `path: string, extensions?: string[]` | Keeps `watched[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file. |
-| `unwatch` | `path: string` | Stops watching `path` and removes it from `watched`. |
+| `watch` | `path: string, extensions?: string[]` | Keeps `watched[path]` listing a folder, absolute or `~/` under `$HOME`. `extensions` match case-insensitively, dot optional; omitted means every file. |
+| `unwatch` | `path: string` | Stops watching `path` (absolute or `~/`) and removes it from `watched`. |
 
 ## Backend
 
@@ -69,7 +69,7 @@ or moved away does the same, and lists again when it comes back.
 
 | Trap | Fix |
 | :--- | :--- |
-| `watch("~/Pictures")` does nothing | Only absolute paths pass; `~` is not expanded. Build the path from `os.getenv("HOME")` |
+| `watched["~/Pictures"]` is `nil` after `watch("~/Pictures")` | `watched` is keyed by the expanded absolute path: `watched[os.getenv("HOME") .. "/Pictures"]` |
 | `watched[path]` is `nil` after a `watch` | The key drops trailing slashes: `watch("/walls/")` lands at `watched["/walls"]` |
 | `error` is set but the folder exists | It is set while the folder is missing and clears on the next listing, up to 200 ms after the folder appears |
 

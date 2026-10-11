@@ -712,6 +712,37 @@ mod tests {
         }
     }
 
+    /// A leading `~/` is `$HOME` for every path a node takes, so caches and decoders see absolute paths.
+    #[test]
+    fn a_leading_tilde_slash_is_home_in_every_node_path() {
+        let lua = Lua::new();
+        let mask = r#"return { kind = "rect", mask = { source = "~/m.png" } }"#;
+        if shared::expand_tilde("~/x").is_err() {
+            for src in [
+                r#"return { kind = "image", source = "~/a.png" }"#,
+                r#"return { kind = "icon", name = "~/a.svg" }"#,
+                r#"return { kind = "shader", source = "~/s.frag" }"#,
+                r#"return { kind = "shader", images = { m = "~/m.png" } }"#,
+                mask,
+            ] {
+                assert!(style(&lua, src).is_err(), "{src}: no $HOME, no expansion");
+            }
+            return;
+        }
+        let at = |rest: &str| shared::expand_tilde(&format!("~/{rest}")).unwrap().into_owned();
+        let parsed = style(&lua, r#"return { kind = "image", source = "~/a.png" }"#);
+        assert!(matches!(parsed, Ok(Some(PaintStyle::Image { source, .. })) if source == at("a.png")));
+        let parsed = style(&lua, r#"return { kind = "icon", name = "~/a.svg" }"#);
+        assert!(matches!(parsed, Ok(Some(PaintStyle::Icon { name, .. })) if name == at("a.svg")));
+        let parsed = style(&lua, r#"return { kind = "shader", source = "~/s.frag", images = { m = "~/m.png" } }"#);
+        let Ok(Some(PaintStyle::Shader { source, images, .. })) = parsed else { panic!("{parsed:?}") };
+        assert_eq!((source, images), (at("s.frag"), vec![("m".to_string(), at("m.png"))]));
+        let parsed = style(&lua, r#"return { kind = "icon", name = "~a" }"#);
+        assert!(matches!(parsed, Ok(Some(PaintStyle::Icon { name, .. })) if name == "~a"), "only `~/` expands");
+        let mask = style(&lua, mask).unwrap().unwrap();
+        assert!(format!("{mask:?}").contains(&at("m.png")), "mask.source expands: {mask:?}");
+    }
+
     #[test]
     fn every_surface_role_parses_the_same_box_properties_a_rect_does() {
         let lua = Lua::new();
