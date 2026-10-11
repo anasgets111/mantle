@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-11
+
 ### Renamed
 
 Rename each in your config; the old name raises as unknown.
