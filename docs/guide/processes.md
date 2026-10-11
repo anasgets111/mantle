@@ -53,9 +53,9 @@ return panel {
 | Shell stops | Killed | Stopped with `stop_signal`, `SIGKILL` after 5 s | Unaffected |
 | Typical uses | `curl`, `getent`, a poll every N seconds, a `--follow` stream | A screen recorder, a daemon the shell owns | Apps, `xdg-open`, a terminal |
 
-- Need the whole output as one string, once the program ends: `process.capture`.
-- Need the output or the exit code: `process.run`. A long-running one, like `tail -f` or a
-  subscribe loop, restarts with each save, which is how to follow a stream.
+- Whole stdout as one string and the exit code once it ends: `process.capture`.
+- Lines as they arrive, or a stream that never ends (`tail -f`): `process.run`. A long-running one
+  restarts with each save.
 - One instance that must outlive a save or a crash: `session_process`.
 - A program the user keeps after the shell: `process.detach`.
 
@@ -74,7 +74,7 @@ Spawns a helper, streams its output line by line, and reports its exit.
 | `on_exit(code)` | Once, after both streams close and the process exits. `code` is the exit status, or `nil` when a signal ended it or the spawn failed |
 | Handle | `handle:kill()`: `SIGTERM` to the whole process group, `SIGKILL` 100 ms later. `on_exit` still fires. A no-op after exit |
 | stdio | stdin `/dev/null`, so a prompt fails instead of hanging; stdout and stderr piped |
-| Environment | Inherited from the shell. The working directory is the shell's and unspecified: use absolute paths |
+| Environment | Inherited from the shell. The working directory is the shell's and unspecified: use absolute paths. `~/` is not expanded in args |
 | Lifetime | Until the next reload, failed ones included, which kills its group as `kill()` does and calls `on_exit(nil)` at once, before the new evaluation runs; no `on_line` follows. A Renderer replacement or shell exit reaps its group without calling `on_exit` |
 | Limits | A line over 64 KiB is cut there and the rest of that line dropped, with one warning per stream. Callbacks run outside the [CPU budget](runtime.md#limits-and-budgets). A raise in either callback is logged as a warning |
 
@@ -200,7 +200,7 @@ The whole state is also readable as `mantle.processes` ([capabilities](../capabi
 | Run a recorder that survives reloads | [session_process](#session_process) |
 | Stop a child | `handle:kill()`, or save: a reload kills them all |
 | Open an app or URL | [process.detach](#processdetach) |
-| Read a file | `process.run("cat", { path }, ...)`, collecting lines, or [persistent_table](scripting.md#persistent_table) for JSON settings |
+| Read a file | [file.read](scripting.md#file), or [persistent_table](scripting.md#persistent_table) for JSON settings |
 
 ### Poll a command every N seconds
 

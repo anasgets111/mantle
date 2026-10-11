@@ -23,7 +23,9 @@ text {
 
 ## How do I…
 
-### Show a battery label with every `nil` state handled
+### Show a battery label
+
+`before` stands in for the first push, so `fn` needs no `nil` guard.
 
 ```lua
 text {

@@ -99,7 +99,7 @@ local menu_rows = computed({ mantle.tray, menu_item, expanded }, function(tray, 
         end
     end
     return {}
-end)
+end, {})
 
 -- "_Quit" -> "Quit"; "__" is a literal underscore.
 local function strip_mnemonic(label)

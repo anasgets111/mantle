@@ -10,11 +10,11 @@ window's `app_id` to its desktop entry, whose `icon` is a theme name:
 <!-- shot-alt: A small status icon beside a truncated file path. -->
 ```lua,shot
 local focused_icon = computed({ mantle.applications, mantle.workspaces }, function(apps, workspaces)
-    local client = workspaces and workspaces.active_client
-    if apps == nil or client == nil then return "" end
+    local client = workspaces.active_client
+    if client == nil then return "" end
     local index = apps.by_app_id[client.app_id] or apps.by_app_id[string.lower(client.app_id)]
     return index and apps.entries[index].icon or ""
-end)
+end, "")
 
 local app_badge = row {
     spacing = 8, padding = { left = 8, right = 12, top = 6, bottom = 6 }, radius = 8, background = "#313244",

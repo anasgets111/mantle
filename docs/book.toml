@@ -20,3 +20,7 @@ additional-css = ["theme/catppuccin.css"]
 
 [output.html.search]
 enable = true
+
+[output.html.redirect]
+"/capabilities/files.html" = "folders.html"
+"/capabilities/system.html" = "clock.html"

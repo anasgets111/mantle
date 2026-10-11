@@ -22,7 +22,7 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
 | Pull colours out of an image | [`palette.quantize`](#palettequantize) |
-| Build Material 3 colours from a seed, or from an image (`quantize`, then `score`, then `scheme`) | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct), [`palette.from_hct`](#palettefrom_hct), [`palette.harmonize`](#paletteharmonize) |
+| Build Material 3 colours from a seed, or from an image (`quantize`, then `score`, then `scheme`; [write them to app configs](app-colours.md)) | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct), [`palette.from_hct`](#palettefrom_hct), [`palette.harmonize`](#paletteharmonize) |
 | Read or write a text file | [`file`](#file) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
@@ -55,7 +55,7 @@ return panel {
 | Part | Contract |
 | :--- | :--- |
 | Signature | `persistent_table { path, defaults? }` → store. Another key raises |
-| `path` | Absolute, or `~/` under `$HOME`; relative, ending in `/`, or with an empty, `.` or `..` component raises. Its directory is created if missing. `mantle.storage`'s `contents` is keyed by the expanded absolute path. Build it from `os.getenv` or `mantle.config_dir` for other roots |
+| `path` | Absolute, or `~/` under `$HOME`; relative, ending in `/`, or with an empty, `.` or `..` component raises. Its directory is created if missing. |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
 | `store.<key>` | Signal for that key: its `defaults` entry (else `nil`) until `mantle.storage` pushes this file, then the stored value; a key the pushed file lacks reads its `defaults` entry, else `nil` |
 | `store:set(key, value)` | Writes one key; `nil` deletes it, and the signal then reads its `defaults` entry (else `nil`). The signal updates on the next push, not inside `set`. The next evaluation writes the default back to the file |
@@ -298,7 +298,7 @@ return panel {
 
 ## palette.scheme
 
-Material 3 colour roles from one seed colour, built by Material Color Utilities at spec 2021 on
+Material 3 colour roles from one seed colour (to write them into other programs' configs: [Colour your apps](app-colours.md)), built by Material Color Utilities at spec 2021 on
 the phone platform. Synchronous: one scheme takes about 0.5 ms.
 
 ```lua
@@ -384,7 +384,7 @@ return text { content = palette.harmonize("#FF0000", "#6750A4"), foreground = "#
 ## file
 
 Whole-file read and write on a background thread. The config VM has no blocking IO: results arrive
-in a callback, like [`palette.quantize`](#palettequantize).
+in a callback, like [`palette.quantize`](#palettequantize). Worked example: [Colour your apps](app-colours.md).
 
 | Part | Contract |
 | :--- | :--- |

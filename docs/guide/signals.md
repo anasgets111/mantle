@@ -48,18 +48,21 @@ Click Next minute to update only the Live column. The screenshot captures that f
 | `sig` | Read again once it is written |
 | `sig:map(fn)` | Live: `fn` of `sig`'s current value |
 | `sig:get()` | A plain value, taken when the config was evaluated |
-| A table with a signal inside, e.g. `{ left = sig }` | Each signal is read again once it is written, as at the top level; `nil` drops a key but is refused as an array entry. Not inside `children`, a `list`'s `source`, a table with a metatable, or a table a signal returned |
+| A table with a signal inside, e.g. `{ left = sig }` | Each signal is read again once it is written, as at the top level; `nil` drops a key but is refused as an array entry. Not inside `children`, a `list`'s `items`, a table with a metatable, or a table a signal returned |
 
-A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
-until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.
-`:map(fn, before?)` and `computed(deps, fn, before?)` never call `fn` with that `nil`: until every
-capability among the dependencies has pushed, the derived signal holds `before` (default `nil`). `:get()`
-and `on_change`'s `previous` still see `nil`. When a
+A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. When a
 signal resolves to `nil`, its property counts as absent and takes the property's default.
 
 For values your config writes, start with [named state](#named-state). To transform or
 combine live values, use [derived signals](#derived-signals). The full API and error messages are
 in the [reference](#reference).
+
+### Capabilities before their first push
+
+A capability reads `nil` until its first snapshot arrives (hydration), and in `mantle check`'s first pass.
+`:map(fn, before?)` and `computed(deps, fn, before?)` skip `fn` and hold `before` until every capability
+dependency has pushed. Set `before` to what a guard would have returned (`{}`, `0`, `""`, `false`);
+without it the signal reads `nil`. `:get()` and `on_change`'s `previous` still see `nil`.
 
 ## Named state
 
@@ -326,14 +329,14 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 
 | Expression | Returns | Contract |
 | :--- | :--- | :--- |
-| `sig:get()` | value | The current value, read once. `nil` before a capability's first push |
+| `sig:get()` | value | The current value, read once. `nil` before a capability's first push ([why](#capabilities-before-their-first-push)) |
 | `sig:map(fn)` | signal | `fn(value)`, run again when read, at most once per layout pass. Works on capabilities |
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
 | `sig:scroll_to(px)`, `sig:scroll_by(px)` | nothing | `scroll` signals only; moves to an offset, or by a distance from where it is headed ([input](input.md#scroll)) |
 | `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
 | `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
-| `computed({ a, b, ... }, fn, before?)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. While a capability among them has not pushed, `fn` is skipped and the signal holds `before` (default `nil`). A `nil`, function, userdata or named key raises, naming the entry |
+| `computed({ a, b, ... }, fn, before?)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. Until every capability among them has pushed, `fn` is skipped and the signal holds `before` ([details](#capabilities-before-their-first-push)). A `nil`, function, userdata or named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
 | `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
@@ -398,7 +401,7 @@ again after changing it in place is a write.
 
 ### Derive from two capabilities
 
-List every source in `computed`. Until every capability has pushed, `fn` is skipped and the signal holds `before`, here `"..."`.
+List every source in `computed`; `before` here is `"..."` ([why](#capabilities-before-their-first-push)).
 
 ```lua
 local status = computed({ mantle.network, mantle.audio }, function(network, audio)
@@ -447,7 +450,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | Trap | Fix |
 | :--- | :--- |
 | `content = sig:get()` never updates | Pass `sig` or `sig:map(...)`; `:get()` is a snapshot |
-| A `computed` or `:get()` errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass. A capability's `:map` and `computed` never call `fn` with `nil`; `:get()` still sees it, so guard there |
+| `:get()` errors with `attempt to index a nil value` at startup | The capability has not pushed yet. Guard there, or use `:map`/`computed`, which skip `fn` until the first push ([details](#capabilities-before-their-first-push)) |
 | `visible = cap:map(function(c) return c.on end)` shows the node before hydration | The signal holds `nil` until the first push, and `visible` defaults to `true`; pass `before`: `cap:map(fn, false)` |
 | `` `margin.left` is a Signal handle `` | The signal sits where it is not read: in a table a signal returned, under a metatable, or 8 tables deep. Return plain values from the map, or move the signal up |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |
