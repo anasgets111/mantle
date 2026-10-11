@@ -2094,6 +2094,16 @@ Later amendment, reversing half of decision 4:
 makes "ide" hit every IDE-adjacent entry. That is noise, not recall. Localization stays out as
 decision 4 left it.
 
+Later amendment, refining decisions 7 and 8:
+
+12. The `hover` signal was `on_hover`'s only record of the previous answer, so decision 8's silent
+    layout write erased the edge: after layout slid a node under or off a still pointer, the next
+    motion fired nothing until the pointer left and came back. Each hover signal now also keeps the
+    last pointer event's answer (`Signal::pointer_crossed`), which only Enter, Motion, Leave and
+    surface teardown update, and `on_hover` fires when that answer changes. Layout still writes the
+    signal silently and a still pointer still never fires; the next motion reports the crossing
+    layout made, and its `on_hover(true)` reads the `hover_rect` the layout write left.
+
 ## 0113. What a code review is worth: four fixes out of two hundred findings, and the two that were the review's own doc drift
 
 Verify review claims against behavior, not finding counts.
