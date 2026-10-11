@@ -447,10 +447,10 @@ impl App {
 
     /// Tab moves control focus; whether it did, else the key goes on to the field or `on_key`.
     pub(in crate::wayland) fn apply_tab_key(&mut self, event: &KeyEvent) -> bool {
-        if self.ctrl_held {
+        if self.held.ctrl {
             return false;
         }
-        let backwards = event.keysym == Keysym::ISO_Left_Tab || (event.keysym == Keysym::Tab && self.shift_held);
+        let backwards = event.keysym == Keysym::ISO_Left_Tab || (event.keysym == Keysym::Tab && self.held.shift);
         if matches!(event.keysym, Keysym::Tab | Keysym::KP_Tab | Keysym::ISO_Left_Tab) {
             let list = self.scoped_controls();
             let current = self
@@ -491,7 +491,7 @@ impl App {
 
     /// Enter or Space on a focused button.
     pub(in crate::wayland) fn apply_activation(&mut self, event: &KeyEvent, repeat: bool, serial: Option<u32>) -> bool {
-        if self.ctrl_held {
+        if self.held.ctrl {
             return false;
         }
         let Some(focused) = self.focused_control.clone() else { return false };

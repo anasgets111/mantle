@@ -580,7 +580,7 @@ impl App {
             return false;
         }
         // Read before the borrow below: shift turns a caret motion into a selection.
-        let shift = self.shift_held;
+        let shift = self.held.shift;
         let action = self.resolve_row_motion(action);
         let Some(field) = self.focused_text_field.as_ref() else {
             return false;

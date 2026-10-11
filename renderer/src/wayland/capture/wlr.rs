@@ -2,7 +2,7 @@
 
 use wayland_client::{Dispatch, WEnum};
 
-use super::shm::{negotiate_buffer, pick_format, stage_landed};
+use super::shm::{negotiate_buffer, pick_format};
 use super::*;
 
 /// wlr-screencopy's `Buffer` event, checked before it is trusted: an unsupported format would
@@ -108,22 +108,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
             }
             Event::Ready { .. } => {
                 proxy.destroy();
-                let Some(source) = state.captures.sources.get_mut(id) else { return };
-                if let Some(Proto::Wlr(wlr)) = source.proto.as_mut() {
-                    wlr.frame = None;
-                }
-                let used_dmabuf = matches!(&source.proto, Some(Proto::Wlr(wlr)) if wlr.dmabuf_active);
-                if used_dmabuf {
-                    land_dmabuf_frame(&mut state.captures, &mut state.capture_cache, id);
-                } else {
-                    let Some(Proto::Wlr(wlr)) = source.proto.as_mut() else { return };
-                    let damage = std::mem::take(&mut wlr.damage);
-                    if let Some(negotiated) = wlr.buffer.as_mut() {
-                        stage_landed(&mut state.capture_cache, *id, negotiated, damage);
-                    }
-                    source.captured = true;
-                    source.in_flight = false;
-                }
+                land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 state.request_next_if_live(*id);
             }
             Event::Failed => {

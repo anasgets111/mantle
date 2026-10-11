@@ -76,6 +76,26 @@ pub fn blur_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<PhysicalRect
     regions
 }
 
+/// The node's accumulated matrix, the ancestors' cut in its pre-matrix space (as
+/// `layout::paint::build_node` carries it: the group's matrix moves the node and what it paints,
+/// but not the clip it is cut by), and the cut its children inherit.
+fn clip_frame(
+    node: &ResolvedNode,
+    rect: LogicalRect,
+    matrix: node::Affine,
+    clip: LogicalRect,
+) -> (node::Affine, LogicalRect, LogicalRect) {
+    let own_matrix = node.paint_matrix(rect);
+    let matrix = own_matrix.map_or(matrix, |own| node::compose_affine(matrix, own));
+    let parent_clip = match own_matrix.and_then(node::invert_affine) {
+        // An empty clip stays empty: mapping would flip its inverted corners into a real rect.
+        Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
+        _ => clip,
+    };
+    let child_clip = if node.clips_children() { parent_clip.intersect(rect) } else { parent_clip };
+    (matrix, parent_clip, child_clip)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_blur_regions(
     node: &ResolvedNode,
@@ -93,19 +113,11 @@ fn collect_blur_regions(
         return;
     }
     let rect = node.at(origin_x, origin_y);
-    let matrix = node.paint_matrix(rect).map_or(matrix, |own| node::compose_affine(matrix, own));
-    // In the node's pre-matrix space, as `layout::paint::build_node` carries it: the group's matrix
-    // moves the node and what it paints, but not the ancestors' clip it is cut by.
-    let parent_clip = match node.paint_matrix(rect).and_then(node::invert_affine) {
-        // An empty clip stays empty: mapping would flip its inverted corners into a real rect.
-        Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
-        _ => clip,
-    };
+    let (matrix, parent_clip, child_clip) = clip_frame(node, rect, matrix, clip);
     let radius = match &node.paint {
         Some(PaintStyle::Box { radius, .. }) => radius.clone(),
         _ => node::Radii::default(),
     };
-    let child_clip = if node.clips_children() { parent_clip.intersect(rect) } else { parent_clip };
     // An outline may reach past the box, and its region with it.
     let clip = parent_clip.intersect(radius.bounds(rect));
     if child_clip.is_empty() && clip.is_empty() {
@@ -266,13 +278,7 @@ fn collect_input_regions(
     }
     let (scale, paint_claims) = scan;
     let rect = node.at(origin_x, origin_y);
-    let own_matrix = node.paint_matrix(rect);
-    let matrix = own_matrix.map_or(matrix, |own| node::compose_affine(matrix, own));
-    let parent_clip = match own_matrix.and_then(node::invert_affine) {
-        Some(inverse) if !clip.is_empty() => node::transformed_bounds(inverse, clip),
-        _ => clip,
-    };
-    let child_clip = if node.clips_children() { parent_clip.intersect(rect) } else { parent_clip };
+    let (matrix, parent_clip, child_clip) = clip_frame(node, rect, matrix, clip);
     let own_clip = match &node.paint {
         Some(PaintStyle::Box { radius, .. }) => parent_clip.intersect(radius.bounds(rect)),
         _ => parent_clip.intersect(rect),

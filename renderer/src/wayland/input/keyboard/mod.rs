@@ -333,10 +333,7 @@ impl KeyboardHandler for App {
         // A Shift released while someone else holds the keyboard sends no `modifiers` here, and a
         // stale one turns the next press into a selection the user never made (ADR-0236). The
         // release that would stop a repeat does not arrive either.
-        self.shift_held = false;
-        self.ctrl_held = false;
-        self.alt_held = false;
-        self.super_held = false;
+        self.held = Held::default();
         self.repeating = None;
         debug!(2; "keyboard focus left {left}");
     }
@@ -351,7 +348,7 @@ impl KeyboardHandler for App {
         serial: u32,
         event: KeyEvent,
     ) {
-        if self.ctrl_held {
+        if self.held.ctrl {
             self.prune_secure_focus();
             self.prune_text_field_focus();
             // Only a field that takes the chord keeps it; with none focused it bubbles to `on_key`.
@@ -424,10 +421,7 @@ impl KeyboardHandler for App {
         _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
-        self.shift_held = modifiers.shift;
-        self.ctrl_held = modifiers.ctrl;
-        self.alt_held = modifiers.alt;
-        self.super_held = modifiers.logo;
+        self.held = Held { ctrl: modifiers.ctrl, shift: modifiers.shift, alt: modifiers.alt, logo: modifiers.logo };
     }
 }
 
@@ -567,13 +561,12 @@ impl App {
             return Err("a `secure_submit` field holds the keyboard".to_string());
         }
         let focus = self.keyboard_focus.replace(surface_id.to_string());
-        let held = (self.ctrl_held, self.shift_held, self.alt_held, self.super_held);
-        (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = (ctrl, shift, false, false);
+        let held = std::mem::replace(&mut self.held, Held { ctrl, shift, ..Held::default() });
         let result = self.keeping_foreign_focus(surface_id, deliver);
         self.keyboard_focus = focus;
         // The scope moved back, and `focus_visible` follows it.
         self.sync_focused();
-        (self.ctrl_held, self.shift_held, self.alt_held, self.super_held) = held;
+        self.held = held;
         Ok(result)
     }
 
@@ -620,7 +613,7 @@ impl App {
                 .is_some_and(|tree| secure::secure_on_cancel(tree, field).is_some());
             (!self.secure_buffer.is_empty(), cancels)
         });
-        if !focus::surface_gets_escape(repeat, self.ctrl_held, plain, secure) {
+        if !focus::surface_gets_escape(repeat, self.held.ctrl, plain, secure) {
             return None;
         }
         let scope = self.keyboard_focus_scope();

@@ -2,7 +2,7 @@
 
 use wayland_client::{Dispatch, WEnum};
 
-use super::shm::{keep_supported, negotiate_buffer, stage_landed};
+use super::shm::{keep_supported, negotiate_buffer};
 use super::*;
 
 impl Dispatch<ext_image_capture_source_v1::ExtImageCaptureSourceV1, NodeId> for App {
@@ -102,21 +102,7 @@ impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, NodeI
             }
             Event::Ready => {
                 proxy.destroy();
-                let Some(source) = state.captures.sources.get_mut(id) else { return };
-                if let Some(Proto::Ext(ext)) = source.proto.as_mut() {
-                    ext.frame = None;
-                }
-                if source.dmabuf_shape.is_some() {
-                    land_dmabuf_frame(&mut state.captures, &mut state.capture_cache, id);
-                } else {
-                    let Some(Proto::Ext(ext)) = source.proto.as_mut() else { return };
-                    let damage = std::mem::take(&mut ext.damage);
-                    if let Some(negotiated) = ext.buffer.as_mut() {
-                        stage_landed(&mut state.capture_cache, *id, negotiated, damage);
-                    }
-                    source.captured = true;
-                    source.in_flight = false;
-                }
+                land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 let pending = state.captures.sources.get_mut(id).and_then(|source| match source.proto.as_mut() {
                     Some(Proto::Ext(ext)) => ext.pending_done.take(),
                     _ => None,

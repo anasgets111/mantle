@@ -115,7 +115,7 @@ impl App {
     /// `(ctrl, shift, alt, super)` on the seat's keyboard, for `on_key` and the pointer handlers.
     // ponytail: unknown while none of our surfaces has keyboard focus (all false); core Wayland has no upgrade.
     pub(in crate::wayland) fn modifiers_held(&self) -> [bool; 4] {
-        [self.ctrl_held, self.shift_held, self.alt_held, self.super_held]
+        [self.held.ctrl, self.held.shift, self.held.alt, self.held.logo]
     }
 }
 

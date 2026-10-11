@@ -91,10 +91,10 @@ impl App {
 
     /// The key as the focused field reads it: a multiline field remaps Return and the row keys.
     pub(super) fn field_key_action<'a>(&self, event: &'a KeyEvent, repeat: bool) -> KeyAction<'a> {
-        let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
+        let action = key_action(event, repeat, self.held.ctrl, self.held.shift);
         let multiline =
             self.focused_text_field.as_ref().and_then(|field| self.field_multiline(&field.surface_id, field.id));
-        let held = (repeat, self.ctrl_held, self.shift_held, self.alt_held);
+        let held = (repeat, self.held.ctrl, self.held.shift, self.held.alt);
         multiline.map_or(action, |lines| multiline_action(event, action, held, lines.submit))
     }
 

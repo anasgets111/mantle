@@ -241,7 +241,7 @@ impl App {
     /// Apply one secure key (ADR-0005). Focus is the destination gate; masked fields without one
     /// are never focused. Bytes go `KeyEvent` → native `SecureBuffer` → Supervisor, never Lua.
     pub(super) fn apply_secure_key(&mut self, event: &KeyEvent, repeat: bool) {
-        let action = key_action(event, repeat, self.ctrl_held, self.shift_held);
+        let action = key_action(event, repeat, self.held.ctrl, self.held.shift);
         if !super::focus::secure_key_reaches_field(
             self.focused_control.as_ref(),
             self.focused_secure_submit.as_ref(),

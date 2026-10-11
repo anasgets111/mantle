@@ -43,7 +43,7 @@ impl App {
         let Some(tree) = self.client.scene().surface(surface_id) else { return };
         let point = (self.pointer_at.as_ref())
             .filter(|(at, _)| at == surface_id)
-            .map(|(_, position)| layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 });
+            .map(|&(_, position)| layout::hit::LogicalPoint::from_position(position));
         let path = point.map(|point| layout::hit::hit_path(tree, point)).unwrap_or_default();
         apply_pointer_writes(lua, layout::hover::pointer_writes(tree, &path, point));
     }

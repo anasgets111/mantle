@@ -22,6 +22,13 @@ pub struct LogicalPoint {
     pub y: f32,
 }
 
+impl LogicalPoint {
+    /// A `wl_pointer` position, which arrives as `f64`.
+    pub fn from_position((x, y): (f64, f64)) -> Self {
+        Self { x: x as f32, y: y as f32 }
+    }
+}
+
 /// Every node containing `point`, root-first and deepest-last; empty if the point misses `root`.
 ///
 /// A path, not a topmost node: the supported tree is a clickable node whose `text` child has no

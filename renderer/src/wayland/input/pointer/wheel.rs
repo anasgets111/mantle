@@ -57,7 +57,7 @@ impl App {
         let Some(tree) = self.client.scene().surface(&surface_id) else {
             return;
         };
-        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let point = layout::hit::LogicalPoint::from_position(position);
         let path = layout::hit::hit_path(tree, point);
         // Deepest scrollable under the pointer wins.
         let scrollable = path.iter().enumerate().rev().find_map(|(depth, node)| {

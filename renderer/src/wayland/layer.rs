@@ -135,6 +135,17 @@ fn ambiguous_zero_axis(size: (u32, u32), anchor: node::Anchor) -> Option<&'stati
     }
     None
 }
+fn warn_ambiguous_zero_axis(surface_id: &str, axis: &str, problem: &str, outcome: &str) {
+    warn!(
+        "surface {surface_id:?} {problem} without anchoring both {axis} edges, \
+         which layer-shell rejects as a protocol error; {outcome}. Give it an explicit {axis}, or anchor both edges."
+    );
+}
+
+fn set_margin(layer: &LayerSurface, margin: node::EdgeInsets) {
+    layer.set_margin(margin.top as i32, margin.right as i32, margin.bottom as i32, margin.left as i32);
+}
+
 /// State for a kept panel when `visible` turns true, based on whether its create configure was
 /// acked. [`App::bind_and_clear`] records the size; `App::unbind` resets it to `(0, 0)`. No
 /// configure carries zero on both axes.
@@ -226,12 +237,7 @@ impl App {
         layer.set_anchor(anchor_for(spec.topology.anchor));
         layer.set_size(size.0, size.1);
         layer.set_keyboard_interactivity(keyboard_interactivity_for(spec.keyboard_interactivity));
-        layer.set_margin(
-            spec.margin.top as i32,
-            spec.margin.right as i32,
-            spec.margin.bottom as i32,
-            spec.margin.left as i32,
-        );
+        set_margin(&layer, spec.margin);
         layer.commit();
         (layer, scale)
     }
@@ -275,10 +281,11 @@ impl App {
         // refused, on the pass that shows it.
         let deferred = !visible;
         if !deferred && let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
-            warn!(
-                "surface {:?} leaves its {axis} to the compositor without anchoring both {axis} edges, \
-                 which layer-shell rejects as a protocol error; no surface created. Give it an explicit {axis}, or anchor both edges.",
-                instance.instance_id
+            warn_ambiguous_zero_axis(
+                &instance.instance_id,
+                axis,
+                &format!("leaves its {axis} to the compositor"),
+                "no surface created",
             );
             return;
         }
@@ -330,11 +337,8 @@ impl App {
         // tree that is about to be painted actually takes.
         let size = layer_size_for(spec, *output_size, *measured);
         if let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
-            warn!(
-                "surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
-                 which layer-shell rejects as a protocol error; it stays hidden. Give it an explicit {axis}, or anchor both edges.",
-                self.surfaces[index].surface_id
-            );
+            let resolved = format!("resolved to a {axis} of 0");
+            warn_ambiguous_zero_axis(&self.surfaces[index].surface_id, axis, &resolved, "it stays hidden");
             return;
         }
         let (fresh, scale) = self.spawn_panel_layer(qh, spec, output.as_ref(), size);
@@ -401,7 +405,7 @@ impl App {
         let update = spec_update(applied, &fresh, *requested, *output_size, *measured);
 
         if let Some(margin) = update.margin {
-            layer.set_margin(margin.top as i32, margin.right as i32, margin.bottom as i32, margin.left as i32);
+            set_margin(layer, margin);
         }
         if let Some(mode) = update.keyboard_interactivity {
             // Log every change: it takes the keyboard from whatever the user was typing in, and a
@@ -415,10 +419,12 @@ impl App {
             // Signals can turn a fixed height into `Fill`; `set_size(_, 0)` on a singly anchored
             // axis kills the connection, so repeat [`ambiguous_zero_axis`].
             if let Some(axis) = ambiguous_zero_axis(size, fresh.topology.anchor) {
-                warn!(
-                    "surface {:?} resolved to a {axis} of 0 without anchoring both {axis} edges, \
-                     which layer-shell rejects as a protocol error; keeping its previous size. Give it an explicit {axis}, or anchor both edges.",
-                    self.surfaces[index].surface_id
+                let resolved = format!("resolved to a {axis} of 0");
+                warn_ambiguous_zero_axis(
+                    &self.surfaces[index].surface_id,
+                    axis,
+                    &resolved,
+                    "keeping its previous size",
                 );
                 // Keep the old baseline so the next re-resolve retries this size.
                 fresh.width = applied.width;

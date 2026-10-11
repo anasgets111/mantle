@@ -83,6 +83,15 @@ use surface::{TrackedSurface, log_bind_failure};
 
 pub use main_loop::run;
 
+/// `ctrl`, `shift`, `alt` and `logo` (Super) as the seat's keyboard last reported them.
+#[derive(Clone, Copy, Default)]
+pub(in crate::wayland) struct Held {
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    logo: bool,
+}
+
 pub struct App {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -214,14 +223,9 @@ pub struct App {
     /// Whether `focused_control` was last moved by Tab or an AT action, which alone draw the outline.
     focus_visible: bool,
     accessibility: accessibility::Accessibility,
-    /// Shift on the seat's keyboard: it turns a caret motion or a press into a selection
-    /// (ADR-0236).
-    shift_held: bool,
-    /// Ctrl on the seat's keyboard, read for Ctrl+A alone (ADR-0236).
-    ctrl_held: bool,
-    /// Alt and Super on the seat's keyboard, reported to `on_key` alone.
-    alt_held: bool,
-    super_held: bool,
+    /// Modifiers on the seat's keyboard: Shift turns a caret motion or a press into a selection, Ctrl is read
+    /// for Ctrl+A (ADR-0236), Alt and Super go to `on_key` alone.
+    held: Held,
     /// The seat's repeat delay and interval, absent when the compositor turned repeat off. SCTK
     /// drives its own repeat from a calloop timer, which this renderer does not link (ADR-0124),
     /// so `poll`'s deadline carries it instead.

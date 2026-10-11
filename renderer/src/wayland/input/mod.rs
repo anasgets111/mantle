@@ -95,12 +95,10 @@ impl SeatHandler for App {
         match capability {
             Capability::Pointer if self.pointer_seat().as_ref() == Some(&seat) => {
                 // No pointer means no release; clear the press like `leave` (ADR-0050 decision 2).
-                self.armed = None;
-                self.cursor_shown = None;
+                self.forget_pointer();
                 // A held drag has no other end: `fire_on_drag(.., "move")` asks for no button, so
                 // a replacement pointer's first Motion would keep dragging.
                 self.drag = None;
-                self.pointer_at = None;
                 // `ThemedPointer::drop` releases `wl_pointer` (`since="3"`), shape device, and
                 // cursor surface (src/seat/pointer/mod.rs:567).
                 self.pointer = None;

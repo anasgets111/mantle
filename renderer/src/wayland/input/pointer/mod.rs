@@ -10,8 +10,16 @@ use crate::layout::node::prop::{Keyword, keywords};
 use crate::lua::call_logged;
 use crate::lua::marshal::{modifiers_table, rect_table};
 
+mod callbacks;
 mod position;
+mod press;
 mod wheel;
+
+pub(crate) use callbacks::apply_hover_write;
+pub(in crate::wayland::input) use callbacks::call_on_click;
+use callbacks::{call_on_drag, call_on_press, local_pointer_table};
+pub(in crate::wayland) use press::{ArmedClick, ArmedSerial};
+use press::{press_chooses_focus, release_completes_click, release_ends_press};
 
 enum HoverUpdate {
     Pointer,
@@ -22,34 +30,6 @@ impl HoverUpdate {
     fn fires_on_hover(&self) -> bool {
         matches!(self, Self::Pointer)
     }
-}
-
-/// One press waiting for its release (ADR-0050 decision 2). The rect stands in for identity:
-/// moving the node between press and release cancels the click.
-#[derive(Debug, Clone, PartialEq)]
-pub(in crate::wayland) struct ArmedClick {
-    instance_id: String,
-    rect: LogicalRect,
-    /// The `href` under the press inside `text` (ADR-0106), so a paragraph's two links do not share
-    /// a click identity.
-    link: Option<String>,
-    /// Evdev code, requiring release of the same button (ADR-0050 second amendment). ponytail: one
-    /// armed click, so chording drops both; upgrade to an `ArrayVec` of three or small map for
-    /// chords.
-    button: u32,
-}
-
-/// Serial for `xdg_popup.grab` and its surface (ADR-0049 amendment, ADR-0051 decision 1). Set by
-/// [`PointerHandler::pointer_frame`], consumed by [`run`]'s poll loop after `dispatch_pending`:
-/// resolving inside the callback would nest `Scene::apply` and Lua/Wayland creation while its
-/// queue is being dispatched. Press and release both arm it, latest wins. `xdg_shell` only
-/// requires a serial from "a real input event", so a stale real-input serial gets normal
-/// `popup_done` refusal (ADR-0051 decision 3). Keep `instance_id`, not the tracked index, because
-/// hotplug can rename indices before re-resolve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(in crate::wayland) struct ArmedSerial {
-    pub(in crate::wayland) serial: u32,
-    pub(in crate::wayland) instance_id: String,
 }
 
 /// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
@@ -255,221 +235,6 @@ keywords! {
     }
 }
 
-/// Whether this release ends the armed press. Completion also needs surface, rect, and link; ending
-/// needs only the button, so drag-off releases end it. A different release must not clear it: left,
-/// right, left must retain the right press.
-fn release_ends_press(armed: Option<&ArmedClick>, button: u32) -> bool {
-    armed.is_some_and(|armed| armed.button == button)
-}
-
-/// Whether a release completes `armed` (ADR-0050 decision 2). It must hit a clickable node with the
-/// same instance, rect, link, and button; matching coordinates on a re-resolved plain rect is not
-/// the original click. `released_on` comes from [`click_target`], not raw position.
-fn release_completes_click(
-    armed: Option<&ArmedClick>,
-    instance_id: &str,
-    released_on: Option<(LogicalRect, Option<&str>)>,
-    button: u32,
-) -> bool {
-    armed.zip(released_on).is_some_and(|(armed, (rect, link))| {
-        armed.instance_id == instance_id
-            && armed.rect == rect
-            && armed.link.as_deref() == link
-            && armed.button == button
-    })
-}
-
-/// A left press's time and position, which the next one may continue.
-type Click = (std::time::Instant, (f64, f64));
-// ponytail: fixed 400 ms and 4 px; upgrade by reading the desktop's double-click setting.
-const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
-const MULTI_CLICK_SLOP: f64 = 4.0;
-
-/// Whether `now` continues the series that `last` began.
-fn continues(last: Click, now: Click) -> bool {
-    now.0.saturating_duration_since(last.0) <= MULTI_CLICK_INTERVAL
-        && (last.1.0 - now.1.0).abs() <= MULTI_CLICK_SLOP
-        && (last.1.1 - now.1.1).abs() <= MULTI_CLICK_SLOP
-}
-
-/// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
-/// reply and password fields must displace each other. `caret` is the byte offset under the press
-/// point ([`layout::hit::caret_at`]), absent when nothing measured it; `extend` is Shift, which
-/// selects from where the caret already was instead of collapsing to the press (ADR-0236). A
-/// non-`primary` (right or middle) press focuses but leaves a selection it lands in, so a menu can
-/// act on it, and starts no drag. `click` is a left (`primary`) press and `None` the others; a held field it continues
-/// selects the next unit (click, word, line, click), and Shift keeps the held unit instead.
-fn press_chooses_focus(
-    hit_field: Option<FieldTarget>,
-    instance_id: &str,
-    caret: Option<usize>,
-    extend: bool,
-    click: Option<Click>,
-    focused_secure_submit: Option<&FocusedField>,
-    focused_text_field: Option<&FocusedTextField>,
-) -> (Option<FocusedField>, Option<FocusedTextField>) {
-    match hit_field {
-        Some(FieldTarget::Masked { id, target }) => {
-            (Some(FocusedField { surface_id: instance_id.to_string(), id, target }), None)
-        }
-        // Re-pressing the same field resumes its draft (ADR-0108).
-        Some(FieldTarget::Plain { id, on_change, on_submit, on_cancel, escape }) => {
-            let resumed = focused_text_field.filter(|field| field.id == id);
-            let resumed_selection = resumed.as_ref().map(|field| field.selection);
-            let primary = click.is_some();
-            // `live` drops a unit that an edit or a keyboard selection has outdated.
-            let held = resumed.as_ref().map(|field| (field.span.live(&field.buffer, field.selection), field.click));
-            let (buffer, mut history) =
-                resumed.map(|field| (field.buffer.clone(), field.history.clone())).unwrap_or_default();
-            history.break_typing();
-            // Where the press landed; the end of the draft when nothing measured it (ADR-0236).
-            let caret = caret.unwrap_or(buffer.len()).min(buffer.len());
-            let span = match (held, click) {
-                (Some((held, _)), _) if extend => held,
-                (held, click) => {
-                    let unit = match (held, click) {
-                        (Some((held, Some(last))), Some(now)) if continues(last, now) => held.unit.next(),
-                        _ => Unit::Char,
-                    };
-                    Span { unit, base: unit_range(&buffer, caret, unit), produced: (0, 0) }
-                }
-            };
-            let selection = match resumed_selection {
-                Some((a, b)) if !primary && (a.min(b)..=a.max(b)).contains(&caret) => (a, b),
-                _ => extend_by_unit(&buffer, span, caret),
-            };
-            let span = Span { produced: selection, ..span };
-            (
-                None,
-                Some(FocusedTextField {
-                    surface_id: instance_id.to_string(),
-                    id,
-                    selection,
-                    buffer,
-                    history,
-                    typing: true,
-                    selecting: primary,
-                    span,
-                    click: click.filter(|_| !extend),
-                    goal_x: None,
-                    on_change,
-                    on_submit,
-                    on_cancel,
-                    escape,
-                }),
-            )
-        }
-        // Elsewhere stops plain typing but keeps its draft (ADR-0108). Masked focus remains until
-        // another field takes it (ADR-0114 decision 8), so scrim, card, and Authenticate clicks do
-        // not discard a secret before `submit`.
-        None => (
-            focused_secure_submit.cloned(),
-            focused_text_field.cloned().map(|field| FocusedTextField {
-                typing: false,
-                selecting: false,
-                click: None,
-                ..field
-            }),
-        ),
-    }
-}
-
-/// The node-local `{ x, y }` table `on_drag` and `on_click` pass.
-fn local_pointer_table(lua: &Lua, local: layout::hit::LogicalPoint) -> mlua::Result<mlua::Table> {
-    let pointer = lua.create_table()?;
-    pointer.set("x", local.x)?;
-    pointer.set("y", local.y)?;
-    Ok(pointer)
-}
-
-/// Call `on_click` with its node rect in surface logical coordinates (ADR-0050 decision 3), the
-/// button, and `position` as a node-local pointer like `on_drag`'s. The rect round-trips to popup
-/// `anchor_rect` through Lua. Error labels distinguish building the engine's argument from a
-/// raised config handler.
-pub(in crate::wayland::input) fn call_on_click(
-    lua: &Lua,
-    on_click: &Function,
-    rect: LogicalRect,
-    button: &str,
-    local: layout::hit::LogicalPoint,
-    modifiers: [bool; 4],
-) -> Result<(), (&'static str, mlua::Error)> {
-    let argument = rect_table(lua, rect).map_err(|e| ("could not build on_click's rect argument", e))?;
-    let pointer = local_pointer_table(lua, local).map_err(|e| ("could not build on_click's pointer argument", e))?;
-    let modifiers =
-        modifiers_table(lua, modifiers).map_err(|e| ("could not build on_click's modifiers argument", e))?;
-    on_click.call::<()>((argument, button, pointer, modifiers)).map_err(|e| ("on_click raised, ignoring it", e))
-}
-
-/// Call `on_press` like `on_click`: rect, button name and node-local pointer.
-fn call_on_press(
-    lua: &Lua,
-    on_press: &Function,
-    target: &PressTarget,
-    button: &str,
-    modifiers: [bool; 4],
-) -> Result<(), (&'static str, mlua::Error)> {
-    let rect = rect_table(lua, target.rect).map_err(|e| ("could not build on_press's rect argument", e))?;
-    let pointer =
-        local_pointer_table(lua, target.at).map_err(|e| ("could not build on_press's pointer argument", e))?;
-    let modifiers =
-        modifiers_table(lua, modifiers).map_err(|e| ("could not build on_press's modifiers argument", e))?;
-    on_press.call::<()>((rect, button, pointer, modifiers)).map_err(|e| ("on_press raised, ignoring it", e))
-}
-
-/// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
-/// decision 1). Local coordinates avoid repeated subtraction in handlers; unclamped coordinates
-/// let each config apply its own `min`/`max`.
-fn call_on_drag(
-    lua: &Lua,
-    on_drag: &Function,
-    rect: LogicalRect,
-    local: layout::hit::LogicalPoint,
-    phase: DragPhase,
-    modifiers: [bool; 4],
-) -> Result<(), (&'static str, mlua::Error)> {
-    let rect_argument = rect_table(lua, rect).map_err(|e| ("could not build on_drag's rect argument", e))?;
-    let pointer = local_pointer_table(lua, local).map_err(|e| ("could not build on_drag's pointer argument", e))?;
-    let modifiers = modifiers_table(lua, modifiers).map_err(|e| ("could not build on_drag's modifiers argument", e))?;
-    on_drag
-        .call::<()>((rect_argument, pointer, phase.name(), modifiers))
-        .map_err(|e| ("on_drag raised, ignoring it", e))
-}
-
-/// Writes one node's hover answer: the boolean, the rect it was crossed at, then its `on_hover`.
-///
-/// The rect precedes the callback because a handler is documented to read `hover_rect(name)` for
-/// the crossing it was called for; writing it after would hand a per-item tooltip the rect of the
-/// item left behind, or the startup placeholder on a first hover.
-pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fires_on_hover: bool, surface_id: &str) {
-    // Non-hover signals stay untouched, so `hover = mantle.network` cannot overwrite a
-    // capability snapshot (ADR-0062 decision 2).
-    let Some(handle) = write.signal.hover_handle() else {
-        return;
-    };
-    // The boolean gates rect and callback writes.
-    let crossed = handle.set_changed(mlua::Value::Boolean(write.hovered));
-    if !crossed {
-        return;
-    }
-    // Rects are edge-only, not merely an optimization: mlua table equality is identity, so
-    // a fresh equal table would undo decision 4 on every motion.
-    if let Some(rect) = write.rect
-        && let Some(rect_handle) = write.signal.hover_rect_handle()
-    {
-        match rect_table(lua, rect) {
-            Ok(table) => rect_handle.set(mlua::Value::Table(table)),
-            // The boolean landed; keep the last tooltip position on table-build failure.
-            Err(err) => warn!("{surface_id}: could not build a hover rect: {err}"),
-        }
-    }
-    // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
-    // times across one node. Swallow handler errors like `fire_on_click`.
-    if fires_on_hover && let Some(on_hover) = &write.on_hover {
-        call_logged(on_hover, write.hovered, format_args!("{surface_id}: on_hover handler"));
-    }
-}
-
 /// Pointer input to `on_click` (ADR-0050); dispatch is delegated by `delegate_dispatch2!(App)`.
 impl PointerHandler for App {
     fn pointer_frame(
@@ -545,7 +310,7 @@ impl App {
                     hit.field,
                     &instance_id,
                     hit.caret,
-                    self.shift_held,
+                    self.held.shift,
                     (button == BTN_LEFT).then(|| (std::time::Instant::now(), position)),
                     self.focused_secure_submit.as_ref(),
                     self.focused_text_field.as_ref(),
@@ -655,9 +420,7 @@ impl App {
                     let instance_id = self.surfaces[index].surface_id.clone();
                     self.fire_on_drag(&instance_id, position, DragPhase::End);
                 }
-                self.armed = None;
-                self.cursor_shown = None;
-                self.pointer_at = None;
+                self.forget_pointer();
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
                 self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
             }
@@ -674,7 +437,7 @@ impl App {
                 self.pointer_at = Some((instance_id, position));
                 // One lookup and one hit path serve both; `Scene::surface` lends its tree.
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+                let point = layout::hit::LogicalPoint::from_position(position);
                 let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
                 self.sync_hover(index, tree, &path, HoverUpdate::Pointer);
                 // Chosen while the tree is still borrowed, shown once that borrow has ended.
@@ -706,7 +469,7 @@ impl App {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
             return PointerHit { click: None, field: None, control: None, caret: None, drag: None, press: None };
         };
-        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let point = layout::hit::LogicalPoint::from_position(position);
         let path = layout::hit::hit_path(tree, point);
         let field = focused_field(&path);
         // `None`, not `""`, for a field this does not hold: an empty draft measures to offset 0,
@@ -765,7 +528,7 @@ impl App {
         let Some(drag) = self.drag.as_ref().filter(|drag| drag.instance_id == instance_id) else {
             return;
         };
-        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let point = layout::hit::LogicalPoint::from_position(position);
         let (rect, local) = drag_local(self.client.scene().surface(instance_id), &drag.target, point);
         let handler = drag.target.handler.clone();
         if phase == DragPhase::End {
@@ -808,10 +571,17 @@ impl App {
             return;
         };
         let tree = self.client.scene().surface(surface_id);
-        let point = layout::hit::LogicalPoint { x: position.0 as f32, y: position.1 as f32 };
+        let point = layout::hit::LogicalPoint::from_position(*position);
         let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
         self.sync_hover(index, tree, &path, HoverUpdate::Layout);
         self.sync_pointer(index);
+    }
+
+    /// The pointer is gone from its surface: no release, no cached cursor, no position.
+    pub(in crate::wayland) fn forget_pointer(&mut self) {
+        self.armed = None;
+        self.cursor_shown = None;
+        self.pointer_at = None;
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never
@@ -832,9 +602,7 @@ impl App {
             return;
         };
         self.fire_on_drag(&surface_id, position, DragPhase::End);
-        self.armed = None;
-        self.cursor_shown = None;
-        self.pointer_at = None;
+        self.forget_pointer();
         let tree = self.client.scene().surface(&surface_id);
         self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
         self.sync_pointer(index);
@@ -891,17 +659,10 @@ impl App {
 mod tests {
     use super::super::tests::hit_node;
     use super::*;
-    use crate::layout::node::MoveTween;
-    use crate::wayland::input::keyboard::tests::{
-        draft, plain_textfield, secure_submit_table, textfield, with_property,
-    };
+    use crate::wayland::input::keyboard::tests::{plain_textfield, secure_submit_table, textfield, with_property};
     use mlua::Table;
 
-    fn left() -> Option<Click> {
-        Some((std::time::Instant::now(), (0.0, 0.0)))
-    }
-
-    fn pt(x: f32, y: f32) -> layout::hit::LogicalPoint {
+    pub(super) fn pt(x: f32, y: f32) -> layout::hit::LogicalPoint {
         layout::hit::LogicalPoint { x, y }
     }
 
@@ -938,35 +699,6 @@ mod tests {
     fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {
         assert!(HoverUpdate::Pointer.fires_on_hover(), "Enter, Motion, and Leave are user input");
         assert!(!HoverUpdate::Layout.fires_on_hover(), "layout movement under a resting pointer is silent");
-    }
-
-    /// A per-item tooltip reads the hovered item's rect in `on_hover` to place itself, so the
-    /// crossing's rect has to be there when the handler runs.
-    #[test]
-    fn on_hover_reads_the_rect_of_the_crossing_it_was_called_for() {
-        let lua = Lua::new();
-        let (signal, rect_signal) =
-            crate::lua::signal::Signal::new_hover(crate::lua::signal::DirtyFlag::new(), mlua::Value::Boolean(false));
-        let seen = std::rc::Rc::new(std::cell::RefCell::new(None));
-        let sink = std::rc::Rc::clone(&seen);
-        let read_rect = rect_signal.clone();
-        let on_hover = lua
-            .create_function(move |lua, _hovered: bool| {
-                let mlua::Value::Table(rect) = read_rect.get_value(lua).unwrap() else { panic!("a rect table") };
-                *sink.borrow_mut() = Some(rect.get::<f32>("x").unwrap());
-                Ok(())
-            })
-            .unwrap();
-
-        let write = layout::hover::HoverWrite {
-            signal,
-            hovered: true,
-            rect: Some(LogicalRect { x: 140.0, y: 0.0, width: 24.0, height: 24.0 }),
-            on_hover: Some(on_hover),
-        };
-        apply_hover_write(&lua, write, true, "bar");
-
-        assert_eq!(*seen.borrow(), Some(140.0), "the handler saw this crossing, not the one before it");
     }
 
     #[test]
@@ -1018,29 +750,6 @@ mod tests {
         assert_eq!(*seen.borrow(), vec![(40.0, "right".to_string(), 10.0)]);
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
         assert!(press_target(&[&bare], at, 0).is_none());
-    }
-
-    #[test]
-    fn on_drag_is_handed_the_pointer_in_the_nodes_own_coordinates() {
-        let lua = Lua::new();
-        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-        let sink = std::rc::Rc::clone(&seen);
-        let handler = lua
-            .create_function(move |_, (rect, pointer, phase): (Table, Table, String)| {
-                sink.borrow_mut().push((
-                    rect.get::<f32>("width").unwrap(),
-                    pointer.get::<f32>("x").unwrap(),
-                    pointer.get::<f32>("y").unwrap(),
-                    phase,
-                ));
-                Ok(())
-            })
-            .unwrap();
-        let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        call_on_drag(&lua, &handler, rect, pt(20.0, 6.0), DragPhase::Start, [false; 4]).unwrap();
-        // Past the right edge: unclamped, so the config's own clamp is what pins the slider.
-        call_on_drag(&lua, &handler, rect, pt(50.0, 6.0), DragPhase::End, [false; 4]).unwrap();
-        assert_eq!(*seen.borrow(), vec![(40.0, 20.0, 6.0, "start".to_string()), (40.0, 50.0, 6.0, "end".to_string())]);
     }
 
     #[test]
@@ -1161,30 +870,6 @@ mod tests {
     }
 
     #[test]
-    fn a_release_fires_only_over_the_same_surface_rect_and_button_the_press_armed() {
-        let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        let moved = LogicalRect { x: 11.0, y: 4.0, width: 40.0, height: 24.0 };
-        let armed = ArmedClick { instance_id: "bar@eDP-1".to_string(), rect, link: None, button: BTN_LEFT };
-
-        assert!(release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-        // Dragged off the node, then released: the release hits no clickable node at all.
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", None, BTN_LEFT));
-        // Dragged onto a different clickable node on the same surface.
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((moved, None)), BTN_LEFT));
-        // Same geometry, different surface -- two panels can resolve identical rects.
-        assert!(!release_completes_click(Some(&armed), "notification_area@eDP-1", Some((rect, None)), BTN_LEFT));
-        // A release with nothing armed (a press that hit no clickable node, or a `leave` in between).
-        assert!(!release_completes_click(None, "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-
-        // Press right, release left, on the same node: two clicks interleaved, neither complete. A
-        // mouse can hold more than one button down at a time, so this is a real sequence.
-        let right = ArmedClick { button: BTN_RIGHT, ..armed };
-        assert!(release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_RIGHT));
-        assert!(!release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-        assert!(!release_completes_click(Some(&right), "bar@eDP-1", Some((rect, None)), BTN_MIDDLE));
-    }
-
-    #[test]
     fn only_the_three_buttons_a_config_can_name_are_handled_at_all() {
         assert_eq!(pointer_button_name(BTN_LEFT), Some("left"));
         assert_eq!(pointer_button_name(BTN_RIGHT), Some("right"));
@@ -1194,255 +879,6 @@ mod tests {
         assert_eq!(pointer_button_name(0x113), None);
         assert_eq!(pointer_button_name(0x116), None);
         assert_eq!(pointer_button_name(0), None);
-    }
-
-    #[test]
-    fn a_release_ends_only_its_own_buttons_press() {
-        // The bug this exists to stop: press left, press right, release left, release right, all
-        // on one node. If the left release clears the slot, the right press is thrown away with
-        // it and the right click never fires despite being a complete pair.
-        let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        let armed = ArmedClick { instance_id: "bar@eDP-1".to_string(), rect, link: None, button: BTN_RIGHT };
-
-        assert!(release_ends_press(Some(&armed), BTN_RIGHT));
-        assert!(!release_ends_press(Some(&armed), BTN_LEFT));
-        // Ending it does not depend on it having fired: dragging off the node and releasing the
-        // same button is over too, and the slot has to go.
-        assert!(!release_ends_press(None, BTN_RIGHT));
-    }
-
-    /// A paragraph holding two links is one rect (ADR-0106): pressing one and releasing over the
-    /// other is not a click on either, and a release on the plain words is not a click on the link.
-    #[test]
-    fn a_link_click_completes_only_on_the_same_link() {
-        let rect = LogicalRect { x: 10.0, y: 4.0, width: 200.0, height: 40.0 };
-        let armed = ArmedClick {
-            instance_id: "bar@eDP-1".to_string(),
-            rect,
-            link: Some("https://a/".to_string()),
-            button: BTN_LEFT,
-        };
-        assert!(release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, Some("https://a/"))), BTN_LEFT));
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, Some("https://b/"))), BTN_LEFT));
-        assert!(!release_completes_click(Some(&armed), "bar@eDP-1", Some((rect, None)), BTN_LEFT));
-
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let mut text = hit_node(&lua, "text", (40.0, 4.0, 100.0, 20.0), false);
-        let properties = std::rc::Rc::make_mut(&mut text.properties);
-        properties.insert("content", lua.load("return {{ text = 'go', href = 'https://a/' }}").eval().unwrap());
-        properties.insert("on_link", Value::Function(lua.create_function(|_, _: String| Ok(())).unwrap()));
-        text.paint = node::paint_style("text", &text.properties).unwrap();
-        text.movement = Some(Box::new(MoveTween::test((-30.0, 0.0))));
-        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 160.0, 32.0), false);
-        root.children.push(text);
-        let painted = layout::hit::LogicalPoint { x: 15.0, y: 10.0 };
-        let path = layout::hit::hit_path(&root, painted);
-        assert_eq!(clickable(&path, painted, &shaping).and_then(|hit| hit.link), Some("https://a/".to_string()));
-        assert_eq!(layout::hit::cursor_under(&path, painted, &shaping), cursor_icon::CursorIcon::Pointer);
-        let old = layout::hit::LogicalPoint { x: 45.0, y: 10.0 };
-        let path = layout::hit::hit_path(&root, old);
-        assert!(clickable(&path, old, &shaping).is_none());
-        assert_eq!(layout::hit::cursor_under(&path, old, &shaping), cursor_icon::CursorIcon::Default);
-    }
-
-    #[test]
-    fn on_click_takes_the_button_name_as_a_second_argument_beside_the_rect() {
-        // Second argument, not a fifth field on the rect table: every handler written against the
-        // one-argument form keeps working, since Lua drops arguments a function does not declare.
-        let lua = Lua::new();
-        let seen: Function = lua
-            .load(r#"seen = {} return function(rect, button, pointer) seen.x, seen.y, seen.w, seen.h, seen.button, seen.px, seen.py = rect.x, rect.y, rect.width, rect.height, button, pointer.x, pointer.y end"#)
-            .eval()
-            .unwrap();
-        call_on_click(
-            &lua,
-            &seen,
-            LogicalRect { x: 12.0, y: 4.0, width: 40.0, height: 24.0 },
-            "right",
-            pt(8.0, 6.0),
-            [false; 4],
-        )
-        .unwrap();
-
-        let recorded: Table = lua.globals().get("seen").unwrap();
-        assert_eq!(recorded.get::<f32>("x").unwrap(), 12.0);
-        assert_eq!(recorded.get::<f32>("y").unwrap(), 4.0);
-        assert_eq!(recorded.get::<f32>("w").unwrap(), 40.0);
-        assert_eq!(recorded.get::<f32>("h").unwrap(), 24.0);
-        assert_eq!(recorded.get::<String>("button").unwrap(), "right");
-        assert_eq!((recorded.get::<f32>("px").unwrap(), recorded.get::<f32>("py").unwrap()), (8.0, 6.0), "node-local");
-
-        // ADR-0050 decision 3's worked example, which every config in the tree uses: a one-argument handler.
-        let anchor: Function = lua.load(r#"return function(rect) anchor = rect end"#).eval().unwrap();
-        let rect = LogicalRect { x: 40.0, y: 0.0, width: 86.0, height: 24.0 };
-        call_on_click(&lua, &anchor, rect, "left", pt(1.0, 1.0), [false; 4]).unwrap();
-        let anchor: Table = lua.globals().get("anchor").unwrap();
-        assert_eq!((anchor.get::<f32>("x").unwrap(), anchor.get::<f32>("height").unwrap()), (40.0, 24.0));
-    }
-
-    #[test]
-    fn the_pointer_handlers_end_with_the_held_modifiers() {
-        let lua = Lua::new();
-        let note: Function = lua
-            .load("seen = {} return function(name, m) seen[name] = (m.ctrl and 'c' or '-') .. (m.shift and 's' or '-') end")
-            .eval()
-            .unwrap();
-        let handler = |name: &'static str| {
-            let note = note.clone();
-            lua.create_function(move |_, args: mlua::MultiValue| {
-                let held = args.into_iter().last().expect("a trailing modifiers table");
-                note.call::<()>((name, held))
-            })
-            .unwrap()
-        };
-        let rect = LogicalRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
-        let target = PressTarget { rect, at: pt(1.0, 1.0), handler: handler("press") };
-        call_on_press(&lua, &target.handler, &target, "left", [true, false, false, false]).unwrap();
-        call_on_click(&lua, &handler("click"), rect, "left", pt(1.0, 1.0), [true, true, false, false]).unwrap();
-        call_on_drag(&lua, &handler("drag"), rect, pt(1.0, 1.0), DragPhase::Move, [false, true, false, false]).unwrap();
-        call_on_drag(&lua, &handler("idle"), rect, pt(1.0, 1.0), DragPhase::End, [false; 4]).unwrap();
-        let seen: Table = lua.globals().get("seen").unwrap();
-        let read = |name: &str| seen.get::<String>(name).unwrap();
-        assert_eq!([read("press"), read("click"), read("drag"), read("idle")], ["c-", "cs", "-s", "--"]);
-    }
-
-    /// A plain field as [`focused_field`] hands one back: a callback is what makes it plain. Each
-    /// handler names itself in the `fired` global, so landing in the wrong slot is visible.
-    fn plain_field(lua: &Lua, id: u64) -> FieldTarget {
-        let handler =
-            |name: &'static str| Some(lua.create_function(move |lua, ()| lua.globals().set("fired", name)).unwrap());
-        FieldTarget::Plain {
-            id: layout::scene::NodeId::test(id),
-            on_change: handler("change"),
-            on_submit: handler("submit"),
-            on_cancel: None,
-            escape: Escape::Clear,
-        }
-    }
-
-    /// One `secure_submit` destination, as the parsers hand it back.
-    fn secure_target() -> node::SecureSubmitTarget {
-        node::SecureSubmitTarget {
-            capability: "session_lock".to_string(),
-            action: "authenticate".to_string(),
-            name: None,
-        }
-    }
-
-    /// ADR-0108 decision 2: the draft outlives focus, so coming back to the same reply box has to
-    /// find the half-typed sentence still in it.
-    #[test]
-    fn re_pressing_the_field_a_draft_belongs_to_resumes_it_rather_than_starting_empty() {
-        let lua = Lua::new();
-        let (masked, plain) = press_chooses_focus(
-            Some(plain_field(&lua, 7)),
-            "notification_area@eDP-1",
-            Some(7),
-            false,
-            left(),
-            None,
-            Some(&draft(7, "half a sentence")),
-        );
-        let plain = plain.expect("the press focused the field it hit");
-        assert_eq!(plain.buffer, "half a sentence");
-        assert!(plain.typing, "the caret is back");
-        assert_eq!(plain.selection, (7, 7), "the caret lands where the press did, not at the end");
-        // `prune_text_field_focus` keys liveness off this, so the draft's stale surface would drop
-        // what was typed.
-        assert_eq!(plain.surface_id, "notification_area@eDP-1", "the press names the surface");
-        plain.on_change.unwrap().call::<()>(()).unwrap();
-        assert_eq!(lua.globals().get::<String>("fired").unwrap(), "change", "the handlers kept their slots");
-        assert!(masked.is_none());
-    }
-
-    #[test]
-    fn pressing_a_different_plain_field_starts_its_own_empty_draft() {
-        // Two reply boxes on one surface: the neighbour's text must not appear in this one.
-        let lua = Lua::new();
-        let (_, plain) = press_chooses_focus(
-            Some(plain_field(&lua, 8)),
-            "notification_area@eDP-1",
-            None,
-            false,
-            left(),
-            None,
-            Some(&draft(7, "half a sentence")),
-        );
-        let plain = plain.expect("the press focused the field it hit");
-        assert_eq!(plain.buffer, "");
-        assert!(plain.typing);
-    }
-
-    /// ADR-0236: Shift selects from where the caret was. `leave` clears `shift_held` so a Shift
-    /// released under another client cannot make this happen to a press the user meant as plain.
-    #[test]
-    fn shift_pressing_a_held_field_selects_from_the_caret_it_already_had() {
-        let lua = Lua::new();
-        let held = draft(7, "half a sentence");
-        let anchor = held.selection.0;
-        let (_, plain) = press_chooses_focus(
-            Some(plain_field(&lua, 7)),
-            "notification_area@eDP-1",
-            Some(4),
-            true,
-            left(),
-            None,
-            Some(&held),
-        );
-        let plain = plain.expect("the press focused the field it hit");
-        assert_eq!(plain.selection, (anchor, 4), "the anchor stays put and the press moves the head");
-
-        // Without Shift the same press collapses instead, which is the difference a stale
-        // `shift_held` would erase.
-        let (_, plain) = press_chooses_focus(
-            Some(plain_field(&lua, 7)),
-            "notification_area@eDP-1",
-            Some(4),
-            false,
-            left(),
-            None,
-            Some(&draft(7, "half a sentence")),
-        );
-        assert_eq!(plain.expect("focused").selection, (4, 4));
-    }
-
-    #[test]
-    fn pressing_away_from_every_field_stops_typing_but_keeps_the_draft() {
-        let held = FocusedField {
-            surface_id: "lock@eDP-1".to_string(),
-            id: layout::scene::NodeId::test(7),
-            target: secure_target(),
-        };
-        let (masked, plain) =
-            press_chooses_focus(None, "bar@eDP-1", None, false, left(), Some(&held), Some(&draft(7, "kept")));
-        let plain = plain.expect("the draft survives a press elsewhere");
-        assert_eq!(plain.buffer, "kept");
-        assert!(!plain.typing, "no caret without focus");
-        // ADR-0114 decision 8: the scrim and the Authenticate button are both presses elsewhere.
-        assert_eq!(masked, Some(held));
-    }
-
-    #[test]
-    fn pressing_a_masked_field_takes_focus_from_the_plain_one() {
-        let (masked, plain) = press_chooses_focus(
-            Some(FieldTarget::Masked { id: layout::scene::NodeId::test(8), target: secure_target() }),
-            "lock@eDP-1",
-            None,
-            false,
-            left(),
-            None,
-            Some(&draft(7, "half a sentence")),
-        );
-        assert_eq!(
-            masked,
-            Some(FocusedField {
-                surface_id: "lock@eDP-1".to_string(),
-                id: layout::scene::NodeId::test(8),
-                target: secure_target(),
-            })
-        );
-        assert!(plain.is_none(), "one field holds the keys, and it is the password one");
     }
 
     fn handler(lua: &Lua) -> Value {
@@ -1491,79 +927,5 @@ mod tests {
         let field = focused_field(&[&masked]);
         let (click, press) = handlers_under(&[&card, &masked], field.as_ref(), at, &shaping);
         assert!(click.is_none() && press.is_none());
-    }
-
-    #[test]
-    fn a_right_press_keeps_a_selection_it_lands_in_and_starts_no_drag() {
-        let lua = Lua::new();
-        let held = || FocusedTextField { selection: (2, 9), ..draft(7, "half a sentence") };
-        let press = |caret, primary: bool| {
-            let (_, plain) = press_chooses_focus(
-                Some(plain_field(&lua, 7)),
-                "bar@eDP-1",
-                Some(caret),
-                false,
-                if primary { left() } else { None },
-                None,
-                Some(&held()),
-            );
-            plain.expect("focused")
-        };
-        let inside = press(5, false);
-        assert_eq!((inside.selection, inside.selecting), ((2, 9), false));
-        let outside = press(12, false);
-        assert_eq!((outside.selection, outside.selecting), ((12, 12), false), "outside it places the caret");
-        let left = press(5, true);
-        assert_eq!((left.selection, left.selecting), ((5, 5), true), "a left press still collapses and drags");
-    }
-
-    #[test]
-    fn presses_continue_a_series_by_time_and_distance_and_a_right_press_or_blur_ends_it() {
-        use std::time::{Duration, Instant};
-        let (lua, t0) = (Lua::new(), Instant::now());
-        let press = |held: Option<FocusedTextField>, id, at, extend, button: Option<Click>| {
-            let click = button.map(|(_, p)| (t0 + Duration::from_millis(at), p));
-            press_chooses_focus(Some(plain_field(&lua, id)), "bar@eDP-1", Some(5), extend, click, None, held.as_ref()).1
-        };
-        let at = |x| Some((t0, (x, 10.0)));
-        let first = press(Some(draft(7, "one two three")), 7, 0, false, at(10.0)).unwrap();
-        let second = press(Some(first.clone()), 7, 300, false, at(12.0)).unwrap();
-        let third = press(Some(second.clone()), 7, 600, false, at(12.0)).unwrap();
-        let fourth = press(Some(third.clone()), 7, 900, false, at(12.0)).unwrap();
-        let units = [first.span.unit, second.span.unit, third.span.unit, fourth.span.unit];
-        assert_eq!(units, [Unit::Char, Unit::Word, Unit::Line, Unit::Char]);
-        assert_eq!((second.selection, third.selection), ((4, 7), (0, 13)));
-        let unit =
-            |held: &FocusedTextField, id, ms, x| press(Some(held.clone()), id, ms, false, at(x)).unwrap().span.unit;
-        assert_eq!(unit(&first, 7, 401, 10.0), Unit::Char, "too slow");
-        assert_eq!(unit(&first, 7, 100, 15.0), Unit::Char, "too far");
-        assert_eq!(unit(&first, 8, 100, 10.0), Unit::Char, "another field starts its own series");
-        let right = press(Some(second.clone()), 7, 100, false, None).unwrap();
-        assert_eq!(unit(&right, 7, 150, 12.0), Unit::Char, "a right press ended the series");
-        let blurred = press_chooses_focus(None, "bar@eDP-1", None, false, None, None, Some(&second)).1.unwrap();
-        assert_eq!(unit(&blurred, 7, 100, 12.0), Unit::Char, "a press elsewhere ended it");
-    }
-
-    #[test]
-    fn shift_press_keeps_the_unit_and_an_edit_or_select_all_drops_it() {
-        let lua = Lua::new();
-        let shift = |caret, held| {
-            press_chooses_focus(Some(plain_field(&lua, 7)), "bar@eDP-1", Some(caret), true, left(), None, Some(&held))
-                .1
-                .expect("focused")
-        };
-        let word = FocusedTextField {
-            selection: (4, 7),
-            span: Span { unit: Unit::Word, base: (4, 7), produced: (4, 7) },
-            ..draft(7, "one two three")
-        };
-        assert_eq!(shift(10, word.clone()).selection, (4, 13), "Shift grows by the held word");
-        assert_eq!(shift(1, word.clone()).selection, (7, 0));
-        let all = FocusedTextField { selection: (0, 13), ..word.clone() };
-        assert_eq!(shift(10, all).selection, (0, 10), "after Ctrl+A the anchor is the live one, not the old word");
-        // A first press on a not-yet-focused field has an empty buffer; its drag must still anchor at the live selection.
-        let swapped = FocusedTextField { selection: (3, 3), ..draft(7, "one two three") };
-        let span = swapped.span.live(&swapped.buffer, swapped.selection);
-        assert_eq!(extend_by_unit(&swapped.buffer, span, 9), (3, 9));
     }
 }

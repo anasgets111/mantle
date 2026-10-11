@@ -42,7 +42,7 @@ mod wlr;
 
 pub(super) use gpu::import_ready_dmabufs;
 use gpu::{DmabufOffer, DmabufProbe, land_dmabuf_frame};
-use shm::NegotiatedBuffer;
+use shm::{NegotiatedBuffer, stage_landed};
 
 /// The capture protocols this compositor offers, bound once at startup (ADR-0248 decision 1).
 struct Backend {
@@ -553,6 +553,35 @@ fn fail_source(captures: &mut CaptureRegistry, id: &NodeId) {
         warn!("capture on `{}` failed; pausing capture", source.target.name());
     }
     source.failed = true;
+}
+
+/// A frame landed: drop its handle, then hand the dmabuf or the shm pixels to the cache. Shared by the ext and wlr `Ready` handlers.
+fn land_ready_frame(captures: &mut CaptureRegistry, cache: &mut CaptureCache, id: &NodeId) {
+    let Some(source) = captures.sources.get_mut(id) else { return };
+    let dmabuf = match source.proto.as_mut() {
+        Some(Proto::Ext(ext)) => {
+            ext.frame = None;
+            source.dmabuf_shape.is_some()
+        }
+        Some(Proto::Wlr(wlr)) => {
+            wlr.frame = None;
+            wlr.dmabuf_active
+        }
+        None => false,
+    };
+    if dmabuf {
+        return land_dmabuf_frame(captures, cache, id);
+    }
+    let (damage, buffer) = match source.proto.as_mut() {
+        Some(Proto::Ext(ext)) => (std::mem::take(&mut ext.damage), ext.buffer.as_mut()),
+        Some(Proto::Wlr(wlr)) => (std::mem::take(&mut wlr.damage), wlr.buffer.as_mut()),
+        None => return,
+    };
+    if let Some(negotiated) = buffer {
+        stage_landed(cache, *id, negotiated, damage);
+    }
+    source.captured = true;
+    source.in_flight = false;
 }
 
 /// A frame failed on `buffer_constraints` (a resize): the `Done` parked behind it is a

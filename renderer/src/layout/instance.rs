@@ -81,20 +81,23 @@ pub struct OutputGeometry {
 /// second surface on one output with `duplicate_output`, leaving no choice. Surfaces appear
 /// when outputs do, via a re-expansion of this function (ADR-0042).
 pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Vec<SurfaceInstance> {
+    // Every instance but a popup seeds `measured_axes` unmeasured; `wayland::layer::create_panel`
+    // pushes a panel's real reading from the resolved spec before its first configure can arrive.
+    let instance = |instance_id: String, declared_id: &str, output: &str, available: LogicalSize| SurfaceInstance {
+        instance_id,
+        declared_id: declared_id.to_string(),
+        output: output.to_string(),
+        available,
+        measured_axes: (false, false),
+    };
     let mut instances = Vec::new();
     for spec in specs {
         match spec {
             SurfaceSpec::Panel(panel) if panel.topology.output == "active" => {
                 if let Some(first) = outputs.first() {
-                    instances.push(SurfaceInstance {
-                        instance_id: panel.topology.id.clone(),
-                        declared_id: panel.topology.id.clone(),
-                        output: String::new(),
-                        // ponytail: the picked output is unknown until `wl_surface.enter`, so this
-                        // seeds from the first; `Percent`, the one size reading it, is refused.
-                        available: first.size,
-                        measured_axes: (false, false),
-                    });
+                    // ponytail: the picked output is unknown until `wl_surface.enter`, so this
+                    // seeds from the first; `Percent`, the one size reading it, is refused.
+                    instances.push(instance(panel.topology.id.clone(), &panel.topology.id, "", first.size));
                 }
             }
             SurfaceSpec::Panel(panel) => {
@@ -102,25 +105,14 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
                     if panel.topology.output != "all" && panel.topology.output != output.name {
                         continue;
                     }
-                    instances.push(SurfaceInstance {
-                        instance_id: format!("{}@{}", panel.topology.id, output.name),
-                        declared_id: panel.topology.id.clone(),
-                        output: output.name.clone(),
-                        available: output.size,
-                        // The output is the ceiling either way, so this seeds allocated and
-                        // measured axes alike; `wayland::layer::create_panel` pushes the real
-                        // reading from the resolved spec before the first configure can arrive.
-                        measured_axes: (false, false),
-                    });
+                    let id = format!("{}@{}", panel.topology.id, output.name);
+                    instances.push(instance(id, &panel.topology.id, &output.name, output.size));
                 }
             }
-            SurfaceSpec::Window(window) => instances.push(SurfaceInstance {
-                instance_id: window.id.clone(),
-                declared_id: window.id.clone(),
-                output: String::new(),
-                available: outputs.first().map_or(LogicalSize::default(), |output| output.size),
-                measured_axes: (false, false),
-            }),
+            SurfaceSpec::Window(window) => {
+                let available = outputs.first().map_or(LogicalSize::default(), |output| output.size);
+                instances.push(instance(window.id.clone(), &window.id, "", available));
+            }
             SurfaceSpec::Popup(popup) => {
                 // A declared axis is its own bound. A `Content` one takes the output as its ceiling
                 // -- the room a popup could occupy at most -- rather than the parent's box: a
@@ -134,22 +126,14 @@ pub fn expand_instances(specs: &[SurfaceSpec], outputs: &[OutputGeometry]) -> Ve
                 let (width, measured_width) = axis(popup.width, ceiling.width);
                 let (height, measured_height) = axis(popup.height, ceiling.height);
                 instances.push(SurfaceInstance {
-                    instance_id: popup.id.clone(),
-                    declared_id: popup.id.clone(),
-                    output: String::new(),
-                    available: LogicalSize { width, height },
                     measured_axes: (measured_width, measured_height),
+                    ..instance(popup.id.clone(), &popup.id, "", LogicalSize { width, height })
                 })
             }
             SurfaceSpec::Lock(lock) => {
                 for output in outputs {
-                    instances.push(SurfaceInstance {
-                        instance_id: format!("{}@{}", lock.id, output.name),
-                        declared_id: lock.id.clone(),
-                        output: output.name.clone(),
-                        available: output.size,
-                        measured_axes: (false, false),
-                    });
+                    let id = format!("{}@{}", lock.id, output.name);
+                    instances.push(instance(id, &lock.id, &output.name, output.size));
                 }
             }
         }

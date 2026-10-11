@@ -261,6 +261,17 @@ const DEFERRED_POPUP_EXTENT: f32 = 1.0;
 /// leaves the positioner incomplete and raises `invalid_positioner` at `get_popup`.
 pub(crate) struct AnchorRect;
 
+/// `n` if `xdg_positioner::set_size` accepts it, else an error opening with `subject`.
+fn popup_extent(property: &str, subject: &str, n: f32, bad: &str) -> Result<f32, LayoutError> {
+    if !(n > 0.0 && n <= 8192.0) {
+        return Err(invalid(
+            property,
+            format!("{subject} be within (0, 8192], got {} -- {bad} is a protocol error", marshal::number_word(n)),
+        ));
+    }
+    Ok(n)
+}
+
 spelled!(AnchorRect => LogicalRect::lua());
 
 impl Prop for AnchorRect {
@@ -286,16 +297,7 @@ impl Prop for AnchorRect {
             let n = input::field::<Option<f32>>("anchor_rect", table, key)?.ok_or_else(|| {
                 invalid("anchor_rect", format!("`{key}` is required and must be greater than 0 -- a zero-size anchor rectangle raises invalid_positioner"))
             })?;
-            if !(n > 0.0 && n <= 8192.0) {
-                return Err(invalid(
-                    "anchor_rect",
-                    format!(
-                        "`{key}` must be within (0, 8192], got {} -- a zero size is a protocol error",
-                        marshal::number_word(n)
-                    ),
-                ));
-            }
-            Ok(n)
+            popup_extent("anchor_rect", &format!("`{key}` must"), n, "a zero size")
         };
         Ok(LogicalRect { x: origin("x")?, y: origin("y")?, width: extent("width")?, height: extent("height")? })
     }
@@ -334,16 +336,7 @@ impl Prop for PopupExtent {
                 ),
             )
         })?;
-        if !(n > 0.0 && n <= 8192.0) {
-            return Err(invalid(
-                property,
-                format!(
-                    "must be within (0, 8192], got {} -- a zero or negative size is a protocol error",
-                    marshal::number_word(n)
-                ),
-            ));
-        }
-        Ok(SizeMode::Pixels(n))
+        popup_extent(property, "must", n, "a zero or negative size").map(SizeMode::Pixels)
     }
 
     fn deferred(_: &Property) -> Result<SizeMode, LayoutError> {
