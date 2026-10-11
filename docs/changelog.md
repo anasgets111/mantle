@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.6.2 - 2026-10-11
+
 - Changed: a HUP, USR1, USR2, ALRM or other terminating signal stops the shell the way SIGTERM does, with an error naming the signal and the sender's pid and command line; SIGINT and SIGTERM log their sender too. The renderer's `connection ended` line says whether the supervisor process is still there.
 - Fixed: `mantle set`/`toggle` read a joined `--pid=N` or `--profile=N` after the state name as an option; it was stored as the value.
 - Fixed: a notification `image-path` or `app_icon` given as a `file://` URL with escapes (`%20`) or a `localhost` host resolves; it was refused.
