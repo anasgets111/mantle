@@ -11,13 +11,12 @@ use shared::{debug, error};
 use tokio::io::Interest;
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
-use udev::MonitorSocket;
 
 use crate::compositor::{Compositor, CompositorKind, backend_or_unsupported};
 
-use super::super::brightness::controller::Login1SessionProxy;
-use super::super::read_attr;
-use super::super::scale::{percent_from_raw, raw_from_percent};
+use super::super::brightness::controller::set_brightness;
+use super::super::scale::{raw_from_percent, read_percent};
+use super::super::{read_parsed, udev_watch};
 use super::locks::{find_leds, read_led_on, resolve_lock_leds};
 
 /// A `*::kbd_backlight` LED and its `max_brightness`, which does not change at runtime.
@@ -81,13 +80,11 @@ impl KeyboardController {
         };
         let name = led.dir.file_name().unwrap_or_default().to_string_lossy();
         let raw = raw_from_percent(pct, led.max) as u32;
-        let result =
-            async { Login1SessionProxy::new(&self.system_bus).await?.set_brightness("leds", &name, raw).await }.await;
-        if let Err(err) = result {
+        if let Err(err) = set_brightness(&self.system_bus, "leds", &name, raw).await {
             debug!("SetBrightness(leds, {name}, {raw}) failed: {err}");
         }
         // `brightness_hw_changed` reports only hardware changes, so read this write back.
-        self.state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(led);
+        self.state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
         let _ = self.events.send(());
     }
 
@@ -105,15 +102,9 @@ impl KeyboardController {
 /// First `*::kbd_backlight` by name with `max_brightness > 0`; a dead sibling must not hide a usable LED.
 fn find_backlight(leds_root: &Path) -> Option<LedBacklight> {
     find_leds(leds_root, "::kbd_backlight").into_iter().find_map(|dir| {
-        let max = read_attr(&dir, "max_brightness")?.parse().ok().filter(|max| *max > 0)?;
+        let max = read_parsed(&dir, "max_brightness").filter(|max| *max > 0)?;
         Some(LedBacklight { dir, max })
     })
-}
-
-/// `None` when `brightness` cannot be read.
-fn read_backlight_percent(led: &LedBacklight) -> Option<u8> {
-    let raw = read_attr(&led.dir, "brightness")?.parse().ok()?;
-    percent_from_raw(raw, led.max)
 }
 
 /// Opens `brightness_hw_changed` before the initial read so a hotkey in between is not lost, then
@@ -121,7 +112,7 @@ fn read_backlight_percent(led: &LedBacklight) -> Option<u8> {
 fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let watch = std::fs::File::open(led.dir.join("brightness_hw_changed"))
         .and_then(|file| AsyncFd::with_interest(file, Interest::PRIORITY));
-    state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(&led);
+    state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
     let watch = match watch {
         Ok(watch) => watch,
         Err(err) => {
@@ -140,7 +131,7 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
             }
             // Reading from offset 0 re-arms kernfs's `POLLPRI`.
             let _ = watch.get_ref().read_at(&mut [0; 8], 0);
-            state.lock().expect("mutex poisoned").backlight_percent = read_backlight_percent(&led);
+            state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
             if events.send(()).is_err() {
                 break;
             }
@@ -201,12 +192,6 @@ fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<evdev
     None
 }
 
-/// Builds the `input` udev watch, like `brightness::controller::build_backlight_watch`.
-fn build_input_watch() -> std::io::Result<AsyncFd<MonitorSocket>> {
-    let socket = udev::MonitorBuilder::new()?.match_subsystem("input")?.listen()?;
-    AsyncFd::new(socket)
-}
-
 /// Forwards `EV_LED` changes until the stream ends, which unplugging the keyboard does with
 /// `ENODEV`. `false` means the signal receiver is gone and the watch should stop for good.
 async fn pump_leds(
@@ -244,7 +229,7 @@ async fn pump_leds(
 /// where the unplug left them until the shell restarts.
 async fn watch_locks(first: Option<evdev::EventStream>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let mut stream = first;
-    let mut watch = build_input_watch()
+    let mut watch = udev_watch("input")
         .inspect_err(|err| {
             error!("failed to set up the udev input watch ({err}); lock state will freeze if the keyboard is replugged")
         })
@@ -316,6 +301,6 @@ mod tests {
         std::fs::write(dir.join("max_brightness"), "3\n").unwrap();
         std::fs::write(dir.join("brightness"), "2\n").unwrap();
         let led = find_backlight(root.path()).expect("kbd_backlight with max > 0");
-        assert_eq!(read_backlight_percent(&led), Some(67));
+        assert_eq!(read_percent(&led.dir, led.max), Some(67));
     }
 }

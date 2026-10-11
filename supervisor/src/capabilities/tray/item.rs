@@ -16,7 +16,7 @@ use super::icon::{
 use super::proxies::StatusNotifierItemProxy;
 use super::registration::item_id;
 use super::{MAX_TRAY_TEXT_BYTES, RawIconPixmap, RawToolTip};
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{properties_proxy, truncate_utf8_bytes};
 
 /// [`MAX_TRAY_TEXT_BYTES`] applied to one application-supplied property.
 fn capped(value: String) -> String {
@@ -68,12 +68,7 @@ const TEXT_PROPS: &[&str] = &["Id", "Title", "Status", "ToolTip"];
 async fn get_props(item: &StatusNotifierItemProxy<'static>, text_only: bool) -> HashMap<String, OwnedValue> {
     let proxy = item.inner();
     let reply = async {
-        let props = zbus::fdo::PropertiesProxy::builder(proxy.connection())
-            .destination(proxy.destination().clone())?
-            .path(proxy.path().clone())?
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
-            .await?;
+        let props = properties_proxy(proxy.connection(), proxy.destination().clone(), proxy.path().clone()).await?;
         if !text_only {
             return props.get_all(proxy.interface().clone()).await.map_err(zbus::Error::from);
         }

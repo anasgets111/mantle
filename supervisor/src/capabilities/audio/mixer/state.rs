@@ -268,6 +268,13 @@ pub(super) enum DefaultDevice {
     Source,
 }
 
+impl DefaultDevice {
+    /// The loudest volume fraction a write may set: the sink's cap, 100% for a source.
+    pub(super) fn max_volume(self) -> f32 {
+        if self == Self::Sink { master::SINK_MAX_VOLUME } else { 1.0 }
+    }
+}
+
 /// Metadata key naming the master output device, confirmed in `pw-metadata`.
 pub(super) const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
 

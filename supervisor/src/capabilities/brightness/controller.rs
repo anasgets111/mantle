@@ -11,8 +11,8 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
-use super::super::scale::{percent_from_raw, raw_from_percent};
-use super::super::{publish, read_attr};
+use super::super::scale::{raw_from_percent, read_percent};
+use super::super::{publish, read_attr, read_parsed, udev_watch};
 
 /// Device preference from `Documentation/ABI/stable/sysfs-class-backlight`: firmware (0) <
 /// platform (1) < raw (2), with unknown/missing last (3), not excluded.
@@ -28,7 +28,7 @@ fn device_type_rank(entry_dir: &Path) -> u8 {
 /// Parsed `max_brightness`; missing or malformed values become `0`, and the `> 0` filter in
 /// [`select_backlight_device`] rejects every non-positive value.
 fn read_max_brightness(entry_dir: &Path) -> i32 {
-    read_attr(entry_dir, "max_brightness").and_then(|text| text.parse().ok()).unwrap_or(0)
+    read_parsed(entry_dir, "max_brightness").unwrap_or(0)
 }
 
 /// Picks one `max_brightness > 0` device (ADR-0053), ranked by [`device_type_rank`] and then
@@ -47,13 +47,6 @@ fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
         })
 }
 
-/// Reads `brightness` (the last requested value), not `actual_brightness`: a driver fade or
-/// rounded request can differ, and `set(50)` must read back `50`. Missing/malformed reads are `None`.
-/// [`select_backlight_device`] guarantees positive `max`, so the `u8` result is `[0, 100]`.
-fn read_percent(device_dir: &Path, max: i32) -> Option<u8> {
-    percent_from_raw(read_attr(device_dir, "brightness")?.parse().ok()?, max)
-}
-
 /// `org.freedesktop.login1.Session.SetBrightness` on fixed `session/auto`, which logind resolves
 /// to the caller's session. Built per write because writes are rare; `keyboard` reuses it for LEDs.
 #[zbus::proxy(
@@ -64,6 +57,11 @@ fn read_percent(device_dir: &Path, max: i32) -> Option<u8> {
 pub(crate) trait Login1Session {
     #[zbus(name = "SetBrightness")]
     fn set_brightness(&self, subsystem: &str, name: &str, brightness: u32) -> zbus::Result<()>;
+}
+
+/// `SetBrightness(subsystem, name, raw)` through a fresh [`Login1SessionProxy`].
+pub(crate) async fn set_brightness(bus: &zbus::Connection, subsystem: &str, name: &str, raw: u32) -> zbus::Result<()> {
+    Login1SessionProxy::new(bus).await?.set_brightness(subsystem, name, raw).await
 }
 
 /// The device [`select_backlight_device`] chose. Its `max_brightness` and sysfs directory do not
@@ -113,17 +111,10 @@ impl BrightnessController {
             debug!("set called but no backlight device was found; ignored");
             return;
         };
-        let proxy = match Login1SessionProxy::new(&self.system_bus).await {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                warn!("failed to build the login1 Session proxy: {err}");
-                return;
-            }
-        };
         let raw = raw_from_percent(pct, max) as u32;
         // logind refuses SetBrightness from a non-active session (for example a background VT).
         // Log that error; do not retry it.
-        if let Err(err) = proxy.set_brightness("backlight", &name, raw).await {
+        if let Err(err) = set_brightness(&self.system_bus, "backlight", &name, raw).await {
             warn!("SetBrightness(backlight, {name}, {raw}) failed: {err}");
         }
         // State changes arrive through the udev watch/poll loop, not an optimistic local update.
@@ -159,7 +150,7 @@ impl BrightnessController {
 /// publishes, and uses [`run_brightness_watch_loop`], falling back to [`run_brightness_poll_loop`]
 /// only when the watch cannot start.
 async fn run_brightness_task(backlight_root: PathBuf, controller: BrightnessController, events: UnboundedSender<()>) {
-    let watch = build_backlight_watch();
+    let watch = udev_watch("backlight");
     if !controller.refresh(&backlight_root, &events) {
         return;
     }
@@ -170,15 +161,6 @@ async fn run_brightness_task(backlight_root: PathBuf, controller: BrightnessCont
             run_brightness_poll_loop(backlight_root, controller, events).await;
         }
     }
-}
-
-/// Builds the `backlight` udev watch: brightness changes and devices added or removed.
-///
-/// inotify misses sysfs attribute writes. `udevadm monitor --udev --subsystem-match=backlight`
-/// confirmed that brightness changes emit a `change` uevent on the `backlight` subsystem instead.
-fn build_backlight_watch() -> std::io::Result<AsyncFd<MonitorSocket>> {
-    let socket = udev::MonitorBuilder::new()?.match_subsystem("backlight")?.listen()?;
-    AsyncFd::new(socket)
 }
 
 /// Awaits a readable udev fd, drains netlink messages, then pushes only a changed reading. Uses

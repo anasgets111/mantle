@@ -5,6 +5,7 @@ pub use shared::state::sysinfo::{DiskDevice, DiskPartition};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
+use super::gpu::parse_json_u64;
 use super::run_limited;
 
 #[derive(serde::Deserialize)]
@@ -26,22 +27,14 @@ struct LsblkDevice {
     children: Vec<LsblkDevice>,
 }
 
-fn parse_bytes(value: Option<&serde_json::Value>) -> u64 {
-    match value {
-        Some(serde_json::Value::Number(n)) => n.as_u64().unwrap_or(0),
-        Some(serde_json::Value::String(s)) => s.parse::<u64>().unwrap_or(0),
-        _ => 0,
-    }
-}
-
 fn collect_partitions(
     node: &LsblkDevice,
     partitions: &mut Vec<DiskPartition>,
     disk_used: &mut u64,
     disk_total: &mut u64,
 ) {
-    let used_bytes = parse_bytes(node.fsused.as_ref());
-    let total_bytes = parse_bytes(node.fssize.as_ref());
+    let used_bytes = parse_json_u64(node.fsused.as_ref()).unwrap_or(0);
+    let total_bytes = parse_json_u64(node.fssize.as_ref()).unwrap_or(0);
 
     let points: Vec<&str> =
         node.mountpoints.iter().filter_map(|opt| opt.as_deref()).filter(|s| !s.is_empty() && *s != "[SWAP]").collect();

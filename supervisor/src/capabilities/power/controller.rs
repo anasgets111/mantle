@@ -10,7 +10,7 @@ use futures_util::{Stream, StreamExt, stream, stream_select};
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::capabilities::publish;
+use crate::capabilities::{properties_proxy, publish};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
 
@@ -165,11 +165,8 @@ async fn read_state(
 
 /// Every `PropertiesChanged` for `proxy`'s object, from whichever process owns its name.
 async fn properties_changed(proxy: &zbus::Proxy<'static>) -> zbus::Result<impl Stream<Item = ()> + use<>> {
-    let properties = zbus::fdo::PropertiesProxy::builder(proxy.connection())
-        .destination(proxy.destination().to_owned())?
-        .path(proxy.path().to_owned())?
-        .build()
-        .await?;
+    let properties =
+        properties_proxy(proxy.connection(), proxy.destination().to_owned(), proxy.path().to_owned()).await?;
     Ok(properties.receive_properties_changed().await?.map(drop))
 }
 

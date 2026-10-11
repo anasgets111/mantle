@@ -143,13 +143,18 @@ pub(super) fn apply_info_event(
         return false;
     }
     let parsed = props.and_then(|props| parse_stream_props(proc_root, node_id, props, apps.get(&node_id)));
+    upsert_or_remove(apps, node_id, parsed)
+}
+
+/// Stores `parsed` under `node_id`, or removes the entry when it is `None`; whether the map changed.
+fn upsert_or_remove<V: PartialEq>(map: &mut BTreeMap<u32, V>, node_id: u32, parsed: Option<V>) -> bool {
     match parsed {
-        Some(app) if apps.get(&node_id) == Some(&app) => false,
-        Some(app) => {
-            apps.insert(node_id, app);
+        Some(value) if map.get(&node_id) == Some(&value) => false,
+        Some(value) => {
+            map.insert(node_id, value);
             true
         }
-        None => apps.remove(&node_id).is_some(),
+        None => map.remove(&node_id).is_some(),
     }
 }
 
@@ -183,15 +188,7 @@ pub(super) fn apply_video_info_event(
     if !has_props_change {
         return false;
     }
-    let parsed = props.and_then(|props| parse_video_source_props(node_id, props));
-    match parsed {
-        Some(source) if sources.get(&node_id) == Some(&source) => false,
-        Some(source) => {
-            sources.insert(node_id, source);
-            true
-        }
-        None => sources.remove(&node_id).is_some(),
-    }
+    upsert_or_remove(sources, node_id, props.and_then(|props| parse_video_source_props(node_id, props)))
 }
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
@@ -240,17 +237,8 @@ pub(super) fn apply_capture_info_event(
     running: bool,
 ) -> bool {
     if has_props_change {
-        return match props.and_then(|props| parse_capture_props(node_id, kind, props)) {
-            Some(mut app) => {
-                app.running = running;
-                if apps.get(&node_id) == Some(&app) {
-                    return false;
-                }
-                apps.insert(node_id, app);
-                true
-            }
-            None => apps.remove(&node_id).is_some(),
-        };
+        let parsed = props.and_then(|props| parse_capture_props(node_id, kind, props));
+        return upsert_or_remove(apps, node_id, parsed.map(|app| CaptureApp { running, ..app }));
     }
     // An unknown node stays unknown: a state event must not resurrect a rejected monitor capture.
     match apps.get_mut(&node_id) {

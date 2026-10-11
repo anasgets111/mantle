@@ -10,7 +10,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
-use super::controller::{DISPLAY_DEVICE, from_upower, get};
+use super::controller::{DISPLAY_DEVICE, device_properties, from_upower, get};
+use crate::capabilities::properties_proxy;
 
 #[zbus::proxy(
     interface = "org.freedesktop.UPower",
@@ -115,11 +116,7 @@ async fn watch(
     path: &OwnedObjectPath,
     changed: UnboundedSender<()>,
 ) -> zbus::Result<Watch> {
-    let properties = zbus::fdo::PropertiesProxy::builder(connection)
-        .destination("org.freedesktop.UPower")?
-        .path(path.clone())?
-        .build()
-        .await?;
+    let properties = properties_proxy(connection, "org.freedesktop.UPower", path.clone()).await?;
     let mut stream = properties.receive_properties_changed().await?;
     let forwarder = tokio::spawn(async move { while stream.next().await.is_some() && changed.send(()).is_ok() {} });
     Ok(Watch { properties, forwarder })
@@ -159,8 +156,7 @@ async fn refresh(
             }
         }
         let watch = &watches[&path];
-        let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.UPower.Device");
-        let all = watch.properties.get_all(interface).await.unwrap_or_default();
+        let all = device_properties(&watch.properties).await;
         if let Some((full, design)) = system_energy(path.as_str(), &all) {
             energy = (energy.0 + full, energy.1 + design);
         }

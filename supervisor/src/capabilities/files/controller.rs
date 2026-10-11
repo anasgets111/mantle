@@ -13,6 +13,8 @@ use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
+use crate::capabilities::system::controller::epoch_seconds;
+
 /// Relist 200ms after the last event. Forty wallpapers produce forty `CREATE`/`CLOSE_WRITE` pairs;
 /// one listing after the burst is the point.
 const RELIST_DEBOUNCE: Duration = Duration::from_millis(200);
@@ -136,11 +138,7 @@ pub fn list_folder(dir: &Path, extensions: &[String]) -> std::io::Result<Vec<Fil
         if !metadata.is_file() {
             continue;
         }
-        let modified = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-            .map_or(0, |elapsed| elapsed.as_secs() as i64);
+        let modified = metadata.modified().map_or(0, epoch_seconds);
         entries.push(FileEntry { name: name.to_string(), path: entry.path().to_string_lossy().into_owned(), modified });
     }
     entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));

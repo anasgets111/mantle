@@ -75,7 +75,7 @@ fn set_channel_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: 
     let channels = {
         let state = state.borrow();
         let current = state.device_props(kind, id);
-        let max = if kind == DefaultDevice::Sink { master::SINK_MAX_VOLUME } else { 1.0 };
+        let max = kind.max_volume();
         current.and_then(|props| master::channel_volume(props, index, volume, max))
     };
     let Some(channels) = channels else {
@@ -91,7 +91,7 @@ fn set_default_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, volu
         debug!("a {kind:?} volume of {volume} has no resolved default device to write to; ignored");
         return;
     };
-    let max = if kind == DefaultDevice::Sink { master::SINK_MAX_VOLUME } else { 1.0 };
+    let max = kind.max_volume();
     let Some(channel_volumes) = master::cubed_channel_volumes(volume, &current.channel_volumes, max) else {
         debug!("a {kind:?} volume of {volume} resolved to node {node_id}, which reports no channels; ignored");
         return;

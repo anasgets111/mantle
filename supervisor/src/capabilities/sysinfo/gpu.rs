@@ -21,7 +21,7 @@ struct NvtopDevice {
     mem_total: Option<serde_json::Value>,
 }
 
-fn parse_json_u64(val: Option<&serde_json::Value>) -> Option<u64> {
+pub(super) fn parse_json_u64(val: Option<&serde_json::Value>) -> Option<u64> {
     match val {
         Some(serde_json::Value::Number(n)) => n.as_u64(),
         Some(serde_json::Value::String(s)) => s.trim().parse::<u64>().ok(),

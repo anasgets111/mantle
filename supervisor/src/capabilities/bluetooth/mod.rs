@@ -67,9 +67,8 @@ fn class_to_category(class: u32) -> &'static str {
             _ => "generic",
         },
         0x05 => match (minor >> 4) & 0x3 {
-            0b01 => "keyboard",
+            0b01 | 0b11 => "keyboard",
             0b10 => "mouse",
-            0b11 => "keyboard",
             _ => "generic",
         },
         _ => "generic",

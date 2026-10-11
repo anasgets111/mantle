@@ -232,11 +232,15 @@ impl BluetoothController {
             || self.busy.lock().expect("mutex poisoned").get(mac) == Some(&DeviceAction::Pairing)
     }
 
-    /// Synchronously resolves `mac` to its tracked path and `Device1` proxy. No `.await`, so the
-    /// registry mutex is never held across an await.
-    fn resolve_device(&self, mac: &str) -> Option<(OwnedObjectPath, Device1Proxy<'static>)> {
+    /// Synchronously resolves `mac` to its tracked path and `Device1` proxy, logging a miss as a failed
+    /// `action`. No `.await`, so the registry mutex is never held across an await.
+    fn resolve_device(&self, mac: &str, action: &str) -> Option<(OwnedObjectPath, Device1Proxy<'static>)> {
         let guard = self.devices.lock().expect("mutex poisoned");
-        guard.iter().find(|(_, entry)| entry.mac == mac).map(|(path, entry)| (path.clone(), entry.device.clone()))
+        let found = guard.iter().find(|(_, entry)| entry.mac == mac);
+        if found.is_none() {
+            debug!("{action}({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
+        }
+        found.map(|(path, entry)| (path.clone(), entry.device.clone()))
     }
 
     /// `bluetooth:answer_pairing(mac, accept)`: answers the prompt on screen when it is for `mac`.
@@ -342,10 +346,7 @@ impl BluetoothController {
     /// `Paired` watch is needed. An unknown `mac` is logged and dropped (ADR-0030). Discovery pauses
     /// for the call; see [`discovery_due`](Self::discovery_due).
     pub async fn pair(&self, mac: &str) {
-        let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("pair({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
-            return;
-        };
+        let Some((_, device)) = self.resolve_device(mac, "pair") else { return };
         let busy = self.mark_busy(mac, DeviceAction::Pairing);
         self.reconcile_discovery().await;
         match device.pair().await {
@@ -368,10 +369,7 @@ impl BluetoothController {
     /// device that walked out of range spins for the whole window. Upgrade path: retry only
     /// `org.bluez.Error.Failed`.
     async fn connect_within(&self, mac: &str, window: Duration) {
-        let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("connect({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
-            return;
-        };
+        let Some((_, device)) = self.resolve_device(mac, "connect") else { return };
         let _busy = self.mark_busy(mac, DeviceAction::Connecting);
         if let Err(err) = device.set_trusted(true).await {
             debug!("failed to set Trusted on {mac:?}: {err}");
@@ -389,10 +387,7 @@ impl BluetoothController {
 
     /// `bluetooth:disconnect(mac)`.
     pub async fn disconnect(&self, mac: &str) {
-        let Some((_, device)) = self.resolve_device(mac) else {
-            debug!("disconnect({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
-            return;
-        };
+        let Some((_, device)) = self.resolve_device(mac, "disconnect") else { return };
         let _busy = self.mark_busy(mac, DeviceAction::Disconnecting);
         if let Err(err) = device.disconnect().await {
             warn!("disconnect({mac:?}) failed: {err}");
@@ -406,10 +401,7 @@ impl BluetoothController {
             debug!("forget({mac:?}) failed: no Bluetooth adapter is present");
             return;
         };
-        let Some((path, _)) = self.resolve_device(mac) else {
-            debug!("forget({mac:?}) failed: no device with that MAC address has been observed via ObjectManager");
-            return;
-        };
+        let Some((path, _)) = self.resolve_device(mac, "forget") else { return };
         if let Err(err) = adapter.remove_device(&path).await {
             warn!("RemoveDevice({mac:?}) failed: {err}");
         }

@@ -10,7 +10,7 @@ use futures_util::StreamExt;
 use shared::error;
 use tokio::sync::mpsc::{self, UnboundedReceiver, UnboundedSender};
 
-use crate::capabilities::publish;
+use crate::capabilities::{properties_proxy, publish};
 use zbus::zvariant::OwnedValue;
 
 /// UPower's own numbering (`org.freedesktop.UPower.Device.State`). An unknown number is
@@ -67,8 +67,13 @@ fn seconds(reported: i64) -> Option<u32> {
 /// values, the same rule as `power::controller::read_state`: a live-looking stale number is worse
 /// than zero.
 async fn read_state(properties: &zbus::fdo::PropertiesProxy<'static>) -> BatteryState {
+    from_properties(&device_properties(properties).await)
+}
+
+/// One `GetAll` of `org.freedesktop.UPower.Device`; a failure reads as empty.
+pub(super) async fn device_properties(properties: &zbus::fdo::PropertiesProxy<'static>) -> HashMap<String, OwnedValue> {
     let interface = zbus::names::InterfaceName::from_static_str_unchecked("org.freedesktop.UPower.Device");
-    properties.get_all(interface).await.map(|all| from_properties(&all)).unwrap_or_default()
+    properties.get_all(interface).await.unwrap_or_default()
 }
 
 /// `IsPresent` alone is true for non-battery display devices, so `Type` and `IsPresent` are checked
@@ -125,19 +130,10 @@ async fn run_battery_task(
     //
     // Subscribe before the first read. A cable change during the subscription round trip must not
     // land between a read and a subscription that does not exist yet.
-    let properties = match zbus::fdo::PropertiesProxy::builder(&system_bus)
-        .destination("org.freedesktop.UPower")
-        .and_then(|builder| builder.path(DISPLAY_DEVICE))
-    {
-        Ok(builder) => match builder.build().await {
-            Ok(proxy) => proxy,
-            Err(err) => {
-                error!("cannot watch the UPower DisplayDevice for changes ({err}); giving up on it");
-                return;
-            }
-        },
+    let properties = match properties_proxy(&system_bus, "org.freedesktop.UPower", DISPLAY_DEVICE).await {
+        Ok(proxy) => proxy,
         Err(err) => {
-            error!("cannot address the UPower DisplayDevice ({err}); giving up on it");
+            error!("cannot watch the UPower DisplayDevice for changes ({err}); giving up on it");
             return;
         }
     };

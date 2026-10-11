@@ -88,6 +88,11 @@ pub fn read_parsed<T: std::str::FromStr>(entry_dir: &Path, name: &str) -> Option
     read_attr(entry_dir, name)?.parse().ok()
 }
 
+/// A udev watch on `subsystem`, readable on its uevents.
+pub(crate) fn udev_watch(subsystem: &str) -> std::io::Result<tokio::io::unix::AsyncFd<udev::MonitorSocket>> {
+    tokio::io::unix::AsyncFd::new(udev::MonitorBuilder::new()?.match_subsystem(subsystem)?.listen()?)
+}
+
 /// Stores `next` and wakes `main.rs` when it differs from `state`; `false` once the receiver is
 /// gone, so a reader loop can stop. The lock drops before the send: the receiver hydrates a
 /// snapshot and must never wait on a task's mutex to do it.
@@ -191,6 +196,27 @@ pub(crate) fn file_url_to_path(art_url: &str) -> Option<PathBuf> {
 
 fn hex_digit(byte: u8) -> Option<u8> {
     char::from(byte).to_digit(16).map(|digit| digit as u8)
+}
+
+/// An uncached `org.freedesktop.DBus.Properties` proxy for `destination`'s object at `path`; it has no
+/// properties of its own, so the cache only matters for the `GetAll`s and signals it serves.
+pub async fn properties_proxy<D, P>(
+    connection: &zbus::Connection,
+    destination: D,
+    path: P,
+) -> zbus::Result<zbus::fdo::PropertiesProxy<'static>>
+where
+    D: TryInto<zbus::names::BusName<'static>>,
+    D::Error: Into<zbus::Error>,
+    P: TryInto<zbus::zvariant::ObjectPath<'static>>,
+    P::Error: Into<zbus::Error>,
+{
+    zbus::fdo::PropertiesProxy::builder(connection)
+        .destination(destination)?
+        .path(path)?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
 }
 
 #[cfg(test)]

@@ -15,6 +15,12 @@ pub fn percent_from_raw(brightness: i32, max: i32) -> Option<u8> {
     Some((((scaled + half) / max64) as i32).clamp(0, 100) as u8)
 }
 
+/// `brightness` under `dir` (the last requested value, not `actual_brightness`) as a percent of `max`;
+/// missing or malformed reads are `None`.
+pub fn read_percent(dir: &std::path::Path, max: i32) -> Option<u8> {
+    percent_from_raw(super::read_parsed(dir, "brightness")?, max)
+}
+
 /// Converts `[0, 100]` percent to the raw `[0, max]` scale for `SetBrightness`, rounding half
 /// away from zero. `pct` is unvalidated: Lua numbers arrive as floats, and out-of-range values
 /// clamp here. NaN reads as 0 (the `as` cast), which the wire cannot carry anyway.

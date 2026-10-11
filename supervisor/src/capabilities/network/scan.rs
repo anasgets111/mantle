@@ -7,6 +7,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::proxies::AP_FLAGS_PRIVACY;
 use super::{AccessPointInfo, NetworkController, NetworkSignal};
+use crate::capabilities::properties_proxy;
 
 /// How many deduplicated APs [`dedup_and_top20`] keeps.
 const MAX_AVAILABLE_NETWORKS: usize = 20;
@@ -99,11 +100,7 @@ impl ApReading {
 /// One uncached `GetAll`: a cached proxy would subscribe to every in-range AP's `Strength`.
 async fn read_access_point(connection: &zbus::Connection, path: &OwnedObjectPath) -> Option<ApReading> {
     let reply = async {
-        zbus::fdo::PropertiesProxy::builder(connection)
-            .destination("org.freedesktop.NetworkManager")?
-            .path(path.clone())?
-            .cache_properties(zbus::proxy::CacheProperties::No)
-            .build()
+        properties_proxy(connection, "org.freedesktop.NetworkManager", path.clone())
             .await?
             .get_all(zbus::names::InterfaceName::from_static_str_unchecked(
                 "org.freedesktop.NetworkManager.AccessPoint",
