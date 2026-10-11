@@ -60,7 +60,7 @@ return panel {
 | Part | Contract |
 | :--- | :--- |
 | Signature | `persistent_table { path, defaults? }` → store. Another key raises |
-| `path` | Absolute file path; relative or ending in `/` raises. Its directory is created if missing. Build it from `os.getenv` or `mantle.config_dir` |
+| `path` | Absolute file path; relative, ending in `/`, or with an empty, `.` or `..` component raises. Its directory is created if missing. Build it from `os.getenv` or `mantle.config_dir` |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
 | `store.<key>` | Signal for that key: its `defaults` entry (else `nil`) until `mantle.storage` pushes this file, then the stored value; a key the pushed file lacks is `nil` |
 | `store:set(key, value)` | Writes one key; `nil` deletes it: the signal reads `nil` until the next evaluation restores the default. The signal updates on the next push, not inside `set` |

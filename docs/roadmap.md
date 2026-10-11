@@ -32,7 +32,7 @@ Wanted, but each needs a consumer or a decision first.
 | Item | Instead | ADR |
 | :--- | :--- | :--- |
 | Native FFT or audio peak metering | Stream Cava output into state and draw it | 0316 |
-| Weather, currency, geolocation, HTTP, sockets or watched file contents | `process.run` streaming `curl`, `socat` or `tail -f`, then `json.decode`; `folders` watches folders | — |
+| Weather, currency, geolocation, HTTP, sockets or watched file contents | `process.run` streaming `curl`, `socat` or `tail -f`, then `json.decode`; `file.read` reads a file once; `folders` watches folders | — |
 | KDE Connect | `kdeconnect-cli` or `dbus-monitor` streamed through `process.run` | — |
 | MPRIS remote artwork | `curl` the player's `art_url` into a cache file through `process.run` and draw that path | 0036 |
 | Generic IPC state read, subscription or per-panel commands | An `action` that returns the value, read with `mantle call`; `mantle set` and `toggle` write state | 0197 |
