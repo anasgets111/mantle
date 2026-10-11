@@ -342,7 +342,7 @@ impl ResolvedNode {
     /// A node with `submits_secure = true` or a pointer handler (ADR-0214).
     pub fn takes_pointer(&self) -> bool {
         matches!(self.properties.get("submits_secure"), Some(Value::Boolean(true)))
-            || ["on_click", "on_press", "on_drag", "on_wheel"]
+            || ["on_click", "on_double_click", "on_press", "on_drag", "on_wheel"]
                 .iter()
                 .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_))))
     }

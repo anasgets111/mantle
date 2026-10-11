@@ -110,6 +110,8 @@ pub fn run(
         keyboard: None,
         keyboard_focus: None,
         armed: None,
+        armed_double: None,
+        last_click: None,
         drag: None,
         input_serial: None,
         key_serial: None,

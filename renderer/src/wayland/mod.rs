@@ -78,7 +78,7 @@ mod turn;
 mod xdg_shell;
 
 use input::keyboard::FocusedControl;
-use input::{ArmedClick, ArmedSerial, FocusedField, FocusedTextField};
+use input::{ArmedClick, ArmedSerial, ClickedNode, FocusedField, FocusedTextField, LastClick};
 use surface::{TrackedSurface, log_bind_failure};
 
 pub use main_loop::run;
@@ -187,6 +187,10 @@ pub struct App {
     keyboard_focus: Option<String>,
     /// Press waiting for release (ADR-0050 decision 2, [`ArmedClick`]).
     armed: Option<ArmedClick>,
+    /// The `on_double_click` node a press armed, waiting for its release.
+    armed_double: Option<ClickedNode>,
+    /// The last `on_double_click` node clicked and when and where it was released, which the next click may double.
+    last_click: Option<LastClick>,
     /// Held left press on an `on_drag` node (ADR-0116 decision 1); `Motion` reports until release
     /// or `Leave`.
     drag: Option<input::ActiveDrag>,

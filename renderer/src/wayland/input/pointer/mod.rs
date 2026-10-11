@@ -18,8 +18,8 @@ mod wheel;
 pub(crate) use callbacks::apply_hover_write;
 pub(in crate::wayland::input) use callbacks::call_on_click;
 use callbacks::{call_on_drag, call_on_press, local_pointer_table};
-pub(in crate::wayland) use press::{ArmedClick, ArmedSerial};
-use press::{press_chooses_focus, release_completes_click, release_ends_press};
+pub(in crate::wayland) use press::{ArmedClick, ArmedSerial, ClickedNode, LastClick};
+use press::{double_click, press_chooses_focus, release_completes_click, release_ends_press};
 
 enum HoverUpdate {
     Pointer,
@@ -72,32 +72,46 @@ fn drag_local(
     (rect, local_pointer(&path, rect, point))
 }
 
-/// Innermost node with callable `on_press`; unhandled nodes are transparent, like `on_click`'s scan.
-fn press_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint, floor: usize) -> Option<PressTarget> {
+/// Innermost node with callable `handler` (`on_press` or `on_double_click`); unhandled nodes are
+/// transparent, like `on_click`'s scan, and each handler has its own target.
+fn press_target(
+    path: &[&layout::ResolvedNode],
+    point: layout::hit::LogicalPoint,
+    floor: usize,
+    handler: fn(&layout::ResolvedNode) -> Option<Function>,
+) -> Option<PressTarget> {
     (floor..path.len()).rev().find_map(|depth| {
-        let handler = pointer::on_press.read(&path[depth].properties).ok().flatten()?;
+        let node = path[depth];
+        let handler = handler(node)?;
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
-        Some(PressTarget { rect, handler, at: local_pointer(&path[..=depth], rect, point) })
+        Some(PressTarget { rect, handler, at: local_pointer(&path[..=depth], rect, point), id: node.id })
     })
 }
 
-/// Click and press targets for a hit. A `textfield` is a leaf that answers only to its own
-/// handlers, never an ancestor's (ADR-0092 decision 7); a masked one answers to none.
+fn on_press(node: &layout::ResolvedNode) -> Option<Function> {
+    pointer::on_press.read(&node.properties).ok().flatten()
+}
+
+fn on_double_click(node: &layout::ResolvedNode) -> Option<Function> {
+    pointer::on_double_click.read(&node.properties).ok().flatten()
+}
+
+/// Click, press and double-click targets for a hit. A `textfield` is a leaf that answers only to
+/// its own handlers, never an ancestor's (ADR-0092 decision 7); a masked one answers to none.
 fn handlers_under(
     path: &[&layout::ResolvedNode],
     field: Option<&FieldTarget>,
     point: layout::hit::LogicalPoint,
     shaping: &ShapingHandle,
-) -> (Option<Clickable>, Option<PressTarget>) {
-    match field {
-        None => (clickable(path, point, shaping), press_target(path, point, 0)),
-        Some(FieldTarget::Plain { .. }) => {
-            // ponytail: a textfield is always the deepest hit node, so the leaf is the field.
-            let leaf = path.len().saturating_sub(1);
-            (click_target(path, point, leaf), press_target(path, point, leaf))
-        }
-        Some(FieldTarget::Masked { .. }) => (None, None),
-    }
+) -> (Option<Clickable>, Option<PressTarget>, Option<PressTarget>) {
+    let floor = match field {
+        None => 0,
+        // ponytail: a textfield is always the deepest hit node, so the leaf is the field.
+        Some(FieldTarget::Plain { .. }) => path.len().saturating_sub(1),
+        Some(FieldTarget::Masked { .. }) => return (None, None, None),
+    };
+    let click = if field.is_none() { clickable(path, point, shaping) } else { click_target(path, point, floor) };
+    (click, press_target(path, point, floor, on_press), press_target(path, point, floor, on_double_click))
 }
 
 /// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
@@ -133,11 +147,12 @@ struct DragTarget {
     id: layout::scene::NodeId,
 }
 
-/// The `on_press` node under a press, with its rect and the node-local pointer.
+/// The `on_press` or `on_double_click` node under the pointer, with its rect and the node-local pointer.
 struct PressTarget {
     rect: LogicalRect,
     handler: Function,
     at: layout::hit::LogicalPoint,
+    id: layout::scene::NodeId,
 }
 
 /// Press/release target: handler, click-identity rect (see [`ArmedClick`]), and link `href`.
@@ -186,6 +201,7 @@ struct PointerHit {
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
     drag: Option<DragTarget>,
     press: Option<PressTarget>,
+    double: Option<PressTarget>,
 }
 
 /// A masked field, or the `submits_secure` node that sends one.
@@ -336,6 +352,11 @@ impl App {
                     link: clickable.link,
                     button,
                 });
+                self.armed_double = hit.double.as_ref().filter(|_| runs).map(|target| ClickedNode {
+                    instance_id: instance_id.clone(),
+                    id: target.id,
+                    button,
+                });
                 // Both press-time handlers run inside one window so `toplevel(id)` requests
                 // queued by either are sent with this press's serial.
                 crate::lua::toplevel::begin_press(self.client.lua(), position);
@@ -360,6 +381,7 @@ impl App {
                 if self.send_toplevel_requests() {
                     self.fire_on_drag(&instance_id, position, DragPhase::End);
                     self.armed = None;
+                    self.armed_double = None;
                 }
             }
             PointerEventKind::Release { button, serial, .. } => {
@@ -383,6 +405,24 @@ impl App {
                 let hit = self.hit_under(index, position);
                 // A field's own `submits_secure` never sends: a right or middle click is no Enter.
                 let submits = hit.field.is_none();
+                let hit_double = hit.double;
+                // `on_double_click` has its own target, armed by its own press: a node and button, not a rect.
+                let clicked = hit_double.as_ref().map(|target| ClickedNode {
+                    instance_id: instance_id.clone(),
+                    id: target.id,
+                    button,
+                });
+                let completed = clicked.filter(|clicked| self.armed_double.as_ref() == Some(clicked));
+                if self.armed_double.as_ref().is_some_and(|armed| armed.button == button) {
+                    self.armed_double = None;
+                }
+                let (doubles, last) = match completed {
+                    Some(clicked) => {
+                        double_click(self.last_click.as_ref(), (clicked, (std::time::Instant::now(), position)))
+                    }
+                    None => (false, None),
+                };
+                self.last_click = last;
                 let hit = hit.click;
                 let fires = release_completes_click(
                     self.armed.as_ref(),
@@ -410,6 +450,9 @@ impl App {
                             }
                         }
                     }
+                }
+                if let Some(target) = hit_double.filter(|_| doubles) {
+                    self.fire_on_click(&instance_id, target.rect, name, target.at, &target.handler, false);
                 }
             }
             // Release will land elsewhere: cancel the armed click. `None` clears all hover
@@ -467,7 +510,15 @@ impl App {
     /// cloned out of the lent tree; the tree itself is not.
     fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit { click: None, field: None, control: None, caret: None, drag: None, press: None };
+            return PointerHit {
+                click: None,
+                field: None,
+                control: None,
+                caret: None,
+                drag: None,
+                press: None,
+                double: None,
+            };
         };
         let point = layout::hit::LogicalPoint::from_position(position);
         let path = layout::hit::hit_path(tree, point);
@@ -475,7 +526,7 @@ impl App {
         // `None`, not `""`, for a field this does not hold: an empty draft measures to offset 0,
         // and handing that to `drag_selection` moves the held field's head into another field's
         // text. Only the draft `press_chooses_focus` would resume has a caret (ADR-0108).
-        let (click, press) = handlers_under(&path, field.as_ref(), point, &self.shaping);
+        let (click, press, double) = handlers_under(&path, field.as_ref(), point, &self.shaping);
         let held = self
             .focused_text_field
             .as_ref()
@@ -490,6 +541,7 @@ impl App {
             field,
             drag: drag_target(&path),
             press,
+            double,
         }
     }
 
@@ -580,6 +632,8 @@ impl App {
     /// The pointer is gone from its surface: no release, no cached cursor, no position.
     pub(in crate::wayland) fn forget_pointer(&mut self) {
         self.armed = None;
+        self.armed_double = None;
+        self.last_click = None;
         self.cursor_shown = None;
         self.pointer_at = None;
     }
@@ -646,6 +700,10 @@ impl App {
         on_click: &Function,
         keyboard: bool,
     ) {
+        // A pointer click after Enter or Space is a first click.
+        if keyboard {
+            self.last_click = None;
+        }
         // `signal:set()` marks its own dirty flag (ADR-0044 decision 5); this call need not.
         crate::lua::focus::begin_callback(self.client.lua(), instance_id, keyboard);
         if let Err((what, e)) = call_on_click(self.client.lua(), on_click, rect, button, local, self.modifiers_held()) {
@@ -746,11 +804,12 @@ mod tests {
 
         let at = layout::hit::LogicalPoint { x: 20.0, y: 12.0 };
         let path = layout::hit::hit_path(&root, at);
-        let target = press_target(&path, at, 0).expect("the bar carries on_press; its icon child is transparent");
+        let target =
+            press_target(&path, at, 0, on_press).expect("the bar carries on_press; its icon child is transparent");
         call_on_press(&lua, &target.handler, &target, "right", [false; 4]).unwrap();
         assert_eq!(*seen.borrow(), vec![(40.0, "right".to_string(), 10.0)]);
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(press_target(&[&bare], at, 0).is_none());
+        assert!(press_target(&[&bare], at, 0, on_press).is_none());
     }
 
     #[test]
@@ -871,6 +930,26 @@ mod tests {
     }
 
     #[test]
+    fn on_double_click_and_on_click_take_their_own_innermost_targets() {
+        let lua = Lua::new();
+        let mut icon = hit_node(&lua, "icon", (0.0, 0.0, 20.0, 20.0), false);
+        let properties = std::rc::Rc::make_mut(&mut icon.properties);
+        properties.insert("on_double_click", handler(&lua));
+        properties.insert("accessible_name", Value::String(lua.create_string("Open").unwrap()));
+        let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
+        std::rc::Rc::make_mut(&mut row.properties).insert("on_click", handler(&lua));
+        let point = layout::hit::LogicalPoint { x: 1.0, y: 1.0 };
+        let path = [&row, &icon];
+        let click = click_target(&path, point, 0).expect("the row's on_click");
+        assert_eq!(click.rect.width, 40.0, "the icon does not swallow the row's single click");
+        let double = press_target(&path, point, 0, on_double_click).expect("the icon's on_double_click");
+        assert_eq!(double.id, icon.id);
+        let shaping = ShapingHandle::spawn();
+        assert_eq!(layout::hit::cursor_under(&[&icon], point, &shaping), cursor_icon::CursorIcon::Pointer);
+        assert!(!layout::scene::is_named_control(&icon), "keyboard activation never double-clicks");
+    }
+
+    #[test]
     fn only_the_three_buttons_a_config_can_name_are_handled_at_all() {
         assert_eq!(pointer_button_name(BTN_LEFT), Some("left"));
         assert_eq!(pointer_button_name(BTN_RIGHT), Some("right"));
@@ -908,7 +987,7 @@ mod tests {
         let at = pt(5.0, 5.0);
         let (card, own) = card_around(&lua, plain_textfield(&lua), true);
         let field = focused_field(&[&own]);
-        let (click, press) = handlers_under(&[&card, &own], field.as_ref(), at, &shaping);
+        let (click, press, _) = handlers_under(&[&card, &own], field.as_ref(), at, &shaping);
         assert_eq!(
             click.expect("the field's on_click").rect,
             LogicalRect { x: 0.0, y: 0.0, width: 40.0, height: 24.0 }
@@ -917,16 +996,16 @@ mod tests {
 
         let (card, bare) = card_around(&lua, plain_textfield(&lua), false);
         let field = focused_field(&[&bare]);
-        let (click, press) = handlers_under(&[&card, &bare], field.as_ref(), at, &shaping);
+        let (click, press, _) = handlers_under(&[&card, &bare], field.as_ref(), at, &shaping);
         assert!(click.is_none() && press.is_none(), "no own handler: the card's never fires");
         // Outside a field the card still wins, as before.
-        let (click, press) = handlers_under(&[&card], None, at, &shaping);
+        let (click, press, _) = handlers_under(&[&card], None, at, &shaping);
         assert!(click.is_some() && press.is_some());
 
         let masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
         let (card, masked) = card_around(&lua, masked, true);
         let field = focused_field(&[&masked]);
-        let (click, press) = handlers_under(&[&card, &masked], field.as_ref(), at, &shaping);
+        let (click, press, _) = handlers_under(&[&card, &masked], field.as_ref(), at, &shaping);
         assert!(click.is_none() && press.is_none());
     }
 }

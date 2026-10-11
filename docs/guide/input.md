@@ -50,6 +50,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
 | `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored. On a `textfield` only right and middle fire, and only the field's own `on_click`, never an ancestor's; a left press edits the field and a `secure_submit` field fires none. The press focuses the field and keeps a selection it lands in, so `:cut()` and `:copy()` act on it |
+| `on_double_click(rect, button, pointer, modifiers)` | As `on_click` | Fires after `on_click` on the release completing a second click on the same node with the same button, within 400 ms and 4 px of the first click's release. See below |
 | `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. A `textfield` calls only its own, for right and middle. See below |
 | `on_drag(rect, pointer, phase, modifiers)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
@@ -60,6 +61,15 @@ before release still clicks; the pointer leaving the surface cancels. The click 
 node's laid-out box moved between press and release, so give press feedback with `scale` or
 `translate` rather than `width` or `margin`. A `textfield` clicks only as the `on_click` row says. A link in a `text` (`on_link`) takes
 the click before any `on_click`, the text's own included.
+
+**Double click.** `on_click` fires for both clicks, then `on_double_click` for the second; a third
+click starts a new pair, so a triple click is one double and one single. The innermost node with
+`on_double_click` takes it, apart from `on_click`'s target: an icon with only `on_double_click`
+inside a row with `on_click` still lets each single click reach the row. The pair is the same node
+even if the first click moved or resized it. A left click on a `textfield` goes to the field and
+never doubles; its right and middle clicks double on its own handler. Enter, Space and
+screen-reader activation never double-click, and a node with only `on_double_click` takes no
+keyboard focus. Wayland has no portable double-click setting, so the 400 ms and 4 px are fixed.
 
 **Modifiers.** Each pointer handler ends with `modifiers`, the `{ ctrl, shift, alt, super }` booleans
 `on_key` reports, so a list can toggle on Ctrl-click or extend on Shift-click. Enter and Space

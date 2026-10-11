@@ -55,9 +55,11 @@ pub(super) fn release_completes_click(
     })
 }
 
-/// A left press's time and position, which the next one may continue.
+/// A left press's time and position, which the next one may continue; for `on_double_click`, a
+/// click's release.
 pub(super) type Click = (std::time::Instant, (f64, f64));
-// ponytail: fixed 400 ms and 4 px; upgrade by reading the desktop's double-click setting.
+// ponytail: fixed 400 ms and 4 px for field multi-clicks and `on_double_click`: Wayland has no
+// portable double-click setting. Upgrade: a config knob, or the desktop's setting where one exists.
 const MULTI_CLICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(400);
 const MULTI_CLICK_SLOP: f64 = 4.0;
 
@@ -66,6 +68,25 @@ pub(super) fn continues(last: Click, now: Click) -> bool {
     now.0.saturating_duration_since(last.0) <= MULTI_CLICK_INTERVAL
         && (last.1.0 - now.1.0).abs() <= MULTI_CLICK_SLOP
         && (last.1.1 - now.1.1).abs() <= MULTI_CLICK_SLOP
+}
+
+/// An `on_double_click` press or click: the node, not its rect, so a node its first click moves or
+/// resizes still doubles and another that slides into its place does not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::wayland) struct ClickedNode {
+    pub(super) instance_id: String,
+    pub(super) id: layout::scene::NodeId,
+    pub(super) button: u32,
+}
+
+/// A click and its release time and position, which `on_double_click` may continue.
+pub(in crate::wayland) type LastClick = (ClickedNode, (std::time::Instant, (f64, f64)));
+
+/// Whether the click `now` completes a double click on the node and button of the previous click
+/// `last`, and the click the next one may continue: none after a double, so a third starts over.
+pub(super) fn double_click(last: Option<&LastClick>, now: LastClick) -> (bool, Option<LastClick>) {
+    let double = last.is_some_and(|(click, at)| *click == now.0 && continues(*at, now.1));
+    (double, (!double).then_some(now))
 }
 
 /// Which field a press focuses (ADR-0050 decision 4). Both halves are rewritten on every press:
@@ -256,6 +277,30 @@ mod tests {
         let path = layout::hit::hit_path(&root, old);
         assert!(clickable(&path, old, &shaping).is_none());
         assert_eq!(layout::hit::cursor_under(&path, old, &shaping), cursor_icon::CursorIcon::Default);
+    }
+
+    #[test]
+    fn a_second_click_on_the_same_node_and_button_in_time_doubles_and_a_third_starts_over() {
+        use std::time::{Duration, Instant};
+        let t0 = Instant::now();
+        let node = |id, button| ClickedNode {
+            instance_id: "bar@eDP-1".to_string(),
+            id: layout::scene::NodeId::test(id),
+            button,
+        };
+        let click = |node: ClickedNode, ms, x| (node, (t0 + Duration::from_millis(ms), (x, 10.0)));
+        let (double, first) = double_click(None, click(node(7, BTN_LEFT), 0, 20.0));
+        assert!(!double);
+        let (double, after) = double_click(first.as_ref(), click(node(7, BTN_LEFT), 300, 23.0));
+        assert!(double, "the node its first click moved or resized is still the same node");
+        assert!(!double_click(after.as_ref(), click(node(7, BTN_LEFT), 500, 23.0)).0, "a third click starts over");
+        assert!(!double_click(first.as_ref(), click(node(7, BTN_LEFT), 401, 20.0)).0, "too slow");
+        assert!(!double_click(first.as_ref(), click(node(7, BTN_LEFT), 100, 25.0)).0, "too far");
+        assert!(!double_click(first.as_ref(), click(node(7, BTN_RIGHT), 100, 20.0)).0, "another button");
+        assert!(
+            !double_click(first.as_ref(), click(node(8, BTN_LEFT), 100, 20.0)).0,
+            "another node slid into its place"
+        );
     }
 
     /// ADR-0108 decision 2: the draft outlives focus, so coming back to the same reply box has to

@@ -245,7 +245,8 @@ mod tests {
             .unwrap()
         };
         let rect = LogicalRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
-        let target = PressTarget { rect, at: pt(1.0, 1.0), handler: handler("press") };
+        let target =
+            PressTarget { rect, at: pt(1.0, 1.0), handler: handler("press"), id: layout::scene::NodeId::test(1) };
         call_on_press(&lua, &target.handler, &target, "left", [true, false, false, false]).unwrap();
         call_on_click(&lua, &handler("click"), rect, "left", pt(1.0, 1.0), [true, true, false, false]).unwrap();
         call_on_drag(&lua, &handler("drag"), rect, pt(1.0, 1.0), DragPhase::Move, [false, true, false, false]).unwrap();
