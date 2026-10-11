@@ -7,6 +7,10 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a failed EGL surface, swap or dmabuf image call logs `EGL error 0x…` and is handled; it aborted the renderer through a panic inside the EGL bindings.
+- Fixed: the privacy capability no longer panics the supervisor on an empty camera/microphone device-event batch.
+- Fixed: a config file that cannot be re-watched after a reload logs a warning; hot reload of it stopped silently.
+
 ## 0.6.0 - 2026-10-10
 
 - Changed: a bad value, duplicate id or unknown property on a top-level `panel`, `window`, `popup` or `lock` names the line that built it, as errors on child nodes do, and reads `shell.lua:2: panel: invalid value for `height`: ...`; an unknown property on any node reads `shell.lua:2: text: no property `contnet`; did you mean `content`?`, not as a top-level return error or an invalid `children` value. `mantle check` no longer repeats `layout:` after the pass name.
