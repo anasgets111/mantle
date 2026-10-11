@@ -211,8 +211,10 @@ cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 [private]
 stop *patterns:
     #!/usr/bin/env bash
+    procs=(/proc/[0-9]*)
+    # Globbing off only after `/proc` expanded: `patterns` must reach `case` unexpanded.
     set -f
-    for d in /proc/[0-9]*; do
+    for d in "${procs[@]}"; do
         exe="$(readlink "$d/exe" 2>/dev/null)" || continue
         for p in "{{cargo_bin}}/mantle" "{{cargo_bin}}/mantle-renderer" {{patterns}}; do
             case "$exe" in $p) kill "${d#/proc/}" || true; break;; esac
