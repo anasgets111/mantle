@@ -785,7 +785,7 @@ mod identity_tests {
 #[cfg(test)]
 mod resync_tests {
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, properties, within};
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, properties, within};
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -886,12 +886,7 @@ mod resync_tests {
 
     /// Polls until `last_known` satisfies `done`, so a test reads state only once it has landed.
     async fn until(registry: &PlayerRegistry, done: impl Fn(&PlayerState) -> bool) {
-        within(async {
-            while !done(&last_known(registry)) {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
+        poll_until(|| done(&last_known(registry)).then_some(())).await;
     }
 
     /// Position updates must not move a player under a config holding its index.

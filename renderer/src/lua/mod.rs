@@ -391,6 +391,13 @@ fn not_a_surface(kind: &str) -> LoaderError {
 pub(crate) mod tests {
     use super::*;
 
+    /// A fresh VM with one module's `register` applied and nothing else.
+    pub(crate) fn lua_registered(register: impl FnOnce(&mlua::Lua) -> mlua::Result<()>) -> mlua::Lua {
+        let lua = mlua::Lua::new();
+        register(&lua).unwrap();
+        lua
+    }
+
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
     /// back a global. A node would reject a probe key no `nodes::properties` field declares.
     pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {

@@ -167,9 +167,7 @@ mod tests {
     use super::*;
 
     fn lua_with_constructors() -> Lua {
-        let lua = Lua::new();
-        register_node_constructors(&lua).unwrap();
-        lua
+        crate::lua::tests::lua_registered(register_node_constructors)
     }
 
     #[test]

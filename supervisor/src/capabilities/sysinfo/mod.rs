@@ -84,12 +84,6 @@ mod tests {
         BUSY.store(false, Ordering::Release);
         assert_eq!(run_limited("sh", &["-c", "echo hi"], Duration::from_secs(5), &BUSY).await, Some(b"hi\n".to_vec()));
         assert_eq!(run_limited("sh", &["-c", "sleep 30"], Duration::from_millis(100), &BUSY).await, None);
-        for _ in 0..100 {
-            if !BUSY.load(Ordering::Acquire) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-        panic!("the killed child was never reaped");
+        crate::capabilities::test_support::poll_until(|| (!BUSY.load(Ordering::Acquire)).then_some(())).await;
     }
 }

@@ -74,10 +74,8 @@ mod tests {
     /// Polls until the watcher has published `expected`; the inotify round trip has no completion
     /// to await.
     async fn wait_for_reboot_required(state: &Arc<Mutex<UpdatesState>>, expected: bool) {
-        crate::capabilities::test_support::within(async {
-            while state.lock().unwrap().reboot_required != expected {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+        crate::capabilities::test_support::poll_until(|| {
+            (state.lock().unwrap().reboot_required == expected).then_some(())
         })
         .await;
     }

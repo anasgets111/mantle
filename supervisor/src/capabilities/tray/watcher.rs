@@ -120,7 +120,7 @@ pub(super) mod tests {
 
     use super::super::{DEFAULT_ITEM_OBJECT_PATH, RawIconPixmap, RawToolTip, WATCHER_OBJECT_PATH};
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, within};
+    use crate::capabilities::test_support::{p2p_pair, p2p_pair_serving, poll_until};
 
     // ---- fabricated unique names must be rejected ----
 
@@ -263,19 +263,14 @@ pub(super) mod tests {
     }
 
     async fn wait_for_entries(registry: &ItemRegistry, count: usize) -> Vec<String> {
-        within(async {
-            loop {
-                let paths: Vec<String> = registry
-                    .lock()
-                    .expect("mutex poisoned")
-                    .keys()
-                    .map(|(_, object_path)| object_path.to_string())
-                    .collect();
-                if paths.len() >= count {
-                    return paths;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-            }
+        poll_until(|| {
+            let paths: Vec<String> = registry
+                .lock()
+                .expect("mutex poisoned")
+                .keys()
+                .map(|(_, object_path)| object_path.to_string())
+                .collect();
+            (paths.len() >= count).then_some(paths)
         })
         .await
     }

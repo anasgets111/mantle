@@ -657,16 +657,6 @@ mod tests {
         }
     }
 
-    async fn wait_until(mut condition: impl FnMut() -> bool) {
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            while !condition() {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .expect("condition did not become true in time");
-    }
-
     #[tokio::test]
     async fn the_connection_after_the_limit_is_closed() {
         let dir = tempfile::tempdir().unwrap();
@@ -714,7 +704,10 @@ mod tests {
         let mut client_b = UnixStream::connect(&path).await.unwrap();
         framing::write_json_frame(&mut client_b, &ConnectionHandshake { generation_id: 2 }).await.unwrap();
 
-        wait_until(|| registry.is_registered(1) && registry.is_registered(2)).await;
+        crate::capabilities::test_support::poll_until(|| {
+            (registry.is_registered(1) && registry.is_registered(2)).then_some(())
+        })
+        .await;
 
         assert!(registry.send_to(1, b"to-one".to_vec()));
         assert!(registry.send_to(2, b"to-two".to_vec()));

@@ -121,9 +121,7 @@ mod tests {
 
     /// A VM with `action` installed and nothing else; dispatch needs no scene.
     fn lua() -> Lua {
-        let lua = Lua::new();
-        register(&lua).unwrap();
-        lua
+        crate::lua::tests::lua_registered(register)
     }
 
     fn failure(outcome: shared::CallOutcome) -> String {

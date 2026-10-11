@@ -222,9 +222,7 @@ mod tests {
     }
 
     fn lua_with_json() -> Lua {
-        let lua = Lua::new();
-        register(&lua).unwrap();
-        lua
+        crate::lua::tests::lua_registered(register)
     }
 
     /// A config polling an untrusted subprocess must get nil plus a message, never a raised error,

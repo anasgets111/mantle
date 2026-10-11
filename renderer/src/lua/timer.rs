@@ -246,9 +246,7 @@ mod tests {
 
     /// A VM with `timer` installed and nothing else; dispatch needs no scene.
     fn lua() -> Lua {
-        let lua = Lua::new();
-        register(&lua).unwrap();
-        lua
+        crate::lua::tests::lua_registered(register)
     }
 
     /// Runs whatever is due a day from now, which is every timer any of these tests arms.

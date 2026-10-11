@@ -127,6 +127,19 @@ pub(crate) async fn within<T>(future: impl std::future::Future<Output = T>) -> T
     tokio::time::timeout(std::time::Duration::from_secs(5), future).await.expect("nothing arrived within five seconds")
 }
 
+/// Polls `check` every 10 ms until it yields a value, bounded by [`within`].
+pub(crate) async fn poll_until<T>(mut check: impl FnMut() -> Option<T>) -> T {
+    within(async {
+        loop {
+            if let Some(value) = check() {
+                return value;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     /// `#[zbus::interface]` copies an item's doc comment into the introspection XML as an XML

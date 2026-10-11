@@ -298,12 +298,7 @@ mod tests {
     }
 
     async fn until_ready(marker: &Path) {
-        crate::capabilities::test_support::within(async {
-            while !marker.exists() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
-        })
-        .await;
+        crate::capabilities::test_support::poll_until(|| marker.exists().then_some(())).await;
     }
 
     #[tokio::test]

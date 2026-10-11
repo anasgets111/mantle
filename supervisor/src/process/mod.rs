@@ -362,11 +362,7 @@ mod tests {
         let script = format!("printf %s \"$PPID\" > {0}.part && mv {0}.part {0}", out.display());
         spawn_detached("sh", &["-c".to_string(), script]).expect("spawn");
 
-        let mut waited = 0;
-        while !out.exists() && waited < 200 {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            waited += 1;
-        }
+        crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
         let recorded = std::fs::read_to_string(&out).expect("the detached program must have run");
         let parent: u32 = recorded.trim().parse().expect("a pid");
         assert_ne!(parent, std::process::id(), "a detached program must not be this process's child");
