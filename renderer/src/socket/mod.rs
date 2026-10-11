@@ -94,8 +94,20 @@ async fn run(
         }
     };
 
+    // The listener's pid, fixed at connect: `getppid` turns into the reaper's once the Supervisor dies.
+    let supervisor = stream.peer_cred().ok().and_then(|cred| cred.pid());
     let (mut read_half, mut write_half) = stream.into_split();
-    pump(&mut read_half, &mut write_half, &inbound_tx, &mut outbound_rx, Some(&waker)).await;
+    pump(&mut read_half, &mut write_half, &inbound_tx, &mut outbound_rx, Some(&waker), supervisor).await;
+}
+
+/// Whether the Supervisor `pid` outlived its socket, with `/proc/<pid>/stat`'s state letter: `Z` or
+/// gone says it died, anything else that the socket closed under a live one.
+fn supervisor_state(proc_root: &Path, pid: i32) -> String {
+    let stat = std::fs::read_to_string(proc_root.join(pid.to_string()).join("stat")).unwrap_or_default();
+    match stat.rsplit_once(") ").and_then(|(_, rest)| rest.chars().next()) {
+        Some(state) => format!("the Supervisor (pid {pid}) is still there, state {state}"),
+        None => format!("the Supervisor (pid {pid}) is gone"),
+    }
 }
 
 /// After handshake, forward decoded `SupervisorFrame`s to Wayland and queued `RendererFrame`s to
@@ -109,6 +121,7 @@ async fn pump<R, W>(
     inbound_tx: &tokio::sync::mpsc::Sender<SupervisorFrame>,
     outbound_rx: &mut mpsc::UnboundedReceiver<RendererFrame>,
     waker: Option<&crate::wake::Waker>,
+    supervisor: Option<i32>,
 ) where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
@@ -130,7 +143,8 @@ async fn pump<R, W>(
                     }
                 }
                 Err(err) => {
-                    error!("connection ended: {err}");
+                    let state = supervisor.map(|pid| supervisor_state(Path::new("/proc"), pid));
+                    error!("connection ended: {err}{}", state.map(|state| format!("; {state}")).unwrap_or_default());
                     break;
                 }
             }
@@ -180,6 +194,16 @@ mod tests {
     use tokio::io::AsyncWriteExt;
     use tokio::net::UnixListener;
 
+    #[test]
+    fn a_lost_supervisor_is_reported_alive_with_its_state_or_gone() {
+        let proc_root = tempfile::tempdir().unwrap();
+        std::fs::create_dir(proc_root.path().join("40")).unwrap();
+        // A `comm` holding `) ` is why the state is read after the last one.
+        std::fs::write(proc_root.path().join("40/stat"), "40 (a) b) Z 1 40 40 0").unwrap();
+        assert_eq!(supervisor_state(proc_root.path(), 40), "the Supervisor (pid 40) is still there, state Z");
+        assert_eq!(supervisor_state(proc_root.path(), 41), "the Supervisor (pid 41) is gone");
+    }
+
     #[tokio::test]
     async fn connect_and_handshake_sends_a_handshake_the_listener_can_decode() {
         let dir = tempfile::tempdir().unwrap();
@@ -208,7 +232,7 @@ mod tests {
         let (outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
         outbound_tx.send(frame).unwrap();
 
-        let pumping = pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None);
+        let pumping = pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None, None);
         let read_response = read_json_frame::<_, RendererFrame>(&mut wire);
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             tokio::select! {
@@ -280,7 +304,7 @@ mod tests {
         let (inbound_tx, mut inbound_rx) = tokio::sync::mpsc::channel(INBOUND_CAPACITY);
         let (_outbound_tx, mut outbound_rx) = mpsc::unbounded_channel();
 
-        pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None).await;
+        pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None, None).await;
 
         assert_eq!(inbound_rx.try_recv(), Ok(SupervisorFrame::Reevaluate));
     }
@@ -316,7 +340,7 @@ mod tests {
         let split_at = wire_bytes.len() / 2;
         assert!(split_at > 4, "the split point must land inside the payload, not the length prefix");
 
-        let pumping = pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None);
+        let pumping = pump(&mut server_read, &mut server_write, &inbound_tx, &mut outbound_rx, None, None);
         tokio::pin!(pumping);
 
         tokio::time::timeout(std::time::Duration::from_secs(2), async {

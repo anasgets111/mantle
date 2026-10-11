@@ -258,10 +258,37 @@ mod tests {
 
     use super::*;
 
-    /// A controller whose signal channel is drained on demand; tests read `snapshot` instead.
-    fn controller() -> (ProcessesController, UnboundedReceiver<()>) {
+    /// A controller whose programs die with the test. A panic drops `supervise` with its child
+    /// unreaped, and the loops below would run on under the user's session.
+    struct Reaping {
+        controller: ProcessesController,
+        _signals: UnboundedReceiver<()>,
+    }
+
+    impl std::ops::Deref for Reaping {
+        type Target = ProcessesController;
+        fn deref(&self) -> &ProcessesController {
+            &self.controller
+        }
+    }
+
+    impl Drop for Reaping {
+        fn drop(&mut self) {
+            for pid in self.snapshot().sessions.values().filter(|s| s.running).filter_map(|s| s.pid) {
+                let _ = nix::sys::signal::killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
+            }
+        }
+    }
+
+    /// Tests read `snapshot`; the signal channel is only held open.
+    fn controller() -> Reaping {
+        // A test binary run as a background job inherits INT ignored, which no child `sh` can
+        // trap; the Supervisor catches INT (`termination`), so its children start at the default.
+        // SAFETY: restores the default disposition; no handler is installed.
+        unsafe { nix::sys::signal::signal(Signal::SIGINT, nix::sys::signal::SigHandler::SigDfl) }
+            .expect("reset SIGINT");
         let (tx, rx) = unbounded_channel();
-        (ProcessesController::new(tx), rx)
+        Reaping { controller: ProcessesController::new(tx), _signals: rx }
     }
 
     fn session(controller: &ProcessesController, name: &str) -> SessionProcess {
@@ -283,6 +310,10 @@ mod tests {
             .unwrap_or_else(|_| panic!("timed out on {name:?}: {:?}", last()));
     }
 
+    /// Idles ~30s rather than forever: a test binary killed outright runs no `Drop`, and its orphans
+    /// must still end by themselves.
+    const IDLE: &str = "for _ in $(seq 600); do sleep 0.05; done";
+
     fn shell(script: &str) -> (String, Vec<String>) {
         ("sh".to_string(), vec!["-c".to_string(), script.to_string()])
     }
@@ -294,7 +325,7 @@ mod tests {
     /// races the `exec` and kills a process whose trap does not exist yet. That race produced a
     /// signalled death with no status, which is exactly what these tests assert did not happen.
     fn trapping_shell(trap: &str, marker: &Path) -> (String, Vec<String>) {
-        shell(&format!("{trap}; : > {}; while :; do sleep 0.05; done", marker.display()))
+        shell(&format!("{trap}; : > {}; {IDLE}", marker.display()))
     }
 
     async fn until_ready(marker: &Path) {
@@ -303,7 +334,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_declared_program_runs_and_its_exit_status_comes_back() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         controller.declare("t", Signal::SIGTERM);
         assert!(!session(&controller, "t").running, "declaring names a program; it does not run one");
 
@@ -317,7 +348,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_signal_reaches_the_program_itself() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         let ready = tempfile::tempdir().expect("tempdir");
         let marker = ready.path().join("armed");
         controller.declare("t", Signal::SIGTERM);
@@ -333,7 +364,7 @@ mod tests {
 
     #[tokio::test]
     async fn stop_sends_the_signal_the_declaration_named_rather_than_sigterm() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         let ready = tempfile::tempdir().expect("tempdir");
         let marker = ready.path().join("armed");
         controller.declare("t", Signal::SIGINT);
@@ -351,7 +382,7 @@ mod tests {
     #[tokio::test]
     async fn a_redeclared_stop_signal_reaches_a_program_that_was_already_running_by_stop_and_by_shutdown() {
         for shutdown in [false, true] {
-            let (controller, _rx) = controller();
+            let controller = controller();
             let ready = tempfile::tempdir().expect("tempdir");
             let marker = ready.path().join("armed");
             controller.declare("t", Signal::SIGTERM);
@@ -379,7 +410,7 @@ mod tests {
 
     #[tokio::test]
     async fn starting_a_name_no_declaration_claimed_is_refused_rather_than_creating_it() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         let (cmd, args) = shell("exit 0");
         controller.start("never-declared", &cmd, &args);
         assert!(
@@ -390,9 +421,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_second_start_leaves_the_running_program_alone() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         controller.declare("t", Signal::SIGTERM);
-        let (cmd, args) = shell("while :; do sleep 0.05; done");
+        let (cmd, args) = shell(IDLE);
         controller.start("t", &cmd, &args);
         until(&controller, "t", |s| s.running).await;
         let first = session(&controller, "t").pid;
@@ -405,7 +436,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_that_is_not_there_says_why_instead_of_looking_like_a_slow_start() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         controller.declare("t", Signal::SIGTERM);
         controller.start("t", "mantle-no-such-binary", &[]);
 
@@ -419,7 +450,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_start_clears_what_the_last_run_left_behind() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         controller.declare("t", Signal::SIGTERM);
         controller.start("t", "mantle-no-such-binary", &[]);
         assert!(!session(&controller, "t").start_error.is_empty());
@@ -433,10 +464,10 @@ mod tests {
 
     #[tokio::test]
     async fn the_shutdown_reap_stops_everything_and_waits_for_it() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         controller.declare("a", Signal::SIGTERM);
         controller.declare("b", Signal::SIGTERM);
-        let (cmd, args) = shell("while :; do sleep 0.05; done");
+        let (cmd, args) = shell(IDLE);
         controller.start("a", &cmd, &args);
         controller.start("b", &cmd, &args);
         until(&controller, "a", |s| s.running).await;
@@ -449,8 +480,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_test_that_fails_still_kills_the_program_it_started() {
+        let ready = tempfile::tempdir().expect("tempdir");
+        let marker = ready.path().join("armed");
+        let controller = controller();
+        controller.declare("t", Signal::SIGTERM);
+        let (cmd, args) = trapping_shell("trap '' INT TERM", &marker);
+        controller.start("t", &cmd, &args);
+        until_ready(&marker).await;
+        let pid = session(&controller, "t").pid.expect("a running program has a pid");
+
+        // What a panic's unwind does; `reap_all` never runs.
+        drop(controller);
+        assert!(crate::process::exited(&[pid]).await, "pid {pid} outlived its test");
+    }
+
+    #[tokio::test]
     async fn a_program_that_ignores_its_stop_signal_is_escalated() {
-        let (controller, _rx) = controller();
+        let controller = controller();
         let ready = tempfile::tempdir().expect("tempdir");
         let marker = ready.path().join("armed");
         controller.declare("t", Signal::SIGINT);

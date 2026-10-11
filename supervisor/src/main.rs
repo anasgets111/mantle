@@ -21,6 +21,7 @@ mod socket;
 #[cfg(test)]
 mod stubs;
 mod supervisor;
+mod termination;
 mod watcher;
 
 use std::error::Error;
@@ -32,7 +33,7 @@ use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
 use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
-use shared::{Capability, RendererFrame, SupervisorFrame, debug, notice, warn};
+use shared::{Capability, RendererFrame, SupervisorFrame, debug, error, notice, warn};
 use socket::send_frame_logged;
 use supervisor::Supervisor;
 
@@ -322,21 +323,18 @@ async fn run_supervisor(
         process_done_tx,
     );
 
-    // Without handlers, Ctrl-C or SIGTERM kills the Supervisor and leaves a headless orphaned
-    // Renderer.
-    use tokio::signal::unix::{SignalKind, signal};
-    let mut sigint = signal(SignalKind::interrupt())?;
-    let mut sigterm = signal(SignalKind::terminate())?;
+    // Without this, a terminating signal kills the Supervisor and orphans a headless Renderer.
+    let mut terminations = termination::watch()?;
     let mut memory_sampler = memory::sampler(profile.map(Duration::from_secs));
 
     loop {
         tokio::select! {
-            _ = sigint.recv() => {
-                notice!("SIGINT received, shutting down");
-                break;
-            }
-            _ = sigterm.recv() => {
-                notice!("SIGTERM received, shutting down");
+            Some(termination::Received { signal, sender }) = terminations.recv() => {
+                if matches!(signal, nix::sys::signal::Signal::SIGINT | nix::sys::signal::Signal::SIGTERM) {
+                    notice!("{signal} received from {sender}, shutting down");
+                } else {
+                    error!("{signal} received from {sender}, shutting down");
+                }
                 break;
             }
             // ADR-0058 decision 1: dead and healthy-idle Renderers both send no frames; without

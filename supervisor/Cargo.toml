@@ -34,7 +34,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 shared.workspace = true
 # `full` minus `fs` and `parking_lot`, which nothing here uses.
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "signal", "sync", "time", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "process", "sync", "time", "io-util"] }
 udev = { version = "0.9.3", features = ["send"] }
 wayland-client.workspace = true
 wayland-protocols = { workspace = true, features = ["client", "staging"] }

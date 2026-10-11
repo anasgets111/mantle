@@ -8305,3 +8305,20 @@ match arms, plus a hand-written "ignored" arm for every operation it lacked.
    as an argument, so the trait stays stateless.
 3. **Cost.** One indirection, and the trait grows with each new window or workspace action. A new
    compositor is one module, one `PROBES` line and one `backend()` arm.
+
+## 0356. The Supervisor catches terminating signals with an `SA_SIGINFO` handler, not `signalfd`
+
+A Supervisor that died at 2026-10-11 07:24 left no log line: tokio caught only INT and TERM, so a
+HUP or USR1 killed it silently, and tokio's handlers never name the sender.
+
+1. **Caught:** HUP, INT, TERM, USR1, USR2, ALRM, VTALRM, PROF, IO, PWR. Each logs the signal and
+   the sender's pid, uid and `/proc/<pid>/cmdline`, then shuts down the way TERM did. QUIT, ABRT
+   and the other core-dumping signals keep their default, so a requested dump still lands.
+2. **A handler, not `signalfd`.** `signalfd` needs the signals blocked in every thread, and std
+   passes a blocked mask on to every child it spawns. A caught signal resets to default at `exec`,
+   so `process.run` programs, the PAM worker and the Renderer start clean, including INT when the
+   Supervisor itself started as a background job with INT ignored.
+3. **The handler only writes** signal, pid and uid to a non-blocking pipe; a thread reads the
+   sender's command line at once, before a short-lived `kill` exits.
+4. **Cost.** Four `unsafe` blocks, and SIGKILL stays unobservable in-process; the Renderer logs
+   whether its Supervisor still exists when the socket ends.
