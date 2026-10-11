@@ -29,7 +29,7 @@ pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
             Some(schema_for!(crate::action::BrightnessAction)),
         ),
         ("radio", schema_for!(crate::state::radio::RadioState), Some(schema_for!(crate::action::RadioAction))),
-        ("files", schema_for!(crate::state::files::FilesState), Some(schema_for!(crate::action::FilesAction))),
+        ("folders", schema_for!(crate::state::folders::FoldersState), Some(schema_for!(crate::action::FoldersAction))),
         (
             "processes",
             schema_for!(crate::state::processes::ProcessesState),
@@ -52,7 +52,7 @@ pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
         ("power", schema_for!(crate::state::power::PowerState), Some(schema_for!(crate::action::PowerAction))),
         ("privacy", schema_for!(crate::state::privacy::PrivacyState), None),
         ("sysinfo", schema_for!(crate::state::sysinfo::SysinfoState), Some(schema_for!(crate::action::SysinfoAction))),
-        ("system", schema_for!(crate::state::system::SystemState), Some(schema_for!(crate::action::SystemAction))),
+        ("clock", schema_for!(crate::state::clock::ClockState), Some(schema_for!(crate::action::ClockAction))),
         ("storage", schema_for!(crate::state::storage::StorageState), Some(schema_for!(crate::action::StorageAction))),
         ("polkit", schema_for!(crate::state::polkit::PolkitState), Some(schema_for!(crate::action::PolkitAction))),
         ("tray", schema_for!(crate::state::tray::TrayState), Some(schema_for!(crate::action::TrayAction))),

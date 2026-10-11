@@ -14,7 +14,7 @@ use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, 
 use super::shape::box_path;
 use super::vector_path::femtovg_path;
 use super::{Draw, DrawCmd, Frame, Shaders, Walk, apply_mask, fill_image, flush, offscreen, scratch};
-use crate::layout::node::outline::inset;
+use crate::layout::node::shape::inset;
 use kurbo::Shape as _;
 
 /// A shadow's gradient: its feather and its colour solid and at zero alpha. A ramp across 3 sigma
@@ -91,14 +91,14 @@ pub(super) fn paint_inset_shadow(
     canvas.fill_path(&box_path(pad, &inner), &paint);
 }
 
-/// An `inset` shadow in an `outline`: all outside the contour moved by `offset` and in by `spread`,
+/// An `inset` shadow in a `shape`: all outside the contour moved by `offset` and in by `spread`,
 /// cast like a layer's and cut to the contour inset by the border.
 /// ponytail: an uncached offscreen and blur per shadow per paint; keep the cast as `draw_layer` does.
 pub(super) fn paint_outline_inset(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     command: &DrawCmd,
-    outline: &node::Outline,
+    outline: &node::Shape,
     target: RenderTarget,
 ) {
     let Draw::InsetShadow { shadow, widths, .. } = &command.draw else { return };
@@ -624,12 +624,12 @@ mod tests {
     /// the tail is filled, its base carries no line, and its sides carry the band.
     #[test]
     fn an_outline_with_a_tail_is_one_shape_to_every_paint() {
-        use crate::layout::node::outline::TAIL;
+        use crate::layout::node::shape::TAIL;
         let (red, white, black, pink) = ((255, 0, 0), (255, 255, 255), (0, 0, 0), (255, 127, 127));
         let (tail, base, below_base, edge, side, beside, top) =
             ((32, 51), (32, 47), (32, 48), (47, 32), (34, 52), (37, 54), (32, 20));
         let at =
-            |effect: &str, points: &[(usize, usize)]| paint_effect_at(&format!("outline = {TAIL}, {effect}"), points);
+            |effect: &str, points: &[(usize, usize)]| paint_effect_at(&format!("shape = {TAIL}, {effect}"), points);
         let fill = r##"background = "#FF0000FF""##;
         let border = format!(r##"{fill}, border_width = 2, border_color = "#000000FF""##);
         let inset = format!(r##"{fill}, shadows = {{ {{ inset = true, spread = 2, color = "#000000FF" }} }}"##);
@@ -1489,7 +1489,7 @@ mod tests {
             "smoothed: {px:?}"
         );
         // An outline's tail, past the box, is inside; beside it and a cut corner are not.
-        let tail = format!("outline = {}", crate::layout::node::outline::TAIL);
+        let tail = format!("shape = {}", crate::layout::node::shape::TAIL);
         let Some(px) = paint_shader(frag, "padding = 8", &tail, &[(32, 51), (37, 54), (16, 16), (32, 32)]) else {
             return;
         };

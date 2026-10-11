@@ -151,9 +151,9 @@ pub fn parse_radius(properties: &PropMap) -> Result<Radii, LayoutError> {
     let radius = fields::paint::radius.read(properties)?;
     let smoothing = fields::paint::corner_smoothing.read(properties)?;
     let scoop = fields::paint::corner_shape.read(properties)? == CornerShape::Scoop;
-    if let Some(outline) = fields::paint::outline.read(properties)? {
+    if let Some(outline) = fields::paint::shape.read(properties)? {
         if !radius.is_zero() || smoothing > 0.0 || scoop {
-            return Err(invalid("outline", "replaces radius, corner_shape and corner_smoothing; round it with corner"));
+            return Err(invalid("shape", "replaces radius, corner_shape and corner_smoothing; round it with corner"));
         }
         return Ok(Radii([0.0; 4], 0.0, Some(outline)));
     }

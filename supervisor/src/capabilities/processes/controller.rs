@@ -33,7 +33,7 @@ use tokio::process::Child;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio::task::JoinHandle;
 
-use crate::capabilities::system::controller::epoch_seconds;
+use crate::capabilities::clock::controller::epoch_seconds;
 
 /// How long a stopping program has after its declared stop signal before `SIGKILL`.
 ///

@@ -92,7 +92,7 @@ mod tests {
             other = state("other", "unchanged")
             return panel { id = "bar", child = column { children = {
                 text { width = 20, content = "Long label", elide = "end", elided = other },
-                list { source = items, itemfn = function()
+                list { items = items, each = function()
                     return text { width = 20, content = "Long label", elide = "end", elided = cut }
                 end },
             } } }"#,

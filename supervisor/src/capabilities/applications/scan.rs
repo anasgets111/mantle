@@ -39,7 +39,7 @@ pub struct ScanResult {
 /// `data_home` is [`shared::xdg_dir`]'s. Applies the `XDG_DATA_DIRS` default: plain login shells
 /// often unset it, and skipping `/usr/share` in that case finds nothing on a normal system.
 ///
-/// Injected, like `SystemController::new`, so precedence is testable without changing the process
+/// Injected, like `ClockController::new`, so precedence is testable without changing the process
 /// environment.
 pub fn application_dirs(data_home: Option<PathBuf>, data_dirs: Option<String>) -> Vec<PathBuf> {
     let dirs = data_dirs.filter(|value| !value.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());

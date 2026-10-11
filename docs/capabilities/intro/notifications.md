@@ -39,11 +39,11 @@ Mantle is the `org.freedesktop.Notifications` server on the session bus.
 ```lua
 list {
     spacing = 6,
-    source = mantle.notifications:map(function(notifications)
+    items = mantle.notifications:map(function(notifications)
         return notifications and notifications.feed or {}
     end),
     key = function(item) return tostring(item.id) end,
-    itemfn = function(item)
+    each = function(item)
         return column {
             width = 320,
             padding = 8,

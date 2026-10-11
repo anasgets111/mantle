@@ -25,7 +25,7 @@ return {
             padding = { left = 12, right = 12 },
             children = {
                 text {
-                    content = mantle.system:map(function(s)
+                    content = mantle.clock:map(function(s)
                         return os.date("%H:%M", s and s.time)
                     end),
                     align_v = "center",

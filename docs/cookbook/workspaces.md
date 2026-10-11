@@ -48,7 +48,7 @@ local function strip(name)
                 direction = "horizontal",
                 spacing = 4,
                 align_v = "center",
-                source = mantle.workspaces:map(function(workspaces)
+                items = mantle.workspaces:map(function(workspaces)
                     local output = output_of(workspaces, name)
                     local items = {}
                     for index, workspace in ipairs(output and output.workspaces or {}) do
@@ -62,7 +62,7 @@ local function strip(name)
                     return items
                 end),
                 key = function(item) return tostring(item.id) end,
-                itemfn = function(item)
+                each = function(item)
                     return rect {
                         width = item.active and 36 or 22,
                         height = 20,
@@ -91,11 +91,11 @@ local specials = list {
     direction = "horizontal",
     spacing = 4,
     align_v = "center",
-    source = mantle.workspaces:map(function(workspaces)
+    items = mantle.workspaces:map(function(workspaces)
         return workspaces and workspaces.special or {}
     end),
     key = function(special) return special.name end,
-    itemfn = function(special)
+    each = function(special)
         local short = special.name:gsub("^special:?", "") -- "special:scratch" -> "scratch"
         return rect {
             padding = { left = 8, right = 8, top = 2, bottom = 2 },

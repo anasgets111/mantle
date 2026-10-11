@@ -8,14 +8,14 @@ between the time and the full date, and hovering it shows the date in a tooltip.
 local show_date = state("clock_show_date", false)
 local clock_hover = hover("clock")
 
-local label = computed({ mantle.system, show_date }, function(system, date)
+local label = computed({ mantle.clock, show_date }, function(system, date)
     if system == nil then
         return "--:--" -- nil until the first push
     end
     return os.date(date and "%A %d %B" or "%H:%M", system.time)
 end)
 
-local tooltip_text = mantle.system:map(function(system)
+local tooltip_text = mantle.clock:map(function(system)
     return system and os.date("%A, %d %B %Y", system.time) or ""
 end)
 
@@ -68,7 +68,7 @@ return { bar, tooltip }
 
 ## How it works
 
-- `mantle.system` pushes the time once a second, and `os.date` formats it ([system](../capabilities/system.md)).
+- `mantle.clock` pushes the time once a second, and `os.date` formats it ([clock](../capabilities/clock.md)).
 - `computed` combines the clock with a [named state](../guide/signals.md#named-state) the click toggles ([derived signals](../guide/signals.md#derived-signals)).
 - Both `"fill"` spacers take an equal share of the row, so the clock sits at the exact centre ([sizes](../nodes/index.md#sizes)).
 - The background is on the `row`, not the panel, so the whole bar takes clicks ([input region](../surfaces/index.md#input-region)).

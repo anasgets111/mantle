@@ -8,7 +8,7 @@ A 32 px bar across the top of every output, reserving its height so windows star
 <!-- shot-alt: A top bar: workspace pills with the active one wider and blue on the left, the time and date centred, and Wi-Fi, Bluetooth and volume icons with the battery level on the right. -->
 ```lua,shot
 local function now(format)
-    return mantle.system:map(function(system) return system and os.date(format, system.time) or "" end)
+    return mantle.clock:map(function(system) return system and os.date(format, system.time) or "" end)
 end
 
 local function workspace(active)
@@ -384,9 +384,9 @@ local stack = panel {
     anchor = { top = true, right = true },
     margin = { top = 8, right = 8 },
     child = list {
-        source = items,
+        items = items,
         spacing = 8,
-        itemfn = function(toast)
+        each = function(toast)
             return row {
                 width = 320, padding = 12, spacing = 12, radius = 12, background = "#1e1e2e",
                 children = {

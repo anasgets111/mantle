@@ -120,13 +120,12 @@ Save each successful check in a [`persistent_table`](../guide/scripting.md#persi
 send `configure` only once the file has loaded, so its seed lands before the first scheduled check.
 
 ```lua
-local dir = (os.getenv("HOME") or "") .. "/.local/state/myshell"
-local cache = persistent_table { path = dir, name = "updates.json" }
-local file = dir .. "/updates.json"
+local file = (os.getenv("HOME") or "") .. "/.local/state/myshell/updates.json"
+local cache = persistent_table { path = file }
 
 mantle.storage:on_change(function(storage, previous)
-    local saved = storage.files[file]
-    if saved and not (previous and previous.files[file]) then
+    local saved = storage.contents[file]
+    if saved and not (previous and previous.contents[file]) then
         mantle.updates:configure({
             interval = 3600,
             checked_at = saved.checked_at,

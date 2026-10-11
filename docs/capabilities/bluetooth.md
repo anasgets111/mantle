@@ -6,11 +6,11 @@ BlueZ: adapter power, discovery, connected, paired and discovered devices, and p
 
 ```lua
 list {
-    source = mantle.bluetooth:map(function(bluetooth)
+    items = mantle.bluetooth:map(function(bluetooth)
         return bluetooth and bluetooth.connected_devices or {}
     end),
     key = function(device) return device.mac end,
-    itemfn = function(device)
+    each = function(device)
         local battery = device.battery and string.format(" %d%%", device.battery) or ""
         return rect {
             on_click = function() mantle.bluetooth:disconnect(device.mac) end,
@@ -147,11 +147,11 @@ return column {
     children = {
         button("Scan", function() mantle.bluetooth:start_discovery() end),
         list {
-            source = mantle.bluetooth:map(function(bluetooth)
+            items = mantle.bluetooth:map(function(bluetooth)
                 return bluetooth and bluetooth.discovered_devices or {}
             end),
             key = function(device) return device.mac end,
-            itemfn = function(device)
+            each = function(device)
                 return button(device.name ~= "" and device.name or device.mac, function()
                     mantle.bluetooth:pair(device.mac)
                 end)

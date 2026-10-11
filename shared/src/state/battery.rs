@@ -43,7 +43,7 @@ pub struct BatteryState {
     /// Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system
     /// batteries. `nil` when UPower reports no design capacity.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub capacity: Option<u8>,
+    pub health: Option<u8>,
     /// UPower batteries outside the system supply, ordered by object path. This may include devices
     /// also shown by `mantle.bluetooth`.
     pub peripherals: Vec<PeripheralBattery>,

@@ -76,14 +76,14 @@ return panel {
                 spacing = 22,
                 children = {
                     text {
-                        content = mantle.system:map(function(s) return os.date("%H:%M", s and s.time) end),
+                        content = mantle.clock:map(function(s) return os.date("%H:%M", s and s.time) end),
                         align_h = "center",
                         font_size = 200,
                         font_weight = 200,
                         foreground = theme.text,
                     },
                     text {
-                        content = mantle.system:map(function(s)
+                        content = mantle.clock:map(function(s)
                             return os.date("%A, %d %B", s and s.time)
                         end),
                         align_h = "center",

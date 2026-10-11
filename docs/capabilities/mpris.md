@@ -79,7 +79,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
-| `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself. |
+| `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.clock.monotonic`); only compare it with itself. |
 | `rate` | `number` | MPRIS playback rate. |
 | `shuffle` | `boolean` | MPRIS shuffle setting. |
 | `title` | `string` | Track title; empty when unset, normal between tracks. |
@@ -165,14 +165,14 @@ One of `"play"`, `"pause"`, `"play_pause"`, `"next"`, `"previous"`, `"stop"`.
 
 | Task | Answer |
 | :--- | :--- |
-| Show a live progress bar | Stamp each new `position_updated_at` with `mantle.system.monotonic` in `on_change`, then add the seconds since: [Media player](../cookbook/media-player.md) |
+| Show a live progress bar | Stamp each new `position_updated_at` with `mantle.clock.monotonic` in `on_change`, then add the seconds since: [Media player](../cookbook/media-player.md) |
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `position` stands still while playing | It is the offset at `position_updated_at`, not polled. Extrapolate, as above |
-| `position_updated_at` compared with `mantle.system.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `system` started. Only compare it with itself |
+| `position_updated_at` compared with `mantle.clock.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `clock` started. Only compare it with itself |
 
 See also: [Media player](../cookbook/media-player.md) recipe.
 

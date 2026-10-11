@@ -763,7 +763,7 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
             (r#"process.run("true", {}, function() end, function() end)"#, &["ProcessHandle"]),
             (r#"palette.quantize("/probe.png", nil, function() end)"#, &["PaletteHandle"]),
             (r#"session_process { name = "probe" }"#, &["SessionProcessHandle"]),
-            (r#"persistent_table { path = "/probe", name = "probe" }"#, &["PersistentTable"]),
+            (r#"persistent_table { path = "/probe" }"#, &["PersistentTable"]),
             ("mantle.audio", &["AudioCapability"]),
             ("mantle.idle", &["IdleCapability"]),
         ] {

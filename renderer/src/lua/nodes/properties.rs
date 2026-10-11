@@ -21,8 +21,8 @@ use crate::layout::node::{
     Align, Anchor, AnchorRect, Animations, Axes, Background, Blend, Caret, Children, ClipShape, ColorOrEdges,
     ConstraintAdjustment, Content, CornerShape, Cursor, Decorations, Direction, Effects, Elide, Exclusive, Fill, Font,
     FontVariations, Images, Items, KeyboardInteractivity, LayerKind, LayoutError, Limit, Live, Mask, MaxLines,
-    NumberOrCorners, NumberOrEdges, Outline, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Ring,
-    Root, Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, SizeHint, SizeMode, StrokeCap, StrokeJoin,
+    NumberOrCorners, NumberOrEdges, Params, PathCommands, PopupAnchor, PopupExtent, PopupOffset, Region, Ring, Root,
+    Scale, SecureSubmitTarget, Selection, ShadowMode, Shadows, Shape, SizeHint, SizeMode, StrokeCap, StrokeJoin,
     TextAlign, TransitionSpec, TrimAxis, Wrap,
 };
 use crate::lua::VirtualNode;
@@ -269,7 +269,7 @@ props! {
         ///
         /// Book: Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal
         id: Structural<Id>;
-        /// Spoken name for a control. A node with `on_click`, `submit` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
+        /// Spoken name for a control. A node with `on_click`, `submits_secure` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
         accessible_name: Bound<Text> = absent(Lua(r#""""#));
         /// A `focus_target(name)` handle. `:request()` from an `on_click`, an `on_key`, or an edit typed or
         /// committed into a field (`on_change`, `on_submit`, `on_cancel`) moves keyboard focus here, if this node
@@ -310,7 +310,7 @@ props! {
         /// Pointer shape over this node; the innermost node that sets one wins (ADR-0107).
         ///
         /// Book: One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins
-        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow"#));
+        cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submits_secure` and on a link, `"text"` on a `textfield`, else the arrow"#));
         /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
         on_hover(hovered: bool);
         /// A key pressed or repeating while the keyboard is on this node or one inside it, or, on a surface root, anywhere on that surface. It goes to the focused node first, then each ancestor, then the surface root; a handler that returns `true` stops it. A focused `textfield` takes the keys it edits with and passes on the rest (arrows at the caret's edge, Up, Down, paging, Tab, Ctrl chords); Tab moves control focus when it can. Never called while a `secure_submit` field is armed, or for a bare modifier. Without `accessible_name` the node is not focusable and hears only what its descendants pass up.
@@ -331,7 +331,7 @@ props! {
         /// A click also submits the armed `secure_submit` field, like Enter (ADR-0114). Works without `on_click` and runs before it.
         ///
         /// Book: A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it
-        submit: Bound<Flag> = absent(Bool(false));
+        submits_secure: Bound<Flag> = absent(Bool(false));
         /// `false` makes this node and every descendant transparent to the pointer: no click, drag, wheel, hover or cursor, and its box claims no input region, so what is underneath gets them. Inherited; a descendant that sets `true` is hit again, and this node's own handlers, cursor and hover then still apply to it.
         ///
         /// Book: `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back, and this node's handlers still apply to it ([pass-through](../guide/input.md#hit-testing))
@@ -342,20 +342,20 @@ props! {
         ///
         /// Book: A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps
         background: Bound<Background>;
-        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "rounded"`. Hit-testing and `behind_blur` ignore it.
+        /// Multiplies the alpha of this node and its subtree (ADR-0255). Cut to the box, or to `radius` under `clip = "rounded"`. Hit-testing and `compositor_blur` ignore it.
         ///
         /// Book: Multiplies the alpha of this node and its subtree; see [Mask](#mask)
         mask: Bound<Mask>;
         /// Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner.
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
-        /// `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow.
+        /// `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `compositor_blur` region follow.
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
-        /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
+        /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `compositor_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
-        /// The box's shape as one closed contour of path commands, in place of `radius`, `corner_shape` and `corner_smoothing`, which it refuses. Points follow the box's size and may reach past it. Fill, border, shadows, clip, mask, glass, `effect.shader`'s `mantle_sdf`, hit testing and the `behind_blur` region follow; the border takes one width and one colour or gradient. Tweens under `animate` between outlines with the same commands, else snaps.
+        /// The box's shape as one closed contour of path commands, in place of `radius`, `corner_shape` and `corner_smoothing`, which it refuses. Points follow the box's size and may reach past it. Fill, border, shadows, clip, mask, glass, `effect.shader`'s `mantle_sdf`, hit testing and the `compositor_blur` region follow; the border takes one width and one colour or gradient. Tweens under `animate` between shapes with the same commands, else snaps.
         ///
-        /// Book: The box's shape as one closed contour, in place of `radius`; see [Outline](#outline)
-        outline: Bound<Outline>;
+        /// Book: The box's shape as one closed contour, in place of `radius`; see [Shape](#shape)
+        shape: Bound<Shape>;
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate`.
         border_color: Bound<ColorOrEdges>;
         /// Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space.
@@ -367,7 +367,7 @@ props! {
         /// Ask the compositor to blur the desktop behind this box, `ext-background-effect-v1` (ADR-0195). Never inferred from a translucent background. Silently nothing without compositor support; strength is the compositor's.
         ///
         /// Book: Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background
-        behind_blur: Bound<Flag> = absent(Bool(false));
+        compositor_blur: Bound<Flag> = absent(Bool(false));
         /// `"box"`: CSS `box-shadow` of the box shape, not drawn under the box. `"content"`: CSS `drop-shadow` of everything painted (ADR-0260).
         ///
         /// Book: `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows)
@@ -544,9 +544,9 @@ props! {
     }
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
-        source: Items = absent(Prose("empty"));
+        items: Items = absent(Prose("empty"));
         /// Builds a node for every built item, visible or not.
-        itemfn(item: Value) -> VirtualNode = absent(Required);
+        each(item: Value) -> VirtualNode = absent(Required);
         /// Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
         key(item: Value) -> String;
         /// Build at most this many items; above 10000 acts as 10000, `0` builds none.
@@ -661,7 +661,7 @@ props! {
         /// Book: Room around the frame for a client-drawn shadow; the compositor sizes and tiles by the frame alone. A number sets all four edges ([client-side decoration](#client-side-decoration))
         geometry_inset: Bound<NumberOrEdges> = range(0.0, 256.0).absent(Number(0.0));
         /// The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing.
-        on_close();
+        on_close_request();
         /// Opens and closes the window; state and `id` survive (ADR-0049).
         visible: Bound<Flag> = absent(Bool(true));
         /// The root's size inside the window, not the window's.

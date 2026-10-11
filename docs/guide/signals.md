@@ -146,7 +146,7 @@ Use `computed` to combine two sources, here a capability and a state that a clic
 ```lua
 local show_seconds = state("show_seconds", false)
 
-local clock = computed({ mantle.system, show_seconds }, function(system, seconds)
+local clock = computed({ mantle.clock, show_seconds }, function(system, seconds)
   if not system then return "" end
   return os.date(seconds and "%H:%M:%S" or "%H:%M", system.time)
 end)
@@ -297,16 +297,16 @@ whole bar. A `list` keeps its items the same way ([when items rebuild](../nodes/
 | For a `panel` or `lock` root, a write to a signal its function `child` read. Every ✓ here runs that function again | ✓ |
 | A write to anything else, even on the same surface | |
 
-The engine sees signal reads only. A `map`, `computed`, `itemfn`, `key` or function `child` must
+The engine sees signal reads only. A `map`, `computed`, `each`, `key` or function `child` must
 answer from its arguments and the signals it reads; anything else it reads is taken as it was at the
 node's last resolve:
 
 | Read inside the function | Kept until a signal it read changes | Instead |
 | :--- | :--- | :--- |
-| `os.time()`, `os.date()` with no time, `os.clock()`, `math.random()` | ✓ | `mantle.system:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`, or a `state` a `timer` writes |
+| `os.time()`, `os.date()` with no time, `os.clock()`, `math.random()` | ✓ | `mantle.clock:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`, or a `state` a `timer` writes |
 | A local or global changed without `:set` | ✓ | Keep it in a `state` |
 | A file | ✓ | Read it in a `timer` and `:set` a `state` |
-| A table changed in place, such as a `list`'s `source` | ✓ | `:set` the table again, or build a new one |
+| A table changed in place, such as a `list`'s `items` | ✓ | `:set` the table again, or build a new one |
 | A `delay` or `pulse` | | Nothing: its readers resolve on every pass while one is pending or open |
 
 A `visible = false` node's subtree is frozen. Its children keep their nodes, ids, properties and
@@ -457,7 +457,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | `delay` on a capability never updates, or `pulse` fires on every push | Payloads are tables, which never compare `==`. Delay or pulse a scalar derived with `:map` |
 | Hiding a view with `visible = false` keeps its whole subtree | Switch views through `children = sig:map(...)` |
 | A `:set` inside a map or computed | Maps must be side-effect free; write state from `on_click`, `on_change` or a `timer` |
-| A clock from `os.date()` alone stops updating | Nothing it read is a signal, so its node keeps the first answer. Derive it from `mantle.system`'s `time` ([what a node reads again](#what-a-node-reads-again)) |
+| A clock from `os.date()` alone stops updating | Nothing it read is a signal, so its node keeps the first answer. Derive it from `mantle.clock`'s `time` ([what a node reads again](#what-a-node-reads-again)) |
 
 See also: [runtime](runtime.md) (budgets, reload), [capabilities](../capabilities/index.md),
 [input](input.md) (`hover`, `scroll`), [animation](animation.md), [cli](cli.md),

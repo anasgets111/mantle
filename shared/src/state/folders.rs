@@ -1,14 +1,14 @@
-//! `mantle.files` snapshot payload.
+//! `mantle.folders` snapshot payload.
 
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-/// `mantle.files` payload (ADR-0120).
+/// `mantle.folders` payload (ADR-0120).
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct FilesState {
+pub struct FoldersState {
     /// One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
-    pub folders: BTreeMap<String, Folder>,
+    pub watched: BTreeMap<String, Folder>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

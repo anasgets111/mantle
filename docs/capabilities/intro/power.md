@@ -1,10 +1,10 @@
 ```lua
 list {
     direction = "horizontal",
-    source = mantle.power:map(function(power)
+    items = mantle.power:map(function(power)
         return power and power.profiles or {}
     end),
-    itemfn = function(name)
+    each = function(name)
         return rect {
             padding = 6,
             background = mantle.power:map(function(power)

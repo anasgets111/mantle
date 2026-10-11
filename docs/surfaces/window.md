@@ -73,7 +73,7 @@ local settings = window {
     app_id = "org.example.settings",
     min_size = { width = 480, height = 360 },
     visible = open,
-    on_close = function() open:set(false) end,
+    on_close_request = function() open:set(false) end,
     child = row {
         width = "fill",
         height = "fill",
@@ -99,12 +99,12 @@ return { settings }
 ```
 
 `mantle toggle settings_open` opens it; the compositor's close button or keybind closes it through
-`on_close`. The title follows the selected tab.
+`on_close_request`. The title follows the selected tab.
 
 ## Properties
 
 Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id` and
-`on_close` takes a signal and updates the open window in place; a change while it is closed applies when it next
+`on_close_request` takes a signal and updates the open window in place; a change while it is closed applies when it next
 opens.
 
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
@@ -117,7 +117,7 @@ opens.
 | `max_size` | `{ width: number, height: number }\|Bound`, `[0, 8192]` | None | Advisory, as `min_size`. A non-zero axis below `min_size`'s is refused; also clamps the opening size |
 | `decorations` | `"server"\|"client"\|Bound` | `"server"` | Who draws the window's frame: `"server"` asks the compositor for its decorations, `"client"` leaves the frame to the app. A compositor without `zxdg_decoration_manager_v1` always leaves it to the app; `toplevel(id):state().decoration` says which was chosen |
 | `geometry_inset` | `number\|Edges\|Bound`, `[0, 256]` | `0` | Room around the frame for a client-drawn shadow; the compositor sizes and tiles by the frame alone. A number sets all four edges ([client-side decoration](#client-side-decoration)) |
-| `on_close` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
+| `on_close_request` | `fun()` | None | The user asked to close. The window stays open until the config sets `visible = false`; without a handler a close request does nothing |
 | `visible` | `boolean\|Bound` | `true` | Opens and closes the window; state and `id` survive |
 | `width` | `Length\|Bound`, `[0, 8192]` | Fill the window | The root's size inside the window, not the window's ([size](#size)) |
 | `height` | `Length\|Bound`, `[0, 8192]` | Fill the window | As `width` |
@@ -151,7 +151,7 @@ the opening size.
 | Task | Answer |
 | :--- | :--- |
 | Open a settings window from a keybind | Bind `visible` to [named state](../guide/signals.md#named-state), as in the example; `mantle toggle settings_open` |
-| Close it when the user clicks the close button | `on_close = function() open:set(false) end` |
+| Close it when the user clicks the close button | `on_close_request = function() open:set(false) end` |
 | Ask before closing | [Confirm before closing](#confirm-before-closing) |
 | Make it float, or place it | A Hyprland `windowrule` or niri `window-rule` matching `app_id` |
 | Give it a starting size | `min_size`, or a compositor rule |
@@ -331,7 +331,7 @@ after the edges.
 
 ### Confirm before closing
 
-`on_close` is a request, so it can open a question instead of closing:
+`on_close_request` is a request, so it can open a question instead of closing:
 
 ```lua
 local open = state("editor_open", true)
@@ -341,7 +341,7 @@ local editor = window {
     id = "editor",
     title = "Editor",
     visible = open,
-    on_close = function() confirming:set(true) end,
+    on_close_request = function() confirming:set(true) end,
     child = column {
         width = "fill", height = "fill", padding = 16, spacing = 8, background = "#1e1e2e",
         children = {
@@ -369,7 +369,7 @@ return { editor }
 
 | Trap | Fix |
 | :--- | :--- |
-| The close button does nothing | Add `on_close` and set `visible` to `false` in it |
+| The close button does nothing | Add `on_close_request` and set `visible` to `false` in it |
 | `min_size` doesn't stop the root shrinking | It is advisory to the compositor; layout does not enforce it |
 | `min_size = { width = 400 }` is refused | Name both axes; `0` leaves one unconstrained |
 | `max_size` below `min_size` is refused | Keep every non-zero `max_size` axis at or above `min_size`'s, or `0` |

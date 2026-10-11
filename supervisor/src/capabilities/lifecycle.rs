@@ -12,7 +12,8 @@ use super::audio::{self, mixer::PrivacySources};
 use super::battery::BatteryController;
 use super::bluetooth::{self, BluetoothController};
 use super::brightness::{self, BrightnessController};
-use super::files::{self, FilesController};
+use super::clock::{self, ClockController};
+use super::folders::{self, FoldersController};
 use super::idle::{self, IdleController};
 use super::keyboard::{self, KeyboardController};
 use super::lock::{self, LockController};
@@ -28,7 +29,6 @@ use super::session_bus;
 use super::signals::{Senders, Signal, Signals};
 use super::storage::{self, StorageController};
 use super::sysinfo::{self, SysinfoController};
-use super::system::{self, SystemController};
 use super::tray::{self, TrayController};
 use super::updates::{self, UpdatesController};
 use super::windows::{self, WindowsController};
@@ -57,9 +57,9 @@ pub struct Capabilities {
     workspaces: Option<WorkspacesController>,
     windows: Option<WindowsController>,
     power: Option<PowerController>,
-    system: Option<SystemController>,
+    clock: Option<ClockController>,
     applications: Option<ApplicationsController>,
-    files: Option<FilesController>,
+    folders: Option<FoldersController>,
     storage: Option<StorageController>,
     secrets: Option<SecretsController>,
     processes: Option<ProcessesController>,
@@ -122,9 +122,9 @@ impl Capabilities {
             workspaces: None,
             windows: None,
             power: None,
-            system: None,
+            clock: None,
             applications: None,
-            files: None,
+            folders: None,
             storage: None,
             secrets: None,
             processes: None,
@@ -242,8 +242,8 @@ impl Capabilities {
                 network.cancel_vpn_secret();
             }));
         }
-        if let Some(files) = &self.files {
-            files.forget_watches();
+        if let Some(folders) = &self.folders {
+            folders.forget_watches();
         }
     }
 
@@ -439,9 +439,9 @@ impl Capabilities {
                 }
             }
             // The clock, and nothing else since ADR-0136 (ADR-0053).
-            Capability::System => {
-                if self.system.is_none() {
-                    self.system = Some(SystemController::new(self.senders.system.clone()));
+            Capability::Clock => {
+                if self.clock.is_none() {
+                    self.clock = Some(ClockController::new(self.senders.clock.clone()));
                 }
             }
             // Installed `.desktop` entries; scans in background and returns before parsing starts.
@@ -456,10 +456,10 @@ impl Capabilities {
                     ));
                 }
             }
-            // `files:watch` starts work; nothing is listed before it.
-            Capability::Files => {
-                if self.files.is_none() {
-                    self.files = Some(FilesController::new(self.senders.files.clone()));
+            // `folders:watch` starts work; nothing is listed before it.
+            Capability::Folders => {
+                if self.folders.is_none() {
+                    self.folders = Some(FoldersController::new(self.senders.folders.clone()));
                 }
             }
             // `persistent_table` opens storage on demand.
@@ -562,13 +562,13 @@ impl Capabilities {
             Signal::Power => push_held!(Power, self.power),
             Signal::Applications => push_held!(Applications, self.applications),
             // `watch`/`unwatch` and each settled folder-change burst.
-            Signal::Files => push_held!(Files, self.files),
+            Signal::Folders => push_held!(Folders, self.folders),
             // Every `open`/`set`, before debounced save (ADR-0136).
             Signal::Storage => push_held!(Storage, self.storage),
             // Every declare, start, signal answered, and exit noticed.
             Signal::Processes => push_held!(Processes, self.processes),
             // Once per clock tick (ADR-0053 decision 2).
-            Signal::System => push_held!(System, self.system),
+            Signal::Clock => push_held!(Clock, self.clock),
             Signal::Privacy => push_held!(Privacy, self.privacy),
             Signal::Appearance => push_held!(Appearance, self.appearance),
             // Periodic checks and install progress updates.
@@ -607,12 +607,12 @@ impl Capabilities {
             Capability::Power => to!(self.power, power::dispatch),
             Capability::Updates => to!(self.updates, updates::dispatch),
             Capability::Applications => to!(self.applications, applications::dispatch),
-            Capability::Files => to!(self.files, files::dispatch),
+            Capability::Folders => to!(self.folders, folders::dispatch),
             Capability::Storage => to!(self.storage, storage::dispatch),
             Capability::Processes => to!(self.processes, processes::dispatch),
             Capability::Audio => to!(self.audio, audio::dispatch),
             Capability::Idle => to!(self.idle, idle::dispatch),
-            Capability::System => to!(self.system, system::dispatch),
+            Capability::Clock => to!(self.clock, clock::dispatch),
             Capability::Lock => lock::dispatch(lock, envelope),
             // Answered in `Supervisor::dispatch_capability_command`, where its controller lives
             // beside the state push that cancel handling needs.

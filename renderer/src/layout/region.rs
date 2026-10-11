@@ -14,7 +14,7 @@ const EVERYTHING: LogicalRect = LogicalRect { x: -1e9, y: -1e9, width: 2e9, heig
 ///
 /// A visible node claims its whole box when it is *solid*: it paints something (a box with a
 /// background or a border, or any text, icon, image or field), or it has a pointer handler
-/// (`on_click`, `on_press`, `on_drag`, `on_wheel`) or `submit`, which may be invisible by design but is still
+/// (`on_click`, `on_press`, `on_drag`, `on_wheel`) or `submits_secure`, which may be invisible by design but is still
 /// pressable (a full-surface click-outside catcher). Transparent containers claim nothing and are walked
 /// into, so a full-surface `column` holding two cards yields the cards. Everything else is
 /// click-through and, under focus-follows-mouse, focus-through; the popup's empty space below its
@@ -50,7 +50,7 @@ pub fn overlay_input_regions(surface_root: &ResolvedNode, scale: f32) -> Vec<Phy
     regions
 }
 
-/// Every `behind_blur = true` node in one surface, as the physical rects the compositor is handed
+/// Every `compositor_blur = true` node in one surface, as the physical rects the compositor is handed
 /// (ADR-0195). Pure; the `ext_background_effect_surface_v1::set_blur_region` push it feeds lives
 /// in `crate::wayland::App::apply_blur_region`.
 ///
@@ -123,7 +123,7 @@ fn collect_blur_regions(
     if child_clip.is_empty() && clip.is_empty() {
         return;
     }
-    if node.behind_blur {
+    if node.compositor_blur {
         push_shape(rect, radius, (matrix, scale, clip), out);
     }
     for child in node.content_children() {
@@ -386,7 +386,7 @@ mod tests {
             (false, (100.0, 0.0, 10.0, 10.0), -20.0, PhysicalRect { x0: 80, y0: 0, x1: 90, y1: 10 }),
         ] {
             let mut glass = region_node(1, "rect", rect, solid_paint(), Vec::new());
-            glass.behind_blur = true;
+            glass.compositor_blur = true;
             let children = if parent_moves {
                 vec![region_node(2, "column", (10.0, 10.0, 30.0, 20.0), None, vec![glass])]
             } else {
@@ -399,7 +399,7 @@ mod tests {
         }
 
         let mut glass = region_node(4, "rect", (110.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
-        glass.behind_blur = true;
+        glass.compositor_blur = true;
         glass.transform.scale = (2.0, 2.0);
         glass.transform.origin = (0.0, 0.0);
         glass.movement = Some(Box::new(MoveTween::test((-40.0, 0.0))));
@@ -442,7 +442,7 @@ mod tests {
     fn blur_regions_claim_only_the_marked_node_inside_a_full_screen_surface() {
         let lua = mlua::Lua::new();
         let mut card = region_node(1, "rect", (200.0, 260.0, 620.0, 260.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         let mut catcher = region_node(2, "rect", (0.0, 0.0, 1920.0, 1161.0), None, Vec::new());
         std::rc::Rc::make_mut(&mut catcher.properties)
             .insert("on_click", Value::Function(lua.create_function(|_, ()| Ok(())).unwrap()));
@@ -465,7 +465,7 @@ mod tests {
     #[test]
     fn blur_regions_follow_an_ancestors_transform_and_an_ancestors_clip() {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         let build_slider = |id: u64, card: ResolvedNode| {
             let mut slider = region_node(id, "column", (10.0, 10.0, 100.0, 40.0), None, vec![card]);
             slider.transform = node::Transform { translate: (300.0, 0.0), ..node::Transform::default() };
@@ -491,7 +491,7 @@ mod tests {
         // The same card scrolled halfway out of a shorter list: paint clips it to the parent box
         // (`layout::paint::build_node`), so blur stops at the same edge.
         let mut card = region_node(4, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         let list = region_node(5, "list", (0.0, 0.0, 100.0, 20.0), None, vec![card]).with_clip(node::ClipShape::Box);
         let root = region_node(6, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![list]);
         assert_eq!(
@@ -508,7 +508,7 @@ mod tests {
     #[test]
     fn a_child_its_parents_translate_carries_into_view_still_asks_for_blur() {
         let mut card = region_node(1, "rect", (80.0, 0.0, 40.0, 20.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         let mut parent =
             region_node(2, "column", (0.0, 0.0, 100.0, 20.0), None, vec![card]).with_clip(node::ClipShape::Box);
         parent.transform = node::Transform { translate: (50.0, 0.0), ..node::Transform::default() };
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn a_clipped_rounded_card_keeps_square_corners_where_it_was_cut() {
         let mut card = region_node(1, "rect", (0.0, 0.0, 100.0, 100.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         card.paint = Some(PaintStyle::Box {
             background: vec![(node::Fill::Color(node::Rgba { r: 0.0, g: 0.0, b: 0.0, a: 0.8 }), node::Blend::Normal)],
             radius: node::Radii::from(20.0),
@@ -575,7 +575,7 @@ mod tests {
         assert!(blur_regions(&root, 1.0).is_empty(), "a painted box that never asked does not blur");
 
         let mut card = region_node(3, "rect", (0.0, 0.0, 100.0, 40.0), solid_paint(), Vec::new());
-        card.behind_blur = true;
+        card.compositor_blur = true;
         let mut faded = region_node(4, "column", (0.0, 0.0, 100.0, 40.0), None, vec![card]);
         faded.opacity = 0.0;
         let root = region_node(5, "panel", (0.0, 0.0, 400.0, 100.0), None, vec![faded]);
@@ -660,7 +660,7 @@ mod tests {
     #[test]
     fn an_outline_region_follows_its_contour() {
         let mut strips = Vec::new();
-        let radii = node::Radii([0.0; 4], 0.0, Some(crate::layout::node::outline::tail()));
+        let radii = node::Radii([0.0; 4], 0.0, Some(crate::layout::node::shape::tail()));
         push_rounded_rect(PhysicalRect { x0: 16, y0: 16, x1: 48, y1: 48 }, radii, &mut strips);
         let covers = |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
         assert!(covers(32, 52) && covers(32, 32) && covers(47, 32), "the tail, the body and its edge");
@@ -674,7 +674,7 @@ mod tests {
     fn a_solid_outline_and_a_corner_path_claim_input_by_shape() {
         let mut bubble = region_node(1, "rect", (16.0, 16.0, 32.0, 32.0), solid_paint(), Vec::new());
         if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
-            radius.2 = Some(crate::layout::node::outline::tail());
+            radius.2 = Some(crate::layout::node::shape::tail());
         }
         let root = region_node(2, "panel", (0.0, 0.0, 64.0, 96.0), None, vec![bubble]);
         let strips = overlay_input_regions(&root, 1.0);
@@ -753,7 +753,7 @@ mod tests {
 
         let label = region_node(9, "rect", (10.0, 10.0, 50.0, 20.0), solid_paint(), Vec::new());
         let mut submit = region_node(10, "row", (0.0, 0.0, 120.0, 40.0), None, vec![label]);
-        std::rc::Rc::make_mut(&mut submit.properties).insert("submit", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut submit.properties).insert("submits_secure", Value::Boolean(true));
         let root = region_node(11, "panel", (0.0, 0.0, 120.0, 40.0), None, vec![submit]);
         assert_eq!(
             overlay_input_regions(&root, 1.0),

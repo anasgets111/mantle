@@ -136,7 +136,7 @@ local FAMILIES = {
     end },
     { "shader effect", function()
         local function at(p)
-            return { shader = { source = DIR .. "outline.frag", params = { width = 3, tint = { 1, 0.8, 0.2, 1 } }, progress = p, padding = 4 } }
+            return { shader = { source = DIR .. "shape.frag", params = { width = 3, tint = { 1, 0.8, 0.2, 1 } }, progress = p, padding = 4 } }
         end
         return { radius = 20, background = "#335577", effect = at(0), animate = loop(at) }
     end },
@@ -247,9 +247,9 @@ local FAMILIES = {
             background = DARK,
             border_width = 2,
             border_color = "#89B4FA",
-            outline = swap(s, outline(30),
+            shape = swap(s, outline(30),
                 outline(70)),
-            animate = { outline = 350 }
+            animate = { shape = 350 }
         }
     end },
     { "spring loop", function()
@@ -352,7 +352,7 @@ return {
             min_size = { width = 704, height = 584 },
             max_size = { width = 704, height = 584 },
             visible = on,
-            on_close = function() on:set(false) end,
+            on_close_request = function() on:set(false) end,
             child = column {
                 width = "fill",
                 height = "fill",

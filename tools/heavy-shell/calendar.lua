@@ -72,7 +72,7 @@ return function(visible, close)
         min_size = { width = 330, height = 300 },
         max_size = { width = 330, height = 300 },
         visible = visible,
-        on_close = close,
+        on_close_request = close,
         child = column {
             width = "fill",
             height = "fill",

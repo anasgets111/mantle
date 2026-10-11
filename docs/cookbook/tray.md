@@ -41,7 +41,7 @@ local tray_items = list {
     direction = "horizontal",
     spacing = 2,
     align_v = "center",
-    source = mantle.tray:map(function(tray)
+    items = mantle.tray:map(function(tray)
         local shown = {}
         for _, item in ipairs(tray and tray.items or {}) do
             if item.status ~= "passive" then -- passive asks to be hidden
@@ -51,7 +51,7 @@ local tray_items = list {
         return shown
     end),
     key = function(item) return item.id end,
-    itemfn = function(item)
+    each = function(item)
         local wheel = 0 -- partial notches from a touchpad or high-resolution wheel
         return rect {
             padding = 4,
@@ -194,10 +194,10 @@ return {
             width = "fill",
             max_height = 480,
             scroll = scroll("tray_menu"),
-            source = menu_rows,
+            items = menu_rows,
             -- The same entry at two depths is two rows.
             key = function(row_data) return row_data.entry.id .. ":" .. row_data.depth end,
-            itemfn = menu_row,
+            each = menu_row,
         },
     },
 }

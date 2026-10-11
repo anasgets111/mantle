@@ -156,9 +156,9 @@ return {
                 list {
                     width = "fill",
                     spacing = 8,
-                    source = cards,
+                    items = cards,
                     key = function(item) return tostring(item.id) end,
-                    itemfn = card,
+                    each = card,
                 },
             },
         },
@@ -183,5 +183,5 @@ return {
 | Play sounds | Once at top level: `mantle.notifications:set_sound("normal", "/usr/share/sounds/freedesktop/stereo/message.oga")` |
 | Bottom-right corner | `anchor = { bottom = true, right = true }`, `margin = { bottom = 8, right = 8 }` |
 | Hide everything under do-not-disturb | `local quiet = notifications.dnd` |
-| Relative time | Add `text { content = mantle.system:map(function(system) return system and math.floor((system.time - item.timestamp) / 60) .. " min ago" or "" end) }` |
+| Relative time | Add `text { content = mantle.clock:map(function(system) return system and math.floor((system.time - item.timestamp) / 60) .. " min ago" or "" end) }` |
 | Mute one app | `mantle.notifications:set_app_muted("discord", true)` |

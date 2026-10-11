@@ -715,7 +715,7 @@ mod tests {
         test_client(std::path::Path::new("/no/such/shell.lua"))
     }
 
-    /// The whole `behind_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
+    /// The whole `compositor_blur` path from Lua to the rects the compositor is handed (ADR-0195), on the
     /// shape the design exists for: a full-screen surface whose click-catcher covers everything
     /// and whose only glass is one card. A `layer-rule` blurring the surface rect flattens the
     /// entire output; this must hand over the card alone.
@@ -734,7 +734,7 @@ mod tests {
                         column { margin = { top = 260, left = 200 }, children = {
                             rect {
                                 width = 620, height = 260, radius = 0,
-                                background = "#20222eb0", behind_blur = true,
+                                background = "#20222eb0", compositor_blur = true,
                             },
                         } },
                     } },
@@ -870,7 +870,7 @@ mod tests {
 
     /// ADR-0070 decision 1: reading starts it, an evaluation touching no capability costs nothing, and
     /// `__index` fires once per name because it moves the member onto the table (a `computed` in a
-    /// `list` `itemfn` reads `mantle.audio` once per row per layout pass; starting per read would be
+    /// `list` `each` reads `mantle.audio` once per row per layout pass; starting per read would be
     /// a frame per row per frame). A typo stays ordinary nil so the config line gets named; any other
     /// metamethod result would make `mantle.audioo:get()` fail inside the engine.
     #[test]
@@ -1274,7 +1274,7 @@ mod tests {
         client
             .loader
             .lua()
-            .load(r#"store = persistent_table { path = "/tmp/bar/", name = "settings.json", defaults = { theme = "mocha" } }"#)
+            .load(r#"store = persistent_table { path = "/tmp/bar/settings.json", defaults = { theme = "mocha" } }"#)
             .exec()
             .unwrap();
 
@@ -1293,19 +1293,14 @@ mod tests {
     #[test]
     fn a_stores_key_reads_the_value_the_supervisor_pushed_for_that_file() {
         let (client, _outbound_rx) = bare_client();
-        client
-            .loader
-            .lua()
-            .load(r#"store = persistent_table { path = "/tmp/bar", name = "state.json" }"#)
-            .exec()
-            .unwrap();
+        client.loader.lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
 
         client
             .apply_state_snapshot(StateSnapshot {
                 capability: "storage".to_string(),
                 revision: 1,
                 payload: serde_json::json!({
-                    "files": { "/tmp/bar/state.json": { "theme": "latte", "wallpaper": { "fit": "cover" } } }
+                    "contents": { "/tmp/bar/state.json": { "theme": "latte", "wallpaper": { "fit": "cover" } } }
                 }),
             })
             .unwrap();
@@ -1327,12 +1322,7 @@ mod tests {
     #[test]
     fn a_stores_write_names_the_same_file_the_declaration_did() {
         let (client, mut outbound_rx) = bare_client();
-        client
-            .loader
-            .lua()
-            .load(r#"store = persistent_table { path = "/tmp/bar", name = "state.json" }"#)
-            .exec()
-            .unwrap();
+        client.loader.lua().load(r#"store = persistent_table { path = "/tmp/bar/state.json" }"#).exec().unwrap();
         let _open = queued_frame(&mut outbound_rx);
 
         client.loader.lua().load(r#"store:set("theme", "latte")"#).exec().unwrap();
@@ -1356,11 +1346,24 @@ mod tests {
         let (client, _outbound_rx) = bare_client();
 
         let setup = r#"
-            first = persistent_table { path = "/tmp/bar", name = "state.json" }
-            second = persistent_table { path = "/tmp/bar/", name = "state.json" }
+            first = persistent_table { path = "/tmp/bar/state.json" }
+            second = persistent_table { path = "/tmp/bar/state.json" }
             same = rawequal(first, second)
         "#;
-        assert!(probe::<bool>(&client.loader, setup, "same"), "the joined path is the identity");
+        assert!(probe::<bool>(&client.loader, setup, "same"), "the file path is the identity");
+    }
+
+    #[test]
+    fn a_store_path_must_be_an_absolute_file_and_name_is_gone() {
+        let (client, _outbound_rx) = bare_client();
+        for (spec, needle) in [
+            (r#"{ path = "bar/state.json" }"#, "must be absolute"),
+            (r#"{ path = "/tmp/bar/" }"#, "must name a file"),
+            (r#"{ path = "/tmp/bar", name = "state.json" }"#, "name"),
+        ] {
+            let err = client.loader.lua().load(format!("persistent_table {spec}")).exec().unwrap_err().to_string();
+            assert!(err.contains(needle), "{spec}: {err}");
+        }
     }
 
     #[test]

@@ -18,23 +18,23 @@ uniform vec4 mantle_radii;
 uniform vec4 mantle_reach;
 uniform vec4 mantle_power;
 uniform vec4 mantle_round;
-// An `outline`'s contour as a polygon, two points to each element; `layout::node::outline::distance` mirrors it.
-uniform vec4 mantle_outline[128];
-uniform int mantle_outline_len;
+// A `shape`'s contour as a polygon, two points to each element; `layout::node::shape::distance` mirrors it.
+uniform vec4 mantle_shape[128];
+uniform int mantle_shape_len;
 
-vec2 mantle_outline_point(int i) {
-    vec4 pair = mantle_outline[i / 2];
+vec2 mantle_shape_point(int i) {
+    vec4 pair = mantle_shape[i / 2];
     return i % 2 == 0 ? pair.xy : pair.zw;
 }
 
 // Signed distance in logical px to the outline, negative inside; smoothed corners are superellipses (`mantle_power`).
 float mantle_sdf(vec2 p) {
-    if (mantle_outline_len > 0) {
+    if (mantle_shape_len > 0) {
         float nearest = 1e20;
         bool inside = false;
-        vec2 a = mantle_outline_point(mantle_outline_len - 1);
-        for (int i = 0; i < mantle_outline_len; i++) {
-            vec2 b = mantle_outline_point(i);
+        vec2 a = mantle_shape_point(mantle_shape_len - 1);
+        for (int i = 0; i < mantle_shape_len; i++) {
+            vec2 b = mantle_shape_point(i);
             vec2 e = b - a;
             vec2 w = p - a;
             float t = dot(e, e) > 0.0 ? clamp(dot(w, e) / dot(e, e), 0.0, 1.0) : 0.0;
@@ -127,7 +127,7 @@ pub(super) const EPILOGUE: &str = r#"
 void main() {
     mantle_effect();
     // Rounded corners: antialiased by the outline's own slope.
-    if (mantle_radii != vec4(0.0) || mantle_outline_len > 0) {
+    if (mantle_radii != vec4(0.0) || mantle_shape_len > 0) {
         float d = mantle_sdf(v_uv * u_size);
         fragColor *= 1.0 - smoothstep(-0.5 * fwidth(d), 0.5 * fwidth(d), d);
     }

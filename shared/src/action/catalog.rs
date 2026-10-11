@@ -96,8 +96,8 @@ pub enum RadioAction {
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum FilesAction {
-    /// Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively,
+pub enum FoldersAction {
+    /// Keeps `watched[path]` listing an absolute folder. `extensions` match case-insensitively,
     /// dot optional; omitted means every file.
     Watch {
         #[serde(deserialize_with = "super::absolute")]
@@ -105,7 +105,7 @@ pub enum FilesAction {
         #[serde(default, deserialize_with = "super::lua_list")]
         extensions: Vec<String>,
     },
-    /// Stops watching `path` and removes it from `folders`.
+    /// Stops watching `path` and removes it from `watched`.
     Unwatch {
         #[serde(deserialize_with = "super::absolute")]
         path: String,
@@ -378,7 +378,7 @@ pub struct SysinfoConfigure {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum StorageAction {
-    /// Loads an absolute JSON file into `files[path]`, filling missing top-level keys from
+    /// Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from
     /// `defaults`. `persistent_table` sends this; stored values win over defaults.
     Open {
         path: String,
@@ -541,16 +541,16 @@ pub enum WindowsAction {
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
-pub enum SystemAction {
+pub enum ClockAction {
     /// Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of
     /// it, and one lands at once.
-    Configure { settings: SystemConfigure },
+    Configure { settings: ClockConfigure },
 }
 
-/// `system:configure`'s table. An absent `interval` keeps the current one.
+/// `clock:configure`'s table. An absent `interval` keeps the current one.
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct SystemConfigure {
+pub struct ClockConfigure {
     /// Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every
     /// minute; `1` is the default and `0` stops them.
     pub interval: Option<u64>,

@@ -29,10 +29,10 @@ pub enum Signal {
     Windows,
     Power,
     Applications,
-    Files,
+    Folders,
     Storage,
     Processes,
-    System,
+    Clock,
     Privacy,
     Appearance,
     Updates,
@@ -132,14 +132,14 @@ capability_channels! {
         Appearance => appearance: (), Some(()) => Signal::Appearance;
         Updates => updates: (), Some(()) => Signal::Updates;
         Battery => battery: (), Some(()) => Signal::Battery;
-        System => system: (), Some(()) => Signal::System;
+        Clock => clock: (), Some(()) => Signal::Clock;
         Brightness => brightness: (), Some(()) => Signal::Brightness;
         Radio => radio: (), Some(()) => Signal::Radio;
         Workspaces => workspaces: (), Some(()) => Signal::Workspaces;
         Windows => windows: (), Some(()) => Signal::Windows;
         Power => power: (), Some(()) => Signal::Power;
         Applications => applications: (), Some(()) => Signal::Applications;
-        Files => files: (), Some(()) => Signal::Files;
+        Folders => folders: (), Some(()) => Signal::Folders;
         Storage => storage: (), Some(()) => Signal::Storage;
         Processes => processes: (), Some(()) => Signal::Processes;
             // `idle/controller.rs`'s inhibitor watch owns and sends state, like `Audio` (ADR-0141).

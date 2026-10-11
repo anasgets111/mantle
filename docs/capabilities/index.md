@@ -45,8 +45,8 @@ There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set
 | Running | A started backend runs for the Supervisor's lifetime. Its state survives reloads and Renderer replacement: a new generation gets every last snapshot replayed ([hydration](../glossary.md#capabilities)) |
 | Shared readers | `audio` and `privacy` share one PipeWire thread; `workspaces` and `windows` share one compositor reader. Whichever is read first starts it |
 | Buses | One system-bus connection for all. `tray`, `notifications`, `mpris`, `idle` and `appearance` each open their own session bus. Every D-Bus method call times out after 25 s |
-| Pushes | On backend events. `system`, `sysinfo`, `updates`, notification expiry, mpris's position recheck and the `brightness` fallback also run timers |
-| Renderer replaced | The departed generation's Bluetooth discovery stops, its pending Wi-Fi prompt is cancelled, its `files` watches, idle thresholds and inhibits are dropped, and its `process.run` children are reaped ([processes](../guide/processes.md#processrun)). An in-place reload keeps the generation |
+| Pushes | On backend events. `clock`, `sysinfo`, `updates`, notification expiry, mpris's position recheck and the `brightness` fallback also run timers |
+| Renderer replaced | The departed generation's Bluetooth discovery stops, its pending Wi-Fi prompt is cancelled, its `folders` watches, idle thresholds and inhibits are dropped, and its `process.run` children are reaped ([processes](../guide/processes.md#processrun)). An in-place reload keeps the generation |
 | Missing backend | Logged; the capability goes inert or stays `nil`. Each page's Backend section says which. Only `network` retries: a failed NetworkManager connection is rebuilt on the next start, which each new generation sends |
 | Built at boot | `lock`, so the session can relock after a Renderer dies. The `polkit` controller also exists at boot, but its agent registers on the first read of `mantle.polkit` or a `secure_submit` naming it |
 | Unknown name | `mantle.audioo` is plain `nil`, so the `:get()` after it raises on that line |
@@ -63,10 +63,10 @@ still exists.
 | A state field read off the capability (`mantle.audio.volume`) | Raises at the read: ``did you mean `mantle.audio:get().volume`?`` |
 | A misspelled action (`mantle.audio:set_volum(1)`) | Raises at the read: ``did you mean `mantle.audio:set_volume(...)`?`` |
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
-| Any other method but `get`, `map` and `on_change` on `appearance`, `battery`, `privacy` or `system` | Raises: they have no actions |
+| Any other method but `get`, `map` and `on_change` on `appearance`, `battery`, `privacy` or `clock` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
 | Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #1: expected a number, got string "loud"`, or `mantle.audio:set_volume: expects 1 argument, got 2` |
-| A value the type rules out | Raises at the call: an empty name, a relative `files:watch` path, a negative `hold_expiry` |
+| A value the type rules out | Raises at the call: an empty name, a relative `folders:watch` path, a negative `hold_expiry` |
 | A float where an `integer` goes | Raises: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
 | Arguments to an action that takes none | Raises: `mantle.network:scan(1)` is refused |
 | An ID, profile or MAC the Supervisor does not know | Does not raise: logged (`mantle log`) or ignored, as the capability's page says |
@@ -93,7 +93,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`battery`](battery.md) | Charge, state, time estimates | Check `present` first |
 | [`bluetooth`](bluetooth.md) | Adapter power, devices, discovery, pairing prompts | |
 | [`brightness`](brightness.md) | Screen backlight percentage | `nil` without a backlight |
-| [`files`](files.md) | Listings of watched folders | Lists nothing until `watch` |
+| [`folders`](folders.md) | Listings of watched folders | Lists nothing until `watch` |
 | [`idle`](idle.md) | Who holds the session awake; idle thresholds and inhibits | Methods, not actions |
 | [`keyboard`](keyboard.md) | Active layout, lock keys, keyboard backlight | `nil` until the compositor reports a layout or a lock key changes |
 | [`lock`](lock.md) | Lock held, authentication progress, last failure | No `unlock`: only a correct password unlocks |
@@ -108,7 +108,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 | [`secrets`](secrets.md) | Status of named Secret Service writes | Values go through `secure_submit`, never Lua |
 | [`storage`](storage.md) | Each `persistent_table` file | Use [`persistent_table`](../guide/scripting.md#persistent_table), not its actions |
 | [`sysinfo`](sysinfo.md) | CPU, memory, swap, temperatures, disks, GPU, network throughput | `nil` until `configure` |
-| [`system`](system.md) | Wall and monotonic clocks, once a second | |
+| [`clock`](clock.md) | Wall and monotonic clocks, once a second | |
 | [`tray`](tray.md) | Tray items, artwork, menus | Mantle hosts the StatusNotifierWatcher |
 | [`updates`](updates.md) | Pending packages, install progress, reboot needed | No schedule until `configure` |
 | [`windows`](windows.md) | Every toplevel: title, app ID, workspace, output, state | |
@@ -158,7 +158,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | Show a value that may not have arrived yet | Guard `nil` in the map: [battery label](battery.md#how-do-i) |
 | Change volume or brightness with the wheel | `on_wheel` plus `:get()` and an action, as in the example above; [brightness](brightness.md) |
 | Show an OSD when volume changes | `:on_change` writing state: [Volume OSD](../cookbook/volume-osd.md) |
-| Show a clock | `os.date` over `mantle.system.time`: [system](system.md) |
+| Show a clock | `os.date` over `mantle.clock.time`: [clock](clock.md) |
 | Give each monitor its own bar and workspaces | A function `child` gets the connector name; match it in `workspaces.outputs`: [workspaces](workspaces.md) |
 | Show CPU and memory use | `configure` once at top level, then map: [sysinfo](sysinfo.md) |
 | Name or iconify the focused app | `workspaces.active_client.app_id` through `applications.by_app_id`: [applications](applications.md) |

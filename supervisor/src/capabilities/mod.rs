@@ -48,8 +48,9 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
+pub mod clock;
 pub(crate) mod file_url;
-pub mod files;
+pub mod folders;
 pub mod idle;
 pub mod keyboard;
 mod latest_writes;
@@ -69,7 +70,6 @@ pub(crate) mod shm_icons;
 mod signals;
 pub mod storage;
 pub mod sysinfo;
-pub mod system;
 #[cfg(test)]
 pub(crate) mod test_support;
 pub mod tray;

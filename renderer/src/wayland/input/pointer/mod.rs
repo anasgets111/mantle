@@ -32,20 +32,20 @@ impl HoverUpdate {
     }
 }
 
-/// Innermost node with callable `on_click` or `submit = true` in a hit path (ADR-0050 decision 1).
+/// Innermost node with callable `on_click` or `submits_secure = true` in a hit path (ADR-0050 decision 1).
 /// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
 /// is transparent. `layout::node::resolve_declared` refuses an `on_click` that is not a function.
 fn click_target(path: &[&layout::ResolvedNode], point: layout::hit::LogicalPoint, floor: usize) -> Option<Clickable> {
     (floor..path.len()).rev().find_map(|depth| {
         let node = path[depth];
         let on_click = pointer::on_click.read(&node.properties).ok().flatten();
-        let submit = pointer::submit.read(&node.properties).is_ok_and(|on| on);
-        if on_click.is_none() && !submit {
+        let submits_secure = pointer::submits_secure.read(&node.properties).is_ok_and(|on| on);
+        if on_click.is_none() && !submits_secure {
             return None;
         }
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         let at = local_pointer(&path[..=depth], rect, point);
-        Some(Clickable { rect, handler: on_click, link: None, submit, at })
+        Some(Clickable { rect, handler: on_click, link: None, submits_secure, at })
     })
 }
 
@@ -146,9 +146,9 @@ struct Clickable {
     rect: LogicalRect,
     handler: Option<Function>,
     link: Option<String>,
-    /// `submit = true` sends the scope's armed `secure_submit` field on release, like Enter
+    /// `submits_secure = true` sends the scope's armed `secure_submit` field on release, like Enter
     /// (ADR-0114); it is the only pointer path to a password, with no Lua callback.
-    submit: bool,
+    submits_secure: bool,
     /// Pointer in the node's own coordinates ([`local_pointer`]).
     at: layout::hit::LogicalPoint,
 }
@@ -169,7 +169,7 @@ fn clickable(
         let rect = layout::hit::absolute_rect(&path[..=depth])?;
         let local = layout::hit::node_local(&path[..=depth], point)?;
         let href = layout::hit::link_under(node, local, shaping)?;
-        Some(Clickable { rect, handler: Some(on_link), link: Some(href), submit: false, at: local })
+        Some(Clickable { rect, handler: Some(on_link), link: Some(href), submits_secure: false, at: local })
     });
     link.or_else(|| click_target(path, point, 0))
 }
@@ -188,9 +188,9 @@ struct PointerHit {
     press: Option<PressTarget>,
 }
 
-/// A masked field, or the `submit` node that sends one.
+/// A masked field, or the `submits_secure` node that sends one.
 fn hits_a_secret(field: Option<&FieldTarget>, click: Option<&Clickable>) -> bool {
-    matches!(field, Some(FieldTarget::Masked { .. })) || click.is_some_and(|click| click.submit)
+    matches!(field, Some(FieldTarget::Masked { .. })) || click.is_some_and(|click| click.submits_secure)
 }
 
 fn focusable_hit(path: &[&layout::ResolvedNode]) -> Option<layout::scene::NodeId> {
@@ -381,7 +381,7 @@ impl App {
                     self.fire_on_drag(&instance_id, position, DragPhase::End);
                 }
                 let hit = self.hit_under(index, position);
-                // A field's own `submit` never sends: a right or middle click is no Enter.
+                // A field's own `submits_secure` never sends: a right or middle click is no Enter.
                 let submits = hit.field.is_none();
                 let hit = hit.click;
                 let fires = release_completes_click(
@@ -396,12 +396,12 @@ impl App {
                 }
                 if let Some(clickable) = hit.filter(|_| fires) {
                     match (clickable.link, clickable.handler) {
-                        // Links take `href`, not the paragraph rect; a link has no `submit`.
+                        // Links take `href`, not the paragraph rect; a link has no `submits_secure`.
                         (Some(href), Some(handler)) => {
                             call_logged(&handler, href, format_args!("{instance_id}: on_link"));
                         }
                         (_, handler) => {
-                            if clickable.submit && submits {
+                            if clickable.submits_secure && submits {
                                 self.prune_secure_focus();
                                 self.finish_secure_submit();
                             }
@@ -493,7 +493,7 @@ impl App {
         }
     }
 
-    /// Whether a press or release at `position` would reach a masked field or a `submit` node, which
+    /// Whether a press or release at `position` would reach a masked field or a `submits_secure` node, which
     /// `mantle input` refuses to touch.
     pub(in crate::wayland::input) fn reaches_a_secret(&self, index: usize, position: (f64, f64)) -> bool {
         let hit = self.hit_under(index, position);
@@ -688,7 +688,8 @@ mod tests {
         assert!(hits_a_secret(focused_field(&[&masked]).as_ref(), None));
         let plain = plain_textfield(&lua);
         assert!(!hits_a_secret(focused_field(&[&plain]).as_ref(), None));
-        let submit = with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "submit", Value::Boolean(true));
+        let submit =
+            with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "submits_secure", Value::Boolean(true));
         let click = click_target(&[&submit], point, 0).expect("a submit node is clickable");
         assert!(hits_a_secret(None, Some(&click)));
         let inert = hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), true);
@@ -858,15 +859,15 @@ mod tests {
         assert_eq!(drag_local(None, &gone, point), pressed, "surface gone");
     }
 
-    /// ADR-0114: `submit = true` alone makes a node a click target, with no Lua handler to call.
+    /// ADR-0114: `submits_secure = true` alone makes a node a click target, with no Lua handler to call.
     #[test]
     fn submit_alone_makes_any_node_a_click_target() {
         let lua = Lua::new();
         let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
-        std::rc::Rc::make_mut(&mut row.properties).insert("submit", Value::Boolean(true));
+        std::rc::Rc::make_mut(&mut row.properties).insert("submits_secure", Value::Boolean(true));
         let clickable =
             click_target(&[&row], layout::hit::LogicalPoint { x: 1.0, y: 1.0 }, 0).expect("submit arms a click");
-        assert!(clickable.handler.is_none() && clickable.submit);
+        assert!(clickable.handler.is_none() && clickable.submits_secure);
     }
 
     #[test]

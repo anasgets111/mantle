@@ -84,9 +84,9 @@ and box properties but `margin`, `align_h` and `align_v`, and stack their one `c
 | Numbers | Finite. A value outside a property's range is an error, not a clamp |
 | Colours | `"#RRGGBB"` or `"#RRGGBBAA"` ([colours](../guide/paint.md#colours)) |
 | Strings | Capped at 64 KB |
-| Arrays | `children`, `list.source` and `text` runs take at most 10000 elements. A `nil` hole in `children` is an error; in `list.source` and runs it ends the array |
+| Arrays | `children`, `list.items` and `text` runs take at most 10000 elements. A `nil` hole in `children` is an error; in `list.items` and runs it ends the array |
 | Tables | A table property (`padding`, `anchor`, `origin`, `transition`, an `animate` entry, a run, ...) refuses a key it does not take, so `{ topp = 4 }` names `topp` |
-| Callbacks and booleans | Every `on_*` takes only a function, and every `boolean` property (`visible`, `submit`, ...) only `true` or `false`. `on_click = "x"` or `submit = 1` is an error. For a conditional handler write `cond and fn or nil`: `false` is refused too |
+| Callbacks and booleans | Every `on_*` takes only a function, and every `boolean` property (`visible`, `submits_secure`, ...) only `true` or `false`. `on_click = "x"` or `submits_secure = 1` is an error. For a conditional handler write `cond and fn or nil`: `false` is refused too |
 
 ## Layout model
 
@@ -99,7 +99,7 @@ container either **flows** its children along one axis or **stacks** them on top
 | :--- | :--- | :--- |
 | `row` | Flow left to right | Horizontal |
 | `column` | Flow top to bottom | Vertical |
-| `list` | Flow, generated from `source` | `direction`: vertical by default |
+| `list` | Flow, generated from `items` | `direction`: vertical by default |
 | `rect`, every surface | Stack: each child gets the whole content box and aligns in it on its own. Later children paint over earlier ones | None |
 | `text`, `icon`, `image`, `capture`, `path`, `shader`, `textfield` | None (leaves) | None |
 
@@ -167,7 +167,7 @@ inside the node's own box, and matters only when that box is wider than the text
 
 ## Common properties
 
-The pointer handlers `on_click`, `on_drag`, `on_wheel` and `submit` are here, so any node takes
+The pointer handlers `on_click`, `on_drag`, `on_wheel` and `submits_secure` are here, so any node takes
 clicks: the innermost node under the pointer with a handler for the event wins, and a node without
 one lets the event through to the node around it ([pointer](../guide/input.md#pointer)).
 
@@ -196,7 +196,7 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `blend` | `"normal"\|"multiply"\|"screen"\|"overlay"\|"darken"\|"lighten"\|"color_dodge"\|"color_burn"\|"hard_light"\|"soft_light"\|"difference"\|"exclusion"\|"hue"\|"saturation"\|"color"\|"luminosity"\|"plus_lighter"\|"plus_darker"\|Bound` | `"normal"` | CSS `mix-blend-mode` onto what this surface painted under the node; see [Blend modes](../guide/paint.md#blend-modes) |
 | `animate` | `Animations\|Bound` | None | Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from` |
 | `id` | `string` | None | Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal |
-| `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click`, `submit` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
+| `accessible_name` | `string\|Bound` | `""` | Spoken name for a control. A node with `on_click`, `submits_secure` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers |
 | `focus_target` | `FocusHandle` | None | A `focus_target(name)` handle. `:request()` from an `on_click`, an `on_key`, or an edit typed or committed into a field (`on_change`, `on_submit`, `on_cancel`) moves keyboard focus here, if this node is a visible focusable control on that callback's keyboard-focused surface or a popup under it. A request from a key callback shows the focus outline, one from a click does not. Inert on a node that takes no focus. Any other value fails the pass |
 | `autofocus` | `boolean\|Bound` | `false` | Takes keyboard focus when the surface gets the keyboard or this node appears; the first in document order wins, field or control. A plain `textfield` arms under existing control focus unless a field is typing or a press just left it; its draft resets to `initial_text` (`""` when unset) and `on_change` is called with it. Any other control arms only while no control holds focus, and once: it never takes focus back after the user leaves it. Inert on a node that takes no focus |
 | `focus_ring` | `boolean\|Bound` | `true` | `false` keeps the engine's [focus outline](../guide/input.md#keyboard-controls-and-accessibility) off this node |
@@ -205,14 +205,14 @@ one lets the event through to the node around it ([pointer](../guide/input.md#po
 | `hover` | `Bound` | None | A `hover(name)` signal the engine sets while the pointer is over this node or its children ([hover](../guide/input.md#hover)) |
 | `pointer` | `Bound` | None | A `pointer(name)` signal the engine sets to the pointer's node-local `{ x, y }` while it is over this node or its children ([pointer position](../guide/input.md#pointer-position)) |
 | `geometry` | `Bound` | None | A `geometry(name)` signal the pass writes this node's surface-local rect into ([geometry](../guide/signals.md#geometry-read-a-nodes-laid-out-rect)) |
-| `cursor` | `Cursor\|Bound` | `"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submit` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
+| `cursor` | `Cursor\|Bound` | `"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submits_secure` and on a link, `"text"` on a `textfield`, else the arrow | One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins |
 | `on_hover` | `fun(hovered: boolean)` | None | Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node |
 | `on_key` | `fun(key: KeyPress): boolean?` | None | A key press or repeat, from the focused node up through its ancestors to the surface; `true` stops it ([key handlers](../guide/input.md#key-handlers)). Needs `accessible_name` to take focus |
 | `on_click` | `fun(rect: Rect, button: "left"\|"right"\|"middle", pointer: { x: number, y: number }, modifiers: Modifiers)` | None | On release over the same node that was pressed, with the same mouse button. `rect` is the node's surface-local box, before transforms. `pointer` is node-local and unclamped like `on_drag`'s; Enter, Space and screen-reader activation report the node's centre. `modifiers` is the keyboard's `Modifiers` at that moment, also for Enter and Space; every handler below ends with it, and it reads all false while none of this shell's surfaces has keyboard focus. A left press on a `textfield` goes to the field instead; its right and middle presses call its own `on_click`, never an ancestor's, and a masked field calls none |
 | `on_press` | `fun(rect: Rect, button: "left"\|"right"\|"middle", pointer: { x: number, y: number }, modifiers: Modifiers)` | None | On press of any mouse button, before `on_click` and before the release. `rect` and `pointer` are as in `on_click`. The only place `toplevel(id)` can move, resize or open the window menu, since compositors honour those for the press serial; an `on_drag` `"start"` works too. A `textfield` calls only its own, and only for the right and middle buttons; a left press edits the field and a masked field calls none |
 | `on_drag` | `fun(rect: Rect, pointer: { x: number, y: number }, phase: "start"\|"move"\|"end", modifiers: Modifiers)` | None | Left-button drag. `rect` is the node's box at each call, so it follows a node that moves under its own drag. `pointer` is node-local and unclamped. `"start"` on press, `"end"` on release (before `on_click`) or when the pointer leaves the surface |
 | `on_wheel` | `fun(rect: Rect, steps: number, modifiers: Modifiers)` | None | Vertical wheel in notches, positive away from the user, fractional on touchpads. The innermost handler or scroll container wins; on one node, the `scroll` |
-| `submit` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
+| `submits_secure` | `boolean\|Bound` | `false` | A click also submits the armed [secure field](../guide/input.md#secure-fields), like Enter. Works without `on_click` and runs before it |
 | `hittable` | `boolean\|Bound` | Inherited; `true` at the root | `false` lets the pointer through this node and its descendants to what is underneath; inherited, and a descendant's `true` takes it back, and this node's handlers still apply to it ([pass-through](../guide/input.md#hit-testing)) |
 <!-- End of the generated table. -->
 
@@ -238,7 +238,7 @@ The compositor draws the shape from its cursor theme.
 ## Box properties
 
 `rect`, `row`, `column` and the four surface roles also take `background`, `radius`,
-`corner_shape`, `corner_smoothing`, `border_color`, `border_width`, `clip`, `mask`, `behind_blur` and
+`corner_shape`, `corner_smoothing`, `border_color`, `border_width`, `clip`, `mask`, `compositor_blur` and
 `shadow_mode`, and `effect.backdrop`. They are documented on [paint](../guide/paint.md#box-properties). Leaves and `list`
 take none of them: wrap one in a `rect` for a background, border or rounded clip.
 

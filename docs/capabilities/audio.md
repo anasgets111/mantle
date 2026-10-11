@@ -6,11 +6,11 @@ PipeWire: output and input volume and mute, device lists, per-app streams and Bl
 
 ```lua
 list {
-    source = mantle.audio:map(function(audio)
+    items = mantle.audio:map(function(audio)
         return audio and audio.sinks or {}
     end),
     key = function(sink) return tostring(sink.id) end,
-    itemfn = function(sink)
+    each = function(sink)
         return rect {
             padding = 6,
             background = sink.active and "#45475A" or "#1E1E2E",

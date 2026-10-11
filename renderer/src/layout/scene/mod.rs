@@ -73,7 +73,7 @@ pub(crate) fn is_named_control(node: &crate::layout::ResolvedNode) -> bool {
     common::accessible_name.read(&node.properties).is_ok_and(|name| !name.is_empty())
         && (common::on_key.read(&node.properties).ok().flatten().is_some()
             || pointer::on_click.read(&node.properties).ok().flatten().is_some()
-            || pointer::submit.read(&node.properties).is_ok_and(|yes| yes))
+            || pointer::submits_secure.read(&node.properties).is_ok_and(|yes| yes))
 }
 
 impl NodeId {
@@ -802,7 +802,7 @@ pub(super) mod tests {
             r#"return panel { id = "bar", child = row { children = {
                    rect { id = "a", width = 10, height = 10, z = 2 },
                    rect { id = "b", width = 10, height = 10, z = -1 },
-                   list { source = { "c", "d" }, itemfn = function(name)
+                   list { items = { "c", "d" }, each = function(name)
                        return rect { id = name, width = 10, height = 10, z = name == "c" and 5 or 0 }
                    end } } } }"#,
         );
@@ -1169,7 +1169,7 @@ pub(super) mod tests {
                 r#"op = state("op", 2) w = state("w", 10) kids = state("kids", {})
                 return { panel { id = "bar", child = column { children = {
                     rect { width = 10, height = 10, opacity = op },
-                    list { source = { 1 }, itemfn = function() return rect { width = 5, height = 5, opacity = op } end },
+                    list { items = { 1 }, each = function() return rect { width = 5, height = 5, opacity = op } end },
                     rect { width = w, height = 10 },
                 } } }, panel { id = "dock", child = column { children = kids } } }"#,
             )
@@ -1340,9 +1340,9 @@ pub(super) mod tests {
                         text {{ content = clock, font_size = 14 }},
                         list {{
                             width = "fill", height = "fill", spacing = 6,
-                            source = source,
+                            items = source,
                             key = function(e) return e.id end,
-                            itemfn = function(e)
+                            each = function(e)
                                 local over = hover(e.id)
                                 return row {{ width = "fill", height = 96, spacing = 6, children = {{
                                     rect {{ width = 96, height = 96, radius = 8, hover = over,
@@ -1458,9 +1458,9 @@ pub(super) mod tests {
             local entries = {}
             for i = 1, 500 do entries[i] = { id = "e" .. i, label = "wallpaper " .. i } end
             return panel { id = "picker", child = list {
-                width = "fill", height = "fill", spacing = 6, scroll = s, source = state("source", entries),
+                width = "fill", height = "fill", spacing = 6, scroll = s, items = state("source", entries),
                 key = function(e) return e.id end,
-                itemfn = function(e)
+                each = function(e)
                     return row { width = "fill", height = 96, spacing = 6, children = {
                         rect { width = 96, height = 96, background = "#202020", radius = 8 },
                         rect { width = 96, height = 96, background = "#202020", radius = 8 },

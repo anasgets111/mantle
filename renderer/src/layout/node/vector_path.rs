@@ -323,7 +323,7 @@ impl Prop for PathCommands {
     }
 }
 
-/// Checks one command against its op and the subpath it continues, then appends it; `outline`'s
+/// Checks one command against its op and the subpath it continues, then appends it; `shape`'s
 /// parser shares it. A corner's `radius` and `corner_smoothing` follow its point in `points`.
 pub(super) fn push(
     name: &str,

@@ -141,9 +141,9 @@ function scroll(name) end
 ---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
 ---@field [string] Signal<any>
 
----A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
+---A JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
 ---`defaults` fills only missing keys, so adding one keeps the user's values.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
----@param spec { path: string, name: string, defaults?: table, [string]: "no such property" } `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
+---@param spec { path: string, defaults?: table, [string]: "no such property" } `path` is an absolute file path, not ending in `/`; otherwise raises.
 ---@return PersistentTable
 function persistent_table(spec) end

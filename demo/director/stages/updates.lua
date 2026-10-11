@@ -79,7 +79,7 @@ local popover = panel {
             width = "fill",
             padding = 26,
             spacing = 16,
-            outline = { commands = {
+            shape = { commands = {
                 { op = "M",      points = { 0, 28 } },
                 { op = "corner", points = { 0, 0 },                              radius = 28 },
                 { op = "corner", points = { { from = "right", px = -84 }, 0 },   radius = 4 },

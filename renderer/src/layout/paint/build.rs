@@ -6,7 +6,7 @@
 //! `ResolvedNode.rect` is parent-relative, so [`build_node`] accumulates an absolute origin as it
 //! descends instead of trusting `rect.x`/`rect.y` as already-absolute.
 
-use crate::layout::node::outline::inset;
+use crate::layout::node::shape::inset;
 use crate::layout::node::{
     self, Blend, BorderColor, BorderPaint, CaretStyle, ClipShape, EdgeInsets, Fill, PaintStyle, PathData, PathOp,
     Radii, Rgba, Ring, Segment, StyleRun,
@@ -1307,8 +1307,8 @@ mod tests {
         let lua = Lua::new();
         let src = format!(
             r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40,
-                child = rect {{ width = 40, height = 20, outline = {} }} }}"##,
-            node::outline::TAIL
+                child = rect {{ width = 40, height = 20, shape = {} }} }}"##,
+            node::shape::TAIL
         );
         let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 100.0 });
         let list = build_with_control(&tree, 1.0, &[], Some(tree.children[0].id));
@@ -1351,15 +1351,15 @@ mod tests {
         }
     }
 
-    /// On an `outline` the ring strokes the contour moved out by the offset plus half its width, in
+    /// On a `shape` the ring strokes the contour moved out by the offset plus half its width, in
     /// buffer pixels, inward for a negative offset.
     #[test]
     fn a_ring_follows_an_outline() {
         for (scale, offset) in [(1.0_f32, 2.0_f32), (2.0, -4.0)] {
             let src = format!(
                 r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = rect {{ width = 40,
-                    height = 20, outline = {}, ring = {{ width = 3, color = "#89b4ff", offset = {offset} }} }} }}"##,
-                node::outline::TAIL
+                    height = 20, shape = {}, ring = {{ width = 3, color = "#89b4ff", offset = {offset} }} }} }}"##,
+                node::shape::TAIL
             );
             let tree = resolved_surface(&Lua::new(), &src, LogicalSize { width: 200.0, height: 100.0 });
             let list = build(&tree, scale, None);
@@ -2271,7 +2271,7 @@ mod tests {
         for parent in [
             "rect { width = 40, height = 20, children = { CHILD } }",
             "column { width = 40, height = 20, children = { CHILD } }",
-            "list { width = 40, height = 20, source = { 1 }, itemfn = function() return CHILD end }",
+            "list { width = 40, height = 20, items = { 1 }, each = function() return CHILD end }",
         ] {
             assert_eq!(at(&list(parent, "#ffffff").commands, 64.0), Some(spill), "{parent}");
             let damage = list(parent, "#000000").damage_since(&list(parent, "#ffffff"), true);
@@ -2280,7 +2280,7 @@ mod tests {
         for parent in [
             r#"rect { width = 40, height = 20, clip = "box", children = { CHILD } }"#,
             r#"column { width = 40, height = 20, scroll = scroll("s"), children = { CHILD } }"#,
-            r#"list { width = 40, height = 20, scroll = scroll("l"), source = { 1 }, itemfn = function() return CHILD end }"#,
+            r#"list { width = 40, height = 20, scroll = scroll("l"), items = { 1 }, each = function() return CHILD end }"#,
             r#"rect { width = 40, height = 20, mask = { source = "/nonexistent/mask.svg" }, children = { CHILD } }"#,
         ] {
             assert_eq!(at(&list(parent, "#ffffff").commands, 64.0), None, "{parent}");

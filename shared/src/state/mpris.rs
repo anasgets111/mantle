@@ -67,7 +67,7 @@ pub struct PlayerState {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub position: Option<i64>,
     /// `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch
-    /// (not `mantle.system.monotonic`); only compare it with itself.
+    /// (not `mantle.clock.monotonic`); only compare it with itself.
     pub position_updated_at: i64,
     /// Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
     #[serde(skip_serializing_if = "Option::is_none")]

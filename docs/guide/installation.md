@@ -70,7 +70,7 @@ or Hyprland through that session's environment.
 | Surfaces | A Wayland compositor with `wlr-layer-shell-v1`; `ext-session-lock-v1` for `lock` |
 | `window`, `popup` | `xdg-shell`; these surfaces are skipped when absent |
 | `capture` | `ext-image-copy-capture-v1`, else `wlr-screencopy-v1` |
-| `behind_blur = true` | `ext-background-effect-v1`; ignored when absent |
+| `compositor_blur = true` | `ext-background-effect-v1`; ignored when absent |
 | Fonts | fontconfig (`fc-match`) |
 | Editor completion | lua-language-server |
 
@@ -98,7 +98,7 @@ capabilities your config uses. Each capability page says what happens when its b
 | [`updates`](../capabilities/updates.md#backend) | `pacman` and its `curl`, `dnf` or `apt-get`; `pkexec`, answered by the polkit agent; paru or yay for AUR |
 | [`applications`](../capabilities/applications.md#backend) | `$TERMINAL` for `Terminal=true` entries, `xdg-open` for `open_url` |
 
-`system`, `files`, `storage` and `processes` need nothing beyond the paths and programs the config
+`clock`, `folders`, `storage` and `processes` need nothing beyond the paths and programs the config
 names.
 
 ## Build from source

@@ -84,7 +84,7 @@ pub(crate) fn build(
 /// (ADR-0070 decision 1).
 ///
 /// `raw_set` installs the member, so the metamethod fires once per name and later reads are
-/// ordinary lookups. This matters because `computed({ mantle.audio }, f)` in a `list` `itemfn`
+/// ordinary lookups. This matters because `computed({ mantle.audio }, f)` in a `list` `each`
 /// indexes it once per row per layout pass.
 ///
 /// Returns `nil` for absent names, preserving ordinary-table behavior: `mantle.audioo` must remain

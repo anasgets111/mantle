@@ -1,6 +1,6 @@
-//! [`FilesController`] owns `mantle.files`, with one listing task per watched folder (ADR-0120).
+//! [`FoldersController`] owns `mantle.folders`, with one listing task per watched folder (ADR-0120).
 
-pub use shared::state::files::{FileEntry, FilesState, Folder};
+pub use shared::state::folders::{FileEntry, Folder, FoldersState};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -13,7 +13,7 @@ use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-use crate::capabilities::system::controller::epoch_seconds;
+use crate::capabilities::clock::controller::epoch_seconds;
 
 /// Relist 200ms after the last event. Forty wallpapers produce forty `CREATE`/`CLOSE_WRITE` pairs;
 /// one listing after the burst is the point.
@@ -26,24 +26,24 @@ struct Watch {
     extensions: Vec<String>,
 }
 
-pub struct FilesController {
-    state: Arc<Mutex<FilesState>>,
+pub struct FoldersController {
+    state: Arc<Mutex<FoldersState>>,
     watches: Arc<Mutex<HashMap<String, Watch>>>,
     events: UnboundedSender<()>,
 }
 
-impl FilesController {
+impl FoldersController {
     /// Builds with nothing watched. A config names folders on demand, so there is no startup scan.
     pub fn new(events: UnboundedSender<()>) -> Self {
-        FilesController {
-            state: Arc::new(Mutex::new(FilesState::default())),
+        FoldersController {
+            state: Arc::new(Mutex::new(FoldersState::default())),
             watches: Arc::new(Mutex::new(HashMap::new())),
             events,
         }
     }
 
-    pub fn snapshot(&self) -> FilesState {
-        self.state.lock().expect("files state mutex poisoned").clone()
+    pub fn snapshot(&self) -> FoldersState {
+        self.state.lock().expect("folders state mutex poisoned").clone()
     }
 
     /// Starts following `path`, or re-pushes the current listing for the same `extensions`. A
@@ -62,8 +62,8 @@ impl FilesController {
                 watches.remove(&key);
             }
             {
-                let mut state = self.state.lock().expect("files state mutex poisoned");
-                state.folders.insert(key.clone(), Folder::default());
+                let mut state = self.state.lock().expect("folders state mutex poisoned");
+                state.watched.insert(key.clone(), Folder::default());
             }
             let task = tokio::spawn(follow_folder(
                 PathBuf::from(&key),
@@ -87,7 +87,7 @@ impl FilesController {
         for watch in watches.into_values() {
             watch.task.abort();
         }
-        self.state.lock().expect("files state mutex poisoned").folders.clear();
+        self.state.lock().expect("folders state mutex poisoned").watched.clear();
         let _ = self.events.send(());
     }
 
@@ -97,7 +97,7 @@ impl FilesController {
         let removed = self.watches.lock().expect("files watches mutex poisoned").remove(&key);
         let Some(watch) = removed else { return };
         watch.task.abort();
-        self.state.lock().expect("files state mutex poisoned").folders.remove(&key);
+        self.state.lock().expect("folders state mutex poisoned").watched.remove(&key);
         let _ = self.events.send(());
     }
 }
@@ -145,7 +145,13 @@ pub fn list_folder(dir: &Path, extensions: &[String]) -> std::io::Result<Vec<Fil
     Ok(entries)
 }
 
-async fn relist(dir: &Path, key: &str, extensions: &[String], state: &Mutex<FilesState>, events: &UnboundedSender<()>) {
+async fn relist(
+    dir: &Path,
+    key: &str,
+    extensions: &[String],
+    state: &Mutex<FoldersState>,
+    events: &UnboundedSender<()>,
+) {
     let dir = dir.to_path_buf();
     let extensions = extensions.to_vec();
     let listed = tokio::task::spawn_blocking(move || list_folder(&dir, &extensions)).await;
@@ -155,13 +161,13 @@ async fn relist(dir: &Path, key: &str, extensions: &[String], state: &Mutex<File
         Err(err) => Folder { ready: true, entries: Vec::new(), error: Some(format!("listing task failed: {err}")) },
     };
     let changed = {
-        let mut guard = state.lock().expect("files state mutex poisoned");
-        match guard.folders.get(key) {
+        let mut guard = state.lock().expect("folders state mutex poisoned");
+        match guard.watched.get(key) {
             // The folder was unwatched while listing ran.
             None => return,
             Some(current) if *current == folder => false,
             Some(_) => {
-                guard.folders.insert(key.to_string(), folder);
+                guard.watched.insert(key.to_string(), folder);
                 true
             }
         }
@@ -190,7 +196,7 @@ async fn follow_folder(
     dir: PathBuf,
     key: String,
     extensions: Vec<String>,
-    state: Arc<Mutex<FilesState>>,
+    state: Arc<Mutex<FoldersState>>,
     events: UnboundedSender<()>,
 ) {
     // Watching comes before listing, so a file created in between is in one or the other.
@@ -285,25 +291,25 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "one.jpg");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = FilesController::new(tx);
+        let controller = FoldersController::new(tx);
         let key = dir.path().to_string_lossy().into_owned();
 
         controller.watch(&format!("{key}/"), vec!["jpg".to_string()]);
         let first = controller.snapshot();
-        assert_eq!(first.folders[&key], Folder::default(), "not ready until the listing lands");
+        assert_eq!(first.watched[&key], Folder::default(), "not ready until the listing lands");
 
         // First push is `watch`; second is the listing landing.
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
         let listed = controller.snapshot();
-        let folder = &listed.folders[&key];
+        let folder = &listed.watched[&key];
         assert!(folder.ready);
         assert_eq!(folder.error, None);
         assert_eq!(folder.entries.len(), 1);
         assert_eq!(folder.entries[0].name, "one.jpg");
 
         controller.unwatch(&key);
-        assert!(controller.snapshot().folders.is_empty());
+        assert!(controller.snapshot().watched.is_empty());
     }
 
     #[tokio::test]
@@ -311,7 +317,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "one.jpg");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = FilesController::new(tx);
+        let controller = FoldersController::new(tx);
         let key = dir.path().to_string_lossy().into_owned();
 
         controller.watch(&key, vec![]);
@@ -319,7 +325,7 @@ mod tests {
         rx.recv().await.unwrap();
 
         controller.forget_watches();
-        assert!(controller.snapshot().folders.is_empty(), "the replacement generation must not inherit the folder");
+        assert!(controller.snapshot().watched.is_empty(), "the replacement generation must not inherit the folder");
         rx.recv().await.unwrap();
 
         controller.forget_watches();
@@ -332,33 +338,33 @@ mod tests {
         touch(dir.path(), "one.jpg");
         touch(dir.path(), "two.png");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = FilesController::new(tx);
+        let controller = FoldersController::new(tx);
         let key = dir.path().to_string_lossy().into_owned();
 
         controller.watch(&key, vec!["jpg".to_string()]);
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
-        assert_eq!(controller.snapshot().folders[&key].entries.len(), 1);
+        assert_eq!(controller.snapshot().watched[&key].entries.len(), 1);
 
         controller.watch(&key, vec!["jpg".to_string()]);
         rx.recv().await.unwrap();
-        assert_eq!(controller.snapshot().folders[&key].entries.len(), 1, "same filter, listing kept");
+        assert_eq!(controller.snapshot().watched[&key].entries.len(), 1, "same filter, listing kept");
 
         controller.watch(&key, vec![]);
-        assert!(!controller.snapshot().folders[&key].ready, "a new filter starts over");
+        assert!(!controller.snapshot().watched[&key].ready, "a new filter starts over");
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
-        assert_eq!(controller.snapshot().folders[&key].entries.len(), 2);
+        assert_eq!(controller.snapshot().watched[&key].entries.len(), 2);
     }
 
     #[tokio::test]
     async fn a_missing_folder_reads_ready_with_an_error() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = FilesController::new(tx);
-        controller.watch("/nonexistent/mantle-files-test", vec![]);
+        let controller = FoldersController::new(tx);
+        controller.watch("/nonexistent/mantle-folders-test", vec![]);
         rx.recv().await.unwrap();
         rx.recv().await.unwrap();
-        let folder = &controller.snapshot().folders["/nonexistent/mantle-files-test"];
+        let folder = &controller.snapshot().watched["/nonexistent/mantle-folders-test"];
         assert!(folder.ready);
         assert!(folder.entries.is_empty());
         assert!(folder.error.is_some());

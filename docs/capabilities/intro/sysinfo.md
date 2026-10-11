@@ -28,7 +28,7 @@ text {
 The chips are picked once, when `sysinfo` starts; a driver loaded later needs a Supervisor
 restart. A reading pushes only when it changed a field. Intervals live in the Supervisor, so they
 outlast reloads until the next `configure`. Each read runs on the wall-clock second, first at the
-next one after `configure`, so it lands with `mantle.system.time`'s tick and the two can share one
+next one after `configure`, so it lands with `mantle.clock.time`'s tick and the two can share one
 layout pass.
 
 ## How do I…
@@ -65,4 +65,4 @@ text {
 | `net_rx_bytes_sec` stays `0` | Rate calculation needs two consecutive samples. Set `net_interval` to `1` or higher |
 | Network rates look high with bridges or tunnels | The counters include every non-loopback interface, including virtual ones; the same traffic may cross more than one |
 
-See also: [system](system.md) for clock time; [battery](battery.md) for charge and power; [network](network.md) for Wi-Fi and connectivity.
+See also: [clock](clock.md) for clock time; [battery](battery.md) for charge and power; [network](network.md) for Wi-Fi and connectivity.

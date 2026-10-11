@@ -574,10 +574,10 @@ fn children_this_pass(
 
 /// A list's items when its own build still holds (ADR-0269): `None` for each whose last build
 /// and resolve still hold, its kept declaration for each whose subtree reads alone were written
-/// (ADR-0293), and for each whose `itemfn` reads were written, its node built again (ADR-0273).
+/// (ADR-0293), and for each whose `each` reads were written, its node built again (ADR-0273).
 /// `None` overall when one of those changed kind or `id`, which only a whole build pairs.
 ///
-/// ponytail: that fallback calls those items' `itemfn` a second time this pass. Upgrade: hand the
+/// ponytail: that fallback calls those items' `each` a second time this pass. Upgrade: hand the
 /// nodes built here to the whole build.
 fn written_items(
     memo: &mut node::ListMemo,
@@ -717,7 +717,7 @@ fn finish(
         opacity: style.opacity,
         z: style.z,
         transform: style.transform,
-        behind_blur: style.behind_blur,
+        compositor_blur: style.compositor_blur,
         layout_style: style,
         properties,
         paint,
@@ -947,7 +947,7 @@ mod tests {
                 r#"
                 built = 0
                 return panel { id = "bar", child = column { visible = state("open", true),
-                    children = { list { source = state("items", { "a", "b" }), itemfn = function(name)
+                    children = { list { items = state("items", { "a", "b" }), each = function(name)
                         built = built + 1
                         return rect { width = 10, height = 10 }
                     end } } } }"#,
@@ -987,9 +987,9 @@ mod tests {
                 spacing = state("spacing", 0)
                 built = 0
                 return panel { id = "bar", child = column { visible = open, children = {
-                    list { spacing = spacing, source = { "a", "b" },
+                    list { spacing = spacing, items = { "a", "b" },
                         key = function(name) return name end,
-                        itemfn = function(name)
+                        each = function(name)
                             built = built + 1
                             return rect { id = name, width = 10, height = 10, animate = { move = 100 } }
                         end }
@@ -1041,8 +1041,8 @@ mod tests {
             .collect()
     }
 
-    /// A `clock` text beside a `list` of `items`, counting `itemfn` calls in `built`. `item` is the
-    /// body of `itemfn(name)`.
+    /// A `clock` text beside a `list` of `items`, counting `each` calls in `built`. `item` is the
+    /// body of `each(name)`.
     fn clock_beside_a_list(item: &str) -> (mlua::Lua, VirtualNode) {
         surface_from(&format!(
             r#"built = 0
@@ -1050,7 +1050,7 @@ mod tests {
             items = state("items", {{ "a", "b", "c" }})
             return panel {{ id = "bar", child = column {{ children = {{
                 text {{ content = clock }},
-                list {{ source = items, key = function(name) return name end, itemfn = function(name)
+                list {{ items = items, key = function(name) return name end, each = function(name)
                     built = built + 1
                     {item}
                 end }},
@@ -1108,7 +1108,7 @@ mod tests {
             end)
             return panel { id = "bar", child = column { children = {
                 text { content = clock },
-                list { source = source, limit = limit, itemfn = function(name)
+                list { items = source, limit = limit, each = function(name)
                     built = built + 1
                     return row { children = { text { content = name .. suffix:get() }, text { content = shown } } }
                 end },
@@ -1139,7 +1139,7 @@ mod tests {
 
         lua.load(r#"suffix:set("?")"#).exec().unwrap();
         apply(&mut scene);
-        assert_eq!(rows(&scene), ["ab?x", "ac?x", "b?x"], "a `:get()` inside `itemfn`");
+        assert_eq!(rows(&scene), ["ab?x", "ac?x", "b?x"], "a `:get()` inside `each`");
 
         lua.load(r#"shown:set("y")"#).exec().unwrap();
         apply(&mut scene);
@@ -1154,7 +1154,7 @@ mod tests {
         assert_eq!(rows(&scene), ["ab?y"], "the list's own `limit`");
     }
 
-    /// ADR-0273: a write one item's `itemfn` read builds that item alone, on the node it had.
+    /// ADR-0273: a write one item's `each` read builds that item alone, on the node it had.
     #[test]
     fn a_write_one_item_read_builds_that_item_alone() {
         let mut scene = Scene::new();
@@ -1172,7 +1172,7 @@ mod tests {
 
         lua.load(r#"state("on_b", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(built(), 4, "b's itemfn, and no other");
+        assert_eq!(built(), 4, "b's each, and no other");
         assert_eq!(list_contents(&scene), ["a", "*b", "c"]);
         assert_eq!(ids(&scene), first);
 
@@ -1182,7 +1182,7 @@ mod tests {
     }
 
     /// A signal bound as an item's property is the item's resolve, not its build: a write to it runs
-    /// the getters that read it, in every item, and no `itemfn`.
+    /// the getters that read it, in every item, and no `each`.
     #[test]
     fn a_signal_bound_in_an_item_resolves_again_without_building_it() {
         let mut scene = Scene::new();
@@ -1194,7 +1194,7 @@ mod tests {
             items = state("items", { "a", "b", "c" })
             return panel { id = "bar", child = column { children = {
                 text { content = "x" },
-                list { source = items, key = function(name) return name end, itemfn = function(name)
+                list { items = items, key = function(name) return name end, each = function(name)
                     built = built + 1
                     return row { children = { text { content = name }, rect { width = 4, background = shade } } }
                 end },
@@ -1246,7 +1246,7 @@ mod tests {
             r#"built = 0
             return panel { id = "bar", child = column { children = {
                 text { content = "x" },
-                list { source = { "a", "b" }, itemfn = function(name)
+                list { items = { "a", "b" }, each = function(name)
                     built = built + 1
                     return text { id = state("id_" .. name, name):get(), content = name }
                 end },
@@ -1258,7 +1258,7 @@ mod tests {
 
         lua.load(r#"state("id_b", "b"):set("z")"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert_eq!(built(), 5, "b's itemfn, then the whole build's two");
+        assert_eq!(built(), 5, "b's each, then the whole build's two");
         assert_eq!(list_contents(&scene), ["a", "b"]);
         assert_ne!(scene.surface("bar@TEST").unwrap().children[0].children[1].children[1].id, b);
     }
@@ -1278,7 +1278,7 @@ mod tests {
                 items = state("items", { "a" })
                 return panel { id = "bar", child = column { children = {
                     text { content = clock },
-                    list { source = items:map(function(all) return all end), itemfn = function(name)
+                    list { items = items:map(function(all) return all end), each = function(name)
                         return text { content = name }
                     end },
                 } } }"#,
@@ -1303,12 +1303,12 @@ mod tests {
             r#"built = 0
             snapshot = state("snapshot", { disks = { { name = "sda", used = 1 } }, net = 0 })
             return panel { id = "bar", child = list {
-                source = snapshot:map(function(s)
+                items = snapshot:map(function(s)
                     if s.net == "bad" then error("bad disk source") end
                     return s.disks
                 end),
                 key = function(disk) return disk.name end,
-                itemfn = function(disk)
+                each = function(disk)
                     built = built + 1
                     return text { content = disk.name .. disk.used }
                 end,
@@ -1390,7 +1390,7 @@ mod tests {
             r#"g = geometry("box")
             return panel { id = "bar", child = column { children = {
                 rect { width = 40, height = 10, geometry = g },
-                list { source = { "a" }, itemfn = function(name)
+                list { items = { "a" }, each = function(name)
                     return text { content = name .. math.floor(g:get().width) }
                 end },
             } } }"#,
@@ -1411,7 +1411,7 @@ mod tests {
             .load(
                 r#"return panel { id = "bar", child = column { children = {
                     text { content = clock },
-                    list { source = items, itemfn = function(name) return text { content = name .. "2" } end },
+                    list { items = items, each = function(name) return text { content = name .. "2" } end },
                 } } }"#,
             )
             .eval()
@@ -1459,7 +1459,7 @@ mod tests {
     fn a_child_removed_while_hidden_plays_no_exit_on_thaw() {
         let (mut scene, lua, shaping, surface) = applied(
             r#"panel { id = "bar", child = column { visible = state("open", true),
-                children = { list { source = state("items", { "a", "b" }), itemfn = function(name)
+                children = { list { items = state("items", { "a", "b" }), each = function(name)
                     return rect { id = name, width = 10, height = 10,
                         animate = { exit = { duration = 100, opacity = 0 } } }
                 end } } } }"#,
@@ -1540,13 +1540,13 @@ mod tests {
     }
 
     /// A misspelled key fails while the parent reads its `children`, before the per-child walk. A
-    /// `list` repeats its `itemfn`'s mistake on every item, which is one mistake.
+    /// `list` repeats its `each`'s mistake on every item, which is one mistake.
     #[test]
     fn a_failed_pass_reports_every_misspelled_child_and_a_list_mistake_once() {
         let (lua, surface) = surface_from(
             r##"panel { id = "bar", child = column { children = {
                    row { children = { text { contnet = "a" }, rect { color = "#fff" } } },
-                   list { source = { 1, 2, 3 }, itemfn = function(n) return text { contnet = n } end },
+                   list { items = { 1, 2, 3 }, each = function(n) return text { contnet = n } end },
                } } }"##,
         );
 
@@ -2464,8 +2464,8 @@ mod tests {
     fn a_list_resolves_one_child_per_source_element_in_source_order() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list {
-                source = { 10, 20, 30 },
-                itemfn = function(item) return rect { width = item, height = 5 } end,
+                items = { 10, 20, 30 },
+                each = function(item) return rect { width = item, height = 5 } end,
             } }"#,
         );
         let list = &scene.surface("bar@TEST").unwrap().children[0];
@@ -2479,13 +2479,13 @@ mod tests {
     fn a_list_with_key_keeps_existing_items_node_ids_when_a_new_element_is_inserted_at_the_front() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let itemfn = r#"function(item) return rect { width = item.n, height = 1 } end"#;
+        let each = r#"function(item) return rect { width = item.n, height = 1 } end"#;
         let key = r#"function(item) return item.id end"#;
         let (_lua1, surface_v1) = surface_from(&format!(
             r#"panel {{ id = "bar", child = list {{
-                source = {{ {{ id = "a", n = 1 }}, {{ id = "b", n = 2 }}, {{ id = "c", n = 3 }} }},
+                items = {{ {{ id = "a", n = 1 }}, {{ id = "b", n = 2 }}, {{ id = "c", n = 3 }} }},
                 key = {key},
-                itemfn = {itemfn},
+                each = {each},
             }} }}"#
         ));
         apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
@@ -2496,9 +2496,9 @@ mod tests {
 
         let (_lua2, surface_v2) = surface_from(&format!(
             r#"panel {{ id = "bar", child = list {{
-                source = {{ {{ id = "z", n = 9 }}, {{ id = "a", n = 1 }}, {{ id = "b", n = 2 }}, {{ id = "c", n = 3 }} }},
+                items = {{ {{ id = "z", n = 9 }}, {{ id = "a", n = 1 }}, {{ id = "b", n = 2 }}, {{ id = "c", n = 3 }} }},
                 key = {key},
-                itemfn = {itemfn},
+                each = {each},
             }} }}"#
         ));
         apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
@@ -2518,15 +2518,14 @@ mod tests {
     fn a_list_without_key_rebuilds_every_item_from_the_insertion_point_on() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let itemfn = r#"function(item) return rect { width = item, height = 1 } end"#;
+        let each = r#"function(item) return rect { width = item, height = 1 } end"#;
         let (_lua1, surface_v1) =
-            surface_from(&format!(r#"panel {{ id = "bar", child = list {{ source = {{ 1 }}, itemfn = {itemfn} }} }}"#));
+            surface_from(&format!(r#"panel {{ id = "bar", child = list {{ items = {{ 1 }}, each = {each} }} }}"#));
         apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
         let x_id = scene.surfaces.get("bar@TEST").unwrap().children[0].children[0].id;
 
-        let (_lua2, surface_v2) = surface_from(&format!(
-            r#"panel {{ id = "bar", child = list {{ source = {{ 2, 1 }}, itemfn = {itemfn} }} }}"#
-        ));
+        let (_lua2, surface_v2) =
+            surface_from(&format!(r#"panel {{ id = "bar", child = list {{ items = {{ 2, 1 }}, each = {each} }} }}"#));
         apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
         let list = &scene.surfaces.get("bar@TEST").unwrap().children[0].children;
 
@@ -2547,9 +2546,9 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = list {
-                source = { { id = "dup" }, { id = "dup" } },
+                items = { { id = "dup" }, { id = "dup" } },
                 key = function(item) return item.id end,
-                itemfn = function(item) return rect { width = 1, height = 1 } end,
+                each = function(item) return rect { width = 1, height = 1 } end,
             } }"#,
         );
         let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
@@ -2562,22 +2561,22 @@ mod tests {
     #[test]
     fn a_list_with_no_source_lays_out_empty() {
         let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = list { itemfn = function(item) return rect {} end } }"#);
+            applied(r#"panel { id = "bar", child = list { each = function(item) return rect {} end } }"#);
         assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty());
     }
 
     #[test]
     fn a_malformed_list_is_a_layout_error_naming_the_property() {
         let shaping = ShapingHandle::spawn();
-        let item = "itemfn = function(item) return rect {} end";
+        let item = "each = function(item) return rect {} end";
         for (fields, property, needle) in [
-            (format!("source = 5, {item}"), "source", ""),
-            ("source = { 1 }".to_string(), "itemfn", ""),
-            (r#"source = { 1 }, itemfn = "nope""#.to_string(), "itemfn", ""),
-            (r#"source = { 1 }, itemfn = function(item) error("boom") end"#.to_string(), "itemfn", "boom"),
-            ("source = { 1 }, itemfn = function(item) return 5 end".to_string(), "itemfn", ""),
-            (format!(r#"source = {{ 1 }}, key = "nope", {item}"#), "key", ""),
-            (format!("source = {{ 1 }}, key = function(item) return 5 end, {item}"), "key", ""),
+            (format!("items = 5, {item}"), "items", ""),
+            ("items = { 1 }".to_string(), "each", ""),
+            (r#"items = { 1 }, each = "nope""#.to_string(), "each", ""),
+            (r#"items = { 1 }, each = function(item) error("boom") end"#.to_string(), "each", "boom"),
+            ("items = { 1 }, each = function(item) return 5 end".to_string(), "each", ""),
+            (format!(r#"items = {{ 1 }}, key = "nope", {item}"#), "key", ""),
+            (format!("items = {{ 1 }}, key = function(item) return 5 end, {item}"), "key", ""),
         ] {
             let mut scene = Scene::new();
             let (lua, surface) = surface_from(&format!(r#"panel {{ id = "bar", child = list {{ {fields} }} }}"#));
@@ -2591,9 +2590,8 @@ mod tests {
 
     #[test]
     fn a_list_with_an_empty_source_has_no_children_and_does_not_error() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = list { source = {}, itemfn = function(item) return rect {} end } }"#,
-        );
+        let (scene, _lua, _shaping, _surface) =
+            applied(r#"panel { id = "bar", child = list { items = {}, each = function(item) return rect {} end } }"#);
         let list = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(list.children.len(), 0);
     }
@@ -2603,8 +2601,8 @@ mod tests {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list {
                 spacing = 3,
-                source = { 1, 2 },
-                itemfn = function(item) return rect { width = 6, height = 10 } end,
+                items = { 1, 2 },
+                each = function(item) return rect { width = 6, height = 10 } end,
             } }"#,
         );
         let list = &scene.surface("bar@TEST").unwrap().children[0];

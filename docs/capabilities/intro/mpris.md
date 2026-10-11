@@ -38,13 +38,13 @@ rect {
 
 | Task | Answer |
 | :--- | :--- |
-| Show a live progress bar | Stamp each new `position_updated_at` with `mantle.system.monotonic` in `on_change`, then add the seconds since: [Media player](../cookbook/media-player.md) |
+| Show a live progress bar | Stamp each new `position_updated_at` with `mantle.clock.monotonic` in `on_change`, then add the seconds since: [Media player](../cookbook/media-player.md) |
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `position` stands still while playing | It is the offset at `position_updated_at`, not polled. Extrapolate, as above |
-| `position_updated_at` compared with `mantle.system.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `system` started. Only compare it with itself |
+| `position_updated_at` compared with `mantle.clock.monotonic` gives nonsense | Different clocks and units: `CLOCK_MONOTONIC` microseconds against seconds since `clock` started. Only compare it with itself |
 
 See also: [Media player](../cookbook/media-player.md) recipe.

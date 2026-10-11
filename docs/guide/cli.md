@@ -103,9 +103,7 @@ Flags and the command may come in any order. `-V` and `-h` win over anything aft
 | `-f`, `--follow` | `log` only | Follows the log until its shell exits |
 | `--pid <pid>`, `--pid=<pid>` | `set`, `toggle`, `call`, `input`, `log`, `stop` | Addresses the shell with that pid, as `mantle list` shows it. Refused together with `-c` |
 
-A flag given to a command it does not apply to is an error, not ignored. `--detached` is the flag
-`-d` passes to the copy it starts; typed by hand, it is ignored and the shell runs in the
-foreground.
+A flag given to a command it does not apply to is an error, not ignored.
 
 Log levels for a run:
 
@@ -221,7 +219,7 @@ real layout code, on one 1920x1080 output plus one per `output` name a panel pin
 | Pass | Capabilities read | Catches |
 | :--- | :--- | :--- |
 | `before capability data` | `nil`, as at start before the first push | Code that forgets the `nil` case |
-| `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1`, every boolean `true`, every enum its first variant | Typos and bad properties in a list `itemfn` or a branch that only shows with data |
+| `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1`, every boolean `true`, every enum its first variant | Typos and bad properties in a list `each` or a branch that only shows with data |
 | `with alternate sample data` | The same push with every boolean `false` and every enum its last variant | A branch taken only on `false` or a later variant, such as unmuted audio or a launcher that drops `no_display` entries |
 | `with empty sample lists` | The first push with every list and map empty | An empty-state branch, such as "No notifications" |
 
@@ -253,7 +251,7 @@ stack traceback:
 | Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` (`false` for an application's `no_display`) and non-empty lists |
 | A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
 | Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |
-| Errors in `:map`, `computed`, list `itemfn`s and function `child` builders, with `nil` and with sample capabilities | Sizes that only fail on a smaller or scaled output |
+| Errors in `:map`, `computed`, list `each`s and function `child` builders, with `nil` and with sample capabilities | Sizes that only fail on a smaller or scaled output |
 | More than one `lock`, and a missing `shell.lua` | |
 
 When the stubs `mantle init` wrote differ from this `mantle`, `check` also prints one line asking
@@ -292,7 +290,7 @@ included, until a `leave` or real pointer motion; a `press` with no `release` st
 Refused, with an error on stderr and exit 1:
 
 - a `lock` surface;
-- a press or release over a `secure_submit` field or a `submit = true` node, and any `key` or `type`
+- a press or release over a `secure_submit` field or a `submits_secure = true` node, and any `key` or `type`
   while a `secure_submit` field holds focus, including the real keyboard's;
 - `ctrl+c` and `ctrl+v`, which need the compositor's clipboard;
 - an unknown, ambiguous or hidden surface, a pointer button with no position, a bad combo or a

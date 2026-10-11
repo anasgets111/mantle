@@ -55,13 +55,13 @@ roster! {
     Lock => "lock", "The session lock: whether it is held, authentication progress and the last failure.",
     Polkit => "polkit", "The pending polkit authentication request, its progress and the last failure.",
     Battery => "battery", "UPower: system battery charge, state and time estimates, plus peripheral batteries.",
-    System => "system", "Wall and monotonic clocks, pushed once a second until `configure` sets the interval.",
+    Clock => "clock", "Wall and monotonic clocks, pushed once a second until `configure` sets the interval.",
     Brightness => "brightness", "The screen backlight percentage; `nil` without a backlight.",
     Workspaces => "workspaces", "Workspaces per output, special workspaces and the focused window.",
     Radio => "radio", "rfkill: soft and hard block state per radio kind; `nil` without `/dev/rfkill`.",
     Power => "power", "Power profiles, mains or battery, and battery power draw.",
     Applications => "applications", "Installed desktop entries, indexed by window `app_id`.",
-    Files => "files", "Live file listings of watched folders.",
+    Folders => "folders", "Live file listings of watched folders.",
     Storage => "storage", "Each `persistent_table` JSON file, keyed by absolute path.",
     Idle => "idle", "Idle inhibitors, plus threshold and inhibit methods.",
     Processes => "processes", "Programs declared with `session_process`: running state, start time and last exit.",
@@ -112,7 +112,7 @@ impl Capability {
             ],
             Capability::Brightness => &["set"],
             Capability::Radio => &["set_blocked", "set_all_blocked"],
-            Capability::Files => &["watch", "unwatch"],
+            Capability::Folders => &["watch", "unwatch"],
             Capability::Processes => &["declare", "start", "signal", "stop"],
             Capability::Keyboard => &["set_backlight", "switch_layout"],
             Capability::Lock => &["lock", "set_unlock_animation"],
@@ -172,7 +172,7 @@ impl Capability {
             Capability::Windows => {
                 &["focus", "close", "set_fullscreen", "set_minimized", "set_maximized", "move_to_workspace"]
             }
-            Capability::System => &["configure"],
+            Capability::Clock => &["configure"],
             Capability::Appearance
             | Capability::Battery
             | Capability::Idle

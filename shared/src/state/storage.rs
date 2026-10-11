@@ -10,5 +10,5 @@ use std::collections::BTreeMap;
 pub struct StorageState {
     /// Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until
     /// declared. Another writer's change to the file replaces it, unsaved writes included.
-    pub files: BTreeMap<String, Value>,
+    pub contents: BTreeMap<String, Value>,
 }

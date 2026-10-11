@@ -602,7 +602,7 @@ mod meta_stub_tests {
             }
             let literal = match *member {
                 // The engine resolves a handle before sibling rules apply, so wrap a sibling's
-                // literal: `image.source` needs a string signal, `list.source` an array. The bare
+                // literal: `image.source` needs a string signal, `list.items` an array. The bare
                 // `hover`/`geometry`/`scroll`/`elided` fall back to their own rows.
                 "Bound" => own
                     .as_ref()
@@ -687,7 +687,7 @@ mod meta_stub_tests {
             }
             ("ring", _) => return Some("{ width = 2.5, color = \"#112233\", offset = 1 }".to_string()),
             ("commands", "PathCommand[]") => return Some("{ { op = \"M\", points = { 1, 2 } } }".to_string()),
-            ("outline", "Outline") => {
+            ("shape", "Shape") => {
                 return Some(
                     "{ commands = { { op = \"M\", points = { 0, 0 } }, { op = \"corner\", points = { \"100%\", 0 }, \
                      radius = 4 }, { op = \"L\", points = { { from = \"center\", px = 2 }, { from = \"bottom\" } } }, \
@@ -714,10 +714,10 @@ mod meta_stub_tests {
             ("focus_target", _) => return Some("focus_target(\"probe\")".to_string()),
             ("reset_on_close", "ScrollSignal") => return Some("scroll(\"probe_reset\")".to_string()),
             ("reset_on_close", _) => return Some("state(\"probe_reset\", 1)".to_string()),
-            // Literal-array `list.source` is fixed for the pass; real lists therefore use the
+            // Literal-array `list.items` is fixed for the pass; real lists therefore use the
             // adjacent signal (ADR-0113 decision 3).
-            ("source", "any[]") => return Some("{ 1, 2 }".to_string()),
-            ("itemfn", _) => return Some("function(item) return rect {} end".to_string()),
+            ("items", "any[]") => return Some("{ 1, 2 }".to_string()),
+            ("each", _) => return Some("function(item) return rect {} end".to_string()),
             // `panel`/`lock` per-output builder (ADR-0121), called with `"PROBE"` here.
             ("child", shape) if shape.contains("fun(") => {
                 return Some("function(output) return rect {} end".to_string());

@@ -355,14 +355,14 @@ pub(crate) mod tests {
             }
             ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble])
         };
-        let root = bubble(ClipShape::Box, crate::layout::node::outline::tail());
+        let root = bubble(ClipShape::Box, crate::layout::node::shape::tail());
         let depth = |x: f32, y: f32| hit_path(&root, LogicalPoint { x, y }).len();
         assert_eq!((depth(32.0, 52.0), depth(32.0, 32.0)), (2, 2), "the tail and the body");
         assert_eq!((depth(16.5, 16.5), depth(37.5, 54.5)), (1, 1), "a cut corner and beside the tail");
         // The same square twice round: even-odd calls its middle outside, non-zero (paint) inside.
         let square = "{ op = 'L', points = { '100%', 0 } }, { op = 'L', points = { '100%', '100%' } }, \
                       { op = 'L', points = { 0, '100%' } }, { op = 'L', points = { 0, 0 } }";
-        let twice = crate::layout::node::outline::parse(&format!(
+        let twice = crate::layout::node::shape::parse(&format!(
             "{{ commands = {{ {{ op = 'M', points = {{ 0, 0 }} }}, {square}, {square}, {{ op = 'Z', points = {{}} }} }} }}"
         ))
         .unwrap()
@@ -379,7 +379,7 @@ pub(crate) mod tests {
             let child = ResolvedNode::test("rect", (0.0, 0.0, 32.0, 40.0), vec![]);
             let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![child]).with_clip(clip);
             if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
-                radius.2 = Some(crate::layout::node::outline::tail());
+                radius.2 = Some(crate::layout::node::shape::tail());
             }
             ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble])
         };
@@ -466,9 +466,14 @@ pub(crate) mod tests {
         assert_eq!(cursor_under(&hit_path(&handled, point), point, &shaping), CursorIcon::Default);
         assert_eq!(cursor_under(&[], point, &shaping), CursorIcon::Default, "off every node");
 
-        let submit = with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "submit", Value::Boolean(true));
+        let submit =
+            with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "submits_secure", Value::Boolean(true));
         let point = LogicalPoint { x: 10.0, y: 10.0 };
-        assert_eq!(cursor_under(&hit_path(&submit, point), point, &shaping), CursorIcon::Pointer, "submit = true");
+        assert_eq!(
+            cursor_under(&hit_path(&submit, point), point, &shaping),
+            CursorIcon::Pointer,
+            "submits_secure = true"
+        );
         let wheel = with(ResolvedNode::test("column", (0.0, 0.0, 50.0, 20.0), vec![]), "on_wheel", function(&lua));
         assert_eq!(cursor_under(&hit_path(&wheel, point), point, &shaping), CursorIcon::Pointer, "on_wheel only");
         let leaf = with(ResolvedNode::test("icon", (0.0, 0.0, 16.0, 16.0), vec![]), "on_drag", function(&lua));

@@ -44,7 +44,7 @@ pub struct NotificationAction {
 pub struct Notification {
     /// Server id, from `1`; a replacement keeps the id it replaces.
     pub id: u32,
-    /// Arrival time, Unix seconds; age is `mantle.system.time - timestamp`. A replacement restamps it.
+    /// Arrival time, Unix seconds; age is `mantle.clock.time - timestamp`. A replacement restamps it.
     pub timestamp: i64,
     /// Sending application, truncated to 64 bytes.
     pub app_name: String,

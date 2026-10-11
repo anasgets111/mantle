@@ -6,10 +6,10 @@ local GIF = "/usr/share/doc/satty/assets/usage.gif"
 local PER_ROW = 6
 local GRID = scroll("hs_gallery")
 
-mantle.files:watch(FOLDER, { "svg", "png" })
+mantle.folders:watch(FOLDER, { "svg", "png" })
 
-local rows = mantle.files:map(function(files)
-    local listing = files and files.folders[FOLDER]
+local rows = mantle.folders:map(function(folders)
+    local listing = folders and folders.watched[FOLDER]
     local entries = listing and listing.entries or {}
     local out = {}
     for i = 1, #entries, PER_ROW do
@@ -46,7 +46,7 @@ return {
             min_size = { width = 340, height = 420 },
             max_size = { width = 340, height = 420 },
             visible = visible,
-            on_close = close,
+            on_close_request = close,
             child = column {
                 width = "fill",
                 height = "fill",
@@ -60,9 +60,9 @@ return {
                         height = "fill",
                         spacing = 6,
                         scroll = GRID,
-                        source = rows,
+                        items = rows,
                         key = row_key,
-                        itemfn = tile_row,
+                        each = tile_row,
                     },
                 },
             },

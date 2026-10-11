@@ -7,7 +7,7 @@ use femtovg::{Canvas, Color, Paint, Path, Solidity};
 
 use super::vector_path::femtovg_path;
 use crate::layout::node::corner::Squircle;
-use crate::layout::node::outline::inset;
+use crate::layout::node::shape::inset;
 use crate::layout::node::{BorderColor, BorderPaint, EdgeInsets, Fill, Gradient, GradientShape, Radii, Rgba};
 use crate::text::snap::{LogicalRect, snap_border_band};
 

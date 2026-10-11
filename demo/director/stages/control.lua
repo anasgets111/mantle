@@ -12,8 +12,7 @@ local open = state("control_open", false)
 local mapped = computed({ open, delay(open, 300) }, function(now, was) return now or was end)
 
 local settings = persistent_table {
-    path = mantle.config_dir .. "/state",
-    name = "settings.json",
+    path = mantle.config_dir .. "/state/settings.json",
     defaults = { dnd = false, night_light = false },
 }
 

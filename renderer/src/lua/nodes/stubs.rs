@@ -7,9 +7,9 @@
 //! supply their unions and projections beside their parsers.
 
 use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
-use crate::layout::node::Outline;
-use crate::layout::node::outline::{AnchorInput, OutlineCommand};
+use crate::layout::node::Shape;
 use crate::layout::node::prop::Keyword;
+use crate::layout::node::shape::{AnchorInput, ShapeCommand};
 use crate::layout::node::{
     Align, Animatable, AnimationSpec, Animations, Axes, BackdropKeys, Blend, BorderColor, CaretKeys, CornersInput,
     Easing, EdgesInput, EffectKeys, ExitBlock, Gradient, GradientStop, KeyframeInput, Mask, MoveSpec, PathCommand,
@@ -22,8 +22,8 @@ use crate::text::snap::LogicalRect;
 const NODE_SHAPES: [fn(String) -> String; 26] = [
     fill::<PathCommand>,
     fill::<AnchorInput>,
-    fill::<OutlineCommand>,
-    fill::<Outline>,
+    fill::<ShapeCommand>,
+    fill::<Shape>,
     fill::<EdgesInput>,
     fill::<CornersInput>,
     fill::<BorderColor>,
@@ -342,10 +342,10 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias Ring {Ring}
 ---@alias GradientStop {GradientStop} Position `[0, 1]` and colour. Positions ascend.
 ---@alias PathCommand {PathCommand}
----@alias OutlineAnchor {OutlineAnchor}
----@alias OutlinePoint number|Percent|OutlineAnchor
----@alias OutlineCommand {OutlineCommand}
----@alias Outline {Outline}
+---@alias ShapeAnchor {ShapeAnchor}
+---@alias ShapePoint number|Percent|ShapeAnchor
+---@alias ShapeCommand {ShapeCommand}
+---@alias Shape {Shape}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
 ---@alias BackgroundLayer Color|Gradient|Bound|{ fill: Color|Gradient|Bound, blend?: Blend|Bound, [string]: "no such property" } First on top. `{ fill = .., blend = .. }` is the table form of a colour or gradient; `blend` defaults to `"normal"`.
 ---@alias Mask {Mask} Exactly one of a `Gradient`, an image `source` path (alpha only, stretched over the box), or `node` naming a direct child id (alpha in its laid-out position). `invert` swaps kept and cut.

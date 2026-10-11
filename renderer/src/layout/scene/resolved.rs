@@ -24,7 +24,7 @@ impl ResolvedNode {
             opacity: 1.0,
             z: 0.0,
             transform: node::Transform::default(),
-            behind_blur: false,
+            compositor_blur: false,
             properties: std::rc::Rc::default(),
             paint: None,
             mask_target: None,
@@ -94,7 +94,7 @@ pub(crate) struct LayoutStyle {
     pub(super) opacity: f32,
     pub(super) z: f32,
     pub(super) transform: node::Transform,
-    pub(super) behind_blur: bool,
+    pub(super) compositor_blur: bool,
     /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
     pub(crate) effect: node::Effect,
 }
@@ -129,7 +129,7 @@ impl LayoutStyle {
             // -0.0 would sort below its z = 0 siblings.
             z: common::z.read(properties)? + 0.0,
             transform: crate::layout::node::parse_transform(properties)?,
-            behind_blur: paint::behind_blur.read(properties)?,
+            compositor_blur: paint::compositor_blur.read(properties)?,
             effect: crate::layout::node::parse_effect(properties)?,
         })
     }
@@ -188,11 +188,11 @@ pub struct ResolvedNode {
     /// and everything the solver produced are untransformed. `layout::paint` composes it down
     /// the subtree, `layout::hit` maps the pointer back through its inverse.
     pub transform: node::Transform,
-    /// This node asked for the desktop behind it to be blurred (`behind_blur`, ADR-0195).
+    /// This node asked for the desktop behind it to be blurred (`compositor_blur`, ADR-0195).
     /// `layout::blur_regions` turns every one of these in a surface into the one region the
     /// compositor is given; nothing else reads it, and a compositor without the protocol ignores the
     /// lot.
-    pub behind_blur: bool,
+    pub compositor_blur: bool,
     /// Shared with the rollback copy until a tween writes it.
     pub properties: std::rc::Rc<PropMap>,
     /// This node's paint properties, parsed here rather than by `layout::paint` on every frame
@@ -339,9 +339,9 @@ impl ResolvedNode {
         }
     }
 
-    /// A node with `submit = true` or a pointer handler (ADR-0214).
+    /// A node with `submits_secure = true` or a pointer handler (ADR-0214).
     pub fn takes_pointer(&self) -> bool {
-        matches!(self.properties.get("submit"), Some(Value::Boolean(true)))
+        matches!(self.properties.get("submits_secure"), Some(Value::Boolean(true)))
             || ["on_click", "on_press", "on_drag", "on_wheel"]
                 .iter()
                 .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_))))

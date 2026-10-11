@@ -172,7 +172,6 @@ const FLAGS: &[&str] = &[
     "--config",
     "-d",
     "--detach",
-    "--detached",
     "--force",
     "-f",
     "--follow",
@@ -234,8 +233,6 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 config_dir = Some(config_dir_from(&value)?);
             }
             "-d" | "--detach" => detach = true,
-            // `detach_self`'s marker for the child it re-execs; it runs in the foreground.
-            "--detached" => {}
             "--force" => force = true,
             "-f" | "--follow" => follow = true,
             "--profile" => profile = Some(60),
@@ -617,7 +614,7 @@ mod tests {
         assert!(parse_args(&["-f"]).is_err(), "--follow has nothing to follow without `log`");
         assert!(parse_args(&["log", "-d"]).is_err(), "--detach has nothing to detach without a run");
         assert!(parse_args(&["-d"]).unwrap().detach, "a bare run takes it");
-        assert!(!parse_args(&["--detached"]).unwrap().detach, "the re-exec'd child must not detach again");
+        assert!(parse_args(&["--detached"]).is_err(), "the internal flag is gone");
     }
 
     #[test]

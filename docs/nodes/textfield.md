@@ -41,9 +41,9 @@ local launcher = column { width = 320, padding = 12, spacing = 8, background = "
     } },
     list {
         width = "fill",
-        source = matches,
+        items = matches,
         key = function(name) return name end,
-        itemfn = function(name)
+        each = function(name)
             return rect {
                 width = "fill", padding = { left = 10, right = 10, top = 6, bottom = 6 }, radius = 8,
                 background = computed({ matches, selected }, function(found, index)
@@ -146,13 +146,13 @@ return { panel { id = "reply", layer = "top", anchor = { bottom = true },
 
 | Task | Answer |
 | :--- | :--- |
-| Filter a list as the user types | The example above: `on_change` sets a state, the list's `source` maps it |
+| Filter a list as the user types | The example above: `on_change` sets a state, the list's `items` maps it |
 | Move a selection with the arrow keys | `on_key` on the field, as above; pair it with `scroll(name):reveal` to keep the row in view ([input](../guide/input.md#text-fields)) |
 | Focus the field when a panel opens | `autofocus = true` and a panel with `keyboard_interactivity` |
 | Return keys to the field after a click | One `local h = focus_target("name")`: `focus_target = h` on the field, `h:request()` in the `on_click` ([input](../guide/input.md#text-fields)) |
 | Close on a second Escape | `on_cancel(cleared)`: close only when `cleared` is `false` |
 | Ask for a password | `secure_submit = { capability = "lock", action = "authenticate" }` ([secure fields](../guide/input.md#secure-fields)) |
-| Submit a password from a button | `submit = true` on the clickable node |
+| Submit a password from a button | `submits_secure = true` on the clickable node |
 | Style the box around the field | Wrap it in a `rect` with `background`, `radius` and `border_*`; the field draws only text and caret |
 | Debounce a search | [signals](../guide/signals.md#debounce-a-search) |
 

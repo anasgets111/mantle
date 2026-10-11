@@ -1,4 +1,4 @@
-//! `list` children: the `source`/`limit` properties, per-item memos and the build that reuses them.
+//! `list` children: the `items`/`limit` properties, per-item memos and the build that reuses them.
 
 use std::collections::HashSet;
 
@@ -12,7 +12,7 @@ use super::spec::deserialize_child;
 use super::*;
 use fields::list;
 
-/// A `list`'s `source`: absent, or a signal still reading nil before its first push, is an empty
+/// A `list`'s `items`: absent, or a signal still reading nil before its first push, is an empty
 /// list. Raw past `resolve_declared`: [`list_children`] reads it, and only when the list builds.
 pub(crate) struct Items;
 
@@ -50,7 +50,7 @@ impl Prop for Limit {
     }
 }
 
-/// A `list`'s items and the build that made them, `source` read here rather than by
+/// A `list`'s items and the build that made them, `items` read here rather than by
 /// `resolve_declared` so a list that [`ListMemo::still_holds`] reads nothing at all.
 pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode>, ListMemo), LayoutError> {
     let mut build = ListMemo {
@@ -61,25 +61,25 @@ pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode
         cells: Vec::new(),
         items: Vec::new(),
     };
-    let Some(source) = signal_at(properties, "source") else {
+    let Some(source) = signal_at(properties, "items") else {
         return Ok((parse_list_children(properties, lua, &mut build)?, build));
     };
     let frame = ComputedFrame::enter(lua);
-    let value = resolve_signal(&source, "list", "source", lua);
+    let value = resolve_signal(&source, "list", "items", lua);
     build.cells = frame.finish();
     let mut resolved = properties.clone();
     match value? {
-        Some(value) => resolved.insert("source", value),
-        None => resolved.remove("source"),
+        Some(value) => resolved.insert("items", value),
+        None => resolved.remove("items"),
     };
     Ok((parse_list_children(&resolved, lua, &mut build)?, build))
 }
 
-/// What a `list` last built its items from (ADR-0269, ADR-0273): its `source`, `itemfn` and `key`
-/// by identity, its `limit`, the cells reading `source` and calling `key` read, and per item, the
-/// cells its `itemfn` call read and, apart, the cells its subtree's resolve read. While the list's
-/// own inputs hold, the pass lays the retained items out again, calls `itemfn` only for an item
-/// whose `itemfn` reads were written, and resolves again one whose subtree reads alone were.
+/// What a `list` last built its items from (ADR-0269, ADR-0273): its `items`, `each` and `key`
+/// by identity, its `limit`, the cells reading `items` and calling `key` read, and per item, the
+/// cells its `each` call read and, apart, the cells its subtree's resolve read. While the list's
+/// own inputs hold, the pass lays the retained items out again, calls `each` only for an item
+/// whose `each` reads were written, and resolves again one whose subtree reads alone were.
 ///
 /// Exact for signals, and blind to anything else a build reads: `os.time()`, an upvalue, a table
 /// mutated in place. That is the contract `docs/nodes/list.md` states.
@@ -98,7 +98,7 @@ pub struct ListMemo {
     pub items: Vec<ItemMemo>,
 }
 
-/// One `list` item's build: the element it came from, the key `key` gave it, where `itemfn` built
+/// One `list` item's build: the element it came from, the key `key` gave it, where `each` built
 /// its node, the write clock taken before it read anything, and what it read.
 #[derive(Clone)]
 pub struct ItemMemo {
@@ -106,7 +106,7 @@ pub struct ItemMemo {
     key: Option<mlua::LuaString>,
     site: Option<Site>,
     stamp: u64,
-    /// What the `itemfn` call read: a write to one builds the item again.
+    /// What the `each` call read: a write to one builds the item again.
     built: Vec<CellId>,
     /// What resolving its subtree read: a write to one resolves the kept declaration again.
     resolved: Vec<CellId>,
@@ -120,12 +120,12 @@ pub enum ItemPass {
     Keep,
     /// Resolve the retained declaration again; each node's memo skips the getters nothing wrote.
     Resolve(Option<Site>),
-    /// Call `itemfn` again.
+    /// Call `each` again.
     Build,
 }
 
 fn list_inputs(properties: &PropMap) -> [Value; 3] {
-    ["source", "itemfn", "key"].map(|key| properties.get(key).cloned().unwrap_or(Value::Nil))
+    ["items", "each", "key"].map(|key| properties.get(key).cloned().unwrap_or(Value::Nil))
 }
 
 impl ListMemo {
@@ -140,10 +140,10 @@ impl ListMemo {
             return Ok(false);
         }
         if signal::written_since(self.stamp, &self.cells)
-            && let Some(source) = signal_at(properties, "source")
+            && let Some(source) = signal_at(properties, "items")
         {
             // Settle a mapped source before deciding whether its output changed.
-            resolve_signal(&source, "list", "source", lua)?;
+            resolve_signal(&source, "list", "items", lua)?;
         }
         let holds = !signal::written_since(self.stamp, &self.cells);
         if holds {
@@ -167,7 +167,7 @@ impl ListMemo {
 
 impl ItemMemo {
     /// What this item needs this pass. The reads a kept part skips are noted as this pass's. A
-    /// resolve starts a fresh subtree read set: every `itemfn` read held up to now, so they hold
+    /// resolve starts a fresh subtree read set: every `each` read held up to now, so they hold
     /// since the new stamp too.
     pub fn pass(&mut self, lua: &Lua) -> ItemPass {
         if signal::written_since(self.stamp, &self.built) {
@@ -183,11 +183,11 @@ impl ItemMemo {
         ItemPass::Resolve(self.site)
     }
 
-    /// `element` built through `itemfn` with no key yet, and its fresh memo.
-    fn build(lua: &Lua, itemfn: &mlua::Function, element: Value) -> Result<(VirtualNode, ItemMemo), LayoutError> {
+    /// `element` built through `each` with no key yet, and its fresh memo.
+    fn build(lua: &Lua, each: &mlua::Function, element: Value) -> Result<(VirtualNode, ItemMemo), LayoutError> {
         let stamp = signal::write_clock(lua);
         let frame = ComputedFrame::enter(lua);
-        let node = build_item(itemfn, &element);
+        let node = build_item(each, &element);
         let built = frame.finish();
         let node = node?;
         let memo = ItemMemo { element, key: None, site: node.site, stamp, built, resolved: Vec::new(), dropped: false };
@@ -196,8 +196,8 @@ impl ItemMemo {
 
     /// This item built again from the element and key it had, and its fresh memo.
     pub fn rebuild(&self, properties: &PropMap, lua: &Lua) -> Result<(VirtualNode, ItemMemo), LayoutError> {
-        let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");
-        let (mut node, mut memo) = Self::build(lua, &itemfn, self.element.clone())?;
+        let each = list::each.read(properties)?.expect("`each` is required");
+        let (mut node, mut memo) = Self::build(lua, &each, self.element.clone())?;
         if let Some(key) = &self.key {
             std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key.clone()));
             memo.key = Some(key.clone());
@@ -225,29 +225,29 @@ fn extend_unique(into: &mut Vec<CellId>, cells: &[CellId]) {
     }
 }
 
-/// `itemfn(element)` as a node.
-fn build_item(itemfn: &mlua::Function, element: &Value) -> Result<VirtualNode, LayoutError> {
-    let built = itemfn.call::<Value>(element).map_err(|e| invalid("itemfn", crate::lua::describe(&e)))?;
+/// `each(element)` as a node.
+fn build_item(each: &mlua::Function, element: &Value) -> Result<VirtualNode, LayoutError> {
+    let built = each.call::<Value>(element).map_err(|e| invalid("each", crate::lua::describe(&e)))?;
     let Value::Table(built_table) = built else {
-        return Err(invalid("itemfn", format!("expected a node table, got {}", preview_for_error(&built))));
+        return Err(invalid("each", format!("expected a node table, got {}", preview_for_error(&built))));
     };
-    deserialize_child(&built_table, "itemfn", None)
+    deserialize_child(&built_table, "each", None)
 }
 
 /// A `list`'s children (ADR-0045 decision 3) are generated once per resolved
-/// `source` item; it arrives already resolved, so a `Signal` there was read exactly once before
-/// `itemfn` runs. Without `key`, reconciliation is positional. With it, `key(element)`
+/// `items` item; it arrives already resolved, so a `Signal` there was read exactly once before
+/// `each` runs. Without `key`, reconciliation is positional. With it, `key(element)`
 /// is called on the source value, not the built node, and overwrites that node's `id`; duplicate
 /// keys fail here before `pair_children_by_id_then_position` sees them.
 ///
-/// Each `itemfn` call reads in its own frame, into `build`'s item; each `key` call into `build`'s
+/// Each `each` call reads in its own frame, into `build`'s item; each `key` call into `build`'s
 /// own cells, since a key is the item's identity rather than its content.
 ///
 /// ponytail: a list whose [`ListMemo`] still holds still lays every item out. A viewport
 /// (ADR-0191) is the upgrade; `layout::scene::tests::list_pass_cost` measures both paths.
 fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) -> Result<Vec<VirtualNode>, LayoutError> {
-    let source = list::source.read(properties)?;
-    let itemfn = list::itemfn.read(properties)?.expect("`itemfn` is required");
+    let source = list::items.read(properties)?;
+    let each = list::each.read(properties)?.expect("`each` is required");
     let key_fn = list::key.read(properties)?;
     let limit = list::limit.read(properties)?;
 
@@ -256,7 +256,7 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
     };
     let mut children = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
     let mut seen_keys: HashSet<String> = HashSet::new();
-    // A broken item does not stop the rest; every item repeating one `itemfn` mistake is one
+    // A broken item does not stop the rest; every item repeating one `each` mistake is one
     // entry after `LayoutError::many`.
     let mut failed = Vec::new();
     for (index, element) in source.sequence_values::<Value>().enumerate() {
@@ -264,12 +264,12 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
             break;
         }
         if index == MAX_ARRAY_ELEMENTS {
-            return Err(invalid("source", format!("more than {MAX_ARRAY_ELEMENTS} items in one list")));
+            return Err(invalid("items", format!("more than {MAX_ARRAY_ELEMENTS} items in one list")));
         }
-        let element = element.map_err(|e| invalid("source", e.to_string()))?;
+        let element = element.map_err(|e| invalid("items", e.to_string()))?;
 
         let item = (|| {
-            let (mut node, mut memo) = ItemMemo::build(lua, &itemfn, element.clone())?;
+            let (mut node, mut memo) = ItemMemo::build(lua, &each, element.clone())?;
 
             if let Some(key_fn) = &key_fn {
                 let frame = ComputedFrame::enter(lua);
@@ -323,21 +323,21 @@ mod tests {
             list_children(&props_from_src(&lua, s), &lua).map(|(children, _)| children.len())
         };
         assert_eq!(
-            eval("return list { source = { 1, 2, 3, 4 }, limit = 2, itemfn = function(i) return rect { width = i, height = i } end }").unwrap(),
+            eval("return list { items = { 1, 2, 3, 4 }, limit = 2, each = function(i) return rect { width = i, height = i } end }").unwrap(),
             2
         );
         assert_eq!(
-            eval("return list { source = { 1, 2 }, limit = 0, itemfn = function() error('unreached') end }").unwrap(),
+            eval("return list { items = { 1, 2 }, limit = 0, each = function() error('unreached') end }").unwrap(),
             0
         );
         assert!(matches!(
-            eval("return list { source = { 1 }, limit = -1, itemfn = function() return rect {} end }").unwrap_err(),
+            eval("return list { items = { 1 }, limit = -1, each = function() return rect {} end }").unwrap_err(),
             LayoutError::InvalidProperty { property, .. } if property == "limit"
         ));
-        assert_eq!(eval("return list { itemfn = function() return rect {} end }").unwrap(), 0, "no source is empty");
+        assert_eq!(eval("return list { each = function() return rect {} end }").unwrap(), 0, "no items is empty");
         assert!(matches!(
-            eval("return list { source = {} }").unwrap_err(),
-            LayoutError::InvalidProperty { property, .. } if property == "itemfn"
+            eval("return list { items = {} }").unwrap_err(),
+            LayoutError::InvalidProperty { property, .. } if property == "each"
         ));
     }
 }

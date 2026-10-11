@@ -9,8 +9,7 @@ end
 -- On disk before any shell stops, so a director reload or crash mid-take still knows what to
 -- bring back on the next run: the shells, and the director's `origin_ws` and `volume`.
 local store = persistent_table {
-    path = state_home .. "/mantle-demo",
-    name = "restore.json",
+    path = state_home .. "/mantle-demo/restore.json",
     defaults = { shells = {} },
 }
 
@@ -70,7 +69,7 @@ local function stop_others(demo_dir, done)
                         while out[k] do
                             if out[k] == "-c" then
                                 k = k + 1
-                            elseif out[k] ~= "-d" and out[k] ~= "--detached" then
+                            elseif out[k] ~= "-d" then
                                 flags[#flags + 1] = out[k]
                             end
                             k = k + 1

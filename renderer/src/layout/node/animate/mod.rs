@@ -15,8 +15,8 @@ use super::prop::{Keyword, Prop};
 use super::style::{BackgroundLayer, MAX_BACKGROUNDS};
 use super::style::{SHADOW_BLUR, SHADOW_REACH, TONE, axis_default, parse_percent, range_of};
 use super::{
-    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, Outline, PathCommands,
-    PathData, PropMap, Rgba, Ring, Shadow, Shadows, fields, input, invalid, is_layer_list, layer_fill, lua_hex_color,
+    Axes, Blend, CornersInput, EdgeInsets, EdgesInput, EffectKeys, Effects, LayoutError, PathCommands, PathData,
+    PropMap, Rgba, Ring, Shadow, Shadows, Shape, fields, input, invalid, is_layer_list, layer_fill, lua_hex_color,
     parse_hex_color, tweened, value_as_f32,
 };
 use crate::lua::luacats::spelled;
@@ -179,7 +179,7 @@ pub enum Animatable {
     Color(Rgba),
     Fields { keys: &'static [&'static str], values: [f32; 4] },
     Path(Rc<PathData>),
-    Outline(Rc<Outline>),
+    Shape(Rc<Shape>),
     Shadows(Vec<Shadow>),
     Ring(Ring),
     Layers(Vec<Layer>),
@@ -220,7 +220,7 @@ spelled!(Animatable => format!(
     Axes::lua(),
     EffectKeys::lua(),
     PathCommands::lua(),
-    Outline::lua(),
+    Shape::lua(),
     Shadows::lua(),
     Ring::lua(),
     Vec::<BackgroundLayer>::lua()
@@ -233,7 +233,7 @@ impl Animatable {
     fn identity(&self, property: &str) -> Self {
         match *self {
             // No empty drawing has this one's ops to tween from.
-            Self::Path(_) | Self::Outline(_) => self.clone(),
+            Self::Path(_) | Self::Shape(_) => self.clone(),
             Self::Number(_) => {
                 Self::Number(if matches!(property, "opacity" | "trim_end") { 1.0 } else { axis_default(property) })
             }
@@ -259,8 +259,8 @@ impl Animatable {
         if property == "commands" {
             return Ok(Some(Self::Path(PathCommands::read(&fields::path::commands.row, Some(value))?)));
         }
-        if property == "outline" {
-            return Ok(Outline::read(&fields::paint::outline.row, Some(value))?.map(Self::Outline));
+        if property == "shape" {
+            return Ok(Shape::read(&fields::paint::shape.row, Some(value))?.map(Self::Shape));
         }
         if property == "effect" {
             let keys = Effects::read(&fields::common::effect.row, Some(value))?;
@@ -459,9 +459,7 @@ impl Animatable {
                 Self::Layers(layers.collect())
             }
             (Self::Path(a), Self::Path(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |path| Self::Path(Rc::new(path))),
-            (Self::Outline(a), Self::Outline(b)) => {
-                a.lerp(b, t).map_or_else(|| to.clone(), |o| Self::Outline(Rc::new(o)))
-            }
+            (Self::Shape(a), Self::Shape(b)) => a.lerp(b, t).map_or_else(|| to.clone(), |o| Self::Shape(Rc::new(o))),
             // The two shapes come from the same property, so this pair cannot be mixed; snap to
             // the target rather than guess if it ever is.
             _ => to.clone(),
@@ -484,7 +482,7 @@ impl Animatable {
                 Value::Table(table)
             }
             Self::Path(ref path) => tweened(lua, path)?,
-            Self::Outline(ref outline) => tweened(lua, outline)?,
+            Self::Shape(ref outline) => tweened(lua, outline)?,
             Self::Effect(values, ref kept) => {
                 let level = |values: &[f32]| {
                     lua.create_table_from(
@@ -837,7 +835,7 @@ const PAINT_ONLY: &[&str] = &[
     "shift",
     "radius",
     "corner_smoothing",
-    "outline",
+    "shape",
     "shadows",
     "ring",
     "effect",

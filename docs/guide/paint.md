@@ -64,7 +64,7 @@ or, with none close, listing them all.
 | Properties | Taken by |
 | :--- | :--- |
 | `shadows`, `effect`, `opacity` | Every node, including `text`, `icon`, `image`, `list`, `textfield` |
-| `background`, `radius`, `corner_shape`, `outline`, `border_color`, `border_width`, `ring`, `clip`, `mask`, `shadow_mode`, `behind_blur` | Box kinds only |
+| `background`, `radius`, `corner_shape`, `shape`, `border_color`, `border_width`, `ring`, `clip`, `mask`, `shadow_mode`, `compositor_blur` | Box kinds only |
 | `effect.backdrop` | Box kinds only; the key is refused elsewhere, naming it |
 | `source_blur` | `image` only |
 | `radius` | Box kinds and `image` |
@@ -88,13 +88,13 @@ colours and no short `#RGB` form.
 | `background` | `Color\|Gradient\|BackgroundLayer[]\|Bound` | None | A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps |
 | `mask` | `Mask\|Bound` | None | Multiplies the alpha of this node and its subtree; see [Mask](#mask) |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
-| `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `behind_blur` region follow |
-| `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `behind_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
-| `outline` | `Outline\|Bound` | None | The box's shape as one closed contour, in place of `radius`; see [Outline](#outline) |
+| `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `compositor_blur` region follow |
+| `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `compositor_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
+| `shape` | `Shape\|Bound` | None | The box's shape as one closed contour, in place of `radius`; see [Shape](#shape) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `ring` | `Ring\|Bound` | None | A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring) |
-| `behind_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
+| `compositor_blur` | `boolean\|Bound` | `false` | Ask the compositor to blur the desktop behind this box; see [Blurs](#blurs). Never inferred from a translucent background |
 | `shadow_mode` | `"box"\|"content"\|Bound` | `"box"` | `"box"`: CSS `box-shadow` of the box shape. `"content"`: CSS `drop-shadow` of everything painted. See [Shadows](#shadows) |
 | `clip` | `"box"\|"rounded"\|"none"\|Bound` | `"box"` on a surface or a `scroll` viewport, else `"none"` | `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip) |
 <!-- End of the generated table. -->
@@ -116,11 +116,11 @@ return rect {
 }
 ```
 
-Fill, border, `clip = "rounded"`, `mask`, `effect.backdrop` and the `behind_blur` region all follow
-the one outline. Two things are approximate: a `"box"` shadow still takes the circular mean radius,
+Fill, border, `clip = "rounded"`, `mask`, `effect.backdrop` and the `compositor_blur` region all follow
+the one shape. Two things are approximate: a `"box"` shadow still takes the circular mean radius,
 and an `image` `transition` shader rounds a smoothed corner by a superellipse through its end points
 and middle, exact only at `0`. A border's inner edge is the outer curve scaled to the inner radii.
-`corner_smoothing` only reshapes the outline, so an `animate` tween on it runs without a layout.
+`corner_smoothing` only reshapes the shape, so an `animate` tween on it runs without a layout.
 
 A border follows the corners, round or scooped, as CSS draws it. Where two edges meet, the corner
 splits between their colours in proportion to their widths, so a lone edge curves round both
@@ -150,14 +150,14 @@ return row {
 }
 ```
 
-### Outline
+### Shape
 
-`outline = { commands = { .. } }` replaces the rounded rectangle with any shape: one closed
+`shape = { commands = { .. } }` replaces the rounded rectangle with any shape: one closed
 contour of [`path`](../nodes/path.md) commands: an `M`, at least two more commands, then `Z`, with
 no other `M` or `Z`, no `hole` and at most 256 commands. A popover and its arrow,
-a speech bubble's tail, a tab joined to its panel or a notched card is one outline, so the fill,
+a speech bubble's tail, a tab joined to its panel or a notched card is one shape, so the fill,
 the border, shadows (inset too), `clip = "rounded"`, `mask`, `effect.backdrop`, `effect.shader`'s
-`mantle_sdf`, hit testing and the `behind_blur` region run round it without a seam. It refuses
+`mantle_sdf`, hit testing and the `compositor_blur` region run round it without a seam. It refuses
 `radius`, `corner_shape` and `corner_smoothing`, and its border takes one width and one colour or
 gradient.
 
@@ -194,7 +194,7 @@ return column {
             border_width = 2,
             border_color = "#89B4FA",
             shadows = { { blur = 12, offset = { y = 4 }, color = "#00000080" } },
-            outline = { commands = {
+            shape = { commands = {
                 { op = "M", points = { 0, 20 } },
                 { op = "corner", points = { 0, 0 }, radius = 12, corner_smoothing = 0.6 },
                 { op = "corner", points = { { from = "center", px = -12 }, 0 }, radius = 4 },
@@ -214,16 +214,16 @@ return column {
 }
 ```
 
-`animate = { outline = .. }` tweens point by point, springs included, between two lists of the
+`animate = { shape = .. }` tweens point by point, springs included, between two lists of the
 same commands; any other change snaps. A point written in px on one side and `"NN%"` on the other
 crosses as their resolved positions would. A corner's radius holds at `0` and its smoothing in
 `[0, 1]` through an overshoot. The tween runs without a layout or Lua.
 
-`mantle_sdf` measures an outline as a polygon of at most 256 points, each curve cut every 3° of
+`mantle_sdf` measures a shape as a polygon of at most 256 points, each curve cut every 3° of
 turn; past 256 points the cut widens to 6°, 12° and so on, so the gradient bends by at most 3° at a
 point up to about 8 corners, more beyond (and straight segments past 256 are thinned). Hit testing
 reads the exact curves, so it and `mantle_sdf` can differ by a fraction of a pixel. A shadow
-on an outline is the silhouette's, blurred offscreen like `shadow_mode = "content"`, and an inset
+on a shape is the silhouette's, blurred offscreen like `shadow_mode = "content"`, and an inset
 shadow takes one offscreen blur per paint where a rounded box takes one gradient quad.
 
 ## Gradients
@@ -323,7 +323,7 @@ box's bounds in its own space).
 | Value | Children are cut to | Cost |
 | :--- | :--- | :--- |
 | `"box"` | The box's rectangle | Free (a scissor) |
-| `"rounded"` | The box's `radius`, `corner_shape` and `corner_smoothing`, or its `outline`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
+| `"rounded"` | The box's `radius`, `corner_shape` and `corner_smoothing`, or its `shape`. With `radius = 0` it is `"box"` | An offscreen pass every repaint of the box |
 | `"none"` | Whatever the parent cuts to, so children and their shadows can overflow this box. The default but on a scroll viewport or a surface | Free |
 
 A rounded clip draws in the order fill, children, border, so the border stays on top of children
@@ -341,7 +341,7 @@ that reach the arc.
 | Any form, plus `invert = true` | The complement: kept and cut swap |
 
 Name exactly one of `source`, `node`, or a gradient. A masked box draws its subtree offscreen every repaint
-and always cuts children to its box (to `radius` or the `outline` too under `clip = "rounded"`), even with
+and always cuts children to its box (to `radius` or the `shape` too under `clip = "rounded"`), even with
 `clip = "none"`.
 
 <!-- shot-alt: A scrolling list of Wi-Fi networks in a card; the rows at its top and bottom edges fade out under a gradient mask. -->
@@ -409,7 +409,7 @@ Mask alpha does not change the content's input or desktop blur region.
 `0`, inside when negative) from its edge with a clear gap between: Material's focus indicator (3 px,
 2 px offset) and CSS `outline` with `outline-offset`. `width = 0`, a clear `color` or an inset past
 the box's middle draws nothing. The gap stays `offset` all round, so a rounded corner's ring has
-radius `radius + offset + width` outside and follows `corner_smoothing` and `outline` too. It is
+radius `radius + offset + width` outside and follows `corner_smoothing` and `shape` too. It is
 paint only: no layout space or hit area, drawn over the children. The node's own `clip` does not cut
 it, a clipping ancestor does as it does a shadow, and `animate.ring` tweens all three numbers.
 
@@ -537,13 +537,13 @@ Four blurs read four different things. Sigmas are in logical px, `[0, 8192]`, 0 
 
 | Property | Reads | When it runs | Cost | Pick it for |
 | :--- | :--- | :--- | :--- | :--- |
-| `behind_blur = true` (box kinds) | The desktop behind the surface: other windows and the wallpaper, not this surface's own pixels | Continuously, in the compositor | The compositor's | A translucent bar or panel over windows |
+| `compositor_blur = true` (box kinds) | The desktop behind the surface: other windows and the wallpaper, not this surface's own pixels | Continuously, in the compositor | The compositor's | A translucent bar or panel over windows |
 | `effect = { backdrop = { blur = sigma } }` (box kinds) | What this surface has already painted under the box: ancestors, earlier siblings, lower `z`. Never the desktop | Every repaint that touches the box or what it reads, on the GPU | A copy and a blur per repaint; not cached | Glass over the surface's own wallpaper, image or animated content |
 | `effect = { blur = sigma }` (every node) | The node's own subtree | On repaint, on the GPU, into an offscreen layer | A blur when the subtree changes; an unchanged layer is reused. Large sigmas downsample first | A blurred or blur-in element, tweened with `animate` |
 | `source_blur = sigma` (`image`) | The image file's pixels | Once, on the CPU, when the source decodes | Nothing per frame | A static blurred picture on a surface that repaints often |
 
-**`behind_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
-of every `behind_blur = true` box on the surface: rounded to `radius`, scooped or shaped as its `outline`, cut by ancestor
+**`compositor_blur = true`.** Mantle sends the compositor a region, through `ext-background-effect-v1`, made
+of every `compositor_blur = true` box on the surface: rounded to `radius`, scooped or shaped as its `shape`, cut by ancestor
 clips, moved by transforms, and dropped while the node is invisible or at `opacity` 0. It ignores
 `mask`. The compositor decides strength, noise, xray and whether to blur at all; a compositor
 without the protocol or its blur capability gives nothing, and no error. It is never inferred from
@@ -563,7 +563,7 @@ panel {
     height = 36,
     exclusive_zone = true,
     background = "#1E1E2E99",
-    behind_blur = true,
+    compositor_blur = true,
     child = row { width = "fill", padding = { left = 12, right = 12 }, children = { clock } },
 }
 ```
@@ -675,7 +675,7 @@ rect {
     background = "#335577",
     effect = {
         shader = {
-            source = mantle.config_dir .. "/shaders/outline.frag",
+            source = mantle.config_dir .. "/shaders/shape.frag",
             params = { width = 3, tint = { 1, 0.8, 0.2, 1 } },
             padding = 4,
         },
@@ -702,15 +702,15 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | `mantle_input(uv)` | `vec4` | The input at a box coordinate, premultiplied; transparent outside the padded area |
 | `mantle_input_blurred(uv)` | `vec4` | The same, through `effect.backdrop`'s blur and colour filters; the plain input when it has none or `input = "content"` |
 | `u_input`, `u_input_blurred`, `u_input_rect` | `sampler2D`, `sampler2D`, `vec4` | The textures and where they sit as `(x, y, w, h)` in box fractions. Use the functions above, which handle the textures' orientation |
-| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's outline, negative inside. It follows `radius`, per-corner radii, `corner_smoothing` and `outline`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
+| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's shape, negative inside. It follows `radius`, per-corner radii, `corner_smoothing` and `outline`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
 | `u_progress` | `float` | `progress` |
 | `mantle_opacity` | | Not set |
 
 Unlike a `shader` node, no step follows your `main`: the output is not rounded to `radius` and not
-multiplied by `opacity`, since the subtree already carries its opacity. Cut to the outline yourself
+multiplied by `opacity`, since the subtree already carries its opacity. Cut to the shape yourself
 with `mantle_sdf` when you want to.
 
-<!-- file: shaders/outline.frag -->
+<!-- file: shaders/shape.frag -->
 ```glsl
 uniform float width;
 uniform vec4 tint;
@@ -718,7 +718,7 @@ uniform vec4 tint;
 void main() {
     vec4 body = mantle_input(v_uv);
     float d = mantle_sdf(v_uv * u_size);
-    // A rim `width` px deep just inside the outline, over the subtree.
+    // A rim `width` px deep just inside the shape, over the subtree.
     float rim = smoothstep(-width - 0.5, -width + 0.5, d) * (1.0 - smoothstep(-0.5, 0.5, d));
     fragColor = body * (1.0 - rim * tint.a) + vec4(tint.rgb * tint.a, tint.a) * rim;
 }
@@ -744,8 +744,8 @@ With `input = "backdrop"` the program reads what this surface already painted un
 `effect.backdrop`: one copy of those pixels feeds both, and `mantle_input_blurred` reads the frost
 the backdrop filters made from it. The output replaces the whole read area, `padding` included, mixed
 with the original pixels by the node's `opacity`; the node's fill, children and border paint over it.
-Return `mantle_input(uv)` to leave a pixel as it was, and do so outside the outline, or the pixel
-comes out as whatever the program returns. Offsetting the coordinate by the outline's distance is a
+Return `mantle_input(uv)` to leave a pixel as it was, and do so outside the shape, or the pixel
+comes out as whatever the program returns. Offsetting the coordinate by the shape's distance is a
 refraction. Box kinds only.
 
 ```lua
@@ -827,7 +827,7 @@ One node paints in this order, each step over the last. The order is fixed: the 
 | `effect.blur` and `effect.backdrop.blur` on one node | The glass stays sharp; only the fill, border and subtree blur | Expected |
 | `effect.backdrop.blur` inside a parent with `mask`, `effect.blur` or a Content-mode shadow | The glass sees only what that parent has drawn so far, not what is under the parent | Move the glass out of the effect parent, or accept it |
 | `effect.backdrop.blur` inside `clip = "rounded"` without a mask | The glass sees what is under the parent, as without the clip | Nothing to do |
-| `effect.backdrop.blur` on a surface root | It blurs transparency: it never reads the desktop | `behind_blur = true` |
+| `effect.backdrop.blur` on a surface root | It blurs transparency: it never reads the desktop | `compositor_blur = true` |
 | Shadow and `effect.blur` on one node | The shadow is cast from the sharp content, then the content is blurred | Expected |
 | Box-mode shadow on a translucent box | One gradient quad, cut out under the box; children do not cast | `shadow_mode = "content"` to cast from what is painted |
 | Content-mode shadow on a masked node | Cast from the masked result | Expected |
@@ -868,7 +868,7 @@ panel {
         background = "#1E1E2EB3",
         border_width = 1,
         border_color = "#FFFFFF2E",
-        behind_blur = true,
+        compositor_blur = true,
         children = { text { content = "Wi-Fi", font_size = 14, foreground = "#CDD6F4" } },
     },
 }
@@ -1002,7 +1002,7 @@ panel {
                 spacing = 8,
                 radius = 16,
                 background = "#1E1E2EE0",
-                behind_blur = true,
+                compositor_blur = true,
                 shadows = { { color = "#00000080", blur = 32 } },
                 children = {
                     text { content = "Log out?", font_size = 18, foreground = "#CDD6F4" },
@@ -1015,16 +1015,16 @@ panel {
 ```
 
 A full-screen [panel](../surfaces/panel.md) whose first child is a translucent scrim and whose
-second is the dialog. Dim with a colour rather than `behind_blur = true` on the scrim: the compositor's
+second is the dialog. Dim with a colour rather than `compositor_blur = true` on the scrim: the compositor's
 blur does not fade with `opacity`, so a fading scrim would blur at full strength until it hits 0.
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
-| `clip = "rounded"` changes nothing | It needs a non-zero `radius` or an `outline`, and only clips children |
+| `clip = "rounded"` changes nothing | It needs a non-zero `radius` or a `shape`, and only clips children |
 | A gradient or a per-edge `border_color` jumps instead of easing under `animate` | Only single colours ease; see [Animation](animation.md) |
-| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle, except for an `outline`, which is hit by its contour. Shrink the clickable node or accept it |
+| Rounded corners, scoops and masks still take clicks in the cut-away area | Hit-testing uses the rectangle, except for a `shape`, which is hit by its contour. Shrink the clickable node or accept it |
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).
 

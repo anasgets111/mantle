@@ -1,10 +1,11 @@
-//! `outline`: a box's shape as one closed contour of path commands, each point placed against the
+//! `shape`: a box's shape as one closed contour of path commands, each point placed against the
 //! box's size where it is painted and hit.
 
 use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
 
-use kurbo::{BezPath, ParamCurve, ParamCurveDeriv, PathEl, Point, Shape};
+use kurbo::Shape as _;
+use kurbo::{BezPath, ParamCurve, ParamCurveDeriv, PathEl, Point};
 use mlua::Value;
 
 use super::prop::Prop;
@@ -15,7 +16,7 @@ use crate::text::snap::LogicalRect;
 
 lua_shape! {
     /// A point `px` from an edge or the centre of the box, or from `"NN%"` of its width or height.
-    #[alias = "OutlineAnchor"]
+    #[alias = "ShapeAnchor"]
     pub(crate) struct AnchorInput {
         from: String,
         px: Option<f32>,
@@ -24,9 +25,9 @@ lua_shape! {
 
 lua_shape! {
     /// As a `PathCommand` with no `hole`: each coordinate is px from the box's top left, `"NN%"` of
-    /// its width or height, or an `OutlineAnchor`; a radius or angle is a number.
-    #[alias = "OutlineCommand"]
-    pub(crate) struct OutlineCommand {
+    /// its width or height, or an `ShapeAnchor`; a radius or angle is a number.
+    #[alias = "ShapeCommand"]
+    pub(crate) struct ShapeCommand {
         op: PathOp,
         points: Vec<Coord>,
         radius: Option<f32>,
@@ -36,9 +37,9 @@ lua_shape! {
 
 lua_shape! {
     /// One closed contour: an `M`, at least two more commands, then `Z`.
-    #[alias = "Outline"]
-    struct OutlineInput {
-        commands: Vec<OutlineCommand>,
+    #[alias = "Shape"]
+    struct ShapeInput {
+        commands: Vec<ShapeCommand>,
     }
 }
 
@@ -51,7 +52,7 @@ pub(crate) struct Coord {
     axis: Option<usize>,
 }
 
-spelled!(Coord => "OutlinePoint");
+spelled!(Coord => "ShapePoint");
 
 const MAX_SHARE: f32 = 16.0;
 
@@ -87,16 +88,16 @@ impl super::input::Input for Coord {
 
 /// A box's own contour, replacing its rounded rectangle.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Outline {
+pub struct Shape {
     /// Each number's px part; a coordinate also has its share of the box in `shares`.
     path: PathData,
     shares: Vec<[f32; 2]>,
 }
 
-/// The vertex cap of the polyline `mantle_sdf` measures, two to each `vec4` of `mantle_outline`.
+/// The vertex cap of the polyline `mantle_sdf` measures, two to each `vec4` of `mantle_shape`.
 pub const SDF_POINTS: usize = 256;
 
-impl Outline {
+impl Shape {
     /// The contour of a box at `rect`, each placed coordinate held to [`COORD_MAX`].
     pub fn bez(&self, rect: LogicalRect) -> BezPath {
         let mut path = self.path.clone();
@@ -230,28 +231,28 @@ pub fn inset(polygon: &[Point], by: f64) -> BezPath {
     }))
 }
 
-/// `outline = { commands = { .. } }`.
-impl LuaType for Outline {
+/// `shape = { commands = { .. } }`.
+impl LuaType for Shape {
     fn lua() -> String {
-        "Outline".into()
+        "Shape".into()
     }
     #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
-        OutlineInput::classes(out);
+        ShapeInput::classes(out);
     }
 }
 
 // ponytail: 256 commands; more needs a measured `mantle_sdf` budget.
 const MAX_COMMANDS: usize = 256;
 
-impl Prop for Outline {
-    type Out = Option<Rc<Outline>>;
+impl Prop for Shape {
+    type Out = Option<Rc<Shape>>;
     fn read(row: &Property, value: Option<&Value>) -> Result<Self::Out, LayoutError> {
         let name = row.name;
         let table = match value {
             None => return Ok(None),
             Some(Value::Table(table)) => table,
-            Some(Value::UserData(ud)) if let Ok(frame) = ud.borrow::<Tweened<Outline>>() => {
+            Some(Value::UserData(ud)) if let Ok(frame) = ud.borrow::<Tweened<Shape>>() => {
                 return Ok(Some(frame.0.clone()));
             }
             Some(value) => return Err(invalid(name, format!("expected a table, got {}", preview_for_error(value)))),
@@ -260,9 +261,9 @@ impl Prop for Outline {
         if let Ok(Value::Table(commands)) = table.get::<Value>("commands") {
             input::array_len(&format!("{name}.commands"), &commands, MAX_COMMANDS)?;
         }
-        let commands = OutlineInput::read(name, table)?.commands;
+        let commands = ShapeInput::read(name, table)?.commands;
         let (mut segments, mut points, mut shares) = (Vec::new(), Vec::new(), Vec::new());
-        for (i, OutlineCommand { op, points: coords, radius, corner_smoothing }) in commands.into_iter().enumerate() {
+        for (i, ShapeCommand { op, points: coords, radius, corner_smoothing }) in commands.into_iter().enumerate() {
             let name = format!("{name}.commands[{}]", i + 1);
             let coordinates = match op {
                 PathOp::A | PathOp::Corner => 2,
@@ -294,7 +295,7 @@ impl Prop for Outline {
         {
             return Err(invalid(name, "one closed contour: M, at least two commands, then Z, with no other M or Z"));
         }
-        Ok(Some(Rc::new(Outline { path: PathData { segments: segments.into(), points }, shares })))
+        Ok(Some(Rc::new(Shape { path: PathData { segments: segments.into(), points }, shares })))
     }
 }
 
@@ -313,15 +314,15 @@ pub(crate) const TAIL: &str = r#"{ commands = {
 } }"#;
 
 #[cfg(test)]
-pub(crate) fn parse(src: &str) -> Result<Option<Rc<Outline>>, LayoutError> {
+pub(crate) fn parse(src: &str) -> Result<Option<Rc<Shape>>, LayoutError> {
     let lua = mlua::Lua::new();
     let value: Value = lua.load(src).eval().unwrap();
-    Outline::read(&super::fields::paint::outline.row, Some(&value))
+    Shape::read(&super::fields::paint::shape.row, Some(&value))
 }
 
 /// [`TAIL`], parsed.
 #[cfg(test)]
-pub(crate) fn tail() -> Rc<Outline> {
+pub(crate) fn tail() -> Rc<Shape> {
     parse(TAIL).unwrap().unwrap()
 }
 
@@ -385,7 +386,7 @@ mod tests {
     /// The command count is checked before any command is read, so a long list of junk reports the
     /// cap, not the first bad entry.
     #[test]
-    fn an_outline_counts_its_commands_before_reading_them() {
+    fn a_shape_counts_its_commands_before_reading_them() {
         let err = parse(&format!("{{ commands = {{ {} }} }}", "1,".repeat(257))).unwrap_err();
         assert!(err.to_string().contains("at most 256"), "{err}");
     }
@@ -403,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn an_outline_refuses_what_is_not_one_closed_contour() {
+    fn a_shape_refuses_what_is_not_one_closed_contour() {
         let contour = |body: &str| format!("{{ commands = {{ {{ op = 'M', points = {{ 0, 0 }} }}, {body} }} }}");
         // `first`, then the rest of a triangle.
         let tailed = |first: &str| {
@@ -438,9 +439,9 @@ mod tests {
             let props = super::super::props_from_src(&lua, format!("return {{ kind = 'rect', {src} }}"));
             super::super::paint_style("rect", &props)
         };
-        assert!(style(&format!("outline = {TAIL}, border_width = 2, border_color = '#000000'")).is_ok());
+        assert!(style(&format!("shape = {TAIL}, border_width = 2, border_color = '#000000'")).is_ok());
         for bad in ["radius = 4", "corner_shape = 'scoop'", "border_width = { top = 2 }"] {
-            assert!(style(&format!("outline = {TAIL}, {bad}")).is_err(), "accepted {bad}");
+            assert!(style(&format!("shape = {TAIL}, {bad}")).is_err(), "accepted {bad}");
         }
     }
 
@@ -468,10 +469,10 @@ mod tests {
         }
     }
 
-    /// `outline` tweens point by point: px against `"NN%"` lerps as the resolved px would, a corner's
+    /// `shape` tweens point by point: px against `"NN%"` lerps as the resolved px would, a corner's
     /// radius and smoothing clamp under overshoot, and other commands snap.
     #[test]
-    fn outlines_tween_point_by_point_and_clamp_overshoot() {
+    fn shapes_tween_point_by_point_and_clamp_overshoot() {
         let shape = |x: &str, radius: f32, smoothing: f32| {
             parse(&format!(
                 "{{ commands = {{ {{ op = 'M', points = {{ {x}, 0 }} }}, {{ op = 'corner', points = {{ 40, 0 }}, \

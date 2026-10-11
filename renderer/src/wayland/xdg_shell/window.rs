@@ -319,18 +319,16 @@ impl WindowHandler for App {
             return;
         };
         let surface_id = self.surfaces[index].surface_id.clone();
-        let on_close = self
-            .client
-            .scene()
-            .surface(&surface_id)
-            .and_then(|tree| crate::layout::node::fields::window::on_close.read(&tree.properties).ok().flatten());
-        let Some(on_close) = on_close else {
+        let on_close_request = self.client.scene().surface(&surface_id).and_then(|tree| {
+            crate::layout::node::fields::window::on_close_request.read(&tree.properties).ok().flatten()
+        });
+        let Some(on_close_request) = on_close_request else {
             debug!(
-                2; "{surface_id}: the compositor asked it to close and no `on_close` declined or accepted; staying open"
+                2; "{surface_id}: the compositor asked it to close and no `on_close_request` declined or accepted; staying open"
             );
             return;
         };
-        call_logged(&on_close, (), format_args!("{surface_id}: on_close"));
+        call_logged(&on_close_request, (), format_args!("{surface_id}: on_close_request"));
     }
 
     /// SCTK has acked this configure. `new_size` may leave axes to the client; no frame is drawn

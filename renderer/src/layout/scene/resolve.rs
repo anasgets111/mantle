@@ -476,8 +476,8 @@ mod tests {
     /// new VM must not read them.
     #[test]
     fn a_scene_carried_to_a_new_vm_builds_again_rather_than_reading_the_old_ones_memos() {
-        const LIST: &str = r#"return panel { id = "bar", child = list { source = { "a" },
-            itemfn = function() return rect { width = 10, height = 10 } end } }"#;
+        const LIST: &str = r#"return panel { id = "bar", child = list { items = { "a" },
+            each = function() return rect { width = 10, height = 10 } end } }"#;
         let (mut scene, lua, shaping, _surface) = applied(LIST);
         drop(lua);
         let (lua, surface) = surface_from(LIST);
@@ -532,7 +532,7 @@ mod tests {
             r##"accent = state("accent", "#101010")
             items = state("items", { "a", "b" })
             return panel { id = "bar", child = column { children = {
-                list { source = items, itemfn = function(name)
+                list { items = items, each = function(name)
                     return text { content = name, foreground = accent }
                 end },
             } } }"##,

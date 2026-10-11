@@ -85,11 +85,11 @@ impl StorageController {
     pub fn snapshot(&self) -> StorageState {
         let guard = self.stores.lock().expect("storage state mutex poisoned");
         StorageState {
-            files: guard.files.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
+            contents: guard.files.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
         }
     }
 
-    /// `persistent_table { path, name, defaults }`, re-sent each evaluation (ADR-0136 decision 1).
+    /// `persistent_table { path, defaults }`, re-sent each evaluation (ADR-0136 decision 1).
     /// The first declaration reads the file; later ones use the newer in-memory copy.
     ///
     /// `defaults` fills missing keys without overwriting stored ones, so adding a default is a new
@@ -328,8 +328,8 @@ mod tests {
         // Reload: an author adds a default after the config already ran.
         controller.open(&stored, &json!({ "theme": "mocha", "dnd": true }));
 
-        assert_eq!(controller.snapshot().files[&fresh], json!({ "theme": "mocha", "dnd": false }));
-        assert_eq!(controller.snapshot().files[&stored], json!({ "theme": "latte", "dnd": true }));
+        assert_eq!(controller.snapshot().contents[&fresh], json!({ "theme": "mocha", "dnd": false }));
+        assert_eq!(controller.snapshot().contents[&stored], json!({ "theme": "latte", "dnd": true }));
     }
 
     #[tokio::test]
@@ -343,7 +343,7 @@ mod tests {
         controller.open(&path, &json!({ "theme": "mocha" }));
 
         assert_eq!(
-            controller.snapshot().files[&path]["theme"],
+            controller.snapshot().contents[&path]["theme"],
             json!("latte"),
             "the in-memory copy is newer than the disk one by the time an evaluation re-declares it"
         );
@@ -373,10 +373,10 @@ mod tests {
         controller.open(&path, &json!({}));
 
         controller.set(&path, "wallpaper", json!({ "path": "/w/1.jpg", "fit": "cover" }));
-        assert_eq!(controller.snapshot().files[&path]["wallpaper"]["fit"], json!("cover"));
+        assert_eq!(controller.snapshot().contents[&path]["wallpaper"]["fit"], json!("cover"));
 
         controller.set(&path, "wallpaper", serde_json::Value::Null);
-        assert_eq!(controller.snapshot().files[&path], json!({}));
+        assert_eq!(controller.snapshot().contents[&path], json!({}));
     }
 
     /// Reads the saved file once the `spawn_blocking` save has landed. Paused time does not wait for
@@ -417,7 +417,7 @@ mod tests {
         // After our own rename in the watch queue, so exactly one push proves that one pushed nothing.
         std::fs::write(&path, r#"{"fit":"fill"}"#).unwrap();
         pushed(&mut rx).await;
-        assert_eq!(controller.snapshot().files[&path]["fit"], json!("fill"));
+        assert_eq!(controller.snapshot().contents[&path]["fit"], json!("fill"));
         assert!(rx.try_recv().is_err(), "the watch saw our rename and found nothing new");
 
         controller.set(&path, "fit", json!("contain"));
@@ -431,7 +431,18 @@ mod tests {
         controller.set("/tmp/never-opened.json", "key", json!(1));
         controller.open("settings.json", &json!({ "theme": "mocha" })); // not resolved against the working directory
 
-        assert!(controller.snapshot().files.is_empty());
+        assert!(controller.snapshot().contents.is_empty());
+    }
+
+    #[tokio::test]
+    async fn opening_a_file_creates_its_missing_parent_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a").join("b").join("state.json");
+        let (controller, _rx) = controller();
+
+        controller.open(&file.to_string_lossy(), &json!({}));
+
+        assert!(file.parent().unwrap().is_dir());
     }
 
     #[tokio::test(start_paused = true)]
@@ -473,7 +484,7 @@ mod tests {
         let (second, _rx) = controller();
         second.open(&path, &json!({ "theme": "mocha" }));
 
-        assert_eq!(second.snapshot().files[&path]["theme"], json!("latte"), "the round trip is the contract");
+        assert_eq!(second.snapshot().contents[&path]["theme"], json!("latte"), "the round trip is the contract");
     }
 
     /// Waits for a push, or fails after the inotify round trip should long have landed.
@@ -515,11 +526,11 @@ mod tests {
         std::fs::write(&renamed, r#"{"theme":"latte"}"#).unwrap();
         std::fs::rename(&renamed, &file).unwrap();
         pushed(&mut rx).await;
-        assert_eq!(controller.snapshot().files[&path], json!({ "theme": "latte", "dnd": false }), "defaults stay");
+        assert_eq!(controller.snapshot().contents[&path], json!({ "theme": "latte", "dnd": false }), "defaults stay");
 
         std::fs::write(&file, r#"{"theme":"frappe"}"#).unwrap();
         pushed(&mut rx).await;
-        assert_eq!(controller.snapshot().files[&path]["theme"], json!("frappe"));
+        assert_eq!(controller.snapshot().contents[&path]["theme"], json!("frappe"));
     }
 
     #[tokio::test(start_paused = true)]
@@ -538,7 +549,7 @@ mod tests {
         let fixed = r#"{"wallpaper":"/w/1.jpg"}"#;
         std::fs::write(&file, fixed).unwrap();
         pushed(&mut rx).await;
-        assert_eq!(controller.snapshot().files[&path], json!({ "wallpaper": "/w/1.jpg" }), "the newer edit wins");
+        assert_eq!(controller.snapshot().contents[&path], json!({ "wallpaper": "/w/1.jpg" }), "the newer edit wins");
         tokio::time::sleep(SAVE_DEBOUNCE + Duration::from_millis(150)).await;
         assert_eq!(std::fs::read_to_string(&file).unwrap(), fixed, "nothing rewrites a file the shell agrees with");
     }

@@ -1,7 +1,7 @@
-//! [`SystemController`] feeds `mantle.system` from one task that wakes on wall-clock multiples of
-//! its interval, one second until `system:configure` changes it.
+//! [`ClockController`] feeds `mantle.clock` from one task that wakes on wall-clock multiples of
+//! its interval, one second until `clock:configure` changes it.
 
-pub use shared::state::system::SystemState;
+pub use shared::state::clock::ClockState;
 
 use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex};
@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use nix::sys::time::TimeSpec;
 use nix::sys::timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags};
-use shared::action::SystemConfigure;
+use shared::action::ClockConfigure;
 use shared::{debug, error};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -38,17 +38,17 @@ pub fn next_wall_clock_second() -> tokio::time::Instant {
         + time_until_next_second(SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default())
 }
 
-pub struct SystemController {
-    state: Arc<Mutex<SystemState>>,
+pub struct ClockController {
+    state: Arc<Mutex<ClockState>>,
     interval: watch::Sender<u64>,
 }
 
-impl SystemController {
+impl ClockController {
     /// Seeds `time` immediately, so an early client sees the current second, not stale zero; the
     /// ticking task takes over afterward.
     pub fn new(signal_tx: UnboundedSender<()>) -> Self {
         let started = Instant::now();
-        let state = Arc::new(Mutex::new(SystemState { time: epoch_seconds(SystemTime::now()), monotonic: 0 }));
+        let state = Arc::new(Mutex::new(ClockState { time: epoch_seconds(SystemTime::now()), monotonic: 0 }));
 
         let (interval, interval_rx) = watch::channel(1);
 
@@ -57,8 +57,8 @@ impl SystemController {
         Self { state, interval }
     }
 
-    /// Applies `system:configure(cfg)`; a new interval takes effect with an immediate push.
-    pub fn configure(&self, cfg: SystemConfigure) {
+    /// Applies `clock:configure(cfg)`; a new interval takes effect with an immediate push.
+    pub fn configure(&self, cfg: ClockConfigure) {
         debug!("configure: interval={:?}", cfg.interval);
         // Capped so the absolute deadline stays far inside `time_t`.
         if let Some(seconds) = cfg.interval
@@ -69,7 +69,7 @@ impl SystemController {
     }
 
     /// Current state for `main.rs`'s signal-channel `select!` snapshot push.
-    pub fn snapshot(&self) -> SystemState {
+    pub fn snapshot(&self) -> ClockState {
         self.state.lock().expect("system state mutex poisoned").clone()
     }
 }
@@ -78,18 +78,18 @@ impl SystemController {
 /// a clock step (NTP, `settimeofday`) cancels the timer and re-aligns it at once. Parked, with no
 /// timer, while the interval is `0`.
 async fn run_clock_task(
-    state: Arc<Mutex<SystemState>>,
+    state: Arc<Mutex<ClockState>>,
     signal_tx: UnboundedSender<()>,
     started: Instant,
     mut interval_rx: watch::Receiver<u64>,
 ) {
     let timer = match TimerFd::new(ClockId::CLOCK_REALTIME, TimerFlags::TFD_NONBLOCK | TimerFlags::TFD_CLOEXEC) {
         Ok(timer) => timer,
-        Err(err) => return error!("cannot create the clock timer: {err}; mantle.system keeps its first reading"),
+        Err(err) => return error!("cannot create the clock timer: {err}; mantle.clock keeps its first reading"),
     };
     let readiness = match AsyncFd::new(timer.as_fd()) {
         Ok(readiness) => readiness,
-        Err(err) => return error!("cannot poll the clock timer: {err}; mantle.system keeps its first reading"),
+        Err(err) => return error!("cannot poll the clock timer: {err}; mantle.clock keeps its first reading"),
     };
     let mut interval = *interval_rx.borrow_and_update();
     // `new` seeded the state; announce it instead of waiting for the first boundary.
@@ -99,7 +99,7 @@ async fn run_clock_task(
     loop {
         if interval == 0 {
             if interval_rx.changed().await.is_err() {
-                return; // SystemController is gone; nothing can reconfigure this task
+                return; // ClockController is gone; nothing can reconfigure this task
             }
         } else {
             let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
@@ -116,14 +116,14 @@ async fn run_clock_task(
                             continue; // spurious readiness; re-arm
                         }
                     }
-                    Err(err) => return error!("clock timer failed: {err}"),
+                    Err(err) => return error!("timer failed: {err}"),
                 },
                 changed = interval_rx.changed() => if changed.is_err() { return },
             }
         }
         interval = *interval_rx.borrow_and_update();
         let sampled =
-            SystemState { time: epoch_seconds(SystemTime::now()), monotonic: started.elapsed().as_secs() as i64 };
+            ClockState { time: epoch_seconds(SystemTime::now()), monotonic: started.elapsed().as_secs() as i64 };
         *state.lock().expect("system state mutex poisoned") = sampled;
         if signal_tx.send(()).is_err() {
             return; // main.rs's select! loop is gone; nothing left to notify
@@ -160,14 +160,14 @@ mod tests {
     async fn zero_parks_the_clock_and_a_new_interval_pushes_at_once() {
         use tokio::time::timeout;
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = SystemController::new(tx);
+        let controller = ClockController::new(tx);
         assert!(timeout(Duration::from_millis(100), rx.recv()).await.is_ok(), "the seed is announced at once");
 
-        controller.configure(SystemConfigure { interval: Some(0) });
+        controller.configure(ClockConfigure { interval: Some(0) });
         assert!(timeout(Duration::from_millis(100), rx.recv()).await.is_ok(), "a reconfigure pushes at once");
         assert!(timeout(Duration::from_millis(1200), rx.recv()).await.is_err(), "0 parks: no tick");
 
-        controller.configure(SystemConfigure { interval: Some(1) });
+        controller.configure(ClockConfigure { interval: Some(1) });
         assert!(timeout(Duration::from_millis(100), rx.recv()).await.is_ok());
         assert!(timeout(Duration::from_millis(1100), rx.recv()).await.is_ok(), "then one tick a second");
     }
@@ -176,7 +176,7 @@ mod tests {
     async fn new_seeds_time_synchronously_before_any_tick_fires() {
         // The first tick is a second away; clients in that second must read real epoch, not zero.
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = SystemController::new(tx);
+        let controller = ClockController::new(tx);
 
         let seeded = controller.snapshot();
         assert!(seeded.time > 1_700_000_000, "seeded from the real clock, not defaulted");

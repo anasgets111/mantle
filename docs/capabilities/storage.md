@@ -16,7 +16,7 @@ there.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `files` | `table<string, any>` | Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included. |
+| `contents` | `table<string, any>` | Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included. |
 
 ## Actions
 
@@ -24,7 +24,7 @@ Call each as `mantle.storage:<action>(arguments...)`; `?` marks an argument you 
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `open` | `path: string, defaults?: table<string, any>` | Loads an absolute JSON file into `files[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults. |
+| `open` | `path: string, defaults?: table<string, any>` | Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults. |
 | `set` | `path: string, key: string, value?: any` | Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write. |
 
 ## Backend

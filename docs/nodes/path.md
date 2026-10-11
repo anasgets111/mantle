@@ -34,7 +34,7 @@ elliptical `A`.
 the turn between the line in from the pen and the line out to the next command's first point
 (or, before a `Z`, the subpath's start) becomes a [continuous corner](../guide/paint.md#continuous-corners),
 cut to fit its sides. A `corner` that ends an open subpath has no line out and is a plain line to its
-point. It cannot begin a subpath. A box's [`outline`](../guide/paint.md#outline) takes the same commands.
+point. It cannot begin a subpath. A box's [`shape`](../guide/paint.md#shape) takes the same commands.
 
 Subpaths are solid whatever their winding, so overlapping ones merge. Set `hole = true` on the
 command that begins a subpath to cut it out of the fill instead. Each solid subpath counts +1 and

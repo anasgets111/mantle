@@ -69,8 +69,8 @@ struct Program {
     reach: Option<glow::UniformLocation>,
     power: Option<glow::UniformLocation>,
     round: Option<glow::UniformLocation>,
-    outline: Option<glow::UniformLocation>,
-    outline_len: Option<glow::UniformLocation>,
+    shape: Option<glow::UniformLocation>,
+    shape_len: Option<glow::UniformLocation>,
     /// Every other active uniform, by the name a config's `params` key has to match. A shader may
     /// declare one and never use it, in which case the compiler drops it and it is absent here;
     /// supplying a value for it is not an error. Carries its components per element, its element
@@ -331,7 +331,7 @@ impl ShaderStage {
         self.blank
     }
 
-    /// Binds the outline uniforms behind `mantle_sdf`: `radii` rounding `round`, in a node of `logical_size`.
+    /// Binds the shape uniforms behind `mantle_sdf`: `radii` rounding `round`, in a node of `logical_size`.
     ///
     /// # Safety
     ///
@@ -351,12 +351,9 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         unsafe {
             if !points.is_empty() {
-                gl.uniform_4_f32_slice(
-                    program.outline.as_ref(),
-                    &[&points[..], &[0.0; 2][..points.len() % 4]].concat(),
-                );
+                gl.uniform_4_f32_slice(program.shape.as_ref(), &[&points[..], &[0.0; 2][..points.len() % 4]].concat());
             }
-            gl.uniform_1_i32(program.outline_len.as_ref(), polygon.len() as i32);
+            gl.uniform_1_i32(program.shape_len.as_ref(), polygon.len() as i32);
             gl.uniform_4_f32_slice(program.radii.as_ref(), &radii.0);
             gl.uniform_4_f32_slice(program.reach.as_ref(), &reach);
             gl.uniform_4_f32_slice(program.power.as_ref(), &power);

@@ -38,8 +38,7 @@ if not state_home or state_home == "" then
 end
 
 local settings = persistent_table {
-    path = state_home .. "/myshell",
-    name = "settings.json",
+    path = state_home .. "/myshell/settings.json",
     defaults = { clock_24h = true, recorder = { fps = 60, audio = "desktop" } },
 }
 
@@ -59,13 +58,12 @@ return panel {
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `persistent_table { path, name, defaults? }` → store. Another key raises |
-| `path` | Absolute directory; relative raises. Created if missing. Build it from `os.getenv` or `mantle.config_dir` |
-| `name` | One file name, no `/`; empty raises |
+| Signature | `persistent_table { path, defaults? }` → store. Another key raises |
+| `path` | Absolute file path; relative or ending in `/` raises. Its directory is created if missing. Build it from `os.getenv` or `mantle.config_dir` |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
 | `store.<key>` | Signal for that key: `nil` before `mantle.storage` first pushes, then the stored value |
 | `store:set(key, value)` | Writes one key; `nil` deletes it until the next reload re-fills its default. The signal updates on the next push, not inside `set` |
-| Identity | One table per file: another call with the same `path`/`name` returns it, across reloads too |
+| Identity | One table per file: another call with the same `path` returns it, across reloads too |
 | Raw state | `mantle.storage` ([capabilities](../capabilities/storage.md)) |
 
 On disk:
@@ -246,7 +244,7 @@ return panel {
         width = 320, padding = 12, spacing = 6, background = "#1E1E2E",
         children = {
             textfield { autofocus = true, placeholder = "Search", on_change = function(text) query:set(text) end },
-            list { source = results, itemfn = function(name) return text { content = name } end },
+            list { items = results, each = function(name) return text { content = name } end },
         },
     },
 }

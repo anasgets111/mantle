@@ -13,7 +13,7 @@ mantle.lock:set_unlock_animation(250)
 local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
 
 local function now(format)
-    return mantle.system:map(function(system) return system and os.date(format, system.time) or "" end)
+    return mantle.clock:map(function(system) return system and os.date(format, system.time) or "" end)
 end
 
 local hint = mantle.lock:map(function(lock)
@@ -115,8 +115,8 @@ The field's keystrokes go to PAM and never reach Lua.
 | Animate the lock screen out | `set_unlock_animation` with the animation's length, and drive `opacity` or `scale` from `unlocking` ([lock capability](../capabilities/lock.md)) |
 | Animate it in | Drive the same property from `active`; `animate.from` covers the first frame |
 | Show the desktop wallpaper behind it | An `image` in the per-output `child`, keyed by `output` ([per-output content](panel.md#per-output-content)) |
-| Put a clock on it | `mantle.system:map(function(system) return system and os.date("%H:%M", system.time) or "" end)` |
-| Add an unlock button beside the field | A clickable node with `submit = true` sends the field like Enter ([pointer](../guide/input.md#pointer)). Give it and the field an `accessible_name` so Tab and screen readers reach both ([keyboard controls](../guide/input.md#keyboard-controls-and-accessibility)) |
+| Put a clock on it | `mantle.clock:map(function(system) return system and os.date("%H:%M", system.time) or "" end)` |
+| Add an unlock button beside the field | A clickable node with `submits_secure = true` sends the field like Enter ([pointer](../guide/input.md#pointer)). Give it and the field an `accessible_name` so Tab and screen readers reach both ([keyboard controls](../guide/input.md#keyboard-controls-and-accessibility)) |
 | Lock before suspend | Invoke `lock` from your idle or suspend handler ([idle](../capabilities/idle.md)) |
 
 ## Gotchas

@@ -75,7 +75,7 @@ local workspaces = list {
     direction = "horizontal",
     spacing = 6,
     align_v = "center",
-    source = mantle.workspaces:map(function(ws)
+    items = mantle.workspaces:map(function(ws)
         local output = ws and ws.outputs[1]
         local items = {}
         local active = output and output.active_workspace
@@ -85,7 +85,7 @@ local workspaces = list {
         return items
     end),
     key = function(w) return tostring(w.id) end,
-    itemfn = function(w)
+    each = function(w)
         return rect {
             -- Numbered only when active, the rest dots, so a dozen workspaces leave the bar room.
             width = w.active and 48 or 14,
@@ -156,7 +156,7 @@ local launcher = panel {
     --@ 05-restyle
     background = theme.fade("surface", "70"),
     radius = 24,
-    behind_blur = true,
+    compositor_blur = true,
     --@ 04-launcher
     background = theme.fade("base", "f2"),
     radius = 16,
@@ -182,9 +182,9 @@ local launcher = panel {
             list {
                 width = "fill",
                 spacing = 2,
-                source = apps,
+                items = apps,
                 key = function(app) return app.id end,
-                itemfn = function(app)
+                each = function(app)
                     return row {
                         width = "fill",
                         padding = 12,
@@ -387,7 +387,7 @@ return {
                 },
                 --@ end
                 text {
-                    content = mantle.system:map(function(s)
+                    content = mantle.clock:map(function(s)
                         --@ 02-color
                         return os.date("%a %d %b   %H:%M", s and s.time)
                         --@ else

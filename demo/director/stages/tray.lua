@@ -6,9 +6,9 @@ return list {
     spacing = 4,
     align_v = "center",
     margin = { right = 14 },
-    source = tray:map(function(t) return t.items end),
+    items = tray:map(function(t) return t.items end),
     key = function(item) return item.id end,
-    itemfn = function(item)
+    each = function(item)
         return rect {
             width = 40,
             height = 40,

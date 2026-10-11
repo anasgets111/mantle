@@ -156,8 +156,8 @@ async fn run_battery_task(
     loop {
         tokio::select! {
             _ = events.closed() => return,
-            Some((peripherals, capacity)) = peripheral_updates.recv() => {
-                (previous.peripherals, previous.capacity) = (peripherals, capacity);
+            Some((peripherals, health)) = peripheral_updates.recv() => {
+                (previous.peripherals, previous.health) = (peripherals, health);
                 if !publish(&state, &events, previous.clone()) { return; }
                 continue;
             }
@@ -167,7 +167,7 @@ async fn run_battery_task(
         }
         let current = BatteryState {
             peripherals: previous.peripherals.clone(),
-            capacity: previous.capacity,
+            health: previous.health,
             ..read_state(&properties).await
         };
         let current = hold_through_glitch(&previous, current);
@@ -209,7 +209,7 @@ mod tests {
             (70, Some(3600), Some(1200), Some(25))
         );
         assert_eq!(
-            (snapshot.peripherals.len(), snapshot.capacity),
+            (snapshot.peripherals.len(), snapshot.health),
             (1, Some(91)),
             "the supply is health, not a peripheral"
         );
@@ -234,7 +234,7 @@ mod tests {
             within(changed.recv()).await.unwrap();
         }
         assert_eq!(
-            (battery.snapshot().present, battery.snapshot().percent, battery.snapshot().capacity),
+            (battery.snapshot().present, battery.snapshot().percent, battery.snapshot().health),
             (true, 40, None)
         );
 

@@ -614,7 +614,7 @@ mod tests {
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
             r#"panel { id = "bar", child = column { width = state("cw", 100), children = {
-                list { width = "fill", source = { "a" }, itemfn = function(name)
+                list { width = "fill", items = { "a" }, each = function(name)
                     return rect { height = 10, align_h = "stretch", animate = { width = { duration = 100, easing = "linear" } } }
                 end } } } }"#,
         );
@@ -856,7 +856,7 @@ mod tests {
         assert!((node.transform.translate.0 + phase / 10.0).abs() < 0.01, "the loop kept its phase");
     }
 
-    /// `outline` eases between two contours of one command list on the paint-only tick, a point
+    /// `shape` eases between two contours of one command list on the paint-only tick, a point
     /// written in px against one in `"NN%"` crossing as their resolved px would, a spring past its end.
     #[test]
     fn an_outline_tweens_paint_only_under_a_spring() {
@@ -865,11 +865,11 @@ mod tests {
         let (lua, surface) = surface_from(
             r##"local open = state("open", false)
             return panel { id = "bar", child = rect { width = 40, height = 20, background = "#ffffff",
-                outline = open:map(function(o) return { commands = {
+                shape = open:map(function(o) return { commands = {
                     { op = "M", points = { o and "50%" or 0, 0 } },
                     { op = "corner", points = { 40, 0 }, radius = o and 0 or 8 },
                     { op = "L", points = { 0, 20 } }, { op = "Z", points = {} } } } end),
-                animate = { outline = { spring = { stiffness = 400, damping = 4 } } } } }"##,
+                animate = { shape = { spring = { stiffness = 400, damping = 4 } } } } }"##,
         );
         let instances = [instance_at(&surface, full())];
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();

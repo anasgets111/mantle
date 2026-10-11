@@ -402,7 +402,7 @@ impl App {
             return;
         };
         let on_click = pointer::on_click.read(&node.properties).ok().flatten();
-        let submit = pointer::submit.read(&node.properties).is_ok_and(|yes| yes);
+        let submit = pointer::submits_secure.read(&node.properties).is_ok_and(|yes| yes);
         if submit {
             self.prune_secure_focus();
             self.finish_secure_submit();

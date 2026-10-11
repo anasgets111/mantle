@@ -103,12 +103,12 @@ fn system_energy(id: &str, all: &HashMap<String, OwnedValue>) -> Option<(f64, f6
 }
 
 /// Combined health of every system battery, weighted by design energy, as UPower rounds `Capacity`.
-fn capacity((full, design): (f64, f64)) -> Option<u8> {
+fn health((full, design): (f64, f64)) -> Option<u8> {
     let percent = full / design * 100.0;
     percent.is_finite().then(|| percent.clamp(0.0, 100.0).round() as u8)
 }
 
-/// What [`run`] sends: the peripherals and the system batteries' [`capacity`].
+/// What [`run`] sends: the peripherals and the system batteries' [`health`].
 pub(super) type Readings = (Vec<PeripheralBattery>, Option<u8>);
 
 async fn watch(
@@ -165,7 +165,7 @@ async fn refresh(
         }
     }
     peripherals.sort_by(|a, b| a.id.cmp(&b.id));
-    let _ = updates.send((peripherals, capacity(energy)));
+    let _ = updates.send((peripherals, health(energy)));
     true
 }
 
@@ -229,10 +229,10 @@ mod tests {
             ("EnergyFullDesign", 42.0f64.into()),
         ]);
         assert_eq!(from_properties("/battery_BAT0", &supply), None);
-        assert_eq!(system_energy("/battery_BAT0", &supply).and_then(capacity), Some(91));
+        assert_eq!(system_energy("/battery_BAT0", &supply).and_then(health), Some(91));
         assert_eq!(system_energy(DISPLAY_DEVICE, &supply), None, "the display device sums the real ones");
-        assert_eq!(capacity((44.0, 42.0)), Some(100), "a new battery can beat its design");
-        assert_eq!(capacity((0.0, 0.0)), None, "no system battery");
+        assert_eq!(health((44.0, 42.0)), Some(100), "a new battery can beat its design");
+        assert_eq!(health((0.0, 0.0)), None, "no system battery");
         let mouse = properties(&[
             ("Type", 5u32.into()),
             ("Model", "Mouse".into()),

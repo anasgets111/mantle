@@ -98,6 +98,10 @@
 ---@field device integer PipeWire device id, the first argument of `set_bluetooth_profile`.
 ---@field mac string MAC address from the `bluez_card.*` name, `_` turned to `:`.
 
+---@class ClockConfigure
+---`clock:configure`'s table. An absent `interval` keeps the current one.
+---@field interval? integer Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them.
+
 ---@class CodecProfile
 ---One entry of `BluetoothCodecs.codecs`.
 ---@field codec string Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
@@ -205,7 +209,7 @@
 ---@field image_path? string Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme name (ADR-0091).
 ---@field reply_placeholder? string Placeholder for an empty reply field, e.g. `"Reply to Alice"`, capped at 64 bytes; `nil` when unset (ADR-0101).
 ---@field summary string Title as sent, truncated to 128 bytes. Not markup-parsed: the spec makes it plain text.
----@field timestamp integer Arrival time, Unix seconds; age is `mantle.system.time - timestamp`. A replacement restamps it.
+---@field timestamp integer Arrival time, Unix seconds; age is `mantle.clock.time - timestamp`. A replacement restamps it.
 ---@field transient boolean Popup-only: removed on expiry instead of retired to history (ADR-0100).
 ---@field urgency Urgency `"normal"` when the sender set none. `"critical"` never expires and plays sound through DND.
 
@@ -289,7 +293,7 @@
 ---@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
----@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.system.monotonic`); only compare it with itself.
+---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.clock.monotonic`); only compare it with itself.
 ---@field rate number MPRIS playback rate.
 ---@field shuffle boolean MPRIS shuffle setting.
 ---@field title string Track title; empty when unset, normal between tracks.
@@ -359,10 +363,6 @@
 ---@field net_interval? integer Seconds between network throughput reads; `0` (the default) stops them.
 ---@field ram_interval? integer Seconds between memory and swap reads; `0` (the default) stops them.
 ---@field temp_interval? integer Seconds between temperature reads; `0` (the default) stops them.
-
----@class SystemConfigure
----`system:configure`'s table. An absent `interval` keeps the current one.
----@field interval? integer Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them.
 
 ---@class TrackListState
 ---@field can_edit boolean Whether the player permits add and remove calls.
@@ -501,7 +501,7 @@
 
 ---@class BatteryState
 ---`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
----@field capacity? integer Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity.
+---@field health? integer Battery health: full charge as a percent of design capacity, `0` to `100`, combined over the system batteries. `nil` when UPower reports no design capacity.
 ---@field percent integer UPower's `Percentage`, rounded to `0` to `100`; a spurious `0` while not draining keeps the last value.
 ---@field peripherals PeripheralBattery[] UPower batteries outside the system supply, ordered by object path. This may include devices also shown by `mantle.bluetooth`.
 ---@field present boolean UPower's display device is a present battery. Check it before drawing system charge, state or time estimates.
@@ -533,9 +533,9 @@
 ---`mantle.radio`'s payload; the capability stays `nil` without `/dev/rfkill` or until a radio exists.
 ---@field radios Radio[] One entry per kind with at least one device, ordered by kernel type id.
 
----@class FilesState
----`mantle.files` payload (ADR-0120).
----@field folders table<string, Folder> One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
+---@class FoldersState
+---`mantle.folders` payload (ADR-0120).
+---@field watched table<string, Folder> One entry per `"watch"`, keyed by its `path` minus trailing slashes; `nil` until watched.
 
 ---@class ProcessesState
 ---`mantle.processes` payload.
@@ -619,14 +619,14 @@
 ---@field temp_cores integer[] CPU temperatures in whole Celsius: per core (`coretemp`) or per CCD (`k10temp`), else one package or `acpitz` reading; empty without a sensor. An unreadable sensor is skipped.
 ---@field temp_gpu? integer `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` hwmon temperature in whole Celsius, or `nil` without a readable one.
 
----@class SystemState
----`mantle.system`'s payload, pushed on each tick of `interval`.
----@field monotonic integer Seconds since `system` was first used, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`.
+---@class ClockState
+---`mantle.clock`'s payload, pushed on each tick of `interval`.
+---@field monotonic integer Seconds since `clock` was first used, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`.
 ---@field time integer Unix epoch seconds, as `os.date` takes them.
 
 ---@class StorageState
 ---`mantle.storage` payload (ADR-0136).
----@field files table<string, any> Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included.
+---@field contents table<string, any> Each declared `persistent_table`'s contents, keyed by its absolute file path; `nil` until declared. Another writer's change to the file replaces it, unsaved writes included.
 
 ---@class PolkitState
 ---`mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
@@ -736,10 +736,10 @@ local IdleCapability = {}
 ---@field set_blocked fun(self: RadioCapability, kind: RadioKind, blocked: boolean) Soft-blocks or unblocks every device of `kind`. A hardware block stays.
 ---@field set_all_blocked fun(self: RadioCapability, blocked: boolean) Soft-blocks or unblocks every radio (airplane mode).
 
----[docs](https://anasgets111.github.io/mantle/capabilities/files.html)
----@class FilesCapability: Capability<FilesState>, userdata
----@field watch fun(self: FilesCapability, path: string, extensions?: string[]) Keeps `folders[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file.
----@field unwatch fun(self: FilesCapability, path: string) Stops watching `path` and removes it from `folders`.
+---[docs](https://anasgets111.github.io/mantle/capabilities/folders.html)
+---@class FoldersCapability: Capability<FoldersState>, userdata
+---@field watch fun(self: FoldersCapability, path: string, extensions?: string[]) Keeps `watched[path]` listing an absolute folder. `extensions` match case-insensitively, dot optional; omitted means every file.
+---@field unwatch fun(self: FoldersCapability, path: string) Stops watching `path` and removes it from `watched`.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/processes.html)
 ---@class ProcessesCapability: Capability<ProcessesState>, userdata
@@ -822,13 +822,13 @@ local PrivacyCapability = {}
 ---@class SysinfoCapability: Capability<SysinfoState>, userdata
 ---@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it).
 
----[docs](https://anasgets111.github.io/mantle/capabilities/system.html)
----@class SystemCapability: Capability<SystemState>, userdata
----@field configure fun(self: SystemCapability, settings: SystemConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
+---[docs](https://anasgets111.github.io/mantle/capabilities/clock.html)
+---@class ClockCapability: Capability<ClockState>, userdata
+---@field configure fun(self: ClockCapability, settings: ClockConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)
 ---@class StorageCapability: Capability<StorageState>, userdata
----@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads an absolute JSON file into `files[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
+---@field open fun(self: StorageCapability, path: string, defaults?: table<string, any>) Loads an absolute JSON file into `contents[path]`, filling missing top-level keys from `defaults`. `persistent_table` sends this; stored values win over defaults.
 ---@field set fun(self: StorageCapability, path: string, key: string, value?: any) Sets `key` in a declared file, `nil` deleting it; saved 1 s after the last write.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
@@ -914,13 +914,13 @@ local PrivacyCapability = {}
 ---@field lock LockCapability The session lock: whether it is held, authentication progress and the last failure.
 ---@field polkit PolkitCapability The pending polkit authentication request, its progress and the last failure.
 ---@field battery BatteryCapability UPower: system battery charge, state and time estimates, plus peripheral batteries.
----@field system SystemCapability Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
+---@field clock ClockCapability Wall and monotonic clocks, pushed once a second until `configure` sets the interval.
 ---@field brightness BrightnessCapability The screen backlight percentage; `nil` without a backlight.
 ---@field workspaces WorkspacesCapability Workspaces per output, special workspaces and the focused window.
 ---@field radio RadioCapability rfkill: soft and hard block state per radio kind; `nil` without `/dev/rfkill`.
 ---@field power PowerCapability Power profiles, mains or battery, and battery power draw.
 ---@field applications ApplicationsCapability Installed desktop entries, indexed by window `app_id`.
----@field files FilesCapability Live file listings of watched folders.
+---@field folders FoldersCapability Live file listings of watched folders.
 ---@field storage StorageCapability Each `persistent_table` JSON file, keyed by absolute path.
 ---@field idle IdleCapability Idle inhibitors, plus threshold and inhibit methods.
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.

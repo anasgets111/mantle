@@ -149,8 +149,8 @@ where
                 if first {
                     tick(true).await;
                 }
-                // On the clock's second, so a whole-second interval lands in `system`'s push turn.
-                let second = crate::capabilities::system::controller::next_wall_clock_second();
+                // On the clock's second, so a whole-second interval lands in `clock`'s push turn.
+                let second = crate::capabilities::clock::controller::next_wall_clock_second();
                 let mut ticker = tokio::time::interval_at(if first { second + duration } else { second }, duration);
                 loop {
                     tokio::select! {

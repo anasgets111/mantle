@@ -38,7 +38,7 @@ local function workspaces(name)
         direction = "horizontal",
         spacing = 4,
         align_v = "center",
-        source = mantle.workspaces:map(function(all)
+        items = mantle.workspaces:map(function(all)
             local output = output_of(all, name)
             local items = {}
             for index, workspace in ipairs(output and output.workspaces or {}) do
@@ -51,7 +51,7 @@ local function workspaces(name)
             return items
         end),
         key = workspace_key,
-        itemfn = workspace_item,
+        each = workspace_item,
     }
 end
 
@@ -70,7 +70,7 @@ local volume = mantle.audio:map(function(a)
     return a.muted and "VOL muted" or string.format("VOL %d%%", math.floor(a.volume + 0.5))
 end)
 local wifi = mantle.network:map(function(n) return n and (n.ssid or "offline") or "NET --" end)
-local clock = mantle.system:map(function(s) return os.date("%H:%M:%S", s and s.time) end)
+local clock = mantle.clock:map(function(s) return os.date("%H:%M:%S", s and s.time) end)
 
 return panel {
     id = "hs_bar",

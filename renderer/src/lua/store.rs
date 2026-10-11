@@ -1,7 +1,7 @@
-//! `persistent_table { path, name, defaults }` (ADR-0136): named JSON file, read as signals and
-//! written one key at a time.
+//! `persistent_table { path, defaults }` (ADR-0136): JSON file, read as signals and written one
+//! key at a time.
 //!
-//! Config supplies `path` and `name`, usually from `mantle.config_dir` and `os.getenv` (one of
+//! Config supplies the file `path`, usually from `mantle.config_dir` and `os.getenv` (one of
 //! ADR-0048's four calls), so `$XDG_STATE_HOME`, `$XDG_CACHE_HOME`, a file beside `shell.lua`, and
 //! three simultaneous files are all the same call with different inputs.
 //!
@@ -17,7 +17,7 @@ use crate::layout::node::preview_str;
 use crate::lua::luacats::{As, LuaType, lua_fn, spelled};
 use crate::lua::signal::{Signal, from_userdata};
 
-/// Stores keyed by joined absolute path: two calls naming one file share one table/signals. It
+/// Stores keyed by absolute file path: two calls naming one file share one table/signals. It
 /// survives VM re-evaluation (ADR-0044 decision 4), so reload does not hand back a second table.
 #[derive(Default)]
 struct StoreRegistry(HashMap<String, Table>);
@@ -27,21 +27,20 @@ struct StoreRegistry(HashMap<String, Table>);
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     lua_fn!(
         lua,
-        /// A named JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
+        /// A JSON file read as signals (ADR-0136). The same file returns the same table across reloads.
         /// `defaults` fills only missing keys, so adding one keeps the user's values.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#persistent_table)
         fn persistent_table(
             lua,
-            /// `path` is an absolute directory and `name` a file name without `/`; otherwise raises.
+            /// `path` is an absolute file path, not ending in `/`; otherwise raises.
             spec: As<Table, Spec>,
         ) -> PersistentTable {
             let spec = spec.0;
-            super::marshal::only_keys(&spec, &["path", "name", "defaults"])
+            super::marshal::only_keys(&spec, &["path", "defaults"])
                 .map_err(|detail| mlua::Error::runtime(format!("persistent_table: {detail}")))?;
             let path: String = spec.get("path")?;
-            let name: String = spec.get("name")?;
             let defaults: Value = spec.get("defaults")?;
-            let file = join(&path, &name)?;
+            let file = file_path(&path)?;
 
             let storage = capability(lua, "persistent_table", "storage")?;
             // Send every evaluation: the Supervisor merges defaults (ADR-0136 decision 4), so
@@ -66,7 +65,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 /// `persistent_table`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
 
-spelled!(Spec => r#"{ path: string, name: string, defaults?: table, [string]: "no such property" }"#);
+spelled!(Spec => r#"{ path: string, defaults?: table, [string]: "no such property" }"#);
 
 /// What `persistent_table` returns: [`build_store`]'s table, whose `set` is real and whose other
 /// keys are signals of the file's JSON values, whatever keys it holds; so the class block is written
@@ -97,11 +96,8 @@ impl LuaType for PersistentTable {
     }
 }
 
-/// Config file as one absolute path.
-///
-/// Keep `path` and `name` separate because config computes the directory and writes the filename.
-/// Join here so config and Supervisor use the same key by construction.
-fn join(path: &str, name: &str) -> mlua::Result<String> {
+/// The config's `path` as the key config and Supervisor share: absolute and naming a file.
+fn file_path(path: &str) -> mlua::Result<String> {
     if !path.starts_with('/') {
         return Err(mlua::Error::runtime(format!(
             "persistent_table: path must be absolute, got {}; a relative one resolves against the \
@@ -109,13 +105,13 @@ fn join(path: &str, name: &str) -> mlua::Result<String> {
             preview_str(path)
         )));
     }
-    if name.is_empty() || name.contains('/') {
+    if std::path::Path::new(path).file_name().is_none() || path.ends_with('/') {
         return Err(mlua::Error::runtime(format!(
-            "persistent_table: name must be one file name, not a path, got {}",
-            preview_str(name)
+            "persistent_table: path must name a file, got {}",
+            preview_str(path)
         )));
     }
-    Ok(format!("{}/{name}", path.trim_end_matches('/')))
+    Ok(path.to_string())
 }
 
 /// `mantle.<name>` through namespace `__index`, so the read starts the capability
@@ -163,7 +159,7 @@ pub(super) fn index_entry_signals(
 /// Config table: real `set` field; `__index` answers other keys with per-file signals.
 fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Result<Table> {
     let store = lua.create_table()?;
-    index_entry_signals(lua, &store, &storage, "files", file)?;
+    index_entry_signals(lua, &store, &storage, "contents", file)?;
     let path = file.to_string();
     store.set(
         "set",
@@ -179,20 +175,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_path_and_a_name_join_into_one_absolute_file() {
-        assert_eq!(join("/home/u/.config/bar", "settings.json").unwrap(), "/home/u/.config/bar/settings.json");
-        assert_eq!(join("/home/u/.config/bar/", "settings.json").unwrap(), "/home/u/.config/bar/settings.json");
+    fn an_absolute_file_path_is_its_own_key() {
+        assert_eq!(file_path("/home/u/.config/bar/settings.json").unwrap(), "/home/u/.config/bar/settings.json");
     }
 
     #[test]
-    fn a_relative_path_or_a_non_file_name_is_refused_at_the_call_rather_than_on_the_wire() {
-        for (path, name, needle) in [
-            (".config/bar", "settings.json", "must be absolute"),
-            ("/home/u", "nested/settings.json", "name must be one file name"),
-            ("/home/u", "", "name must be one file name"),
+    fn a_relative_path_or_a_directory_is_refused_at_the_call_rather_than_on_the_wire() {
+        for (path, needle) in [
+            (".config/bar/settings.json", "must be absolute"),
+            ("/home/u/bar/", "must name a file"),
+            ("/", "must name a file"),
+            ("/home/u/..", "must name a file"),
         ] {
-            let err = join(path, name).unwrap_err().to_string();
-            assert!(err.contains(needle), "{path:?} {name:?}: the message has to say what to fix: {err}");
+            let err = file_path(path).unwrap_err().to_string();
+            assert!(err.contains(needle), "{path:?}: the message has to say what to fix: {err}");
         }
     }
 }

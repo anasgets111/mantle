@@ -6,7 +6,7 @@ local target = require("targets")
 local layout = require("layout")
 local DIR = mantle.config_dir .. "/wallpapers"
 local THUMBS = DIR .. "/thumbs/"
-mantle.files:watch(DIR, { "png" })
+mantle.folders:watch(DIR, { "png" })
 
 local current = state("wallpaper", "")
 local open = state("picker_open", false)
@@ -79,12 +79,12 @@ local picker = panel {
             list {
                 direction = "horizontal",
                 spacing = 16,
-                source = mantle.files:map(function(files)
-                    local folder = files and files.folders[DIR]
+                items = mantle.folders:map(function(folders)
+                    local folder = folders and folders.watched[DIR]
                     return folder and folder.entries or {}
                 end),
                 key = function(entry) return entry.name end,
-                itemfn = thumbnail,
+                each = thumbnail,
             },
         },
     },

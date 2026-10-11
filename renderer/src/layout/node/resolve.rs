@@ -91,7 +91,7 @@ pub(crate) fn resolve_declared(
     let mut typed: Vec<&'static str> = properties
         .keys()
         .copied()
-        .filter(|property| property.starts_with("on_") || matches!(*property, "submit" | "autofocus"))
+        .filter(|property| property.starts_with("on_") || matches!(*property, "submits_secure" | "autofocus"))
         .collect();
     typed.sort_unstable();
     for property in typed {

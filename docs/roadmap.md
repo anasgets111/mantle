@@ -32,7 +32,7 @@ Wanted, but each needs a consumer or a decision first.
 | Item | Instead | ADR |
 | :--- | :--- | :--- |
 | Native FFT or audio peak metering | Stream Cava output into state and draw it | 0316 |
-| Weather, currency, geolocation, HTTP, sockets or watched file contents | `process.run` streaming `curl`, `socat` or `tail -f`, then `json.decode`; `files` watches folders | — |
+| Weather, currency, geolocation, HTTP, sockets or watched file contents | `process.run` streaming `curl`, `socat` or `tail -f`, then `json.decode`; `folders` watches folders | — |
 | KDE Connect | `kdeconnect-cli` or `dbus-monitor` streamed through `process.run` | — |
 | MPRIS remote artwork | `curl` the player's `art_url` into a cache file through `process.run` and draw that path | 0036 |
 | Generic IPC state read, subscription or per-panel commands | An `action` that returns the value, read with `mantle call`; `mantle set` and `toggle` write state | 0197 |
@@ -41,7 +41,7 @@ Wanted, but each needs a consumer or a decision first.
 | List virtualization | `limit`, or page the source in Lua. A full rebuild costs about 25 µs a row; revisit for a real list past ~200 rows | 0191, 0219 |
 | Clipboard capability | `process.detach("wl-copy", { text })`: a selection needs a process that stays alive to serve it | 0188 |
 | Video encoding or global input capture | A recorder or input backend under `session_process`, streamed in | 0175 |
-| Wallpaper capability | A `"background"`-layer panel, an `image` with `async`/`retain`/`transition`, `files` for the folder, `persistent_table` for the choice | 0055 |
+| Wallpaper capability | A `"background"`-layer panel, an `image` with `async`/`retain`/`transition`, `folders` for the folder, `persistent_table` for the choice | 0055 |
 | Rust widgets (sliders, calendars, launchers, settings) | Lua components over existing nodes | — |
 | Framework settings schema | `persistent_table` with config-declared files | — |
 | Deferred surface loader | Wayland objects are created when shown; the [Lua CPU budget](guide/runtime.md#limits-and-budgets) guards one signal resolve, not a whole evaluation | 0157 |

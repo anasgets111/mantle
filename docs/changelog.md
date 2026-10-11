@@ -7,6 +7,20 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Changed: `mantle.files` is now `mantle.folders`, and its `folders` field is now `watched`: the capability lists watched folders, and `folders.folders` read badly.
+- Changed: `mantle.system` is now `mantle.clock`: it holds the wall and monotonic clocks, nothing else about the system.
+- Changed: `mantle.battery`'s `capacity` is now `health`: the field is full charge over design capacity, and `capacity` read as the charge level.
+- Changed: `mantle.storage`'s `files` field is now `contents`: the values are each file's contents, keyed by path.
+- Changed: `persistent_table { path, name }` is now `persistent_table { path }`, where `path` is the absolute file path; `name` raises as an unknown key, and a relative path or one ending in `/` raises. One key names the file, and the engine creates its parent directory.
+- Changed: the internal `--detached` flag is gone and raises as an unknown argument; the child of `mantle -d` leads its own session and logs `(detached)` in its `started` line.
+- Changed: `list` `source` is now `items`: it names the data, and `source` also means a file path on `image` and `shader`.
+- Changed: `list` `itemfn` is now `each`: a plain word instead of a run-together abbreviation.
+- Changed: window `on_close` is now `on_close_request`: it is a request, the window stays open until the config hides it.
+- Changed: `behind_blur` is now `compositor_blur`: the compositor does the blurring, not the shell.
+- Changed: box `outline` is now `shape` (type `Outline` is now `Shape`): it is the box's shape, and `outline` read as CSS `outline`, which `ring` covers.
+- Changed: the shader uniforms `mantle_outline`, `mantle_outline_len` and `mantle_outline_point` are now `mantle_shape`, `mantle_shape_len` and `mantle_shape_point`: they carry the `shape` property's points.
+- Changed: node `submit` is now `submits_secure`: it sends the armed secure field, and `submit` read like `on_submit`.
+
 ## 0.6.2 - 2026-10-11
 
 - Changed: a HUP, USR1, USR2, ALRM or other terminating signal stops the shell the way SIGTERM does, with an error naming the signal and the sender's pid and command line; SIGINT and SIGTERM log their sender too. The renderer's `connection ended` line says whether the supervisor process is still there.

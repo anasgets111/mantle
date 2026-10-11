@@ -1,14 +1,14 @@
 ```lua
 local folder = (os.getenv("HOME") or "") .. "/Pictures/Wallpapers"
-mantle.files:watch(folder, { "jpg", "png" })
+mantle.folders:watch(folder, { "jpg", "png" })
 
 list {
-    source = mantle.files:map(function(files)
-        local listing = files and files.folders[folder]
+    items = mantle.folders:map(function(folders)
+        local listing = folders and folders.watched[folder]
         return listing and listing.entries or {}
     end),
     key = function(entry) return entry.path end,
-    itemfn = function(entry)
+    each = function(entry)
         return text { content = entry.name }
     end,
 }
@@ -27,7 +27,7 @@ a `watch` with the same `extensions` only re-pushes the listing.
 | Trap | Fix |
 | :--- | :--- |
 | `watch("~/Pictures")` does nothing | Only absolute paths pass; `~` is not expanded. Build the path from `os.getenv("HOME")` |
-| `folders[path]` is `nil` after a `watch` | The key drops trailing slashes: `watch("/walls/")` lands at `folders["/walls"]` |
+| `watched[path]` is `nil` after a `watch` | The key drops trailing slashes: `watch("/walls/")` lands at `watched["/walls"]` |
 | A folder created after `watch` never lists | A missing folder records `error` and stays unwatched. `unwatch`, then `watch` again once it exists |
 
 See also: [`process.run`](../guide/processes.md#processrun) to read a file's contents.

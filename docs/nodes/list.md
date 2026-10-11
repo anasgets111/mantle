@@ -1,6 +1,6 @@
 # list
 
-A `row` or `column` whose children come from data: one `itemfn(item)` call per element of `source`, up to `limit`.
+A `row` or `column` whose children come from data: one `each(item)` call per element of `items`, up to `limit`.
 Use it for anything with a count you do not know up front: workspaces, notifications, search
 results, a thumbnail grid. For a fixed set of children, a [`row` or `column`](row-column.md) is
 simpler.
@@ -24,9 +24,9 @@ local grid = list {
     height = 300,
     spacing = 8,
     scroll = scroll("thumbs"),
-    source = rows,
+    items = rows,
     key = function(pair) return table.concat(pair, "\n") end,
-    itemfn = function(pair)
+    each = function(pair)
         local tiles = {}
         for i, path in ipairs(pair) do
             tiles[i] = image { source = path, async = true, fit = "cover", width = 206, height = 116 }
@@ -48,8 +48,8 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 <!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
-| `source` | `any[]\|Bound` | Empty | Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error |
-| `itemfn` | `fun(item: any): Node` | Required | Builds a node for every built item, visible or not |
+| `items` | `any[]\|Bound` | Empty | Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error |
+| `each` | `fun(item: any): Node` | Required | Builds a node for every built item, visible or not |
 | `key` | `fun(item: any): string` | None | Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position |
 | `limit` | `integer\|Bound` | None | Build at most this many items; above 10000 acts as 10000, `0` builds none |
 | `direction` | `"vertical"\|"horizontal"\|Bound` | `"vertical"` | Lays out as a `column` or a `row` |
@@ -63,33 +63,33 @@ A `list` packs and aligns exactly like the `row` or `column` its `direction` nam
 ## When items rebuild
 
 A list keeps the items it built until something that build read changes. A pass that finds nothing
-changed calls no `itemfn` and reads none of the items' signals; it lays the kept items out again,
-about a third of the cost of building them. A change one item's `itemfn` read builds that item
+changed calls no `each` and reads none of the items' signals; it lays the kept items out again,
+about a third of the cost of building them. A change one item's `each` read builds that item
 alone; a change the list itself read builds every item, scrolled out of view or not. A signal bound
 to an item's property is not the build's: a write to it runs that property's getter in each item
-that binds it and calls no `itemfn`.
+that binds it and calls no `each`.
 
 | Change | Runs again |
 | :--- | :--- |
-| A write to `source`, or to a signal under a `map` or `computed` bound to it | Every item's `itemfn` |
-| A write to a signal `key` read with `:get()` | Every item's `itemfn` |
-| A new `source`, `itemfn` or `key` value, a new `limit`, or a reload | Every item's `itemfn` |
-| A write to a signal an item's `itemfn` call read with `:get()` | That item's `itemfn` |
-| A write to a signal bound to a property of an item at any depth, such as `background = theme` or its `hover` | The getters that read it, no `itemfn` |
+| A write to `items`, or to a signal under a `map` or `computed` bound to it | Every item's `each` |
+| A write to a signal `key` read with `:get()` | Every item's `each` |
+| A new `items`, `each` or `key` value, a new `limit`, or a reload | Every item's `each` |
+| A write to a signal an item's `each` call read with `:get()` | That item's `each` |
+| A write to a signal bound to a property of an item at any depth, such as `background = theme` or its `hover` | The getters that read it, no `each` |
 | A write to anything else, even on the same surface | Nothing |
 
 So bind a shared signal such as a theme color as the property, `background = theme.bg`, rather than
-reading it in `itemfn` with `theme.bg:get()`: flipping the theme then costs one getter per row, not
-one `itemfn` per row. A selection highlight follows the same rule: derive it per row,
+reading it in `each` with `theme.bg:get()`: flipping the theme then costs one getter per row, not
+one `each` per row. A selection highlight follows the same rule: derive it per row,
 `background = computed({ results, selected }, ...)`, rather than folding the selection into
-`source`, which builds every row on each move.
+`items`, which builds every row on each move.
 
 `key` carries each item's state (tweens, a held image, a text field's draft) onto its rebuilt node,
 and across reorders. Cap a long list with `limit` (a launcher's top 50 matches), or hide it while
 closed so it freezes.
 
-The engine sees signal reads only. An `itemfn`, `key` or item `map` that reads the clock, a mutable
-variable or a `source` table changed in place keeps what it read until a signal it read is written.
+The engine sees signal reads only. An `each`, `key` or item `map` that reads the clock, a mutable
+variable or an `items` table changed in place keeps what it read until a signal it read is written.
 A `delay` or `pulse` builds the items that read it again on every pass while one is pending or open. What to read
 instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 
@@ -102,7 +102,7 @@ instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
 | Keep items' animations when the order changes | Give `key` a stable per-element string (an id from the data) |
 | Show only the top N matches | `limit = 50` |
 | Lay items out horizontally | `direction = "horizontal"` |
-| Filter as the user types | Bind `source` to a `map` of the query, as the [textfield](textfield.md) example does |
+| Filter as the user types | Bind `items` to a `map` of the query, as the [textfield](textfield.md) example does |
 | Show an empty state | A sibling with `visible = items:map(function(all) return not all or #all == 0 end)` |
 
 ### Scroll a long list
@@ -119,8 +119,8 @@ local items = list {
     max_height = 200, -- grows with its items up to 200 px, then scrolls
     spacing = 2,
     scroll = scroll("items"),
-    source = names,
-    itemfn = function(name)
+    items = names,
+    each = function(name)
         return text { content = name, width = "fill", padding = 6 }
     end,
 }
@@ -130,10 +130,10 @@ local items = list {
 
 | Trap | Fix |
 | :--- | :--- |
-| A 2000-item `list` makes every update slow | Every item is laid out on every pass, and built whenever anything it read changes, visible or not. Cap it with `limit`, filter the `source`, or hide the list while it is closed |
-| A `list` rebuilds though nothing it shows changed | Its `itemfn` or `key` is a new function each time the builder around it runs, as inside a function `child` that reads a signal. Define them once, outside the builder |
-| A relative time ("3 min ago") in an item stops updating | `itemfn` read the clock with `os.time()`. Bind the text to a `map` of `mantle.system` instead ([what a node reads again](../guide/signals.md#what-a-node-reads-again)) |
-| A `list` of more than 10000 elements is refused | Set `limit`, or page the `source` |
+| A 2000-item `list` makes every update slow | Every item is laid out on every pass, and built whenever anything it read changes, visible or not. Cap it with `limit`, filter the `items`, or hide the list while it is closed |
+| A `list` rebuilds though nothing it shows changed | Its `each` or `key` is a new function each time the builder around it runs, as inside a function `child` that reads a signal. Define them once, outside the builder |
+| A relative time ("3 min ago") in an item stops updating | `each` read the clock with `os.time()`. Bind the text to a `map` of `mantle.clock` instead ([what a node reads again](../guide/signals.md#what-a-node-reads-again)) |
+| A `list` of more than 10000 elements is refused | Set `limit`, or page the `items` |
 | `duplicate key` error | `key` must return a different string for every element |
 | `key` returning a number is refused | Return a string: `tostring(item.id)` |
 | Items lose their state when one is added at the top | Without `key` they match by position. Add `key` |

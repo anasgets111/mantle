@@ -18,9 +18,9 @@ local bar = list {
     spacing = 6,
     align_v = "center",
     margin = { left = 18 },
-    source = windows:map(function(w) return w.windows end),
+    items = windows:map(function(w) return w.windows end),
     key = function(w) return w.id end,
-    itemfn = function(w)
+    each = function(w)
         return rect {
             geometry = target("task:" .. w.id),
             height = 44,

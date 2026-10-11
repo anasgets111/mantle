@@ -44,7 +44,7 @@ Every pointer event asks which nodes lie under the pointer, from the surface dow
 Any node takes clicks, drags and the wheel, hit-tested by its own box. For each event the innermost
 node with a handler for that event wins; a node without one is transparent, so a handle inside a
 draggable track leaves the track draggable, and a `text` with no handler passes the click to the
-`row` around it. A node with a handler or `submit = true` shows the `"pointer"` cursor unless it
+`row` around it. A node with a handler or `submits_secure = true` shows the `"pointer"` cursor unless it
 sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
@@ -53,7 +53,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 | `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. A `textfield` calls only its own, for right and middle. See below |
 | `on_drag(rect, pointer, phase, modifiers)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
 | `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
-| `submit = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
+| `submits_secure = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
 
 **Click.** A press arms the click and the release fires it. Leaving the node and coming back
 before release still clicks; the pointer leaving the surface cancels. The click also cancels if the
@@ -254,7 +254,7 @@ return panel {
 
 ## Keyboard controls and accessibility
 
-A node with `on_click`, `submit = true` or `on_key` becomes a keyboard control when it has a nonempty
+A node with `on_click`, `submits_secure = true` or `on_key` becomes a keyboard control when it has a nonempty
 `accessible_name`. The name is announced through AT-SPI. Give every `textfield` an
 `accessible_name` too; fields take focus through their existing callbacks or `secure_submit`.
 Keys reach controls only on the surface with keyboard focus. Panels use
@@ -265,7 +265,7 @@ Tab moves to the next control in document order across the focused surface and i
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
 When fewer than two controls can take focus, Tab reaches `on_key`.
 Enter or Space activates a named control once per press, calling `on_click(rect, "left", pointer)`
-with `pointer` at the node's centre, and running `submit` when set. Pointer presses also focus
+with `pointer` at the node's centre, and running `submits_secure` when set. Pointer presses also focus
 named controls.
 
 A `panel`, `window` or `popup` takes `on_escape()` for dismissing without a field. It fires once per
@@ -346,7 +346,7 @@ return panel {
 The engine draws a black and white outline around the focused control only when Tab, Shift+Tab or
 an assistive-technology action moved focus there. Focus from a press, `autofocus` or
 `focus_target(name):request()` from a click draws none, and a press hides an outline Tab drew. `focus_ring = false`
-keeps the outline off a node. The outline follows the node's `radius`, `corner_smoothing` and `outline`.
+keeps the outline off a node. The outline follows the node's `radius`, `corner_smoothing` and `shape`.
 
 `focused(name)` returns a read-only boolean signal, `false` until the bound node first holds focus.
 Bind it to a node's `focused` and the engine sets it `true` while that node or any node inside it
@@ -656,8 +656,8 @@ secret or its length.
 | :--- | :--- |
 | Arming | When the surface gains keyboard focus, the sole visible secure field in it (and in popups shown under it) is armed with no click. With two or more, a press picks one. A field revealed later under existing focus arms if none is armed |
 | Keys | Typed text appends, Backspace removes one character, Escape clears the buffer, stays armed and calls the field's `on_cancel(cleared)`. There is no caret or selection, and no `on_key`; `on_change` and `on_submit` never fire |
-| Sending | Enter, or a click on a `submit = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
-| Focus | A click on anything but a field keeps the field armed, so a `submit = true` node works. Tab to a named button keeps the buffer too: typing stops, Enter on a `submit = true` button sends it, and Escape still clears it and calls `on_cancel`. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
+| Sending | Enter, or a click on a `submits_secure = true` node, sends the buffer and wipes it. An empty buffer is sent only to `network`/`connect`, where it joins an open network |
+| Focus | A click on anything but a field keeps the field armed, so a `submits_secure = true` node works. Tab to a named button keeps the buffer too: typing stops, Enter on a `submits_secure = true` button sends it, and Escape still clears it and calls `on_cancel`. Focusing another field, plain or secure, or the keyboard leaving the surface, disarms it and wipes the buffer |
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
 | `on_escape` | A surface's `on_escape` fires when the buffer is empty and the field has no `on_cancel`, so it reveals that one bit (ADR-0320) |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
@@ -685,7 +685,7 @@ return lock {
                 padding = 8,
                 radius = 8,
                 background = "#89b4fa",
-                submit = true,
+                submits_secure = true,
                 accessible_name = "Unlock",
                 children = { text { content = "Unlock", foreground = "#11111b" } },
             },
@@ -705,7 +705,7 @@ return lock {
 | Handle arrows or shortcuts on a custom control | `on_key` ([key handlers](#key-handlers)) |
 | Close a dialog or menu on Escape | `on_escape` on the surface ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Ask for a password | The lock example under [secure fields](#secure-fields) |
-| Reach a button by keyboard or screen reader | Give the node with `on_click` or `submit` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
+| Reach a button by keyboard or screen reader | Give the node with `on_click` or `submits_secure` an `accessible_name` ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Hide or restyle the focus outline | `focus_ring = false` on the control, and style a wrapper from `focus_visible(name)`, or `focused(name)` to track any focus ([keyboard controls](#keyboard-controls-and-accessibility)) |
 | Show a tooltip on hover | [Tooltip](../surfaces/popup.md), with `hover_rect` as the anchor |
 | Open a menu on right click | Below |
@@ -826,7 +826,7 @@ return panel {
     id = "bar",
     layer = "top",
     anchor = { top = true },
-    child = list { spacing = 4, source = items, itemfn = row_for, key = function(name) return name end },
+    child = list { spacing = 4, items = items, each = row_for, key = function(name) return name end },
 }
 ```
 

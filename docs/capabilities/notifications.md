@@ -51,7 +51,7 @@ One `notifications.feed` entry.
 | `image_path?` | `string` | Attached picture (album art, avatar) as an existing absolute path, or `nil`. Never a theme name. |
 | `reply_placeholder?` | `string` | Placeholder for an empty reply field, e.g. `"Reply to Alice"`, capped at 64 bytes; `nil` when unset. |
 | `summary` | `string` | Title as sent, truncated to 128 bytes. Not markup-parsed: the spec makes it plain text. |
-| `timestamp` | `integer` | Arrival time, Unix seconds; age is `mantle.system.time - timestamp`. A replacement restamps it. |
+| `timestamp` | `integer` | Arrival time, Unix seconds; age is `mantle.clock.time - timestamp`. A replacement restamps it. |
 | `transient` | `boolean` | Popup-only: removed on expiry instead of retired to history. |
 | `urgency` | `Urgency` | `"normal"` when the sender set none. `"critical"` never expires and plays sound through DND. |
 
@@ -121,11 +121,11 @@ Mantle is the `org.freedesktop.Notifications` server on the session bus.
 ```lua
 list {
     spacing = 6,
-    source = mantle.notifications:map(function(notifications)
+    items = mantle.notifications:map(function(notifications)
         return notifications and notifications.feed or {}
     end),
     key = function(item) return tostring(item.id) end,
-    itemfn = function(item)
+    each = function(item)
         return column {
             width = 320,
             padding = 8,

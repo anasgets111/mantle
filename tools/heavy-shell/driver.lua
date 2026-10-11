@@ -22,7 +22,7 @@ return function(mode, cal_hidden, listwin, gallery, theme, fx)
         if tick % 2 == 0 then day:set(tick // 2 % 28 + 1) end
         if tick % 5 == 0 then
             listwin.query:set(QUERIES[tick // 5 % #QUERIES + 1])
-            -- A fixed span, not `#gallery.rows:get()`: converting the 331-entry `mantle.files`
+            -- A fixed span, not `#gallery.rows:get()`: converting the 331-entry `mantle.folders`
             -- snapshot inside this callback measured over the 2.5 ms budget. Past the end is a no-op.
             gallery.scroll:reveal((tick // 5 * 3) % 56 + 1)
         end

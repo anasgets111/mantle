@@ -52,12 +52,12 @@ Draw `number` or `name`, send `id` ([`list`](../nodes/list.md) builds one button
 list {
     direction = "horizontal",
     spacing = 4,
-    source = mantle.workspaces:map(function(workspaces)
+    items = mantle.workspaces:map(function(workspaces)
         local output = workspaces and workspaces.outputs[1]
         return output and output.workspaces or {}
     end),
     key = function(workspace) return tostring(workspace.id) end,
-    itemfn = function(workspace)
+    each = function(workspace)
         local active = mantle.workspaces:map(function(workspaces)
             local output = workspaces and workspaces.outputs[1]
             return output ~= nil and output.active_workspace == workspace.id

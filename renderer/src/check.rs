@@ -24,7 +24,7 @@ use crate::text::shaping::ShapingHandle;
 /// config author needs to read.
 ///
 /// Lays out with every capability `nil`, as a boot does, then after one push per capability of each
-/// sample set (ADR-0267): the first, so an `itemfn` runs on a row, the alternate, so a `false` or
+/// sample set (ADR-0267): the first, so an `each` runs on a row, the alternate, so a `false` or
 /// last-variant branch runs, and the empty, so an empty-list branch runs. Each failing pass is
 /// reported.
 pub fn run(config_dir: &Path) -> Result<String, String> {
@@ -455,8 +455,8 @@ mod tests {
             ),
             (
                 "action argument nil before another",
-                &[("shell.lua", "\nmantle.files:watch(nil, { \"a\" })\nreturn {}\n")],
-                &["shell.lua:2: mantle.files:watch: bad argument #1: expected a string, got nil"],
+                &[("shell.lua", "\nmantle.folders:watch(nil, { \"a\" })\nreturn {}\n")],
+                &["shell.lua:2: mantle.folders:watch: bad argument #1: expected a string, got nil"],
             ),
             (
                 "action argument that quotes serde",
@@ -485,10 +485,10 @@ mod tests {
                 &["shell.lua:2: children[2]: node table has no `kind` field (at panel (shell.lua:2) on `p@DP-1`)"],
             ),
             (
-                "a typo in an itemfn row",
+                "a typo in an each row",
                 &[(
                     "shell.lua",
-                    "\nreturn panel { id = \"p\", layer = \"top\", child = list {\n  source = { 1, 2, 3, 4 },\n  itemfn = function(n) if n == 4 then return text { contnet = \"x\" } end return text { content = \"x\" } end } }\n",
+                    "\nreturn panel { id = \"p\", layer = \"top\", child = list {\n  items = { 1, 2, 3, 4 },\n  each = function(n) if n == 4 then return text { contnet = \"x\" } end return text { content = \"x\" } end } }\n",
                 )],
                 &[
                     "shell.lua:4: text: no property `contnet`; did you mean `content`? (at panel (shell.lua:2) > list (shell.lua:2) on `p@DP-1`)",
@@ -506,8 +506,8 @@ mod tests {
             ),
             (
                 "action argument nested in a table",
-                &[("shell.lua", "\nmantle.files:watch(\"/tmp\", { \"a\", 5 })\nreturn {}\n")],
-                &["shell.lua:2: mantle.files:watch: bad argument #2: expected a string, got integer 5"],
+                &[("shell.lua", "\nmantle.folders:watch(\"/tmp\", { \"a\", 5 })\nreturn {}\n")],
+                &["shell.lua:2: mantle.folders:watch: bad argument #2: expected a string, got integer 5"],
             ),
             (
                 "set_volume with a string",
@@ -583,7 +583,7 @@ mod tests {
         assert!(err.ends_with("on `bar@HDMI-A-1`)"), "a static error fails every pass and names none: {err}");
     }
 
-    /// An `itemfn` runs only once a `list` source has rows, and every capability reads `nil` until
+    /// An `each` runs only once a `list` has items, and every capability reads `nil` until
     /// its first push, so only the sample pass reaches this typo.
     #[test]
     fn a_typo_inside_an_itemfn_fails_the_check_with_sample_capability_data() {
@@ -592,8 +592,8 @@ mod tests {
             dir.path().join("shell.lua"),
             r#"return { panel { id = "p", layer = "top", anchor = { top = true }, width = "fill", height = 30,
     child = list {
-        source = mantle.workspaces:map(function(s) return s and s.outputs or {} end),
-        itemfn = function(o) return text { contnet = o.name } end,
+        items = mantle.workspaces:map(function(s) return s and s.outputs or {} end),
+        each = function(o) return text { contnet = o.name } end,
     } } }
 "#,
         )
@@ -609,14 +609,14 @@ mod tests {
         std::fs::write(
             dir.path().join("shell.lua"),
             r#"return panel { id = "launcher", layer = "top", child = list {
-    source = mantle.applications:map(function(s)
+    items = mantle.applications:map(function(s)
         local entries = {}
         for _, app in ipairs(s and s.entries or {}) do
             if not app.no_display then entries[#entries + 1] = app end
         end
         return entries
     end),
-    itemfn = function(app) return text { contnet = app.name } end,
+    each = function(app) return text { contnet = app.name } end,
 } }
 "#,
         )
@@ -648,7 +648,7 @@ mod tests {
             std::fs::write(
                 dir.path().join("shell.lua"),
                 format!(
-                    "return panel {{ id = \"p\", layer = \"top\", child = list {{\n    source = {source},\n    itemfn = function() return text {{ contnet = \"row\" }} end,\n}} }}\n"
+                    "return panel {{ id = \"p\", layer = \"top\", child = list {{\n    items = {source},\n    each = function() return text {{ contnet = \"row\" }} end,\n}} }}\n"
                 ),
             )
             .unwrap();

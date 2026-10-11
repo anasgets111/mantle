@@ -28,7 +28,7 @@ use super::{
     NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsState, Urgency, desktop_entry_from_hint,
     reply_placeholder_from_hint, urgency_from_hint_byte,
 };
-use crate::capabilities::system::controller::epoch_seconds;
+use crate::capabilities::clock::controller::epoch_seconds;
 use crate::capabilities::truncate_utf8_bytes;
 
 struct NotificationsQueueState {

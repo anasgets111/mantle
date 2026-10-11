@@ -30,7 +30,7 @@ local M = {
         { name = "02-color" },
         { name = "03-workspaces",    type = { "workspaces," } },
         { name = "04-launcher",      type = { "local open", "fuzzy(" } },
-        { name = "05-restyle",       type = { "behind_blur", "radius = 24" } },
+        { name = "05-restyle",       type = { "compositor_blur", "radius = 24" } },
         { name = "06-shader",        type = { "/aurora.frag", "mask = FADE" } },
         { name = "07-wallpaper",     type = { 'require("theme")' } },
         { name = "08-windows",       type = { "taskbar.bar,", "overview," } },

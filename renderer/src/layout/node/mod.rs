@@ -10,10 +10,10 @@ mod content;
 pub(crate) mod corner;
 pub(crate) mod input;
 mod list;
-pub(crate) mod outline;
 mod paint_style;
+pub(crate) mod shape;
 mod vector_path;
-pub use outline::Outline;
+pub use shape::Shape;
 #[cfg(test)]
 pub(crate) use vector_path::PathCommand;
 pub(crate) use vector_path::{
@@ -146,10 +146,10 @@ crate::lua::luacats::lua_shape! {
 }
 
 /// A box's shape: corner radii clockwise from the top left, in px, and the `corner_smoothing` they
-/// share, or an `outline` in their place. Negative is a scoop (`corner_shape`), on every corner at
+/// share, or a `shape` in their place. Negative is a scoop (`corner_shape`), on every corner at
 /// once; zero is square. Smoothing is never combined with a scoop (`parse_radius`).
 #[derive(Debug, Clone, PartialEq, Default)]
-pub struct Radii(pub [f32; 4], pub f32, pub Option<Rc<Outline>>);
+pub struct Radii(pub [f32; 4], pub f32, pub Option<Rc<Shape>>);
 
 impl Radii {
     pub fn is_zero(&self) -> bool {
@@ -425,7 +425,7 @@ pub(crate) fn invalid(property: &str, detail: impl Into<String>) -> LayoutError 
     LayoutError::InvalidProperty { property: property.to_string(), detail: detail.into(), at: None }
 }
 
-/// Elements accepted from one config-supplied array: a node's `children`, a `list`'s `source`, and
+/// Elements accepted from one config-supplied array: a node's `children`, a `list`'s `items`, and
 /// a `text`'s style runs.
 ///
 /// `scene::MAX_TREE_DEPTH` bounds depth; this bounds width, which nothing else does. The layout
@@ -442,7 +442,7 @@ pub(crate) const MAX_ARRAY_ELEMENTS: usize = 10_000;
 /// `rescue` `error_log` line without limiting valid string properties.
 const MAX_ERROR_VALUE_PREVIEW_BYTES: usize = 200;
 
-/// Crate-visible because `layout::scene`'s `list` parser reports bad `source`, `itemfn`, or `key`
+/// Crate-visible because `layout::scene`'s `list` parser reports bad `items`, `each`, or `key`
 /// values through it. Formats a rejected value for [`invalid`] without first formatting an
 /// oversized string in full:
 /// `rect { radius = string.rep("x", 20 * 1024 * 1024) }` would otherwise allocate and escape 20 MB
@@ -690,14 +690,14 @@ mod tests {
         );
     }
 
-    /// Raw rows, `children` and a list's `source` keep the declared table, signals and all.
+    /// Raw rows, `children` and a list's `items` keep the declared table, signals and all.
     #[test]
     fn raw_rows_children_and_a_list_source_are_not_walked_for_signals() {
         let lua = scene_lua();
         for (kind, src, property) in [
             ("panel", r#"id = "bar", layer = "top", anchor = { top = state("a", true) }"#, "anchor"),
             ("column", "children = { rect { width = state('w', 1) } }", "children"),
-            ("list", "source = { { a = state('s', 1) } }, itemfn = function() end", "source"),
+            ("list", "items = { { a = state('s', 1) } }, each = function() end", "items"),
         ] {
             let declared = props_from_src(&lua, format!(r#"return {{ kind = "{kind}", {src} }}"#));
             let resolved = resolve_declared(&declared, kind, false, &lua).unwrap();
@@ -828,7 +828,7 @@ mod tests {
         let lua = mlua::Lua::new();
         for (source, property, expected) in [
             (r#"{ kind = "row", on_click = "quit" }"#, "on_click", "expected a function, got string \"quit\""),
-            (r#"{ kind = "icon", submit = 1 }"#, "submit", "expected a boolean, got integer 1"),
+            (r#"{ kind = "icon", submits_secure = 1 }"#, "submits_secure", "expected a boolean, got integer 1"),
             (r#"{ kind = "textfield", autofocus = "yes" }"#, "autofocus", "expected a boolean, got string \"yes\""),
         ] {
             let err =

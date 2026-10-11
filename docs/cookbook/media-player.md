@@ -8,7 +8,7 @@ buttons. It prefers whichever player is playing and hides when none runs.
 ```lua,shot
 local card_open = state("media_open", false)
 local card_anchor = state("media_anchor", { x = 0, y = 0, width = 1, height = 1 })
--- Where `position` was last reported, in `mantle.system.monotonic` seconds.
+-- Where `position` was last reported, in `mantle.clock.monotonic` seconds.
 local position_mark = state("media_position_mark", { key = "", at = 0 })
 local selected_player = state("media_selected_player", "")
 
@@ -56,7 +56,7 @@ end
 -- Positions are not polled: stamp each new report so the bar can add the time since.
 mantle.mpris:on_change(function(mpris)
     local current = pick(mpris)
-    local system = mantle.system:get()
+    local system = mantle.clock:get()
     if current and system then
         local key = report_key(current)
         if key ~= position_mark:get().key then
@@ -66,7 +66,7 @@ mantle.mpris:on_change(function(mpris)
 end)
 
 -- Live position in microseconds, or nil when unknown.
-local position = computed({ player, position_mark, mantle.system }, function(current, mark, system)
+local position = computed({ player, position_mark, mantle.clock }, function(current, mark, system)
     if current == nil or current.position == nil then
         return nil
     end
@@ -280,7 +280,7 @@ return {
 ## How it works
 
 - `players` is in registration order; the map prefers one that is playing and keeps it selected while paused ([mpris](../capabilities/mpris.md)).
-- `position` is a snapshot, not polled. `on_change` stamps each new report with `mantle.system.monotonic`, and a `computed` adds the seconds since ([system](../capabilities/system.md), [derived signals](../guide/signals.md#derived-signals)).
+- `position` is a snapshot, not polled. `on_change` stamps each new report with `mantle.clock.monotonic`, and a `computed` adds the seconds since ([clock](../capabilities/clock.md), [derived signals](../guide/signals.md#derived-signals)).
 - The fill is a `"NN%"` width in a rounded, clipped track; `on_drag` on the track seeks on release ([pointer](../guide/input.md#pointer), [clip](../guide/paint.md#clip)).
 - `album_art_path` is an existing local path or `""`. A remote cover arrives only as `art_url`; fetch it into a cache file with `curl` through `process.run` and draw that path. An `image` with `source = ""` draws nothing over the placeholder `rect` ([image](../nodes/image.md)).
 - The card is a grabbing [popup](../surfaces/popup.md) anchored to the pill's click rect; it also closes when the last player quits.

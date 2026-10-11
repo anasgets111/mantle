@@ -30,7 +30,7 @@ return panel {
 ```lua
 -- widgets/clock.lua
 return text {
-    content = mantle.system:map(function(system)
+    content = mantle.clock:map(function(system)
         return system and os.date("%H:%M", system.time) or "" -- nil before the first push
     end),
     foreground = "#cdd6f4ff",
@@ -210,11 +210,11 @@ it.
 | :--- | :--- | :--- | :--- |
 | CPU budget | 2.5 ms of thread CPU time | Each `:map` and `computed` recompute, each `delay`/`pulse` read, each `on_change` handler, `action` handler and `timer` or `interval` callback. Nested reads share the outermost deadline | The call raises `exceeded the 2.5ms CPU budget for one evaluation`. `pcall` inside the callback does not hide it |
 | Signal nesting | 32 levels | Signal reads nested inside other signal reads (a `map` of a `map` of ..., a computed reading itself) | Raises `signal nesting exceeded its maximum depth of 32 levels` |
-| Layout pass | 2 s | One whole pass over the scene, including list `itemfn`s and function `child` builders | The pass fails and every surface keeps its last applied tree |
+| Layout pass | 2 s | One whole pass over the scene, including list `each`s and function `child` builders | The pass fails and every surface keeps its last applied tree |
 | Tree depth | 64 levels | Nested nodes in one surface | The pass fails |
 | Scalar values | Numbers finite, integers within ±(2^53 − 1), strings at most 64 KiB | `state` seeds, `:set()`, `mantle set`, and number or string node properties. Tables are not checked | `state` and `:set` raise. `mantle set` is refused: it exits 1 and logs a warning. A node property is invalid, as below |
 | Numeric properties | `[0, 8192]` logical px for most sizes and each `padding` edge. `[-8192, 8192]` for `translate`, `rotate`, shader `progress`, shadow offset and spread. `opacity` and `origin` `[0, 1]`, `scale` `[0, 64]`, `font_size` `[1, 8192]`. `margin`, `spacing` and icon `size` are unbounded (a tween still clamps them) | Node and surface properties ([nodes](../nodes/index.md)) | A startup or live pass uses the property's default; a reload and `mantle check` fail. Each names the property |
-| Array length | 10,000 | `children` of one node, items of one `list` (`source`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails; a startup or live pass gives a `content` its default instead |
+| Array length | 10,000 | `children` of one node, items of one `list` (`items`, and `limit` is clamped to it), runs in one `text` `content` | The pass fails; a startup or live pass gives a `content` its default instead |
 | `delay`, `pulse` duration | `[1, 60000]` ms | `delay(signal, ms)`, `pulse(signal, ms)` ([signals](signals.md)) | Raises at the call |
 | `timer` and `interval` delay | `[1, 86400000]` ms (one day) | `timer(ms, fn)`, `interval(ms, fn)` ([scripting](scripting.md#timer)) | Raises at the call |
 | Action answer | 1 MiB of JSON | What an `action` handler returns | The `mantle call` fails |
@@ -224,7 +224,7 @@ it.
 | Respawn brake | 3 Renderer deaths within 60 s | The Supervisor | The next respawn waits 30 s |
 
 Not budgeted: an evaluation's top level, input handlers (`on_click`, `on_drag`, `on_wheel`,
-`on_hover`, `on_link`, textfield callbacks, `on_close`, `on_dismiss`), `process.run` callbacks,
+`on_hover`, `on_link`, textfield callbacks, `on_close_request`, `on_dismiss`), `process.run` callbacks,
 `palette` callbacks and idle callbacks. A slow one stalls every surface until it returns.
 
 Keep maps cheap. Build lookup tables once at the top level, which has no budget, and do only an
@@ -253,7 +253,7 @@ started with `process.run`, whose output callback sets a `state`.
 | :--- | :--- |
 | `print(...)` | The Renderer's stdout, unstamped |
 | `log.error/warn/info/debug(...)` | Stamped lines under the `config` subsystem ([log](scripting.md#log)) |
-| A raise from any callback: input handlers, `on_close`, `on_dismiss`, `on_change`, `timer`, `process.run`, `palette` or idle | A warning |
+| A raise from any callback: input handlers, `on_close_request`, `on_dismiss`, `on_change`, `timer`, `process.run`, `palette` or idle | A warning |
 | A `process.run` or `process.detach` that cannot spawn, a failing `mantle call` | A warning |
 | An icon name no theme has, an image that does not decode | A warning, once per name |
 

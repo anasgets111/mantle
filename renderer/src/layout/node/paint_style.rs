@@ -201,7 +201,7 @@ pub enum PaintStyle {
         /// duration, instead of swapping between them in one frame.
         transition: Option<TransitionSpec>,
         /// `source_blur` (ADR-0240): a static blur run once when the source's decode lands, in
-        /// logical pixels. `0.0` is off. Distinct from `behind_blur` (ADR-0195), which asks the
+        /// logical pixels. `0.0` is off. Distinct from `compositor_blur` (ADR-0195), which asks the
         /// compositor to blur the desktop *behind* a box instead of blurring the node's own
         /// pixels, and which `image` does not accept.
         source_blur: f32,
@@ -269,7 +269,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 BorderPaint::Gradient(_) => true,
             };
             if radius.2.is_some() && !([right, bottom, left].iter().all(|w| *w == top) && one_colour) {
-                return Err(invalid("outline", "takes one border_width and one border_color for its whole contour"));
+                return Err(invalid("shape", "takes one border_width and one border_color for its whole contour"));
             }
             PaintStyle::Box {
                 background: paint::background.read(properties)?,

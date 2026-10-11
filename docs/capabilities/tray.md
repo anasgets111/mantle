@@ -8,11 +8,11 @@ StatusNotifierItem: registered tray items with artwork, status and menus.
 list {
     direction = "horizontal",
     spacing = 4,
-    source = mantle.tray:map(function(tray)
+    items = mantle.tray:map(function(tray)
         return tray and tray.items or {}
     end),
     key = function(item) return item.id end,
-    itemfn = function(item)
+    each = function(item)
         return rect {
             on_click = function(_, which)
                 if which == "left" and not item.item_is_menu then

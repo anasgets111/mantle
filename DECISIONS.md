@@ -8322,3 +8322,19 @@ HUP or USR1 killed it silently, and tokio's handlers never name the sender.
    sender's command line at once, before a short-lived `kill` exits.
 4. **Cost.** Four `unsafe` blocks, and SIGKILL stays unobservable in-process; the Renderer logs
    whether its Supervisor still exists when the socket ends.
+
+## 0357. Lua names say what the value is; one rename pass before 1.0
+
+A name a config author reads wrong is a bug in the API. Renamed, no aliases: `mantle.files` to
+`mantle.folders` (`.watched`), freeing `file` for file access; `mantle.system` to `mantle.clock`, as
+ADR-0136 item 7 already called it; `battery.capacity` to `health`, beside `percent`;
+`storage.files` to `contents`; list `source`/`itemfn` to `items`/`each`, since `source` is a file
+path on `image` and `shader`; window `on_close` to `on_close_request`; `behind_blur` to
+`compositor_blur`, beside `effect.backdrop.blur`; box `outline` to `shape` (and `mantle_outline*`
+to `mantle_shape*`), since `ring` is CSS `outline`; `submit` to `submits_secure`, beside
+`on_submit`. `persistent_table` takes one file `path`, not a directory and a name, so every `path`
+in the API is a file. The internal `--detached` flag is gone: `detach_self` marks the child through
+an environment variable the child removes at startup.
+
+Rejected: popup `anchor` to `anchor_point` (`anchor` and `gravity` are xdg-positioner's words), and
+taste-only renames (`itemfn` to `item` beside `items`, run `color`, `pointer`).

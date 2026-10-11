@@ -133,8 +133,8 @@ impl ShaderStage {
                 reach: named("mantle_reach"),
                 power: named("mantle_power"),
                 round: named("mantle_round"),
-                outline: named("mantle_outline"),
-                outline_len: named("mantle_outline_len"),
+                shape: named("mantle_shape"),
+                shape_len: named("mantle_shape_len"),
                 params,
                 images: images.iter().map(|(image, _)| (named(image), named(&format!("{image}_size")))).collect(),
             })

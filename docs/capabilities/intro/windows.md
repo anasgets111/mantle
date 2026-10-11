@@ -1,10 +1,10 @@
 ```lua
 list {
-    source = mantle.windows:map(function(windows)
+    items = mantle.windows:map(function(windows)
         return windows and windows.windows or {}
     end),
     key = function(window) return window.id end,
-    itemfn = function(window)
+    each = function(window)
         return rect {
             on_click = function() mantle.windows:focus(window.id) end,
             children = {

@@ -91,7 +91,7 @@ pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Resul
         Capability::Audio => fits::<AudioAction>(action, arguments),
         Capability::Bluetooth => fits::<BluetoothAction>(action, arguments),
         Capability::Brightness => fits::<BrightnessAction>(action, arguments),
-        Capability::Files => fits::<FilesAction>(action, arguments),
+        Capability::Folders => fits::<FoldersAction>(action, arguments),
         Capability::Processes => fits::<ProcessesAction>(action, arguments),
         Capability::Keyboard => fits::<KeyboardAction>(action, arguments),
         Capability::Lock => fits::<LockAction>(action, arguments),
@@ -107,7 +107,7 @@ pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Resul
         Capability::Updates => fits::<UpdatesAction>(action, arguments),
         Capability::Workspaces => fits::<WorkspacesAction>(action, arguments),
         Capability::Windows => fits::<WindowsAction>(action, arguments),
-        Capability::System => fits::<SystemAction>(action, arguments),
+        Capability::Clock => fits::<ClockAction>(action, arguments),
         Capability::Appearance | Capability::Battery | Capability::Idle | Capability::Privacy | Capability::Secrets => {
             Err(serde::de::Error::custom("it has no actions"))
         }
@@ -191,9 +191,12 @@ mod tests {
             ),
             (decode::<ProcessesAction>("start", json!(["rec", ""])), Err("non-empty")),
             (decode::<ProcessesAction>("declare", json!(["rec", "SIGUSR2"])), Err("unknown variant")),
-            (decode::<FilesAction>("watch", json!(["/walls", {}])), Ok(r#"Watch { path: "/walls", extensions: [] }"#)),
-            (decode::<FilesAction>("watch", json!(["/walls", {"jpg": true}])), Err("invalid type")),
-            (decode::<FilesAction>("unwatch", json!(["walls"])), Err("absolute")),
+            (
+                decode::<FoldersAction>("watch", json!(["/walls", {}])),
+                Ok(r#"Watch { path: "/walls", extensions: [] }"#),
+            ),
+            (decode::<FoldersAction>("watch", json!(["/walls", {"jpg": true}])), Err("invalid type")),
+            (decode::<FoldersAction>("unwatch", json!(["walls"])), Err("absolute")),
             (
                 decode::<UpdatesAction>("configure", json!([{"interval": 3600, "packages": {}}])),
                 Ok(

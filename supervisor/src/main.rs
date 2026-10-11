@@ -101,12 +101,8 @@ fn new_session_without_inherited_fds(command: &mut std::process::Command) {
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
-        // `--detached` in `-d`'s place, so the child's `started` line shows it was asked for.
-        .args(
-            std::env::args()
-                .skip(1)
-                .map(|arg| if arg == "-d" || arg == "--detach" { "--detached".into() } else { arg }),
-        )
+        // The child shows it was detached by leading its own session (see `started`).
+        .args(std::env::args().skip(1).filter(|arg| arg != "-d" && arg != "--detach"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());
@@ -307,7 +303,9 @@ async fn run_supervisor(
     if let Some(pid) = boot_child.id() {
         registry.expect_generation(0, pid);
         let argv: String = std::env::args().skip(1).map(|arg| format!(" {arg}")).collect();
-        notice!("started `mantle{argv}` on {}; renderer pid {pid}", config_dir.display());
+        let detached = nix::unistd::getsid(None).is_ok_and(|sid| sid == nix::unistd::Pid::this());
+        let detached = if detached { " (detached)" } else { "" };
+        notice!("started `mantle{argv}`{detached} on {}; renderer pid {pid}", config_dir.display());
     }
 
     let mut supervisor = Supervisor::new(

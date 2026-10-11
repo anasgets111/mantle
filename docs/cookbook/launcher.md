@@ -101,9 +101,9 @@ local results = list {
     max_height = 400,
     spacing = 2,
     scroll = results_scroll,
-    source = matches,
+    items = matches,
     key = function(entry) return entry.id end,
-    itemfn = function(entry)
+    each = function(entry)
         return row {
             width = "fill",
             padding = 8,
@@ -192,7 +192,7 @@ launcher_open` on Hyprland or `Mod+Space { spawn "mantle" "toggle" "launcher_ope
 - `applications.entries` includes desktop entries used for window icon lookup; the launcher omits entries with `no_display = true`. It follows installs and removals; `launch` takes an entry's `id` and runs it detached ([applications](../capabilities/applications.md)).
 - `fuzzy` scores one candidate; ranking, the tiebreak and the cap stay in Lua ([fuzzy](../guide/scripting.md#fuzzy)).
 - `computed` joins the capability with the query ([derived signals](../guide/signals.md#derived-signals)).
-- Each row derives its own highlight from `matches` and `selected`. An arrow key reruns those 50 small functions and builds no row; folding the selection into `source` would call `itemfn` for all 50 on every keypress ([when items rebuild](../nodes/list.md#when-items-rebuild)).
+- Each row derives its own highlight from `matches` and `selected`. An arrow key reruns those 50 small functions and builds no row; folding the selection into `items` would call `each` for all 50 on every keypress ([when items rebuild](../nodes/list.md#when-items-rebuild)).
 - The `textfield` owns the typed text and reports it through `on_change`; `on_key` gets the arrow and Tab keys the field does not use ([textfield](../nodes/textfield.md), [key handlers](../guide/input.md#key-handlers)).
 - `scroll(name):reveal(index)` keeps the selected row in view inside the `max_height` list ([scroll](../guide/input.md#scroll), [list](../nodes/list.md)).
 - `reset_on_close` returns the query, the selection and the scroll to their start whenever the launcher closes, including by `mantle toggle` ([reset on close](../surfaces/index.md#reset-on-close)).

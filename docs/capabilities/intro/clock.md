@@ -1,8 +1,8 @@
 ```lua
-mantle.system:configure({ interval = 60 }) -- the text below shows no seconds
+mantle.clock:configure({ interval = 60 }) -- the text below shows no seconds
 
 text {
-    content = mantle.system:map(function(system)
+    content = mantle.clock:map(function(system)
         return system and os.date("%a %H:%M", system.time) or ""
     end),
 }
