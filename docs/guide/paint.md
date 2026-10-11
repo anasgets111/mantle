@@ -702,7 +702,7 @@ Write `void main()` and set `fragColor` to premultiplied RGBA.
 | `mantle_input(uv)` | `vec4` | The input at a box coordinate, premultiplied; transparent outside the padded area |
 | `mantle_input_blurred(uv)` | `vec4` | The same, through `effect.backdrop`'s blur and colour filters; the plain input when it has none or `input = "content"` |
 | `u_input`, `u_input_blurred`, `u_input_rect` | `sampler2D`, `sampler2D`, `vec4` | The textures and where they sit as `(x, y, w, h)` in box fractions. Use the functions above, which handle the textures' orientation |
-| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's shape, negative inside. It follows `radius`, per-corner radii, `corner_smoothing` and `outline`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
+| `mantle_sdf(p)` | `float` | Signed distance in logical px from `p` (a box position in logical px, `v_uv * u_size`) to the node's shape, negative inside. It follows `radius`, per-corner radii, `corner_smoothing` and `shape`, so a shader can draw a rim, a glow or a clip that matches the shape. Smoothed corners are approximate, as in [Continuous corners](#continuous-corners) |
 | `u_progress` | `float` | `progress` |
 | `mantle_opacity` | | Not set |
 

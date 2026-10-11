@@ -38,14 +38,19 @@ pub(crate) fn dispatch(
         send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
     };
     match envelope.params.action.as_str() {
-        "run" => match process_run_args(&envelope.params.arguments) {
+        action @ ("run" | "capture") => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => match spawn_and_register_process(processes, generation_id, id, &cmd, &args) {
                 Some((stdout, stderr)) => {
                     debug!(2; "process.run: spawned generation={} id={} cmd={:?}", generation_id, id, cmd);
                     let task_registry = registry.clone();
                     let task_done_tx = process_done_tx.clone();
+                    let capture = action == "capture";
                     tokio::spawn(async move {
-                        stream_process_output(&task_registry, generation_id, id, stdout, stderr).await;
+                        if capture {
+                            capture_process_output(&task_registry, generation_id, id, stdout, stderr).await;
+                        } else {
+                            stream_process_output(&task_registry, generation_id, id, stdout, stderr).await;
+                        }
                         // Pipes close an instant before the exit status lands; let it, so `on_exit` is not rechecked 100 ms later.
                         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                         let _ = task_done_tx.send((generation_id, id));
@@ -236,6 +241,37 @@ pub(crate) async fn stream_process_output(
                 stderr_done = report_process_output_line(registry, generation_id, id, ProcessStream::Stderr, line).await;
             }
         }
+    }
+}
+
+/// The most stdout `process.capture` keeps.
+// ponytail: the rest is drained and dropped. Upgrade: a per-call cap argument.
+const MAX_CAPTURE_BYTES: u64 = 1024 * 1024;
+
+/// `process.capture`'s reader: sends stdout as one `ProcessOutput` frame at EOF (none when empty) and
+/// drains stderr to nowhere. Either pipe left unread could block the child. Same done contract as
+/// [`stream_process_output`].
+pub(crate) async fn capture_process_output(
+    registry: &socket::GenerationRegistry,
+    generation_id: u32,
+    id: u64,
+    mut stdout: ChildStdout,
+    mut stderr: ChildStderr,
+) {
+    let mut kept = Vec::new();
+    let drain_stdout = async {
+        let read = (&mut stdout).take(MAX_CAPTURE_BYTES).read_to_end(&mut kept).await;
+        let dropped = tokio::io::copy(&mut stdout, &mut tokio::io::sink()).await;
+        read.and(dropped)
+    };
+    let mut nowhere = tokio::io::sink();
+    let (out, _) = tokio::join!(drain_stdout, tokio::io::copy(&mut stderr, &mut nowhere));
+    if let Err(err) = out {
+        warn!("process {id} (generation {generation_id}): failed to read stdout: {err}");
+    }
+    if !kept.is_empty() {
+        let text = String::from_utf8_lossy_owned(kept);
+        report_process_output_line(registry, generation_id, id, ProcessStream::Stdout, Ok(Some(text))).await;
     }
 }
 
@@ -511,6 +547,36 @@ mod tests {
         // that's the caller's `remove` + wait_and_report_exit's job, via a detached task.
         let mut child = processes.remove(&(1, 9)).expect("process must still be registered");
         assert_eq!(child.wait().await.unwrap().code(), Some(3));
+    }
+
+    async fn captured(script: &str) -> Vec<ProcessOutputLine> {
+        let mut processes: LiveProcesses = HashMap::new();
+        let (stdout, stderr) = spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args(script)).unwrap();
+        let (registry, mut rx) = registry_with_connection(1);
+        capture_process_output(&registry, 1, 9, stdout, stderr).await;
+        let mut frames = Vec::new();
+        while let Ok(payload) = rx.try_recv() {
+            match serde_json::from_slice::<SupervisorFrame>(&payload).unwrap() {
+                SupervisorFrame::ProcessOutput(line) => frames.push(line),
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        frames
+    }
+
+    #[tokio::test]
+    async fn capture_sends_stdout_whole_with_its_newlines_and_drops_stderr() {
+        let frames = captured("printf 'a\nb\n'; echo err >&2").await;
+        assert_eq!(frames.len(), 1);
+        assert_eq!((frames[0].stream, frames[0].line.as_str()), (ProcessStream::Stdout, "a\nb\n"));
+        assert_eq!(captured("printf 'a\nb'").await[0].line, "a\nb", "no newline is added");
+        assert!(captured("true").await.is_empty(), "empty stdout sends no frame");
+    }
+
+    #[tokio::test]
+    async fn capture_keeps_the_first_cap_bytes_and_drains_the_rest() {
+        let frames = captured("head -c 3000000 /dev/zero | tr '\\0' x").await;
+        assert_eq!(frames[0].line.len() as u64, MAX_CAPTURE_BYTES);
     }
 
     #[tokio::test]

@@ -7,15 +7,13 @@ NetworkManager: connectivity, Wi-Fi and wired state, scanned access points and j
 ```lua
 text {
     content = mantle.network:map(function(network)
-        if network == nil then
-            return ""
-        elseif not network.connected then
+        if not network.connected then
             return "offline"
         elseif network.ssid == "Ethernet" then
             return "wired"
         end
         return string.format("%s %d%%", network.ssid or "", network.strength)
-    end),
+    end, ""),
 }
 ```
 
@@ -173,8 +171,8 @@ calls its `on_cancel`, the place to call `cancel_connect`:
 
 ```lua
 local asking = mantle.network:map(function(network)
-    return network ~= nil and network.password_ssid ~= nil
-end)
+    return network.password_ssid ~= nil
+end, false)
 
 return column {
     visible = asking,
@@ -182,8 +180,8 @@ return column {
     children = {
         text {
             content = mantle.network:map(function(network)
-                return network and network.password_ssid and ("Password for " .. network.password_ssid) or ""
-            end),
+                return network.password_ssid and ("Password for " .. network.password_ssid) or ""
+            end, ""),
         },
         textfield {
             width = 240,
@@ -201,7 +199,7 @@ return column {
 Which profile counts as the preferred one is the shell's call; `vpns` carries what it needs:
 
 ```lua
-local vpns = mantle.network:map(function(network) return network and network.vpns or {} end)
+local vpns = mantle.network:map(function(network) return network.vpns or {} end, {})
 
 return column {
     spacing = 4,
@@ -231,7 +229,7 @@ drops the whole request, not one field, and fails the activation. Here a first E
 a second cancels. `retry` is `true` after rejected secrets:
 
 ```lua
-local request = mantle.network:map(function(network) return network and network.vpn_secret end)
+local request = mantle.network:map(function(network) return network.vpn_secret end)
 
 return column {
     visible = request:map(function(secret) return secret ~= nil end),
@@ -262,9 +260,9 @@ A failed `connect` lands in `connect_error`:
 text {
     foreground = "#F38BA8",
     content = mantle.network:map(function(network)
-        local failure = network and network.connect_error
+        local failure = network.connect_error
         return failure and (failure.ssid .. ": " .. failure.message) or ""
-    end),
+    end, ""),
 }
 ```
 

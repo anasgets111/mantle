@@ -1,7 +1,7 @@
 ```lua
 list {
     items = mantle.audio:map(function(audio)
-        return audio and audio.sinks or {}
+        return audio.sinks
     end),
     key = function(sink) return tostring(sink.id) end,
     each = function(sink)
@@ -61,11 +61,11 @@ rect {
     children = {
         text {
             content = mantle.audio:map(function(audio)
-                if audio == nil or audio.volume == nil then
+                if audio.volume == nil then
                     return "--"
                 end
                 return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
-            end),
+            end, "--"),
         },
     },
 }

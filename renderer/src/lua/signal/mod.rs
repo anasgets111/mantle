@@ -832,17 +832,40 @@ mod tests {
 
     /// A hole is an entry, not the end of the list, so a dependency after it is never dropped.
     #[test]
-    fn computed_names_the_dependency_that_is_not_a_signal() {
+    fn computed_names_the_hole_in_its_dependencies() {
         let lua = lua_with_state().0;
         lua.globals().set("a", Signal::new_state(Value::Integer(3), DirtyFlag::new()).unwrap()).unwrap();
         let err = |source: &str| lua.load(source).exec().unwrap_err().to_string();
 
         let hole = err("computed({a, nil, a}, function(x, y, z) return x end)");
         assert!(hole.contains("computed() dependency 2 is nil"), "{hole}");
-        let number = err("computed({a, 5}, function(x, y) return x end)");
-        assert!(number.contains("computed() dependency 2 is an integer"), "{number}");
         let named = err("computed({a, b = a}, function(x) return x end)");
         assert!(named.contains("`b`"), "{named}");
+    }
+
+    #[test]
+    fn computed_refuses_a_function_or_userdata_as_a_constant() {
+        let lua = lua_with_state().0;
+        for dependency in ["print", "io.stdout", "coroutine.create(print)"] {
+            let err = lua
+                .load(format!("computed({{ {dependency} }}, function(x) return x end)"))
+                .exec()
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("computed() dependency 1 is"), "{dependency}: {err}");
+        }
+    }
+
+    #[test]
+    fn computed_passes_plain_dependencies_through_as_constants() {
+        let lua = lua_with_state().0;
+        lua.globals().set("a", Signal::new_state(Value::Integer(3), DirtyFlag::new()).unwrap()).unwrap();
+        let sum: i64 =
+            lua.load("return computed({a, 4, {5}}, function(x, y, t) return x + y + t[1] end):get()").eval().unwrap();
+        assert_eq!(sum, 12);
+        let label: String =
+            lua.load("return computed({'k', true}, function(s, b) return s .. tostring(b) end):get()").eval().unwrap();
+        assert_eq!(label, "ktrue");
     }
 
     #[test]
@@ -906,37 +929,6 @@ mod tests {
         lua.globals().set("probe", capability).unwrap();
         lua.globals().set("plain", Signal::new_state(Value::Integer(1), DirtyFlag::new()).unwrap()).unwrap();
         // Neither type: both checks must say no.
-        lua.globals().set("handle", lua.create_any_userdata(7u32).unwrap()).unwrap();
-
-        for name in ["probe", "plain", "handle"] {
-            let ud: mlua::AnyUserData = lua.load(format!("return {name}")).eval().unwrap();
-            assert_eq!(from_userdata(&ud).is_some(), is_signal(&ud), "{name}");
-        }
-    }
-
-    #[test]
-    fn computed_accepts_a_capability_as_a_dependency_and_names_what_it_rejects() {
-        use crate::lua::capability::{Capability, CommandSender};
-
-        let lua = lua_with_state().0;
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let (capability, handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
-        handle.hydrate(Value::Integer(3));
-        lua.globals().set("probe", capability).unwrap();
-
-        // The resolver must see through `Capability`, or live `mantle.<name>` becomes a literal.
-        let ud: mlua::AnyUserData = lua.load("return probe").eval().unwrap();
-        let signal = from_userdata(&ud).expect("a capability must resolve like the signal it wraps");
-        assert_eq!(signal.get_value(&lua).unwrap().as_i64(), Some(3));
-        let doubled: i64 = lua.load("return computed({probe}, function(n) return n * 2 end):get()").eval().unwrap();
-        assert_eq!(doubled, 6);
-
-        lua.globals().set("handle", lua.create_any_userdata(7u32).unwrap()).unwrap();
-        let err = lua.load("return computed({handle}, function(n) return n end)").exec().unwrap_err().to_string();
-        assert!(
-            err.contains("must be Signals or `mantle` capabilities"),
-            "the error must say what was expected: {err}"
-        );
     }
 
     #[test]

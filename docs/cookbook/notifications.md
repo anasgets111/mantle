@@ -13,7 +13,7 @@ local stack_hover = hover("notification_stack")
 -- Cards to show: not expired, not silenced by do-not-disturb, newest first.
 local cards = mantle.notifications:map(function(notifications)
     local out = {}
-    for _, item in ipairs(notifications and notifications.feed or {}) do
+    for _, item in ipairs(notifications.feed) do
         local quiet = notifications.dnd and item.urgency ~= "critical"
         if not item.expired and not quiet and #out < MAX_CARDS then
             out[#out + 1] = item
@@ -183,5 +183,5 @@ return {
 | Play sounds | Once at top level: `mantle.notifications:set_sound("normal", "/usr/share/sounds/freedesktop/stereo/message.oga")` |
 | Bottom-right corner | `anchor = { bottom = true, right = true }`, `margin = { bottom = 8, right = 8 }` |
 | Hide everything under do-not-disturb | `local quiet = notifications.dnd` |
-| Relative time | Add `text { content = mantle.clock:map(function(system) return system and math.floor((system.time - item.timestamp) / 60) .. " min ago" or "" end) }` |
+| Relative time | Add `text { content = mantle.clock:map(function(clock) return math.floor((clock.time - item.timestamp) / 60) .. " min ago" end, "") }` |
 | Mute one app | `mantle.notifications:set_app_muted("discord", true)` |

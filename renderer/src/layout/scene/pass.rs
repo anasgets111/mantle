@@ -1090,7 +1090,7 @@ mod tests {
     }
 
     #[test]
-    fn a_signal_read_by_itemfn_or_bound_in_an_item_or_under_the_source_rebuilds_the_list() {
+    fn a_signal_read_by_each_or_bound_in_an_item_or_under_items_rebuilds_the_list() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
@@ -1385,7 +1385,7 @@ mod tests {
     /// A layout write is quiet, and still a write: `geometry` is published after the build that
     /// read it, and the next pass must see the new rect.
     #[test]
-    fn a_geometry_read_by_itemfn_rebuilds_the_list_once_layout_moves_it() {
+    fn a_geometry_read_by_each_rebuilds_the_list_once_layout_moves_it() {
         let (mut scene, lua, shaping, surface) = applied(
             r#"g = geometry("box")
             return panel { id = "bar", child = column { children = {

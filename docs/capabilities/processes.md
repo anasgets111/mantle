@@ -11,9 +11,9 @@ program in one table.
 ```lua
 text {
     content = mantle.processes:map(function(processes)
-        local recorder = processes and processes.sessions.recorder
+        local recorder = processes.sessions.recorder
         return (recorder and recorder.running) and "● REC" or ""
-    end),
+    end, ""),
 }
 ```
 

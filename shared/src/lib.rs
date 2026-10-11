@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::ZeroizeOnDrop;
 
 pub mod action;
+mod atomic;
 mod capability;
 pub mod framing;
 pub mod log;
@@ -11,12 +12,13 @@ mod paths;
 pub mod schema;
 mod secure_buffer;
 pub mod state;
+pub use atomic::write_atomic;
 pub use capability::Capability;
 pub use malloc::Malloc;
 pub use paths::{
     CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, GENERATION_ID_ENV, INSTANCE_DIR_ENV, PROFILE_ENV, VERBOSE_ENV,
-    config_dir, control_socket_path, instance_dir, profile_interval, runtime_root, session_locked_flag_path,
-    shell_lua_path, xdg_dir,
+    config_dir, control_socket_path, expand_home, instance_dir, profile_interval, runtime_root,
+    session_locked_flag_path, shell_lua_path, xdg_dir,
 };
 pub use secure_buffer::SecureBuffer;
 pub use zeroize::{Zeroize, Zeroizing};

@@ -859,7 +859,7 @@ mod tests {
     /// `shape` eases between two contours of one command list on the paint-only tick, a point
     /// written in px against one in `"NN%"` crossing as their resolved px would, a spring past its end.
     #[test]
-    fn an_outline_tweens_paint_only_under_a_spring() {
+    fn a_shape_tweens_paint_only_under_a_spring() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let (lua, surface) = surface_from(
@@ -875,14 +875,14 @@ mod tests {
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         lua.load(r#"state("open", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert!(scene.surface("bar@TEST").unwrap().tick_is_paint_only(), "an outline asks the solver nothing");
+        assert!(scene.surface("bar@TEST").unwrap().tick_is_paint_only(), "a shape asks the solver nothing");
         let started = child_tween(&scene).started;
         let (mut crossed, mut overshot) = (false, false);
         for ms in (10..400).step_by(10) {
             scene.tick(&instances, &shaping, &lua, started + Duration::from_millis(ms));
             let node = &scene.surface("bar@TEST").unwrap().children[0];
             let Some(node::PaintStyle::Box { radius, .. }) = &node.paint else { panic!("a box paints") };
-            let bez = radius.2.as_ref().expect("an outline").bez(node.rect);
+            let bez = radius.2.as_ref().expect("a shape").bez(node.rect);
             let kurbo::PathEl::MoveTo(start) = bez.elements()[0] else { panic!("{bez:?}") };
             crossed |= start.x > 2.0 && start.x < 18.0;
             overshot |= start.x > 20.5;
@@ -1469,7 +1469,7 @@ mod tests {
         lua.load(r#"state("up", false):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         let root = scene.surface("bar@TEST").unwrap();
-        assert!(root.tick_is_paint_only(), "an outline asks the solver nothing");
+        assert!(root.tick_is_paint_only(), "a shape asks the solver nothing");
         let started = root.children[0].tweens[0].started;
         scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
         let Some(PaintStyle::Box { radius, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {

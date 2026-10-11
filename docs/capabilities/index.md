@@ -14,11 +14,11 @@ text {
         end
     end,
     content = mantle.audio:map(function(audio)
-        if audio == nil or audio.volume == nil then
-            return "--" -- nil before the first push; no volume without a default sink
+        if audio.volume == nil then
+            return "--" -- no volume without a default sink
         end
         return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
-    end),
+    end, "--"),
 }
 ```
 
@@ -30,7 +30,7 @@ a property and the property stays live. Each push replaces the whole snapshot.
 | Member | Contract |
 | :--- | :--- |
 | `:get()` | The last pushed snapshot; `nil` before the first |
-| `:map(fn)` | Derived signal; `fn` must handle `nil`. A capability also works as a `computed` dependency |
+| `:map(fn, before?)` | Derived signal. `fn` never sees the pre-push `nil`: until the first push the signal holds `before` (default `nil`, the property's default). A capability also works as a `computed` dependency, whose `fn` does see `nil` |
 | `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the [Lua CPU budget](../guide/runtime.md#limits-and-budgets) and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
 | `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(50)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
 

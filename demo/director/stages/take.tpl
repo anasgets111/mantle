@@ -76,7 +76,7 @@ local workspaces = list {
     spacing = 6,
     align_v = "center",
     items = mantle.workspaces:map(function(ws)
-        local output = ws and ws.outputs[1]
+        local output = ws.outputs[1]
         local items = {}
         local active = output and output.active_workspace
         for _, w in ipairs(output and output.workspaces or {}) do
@@ -389,11 +389,11 @@ return {
                 text {
                     content = mantle.clock:map(function(s)
                         --@ 02-color
-                        return os.date("%a %d %b   %H:%M", s and s.time)
+                        return os.date("%a %d %b   %H:%M", s.time)
                         --@ else
-                        return os.date("%H:%M", s and s.time)
+                        return os.date("%H:%M", s.time)
                         --@ end
-                    end),
+                    end, os.date("%H:%M")),
                     align_v = "center",
                     --@ 01-size
                     font_size = 22,

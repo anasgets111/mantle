@@ -59,7 +59,7 @@ return rect {
     radius = 20,
     background = theme.surface,
     animate = { move = { duration = 180, easing = "out_cubic" } },
-    visible = mantle.sysinfo:map(function(s) return s ~= nil end),
+    visible = mantle.sysinfo:map(function() return true end, false),
     children = {
         row {
             height = "fill",
@@ -94,8 +94,8 @@ return rect {
                         },
                     },
                 },
-                chip("CPU", mantle.sysinfo:map(function(s) return s and (s.cpu_percent .. "%") or "" end)),
-                chip("RAM", mantle.sysinfo:map(function(s) return s and (s.ram_percent .. "%") or "" end)),
+                chip("CPU", mantle.sysinfo:map(function(s) return s.cpu_percent .. "%" end, "")),
+                chip("RAM", mantle.sysinfo:map(function(s) return s.ram_percent .. "%" end, "")),
             },
         },
     },

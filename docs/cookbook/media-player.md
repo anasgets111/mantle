@@ -14,7 +14,7 @@ local selected_player = state("media_selected_player", "")
 
 -- Prefer a playing player. When all are paused, keep the selected one while it remains registered.
 local function pick(mpris)
-    local players = mpris and mpris.players or {}
+    local players = mpris.players
     for _, candidate in ipairs(players) do
         if candidate.play_state == "playing" then
             return candidate
@@ -56,24 +56,24 @@ end
 -- Positions are not polled: stamp each new report so the bar can add the time since.
 mantle.mpris:on_change(function(mpris)
     local current = pick(mpris)
-    local system = mantle.clock:get()
-    if current and system then
+    local clock = mantle.clock:get()
+    if current and clock then
         local key = report_key(current)
         if key ~= position_mark:get().key then
-            position_mark:set({ key = key, at = system.monotonic })
+            position_mark:set({ key = key, at = clock.monotonic })
         end
     end
 end)
 
 -- Live position in microseconds, or nil when unknown.
-local position = computed({ player, position_mark, mantle.clock }, function(current, mark, system)
+local position = computed({ player, position_mark, mantle.clock }, function(current, mark, clock)
     if current == nil or current.position == nil then
         return nil
     end
     local elapsed = 0
     -- An unstamped report, such as one before the first clock push, adds nothing.
-    if current.play_state == "playing" and system and mark.key == report_key(current) then
-        elapsed = (system.monotonic - mark.at) * 1000000
+    if current.play_state == "playing" and clock and mark.key == report_key(current) then
+        elapsed = (clock.monotonic - mark.at) * 1000000
     end
     local rate = current.rate or 1
     if rate <= 0 then rate = 1 end

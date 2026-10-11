@@ -94,16 +94,16 @@ pub(super) fn paint_inset_shadow(
 /// An `inset` shadow in a `shape`: all outside the contour moved by `offset` and in by `spread`,
 /// cast like a layer's and cut to the contour inset by the border.
 /// ponytail: an uncached offscreen and blur per shadow per paint; keep the cast as `draw_layer` does.
-pub(super) fn paint_outline_inset(
+pub(super) fn paint_shape_inset(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     command: &DrawCmd,
-    outline: &node::Shape,
+    shape: &node::Shape,
     target: RenderTarget,
 ) {
     let Draw::InsetShadow { shadow, widths, .. } = &command.draw else { return };
     let (rect, clip) = (command.rect, command.clip);
-    let polygon = outline.polygon(rect, 0.25);
+    let polygon = shape.polygon(rect, 0.25);
     let (dx, dy) = (f64::from(shadow.offset.0), f64::from(shadow.offset.1));
     let mut hole = inset(&polygon, f64::from(widths.top + shadow.spread));
     hole.apply_affine(kurbo::Affine::translate((dx, dy)));
@@ -619,11 +619,11 @@ mod tests {
         close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
     }
 
-    /// A box at (16, 16) whose outline hangs a tail to y = 56 below its centre: the fill, a border, an
+    /// A box at (16, 16) whose `shape` hangs a tail to y = 56 below its centre: the fill, a border, an
     /// inset shadow, a knocked-out shadow, a backdrop and a rounded clip all take the one contour, so
     /// the tail is filled, its base carries no line, and its sides carry the band.
     #[test]
-    fn an_outline_with_a_tail_is_one_shape_to_every_paint() {
+    fn a_shape_with_a_tail_is_one_contour_to_every_paint() {
         use crate::layout::node::shape::TAIL;
         let (red, white, black, pink) = ((255, 0, 0), (255, 255, 255), (0, 0, 0), (255, 127, 127));
         let (tail, base, below_base, edge, side, beside, top) =
@@ -1465,10 +1465,10 @@ mod tests {
         assert!(near(px[0], (255, 255, 255)) && near(px[1], (0, 255, 0)), "the box alone: {px:?}");
     }
 
-    /// ADR-0335, ADR-0336. `mantle_sdf` is negative inside the outline and positive outside, at a
+    /// ADR-0335, ADR-0336. `mantle_sdf` is negative inside the shape and positive outside, at a
     /// rounded corner and at a smoothed one, which cuts more of the corner away from its diagonal.
     #[test]
-    fn mantle_sdf_is_negative_inside_the_outline_and_positive_outside() {
+    fn mantle_sdf_is_negative_inside_the_shape_and_positive_outside() {
         let frag = "void main() { fragColor = mantle_sdf(v_uv * u_size) < 0.0 ? vec4(1.0, 0.0, 0.0, 1.0) : vec4(0.0, 0.0, 0.0, 1.0); }";
         let inside = |p: (u8, u8, u8, u8)| p == (255, 0, 0, 255);
         // A 48px box at (16, 16), radius 16: (17, 17) is 1.5px in along the diagonal, (22, 22) 6.5px;
@@ -1488,12 +1488,12 @@ mod tests {
             [false, true, false, true, false, true],
             "smoothed: {px:?}"
         );
-        // An outline's tail, past the box, is inside; beside it and a cut corner are not.
+        // A shape's tail, past the box, is inside; beside it and a cut corner are not.
         let tail = format!("shape = {}", crate::layout::node::shape::TAIL);
         let Some(px) = paint_shader(frag, "padding = 8", &tail, &[(32, 51), (37, 54), (16, 16), (32, 32)]) else {
             return;
         };
-        assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, true], "outline: {px:?}");
+        assert_eq!(px.iter().copied().map(inside).collect::<Vec<_>>(), [true, false, false, true], "shape: {px:?}");
     }
 
     /// ADR-0336. A shader that does not build leaves the node as painted.

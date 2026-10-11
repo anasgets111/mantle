@@ -20,7 +20,7 @@ pub struct Folder {
     /// sorted case-insensitively by name. Relisted 200 ms after the last change.
     pub entries: Vec<FileEntry>,
     /// Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A
-    /// missing or deleted folder is not watched for reappearing.
+    /// missing or deleted folder keeps this error until it appears, then lists on its own.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }

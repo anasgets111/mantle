@@ -59,18 +59,17 @@ local function reading(content)
     return text { content = content, align_v = "center", font_size = 12, foreground = theme.color("fg") }
 end
 
-local cpu = mantle.sysinfo:map(function(s) return s and string.format("CPU %d%%", s.cpu_percent) or "CPU --" end)
-local ram = mantle.sysinfo:map(function(s) return s and string.format("RAM %d%%", s.ram_percent) or "RAM --" end)
+local cpu = mantle.sysinfo:map(function(s) return string.format("CPU %d%%", s.cpu_percent) end, "CPU --")
+local ram = mantle.sysinfo:map(function(s) return string.format("RAM %d%%", s.ram_percent) end, "RAM --")
 local net = mantle.sysinfo:map(function(s)
-    if not s then return "" end
     return string.format("down %dK up %dK", s.net_rx_bytes_sec // 1024, s.net_tx_bytes_sec // 1024)
-end)
+end, "")
 local volume = mantle.audio:map(function(a)
-    if not a or not a.volume then return "VOL --" end
+    if not a.volume then return "VOL --" end
     return a.muted and "VOL muted" or string.format("VOL %d%%", math.floor(a.volume + 0.5))
-end)
-local wifi = mantle.network:map(function(n) return n and (n.ssid or "offline") or "NET --" end)
-local clock = mantle.clock:map(function(s) return os.date("%H:%M:%S", s and s.time) end)
+end, "VOL --")
+local wifi = mantle.network:map(function(n) return n.ssid or "offline" end, "NET --")
+local clock = mantle.clock:map(function(s) return os.date("%H:%M:%S", s.time) end, os.date("%H:%M:%S"))
 
 return panel {
     id = "hs_bar",

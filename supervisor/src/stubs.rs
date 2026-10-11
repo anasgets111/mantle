@@ -334,7 +334,7 @@ const GENERATED_HEADER: &str = r#"---@meta
 -- Descriptions are the Rust doc comments on the supervisor's `Serialize` payload and action types:
 -- document a field there and regenerate. `mantle init` rewrites installed stubs that differ.
 --
--- Every capability reads `nil` until its first push, so its `:get()` and `:map` see `T?`. A JSON
+-- Every capability reads `nil` until its first push, so its `:get()` sees `T?`; `:map` skips that `nil`. A JSON
 -- `null` arrives as an absent key (ADR-0057), so `if item.app_icon then` guards an optional field.
 --
 -- Stub note: each class also names `userdata`. LuaLS does not follow a generic parent such as
@@ -349,13 +349,13 @@ const GENERATED_HEADER: &str = r#"---@meta
 
 ---@class ReadOnlyCapability<T>: WatchedSignal<T>
 ---@field get fun(self: ReadOnlyCapability<T>): T? The last pushed payload; `nil` before the first push.
----@field map fun(self: ReadOnlyCapability<T>, fn: fun(value: T?): any): Signal<any> As `Signal:map`; `fn` sees `nil` before the first push.
+---@field map fun(self: ReadOnlyCapability<T>, fn: (fun(value: T): any), before?: any): Signal<any> As `Signal:map`, but `fn` never runs before the first push: until then the signal holds `before` (default `nil`, the property's default).
 
 ---@class Capability<T>: ReadOnlyCapability<T>
 "#;
 
-/// Methods no action schema can describe, appended to the generated class. Only `idle` has them:
-/// three Lua callbacks never cross the wire, so no `IdleAction` signature exists (ADR-0032,
+/// Methods no action schema can describe, appended to the generated class. `clock:monotonic()` is a read the Renderer
+/// answers itself; `idle` has the rest: three Lua callbacks never cross the wire, so no `IdleAction` signature exists (ADR-0032,
 /// ADR-0141). Its actions stay `None`: `register` without the local callbacks fires into nothing,
 /// and `forget_thresholds` would drop the config's own thresholds (ADR-0158).
 ///
@@ -370,6 +370,9 @@ fn hand_written_methods(capability: &str) -> &'static str {
     match capability {
         "idle" => {
             "---@field register_threshold fun(self: IdleCapability, seconds: integer, on_idle: fun(), on_resume: fun(cause: \"input\" | \"activity\" | \"inhibitor\")): integer Runs `on_idle` after `seconds` without input and `on_resume` when idle ends or input follows a non-input resume; returns a handle for `cancel_threshold`. When an earlier registration at the same `seconds` has already gone idle this evaluation, `on_idle` runs at once. Reloads drop registrations.\n---@field cancel_threshold fun(self: IdleCapability, handle: integer) Drops one registration; an unknown handle is a no-op.\n---@field inhibit fun(self: IdleCapability, reason: string) Holds off idle system-wide (a logind `idle` inhibitor) until `release_inhibit`. Counted; holds survive in-place reloads and drop when the Renderer restarts.\n---@field release_inhibit fun(self: IdleCapability) Releases one `inhibit` hold; with none held, a no-op.\n"
+        }
+        "clock" => {
+            "---@field monotonic fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.\n"
         }
         _ => "",
     }

@@ -344,14 +344,14 @@ pub(crate) mod tests {
         assert_eq!(hit_path(&root, LogicalPoint { x: 120.0, y: 10.0 }).len(), 1);
     }
 
-    /// An outline takes the pointer inside its contour, by the fill rule paint uses: in a tail past
+    /// A `shape` takes the pointer inside its contour, by the fill rule paint uses: in a tail past
     /// its box, not in a cut corner or beside the tail, and where a contour wound twice overlaps itself.
     #[test]
-    fn an_outline_is_hit_inside_its_contour_and_its_tail() {
-        let bubble = |clip, outline| {
+    fn a_shape_is_hit_inside_its_contour_and_its_tail() {
+        let bubble = |clip, shape| {
             let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![]).with_clip(clip);
             if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
-                radius.2 = Some(outline);
+                radius.2 = Some(shape);
             }
             ResolvedNode::test("panel", (0.0, 0.0, 64.0, 96.0), vec![bubble])
         };
@@ -374,7 +374,7 @@ pub(crate) mod tests {
     /// Children are hit where paint cuts them: to the box under `clip = "box"`, to the contour under
     /// `"rounded"`, so a child hanging into the tail is hit only in the second.
     #[test]
-    fn a_child_in_an_outlines_tail_is_hit_only_where_paint_draws_it() {
+    fn a_child_in_a_shapes_tail_is_hit_only_where_paint_draws_it() {
         let bubble = |clip| {
             let child = ResolvedNode::test("rect", (0.0, 0.0, 32.0, 40.0), vec![]);
             let mut bubble = ResolvedNode::test("rect", (16.0, 16.0, 32.0, 32.0), vec![child]).with_clip(clip);

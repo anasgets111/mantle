@@ -2,8 +2,8 @@ Follow the system's dark mode and accent colour instead of hardcoding them:
 
 ```lua
 local scheme = mantle.appearance:map(function(appearance)
-    return appearance and appearance.color_scheme or "default"
-end)
+    return appearance.color_scheme or "default"
+end, "default")
 
 rect {
     padding = 8,
@@ -13,8 +13,8 @@ rect {
     border = {
         width = 2,
         color = mantle.appearance:map(function(appearance)
-            return appearance and appearance.accent or "#89B4FA"
-        end),
+            return appearance.accent or "#89B4FA"
+        end, "#89B4FA"),
     },
 }
 ```

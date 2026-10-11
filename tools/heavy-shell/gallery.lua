@@ -9,7 +9,7 @@ local GRID = scroll("hs_gallery")
 mantle.folders:watch(FOLDER, { "svg", "png" })
 
 local rows = mantle.folders:map(function(folders)
-    local listing = folders and folders.watched[FOLDER]
+    local listing = folders.watched[FOLDER]
     local entries = listing and listing.entries or {}
     local out = {}
     for i = 1, #entries, PER_ROW do

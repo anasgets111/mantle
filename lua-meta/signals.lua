@@ -28,7 +28,7 @@ function elided(name) end
 ---and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,
 ---since typing them needs an overload per arity; prefer `:map` for one source.
 ---[docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
----@param dependencies Signal<any>[] Signals or capabilities, in `fn`'s argument order; anything else raises.
+---@param dependencies any[] Signals, capabilities or plain values, in `fn`'s argument order; a plain value reaches `fn` unchanged, as a constant: a string, number, boolean or table.
 ---@param fn fun(...: any): any
 ---@return Signal<any> # Read-only.
 function computed(dependencies, fn) end
@@ -136,8 +136,8 @@ function geometry(name) end
 function scroll(name) end
 
 ---@class PersistentTable
----One JSON file. Every key but `set` reads as a signal of its stored value, `nil` before the first
----push and for a missing key.
+---One JSON file. Every key but `set` reads as a signal of its stored value: the declared default until
+---this file's first push, `nil` for a key the file lacks. `set(key, nil)` reads `nil` until the next evaluation restores the default.
 ---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
 ---@field [string] Signal<any>
 

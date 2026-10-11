@@ -263,6 +263,16 @@ function ProcessHandle:kill() end
 ---@return ProcessHandle
 function process.run(cmd, args, on_line, on_exit) end
 
+---Runs `cmd` like `process.run`, then hands `on_done` its whole stdout as one string, newlines
+---kept, and its exit code. stderr is dropped. Only the first 1 MiB of stdout is kept.
+---A reload kills it and calls `on_done(nil, nil)`.
+---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processcapture)
+---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+---@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
+---@param on_done fun(stdout: string?, code: integer?) `stdout` and `code` are both `nil` when a signal ended it or it failed to spawn.
+---@return ProcessHandle
+function process.capture(cmd, args, on_done) end
+
 ---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
 ---shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
@@ -362,9 +372,48 @@ function palette.scheme(seed, opts) end
 ---@return PaletteHct
 function palette.hct(color) end
 
+---The `#RRGGBB` for an HCT colour, `palette.hct`'s inverse. Out-of-gamut chroma is reduced to what sRGB can show.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettefrom_hct)
+---@param hct PaletteHct `hue` degrees (wraps), `chroma` from 0, `tone` 0 to 100; all finite.
+---@return Color
+function palette.from_hct(hct) end
+
+---Shifts `color`'s hue up to 15 degrees toward `source`'s, keeping its chroma and tone: Material's
+---way to make a fixed colour (an error red) sit with a seed.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#paletteharmonize)
+---@param color Color `#RRGGBB`.
+---@param source Color `#RRGGBB`.
+---@return Color
+function palette.harmonize(color, source) end
+
 ---Up to 4 seed colours ranked by Material 3's Score: chromatic, common and far apart in hue.
 ---Each is one input swatch's colour as uppercase `#RRGGBB`; `#4285F4` when none qualifies.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescore)
 ---@param swatches PaletteSwatch[] `palette.quantize`'s swatches; only the ratios of their `share`s count.
 ---@return Color[]
 function palette.score(swatches) end
+
+file = {}
+
+---@class FileHandle
+local FileHandle = {}
+
+---Drops the callback. A write still lands.
+function FileHandle:cancel() end
+
+---Reads a whole file off the Lua thread. `on_done` gets the text, or `nil` and an error message
+---(missing, unreadable, not UTF-8, or over 8 MiB). A raise in `on_done` is logged as a warning.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#file)
+---@param path string Absolute, or `~/` under `$HOME`; anything else raises.
+---@param on_done fun(text: string?, err: string?)
+---@return FileHandle
+function file.read(path, on_done) end
+
+---Writes `text` to a file off the Lua thread, creating parent directories. When the file already
+---holds exactly `text`, nothing is written and `changed` is `false`; otherwise the file is replaced atomically.
+---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#file)
+---@param path string Absolute, or `~/` under `$HOME`; anything else raises.
+---@param text string
+---@param on_done? fun(changed: boolean?, err: string?) Runs once with `changed`, or `nil` and an error message. Cancelling or reloading drops it; the write still lands.
+---@return FileHandle
+function file.write(path, text, on_done) end

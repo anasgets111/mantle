@@ -30,9 +30,9 @@ return panel {
 ```lua
 -- widgets/clock.lua
 return text {
-    content = mantle.clock:map(function(system)
-        return system and os.date("%H:%M", system.time) or "" -- nil before the first push
-    end),
+    content = mantle.clock:map(function(clock)
+        return os.date("%H:%M", clock.time)
+    end, ""), -- "" until the first push
     foreground = "#cdd6f4ff",
 }
 ```
@@ -169,11 +169,11 @@ return panel {
     id = "rescue",
     layer = "overlay",
     anchor = { bottom = true, left = true, right = true },
-    visible = rescue:map(function(state) return state ~= nil and state.is_rescue end),
+    visible = rescue:map(function(state) return state.is_rescue end),
     background = "#f38ba8ff",
     padding = 8,
     child = text {
-        content = rescue:map(function(state) return state and state.error_log or "" end),
+        content = rescue:map(function(state) return state.error_log end),
         foreground = "#11111bff",
     },
 }
@@ -234,14 +234,14 @@ index and a format inside the map:
 -- Evaluation has no CPU budget: build lookup tables here, once.
 local levels = { "empty", "low", "half", "high", "full" }
 
--- The map runs on every push, under 2.5 ms: one nil check, one index, one format.
+-- The map runs on every push, under 2.5 ms: one check, one index, one format.
 local battery_label = mantle.battery:map(function(battery)
-    if not battery or not battery.present then
-        return "" -- nil until the first push; no battery on a desktop
+    if not battery.present then
+        return "" -- no battery on a desktop
     end
     local level = levels[math.min(#levels, battery.percent // 20 + 1)]
     return string.format("%s %d%%", level, battery.percent)
-end)
+end, "")
 ```
 
 Work that is slow by nature (parsing a large file, searching many entries) belongs in a program

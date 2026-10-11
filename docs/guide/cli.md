@@ -218,7 +218,7 @@ real layout code, on one 1920x1080 output plus one per `output` name a panel pin
 
 | Pass | Capabilities read | Catches |
 | :--- | :--- | :--- |
-| `before capability data` | `nil`, as at start before the first push | Code that forgets the `nil` case |
+| `before capability data` | `nil`, as at start before the first push | A `:get()` or `computed` that forgets the `nil` case |
 | `with sample capability data` | One sample push each: every list has one entry, every optional field is set, every string is `"sample"`, every integer `1`, every boolean `true`, every enum its first variant | Typos and bad properties in a list `each` or a branch that only shows with data |
 | `with alternate sample data` | The same push with every boolean `false` and every enum its last variant | A branch taken only on `false` or a later variant, such as unmuted audio or a launcher that drops `no_display` entries |
 | `with empty sample lists` | The first push with every list and map empty | An empty-state branch, such as "No notifications" |

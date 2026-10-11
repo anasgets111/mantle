@@ -3,6 +3,8 @@
 pub use shared::state::folders::{FileEntry, Folder, FoldersState};
 
 use std::collections::HashMap;
+use std::ffi::OsString;
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -52,7 +54,7 @@ impl FoldersController {
     pub fn watch(&self, path: &str, extensions: Vec<String>) {
         let key = folder_key(path);
         {
-            let mut watches = self.watches.lock().expect("files watches mutex poisoned");
+            let mut watches = self.watches.lock().expect("folders watches mutex poisoned");
             if let Some(existing) = watches.get(&key) {
                 if existing.extensions == extensions {
                     let _ = self.events.send(());
@@ -80,7 +82,7 @@ impl FoldersController {
     /// Drops every watch, for a generation that is gone: nothing else does, and its replacement
     /// hydrates from this payload before it asks for the folders it wants.
     pub fn forget_watches(&self) {
-        let watches = std::mem::take(&mut *self.watches.lock().expect("files watches mutex poisoned"));
+        let watches = std::mem::take(&mut *self.watches.lock().expect("folders watches mutex poisoned"));
         if watches.is_empty() {
             return;
         }
@@ -94,7 +96,7 @@ impl FoldersController {
     /// Stops following `path` and removes it from the payload; an unwatched path is a no-op.
     pub fn unwatch(&self, path: &str) {
         let key = folder_key(path);
-        let removed = self.watches.lock().expect("files watches mutex poisoned").remove(&key);
+        let removed = self.watches.lock().expect("folders watches mutex poisoned").remove(&key);
         let Some(watch) = removed else { return };
         watch.task.abort();
         self.state.lock().expect("folders state mutex poisoned").watched.remove(&key);
@@ -189,9 +191,33 @@ fn watch_mask() -> WatchMask {
         | WatchMask::MOVE_SELF
 }
 
-/// Lists a folder, then relists after each settled inotify burst until abort or folder loss. A
-/// missing/unreadable folder is listed once to record the error and left there. ponytail: watching
-/// the parent for it to appear is the upgrade path, but no caller asks for it.
+/// What an ancestor of a missing folder reports: the awaited child arriving, or the ancestor going.
+fn ancestor_mask() -> WatchMask {
+    WatchMask::CREATE | WatchMask::MOVED_TO | WatchMask::DELETE_SELF | WatchMask::MOVE_SELF
+}
+
+/// Watches `dir`, or when it is missing its nearest existing ancestor. `Some((ancestor, child))`
+/// is that ancestor and the name under it that leads to `dir`, the one event worth waking for.
+fn watch_nearest(inotify: &Inotify, dir: &Path) -> std::io::Result<Option<(PathBuf, OsString)>> {
+    let mut missing = None;
+    let mut at = dir;
+    loop {
+        let mask = if missing.is_none() { watch_mask() } else { ancestor_mask() };
+        match inotify.watches().add(at, mask) {
+            Ok(_) => return Ok(missing.map(|child| (at.to_path_buf(), child))),
+            Err(err) if matches!(err.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+                let (Some(parent), Some(name)) = (at.parent(), at.file_name()) else { return Err(err) };
+                missing = Some(name.to_owned());
+                at = parent;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
+/// Lists a folder, then relists after each settled inotify burst until abort. A missing folder
+/// waits on its nearest existing ancestor for the path to appear, and a lost one is listed once
+/// more (recording the error) and waits the same way.
 async fn follow_folder(
     dir: PathBuf,
     key: String,
@@ -199,43 +225,50 @@ async fn follow_folder(
     state: Arc<Mutex<FoldersState>>,
     events: UnboundedSender<()>,
 ) {
-    // Watching comes before listing, so a file created in between is in one or the other.
-    let stream = Inotify::init().and_then(|inotify| {
-        inotify.watches().add(&dir, watch_mask())?;
-        inotify.into_event_stream(vec![0u8; 4096])
-    });
-    relist(&dir, &key, &extensions, &state, &events).await;
-    let mut stream = match stream {
-        Ok(stream) => stream,
-        Err(err) => {
-            warn!("cannot watch {}: {err}; its listing will not follow changes", dir.display());
-            return;
-        }
-    };
-
-    let mut burst = crate::debounce::Burst::default();
     loop {
-        tokio::select! {
-            event = stream.next() => {
-                match event {
-                    Some(Ok(event)) => {
-                        if event.mask.intersects(EventMask::DELETE_SELF | EventMask::MOVE_SELF | EventMask::IGNORED) {
-                            // Record the folder's disappearance in one last listing.
-                            relist(&dir, &key, &extensions, &state, &events).await;
-                            return;
-                        }
-                        burst.bump(RELIST_DEBOUNCE);
-                    }
-                    Some(Err(err)) => {
-                        warn!("inotify read on {} failed: {err}", dir.display());
-                        tokio::time::sleep(Duration::from_secs(1)).await;
-                    }
-                    None => return,
-                }
+        // Watching comes before listing, so a file created in between is in one or the other.
+        let watching = Inotify::init().and_then(|inotify| {
+            let waiting_for = watch_nearest(&inotify, &dir)?;
+            Ok((inotify.into_event_stream(vec![0u8; 4096])?, waiting_for))
+        });
+        relist(&dir, &key, &extensions, &state, &events).await;
+        let (mut stream, waiting_for) = match watching {
+            Ok(watching) => watching,
+            Err(err) => {
+                warn!("cannot watch {}: {err}; its listing will not follow changes", dir.display());
+                return;
             }
-            _ = tokio::time::sleep_until(burst.at().unwrap_or_else(tokio::time::Instant::now)), if burst.at().is_some() => {
-                burst = crate::debounce::Burst::default();
-                relist(&dir, &key, &extensions, &state, &events).await;
+        };
+        // The child may have appeared between the failed watch and the ancestor's.
+        if waiting_for.as_ref().is_some_and(|(ancestor, child)| ancestor.join(child).exists()) {
+            continue;
+        }
+
+        let mut burst = crate::debounce::Burst::default();
+        loop {
+            tokio::select! {
+                event = stream.next() => {
+                    match event {
+                        Some(Ok(event)) => {
+                            let lost = event.mask.intersects(EventMask::DELETE_SELF | EventMask::MOVE_SELF | EventMask::IGNORED);
+                            match &waiting_for {
+                                Some((_, child)) if lost || event.name.as_deref() == Some(child.as_os_str()) => break,
+                                Some(_) => {}
+                                None if lost => break,
+                                None => burst.bump(RELIST_DEBOUNCE),
+                            }
+                        }
+                        Some(Err(err)) => {
+                            warn!("inotify read on {} failed: {err}", dir.display());
+                            tokio::time::sleep(Duration::from_secs(1)).await;
+                        }
+                        None => return,
+                    }
+                }
+                _ = tokio::time::sleep_until(burst.at().unwrap_or_else(tokio::time::Instant::now)), if burst.at().is_some() => {
+                    burst = crate::debounce::Burst::default();
+                    relist(&dir, &key, &extensions, &state, &events).await;
+                }
             }
         }
     }
@@ -368,5 +401,65 @@ mod tests {
         assert!(folder.ready);
         assert!(folder.entries.is_empty());
         assert!(folder.error.is_some());
+    }
+
+    /// Waits for `want(snapshot)` across pushes, bounded so a missed event fails instead of hanging.
+    async fn until(
+        controller: &FoldersController,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<()>,
+        key: &str,
+        want: impl Fn(&Folder) -> bool,
+    ) {
+        let wait = async {
+            while !controller.snapshot().watched.get(key).is_some_and(&want) {
+                rx.recv().await.expect("controller dropped");
+            }
+        };
+        tokio::time::timeout(Duration::from_secs(10), wait).await.expect("the listing never reached the wanted state");
+    }
+
+    #[tokio::test]
+    async fn a_missing_folder_is_listed_once_it_appears_even_several_levels_down() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("a/b");
+        let key = dir.to_string_lossy().into_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FoldersController::new(tx);
+
+        controller.watch(&key, vec![]);
+        until(&controller, &mut rx, &key, |folder| folder.ready && folder.error.is_some()).await;
+
+        std::fs::create_dir_all(&dir).unwrap();
+        touch(&dir, "one.jpg");
+        until(&controller, &mut rx, &key, |folder| folder.error.is_none() && folder.entries.len() == 1).await;
+    }
+
+    #[test]
+    fn a_missing_folder_waits_on_its_nearest_ancestor_for_the_child_under_it() {
+        let root = tempfile::tempdir().unwrap();
+        let inotify = Inotify::init().unwrap();
+        let waiting = watch_nearest(&inotify, &root.path().join("a/b")).unwrap();
+        assert_eq!(waiting, Some((root.path().to_path_buf(), OsString::from("a"))));
+        assert_eq!(watch_nearest(&inotify, root.path()).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn a_deleted_folder_reports_the_error_then_lists_again_when_it_is_recreated() {
+        let root = tempfile::tempdir().unwrap();
+        let dir = root.path().join("walls");
+        std::fs::create_dir(&dir).unwrap();
+        touch(&dir, "one.jpg");
+        let key = dir.to_string_lossy().into_owned();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = FoldersController::new(tx);
+        controller.watch(&key, vec![]);
+        until(&controller, &mut rx, &key, |folder| folder.entries.len() == 1).await;
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        until(&controller, &mut rx, &key, |folder| folder.error.is_some() && folder.entries.is_empty()).await;
+
+        std::fs::create_dir(&dir).unwrap();
+        touch(&dir, "two.jpg");
+        until(&controller, &mut rx, &key, |folder| folder.error.is_none() && folder.entries.len() == 1).await;
     }
 }

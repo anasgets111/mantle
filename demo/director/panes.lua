@@ -12,8 +12,8 @@ local BAR = 56
 local HEADER = 64
 
 local frame = mantle.screens:map(function(screens)
-    return layout.metrics(screens and screens[1])
-end)
+    return layout.metrics(screens[1])
+end, layout.metrics())
 local code_size = frame:map(function(m) return m.font end)
 local line_px = frame:map(function(m) return m.line end)
 local pane_width = frame:map(function(m) return m.pane end)

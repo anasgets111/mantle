@@ -6,11 +6,11 @@ rect {
     children = {
         text {
             content = mantle.updates:map(function(updates)
-                if updates == nil or updates.checking then
+                if updates.checking then
                     return "…"
                 end
                 return #updates.packages > 0 and (#updates.packages .. " updates") or "up to date"
-            end),
+            end, "…"),
         },
     },
 }
@@ -80,8 +80,8 @@ end)
 
 return text {
     content = mantle.updates:map(function(updates)
-        return updates and tostring(#updates.packages) or ""
-    end),
+        return tostring(#updates.packages)
+    end, ""),
 }
 ```
 

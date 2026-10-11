@@ -21,8 +21,8 @@ local app_badge = row {
     children = {
         icon { name = focused_icon, size = 20, align_v = "center" },
         text { content = mantle.workspaces:map(function(w)
-            return w and w.active_client and w.active_client.title or ""
-        end), max_width = 200, elide = "end", align_v = "center", foreground = "#CDD6F4" },
+            return w.active_client and w.active_client.title or ""
+        end, ""), max_width = 200, elide = "end", align_v = "center", foreground = "#CDD6F4" },
     },
 }
 

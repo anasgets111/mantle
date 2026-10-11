@@ -23,7 +23,7 @@ use crate::text::snap::{LogicalRect, PhysicalRect};
 #[cfg(test)]
 use super::build;
 use super::{DisplayList, Draw, DrawCmd, UNCLIPPED};
-use effects::{draw_backdrop, draw_layer, paint_inset_shadow, paint_outline_inset, paint_shadow, read_target, replace};
+use effects::{draw_backdrop, draw_layer, paint_inset_shadow, paint_shadow, paint_shape_inset, read_target, replace};
 use shape::{box_path, fill_rect, gradient_paint, paint_border};
 
 /// Timing breakdown of what [`execute`] drew.
@@ -349,7 +349,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 paint_shadow(painter.canvas_mut(), rect, *shadow, radius, *knockout)
             }
             Draw::InsetShadow { shadow, radius, widths } => match &radius.2 {
-                Some(outline) => paint_outline_inset(painter, walk, command, outline, target),
+                Some(shape) => paint_shape_inset(painter, walk, command, shape, target),
                 None => paint_inset_shadow(painter.canvas_mut(), rect, *shadow, radius, *widths),
             },
             Draw::Layer { .. } => {

@@ -13,7 +13,7 @@ panel {
     child = function(output) -- one instance per monitor, named by connector
         return text {
             content = mantle.workspaces:map(function(workspaces)
-                for _, entry in ipairs(workspaces and workspaces.outputs or {}) do
+                for _, entry in ipairs(workspaces.outputs) do
                     if entry.name == output then
                         for _, workspace in ipairs(entry.workspaces) do
                             if workspace.id == entry.active_workspace then
@@ -23,7 +23,7 @@ panel {
                     end
                 end
                 return ""
-            end),
+            end, ""),
         }
     end,
 }
@@ -128,15 +128,15 @@ list {
     direction = "horizontal",
     spacing = 4,
     items = mantle.workspaces:map(function(workspaces)
-        local output = workspaces and workspaces.outputs[1]
+        local output = workspaces.outputs[1]
         return output and output.workspaces or {}
     end),
     key = function(workspace) return tostring(workspace.id) end,
     each = function(workspace)
         local active = mantle.workspaces:map(function(workspaces)
-            local output = workspaces and workspaces.outputs[1]
+            local output = workspaces.outputs[1]
             return output ~= nil and output.active_workspace == workspace.id
-        end)
+        end, false)
         return rect {
             padding = { left = 8, right = 8 },
             radius = 6,

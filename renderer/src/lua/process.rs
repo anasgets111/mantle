@@ -47,9 +47,36 @@ impl ProcessRegistry {
     }
 
     fn run(&self, cmd: String, args: Vec<String>, on_line: Function, on_exit: Function) -> ProcessHandle {
+        self.start("run", cmd, args, on_line, on_exit)
+    }
+
+    /// `process.capture`: the Supervisor answers a `"capture"` with at most one stdout frame carrying
+    /// the whole text, so the callbacks are plain `run` ones: the line is stashed, `on_exit` delivers it.
+    fn capture(&self, lua: &Lua, cmd: String, args: Vec<String>, on_done: Function) -> mlua::Result<ProcessHandle> {
+        let stdout = Rc::new(RefCell::new(String::new()));
+        let stash = stdout.clone();
+        let on_line = lua.create_function(move |_, (text, _stream): (String, String)| {
+            *stash.borrow_mut() = text;
+            Ok(())
+        })?;
+        // A killed or unspawned child has nothing worth handing over: stdout is `nil` with the code.
+        let on_exit = lua.create_function(move |_, code: Option<i32>| {
+            on_done.call::<()>((code.map(|_| std::mem::take(&mut *stdout.borrow_mut())), code))
+        })?;
+        Ok(self.start("capture", cmd, args, on_line, on_exit))
+    }
+
+    fn start(
+        &self,
+        action: &str,
+        cmd: String,
+        args: Vec<String>,
+        on_line: Function,
+        on_exit: Function,
+    ) -> ProcessHandle {
         let id = self.commands.next_id();
         self.pending.borrow_mut().insert(id, PendingProcess { on_line, on_exit });
-        self.send("run", vec![serde_json::json!(cmd), serde_json::json!(args)], id);
+        self.send(action, vec![serde_json::json!(cmd), serde_json::json!(args)], id);
         ProcessHandle { id, registry: self.clone() }
     }
 
@@ -130,6 +157,7 @@ lua_class! {
 /// closure signature supplies argument validation.
 pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     let detach_registry = registry.clone();
+    let capture_registry = registry.clone();
     super::luacats::lua_table!(lua, process)?;
     lua_fn!(
         lua,
@@ -149,6 +177,24 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             on_exit: fn(code: Option<i32>),
         ) -> ProcessHandle {
             Ok(registry.run(cmd, args.unwrap_or_default(), on_line.0, on_exit.0))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Runs `cmd` like `process.run`, then hands `on_done` its whole stdout as one string, newlines
+        /// kept, and its exit code. stderr is dropped. Only the first 1 MiB of stdout is kept.
+        /// A reload kills it and calls `on_done(nil, nil)`.
+        /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processcapture)
+        fn process.capture(
+            lua,
+            /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
+            cmd: String,
+            /// Already split: `"a b"` is one argument. `nil` is none.
+            args: Option<Vec<String>>,
+            /// `stdout` and `code` are both `nil` when a signal ended it or it failed to spawn.
+            on_done: fn(stdout: Option<String>, code: Option<i32>),
+        ) -> ProcessHandle {
+            capture_registry.capture(lua, cmd, args.unwrap_or_default(), on_done.0)
         }
     )?;
     lua_fn!(
@@ -313,5 +359,31 @@ mod tests {
             probe_table(&lua).get::<bool>("is_nil").unwrap(),
             "a killed-by-signal exit must pass nil, not a synthesized code"
         );
+    }
+
+    #[test]
+    fn capture_queues_a_capture_and_delivers_the_whole_stdout_with_the_code_or_nils() {
+        let (lua, registry, mut rx) = lua_with_process(2);
+        lua.load(r#"process.capture("cmd", nil, function(out, code) probe = { out = out, code = code } end)"#)
+            .exec()
+            .unwrap();
+        assert_eq!(queued_command(&mut rx).expect("queued").params.action, "capture");
+
+        registry.dispatch_output(0, ProcessStream::Stdout, "a\nb\n".to_string());
+        registry.dispatch_exit(0, Some(3));
+        let probe = probe_table(&lua);
+        assert_eq!((probe.get::<String>("out").unwrap(), probe.get::<i64>("code").unwrap()), ("a\nb\n".into(), 3));
+
+        lua.load("probe = nil").exec().unwrap();
+        lua.load(r#"process.capture("cmd", nil, function(out, code) probe = { n = out == nil and code == nil } end)"#)
+            .exec()
+            .unwrap();
+        registry.dispatch_output(1, ProcessStream::Stdout, "partial".to_string());
+        registry.kill_all();
+        assert!(probe_table(&lua).get::<bool>("n").unwrap(), "a killed capture hands over nil, nil");
+
+        lua.load(r#"process.capture("cmd", nil, function(out, code) probe = { out = out } end)"#).exec().unwrap();
+        registry.dispatch_exit(2, Some(0));
+        assert_eq!(probe_table(&lua).get::<String>("out").unwrap(), "", "no output is an empty string");
     }
 }

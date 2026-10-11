@@ -655,10 +655,10 @@ mod tests {
         }
     }
 
-    /// An outline's region is its contour, row by row: the tail past the box is in, a cut corner and
+    /// A `shape`'s region is its contour, row by row: the tail past the box is in, a cut corner and
     /// the ground beside the tail are out.
     #[test]
-    fn an_outline_region_follows_its_contour() {
+    fn a_shape_region_follows_its_contour() {
         let mut strips = Vec::new();
         let radii = node::Radii([0.0; 4], 0.0, Some(crate::layout::node::shape::tail()));
         push_rounded_rect(PhysicalRect { x0: 16, y0: 16, x1: 48, y1: 48 }, radii, &mut strips);
@@ -668,10 +668,10 @@ mod tests {
         assert!(strips.iter().all(|s| !s.is_empty()));
     }
 
-    /// A solid outline claims its contour's strips, not its bounding box: the tail takes input and
+    /// A solid `shape` claims its contour's strips, not its bounding box: the tail takes input and
     /// the ground beside it does not. A path of corners alone is a shape that claims input too.
     #[test]
-    fn a_solid_outline_and_a_corner_path_claim_input_by_shape() {
+    fn a_solid_shape_and_a_corner_path_claim_input_by_shape() {
         let mut bubble = region_node(1, "rect", (16.0, 16.0, 32.0, 32.0), solid_paint(), Vec::new());
         if let Some(PaintStyle::Box { radius, .. }) = &mut bubble.paint {
             radius.2 = Some(crate::layout::node::shape::tail());

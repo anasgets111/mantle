@@ -199,6 +199,51 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     )?;
     lua_fn!(
         lua,
+        /// The `#RRGGBB` for an HCT colour, `palette.hct`'s inverse. Out-of-gamut chroma is reduced to what sRGB can show.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettefrom_hct)
+        fn palette.from_hct(
+            _lua,
+            /// `hue` degrees (wraps), `chroma` from 0, `tone` 0 to 100; all finite.
+            hct: As<Table, PaletteHct>,
+        ) -> As<String, Color> {
+            let part = |key: &str| -> mlua::Result<f64> {
+                let value: f64 = hct.0.get(key).map_err(|_| {
+                    mlua::Error::runtime(format!("palette.from_hct: `{key}` must be a number"))
+                })?;
+                value.is_finite().then_some(value).ok_or_else(|| {
+                    mlua::Error::runtime(format!("palette.from_hct: `{key}` must be finite"))
+                })
+            };
+            let (hue, chroma, tone) = (part("hue")?, part("chroma")?, part("tone")?);
+            if chroma < 0.0 || !(0.0..=100.0).contains(&tone) {
+                return Err(mlua::Error::runtime("palette.from_hct: `chroma` must be 0 or more and `tone` 0 to 100"));
+            }
+            Ok(As(hex(Hct::from(hue, chroma, tone).into()), PhantomData))
+        }
+    )?;
+    lua_fn!(
+        lua,
+        /// Shifts `color`'s hue up to 15 degrees toward `source`'s, keeping its chroma and tone: Material's
+        /// way to make a fixed colour (an error red) sit with a seed.
+        /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#paletteharmonize)
+        fn palette.harmonize(
+            _lua,
+            /// `#RRGGBB`.
+            color: As<String, Color>,
+            /// `#RRGGBB`.
+            source: As<String, Color>,
+        ) -> As<String, Color> {
+            let rgb = |name: &str, value: &str| {
+                parse(value).ok_or_else(|| {
+                    mlua::Error::runtime(format!("palette.harmonize: {name} must be #RRGGBB, got {}", preview_str(value)))
+                })
+            };
+            let blended = material_colors::blend::harmonize(rgb("color", &color.0)?, rgb("source", &source.0)?);
+            Ok(As(hex(blended), PhantomData))
+        }
+    )?;
+    lua_fn!(
+        lua,
         /// Up to 4 seed colours ranked by Material 3's Score: chromatic, common and far apart in hue.
         /// Each is one input swatch's colour as uppercase `#RRGGBB`; `#4285F4` when none qualifies.
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettescore)
@@ -302,6 +347,23 @@ mod tests {
     }
 
     #[test]
+    fn from_hct_inverts_hct_and_harmonize_matches_material() {
+        let lua = lua();
+        let back: String = lua.load(r##"return palette.from_hct(palette.hct("#6750A4"))"##).eval().unwrap();
+        assert_eq!(back, "#6750A4");
+        let (black, white): (String, String) = lua
+            .load(r#"return palette.from_hct{ hue = 0, chroma = 0, tone = 0 }, palette.from_hct{ hue = 90, chroma = 0, tone = 100 }"#)
+            .eval()
+            .unwrap();
+        assert_eq!((black.as_str(), white.as_str()), ("#000000", "#FFFFFF"));
+        // Upstream `blend_test`: red toward blue, green and yellow, shifted at most 15 degrees.
+        for (source, expected) in [("#0000FF", "#FB0057"), ("#00FF00", "#D85600"), ("#FFFF00", "#D85600")] {
+            let got: String = lua.load(format!(r##"return palette.harmonize("#FF0000", "{source}")"##)).eval().unwrap();
+            assert_eq!(got, expected, "toward {source}");
+        }
+    }
+
+    #[test]
     fn bad_input_raises_naming_the_problem() {
         let lua = lua();
         for (code, expected) in [
@@ -316,6 +378,9 @@ mod tests {
             (r##"palette.scheme("#6750A4", { dark = "yes" })"##, "`dark` must be a boolean, got string \"yes\""),
             (r##"palette.scheme("#6750A4", { darke = true })"##, "unknown key `darke`"),
             (r##"palette.hct("#6750A4FF")"##, "palette.hct: color must be #RRGGBB, got string \"#6750A4FF\""),
+            (r#"palette.from_hct{ hue = 1, chroma = 1 }"#, "`tone` must be a number"),
+            (r#"palette.from_hct{ hue = 1, chroma = -1, tone = 5 }"#, "`chroma` must be 0 or more"),
+            (r##"palette.harmonize("#FF0000", "blue")"##, "source must be #RRGGBB"),
             (r#"palette.score({ { color = "blue", share = 1 } })"#, "swatch 1: `color` must be #RRGGBB"),
             (r##"palette.score({ { color = "#0000FF", share = 0 } })"##, "swatch 1: `share` must be above 0"),
         ] {

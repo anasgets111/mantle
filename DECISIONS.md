@@ -8338,3 +8338,38 @@ an environment variable the child removes at startup.
 
 Rejected: popup `anchor` to `anchor_point` (`anchor` and `gravity` are xdg-positioner's words), and
 taste-only renames (`itemfn` to `item` beside `items`, run `color`, `pointer`).
+
+## 0358. The config VM reads and writes files off-thread (amends ADR-0048)
+
+ADR-0048's ban stands: no `io`, no blocking call on the dispatch thread. `file.read` and
+`file.write` run off it and answer by callback, like `palette.quantize`; this is the asynchronous
+reader that entry left waiting for a caller (app colour templates). Paths are absolute or `~/`.
+Reads take UTF-8 up to 8 MiB. One writer thread keeps writes to a path in call order; a write
+equal to the file's bytes is skipped and reports `changed = false`, so a reload hook runs only on
+a real change. Writes go through `shared::write_atomic`, which `persistent_table` saves share: it
+replaces a symlink's target, not the link (stow-managed dotfiles), keeps the old mode and syncs
+before the rename. A callback is dropped at an evaluation boundary; its write still lands.
+`mantle check` runs both dry.
+
+Rejected: engine-owned templates and reload hooks (policy; which apps and how they reload belong to
+the config), and shipping app templates (matugen-themes keeps about 70).
+
+## 0359. A capability's `:map` skips the pre-push `nil` instead of seeding defaults
+
+Before a capability's first push, `cap:map(fn, before)` holds `before` (default `nil`) and never
+calls `fn`. Seeding each capability with a default payload would draw a state nothing reported, a
+`0%` battery or `muted = false`, the plausible-value problem ADR-0307 removed. `:get()`, `computed`
+and `on_change`'s `previous` still see `nil`, so code that asks for "unknown" keeps it. Cost: a
+`visible` map needs an explicit `false`, since `nil` means the property's default.
+
+`persistent_table` keys differ: the config declared their defaults, so they read the default until
+the file's first push.
+
+## 0360. `clock.monotonic` is the system `CLOCK_MONOTONIC`, read live by `mantle.clock:monotonic()` (amends ADR-0202)
+
+Decision 1 of ADR-0202 changes: `monotonic` is `CLOCK_MONOTONIC` seconds since boot, fractional,
+not seconds since the capability started. A per-capability origin could not join a stamp from
+another process (the wall ADR-0202's amendment hit for recording); now `mpris`
+`position_updated_at` (microseconds) compares directly. `mantle.clock:monotonic()` reads the same
+clock synchronously in the Renderer, before the first push, because the field is only as fresh as
+`interval`. The push gating and suspend exclusion are unchanged.

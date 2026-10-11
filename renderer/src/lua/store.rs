@@ -46,16 +46,22 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
             // Send every evaluation: the Supervisor merges defaults (ADR-0136 decision 4), so
             // edited defaults land on reload without reverting user values.
             let defaults = match defaults {
-                Value::Nil => Value::Table(lua.create_table()?),
-                defaults => defaults,
+                Value::Nil => lua.create_table()?,
+                Value::Table(defaults) => defaults,
+                other => {
+                    return Err(mlua::Error::runtime(format!(
+                        "persistent_table: defaults must be a table, got {}",
+                        crate::lua::marshal::a_type(&other)
+                    )));
+                }
             };
-            storage.call_method::<()>("open", (file.clone(), defaults))?;
+            storage.call_method::<()>("open", (file.clone(), defaults.clone()))?;
 
             if let Some(existing) = super::app_data_or_default::<StoreRegistry>(lua).0.get(&file).cloned() {
                 return Ok(PersistentTable(existing));
             }
 
-            let store = build_store(lua, &file, storage)?;
+            let store = build_store(lua, &file, storage, defaults)?;
             super::app_data_or_default::<StoreRegistry>(lua).0.insert(file, store.clone());
             Ok(PersistentTable(store))
         }
@@ -86,8 +92,8 @@ impl LuaType for PersistentTable {
     fn classes(out: &mut Vec<String>) {
         out.push(
             r#"---@class PersistentTable
----One JSON file. Every key but `set` reads as a signal of its stored value, `nil` before the first
----push and for a missing key.
+---One JSON file. Every key but `set` reads as a signal of its stored value: the declared default until
+---this file's first push, `nil` for a key the file lacks. `set(key, nil)` reads `nil` until the next evaluation restores the default.
 ---@field set fun(self: PersistentTable, key: string, value: any) Stores one JSON value; `nil` deletes the key. The file is saved 1 s after the last write.
 ---@field [string] Signal<any>
 "#
@@ -111,6 +117,13 @@ fn file_path(path: &str) -> mlua::Result<String> {
             preview_str(path)
         )));
     }
+    // One file, one key: `/a/./x` and `/a//x` would otherwise make two stores for it.
+    if path.split('/').skip(1).any(|part| matches!(part, "" | "." | "..")) {
+        return Err(mlua::Error::runtime(format!(
+            "persistent_table: path must not contain empty, `.` or `..` components, got {}",
+            preview_str(path)
+        )));
+    }
     Ok(path.to_string())
 }
 
@@ -124,14 +137,16 @@ pub(super) fn capability(lua: &Lua, caller: &str, name: &str) -> mlua::Result<An
 }
 
 /// Answers every key `table` lacks with `payload[section][entry][key]` mapped over `capability`,
-/// cached with `rawset` so later reads are plain and each key has one signal. `nil` before the
-/// first push and for an absent entry or key, matching the property's documented default.
+/// cached with `rawset` so later reads are plain and each key has one signal. A store's `defaults`
+/// answer for every entry the payload lacks; a key missing from a present entry is `nil`, matching
+/// the property's documented default.
 pub(super) fn index_entry_signals(
     lua: &Lua,
     table: &Table,
     capability: &AnyUserData,
     section: &'static str,
     entry: &str,
+    defaults: Option<Table>,
 ) -> mlua::Result<()> {
     let signal = from_userdata(capability)
         .ok_or_else(|| mlua::Error::runtime(format!("the `{section}` owner is not a signal")))?;
@@ -142,11 +157,19 @@ pub(super) fn index_entry_signals(
         lua.create_function(move |lua, (table, key): (Table, String)| {
             let entry = entry.clone();
             let field = key.clone();
+            let defaults = defaults.clone();
             let read = lua.create_function(move |_, payload: Value| {
-                let Value::Table(payload) = payload else { return Ok(Value::Nil) };
-                let Value::Table(entries) = payload.get::<Value>(section)? else { return Ok(Value::Nil) };
-                let Value::Table(stored) = entries.get::<Value>(entry.as_str())? else { return Ok(Value::Nil) };
-                stored.get::<Value>(field.as_str())
+                let stored = match payload {
+                    Value::Table(payload) => match payload.get::<Value>(section)? {
+                        Value::Table(entries) => entries.get::<Value>(entry.as_str())?,
+                        _ => Value::Nil,
+                    },
+                    _ => Value::Nil,
+                };
+                match stored {
+                    Value::Table(stored) => stored.get::<Value>(field.as_str()),
+                    _ => defaults.as_ref().map_or(Ok(Value::Nil), |defaults| defaults.get(field.as_str())),
+                }
             })?;
             let key_signal = Signal::mapped(lua, lua.create_userdata(signal.clone())?, read)?;
             table.raw_set(key, key_signal.clone())?;
@@ -157,9 +180,9 @@ pub(super) fn index_entry_signals(
 }
 
 /// Config table: real `set` field; `__index` answers other keys with per-file signals.
-fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData) -> mlua::Result<Table> {
+fn build_store(lua: &Lua, file: &str, storage: mlua::AnyUserData, defaults: Table) -> mlua::Result<Table> {
     let store = lua.create_table()?;
-    index_entry_signals(lua, &store, &storage, "contents", file)?;
+    index_entry_signals(lua, &store, &storage, "contents", file, Some(defaults))?;
     let path = file.to_string();
     store.set(
         "set",
@@ -186,6 +209,9 @@ mod tests {
             ("/home/u/bar/", "must name a file"),
             ("/", "must name a file"),
             ("/home/u/..", "must name a file"),
+            ("/home/u/./x.json", "empty, `.` or `..`"),
+            ("/home/u//x.json", "empty, `.` or `..`"),
+            ("/home/u/../x.json", "empty, `.` or `..`"),
         ] {
             let err = file_path(path).unwrap_err().to_string();
             assert!(err.contains(needle), "{path:?}: the message has to say what to fix: {err}");

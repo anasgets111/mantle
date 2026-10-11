@@ -24,7 +24,7 @@ end
 
 -- Adwaita-style names: battery-level-0 to battery-level-100 in steps of 10.
 local glyph = mantle.battery:map(function(battery)
-    if battery == nil or not battery.present then
+    if not battery.present then
         return "battery-missing-symbolic"
     end
     local step = math.floor(battery.percent / 10 + 0.5) * 10
@@ -32,15 +32,15 @@ local glyph = mantle.battery:map(function(battery)
         return "battery-level-100-charged-symbolic"
     end
     return string.format("battery-level-%d%s-symbolic", step, battery.state == "charging" and "-charging" or "")
-end)
+end, "battery-missing-symbolic")
 
 local colour = mantle.battery:map(function(battery)
-    local low = battery and battery.present and battery.percent <= LOW and battery.state == "discharging"
+    local low = battery.present and battery.percent <= LOW and battery.state == "discharging"
     return low and "#f38ba8" or "#cdd6f4"
-end)
+end, "#cdd6f4")
 
 local details = mantle.battery:map(function(battery)
-    if battery == nil or not battery.present then
+    if not battery.present then
         return "No battery"
     end
     local line = string.format("%d%% · %s", battery.percent, STATES[battery.state] or battery.state)
@@ -50,7 +50,7 @@ local details = mantle.battery:map(function(battery)
         line = line .. "\n" .. duration(battery.time_to_full) .. " to full"
     end
     return line
-end)
+end, "No battery")
 
 -- Warn once each time the charge falls past LOW while draining.
 mantle.battery:on_change(function(battery, previous)
@@ -69,13 +69,13 @@ local pill = row {
     radius = 12,
     background = pill_hover:map(function(on) return on and "#45475a" or "#313244" end),
     hover = pill_hover,
-    visible = mantle.battery:map(function(battery) return battery ~= nil and battery.present end),
+    visible = mantle.battery:map(function(battery) return battery.present end, false),
     children = {
         icon { name = glyph, size = 16, foreground = colour, align_v = "center" },
         text {
             content = mantle.battery:map(function(battery)
-                return battery and battery.present and battery.percent .. "%" or ""
-            end),
+                return battery.present and battery.percent .. "%" or ""
+            end, ""),
             foreground = colour,
             align_v = "center",
         },
@@ -119,7 +119,7 @@ return {
 
 ## How it works
 
-- `mantle.battery` is `nil` before its first push and reads `present = false` on a desktop; every map checks both ([battery](../capabilities/battery.md)).
+- `mantle.battery` reads `present = false` on a desktop, and a map gives `before` for the time before its first push ([battery](../capabilities/battery.md)).
 - `state` names UPower's charge state; `time_to_empty` and `time_to_full` are optional and need their own guard.
 - The icon is picked by name from the icon theme and tinted with `foreground` ([icon](../nodes/icon.md)).
 - `on_change` compares with the previous push to fire only on the downward crossing ([on_change](../capabilities/index.md#reading-and-acting)); `process.detach` runs `notify-send` ([process.detach](../guide/processes.md#processdetach)).
@@ -131,6 +131,6 @@ return {
 | :--- | :--- |
 | Charge as a bar instead of an icon | A 24 × 10 `rect` track with a child `rect { width = battery.percent .. "%", height = "fill" }` ([sizes](../nodes/index.md#sizes)) |
 | Cycle the power profile on click | Make the pill a node with an `on_click` that picks the next entry of `mantle.power:get().profiles` and calls `set_profile` ([power](../capabilities/power.md)) |
-| Show the wattage | Add `text { content = mantle.power:map(function(power) return power and power.energy_rate and string.format("%.1f W", power.energy_rate) or "" end) }` |
+| Show the wattage | Add `text { content = mantle.power:map(function(power) return power.energy_rate and string.format("%.1f W", power.energy_rate) or "" end, "") }` |
 | Different threshold | `LOW = 20` |
-| Hide the pill on mains at full charge | `visible` returns `battery ~= nil and battery.present and battery.state ~= "fully_charged"` |
+| Hide the pill on mains at full charge | `visible` returns `battery.present and battery.state ~= "fully_charged"`, with `before` `false` |

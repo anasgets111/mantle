@@ -1,7 +1,7 @@
 ```lua
 list {
     items = mantle.windows:map(function(windows)
-        return windows and windows.windows or {}
+        return windows.windows
     end),
     key = function(window) return window.id end,
     each = function(window)

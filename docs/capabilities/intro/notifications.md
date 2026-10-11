@@ -9,8 +9,8 @@ rect {
     children = {
         text {
             content = mantle.notifications:map(function(notifications)
-                return (notifications and notifications.dnd) and "DND on" or "DND off"
-            end),
+                return notifications.dnd and "DND on" or "DND off"
+            end, "DND off"),
         },
     },
 }
@@ -40,7 +40,7 @@ Mantle is the `org.freedesktop.Notifications` server on the session bus.
 list {
     spacing = 6,
     items = mantle.notifications:map(function(notifications)
-        return notifications and notifications.feed or {}
+        return notifications.feed
     end),
     key = function(item) return tostring(item.id) end,
     each = function(item)

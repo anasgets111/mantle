@@ -115,6 +115,29 @@ fn xdg_dir_from(value: Option<OsString>, home: Option<OsString>, home_relative: 
         .or_else(|| home.filter(|home| !home.is_empty()).map(|home| PathBuf::from(home).join(home_relative)))
 }
 
+/// Why [`expand_home`] refused a path.
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum ExpandHomeError {
+    #[error("`~/` needs $HOME, which is unset or empty")]
+    NoHome,
+    #[error("path must be absolute or start with ~/")]
+    Relative,
+}
+
+/// An absolute path, or `~/rest` under `$HOME`; an error for anything else, so a config's relative path
+/// never silently resolves against the renderer's working directory.
+pub fn expand_home(path: &str) -> Result<PathBuf, ExpandHomeError> {
+    expand_home_from(path, std::env::var_os("HOME"))
+}
+
+fn expand_home_from(path: &str, home: Option<OsString>) -> Result<PathBuf, ExpandHomeError> {
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = home.filter(|home| !home.is_empty()).ok_or(ExpandHomeError::NoHome)?;
+        return Ok(PathBuf::from(home).join(rest));
+    }
+    if Path::new(path).is_absolute() { Ok(PathBuf::from(path)) } else { Err(ExpandHomeError::Relative) }
+}
+
 /// `config_dir()` joined with the real config entry point, `shell.lua`.
 pub fn shell_lua_path() -> io::Result<PathBuf> {
     Ok(config_dir()?.join("shell.lua"))
@@ -125,6 +148,17 @@ mod tests {
     use super::*;
 
     /// The named directory is the config itself, not a parent to join with `mantle`.
+    #[test]
+    fn expand_home_takes_absolute_and_tilde_slash_only() {
+        let home = Some(OsString::from("/home/u"));
+        assert_eq!(expand_home_from("~/a/b", home.clone()), Ok("/home/u/a/b".into()));
+        assert_eq!(expand_home_from("/etc/x", home.clone()), Ok("/etc/x".into()));
+        assert_eq!(expand_home_from("rel/x", home.clone()), Err(ExpandHomeError::Relative));
+        assert_eq!(expand_home_from("~x", home), Err(ExpandHomeError::Relative));
+        assert_eq!(expand_home_from("~/a", Some("".into())), Err(ExpandHomeError::NoHome));
+        assert_eq!(expand_home_from("~/a", None), Err(ExpandHomeError::NoHome));
+    }
+
     #[test]
     fn the_named_directory_wins_over_xdg_config_home() {
         let resolved = config_dir_from(Some("/tmp/env".into()), Some("/tmp/xdg".into()), None).unwrap();

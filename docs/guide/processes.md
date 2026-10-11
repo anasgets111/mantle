@@ -42,10 +42,10 @@ return panel {
 
 ## Which one do I use
 
-| | [`process.run`](#processrun) | [`session_process`](#session_process) | [`process.detach`](#processdetach) |
+| | [`process.run`](#processrun) / [`process.capture`](#processcapture) | [`session_process`](#session_process) | [`process.detach`](#processdetach) |
 | :--- | :--- | :--- | :--- |
-| Output | Line by line to `on_line` | Inherited stdio: `mantle log` | None: `/dev/null` |
-| Exit | `on_exit(code)` | `running` and `exit_code` signals | None |
+| Output | Line by line to `on_line`; `capture`: one string at the end | Inherited stdio: `mantle log` | None: `/dev/null` |
+| Exit | `on_exit(code)`; `capture`: `on_done(stdout, code)` | `running` and `exit_code` signals | None |
 | Instances | One per call | One per name; `start` is a no-op while it runs | One per call |
 | Owner | The evaluation that started it | The Supervisor | Nobody: own session, reparented to init |
 | Reload | Killed, `on_exit(nil)` | Keeps running | Unaffected |
@@ -53,6 +53,7 @@ return panel {
 | Shell stops | Killed | Stopped with `stop_signal`, `SIGKILL` after 5 s | Unaffected |
 | Typical uses | `curl`, `getent`, a poll every N seconds, a `--follow` stream | A screen recorder, a daemon the shell owns | Apps, `xdg-open`, a terminal |
 
+- Need the whole output as one string, once the program ends: `process.capture`.
 - Need the output or the exit code: `process.run`. A long-running one, like `tail -f` or a
   subscribe loop, restarts with each save, which is how to follow a stream.
 - One instance that must outlive a save or a crash: `session_process`.
@@ -79,6 +80,26 @@ Spawns a helper, streams its output line by line, and reports its exit.
 
 The call returns immediately. A spawn failure (command not on `PATH`) reaches Lua only as
 `on_exit(nil)` with no output; the reason is logged as a warning.
+
+## process.capture
+
+Runs a helper to its end and hands over all of its stdout at once. `process.run` without the
+line accumulator, and with the newlines left in.
+
+```lua,fragment
+process.capture("date", { "+%F" }, function(stdout, code)
+    if code == 0 then today = stdout:gsub("\n$", "") end
+end)
+```
+
+| Part | Contract |
+| :--- | :--- |
+| Signature | `process.capture(cmd, args, on_done)` → handle |
+| `cmd`, `args`, handle, stdin, environment | As `process.run` |
+| `on_done(stdout, code)` | Once, after the process exits. `stdout` is everything it wrote, newlines kept (`"a\nb\n"`; no newline is added), `""` for none. Invalid UTF-8 is replaced. `code` is the exit status |
+| Failure | A signal, a failed spawn or a reload gives `on_done(nil, nil)`; the reload calls it at once, as for `process.run` |
+| stderr | Dropped |
+| Limits | Past 1 MiB of stdout the rest is dropped, with no warning to Lua. Callbacks run outside the CPU budget; a raise is logged as a warning |
 
 ## process.detach
 

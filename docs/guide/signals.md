@@ -52,8 +52,9 @@ Click Next minute to update only the Live column. The screenshot captures that f
 
 A capability (`mantle.<name>`, see [capabilities](../capabilities/index.md)) is a signal too. It reads `nil`
 until its first snapshot arrives (hydration), and in `mantle check`'s first pass, before a sample push.
-Every function that reads a capability must handle `nil`. When a signal resolves to `nil`, its
-property counts as absent and takes the property's default.
+`:map(fn, before?)` never calls `fn` with that `nil`: until the first push the mapped signal holds
+`before` (default `nil`). `:get()`, `computed` and `on_change`'s `previous` still see `nil`. When a
+signal resolves to `nil`, its property counts as absent and takes the property's default.
 
 For values your config writes, start with [named state](#named-state). To transform or
 combine live values, use [derived signals](#derived-signals). The full API and error messages are
@@ -134,9 +135,9 @@ A derived colour:
 
 ```lua
 local battery_color = mantle.battery:map(function(battery)
-  if not battery or not battery.present then return "#6c7086" end
+  if not battery.present then return "#6c7086" end
   return battery.percent <= 20 and "#f38ba8" or "#a6e3a1"
-end)
+end, "#6c7086")
 
 text { content = "●", foreground = battery_color }
 ```
@@ -303,7 +304,7 @@ node's last resolve:
 
 | Read inside the function | Kept until a signal it read changes | Instead |
 | :--- | :--- | :--- |
-| `os.time()`, `os.date()` with no time, `os.clock()`, `math.random()` | ✓ | `mantle.clock:map(function(s) return s and os.date("%H:%M", s.time) or "" end)`, or a `state` a `timer` writes |
+| `os.time()`, `os.date()` with no time, `os.clock()`, `math.random()` | ✓ | `mantle.clock:map(function(s) return os.date("%H:%M", s.time) end, "")`, or a `state` a `timer` writes |
 | A local or global changed without `:set` | ✓ | Keep it in a `state` |
 | A file | ✓ | Read it in a `timer` and `:set` a `state` |
 | A table changed in place, such as a `list`'s `items` | ✓ | `:set` the table again, or build a new one |
@@ -332,7 +333,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `sig:scroll_to(px)`, `sig:scroll_by(px)` | nothing | `scroll` signals only; moves to an offset, or by a distance from where it is headed ([input](input.md#scroll)) |
 | `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
 | `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
-| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Each entry must be a signal or capability: a `nil`, another value or a named key raises, naming the entry |
+| `computed({ a, b, ... }, fn)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. A `nil`, function, userdata or named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
 | `delay(sig, ms)` | signal | `sig`'s value once a new value has held for `ms`, and the old value until then. A change that reverts sooner is dropped |
 | `pulse(sig, ms)` | boolean signal | `true` for `ms` after `sig` changes, `false` otherwise. A change inside the window restarts it. Starts `false` |
@@ -372,7 +373,7 @@ again after changing it in place is a write.
 
 | Message starts with | Cause |
 | :--- | :--- |
-| `computed() dependency 2 is nil` / `is a table` | That `computed` list entry is not a signal or capability; `nil` is often a misspelled variable |
+| `computed() dependency 2 is nil` | That `computed` list entry is `nil`, often a misspelled variable |
 | `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
 | ``delay: source must be a Signal or a `mantle` capability, got integer 5`` / the same for `pulse` | The first argument is not a signal or capability |
 | `delay: ms must be within [1, 60000]` / `pulse: ms must be within` | `ms` out of range, or rounds to 0 |
@@ -397,7 +398,7 @@ again after changing it in place is a write.
 
 ### Derive from two capabilities
 
-List every source in `computed`. Each one reads `nil` until its first push.
+List every source in `computed`. Each one reads `nil` until its first push, and `fn` sees that `nil` (unlike `:map`).
 
 ```lua
 local status = computed({ mantle.network, mantle.audio }, function(network, audio)
@@ -447,8 +448,8 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | Trap | Fix |
 | :--- | :--- |
 | `content = sig:get()` never updates | Pass `sig` or `sig:map(...)`; `:get()` is a snapshot |
-| A map errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass; return a fallback for `nil` |
-| `visible = cap:map(function(c) return c and c.on end)` shows the node before hydration | `nil` means absent, and `visible` defaults to `true`; return `false` explicitly |
+| A `computed` or `:get()` errors with `attempt to index a nil value` at startup | Capabilities read `nil` before hydration and in `mantle check`'s first pass. A capability's `:map` never calls `fn` with `nil`; `computed` and `:get()` still see it, so guard there |
+| `visible = cap:map(function(c) return c.on end)` shows the node before hydration | The signal holds `nil` until the first push, and `visible` defaults to `true`; pass `before`: `cap:map(fn, false)` |
 | `` `margin.left` is a Signal handle `` | The signal sits where it is not read: in a table a signal returned, under a metatable, or 8 tables deep. Return plain values from the map, or move the signal up |
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |
 | `layer`, `anchor`, `output`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |

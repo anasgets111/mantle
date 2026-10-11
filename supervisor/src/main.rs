@@ -91,6 +91,23 @@ fn new_session_without_inherited_fds(command: &mut std::process::Command) {
     };
 }
 
+/// Set by [`detach_self`] on its child only, so `started` can say "(detached)" without guessing
+/// from session leadership, which `setsid`, systemd and a TTY login all share.
+const DETACHED_ENV: &str = "MANTLE_DETACHED_CHILD";
+
+/// Whether `value` is the marker [`detach_self`] sets.
+fn is_detach_marker(value: Option<&std::ffi::OsStr>) -> bool {
+    value.is_some_and(|value| value == "1")
+}
+
+/// Reads and removes the marker, so nothing the Supervisor spawns inherits it.
+fn take_detach_marker() -> bool {
+    let marked = is_detach_marker(std::env::var_os(DETACHED_ENV).as_deref());
+    // SAFETY: first thing in `main`, before any thread exists.
+    unsafe { std::env::remove_var(DETACHED_ENV) };
+    marked
+}
+
 /// `mantle -d`: re-exec in a new session and return once it holds its instance, so the terminal
 /// gets its prompt back and `mantle log -f` finds it.
 ///
@@ -101,7 +118,7 @@ fn new_session_without_inherited_fds(command: &mut std::process::Command) {
 fn detach_self(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
     let mut command = std::process::Command::new(std::env::current_exe()?);
     command
-        // The child shows it was detached by leading its own session (see `started`).
+        .env(DETACHED_ENV, "1")
         .args(std::env::args().skip(1).filter(|arg| arg != "-d" && arg != "--detach"))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -129,6 +146,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     unsafe {
         libc::mallopt(libc::M_ARENA_MAX, 1);
     }
+    let detached = take_detach_marker();
     if std::env::var_os(pam_worker::WORKER_ENV).is_some() {
         return pam_worker::run_worker();
     }
@@ -225,7 +243,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             // socket/D-Bus/inotify/timer waits; the blocking pool is separate. A twenty-core laptop
             // otherwise used twenty bar-serving threads.
             let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build()?;
-            runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose))?;
+            runtime.block_on(run_supervisor(dir, config_dir, args.profile, args.verbose, detached))?;
             std::process::exit(0);
         }
     }
@@ -235,6 +253,7 @@ async fn run_supervisor(
     config_dir: PathBuf,
     profile: Option<u64>,
     verbose: u8,
+    detached: bool,
 ) -> Result<(), Box<dyn Error>> {
     let connection = capabilities::with_call_timeout(zbus::connection::Builder::system()).await?;
 
@@ -303,7 +322,6 @@ async fn run_supervisor(
     if let Some(pid) = boot_child.id() {
         registry.expect_generation(0, pid);
         let argv: String = std::env::args().skip(1).map(|arg| format!(" {arg}")).collect();
-        let detached = nix::unistd::getsid(None).is_ok_and(|sid| sid == nix::unistd::Pid::this());
         let detached = if detached { " (detached)" } else { "" };
         notice!("started `mantle{argv}`{detached} on {}; renderer pid {pid}", config_dir.display());
     }
@@ -463,6 +481,14 @@ mod tests {
         assert!(!frame_may_dispatch(&start, 0, 1));
         assert!(frame_may_dispatch(&start, 1, 1));
         assert!(frame_may_dispatch(&start, shared::CONTROL_CLIENT_GENERATION, 1));
+    }
+
+    #[test]
+    fn only_the_detach_marker_reads_as_detached() {
+        use std::ffi::OsStr;
+        assert!(is_detach_marker(Some(OsStr::new("1"))));
+        assert!(!is_detach_marker(None));
+        assert!(!is_detach_marker(Some(OsStr::new(""))));
     }
 
     #[test]

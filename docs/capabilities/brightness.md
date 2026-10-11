@@ -18,8 +18,8 @@ rect {
     children = {
         text {
             content = mantle.brightness:map(function(brightness)
-                return brightness and string.format("☀ %d%%", brightness.percent) or ""
-            end),
+                return string.format("☀ %d%%", brightness.percent)
+            end, ""),
         },
     },
 }

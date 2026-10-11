@@ -5,8 +5,8 @@ rect {
     radius = 4,
     background = "#F38BA8",
     visible = mantle.privacy:map(function(privacy)
-        return privacy ~= nil and (#privacy.microphone_users > 0 or #privacy.camera_users > 0)
-    end),
+        return #privacy.microphone_users > 0 or #privacy.camera_users > 0
+    end, false),
 }
 ```
 

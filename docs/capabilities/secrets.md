@@ -18,8 +18,8 @@ column {
         },
         text {
             content = mantle.secrets:map(function(secrets)
-                return secrets and secrets.entries.mail or ""
-            end),
+                return secrets.entries.mail or ""
+            end, ""),
         },
     },
 }

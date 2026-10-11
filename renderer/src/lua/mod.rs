@@ -3,7 +3,9 @@
 //! (`shared::shell_lua_path`) and is the `renderer/src/socket/client/mod.rs` entry point on startup and every
 //! Supervisor-triggered `Reevaluate`.
 pub mod action;
+pub mod calls;
 pub mod capability;
+pub mod file;
 pub(crate) mod focus;
 pub mod fonts;
 pub mod fuzzy;
@@ -258,6 +260,11 @@ impl Loader {
     /// See [`Self::register_process`].
     pub fn register_palette(&self, registry: palette::PaletteRegistry) -> mlua::Result<()> {
         palette::register(&self.lua, registry)
+    }
+
+    /// See [`Self::register_process`].
+    pub fn register_file(&self, registry: file::FileRegistry) -> mlua::Result<()> {
+        file::register(&self.lua, registry)
     }
 
     /// Gives the loader the `mantle.idle` registry from `lua::namespace::build`, so
@@ -762,6 +769,7 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
             ("timer(1000, function() end)", &["TimerHandle"]),
             (r#"process.run("true", {}, function() end, function() end)"#, &["ProcessHandle"]),
             (r#"palette.quantize("/probe.png", nil, function() end)"#, &["PaletteHandle"]),
+            (r#"file.read("/probe", function() end)"#, &["FileHandle"]),
             (r#"session_process { name = "probe" }"#, &["SessionProcessHandle"]),
             (r#"persistent_table { path = "/probe" }"#, &["PersistentTable"]),
             ("mantle.audio", &["AudioCapability"]),
@@ -857,6 +865,7 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         let commands = capability::CommandSender::new(0, tx);
         loader.register_process(process::ProcessRegistry::new(commands.clone())).unwrap();
         loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
+        loader.register_file(file::FileRegistry::checking()).unwrap();
         namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
         (dir, loader)
     }

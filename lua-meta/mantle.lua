@@ -5,7 +5,7 @@
 -- Descriptions are the Rust doc comments on the supervisor's `Serialize` payload and action types:
 -- document a field there and regenerate. `mantle init` rewrites installed stubs that differ.
 --
--- Every capability reads `nil` until its first push, so its `:get()` and `:map` see `T?`. A JSON
+-- Every capability reads `nil` until its first push, so its `:get()` sees `T?`; `:map` skips that `nil`. A JSON
 -- `null` arrives as an absent key (ADR-0057), so `if item.app_icon then` guards an optional field.
 --
 -- Stub note: each class also names `userdata`. LuaLS does not follow a generic parent such as
@@ -20,7 +20,7 @@
 
 ---@class ReadOnlyCapability<T>: WatchedSignal<T>
 ---@field get fun(self: ReadOnlyCapability<T>): T? The last pushed payload; `nil` before the first push.
----@field map fun(self: ReadOnlyCapability<T>, fn: fun(value: T?): any): Signal<any> As `Signal:map`; `fn` sees `nil` before the first push.
+---@field map fun(self: ReadOnlyCapability<T>, fn: (fun(value: T): any), before?: any): Signal<any> As `Signal:map`, but `fn` never runs before the first push: until then the signal holds `before` (default `nil`, the property's default).
 
 ---@class Capability<T>: ReadOnlyCapability<T>
 
@@ -157,7 +157,7 @@
 
 ---@class Folder
 ---@field entries FileEntry[] Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and sorted case-insensitively by name. Relisted 200 ms after the last change.
----@field error? string Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A missing or deleted folder is not watched for reappearing.
+---@field error? string Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A missing or deleted folder keeps this error until it appears, then lists on its own.
 ---@field ready boolean `false` until the first listing lands, then `true` even when empty or failed.
 
 ---@class GpuTelemetry
@@ -293,7 +293,7 @@
 ---@field play_state PlayState MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
 ---@field playlists PlaylistsState One bounded page from the optional MPRIS Playlists interface.
 ---@field position? integer Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown (ADR-0036).
----@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read. No Lua clock shares this epoch (not `mantle.clock.monotonic`); only compare it with itself.
+---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:monotonic()` in seconds, so `mantle.clock:monotonic() - position_updated_at / 1e6` is the age.
 ---@field rate number MPRIS playback rate.
 ---@field shuffle boolean MPRIS shuffle setting.
 ---@field title string Track title; empty when unset, normal between tracks.
@@ -621,7 +621,7 @@
 
 ---@class ClockState
 ---`mantle.clock`'s payload, pushed on each tick of `interval`.
----@field monotonic integer Seconds since `clock` was first used, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`.
+---@field monotonic number System-wide `CLOCK_MONOTONIC` seconds since boot, as of the last push; excludes suspend. Take durations from it, since NTP moves `time`. `mantle.clock:monotonic()` reads it live.
 ---@field time integer Unix epoch seconds, as `os.date` takes them.
 
 ---@class StorageState
@@ -824,6 +824,7 @@ local PrivacyCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/clock.html)
 ---@class ClockCapability: Capability<ClockState>, userdata
+---@field monotonic fun(self: ClockCapability): number `CLOCK_MONOTONIC` seconds since boot, read now rather than as of the last push, and valid before the first one. The unit and clock of the `monotonic` field; excludes suspend.
 ---@field configure fun(self: ClockCapability, settings: ClockConfigure) Sets the push interval, `1` second until this. Each push lands on a wall-clock multiple of it, and one lands at once.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/storage.html)

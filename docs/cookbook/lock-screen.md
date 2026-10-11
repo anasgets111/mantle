@@ -13,23 +13,21 @@ mantle.idle:register_threshold(300, function() mantle.lock:lock() end, function(
 action("lock", function() mantle.lock:lock() end)
 
 -- Up while locked and not yet unlocking: drives the fade both ways.
-local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
+local up = mantle.lock:map(function(lock) return lock.active and not lock.unlocking end, false)
 
-local time = mantle.clock:map(function(system) return system and os.date("%H:%M", system.time) or "" end)
-local date = mantle.clock:map(function(system) return system and os.date("%A, %d %B", system.time) or "" end)
+local time = mantle.clock:map(function(clock) return os.date("%H:%M", clock.time) end, "")
+local date = mantle.clock:map(function(clock) return os.date("%A, %d %B", clock.time) end, "")
 
 local hint = mantle.lock:map(function(lock)
-    if lock == nil then
-        return ""
-    elseif lock.authenticating then
+    if lock.authenticating then
         return "Checking…"
     elseif lock.error ~= "" then
         return lock.attempts > 1 and string.format("Wrong password (%d tries)", lock.attempts) or "Wrong password"
     end
     return "Type your password and press Enter"
-end)
+end, "")
 
-local failed = mantle.lock:map(function(lock) return lock ~= nil and lock.error ~= "" and not lock.authenticating end)
+local failed = mantle.lock:map(function(lock) return lock.error ~= "" and not lock.authenticating end, false)
 
 local lock_screen = lock {
     id = "lock",

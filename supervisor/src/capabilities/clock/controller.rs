@@ -5,11 +5,12 @@ pub use shared::state::clock::ClockState;
 
 use std::os::fd::AsFd;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use nix::sys::time::TimeSpec;
 use nix::sys::timerfd::{ClockId, Expiration, TimerFd, TimerFlags, TimerSetTimeFlags};
 use shared::action::ClockConfigure;
+use shared::state::clock::monotonic_seconds;
 use shared::{debug, error};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
@@ -18,6 +19,10 @@ use tokio::sync::watch;
 /// `SystemTime::now()`'s epoch truncated to whole seconds for `time`; one pinned seam.
 pub fn epoch_seconds(now: SystemTime) -> i64 {
     now.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0)
+}
+
+fn sample() -> ClockState {
+    ClockState { time: epoch_seconds(SystemTime::now()), monotonic: monotonic_seconds() }
 }
 
 /// The first epoch second after `now` that is a multiple of `interval` (non-zero).
@@ -47,12 +52,11 @@ impl ClockController {
     /// Seeds `time` immediately, so an early client sees the current second, not stale zero; the
     /// ticking task takes over afterward.
     pub fn new(signal_tx: UnboundedSender<()>) -> Self {
-        let started = Instant::now();
-        let state = Arc::new(Mutex::new(ClockState { time: epoch_seconds(SystemTime::now()), monotonic: 0 }));
+        let state = Arc::new(Mutex::new(sample()));
 
         let (interval, interval_rx) = watch::channel(1);
 
-        tokio::spawn(run_clock_task(Arc::clone(&state), signal_tx, started, interval_rx));
+        tokio::spawn(run_clock_task(Arc::clone(&state), signal_tx, interval_rx));
 
         Self { state, interval }
     }
@@ -70,7 +74,7 @@ impl ClockController {
 
     /// Current state for `main.rs`'s signal-channel `select!` snapshot push.
     pub fn snapshot(&self) -> ClockState {
-        self.state.lock().expect("system state mutex poisoned").clone()
+        self.state.lock().expect("clock state mutex poisoned").clone()
     }
 }
 
@@ -80,7 +84,6 @@ impl ClockController {
 async fn run_clock_task(
     state: Arc<Mutex<ClockState>>,
     signal_tx: UnboundedSender<()>,
-    started: Instant,
     mut interval_rx: watch::Receiver<u64>,
 ) {
     let timer = match TimerFd::new(ClockId::CLOCK_REALTIME, TimerFlags::TFD_NONBLOCK | TimerFlags::TFD_CLOEXEC) {
@@ -122,9 +125,7 @@ async fn run_clock_task(
             }
         }
         interval = *interval_rx.borrow_and_update();
-        let sampled =
-            ClockState { time: epoch_seconds(SystemTime::now()), monotonic: started.elapsed().as_secs() as i64 };
-        *state.lock().expect("system state mutex poisoned") = sampled;
+        *state.lock().expect("clock state mutex poisoned") = sample();
         if signal_tx.send(()).is_err() {
             return; // main.rs's select! loop is gone; nothing left to notify
         }
@@ -180,6 +181,9 @@ mod tests {
 
         let seeded = controller.snapshot();
         assert!(seeded.time > 1_700_000_000, "seeded from the real clock, not defaulted");
-        assert_eq!(seeded.monotonic, 0, "zero is the epoch, not missing data");
+        assert!(
+            seeded.monotonic > 0.0 && seeded.monotonic <= monotonic_seconds(),
+            "the system-wide clock, not an epoch of this capability's start"
+        );
     }
 }

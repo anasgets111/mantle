@@ -154,7 +154,7 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
     handle
         .set("stop", lua.create_function(move |_, _handle: Table| owner.call_method::<()>("stop", program.clone()))?)?;
 
-    index_entry_signals(lua, &handle, &processes, "sessions", name)?;
+    index_entry_signals(lua, &handle, &processes, "sessions", name, None)?;
     Ok(handle)
 }
 

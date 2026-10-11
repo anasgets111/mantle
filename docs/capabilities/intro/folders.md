@@ -4,7 +4,7 @@ mantle.folders:watch(folder, { "jpg", "png" })
 
 list {
     items = mantle.folders:map(function(folders)
-        local listing = folders and folders.watched[folder]
+        local listing = folders.watched[folder]
         return listing and listing.entries or {}
     end),
     key = function(entry) return entry.path end,
@@ -22,12 +22,16 @@ One inotify watch per folder, on the folder only: subfolders are neither listed 
 generation drops every watch, so call `watch` at top level and each evaluation asks again; repeating
 a `watch` with the same `extensions` only re-pushes the listing.
 
+A missing folder is watched through its nearest existing ancestor: `ready` is `true` with `error`
+set until the folder appears, then it lists with `error` cleared. A watched folder that is deleted
+or moved away does the same, and lists again when it comes back.
+
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
 | `watch("~/Pictures")` does nothing | Only absolute paths pass; `~` is not expanded. Build the path from `os.getenv("HOME")` |
 | `watched[path]` is `nil` after a `watch` | The key drops trailing slashes: `watch("/walls/")` lands at `watched["/walls"]` |
-| A folder created after `watch` never lists | A missing folder records `error` and stays unwatched. `unwatch`, then `watch` again once it exists |
+| `error` is set but the folder exists | It is set while the folder is missing and clears on the next listing, up to 200 ms after the folder appears |
 
 See also: [`process.run`](../guide/processes.md#processrun) to read a file's contents.

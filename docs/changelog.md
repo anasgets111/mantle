@@ -7,12 +7,21 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Added: `file.read(path, on_done)` and `file.write(path, text, on_done?)` read and write whole files off the Lua thread. A write that would change nothing is skipped and reports `changed = false`; a write lands in call order, through a symlink to its target, keeping the file's mode. See [`file`](guide/scripting.md#file) and [Colour your apps](guide/app-colours.md).
+- Added: `palette.from_hct{ hue, chroma, tone }` and `palette.harmonize(color, source)` return `"#RRGGBB"`.
+- Added: `process.capture(cmd, args, on_done)` runs a program to its end and calls `on_done(stdout, code)` with all of stdout as one string, newlines kept (first 1 MiB; stderr dropped). A signal, failed spawn or reload gives `nil, nil`.
+- Added: `mantle.clock:monotonic()` reads the monotonic clock at the call, before the first push too.
+- Added: `computed` takes plain strings, numbers, booleans and tables among its dependencies and passes them to `fn` unchanged; a function or userdata still raises.
+- Changed: a capability's `:map(fn, before?)` never calls `fn` with the pre-push `nil`; until the first push the mapped signal holds `before` (default `nil`). Drop `x and ...` guards from capability maps. `:get()`, `computed` and `on_change` are unchanged.
+- Changed: `persistent_table` keys read their declared `defaults` entry until `mantle.storage` pushes that file, not `nil`; `set(key, nil)` reads `nil` until the next evaluation restores the default. Saves keep a symlink's link and the file's mode.
+- Changed: `mantle.clock`'s `monotonic` is now `CLOCK_MONOTONIC` seconds since boot as a fractional number, not whole seconds since the capability started; it is the clock `mantle.mpris`'s `position_updated_at` uses, in microseconds (divide by `1e6`).
+- Changed: `mantle.folders:watch` on a missing folder, and on one that is later deleted, waits for it to appear and lists it then; `error` holds until it does. It used to stay unwatched until a second `watch`.
 - Changed: `mantle.files` is now `mantle.folders`, and its `folders` field is now `watched`: the capability lists watched folders, and `folders.folders` read badly.
 - Changed: `mantle.system` is now `mantle.clock`: it holds the wall and monotonic clocks, nothing else about the system.
 - Changed: `mantle.battery`'s `capacity` is now `health`: the field is full charge over design capacity, and `capacity` read as the charge level.
 - Changed: `mantle.storage`'s `files` field is now `contents`: the values are each file's contents, keyed by path.
-- Changed: `persistent_table { path, name }` is now `persistent_table { path }`, where `path` is the absolute file path; `name` raises as an unknown key, and a relative path or one ending in `/` raises. One key names the file, and the engine creates its parent directory.
-- Changed: the internal `--detached` flag is gone and raises as an unknown argument; the child of `mantle -d` leads its own session and logs `(detached)` in its `started` line.
+- Changed: `persistent_table { path, name }` is now `persistent_table { path }`, where `path` is the absolute file path; `name` raises as an unknown key, and a relative path, one ending in `/`, or one with an empty, `.` or `..` component raises. The engine creates its parent directory.
+- Changed: the internal `--detached` flag is gone and raises as an unknown argument.
 - Changed: `list` `source` is now `items`: it names the data, and `source` also means a file path on `image` and `shader`.
 - Changed: `list` `itemfn` is now `each`: a plain word instead of a run-together abbreviation.
 - Changed: window `on_close` is now `on_close_request`: it is a request, the window stays open until the config hides it.

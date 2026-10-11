@@ -32,7 +32,7 @@ return panel {
                 foreground = theme.crust,
             },
             text {
-                content = rescue:map(function(r) return r and r.error_log or "" end),
+                content = rescue:map(function(r) return r.error_log end),
                 width = "fill",
                 wrap = "word",
                 font = "CaskaydiaCove Nerd Font Mono",

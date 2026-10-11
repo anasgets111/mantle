@@ -40,9 +40,9 @@ return panel {
             text { content = "Mantle", font_weight = 700, foreground = "#89b4fa", align_v = "center" },
             rect { width = "fill" },
             text {
-                content = mantle.clock:map(function(system)
-                    return system and os.date("%H:%M", system.time) or "--:--"
-                end),
+                content = mantle.clock:map(function(clock)
+                    return os.date("%H:%M", clock.time)
+                end, "--:--"),
                 font_weight = 700,
                 foreground = "#cdd6f4",
                 align_v = "center",
@@ -56,7 +56,7 @@ return panel {
 | :--- | :--- |
 | `panel` | Places a 32 px bar at the top of each output and reserves that space from windows |
 | `row` and the `"fill"` `rect` | Put the label on the left and push the clock to the right |
-| `mantle.clock:map(...)` | Updates the clock when the system capability pushes time. The callback handles `nil` before its first push |
+| `mantle.clock:map(...)` | Updates the clock when the clock capability pushes time. Until the first push the signal holds the second argument, and the callback does not run |
 
 Check the config before starting a shell, then run it:
 

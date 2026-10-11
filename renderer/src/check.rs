@@ -13,6 +13,7 @@ use crate::layout::node::SurfaceSpec;
 use crate::layout::scene::{LogicalSize, Scene};
 use crate::lua::LoadOutput;
 use crate::lua::capability::CommandSender;
+use crate::lua::file::FileRegistry;
 use crate::lua::namespace::{self, Namespace};
 use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
@@ -153,6 +154,7 @@ fn evaluate(config_dir: &Path) -> Result<(LoadOutput, Vec<SurfaceSpec>, Namespac
     let commands = CommandSender::new(0, outbound_tx);
     loader.register_process(ProcessRegistry::new(commands.clone())).map_err(|err| err.to_string())?;
     loader.register_palette(PaletteRegistry::new(None)).map_err(|err| err.to_string())?;
+    loader.register_file(FileRegistry::checking()).map_err(|err| err.to_string())?;
     let namespace = namespace::build(&loader, &dirty, &commands, &shell_lua).map_err(|err| err.to_string())?;
 
     let (output, specs) =
@@ -586,7 +588,7 @@ mod tests {
     /// An `each` runs only once a `list` has items, and every capability reads `nil` until
     /// its first push, so only the sample pass reaches this typo.
     #[test]
-    fn a_typo_inside_an_itemfn_fails_the_check_with_sample_capability_data() {
+    fn a_typo_inside_an_each_fails_the_check_with_sample_capability_data() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),
@@ -604,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn a_launcher_filtering_no_display_still_checks_its_itemfn() {
+    fn a_launcher_filtering_no_display_still_checks_its_each() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(
             dir.path().join("shell.lua"),

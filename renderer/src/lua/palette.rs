@@ -1,14 +1,11 @@
 //! `palette` global (ADR-0249). Renderer-local, unlike `process.run`: a palette has nothing to
 //! outlive a Renderer respawn.
 
-use std::cell::RefCell;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::mpsc::{Receiver, Sender};
 
 use mlua::{Function, Lua, Table, Value};
 
+use super::calls::Calls;
 use super::luacats::{As, lua_class, lua_fn, lua_shape, spelled};
 use shared::warn;
 
@@ -22,8 +19,8 @@ const DEFAULT_DEPTH: i64 = 3;
 /// A freedesktop "normal" thumbnail's edge, so the default hits a thumbnail already on disk.
 const DEFAULT_RESCALE: i64 = 128;
 
-/// A call's id and swatches, `None` on failure.
-type PaletteResult = (u64, Option<Vec<PaletteSwatch>>);
+/// A call's swatches, `None` on failure.
+type PaletteResult = Option<Vec<PaletteSwatch>>;
 
 // `share` is the fraction of counted pixels, so a config can weigh colourfulness against coverage.
 lua_shape! {
@@ -42,15 +39,8 @@ struct Options;
 spelled!(Options => r#"{ depth?: integer, method?: "celebi"|"wu", rescale?: integer, [string]: "no such property" }"#);
 
 #[derive(Clone)]
-pub struct PaletteRegistry(Rc<RefCell<Inner>>);
-
-struct Inner {
-    next_id: u64,
-    pending: HashMap<u64, Function>,
-    result_tx: Sender<PaletteResult>,
-    results: Receiver<PaletteResult>,
-    /// `None` under `mantle check`, which runs no loop to wake.
-    waker: Option<crate::wake::Waker>,
+pub struct PaletteRegistry {
+    calls: Calls<PaletteResult>,
     cache_root: Option<PathBuf>,
 }
 
@@ -60,27 +50,13 @@ impl PaletteRegistry {
     }
 
     fn with_cache_root(waker: Option<crate::wake::Waker>, cache_root: Option<PathBuf>) -> Self {
-        let (result_tx, results) = std::sync::mpsc::channel();
-        PaletteRegistry(Rc::new(RefCell::new(Inner {
-            next_id: 0,
-            pending: HashMap::new(),
-            result_tx,
-            results,
-            waker,
-            cache_root,
-        })))
+        Self { calls: Calls::new(waker, false), cache_root }
     }
 
     fn quantize(&self, path: String, depth: u8, method: Method, rescale: u32, on_done: Function) -> PaletteHandle {
-        let mut inner = self.0.borrow_mut();
-        let id = inner.next_id;
-        inner.next_id += 1;
-        inner.pending.insert(id, on_done);
-        let (tx, waker, cache_root) = (inner.result_tx.clone(), inner.waker.clone(), inner.cache_root.clone());
-        // ponytail: a thread per call, outside the image pool's `Budget`, so a quantize can briefly
-        // push decodes past `DECODE_POOL_BYTES`. Share the `Budget` if that is ever measured.
-        std::thread::spawn(move || {
-            let swatches = match quantize_file(Path::new(&path), depth, method, rescale, cache_root.as_deref()) {
+        let cache_root = self.cache_root.clone();
+        let (id, job) = self.calls.submit(Some(on_done), move || {
+            match quantize_file(Path::new(&path), depth, method, rescale, cache_root.as_deref()) {
                 Ok(buckets) => {
                     let total: u32 = buckets.iter().map(|(count, _)| count).sum();
                     Some(
@@ -97,41 +73,39 @@ impl PaletteRegistry {
                     warn!("palette.quantize({path}): {err}");
                     None
                 }
-            };
-            let _ = tx.send((id, swatches));
-            if let Some(waker) = waker {
-                waker.wake();
             }
         });
-        PaletteHandle { id, registry: self.clone() }
+        if let Some(job) = job {
+            // ponytail: a thread per call, outside the image pool's `Budget`, so a quantize can briefly
+            // push decodes past `DECODE_POOL_BYTES`. Share the `Budget` if that is ever measured.
+            std::thread::spawn(job);
+        }
+        PaletteHandle { id, calls: self.calls.clone() }
     }
 
-    /// Drops every pending callback at an evaluation boundary: each closes over the locals of an
-    /// evaluation being replaced or rejected. Their decodes still finish and are discarded.
+    /// Drops every pending callback at an evaluation boundary; their decodes still finish and are discarded.
     pub fn clear(&self) {
-        self.0.borrow_mut().pending.clear();
+        self.calls.clear();
     }
 
     /// Runs each finished call's callback once; a cancelled id is dropped.
     pub fn poll(&self) {
-        let results: Vec<PaletteResult> = std::iter::from_fn(|| self.0.borrow().results.try_recv().ok()).collect();
-        for (id, swatches) in results {
-            let Some(on_done) = self.0.borrow_mut().pending.remove(&id) else { continue };
-            call_logged(&on_done, swatches, format_args!("palette.quantize(id={id}): callback"));
-        }
+        self.calls.poll(|id, on_done, swatches| {
+            call_logged(on_done, swatches, format_args!("palette.quantize(id={id}): callback"));
+        });
     }
 }
 
 pub struct PaletteHandle {
     id: u64,
-    registry: PaletteRegistry,
+    calls: Calls<PaletteResult>,
 }
 
 lua_class! {
     impl PaletteHandle {
         /// Drops the callback. The decode still finishes.
         fn cancel(_lua, this) {
-            this.registry.0.borrow_mut().pending.remove(&this.id);
+            this.calls.cancel(this.id);
             Ok(())
         }
     }
@@ -208,8 +182,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::{Duration, Instant};
-
+    use super::super::calls::poll_until;
     use super::*;
 
     /// A registry pointed at a tempdir cache root, never the real `$HOME/.cache`.
@@ -219,17 +192,6 @@ mod tests {
         let registry = PaletteRegistry::with_cache_root(None, Some(cache.path().to_path_buf()));
         register(&lua, registry.clone()).unwrap();
         (lua, registry)
-    }
-
-    /// Polls until the background thread's result lands or a generous timeout trips; keeps the
-    /// test from hanging silently if `poll` regresses.
-    fn poll_until_dispatched(registry: &PaletteRegistry, probe: impl Fn() -> bool) {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while !probe() {
-            assert!(Instant::now() < deadline, "palette.quantize callback never fired");
-            registry.poll();
-            std::thread::sleep(Duration::from_millis(5));
-        }
     }
 
     #[test]
@@ -245,7 +207,7 @@ mod tests {
         let is_userdata: bool = lua.load("return type(handle) == \"userdata\"").eval().unwrap();
         assert!(is_userdata, "palette.quantize must return a userdata handle");
 
-        poll_until_dispatched(&registry, || lua.load("return probe ~= nil").eval().unwrap());
+        poll_until(|| registry.poll(), || lua.load("return probe ~= nil").eval().unwrap());
         let (color, share): (String, f64) = lua.load("return probe[1].color, probe[1].share").eval().unwrap();
         assert_eq!(
             (color.as_str(), share, lua.load("return #probe").eval::<i64>().unwrap()),
@@ -262,7 +224,7 @@ mod tests {
             .exec()
             .unwrap();
 
-        poll_until_dispatched(&registry, || lua.load("return probe ~= nil").eval().unwrap());
+        poll_until(|| registry.poll(), || lua.load("return probe ~= nil").eval().unwrap());
         let is_nil: bool = lua.load("return probe.is_nil").eval().unwrap();
         assert!(is_nil, "a decode failure must call back with nil, not raise or hang");
     }
@@ -281,10 +243,7 @@ mod tests {
             lua.load(format!(r#"handle = palette.quantize({path:?}, nil, function(colors) probe = colors end)"#))
                 .exec()
                 .unwrap();
-            cancel(&lua, &registry);
-
-            let result = registry.0.borrow().results.recv_timeout(Duration::from_secs(5)).unwrap();
-            registry.0.borrow().result_tx.send(result).unwrap();
+            registry.calls.replay(|| cancel(&lua, &registry));
             registry.poll();
             let is_nil: bool = lua.load("return probe == nil").eval().unwrap();
             assert!(is_nil, "a cancelled callback must never run");

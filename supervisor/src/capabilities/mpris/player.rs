@@ -62,8 +62,8 @@ pub(super) fn ordered_players(registry: &PlayerRegistry) -> Vec<PlayerState> {
 const POSITION_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// Cross-process-comparable `CLOCK_MONOTONIC` microseconds, matching the IDL's timestamp field;
-/// opaque `std::time::Instant` would not. Known gap (ADR-0036): `system.time` is
-/// 1Hz, too coarse for this resolution.
+/// opaque `std::time::Instant` would not. Known gap (ADR-0036): the clock's `time` is 1 Hz, too
+/// coarse for this resolution; Lua reads `mantle.clock:monotonic()` instead.
 pub(super) fn monotonic_micros() -> i64 {
     let now: std::time::Duration = nix::time::clock_gettime(nix::time::ClockId::CLOCK_MONOTONIC)
         .map(std::time::Duration::from)

@@ -22,7 +22,8 @@ Terms used below (*Supervisor*, *Renderer*, *generation*, *push*) are in the
 | Write to the shell's log | [`log.*`](#log) |
 | Rank search results | [`fuzzy`](#fuzzy) |
 | Pull colours out of an image | [`palette.quantize`](#palettequantize) |
-| Build Material 3 colours from a seed, or from an image (`quantize`, then `score`, then `scheme`) | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct) |
+| Build Material 3 colours from a seed, or from an image (`quantize`, then `score`, then `scheme`) | [`palette.scheme`](#palettescheme), [`palette.score`](#palettescore), [`palette.hct`](#palettehct), [`palette.from_hct`](#palettefrom_hct), [`palette.harmonize`](#paletteharmonize) |
+| Read or write a text file | [`file`](#file) |
 | Set the font fallback chain | [`fonts`](#fonts) |
 
 What each one keeps across a reload, a crash and a restart: [runtime](runtime.md#what-survives-a-reload).
@@ -42,8 +43,8 @@ local settings = persistent_table {
     defaults = { clock_24h = true, recorder = { fps = 60, audio = "desktop" } },
 }
 
--- nil until the first push, so pick the default here too.
-local clock_24h = settings.clock_24h:map(function(value) return value ~= false end)
+-- Reads its declared default before the first push.
+local clock_24h = settings.clock_24h
 
 return panel {
     id = "clock", layer = "top", anchor = { top = true },
@@ -61,8 +62,8 @@ return panel {
 | Signature | `persistent_table { path, defaults? }` → store. Another key raises |
 | `path` | Absolute file path; relative or ending in `/` raises. Its directory is created if missing. Build it from `os.getenv` or `mantle.config_dir` |
 | `defaults` | Fills missing top-level keys; stored values win. Nested tables are one value and do not merge. Re-sent every evaluation, so a new default lands on reload |
-| `store.<key>` | Signal for that key: `nil` before `mantle.storage` first pushes, then the stored value |
-| `store:set(key, value)` | Writes one key; `nil` deletes it until the next reload re-fills its default. The signal updates on the next push, not inside `set` |
+| `store.<key>` | Signal for that key: its `defaults` entry (else `nil`) until `mantle.storage` pushes this file, then the stored value; a key the pushed file lacks is `nil` |
+| `store:set(key, value)` | Writes one key; `nil` deletes it: the signal reads `nil` until the next evaluation restores the default. The signal updates on the next push, not inside `set` |
 | Identity | One table per file: another call with the same `path` returns it, across reloads too |
 | Raw state | `mantle.storage` ([capabilities](../capabilities/storage.md)) |
 
@@ -365,6 +366,41 @@ return text { content = hct.chroma >= 36 and "vivid" or "muted" }
 | `chroma` | Colourfulness from `0`. Greys stay under `5`, the cutoff below which Score ignores a colour |
 | `tone` | Lightness, `0` (black) to `100` (white) |
 
+## palette.from_hct
+
+`palette.hct`'s inverse: `palette.from_hct{ hue, chroma, tone }` → `"#RRGGBB"`. `hue` wraps, `chroma`
+is 0 or more, `tone` 0 to 100, all numbers; anything else raises. A chroma sRGB cannot show at that
+hue and tone is reduced to what fits.
+
+```lua
+local hct = palette.hct("#6750A4")
+return text { content = palette.from_hct { hue = hct.hue, chroma = hct.chroma, tone = 90 } }
+```
+
+## palette.harmonize
+
+`palette.harmonize(color, source)` → `"#RRGGBB"`. Moves `color`'s hue toward `source`'s by half the gap,
+at most 15°, keeping chroma and tone: Material's way to seat a fixed colour, such as an error red, beside a seed.
+
+```lua
+return text { content = palette.harmonize("#FF0000", "#6750A4"), foreground = "#FFFFFF" }
+```
+
+## file
+
+Whole-file read and write on a background thread. The config VM has no blocking IO: results arrive
+in a callback, like [`palette.quantize`](#palettequantize).
+
+| Part | Contract |
+| :--- | :--- |
+| `file.read(path, on_done)` | `on_done(text, err)`: the text, or `nil` and a message for a missing, unreadable, non-UTF-8 or over-8 MiB file |
+| `file.write(path, text, on_done?)` | Creates parent directories. When the file already holds exactly `text`, writes nothing and calls `on_done(false)`; otherwise replaces it atomically (temporary in the same directory, then rename) and calls `on_done(true)`. On failure `on_done(nil, err)` |
+| `path` | Absolute, or `~/` under `$HOME`. Anything else raises at the call |
+| Order | Writes run one at a time in call order, so two writes to a path end with the later text. A read does not wait for them: read in the write's `on_done`. A symlink keeps its link and its target is replaced; the file's mode is kept |
+| Handle | `handle:cancel()` drops the callback. A started write still lands |
+| Reload | Drops pending callbacks, so keep what they touch in named [state](signals.md#named-state). A write begun before the reload still lands |
+| `mantle check` | Calls return a handle and do nothing |
+
 ## fonts
 
 `fonts { family, ... }` sets the fallback chain every `text` node uses. Each glyph takes the
@@ -401,7 +437,7 @@ fonts { "Inter", "Symbols Nerd Font", "Noto Color Emoji" }
 | A `timer` re-armed every few milliseconds to move something | Each tick runs Lua and resolves again. Use `animate` ([Lua cost](animation.md#lua-cost)) |
 | Two modules declare the same action | Raises. Pick unique names |
 | `store.key:get()` right after `store:set` | Still the old value. The signal updates on the next push |
-| `store.key` is `nil` at startup | Every key reads `nil` until `mantle.storage` pushes, even with defaults. Handle `nil` in every map |
+| `store.key` is `nil` at startup | The key has no `defaults` entry and `mantle.storage` has not pushed, or the file lacks it. Give it a default |
 | Storing a key named `set` | `store.set` is the method, so that key is unreadable |
 
 See also: [processes](processes.md), [runtime](runtime.md) (reloads, budgets, logging),
@@ -411,5 +447,5 @@ See also: [processes](processes.md), [runtime](runtime.md) (reloads, budgets, lo
 Source: [store](../../renderer/src/lua/store.rs),
 [storage controller](../../supervisor/src/capabilities/storage/controller.rs), [timer](../../renderer/src/lua/timer.rs),
 [action](../../renderer/src/lua/action.rs), [json](../../renderer/src/lua/json.rs), [log](../../renderer/src/lua/log.rs),
-[fuzzy](../../renderer/src/lua/fuzzy.rs), [palette](../../renderer/src/lua/palette.rs),
+[fuzzy](../../renderer/src/lua/fuzzy.rs), [palette](../../renderer/src/lua/palette.rs), [file](../../renderer/src/lua/file.rs),
 [scheme](../../renderer/src/lua/scheme.rs), [fonts](../../renderer/src/lua/fonts.rs).

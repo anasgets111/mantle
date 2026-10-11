@@ -3,7 +3,7 @@ list {
     direction = "horizontal",
     spacing = 4,
     items = mantle.tray:map(function(tray)
-        return tray and tray.items or {}
+        return tray.items
     end),
     key = function(item) return item.id end,
     each = function(item)

@@ -18,12 +18,19 @@ use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::SurfaceSpec;
 use crate::layout::{self, Scene};
 use crate::lua::capability::{Capability, CapabilityHandle, CommandSender};
+use crate::lua::file::FileRegistry;
 use crate::lua::palette::PaletteRegistry;
 use crate::lua::process::ProcessRegistry;
 use crate::lua::signal::DirtyFlag;
 use crate::lua::surfaces::evaluate_and_specs;
 use crate::lua::{self, Loader};
 use crate::text::shaping::ShapingHandle;
+
+/// The registries whose calls finish on another thread.
+struct OffThread {
+    palette: PaletteRegistry,
+    file: FileRegistry,
+}
 
 /// Reload state. `applied_specs` is the applied declaration set, empty before any evaluation.
 /// `pending` holds an evaluation until the Wayland loop applies it. `applied_output` is ADR-0044 decision 2's re-resolve
@@ -104,7 +111,7 @@ pub struct RendererClient {
     /// Any other rescue waits for the next applied evaluation.
     rescue_is_applied_output: bool,
     process_registry: ProcessRegistry,
-    palette_registry: PaletteRegistry,
+    off_thread: OffThread,
     /// Renderer-sourced `mantle.idle` threshold callbacks (ADR-0032).
     idle_registry: crate::lua::idle::IdleRegistry,
     /// Scene-dirty flag (ADR-0044 decision 2), cloned into every handed-out `LiveSignalHandle`.
@@ -150,12 +157,24 @@ impl RendererClient {
         loader
             .register_process(process_registry.clone())
             .map_err(|err| format!("failed to register the process global: {err}"))?;
-        let palette_registry = PaletteRegistry::new(Some(waker));
+        let palette_registry = PaletteRegistry::new(Some(waker.clone()));
         loader
             .register_palette(palette_registry.clone())
             .map_err(|err| format!("failed to register the palette global: {err}"))?;
-        let client = Self::new(loader, shell_lua_path, shaping, commands, process_registry, palette_registry, dirty)
-            .map_err(|err| format!("failed to build the `mantle` namespace: {err}"))?;
+        let file_registry = FileRegistry::new(Some(waker));
+        loader
+            .register_file(file_registry.clone())
+            .map_err(|err| format!("failed to register the file global: {err}"))?;
+        let client = Self::new(
+            loader,
+            shell_lua_path,
+            shaping,
+            commands,
+            process_registry,
+            OffThread { palette: palette_registry, file: file_registry },
+            dirty,
+        )
+        .map_err(|err| format!("failed to build the `mantle` namespace: {err}"))?;
         Ok(client)
     }
 
@@ -167,7 +186,7 @@ impl RendererClient {
         shaping: ShapingHandle,
         commands: CommandSender,
         process_registry: ProcessRegistry,
-        palette_registry: PaletteRegistry,
+        off_thread: OffThread,
         dirty: DirtyFlag,
     ) -> mlua::Result<Self> {
         // Take it from `commands`, avoiding a drifting clone.
@@ -188,7 +207,7 @@ impl RendererClient {
             rescue_state: (false, String::new()),
             rescue_is_applied_output: false,
             process_registry,
-            palette_registry,
+            off_thread,
             idle_registry: namespace.idle,
             dirty,
             last_resolved: None,
@@ -201,8 +220,10 @@ impl RendererClient {
         })
     }
 
-    pub fn poll_palette(&self) {
-        self.palette_registry.poll();
+    /// Runs the callbacks of `palette` and `file` calls that finished off the Lua thread.
+    pub fn poll_off_thread(&self) {
+        self.off_thread.palette.poll();
+        self.off_thread.file.poll();
     }
 
     /// Returns and clears the instance IDs narrowed during the last dirty re-resolve, if any.
@@ -255,7 +276,8 @@ impl RendererClient {
     /// previous evaluation's, whose registrations this already dropped.
     fn clear_change_handlers(&self) {
         self.process_registry.kill_all();
-        self.palette_registry.clear();
+        self.off_thread.palette.clear();
+        self.off_thread.file.clear();
         for handle in self.capabilities.borrow().values().chain([&self.rescue_handle, &self.screens_handle]) {
             handle.clear_handlers();
         }
@@ -697,13 +719,15 @@ mod tests {
         loader.register_process(process_registry.clone()).unwrap();
         let palette_registry = PaletteRegistry::new(None);
         loader.register_palette(palette_registry.clone()).unwrap();
+        let file_registry = FileRegistry::checking();
+        loader.register_file(file_registry.clone()).unwrap();
         let client = RendererClient::new(
             loader,
             shell_lua_path.to_path_buf(),
             ShapingHandle::spawn(),
             commands,
             process_registry,
-            palette_registry,
+            OffThread { palette: palette_registry, file: file_registry },
             dirty,
         )
         .unwrap();
@@ -1091,8 +1115,8 @@ mod tests {
             return { panel {
                 id = "notification_area", layer = "top", anchor = { top = true, right = true },
                 width = 200, height = 60,
-                -- nil until the first push, as at real boot.
-                visible = mantle.notifications:map(function(n) return n ~= nil and #n.feed > 0 end),
+                -- `false` until the first push, as at real boot (nil would leave `visible` at its default, true).
+                visible = mantle.notifications:map(function(n) return #n.feed > 0 end, false),
                 child = rect { width = 200, height = 60, background = "#111111ff" },
             } }
             "##,
@@ -1317,6 +1341,57 @@ mod tests {
             None,
             "a key the file does not have reads nil, so a property falls back to its documented default"
         );
+    }
+
+    #[test]
+    fn a_stores_declared_default_reads_before_the_first_push_then_the_stored_value() {
+        let (client, _outbound_rx) = bare_client();
+        client
+            .loader
+            .lua()
+            .load(r#"store = persistent_table { path = "/tmp/bar/state.json", defaults = { theme = "mocha" } }"#)
+            .exec()
+            .unwrap();
+
+        let setup = r#"theme = store.theme:get() other = store.other:get()"#;
+        assert_eq!(probe::<String>(&client.loader, setup, "theme"), "mocha");
+        assert_eq!(probe::<Option<String>>(&client.loader, setup, "other"), None, "no default, no value");
+
+        client
+            .apply_state_snapshot(StateSnapshot {
+                capability: "storage".to_string(),
+                revision: 1,
+                payload: serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }),
+            })
+            .unwrap();
+        assert_eq!(probe::<String>(&client.loader, setup, "theme"), "latte");
+    }
+
+    #[test]
+    fn a_store_the_first_push_omits_still_reads_its_defaults() {
+        let (client, _outbound_rx) = bare_client();
+        client
+            .loader
+            .lua()
+            .load(
+                r#"
+                a = persistent_table { path = "/tmp/bar/a.json", defaults = { theme = "mocha" } }
+                b = persistent_table { path = "/tmp/bar/b.json", defaults = { theme = "frappe" } }"#,
+            )
+            .exec()
+            .unwrap();
+        client
+            .apply_state_snapshot(StateSnapshot {
+                capability: "storage".to_string(),
+                revision: 1,
+                payload: serde_json::json!({ "contents": { "/tmp/bar/a.json": { "theme": "latte" } } }),
+            })
+            .unwrap();
+
+        let setup = r#"a_theme = a.theme:get() b_theme = b.theme:get() b_other = b.other:get()"#;
+        assert_eq!(probe::<String>(&client.loader, setup, "a_theme"), "latte");
+        assert_eq!(probe::<String>(&client.loader, setup, "b_theme"), "frappe", "B has not been pushed yet");
+        assert_eq!(probe::<Option<String>>(&client.loader, setup, "b_other"), None);
     }
 
     #[test]

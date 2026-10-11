@@ -60,6 +60,7 @@
 - [Input](guide/input.md)
 - [Processes](guide/processes.md)
 - [Scripting](guide/scripting.md)
+- [Colour your apps](guide/app-colours.md)
 
 # Capabilities
 

@@ -10,18 +10,17 @@ the [lock capability](../capabilities/lock.md). Rules every role shares are in [
 ```lua,shot
 mantle.lock:set_unlock_animation(250)
 
-local up = mantle.lock:map(function(lock) return lock ~= nil and lock.active and not lock.unlocking end)
+local up = mantle.lock:map(function(lock) return lock.active and not lock.unlocking end, false)
 
 local function now(format)
-    return mantle.clock:map(function(system) return system and os.date(format, system.time) or "" end)
+    return mantle.clock:map(function(clock) return os.date(format, clock.time) end, "")
 end
 
 local hint = mantle.lock:map(function(lock)
-    if lock == nil then return "" end
     if lock.error ~= "" then return string.format("%s (%d)", lock.error, lock.attempts) end
     if lock.authenticating then return "Checking…" end
     return lock.active and "Enter your password" or "Locking…"
-end)
+end, "")
 
 local lock_screen = lock {
     id = "lock",
@@ -50,7 +49,7 @@ local lock_screen = lock {
                 },
                 text {
                     content = hint,
-                    foreground = mantle.lock:map(function(lock) return lock and lock.error ~= "" and "#f38ba8" or "#a6adc8" end),
+                    foreground = mantle.lock:map(function(lock) return lock.error ~= "" and "#f38ba8" or "#a6adc8" end, "#a6adc8"),
                     align_h = "center",
                 },
             },
@@ -115,7 +114,7 @@ The field's keystrokes go to PAM and never reach Lua.
 | Animate the lock screen out | `set_unlock_animation` with the animation's length, and drive `opacity` or `scale` from `unlocking` ([lock capability](../capabilities/lock.md)) |
 | Animate it in | Drive the same property from `active`; `animate.from` covers the first frame |
 | Show the desktop wallpaper behind it | An `image` in the per-output `child`, keyed by `output` ([per-output content](panel.md#per-output-content)) |
-| Put a clock on it | `mantle.clock:map(function(system) return system and os.date("%H:%M", system.time) or "" end)` |
+| Put a clock on it | `mantle.clock:map(function(clock) return os.date("%H:%M", clock.time) end, "")` |
 | Add an unlock button beside the field | A clickable node with `submits_secure = true` sends the field like Enter ([pointer](../guide/input.md#pointer)). Give it and the field an `accessible_name` so Tab and screen readers reach both ([keyboard controls](../guide/input.md#keyboard-controls-and-accessibility)) |
 | Lock before suspend | Invoke `lock` from your idle or suspend handler ([idle](../capabilities/idle.md)) |
 

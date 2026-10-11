@@ -9,7 +9,7 @@ A rounded preview of the first screen at up to 30 frames per second:
 
 ```lua
 local first_output = mantle.screens:map(function(screens)
-    return screens and screens[1] and screens[1].name or ""
+    return screens[1] and screens[1].name or ""
 end)
 
 local preview = rect {
@@ -30,7 +30,7 @@ Preview the focused window using its [`mantle.windows`](../capabilities/windows.
 
 ```lua
 local focused_window = mantle.windows:map(function(state)
-    for _, entry in ipairs(state and state.windows or {}) do
+    for _, entry in ipairs(state.windows) do
         if entry.focused then return entry.id end
     end
     return ""

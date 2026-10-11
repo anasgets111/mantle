@@ -15,11 +15,8 @@ rect {
     children = {
         text {
             content = mantle.keyboard:map(function(keyboard)
-                if keyboard == nil then
-                    return ""
-                end
                 return keyboard.active_layout .. (keyboard.caps_lock and " ⇪" or "")
-            end),
+            end, ""),
         },
     },
 }

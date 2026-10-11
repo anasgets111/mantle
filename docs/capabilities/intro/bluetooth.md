@@ -1,7 +1,7 @@
 ```lua
 list {
     items = mantle.bluetooth:map(function(bluetooth)
-        return bluetooth and bluetooth.connected_devices or {}
+        return bluetooth.connected_devices
     end),
     key = function(device) return device.mac end,
     each = function(device)
@@ -60,7 +60,7 @@ return column {
         button("Scan", function() mantle.bluetooth:start_discovery() end),
         list {
             items = mantle.bluetooth:map(function(bluetooth)
-                return bluetooth and bluetooth.discovered_devices or {}
+                return bluetooth.discovered_devices
             end),
             key = function(device) return device.mac end,
             each = function(device)
@@ -71,42 +71,42 @@ return column {
         },
         text {
             content = mantle.bluetooth:map(function(bluetooth)
-                local request = bluetooth and bluetooth.pairing_request
+                local request = bluetooth.pairing_request
                 if request == nil then
                     return ""
                 end
                 return string.format("%s (%s) %s", request.name, request.kind, request.code or "")
-            end),
+            end, ""),
         },
         row {
             visible = mantle.bluetooth:map(function(bluetooth)
-                local request = bluetooth and bluetooth.pairing_request
+                local request = bluetooth.pairing_request
                 return request ~= nil and
                     (request.kind == "confirm" or request.kind == "authorize" or request.kind == "service")
-            end),
+            end, false),
             spacing = 6,
             children = { button("Yes", answer(true)), button("No", answer(false)) },
         },
         textfield {
             visible = mantle.bluetooth:map(function(bluetooth)
-                local request = bluetooth and bluetooth.pairing_request
+                local request = bluetooth.pairing_request
                 return request ~= nil and (request.kind == "pin_entry" or request.kind == "passkey_entry")
-            end),
+            end, false),
             width = "fill",
             height = 28,
             placeholder = "PIN or passkey",
             accessible_name = "Bluetooth PIN or passkey",
             secure_submit = mantle.bluetooth:map(function(bluetooth)
-                local request = bluetooth and bluetooth.pairing_request
+                local request = bluetooth.pairing_request
                 if request and (request.kind == "pin_entry" or request.kind == "passkey_entry") then
                     return { capability = "bluetooth", action = "pair", name = request.id .. "/" .. request.mac }
                 end
             end),
         },
         button("No", answer(false), mantle.bluetooth:map(function(bluetooth)
-            local request = bluetooth and bluetooth.pairing_request
+            local request = bluetooth.pairing_request
             return request ~= nil and (request.kind == "pin_entry" or request.kind == "passkey_entry")
-        end)),
+        end, false)),
     },
 }
 ```

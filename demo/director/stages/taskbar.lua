@@ -7,10 +7,9 @@ local windows = state("mock_windows", { source = "hyprland", windows = {} })
 -- until the entries arrive, or the first frame looks up a name no theme has.
 local function icon_of(app_id)
     return mantle.applications:map(function(a)
-        if not a then return "" end
         local index = a.by_app_id[app_id]
         return index and a.entries[index].icon or app_id
-    end)
+    end, "")
 end
 
 local bar = list {

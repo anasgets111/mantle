@@ -274,8 +274,9 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/signals.html#derived-signals)
         fn computed(
             lua,
-            /// Signals or capabilities, in `fn`'s argument order; anything else raises.
-            dependencies: As<Table, Vec<SignalOf<Value>>>,
+            /// Signals, capabilities or plain values, in `fn`'s argument order; a plain value reaches `fn`
+            /// unchanged, as a constant: a string, number, boolean or table.
+            dependencies: As<Table, Vec<Value>>,
             r#fn: fn(values: Variadic<Value>) -> Value,
         ) -> /// Read-only.
         SignalOf<Value, AnyUserData> {
@@ -284,11 +285,17 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             let collected = (1..)
                 .zip(entries)
                 .map(|(index, dep)| match dep {
-                    // Name the expected type; `borrow`'s error does not.
                     Value::UserData(dep) if is_signal(&dep) => Ok(dep),
+                    // A hole in the list is a mistake, not a constant `nil`.
+                    Value::Nil => Err(mlua::Error::runtime(format!("computed() dependency {index} is nil"))),
+                    constant @ (Value::String(_)
+                    | Value::Integer(_)
+                    | Value::Number(_)
+                    | Value::Boolean(_)
+                    | Value::Table(_)) => lua.create_userdata(Signal::new_live(constant, DirtyFlag::new()).0),
                     other => Err(mlua::Error::runtime(format!(
-                        "computed() dependency {index} is {}; dependencies must be Signals or `mantle` capabilities",
-                        a_type(&other)
+                        "computed() dependency {index} is {}; a constant is a string, number, boolean or table",
+                        crate::lua::marshal::a_type(&other)
                     ))),
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;

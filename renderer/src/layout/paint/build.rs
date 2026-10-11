@@ -161,7 +161,7 @@ fn build_node(
         }
         _ => (Radii::default(), false, false),
     };
-    // A gradient cannot draw a scoop or an outline, so their box shadow is their silhouette's.
+    // A gradient cannot draw a scoop or a `shape`, so their box shadow is their silhouette's.
     let casts = !effect.shadows.is_empty() && (boxed || (opaque && radius.analytic()));
     // Like a shadow, a ring paints past the box: its own clip and the layer both reach out to it.
     let ring = match &node.paint {
@@ -1303,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn the_focus_outline_follows_an_outline() {
+    fn the_focus_outline_follows_a_shape() {
         let lua = Lua::new();
         let src = format!(
             r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40,
@@ -1354,7 +1354,7 @@ mod tests {
     /// On a `shape` the ring strokes the contour moved out by the offset plus half its width, in
     /// buffer pixels, inward for a negative offset.
     #[test]
-    fn a_ring_follows_an_outline() {
+    fn a_ring_follows_a_shape() {
         for (scale, offset) in [(1.0_f32, 2.0_f32), (2.0, -4.0)] {
             let src = format!(
                 r##"return panel {{ id = "bar", width = 200, height = 100, padding = 40, child = rect {{ width = 40,

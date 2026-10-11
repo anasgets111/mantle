@@ -8,16 +8,16 @@ between the time and the full date, and hovering it shows the date in a tooltip.
 local show_date = state("clock_show_date", false)
 local clock_hover = hover("clock")
 
-local label = computed({ mantle.clock, show_date }, function(system, date)
-    if system == nil then
+local label = computed({ mantle.clock, show_date }, function(clock, date)
+    if clock == nil then
         return "--:--" -- nil until the first push
     end
-    return os.date(date and "%A %d %B" or "%H:%M", system.time)
+    return os.date(date and "%A %d %B" or "%H:%M", clock.time)
 end)
 
-local tooltip_text = mantle.clock:map(function(system)
-    return system and os.date("%A, %d %B %Y", system.time) or ""
-end)
+local tooltip_text = mantle.clock:map(function(clock)
+    return os.date("%A, %d %B %Y", clock.time)
+end, "")
 
 local clock = rect {
     align_v = "center",

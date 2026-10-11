@@ -43,7 +43,7 @@ local tray_items = list {
     align_v = "center",
     items = mantle.tray:map(function(tray)
         local shown = {}
-        for _, item in ipairs(tray and tray.items or {}) do
+        for _, item in ipairs(tray.items) do
             if item.status ~= "passive" then -- passive asks to be hidden
                 shown[#shown + 1] = item
             end
@@ -215,7 +215,7 @@ return {
 
 | Change | Edit |
 | :--- | :--- |
-| Show hidden (`"passive"`) items | Return `tray and tray.items or {}` from the source map |
+| Show hidden (`"passive"`) items | Return `tray.items` from the source map |
 | Tooltips | Give each button `hover = hover("tray_" .. item.id)` and add a `grab = false` popup showing `item.tooltip` ([tooltip](../surfaces/popup.md#tooltip)) |
 | Bigger icons | `size = 20` and `width = 20, height = 20` |
 | Open the menu rightwards, for a tray on the left | `gravity = "bottom_right"` |

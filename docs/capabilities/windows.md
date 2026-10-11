@@ -7,7 +7,7 @@ Open toplevel windows with title, app ID, workspace, output and state flags.
 ```lua
 list {
     items = mantle.windows:map(function(windows)
-        return windows and windows.windows or {}
+        return windows.windows
     end),
     key = function(window) return window.id end,
     each = function(window)

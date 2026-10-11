@@ -5,14 +5,14 @@ Supervisor.
 ```lua
 column {
     visible = mantle.polkit:map(function(polkit)
-        return polkit ~= nil and polkit.active
-    end),
+        return polkit.active
+    end, false),
     spacing = 8,
     children = {
         text {
             content = mantle.polkit:map(function(polkit)
-                return polkit and polkit.message or ""
-            end),
+                return polkit.message or ""
+            end, ""),
         },
         textfield {
             width = 280,
@@ -23,8 +23,8 @@ column {
         text {
             foreground = "#F38BA8",
             content = mantle.polkit:map(function(polkit)
-                return polkit and polkit.error or ""
-            end),
+                return polkit.error or ""
+            end, ""),
         },
         rect {
             on_click = function() mantle.polkit:cancel() end,

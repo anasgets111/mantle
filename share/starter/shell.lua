@@ -1,7 +1,7 @@
 -- Your shell. Everything on screen is declared here or in a file this requires.
 --
--- Capabilities read `nil` until their first push, so the clock's map guards `s and s.time`;
--- `os.date` with a nil time is now. Docs: https://anasgets111.github.io/mantle/
+-- A capability's `:map(fn, before)` skips `fn` until the first push and holds `before` meanwhile.
+-- Docs: https://anasgets111.github.io/mantle/
 
 -- Example families: a missing one is skipped, and omitting `fonts` keeps the default chain.
 fonts {
@@ -26,8 +26,8 @@ return {
             children = {
                 text {
                     content = mantle.clock:map(function(s)
-                        return os.date("%H:%M", s and s.time)
-                    end),
+                        return os.date("%H:%M", s.time)
+                    end, os.date("%H:%M")),
                     align_v = "center",
                     font_size = 13,
                     foreground = "#cdd6f4ff",

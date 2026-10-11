@@ -22,7 +22,7 @@ const SAVE_DEBOUNCE: Duration = Duration::from_millis(1000);
 /// Behind one lock, so a sync sees memory and the last disk copy together.
 #[derive(Default)]
 struct Stores {
-    files: HashMap<String, Store>,
+    stores: HashMap<String, Store>,
     watches: Option<Watches>,
 }
 
@@ -66,7 +66,7 @@ impl StorageController {
                         let guard = stores.lock().expect("storage state mutex poisoned");
                         // A nameless event is a queue overflow, which may have hidden any store's write.
                         let named = guard
-                            .files
+                            .stores
                             .keys()
                             .map(PathBuf::from)
                             .filter(|path| event.name.is_none() || path.file_name() == event.name.as_deref());
@@ -85,7 +85,7 @@ impl StorageController {
     pub fn snapshot(&self) -> StorageState {
         let guard = self.stores.lock().expect("storage state mutex poisoned");
         StorageState {
-            contents: guard.files.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
+            contents: guard.stores.iter().map(|(key, store)| (key.clone(), store.values.clone().into())).collect(),
         }
     }
 
@@ -103,9 +103,9 @@ impl StorageController {
 
         let (declared, changed) = {
             let mut guard = self.stores.lock().expect("storage state mutex poisoned");
-            let Stores { files, watches } = &mut *guard;
-            let declared = !files.contains_key(&key);
-            let store = files.entry(key).or_default();
+            let Stores { stores, watches } = &mut *guard;
+            let declared = !stores.contains_key(&key);
+            let store = stores.entry(key).or_default();
             if declared {
                 watch(watches.as_mut(), &path);
                 store.on_disk = load(&path).unwrap_or_else(|err| {
@@ -147,7 +147,7 @@ impl StorageController {
 
         let changed = {
             let mut guard = self.stores.lock().expect("storage state mutex poisoned");
-            let Some(store) = guard.files.get_mut(&*path.to_string_lossy()) else {
+            let Some(store) = guard.stores.get_mut(&*path.to_string_lossy()) else {
                 debug!("refused a write to {}; no persistent_table declared it", path.display());
                 return;
             };
@@ -198,8 +198,8 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
     let disk = load(path);
     let contents = {
         let mut guard = stores.lock().expect("storage state mutex poisoned");
-        let Stores { files, watches } = &mut *guard;
-        let Some(store) = files.get_mut(&*key) else { return };
+        let Stores { stores, watches } = &mut *guard;
+        let Some(store) = stores.get_mut(&*key) else { return };
         let disk = match disk {
             Ok(disk) => disk,
             Err(err) => return log_parse_error(store, path, err),
@@ -223,10 +223,14 @@ fn sync(stores: &Mutex<Stores>, path: &Path, save: bool, signal_tx: &UnboundedSe
         watch(watches.as_mut(), path);
         store.values.clone()
     };
-    if let Err(err) = write(path, &contents) {
+    let saved = serde_json::to_vec_pretty(&contents).map_err(std::io::Error::other).and_then(|mut json| {
+        json.push(b'\n');
+        shared::write_atomic(path, &json)
+    });
+    if let Err(err) = saved {
         return warn!("could not save {}: {err}", path.display());
     }
-    if let Some(store) = stores.lock().expect("storage state mutex poisoned").files.get_mut(&*key) {
+    if let Some(store) = stores.lock().expect("storage state mutex poisoned").stores.get_mut(&*key) {
         store.on_disk = Some(contents);
     }
 }
@@ -281,27 +285,6 @@ fn fill_missing(stored: &mut Map<String, Value>, defaults: &Value) -> bool {
         }
     }
     changed
-}
-
-/// Writes pretty JSON to a same-directory temporary file, then renames atomically within one
-/// filesystem. A crash cannot leave a half-written file.
-fn write(path: &Path, contents: &Map<String, Value>) -> std::io::Result<()> {
-    let mut serialized = serde_json::to_vec_pretty(contents).map_err(std::io::Error::other)?;
-    serialized.push(b'\n');
-
-    // The temporary has to be a name no declared table can also be. `Path::with_extension` was
-    // worse than it looked: it derives from the *stem*, so `notes.json` and `notes.db` shared one
-    // `notes.json.tmp` and either rename could publish the other's bytes. Appending alone is not
-    // enough either -- a config declaring both `foo` and `foo.tmp` would have the first table's
-    // temporary land on the second table's file. The leading dot and the pid together are outside
-    // what `persistent_table` hands us, and the pid keeps a second supervisor off this one's
-    // temporary.
-    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
-    let temporary = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
-    std::fs::write(&temporary, &serialized)?;
-    std::fs::rename(&temporary, path).inspect_err(|_| {
-        let _ = std::fs::remove_file(&temporary);
-    })
 }
 
 #[cfg(test)]
@@ -559,9 +542,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("state.json");
         let stores = Mutex::new(Stores::default());
-        stores.lock().unwrap().files.insert(file.to_string_lossy().into_owned(), Store::default());
+        stores.lock().unwrap().stores.insert(file.to_string_lossy().into_owned(), Store::default());
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-        let error = || stores.lock().unwrap().files.values().next().unwrap().error.clone();
+        let error = || stores.lock().unwrap().stores.values().next().unwrap().error.clone();
 
         std::fs::write(&file, "{oops").unwrap();
         sync(&stores, &file, false, &tx);

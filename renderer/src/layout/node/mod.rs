@@ -160,7 +160,7 @@ impl Radii {
         self.0.iter().any(|r| *r < 0.0)
     }
 
-    /// Whether a box gradient draws this shape's shadow: not a scoop or an outline (ADR-0260).
+    /// Whether a box gradient draws this shape's shadow: not a scoop or a `shape` (ADR-0260).
     pub fn analytic(&self) -> bool {
         !self.scoop() && self.2.is_none()
     }

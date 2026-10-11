@@ -8,7 +8,7 @@ A 32 px bar across the top of every output, reserving its height so windows star
 <!-- shot-alt: A top bar: workspace pills with the active one wider and blue on the left, the time and date centred, and Wi-Fi, Bluetooth and volume icons with the battery level on the right. -->
 ```lua,shot
 local function now(format)
-    return mantle.clock:map(function(system) return system and os.date(format, system.time) or "" end)
+    return mantle.clock:map(function(clock) return os.date(format, clock.time) end, "")
 end
 
 local function workspace(active)

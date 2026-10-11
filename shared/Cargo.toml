@@ -22,4 +22,5 @@ unicode-segmentation.workspace = true
 zeroize = { version = "1.9.0", features = ["derive"] }
 
 [dev-dependencies]
+tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "macros", "time"] }

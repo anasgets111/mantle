@@ -9,11 +9,8 @@ mantle.sysinfo:configure({ cpu_interval = 2, ram_interval = 5 })
 
 text {
     content = mantle.sysinfo:map(function(sysinfo)
-        if sysinfo == nil then
-            return ""
-        end
         return string.format("CPU %d%%  RAM %d%%", sysinfo.cpu_percent, sysinfo.ram_percent)
-    end),
+    end, ""),
 }
 ```
 
@@ -119,9 +116,6 @@ mantle.sysinfo:configure({ disk_interval = 30, gpu_interval = 2, net_interval = 
 
 text {
     content = mantle.sysinfo:map(function(sysinfo)
-        if sysinfo == nil then
-            return ""
-        end
         local gpu_str = sysinfo.gpu and sysinfo.gpu.util_percent and
             string.format("GPU %d%%", sysinfo.gpu.util_percent) or "GPU --"
         local disk = sysinfo.disks[1]
@@ -129,7 +123,7 @@ text {
         local down_kib = sysinfo.net_rx_bytes_sec // 1024
         local up_kib = sysinfo.net_tx_bytes_sec // 1024
         return string.format("%s  %s  ↓%d KiB/s ↑%d KiB/s", gpu_str, disk_str, down_kib, up_kib)
-    end),
+    end, ""),
 }
 ```
 

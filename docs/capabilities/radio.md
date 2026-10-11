@@ -21,12 +21,11 @@ rect {
     children = {
         text {
             content = mantle.radio:map(function(radio)
-                if not radio then return "" end
                 for _, r in ipairs(radio.radios) do
                     if r.hard_blocked then return "airplane (switch)" end
                 end
                 return "radios"
-            end),
+            end, ""),
         },
     },
 }

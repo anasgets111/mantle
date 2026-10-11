@@ -2,14 +2,14 @@
 list {
     direction = "horizontal",
     items = mantle.power:map(function(power)
-        return power and power.profiles or {}
+        return power.profiles
     end),
     each = function(name)
         return rect {
             padding = 6,
             background = mantle.power:map(function(power)
-                return (power and power.active_profile == name) and "#89B4FA" or "#313244"
-            end),
+                return power.active_profile == name and "#89B4FA" or "#313244"
+            end, "#313244"),
             on_click = function() mantle.power:set_profile(name) end,
             children = { text { content = name } },
         }

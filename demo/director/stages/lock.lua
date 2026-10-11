@@ -76,7 +76,9 @@ return panel {
                 spacing = 22,
                 children = {
                     text {
-                        content = mantle.clock:map(function(s) return os.date("%H:%M", s and s.time) end),
+                        content = mantle.clock:map(function(s)
+                            return os.date("%H:%M", s.time)
+                        end, os.date("%H:%M")),
                         align_h = "center",
                         font_size = 200,
                         font_weight = 200,
@@ -84,8 +86,8 @@ return panel {
                     },
                     text {
                         content = mantle.clock:map(function(s)
-                            return os.date("%A, %d %B", s and s.time)
-                        end),
+                            return os.date("%A, %d %B", s.time)
+                        end, os.date("%A, %d %B")),
                         align_h = "center",
                         font_size = 36,
                         foreground = theme.subtext,

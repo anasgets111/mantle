@@ -80,7 +80,7 @@ local picker = panel {
                 direction = "horizontal",
                 spacing = 16,
                 items = mantle.folders:map(function(folders)
-                    local folder = folders and folders.watched[DIR]
+                    local folder = folders.watched[DIR]
                     return folder and folder.entries or {}
                 end),
                 key = function(entry) return entry.name end,

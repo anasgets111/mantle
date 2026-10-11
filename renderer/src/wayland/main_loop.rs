@@ -279,7 +279,7 @@ pub fn run(
         let mut phases = idle_profile::Phases::start(profile.is_some());
         app.client.fire_due_timers();
         app.process_accessibility_actions();
-        app.client.poll_palette();
+        app.client.poll_off_thread();
         app.client.wake_due_signals();
         // `apply_instances` and `handle_apply_pending` also resolve, from dispatch, where `ms
         // resolve` is not running. Dropped rather than reported, so the split stays a breakdown of

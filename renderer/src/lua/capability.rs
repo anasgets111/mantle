@@ -206,7 +206,15 @@ impl UserData for Capability {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         // Delegate `get`/`map` so capabilities read like bare `Signal` globals.
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
-        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| Signal::mapped(lua, ud, f));
+        // `fn` never sees the pre-push `nil`: the mapped signal holds `before` until the first push.
+        methods.located_function("map", |lua, (ud, f, before): (mlua::AnyUserData, Function, Value)| {
+            let skip = lua.create_function(
+                move |_, value: Value| {
+                    if value.is_nil() { Ok(before.clone()) } else { f.call::<Value>(value) }
+                },
+            )?;
+            Signal::mapped(lua, ud, skip)
+        });
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,
         // with new and old payloads, and input-callback powers (actions, `process.run`, state).
         methods.located_method("on_change", |_, this, f: Function| {
@@ -217,6 +225,16 @@ impl UserData for Capability {
         // `__index`; `every_roster_action_is_a_method_no_builtin_shadows` keeps names clear of them.
         // An unknown key raises rather than reading `nil`, so `mantle.audio.volume` names the fix.
         methods.add_meta_method(MetaMethod::Index, |lua, this, key: String| {
+            // `mantle.clock:monotonic()` reads the system-wide clock here, so it is live between pushes.
+            if this.name == "clock" && key == "monotonic" {
+                const CACHED: &str = "mantle.clock.monotonic";
+                if let Ok(Value::Function(cached)) = lua.named_registry_value::<Value>(CACHED) {
+                    return Ok(Value::Function(cached));
+                }
+                let read = lua.create_function(|_, _receiver: Value| Ok(shared::state::clock::monotonic_seconds()))?;
+                lua.set_named_registry_value(CACHED, read.clone())?;
+                return Ok(Value::Function(read));
+            }
             let roster = shared::Capability::from_name(&this.name);
             let actions = roster.map_or(&[][..], shared::Capability::actions);
             let Some(&action) = actions.iter().find(|action| **action == key) else {
@@ -240,6 +258,7 @@ impl UserData for Capability {
                     .send_action(lua, &receiver, action, args)
                     .map_err(|err| crate::lua::location::located(lua, err))
             })
+            .map(Value::Function)
         });
     }
 }
@@ -489,6 +508,22 @@ pub(crate) mod tests {
         assert!(queued_command(&mut rx).is_none(), "a dot call must not send 0.5 as the receiver");
     }
 
+    #[test]
+    fn clock_monotonic_reads_the_live_system_clock_before_any_push() {
+        let lua = Lua::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (clock, _) = Capability::new("clock", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("clock", clock).unwrap();
+        let before = shared::state::clock::monotonic_seconds();
+
+        let read: f64 = lua.load("return clock:monotonic()").eval().unwrap();
+
+        assert!(read >= before && read <= shared::state::clock::monotonic_seconds());
+        assert!(queued_command(&mut rx).is_none(), "a read sends nothing");
+        assert!(lua.load("return clock.monotonic == clock.monotonic").eval::<bool>().unwrap(), "built once");
+        assert!(lua.load("return clock:nope()").exec().is_err(), "other keys still raise");
+    }
+
     /// mlua resolves `get`/`map`/`on_change` before `__index`, so an action by one of those names
     /// would never reach the Supervisor.
     #[test]
@@ -499,6 +534,11 @@ pub(crate) mod tests {
         for capability in shared::Capability::ALL {
             let (member, _) = Capability::new(capability.as_str(), DirtyFlag::new(), commands.clone());
             lua.globals().set("cap", member).unwrap();
+            // `__index` answers `clock:monotonic` itself, ahead of the roster.
+            assert!(
+                capability.as_str() != "clock" || !capability.actions().contains(&"monotonic"),
+                "a clock action named monotonic would be shadowed"
+            );
             for action in capability.actions() {
                 // Most actions refuse no arguments; the refusal naming the action proves it reached `send_action`.
                 match lua.load(format!("cap:{action}()")).exec() {
@@ -595,7 +635,7 @@ pub(crate) mod tests {
         // The lock screen's failure text maps this handle; freezing the map at registration would
         // paint the first snapshot forever.
         let (lua, handle, _rx) = lua_with_capability(0);
-        lua.load(r#"mapped = mantle.probe:map(function(s) return (s and s.error) or "" end)"#).exec().unwrap();
+        lua.load(r#"mapped = mantle.probe:map(function(s) return s.error or "" end, "")"#).exec().unwrap();
 
         let first: String = lua.load("return mapped:get()").eval().unwrap();
         assert_eq!(first, "");
@@ -606,5 +646,30 @@ pub(crate) mod tests {
 
         let second: String = lua.load("return mapped:get()").eval().unwrap();
         assert_eq!(second, "authentication failed");
+    }
+
+    #[test]
+    fn map_skips_its_function_until_the_first_push_and_holds_before() {
+        let (lua, handle, _rx) = lua_with_capability(0);
+        lua.load(
+            r#"
+            calls = 0
+            seeded = mantle.probe:map(function(s) calls = calls + 1 return s.n end, 7)
+            bare = mantle.probe:map(function(s) return s.n end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+
+        let (seeded, bare_nil, calls): (i64, bool, i64) =
+            lua.load("return seeded:get(), bare:get() == nil, calls").eval().unwrap();
+        assert_eq!((seeded, bare_nil, calls), (7, true, 0), "fn must not run on the pre-push nil");
+
+        let pushed = lua.create_table().unwrap();
+        pushed.set("n", 3).unwrap();
+        handle.hydrate(Value::Table(pushed));
+
+        let (seeded, bare, calls): (i64, i64, i64) = lua.load("return seeded:get(), bare:get(), calls").eval().unwrap();
+        assert_eq!((seeded, bare, calls), (3, 3, 1));
     }
 }
