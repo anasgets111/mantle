@@ -147,18 +147,29 @@ pub(crate) struct ImageRequest<'a> {
     pub tint: Option<Rgba>,
     pub fit: Fit,
     pub blur_px: u32,
+    /// Read the source's size from its header if a thumbnail stands in for it, for an image whose
+    /// `status` reports it. Not part of the key: a slot decoded without it reads the header later,
+    /// when [`ImageCache::loaded`] is asked with it.
+    pub wants_size: bool,
 }
 
 impl ImageRequest<'_> {
     /// A shader's `images` entry: whole and uncropped, at its own size up to [`MAX_SAMPLER_EDGE`]
     /// a side (a larger file is downscaled), since a sampler reads texels and not a fitted picture.
     pub(crate) fn sampler(path: &Path) -> ImageRequest<'_> {
-        ImageRequest { path, box_px: (MAX_SAMPLER_EDGE, MAX_SAMPLER_EDGE), tint: None, fit: Fit::Stretch, blur_px: 0 }
+        ImageRequest {
+            path,
+            box_px: (MAX_SAMPLER_EDGE, MAX_SAMPLER_EDGE),
+            tint: None,
+            fit: Fit::Stretch,
+            blur_px: 0,
+            wants_size: false,
+        }
     }
 
     /// An image `mask`'s file, stretched over a box of `box_px`.
     pub(crate) fn mask(path: &Path, box_px: (u32, u32)) -> ImageRequest<'_> {
-        ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0 }
+        ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0, wants_size: false }
     }
 }
 
@@ -185,6 +196,9 @@ pub enum Load {
     Background,
 }
 
+/// A source's own pixel size, before any downscale for its box.
+pub type Natural = (u32, u32);
+
 /// Decoder output awaiting texture upload: a still's one frame, or a GIF's base frame plus its
 /// later frames' changed rects (ADR-0235). `deltas` and `delays` are empty and length-1
 /// respectively for anything that is not an animation.
@@ -197,6 +211,8 @@ struct Decoded {
     deltas: Vec<GifDelta>,
     width: u32,
     height: u32,
+    /// The source's own size, before any downscale for the box: what `image_status` reports.
+    natural: Option<Natural>,
     /// tiny-skia `Pixmap` is premultiplied RGBA8; `image` is straight. The wrong femtovg flag gives
     /// every anti-aliased icon edge a dark halo, not an outright failure.
     premultiplied: bool,
@@ -222,7 +238,16 @@ enum Slot {
         bytes: usize,
         start: Instant,
         anim: Option<Animation>,
+        natural: Option<Natural>,
     },
+    Failed,
+}
+
+/// What a draw's exact slot holds, for `image_status` (`layout::paint::DrawnImage`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Loaded {
+    /// Decoded, with the source's own size when known.
+    Ready(Option<Natural>),
     Failed,
 }
 
@@ -232,6 +257,8 @@ struct Entry {
     last_hit: u64,
     /// See [`Decoded::text`]; beside the slot so tests can set it without an `ImageId`.
     text: bool,
+    /// A size-only job was queued for a ready slot that lacked its source's size.
+    sized: bool,
 }
 
 /// A queued decode's key, so a late result lands in the right slot, plus its tint and the
@@ -241,6 +268,9 @@ struct Job {
     key: CacheKey,
     tint: Option<Rgba>,
     animation_bytes: usize,
+    wants_size: bool,
+    /// Read only the source's size, for a slot already ready without it.
+    size_only: bool,
 }
 
 /// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. If resource
@@ -477,11 +507,19 @@ impl ImageCache {
                     // `upload_landed` would skip it anyway; dropping it here also keeps its path
                     // out of the repaint cue, which would otherwise redraw for nothing.
                     self.unwant(&result.0);
-                    if !matches!(self.entries.get(&result.0).map(|entry| &entry.slot), Some(Slot::Pending)) {
-                        continue;
-                    }
+                    let pending = match (self.entries.get_mut(&result.0).map(|entry| &mut entry.slot), &result.1) {
+                        (Some(Slot::Pending), _) => true,
+                        // A size-only job's answer: no pixels, nothing to upload.
+                        (Some(Slot::Ready { natural: natural @ None, .. }), Ok(sized)) if sized.natural.is_some() => {
+                            *natural = sized.natural;
+                            false
+                        }
+                        _ => continue,
+                    };
                     files.push(result.0.path.clone());
-                    self.landed.push(result);
+                    if pending {
+                        self.landed.push(result);
+                    }
                 }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => {
@@ -625,6 +663,8 @@ impl ImageCache {
                     fonts: self.fonts.clone(),
                     key: key.clone(),
                     tint,
+                    wants_size: request.wants_size,
+                    size_only: false,
                     animation_bytes: self.animation_bytes(),
                 }) {
                     Ok(()) => {
@@ -647,7 +687,35 @@ impl ImageCache {
         }
     }
 
-    fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px }: &ImageRequest) -> CacheKey {
+    /// What `request`'s own slot holds after a draw asked for it; `None` while it decodes. A stand-in
+    /// or a `retain` cover drawn meanwhile says nothing about this source.
+    ///
+    /// A ready slot without the size a `status` wants asks a worker for it, once, from the header.
+    pub(crate) fn loaded(&mut self, request: &ImageRequest) -> Option<Loaded> {
+        let key = self.key_for(request);
+        let entry = self.entries.get_mut(&key)?;
+        let loaded = match entry.slot {
+            Slot::Ready { natural, .. } => Loaded::Ready(natural),
+            Slot::Failed => return Some(Loaded::Failed),
+            Slot::Pending => return None,
+        };
+        if loaded == Loaded::Ready(None) && request.wants_size && !std::mem::replace(&mut entry.sized, true) {
+            let job = Job {
+                fonts: self.fonts.clone(),
+                key: key.clone(),
+                tint: None,
+                wants_size: true,
+                size_only: true,
+                animation_bytes: 0,
+            };
+            if self.admit(&key) && self.pool.jobs.try_send(job).is_err() {
+                self.unwant(&key);
+            }
+        }
+        Some(loaded)
+    }
+
+    fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px, .. }: &ImageRequest) -> CacheKey {
         let vector = is_vector(path);
         let (version, recheck) = self.versions.read(path, Instant::now());
         // The repaint that sees a rewrite made inside the window.
@@ -772,7 +840,7 @@ impl ImageCache {
             Slot::Failed => self.failed_total += 1,
             Slot::Pending => {}
         }
-        self.entries.entry(key).insert_entry(Entry { slot, last_hit: self.tick, text: false }).into_mut()
+        self.entries.entry(key).insert_entry(Entry { slot, last_hit: self.tick, text: false, sized: false }).into_mut()
     }
 
     /// Drops one entry, queues its texture for [`ImageCache::release_evicted`], and subtracts its
@@ -907,12 +975,38 @@ mod tests {
         if cache.pool.workers == 0 {
             return;
         }
-        let small = ImageRequest { path: &path, box_px: (16, 16), tint: None, fit: Fit::Contain, blur_px: 0 };
+        let small = ImageRequest {
+            path: &path,
+            box_px: (16, 16),
+            tint: None,
+            fit: Fit::Contain,
+            blur_px: 0,
+            wants_size: false,
+        };
         let large = ImageRequest { box_px: (32, 32), ..small };
         let first = cache.image(painter.canvas_mut(), &small, Load::Inline).unwrap();
         assert!(cache.image(painter.canvas_mut(), &large, Load::Background).is_none());
         assert_eq!(cache.stand_in(painter.canvas_mut(), &large), Some(first));
         assert!(cache.stand_in(painter.canvas_mut(), &ImageRequest { fit: Fit::Cover, ..large }).is_none());
+        // `image_status`: the file's own size once decoded; a stand-in is not this size's load.
+        assert_eq!(cache.loaded(&small), Some(Loaded::Ready(Some((2, 2)))));
+        // Decoded without its size, as a thumbnail hit nobody asked the size of: a `status` asks.
+        let small_key = cache.key_for(&small);
+        if let Some(Slot::Ready { natural, .. }) = cache.entries.get_mut(&small_key).map(|entry| &mut entry.slot) {
+            *natural = None;
+        }
+        let sized = ImageRequest { wants_size: true, ..small };
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while cache.loaded(&sized) != Some(Loaded::Ready(Some((2, 2)))) {
+            assert!(Instant::now() < deadline, "the header read never landed");
+            cache.poll();
+            std::thread::yield_now();
+        }
+        assert_eq!(cache.loaded(&large), None);
+        let missing = dir.path().join("missing.png");
+        let gone = ImageRequest { path: &missing, ..small };
+        assert!(cache.image(painter.canvas_mut(), &gone, Load::Inline).is_none());
+        assert_eq!(cache.loaded(&gone), Some(Loaded::Failed));
     }
 
     /// A wallpaper's shape without a wallpaper's art: a 16:9 viewBox filled corner to corner by one
@@ -947,7 +1041,10 @@ mod tests {
         let v = FileVersion::default();
         let (ready, failed) = (key("/w/ready.png", 8, v), key("/w/failed.png", 8, v));
         let mut cache = ImageCache::new();
-        cache.insert(ready.clone(), Slot::Ready { image: image.unwrap(), bytes: 4, start: Instant::now(), anim: None });
+        cache.insert(
+            ready.clone(),
+            Slot::Ready { image: image.unwrap(), bytes: 4, start: Instant::now(), anim: None, natural: None },
+        );
         cache.insert(failed.clone(), Slot::Failed);
         cache.evict(&failed);
         assert!(!cache.take_freed(), "a failed slot held no memory");
@@ -1107,7 +1204,8 @@ mod tests {
         let png = dir.path().join("tray.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let request = ImageRequest { path: &png, box_px: (8, 8), tint: None, fit: Fit::Contain, blur_px: 0 };
+        let request =
+            ImageRequest { path: &png, box_px: (8, 8), tint: None, fit: Fit::Contain, blur_px: 0, wants_size: false };
         let start = Instant::now();
         cache.key_for(&request);
         assert!(cache.take_deferred().is_none(), "a fresh stat owes nothing");
@@ -1221,7 +1319,14 @@ mod tests {
         cache
             .pool
             .jobs
-            .send(Job { fonts: cache.fonts.clone(), key, tint: None, animation_bytes: STARTING_TEXTURE_BUDGET })
+            .send(Job {
+                fonts: cache.fonts.clone(),
+                key,
+                tint: None,
+                animation_bytes: STARTING_TEXTURE_BUDGET,
+                wants_size: false,
+                size_only: false,
+            })
             .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while cache.poll().is_empty() {
@@ -1252,6 +1357,8 @@ mod tests {
                 key: key.clone(),
                 tint: None,
                 animation_bytes: STARTING_TEXTURE_BUDGET,
+                wants_size: false,
+                size_only: false,
             })
             .unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

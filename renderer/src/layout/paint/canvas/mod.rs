@@ -49,8 +49,9 @@ pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &Res
     let _ = execute("test", painter, images, &mut captures, &build(root, scale, None), scale, size, &[whole], None);
 }
 
-/// One `image` node's source that this paint had a texture for. `layout::scene` moves the node onto
-/// it, which is how a `retain` cover ends and a `transition` begins (ADR-0183).
+/// One `image` node's source that this paint found decoded or failed. `layout::scene` moves a
+/// node onto a ready source, which is how a `retain` cover ends and a `transition` begins
+/// (ADR-0183), and reports both outcomes through `image_status`.
 ///
 /// Reported from the draw rather than inferred from `ImageCache::poll`, because only the draw asks
 /// the cache with the node's exact key: a path-keyed cue fires for a failed decode, never fires for
@@ -59,6 +60,7 @@ pub fn paint_tree(painter: &mut TextPainter, images: &mut ImageCache, root: &Res
 pub struct DrawnImage {
     pub node: NodeId,
     pub source: String,
+    pub loaded: image::Loaded,
 }
 
 /// The GL context and the compiled config shaders, for the runs that need them (ADR-0184). Absent
@@ -258,8 +260,14 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             Draw::Icon { name, px, alpha, color } => {
                 let t0 = timing.then(Instant::now);
                 if let Some(path) = image::icons::resolve(name, *px) {
-                    let request =
-                        ImageRequest { path: &path, box_px: (*px, *px), tint: *color, fit: Fit::Contain, blur_px: 0 };
+                    let request = ImageRequest {
+                        path: &path,
+                        box_px: (*px, *px),
+                        tint: *color,
+                        fit: Fit::Contain,
+                        blur_px: 0,
+                        wants_size: false,
+                    };
                     let draw =
                         FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: &node::Radii::default() };
                     let _ = draw_file(painter.canvas_mut(), walk.images, draw);
@@ -268,40 +276,49 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     walk.split.icons += t0.elapsed();
                 }
             }
-            Draw::Image { node, source, fit, box_px, alpha, load, retained, dissolve, shader, blur_px, radius } => {
+            Draw::Image {
+                node,
+                source,
+                fit,
+                box_px,
+                alpha,
+                load,
+                retained,
+                dissolve,
+                shader,
+                blur_px,
+                radius,
+                wants_size,
+            } => {
                 let request = ImageRequest {
                     path: std::path::Path::new(source),
                     box_px: *box_px,
                     tint: None,
                     fit: *fit,
                     blur_px: *blur_px,
+                    wants_size: *wants_size,
                 };
                 let draw = FileDraw { request, rect, alpha: *alpha, load: *load, radius };
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
-                        let at = DrawnImage { node: *node, source: source.clone() };
-                        dissolve_image(
-                            painter,
-                            walk,
-                            (draw, under),
-                            (at, shader.as_ref(), *progress),
-                            (scissor, frame),
-                        );
+                        dissolve_image(painter, walk, (draw, under), (shader.as_ref(), *progress), (scissor, frame));
                     }
                     // The named source has no texture: still decoding, or a failure the cache has
                     // already logged once. Either way the node keeps its last picture rather than
                     // showing the surface behind it (ADR-0180). A cover that is itself gone --
                     // evicted despite the pin, or deleted from disk -- draws nothing.
-                    None => match draw_file(painter.canvas_mut(), walk.images, draw) {
-                        Some(true) => walk.drawn.push(DrawnImage { node: *node, source: source.clone() }),
-                        Some(false) => {}
-                        None => {
-                            if let Some(under) = under {
-                                draw_file(painter.canvas_mut(), walk.images, under);
-                            }
+                    None => {
+                        if draw_file(painter.canvas_mut(), walk.images, draw).is_none()
+                            && let Some(under) = under
+                        {
+                            draw_file(painter.canvas_mut(), walk.images, under);
                         }
-                    },
+                    }
+                }
+                // After the draw, which is what decodes or queues it (ADR-0183).
+                if let Some(loaded) = walk.images.loaded(&request) {
+                    walk.drawn.push(DrawnImage { node: *node, source: source.clone(), loaded });
                 }
             }
             // `wayland::capture` staged this node's pixels, if any landed; `execute`'s
@@ -367,13 +384,13 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
 /// A cross's config shader, its `params` and `images`.
 type CrossShader = (std::path::PathBuf, Vec<node::ShaderParam>, Vec<super::SamplerFile>);
 
-/// A [`Draw::Image`] mid cross-dissolve: `draw` fades in over `under`, and `drawn` is reported back
-/// if the incoming texture is exact. `at` is the scissor and frame it runs under.
+/// A [`Draw::Image`] mid cross-dissolve: `draw` fades in over `under`. `at` is the scissor and
+/// frame it runs under.
 fn dissolve_image(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
     (draw, under): (FileDraw<'_>, Option<FileDraw<'_>>),
-    (drawn, shader, progress): (DrawnImage, Option<&CrossShader>, f32),
+    (shader, progress): (Option<&CrossShader>, f32),
     (scissor, frame): (PhysicalRect, Frame),
 ) {
     let FileDraw { rect, alpha, radius, .. } = draw;
@@ -381,9 +398,6 @@ fn dissolve_image(
     // Asked for whether or not a pixel of it is visible yet: the answer is about the texture, and
     // it is what starts the run (ADR-0183).
     let to = file_texture(painter.canvas_mut(), walk.images, draw);
-    if to.as_ref().is_some_and(|(_, _, exact)| *exact) {
-        walk.drawn.push(drawn);
-    }
     let from = under.and_then(|under| file_texture(painter.canvas_mut(), walk.images, under));
 
     // The stage takes the whole cross, both endpoints at once, which is the only way an effect can
@@ -391,7 +405,7 @@ fn dissolve_image(
     // exactly (ADR-0186). It needs both textures and a context; without either, the two draws
     // below take the frame, which is why they were built first and why they stay.
     let crossed = match (walk.shaders.as_mut(), from, to) {
-        (Some(shaders), Some((from, from_rect, _)), Some((to, to_rect, _))) => {
+        (Some(shaders), Some((from, from_rect)), Some((to, to_rect))) => {
             let (params, files) =
                 shader.map_or((&[][..], &[][..]), |(_, params, files)| (params.as_slice(), files.as_slice()));
             let images = sampler_images(painter.canvas_mut(), walk.images, files);
@@ -425,10 +439,10 @@ fn dissolve_image(
     // the engine's own shader would not build. The first is the test harness; the rest are real
     // and are why this stays.
     if !crossed {
-        if let Some((id, fitted, _)) = from {
+        if let Some((id, fitted)) = from {
             fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha);
         }
-        if let Some((id, fitted, _)) = to {
+        if let Some((id, fitted)) = to {
             fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha * progress);
         }
     }
@@ -696,12 +710,12 @@ impl<'a> FileDraw<'a> {
 /// Cache lookup and one `fill_path` over the fitted rect. Filling the full box with a `Contain`
 /// paint would let femtovg clamp the outer pixel row into the letterbox; `Cover` is cropped by the
 /// run's scissor.
-/// Answers whether it drew, which is how an `image` learns its source has no texture yet and its
-/// `retain` cover should take the frame (ADR-0180).
-fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, draw: FileDraw) -> Option<bool> {
-    let (id, fitted, exact) = file_texture(canvas, images, draw)?;
+/// `None` when it drew nothing, which is how an `image` learns its source has no texture yet and
+/// its `retain` cover should take the frame (ADR-0180).
+fn draw_file(canvas: &mut Canvas<OpenGl>, images: &mut ImageCache, draw: FileDraw) -> Option<()> {
+    let (id, fitted) = file_texture(canvas, images, draw)?;
     fill_image_rounded(canvas, id, fitted, draw.rect, draw.radius, draw.alpha);
-    Some(exact)
+    Some(())
 }
 
 /// The texture for `file` and the rect its `fit` puts it in, without drawing it. Split out because
@@ -710,12 +724,12 @@ fn file_texture(
     canvas: &mut Canvas<OpenGl>,
     images: &mut ImageCache,
     draw: FileDraw,
-) -> Option<(ImageId, LogicalRect, bool)> {
+) -> Option<(ImageId, LogicalRect)> {
     let FileDraw { request, rect, load, .. } = draw;
     let exact = images.image(canvas, &request, load);
     let id = exact.or_else(|| (load == Load::Background).then(|| images.stand_in(canvas, &request)).flatten())?;
     let (width, height) = canvas.image_size(id).ok()?;
-    Some((id, image::fitted_rect(rect, width as f32, height as f32, request.fit), exact.is_some()))
+    Some((id, image::fitted_rect(rect, width as f32, height as f32, request.fit)))
 }
 
 fn fill_image(canvas: &mut Canvas<OpenGl>, id: ImageId, fitted: LogicalRect, alpha: f32) {

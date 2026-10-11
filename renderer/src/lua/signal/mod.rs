@@ -11,6 +11,7 @@ mod dirty;
 pub(crate) mod elision;
 mod globals;
 mod held;
+pub(crate) mod image_status;
 mod state_handlers;
 mod tracking;
 
@@ -105,6 +106,9 @@ enum SignalKind {
     Geometry(CellId, Rc<RefCell<Value>>),
     /// Text fitting result, published only after a successful retained-scene transaction.
     Elided(CellId, Rc<RefCell<Value>>),
+    /// `image_status(name)`: an `image`'s load, written by the pass for a changed `source` and by
+    /// paint once its decode lands or fails.
+    ImageStatus(CellId, Rc<RefCell<Value>>),
     /// `delay(signal, ms)` (ADR-0146): follows `source` once it has held a new value for `hold`.
     /// A read notes the pending value and its due time, arms a wake through `held::WakeDeadline`, and
     /// keeps answering the held value until a read after the due time adopts the new one; the
@@ -158,6 +162,7 @@ impl SignalKind {
             SignalKind::Pulse { .. } => "a pulse",
             SignalKind::Geometry(..) => "a geometry",
             SignalKind::Elided(..) => "an elided",
+            SignalKind::ImageStatus(..) => "an image_status",
         }
     }
 }
@@ -436,7 +441,8 @@ impl Signal {
             | SignalKind::Scroll { id, cell, .. }
             | SignalKind::State { id, cell, .. }
             | SignalKind::Geometry(id, cell)
-            | SignalKind::Elided(id, cell) => Some((*id, cell)),
+            | SignalKind::Elided(id, cell)
+            | SignalKind::ImageStatus(id, cell) => Some((*id, cell)),
             _ => None,
         }
     }

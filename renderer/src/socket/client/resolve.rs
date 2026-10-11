@@ -260,9 +260,7 @@ impl RendererClient {
     pub fn tick_animations(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
         let instances = self.instances.iter().filter(|instance| due.contains(&instance.instance_id));
         let ticked = self.scene.tick(instances, &self.shaping, self.loader.lua(), now);
-        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
-            self.dirty.mark_cell(id);
-        }
+        self.mark_layout_readers();
         ticked
     }
 }

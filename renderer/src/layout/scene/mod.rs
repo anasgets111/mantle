@@ -10,6 +10,7 @@ mod census;
 mod elision;
 mod field;
 mod fit;
+mod image_status;
 mod pass;
 mod resolve;
 mod resolved;
@@ -29,6 +30,7 @@ use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 
+use crate::image::Loaded;
 use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::{
     self, Align, Dissolve, EdgeInsets, LayoutError, MoveSpec, MoveTween, PaintStyle, PropMap, SizeMode, Tween,
@@ -115,6 +117,8 @@ pub struct Scene {
     field_drafts: field::FieldDrafts,
     resolve_split: ResolveSplit,
     tick_split: TickSplit,
+    /// What paint last found for each image bound to an `image_status`.
+    image_loads: image_status::Loads,
 }
 
 struct InstanceResolveGuard<'a>(&'a Lua);
@@ -251,7 +255,9 @@ impl Scene {
             Err(err) => return Err(node::invalid("layout", err.to_string())),
         };
         let mut rollback = Vec::new();
-        let outcome = self.apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit);
+        let outcome = self
+            .apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit)
+            .and_then(|outcome| self.check_image_status_names(lua).map(|()| outcome));
         if outcome.is_err() {
             for (key, tree) in rollback {
                 self.restore(key, tree);
@@ -260,6 +266,7 @@ impl Scene {
             self.seeds.truncate(seeds_snapshot);
         } else {
             self.publish_elision(lua);
+            self.publish_image_status(lua);
             self.forget_gone_fields();
         }
         outcome
@@ -411,7 +418,8 @@ impl Scene {
     pub fn note_drawn_images(&mut self, instance_id: &str, drawn: &[DrawnImage], now: Instant) {
         fn walk(node: &mut ResolvedNode, drawn: &[DrawnImage], now: Instant) {
             if let Some(PaintStyle::Image { retain: true, transition, .. }) = &node.paint
-                && let Some(shown) = drawn.iter().find(|image| image.node == node.id)
+                && let Some(shown) =
+                    drawn.iter().find(|image| image.node == node.id && matches!(image.loaded, Loaded::Ready(..)))
                 && node.displayed_source.as_deref() != Some(shown.source.as_str())
             {
                 let previous = node.displayed_source.replace(shown.source.clone());
@@ -455,6 +463,7 @@ impl Scene {
         self.surfaces.remove(instance_id);
         self.solver_trees.remove(instance_id);
         self.publish_elision(lua);
+        self.publish_image_status(lua);
     }
 
     /// Node count per retained surface, largest first, for `crate::wayland::memory_profile`. The
@@ -677,7 +686,7 @@ pub(super) mod tests {
         // A report for another node moves nothing. Node identity, not path: two images may draw
         // one file, and only the one that drew it has caught up to it.
         let (held_id, plain_id) = (id(&scene, 0), id(&scene, 1));
-        let drew = |node, source: &str| DrawnImage { node, source: source.to_string() };
+        let drew = |node, source: &str| DrawnImage { node, source: source.to_string(), loaded: Loaded::Ready(None) };
         scene.note_drawn_images("bar@TEST", &[drew(plain_id, "/tmp/new.png")], Instant::now());
         assert_eq!(held(&scene), None);
         assert_eq!(plain(&scene), None, "an image that did not ask to retain holds nothing");
@@ -712,7 +721,11 @@ pub(super) mod tests {
         };
         let node = |scene: &Scene| scene.surface("bar@TEST").unwrap().children[0].clone();
         let drew = |scene: &Scene, source: &str| {
-            [DrawnImage { node: scene.surface("bar@TEST").unwrap().children[0].id, source: source.to_string() }]
+            [DrawnImage {
+                node: scene.surface("bar@TEST").unwrap().children[0].id,
+                source: source.to_string(),
+                loaded: Loaded::Ready(None),
+            }]
         };
 
         apply(&mut scene, "/tmp/a.png");

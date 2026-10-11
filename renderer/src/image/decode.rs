@@ -9,7 +9,7 @@ use super::budget::{Budget, Charge, Permit};
 use super::svg::rasterize_svg;
 use super::{
     CacheKey, DECODE_POOL_BYTES, Decoded, GifDelta, Job, MAX_DECODE_EDGE, MAX_DECODE_WORKERS, MAX_INFLIGHT_DECODES,
-    Pool, thumbnails,
+    Natural, Pool, thumbnails,
 };
 use crate::layout::node::Rgba;
 
@@ -50,15 +50,35 @@ impl Pool {
                     // size is known; `still_wanted` is re-asked there because a worker can now
                     // wait for room, and an entry can be evicted while it does (ADR-0187).
                     let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
-                    let result = decode(
-                        &job.key,
-                        job.tint,
-                        cache_root.as_deref(),
-                        Charge::Waiting(&budget),
-                        &still_wanted,
-                        job.animation_bytes,
-                        &job.fonts,
-                    );
+                    let mut result = if job.size_only {
+                        Ok(Decoded {
+                            base: Vec::new(),
+                            delays: Vec::new(),
+                            deltas: Vec::new(),
+                            width: 0,
+                            height: 0,
+                            natural: None,
+                            premultiplied: false,
+                            text: false,
+                        })
+                    } else {
+                        decode(
+                            &job.key,
+                            job.tint,
+                            cache_root.as_deref(),
+                            Charge::Waiting(&budget),
+                            &still_wanted,
+                            job.animation_bytes,
+                            &job.fonts,
+                        )
+                    };
+                    // A thumbnail hit does not know the source's size; read it only if asked.
+                    if let Ok(decoded) = &mut result
+                        && job.wants_size
+                        && decoded.natural.is_none()
+                    {
+                        decoded.natural = header_size(&job.key.path);
+                    }
                     if result_tx.send((job.key, result)).is_err() {
                         return;
                     }
@@ -105,7 +125,8 @@ pub(super) fn decode(
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
-        let (pixels, width, height, text) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
+        let (pixels, width, height, text, natural) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
+        let natural = Some(natural);
         let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
         return Ok(Decoded {
             base: pixels,
@@ -113,6 +134,7 @@ pub(super) fn decode(
             deltas: Vec::new(),
             width,
             height,
+            natural,
             premultiplied: true,
             text,
         });
@@ -127,7 +149,7 @@ pub(super) fn decode(
     if is_animated(path) {
         return decode_gif(path, *box_px, *cropped, charge, animation_bytes);
     }
-    let (pixels, width, height) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
+    let (pixels, width, height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
     // Here rather than inside `decode_raster`, which returns from three places (thumbnail hit,
     // rescaled thumbnail, full decode) and would need the crop at each.
     let (pixels, width, height) =
@@ -140,6 +162,7 @@ pub(super) fn decode(
         deltas: Vec::new(),
         width,
         height,
+        natural,
         premultiplied,
         text: false,
     })
@@ -266,7 +289,8 @@ fn decode_gif(
         };
     }
     let Some(base) = base else { return Err("no frames".to_string()) };
-    Ok(Decoded { base, delays, deltas, width, height, premultiplied: false, text: false })
+    let natural = Some((source_width, source_height));
+    Ok(Decoded { base, delays, deltas, width, height, natural, premultiplied: false, text: false })
 }
 
 /// The byte index of pixel `(x, y)` in a `width`-wide RGBA8 buffer.
@@ -420,25 +444,26 @@ fn stored_size(width: u32, height: u32, box_px: (u32, u32)) -> (u32, u32) {
 ///
 /// If `thumbnails` has a covering size, decode a current thumbnail instead of the file. A full
 /// decode larger than that size leaves one behind; a 32px tray icon is never thumbnailed. Write
-/// failure logs once and still produces the texture.
+/// failure logs once and still produces the texture. The last field is the source's own size,
+/// unknown on a thumbnail hit.
 fn decode_raster(
     path: &Path,
     box_px: (u32, u32),
     thumbnails: Option<&Path>,
     charge: Charge<'_>,
     still_wanted: &dyn Fn() -> bool,
-) -> Result<(Vec<u8>, u32, u32), String> {
+) -> Result<(Vec<u8>, u32, u32, Option<Natural>), String> {
     let slot = thumbnails.and_then(|root| thumbnails::Slot::for_file(root, path, box_px));
     if let Some(slot) = &slot
         && let Some((pixels, width, height)) = slot.read_valid()
     {
         let (stored_width, stored_height) = stored_size(width, height, box_px);
         if (stored_width, stored_height) == (width, height) {
-            return Ok((pixels, width, height));
+            return Ok((pixels, width, height, None));
         }
         let image = ::image::RgbaImage::from_raw(width, height, pixels).ok_or("thumbnail pixel count is off")?;
         let scaled = downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?;
-        return Ok((scaled.into_raw(), stored_width, stored_height));
+        return Ok((scaled.into_raw(), stored_width, stored_height, None));
     }
     // Past the thumbnail branch, so the budget is charged for the source actually decoded and a
     // covering thumbnail is never made to wait for room it does not need (ADR-0187).
@@ -472,7 +497,16 @@ fn decode_raster(
     } else {
         downscale(&decoded, (stored_width, stored_height))?
     };
-    Ok((rgba.into_raw(), stored_width, stored_height))
+    Ok((rgba.into_raw(), stored_width, stored_height, Some((width, height))))
+}
+
+/// The source's size from its header, without decoding pixels. Not free: a JPEG's is a scan of
+/// the whole file for its markers, so it runs on a worker and only for a bound `status`.
+fn header_size(path: &Path) -> Option<Natural> {
+    refuse_irregular(path).ok()?;
+    let size = ::image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
+    let plausible = 1..=MAX_DECODE_EDGE;
+    (plausible.contains(&size.0) && plausible.contains(&size.1)).then_some(size)
 }
 
 /// Reads at most `cap` bytes of `path`, or `None` if the file has more than that.
@@ -601,7 +635,7 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
 
-        let (pixels, width, height) =
+        let (pixels, width, height, _) =
             decode_raster(&png, (2, 2), None, Charge::Free, &|| true).expect("a PNG decoder must be compiled in");
         assert_eq!((width, height), (2, 2));
         // Straight alpha in Pillow's order: half-transparent green stays 0x00ff00, not
@@ -751,7 +785,7 @@ mod tests {
         ::image::RgbaImage::from_pixel(400, 200, ::image::Rgba([10, 20, 30, 255])).save(&big).unwrap();
         let cache = dir.path().join("cache");
 
-        let (_, width, height) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+        let (_, width, height, _) = decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
         assert_eq!((width, height), (200, 100), "the texture is the box's, whatever the thumbnail is");
         let slot = thumbnails::Slot::for_file(&cache, &big, (100, 100)).unwrap();
         let (_, thumb_width, thumb_height) = slot.read_valid().expect("a `normal` thumbnail was written");
@@ -763,6 +797,28 @@ mod tests {
             decode_raster(&big, (100, 100), Some(&cache), Charge::Free, &|| true).is_err(),
             "no source, no mtime, no slot"
         );
+    }
+
+    /// A thumbnail hit draws the thumbnail, left as written, without the source's size, which
+    /// the source's header gives when `image` can read it.
+    #[test]
+    fn a_thumbnail_hit_draws_as_written_and_the_header_gives_the_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let png = dir.path().join("wall.png");
+        ::image::RgbaImage::from_pixel(400, 200, ::image::Rgba([10, 20, 30, 255])).save(&png).unwrap();
+        let unreadable = dir.path().join("wall.xcf");
+        std::fs::write(&unreadable, b"not a format `image` knows").unwrap();
+        for (source, natural) in [(&png, Some((400, 200))), (&unreadable, None)] {
+            let slot = thumbnails::Slot::for_file(&cache, source, (100, 100)).unwrap();
+            slot.write(&[9, 8, 7, 255].repeat(128 * 64), 128, 64).unwrap();
+            let written = std::fs::read(slot.path()).unwrap();
+            let (_, width, height, size) =
+                decode_raster(source, (100, 100), Some(&cache), Charge::Free, &|| true).unwrap();
+            assert_eq!(((width, height), size), ((128, 64), None), "the thumbnail drew: {}", source.display());
+            assert_eq!(header_size(source), natural);
+            assert_eq!(std::fs::read(slot.path()).unwrap(), written, "the thumbnail is never rewritten");
+        }
     }
 
     #[test]

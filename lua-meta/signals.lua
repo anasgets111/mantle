@@ -24,6 +24,14 @@
 ---@return Signal<boolean>
 function elided(name) end
 
+---Read-only, initially `{ state = "empty" }`. The load of the `source` of the image bound
+---through `status`: `"loading"` until its decode lands, then `"ready"` with the file's own
+---`width` and `height` in pixels, or `"failed"`.
+---[docs](https://anasgets111.github.io/mantle/guide/signals.html#image_status-read-an-images-load)
+---@param name string One name, one read-only signal, across reloads. Bind it as one image's `status`.
+---@return Signal<{ state: "empty"|"loading"|"ready"|"failed", width: integer?, height: integer? }>
+function image_status(name) end
+
 ---A signal of `fn` over its dependencies' values, recomputed on read. A capability that has not
 ---pushed yet reads `nil`; `fn` is skipped and the signal holds `before`. `fn` must be side-effect free
 ---and runs under the shared Lua CPU budget (ADR-0021). ponytail: `fn`'s parameters are untyped,

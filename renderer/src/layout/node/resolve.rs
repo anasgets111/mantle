@@ -55,7 +55,7 @@ pub(crate) fn resolve_declared(
                 // The writer of a layout measurement is not its reader: a change re-resolves only
                 // the nodes that read it. A `scroll` slot's holder reads nothing of it either; the
                 // scene notes it outside the node's own reads (`scene::resolve`).
-                if !matches!(property, "geometry" | "scroll" | "elided")
+                if !matches!(property, "geometry" | "scroll" | "elided" | "status")
                     && let Some(cell) = signal_at(&properties, property).and_then(|s| s.cell_id())
                 {
                     signal::note_read(lua, cell);

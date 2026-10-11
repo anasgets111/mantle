@@ -14,13 +14,13 @@ const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
-/// loaded fonts change.
+/// loaded fonts change; the last field is the document's own size, rounded.
 pub(super) fn rasterize_svg(
     path: &Path,
     box_px: u32,
     tint: Option<Rgba>,
     fonts: &FontDatabase,
-) -> Result<(Vec<u8>, u32, u32, bool), String> {
+) -> Result<(Vec<u8>, u32, u32, bool, super::Natural), String> {
     // Read through a limited reader rather than checking `metadata` and then reading: the file can
     // grow between the two, and the read is what allocates. `usvg` parses whatever it is handed
     // into a tree with no ceiling of its own (see `MAX_SVG_BYTES`).
@@ -80,7 +80,8 @@ pub(super) fn rasterize_svg(
     let mut pixmap =
         resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| format!("no pixmap for {width}x{height}"))?;
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
-    Ok((pixmap.take(), width, height, asked_for_a_font.load(Ordering::Relaxed)))
+    let natural = (size.width().round() as u32, size.height().round() as u32);
+    Ok((pixmap.take(), width, height, asked_for_a_font.load(Ordering::Relaxed), natural))
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -196,7 +197,7 @@ pub(super) mod tests {
             rasterize_svg(&path, 240, None, snapshot).unwrap().0
         };
         let plain = render("", &fonts);
-        let (_, _, _, text) = rasterize_svg(&path, 240, None, &FontDatabase::default()).unwrap();
+        let (_, _, _, text, _) = rasterize_svg(&path, 240, None, &FontDatabase::default()).unwrap();
         assert!(text, "text no loaded face could draw still waits on a later font");
         assert!(plain.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
         assert_eq!(plain, render(r#"font-family="Noto Sans""#, &fonts));
@@ -262,7 +263,7 @@ pub(super) mod tests {
         )
         .unwrap();
         let red = Rgba { r: 1.0, g: 0.0, b: 0.0, a: 1.0 };
-        let (pixels, _, _, text) = rasterize_svg(&path, 240, Some(red), &fonts).unwrap();
+        let (pixels, _, _, text, _) = rasterize_svg(&path, 240, Some(red), &fonts).unwrap();
         assert!(text, "text inside a mask still depends on the fonts");
         assert!(pixels.as_chunks::<4>().0.iter().filter(|p| p[3] > 0).count() > 500);
         assert!(pixels.as_chunks::<4>().0.iter().all(|p| p[0] == p[3] && p[1] == 0 && p[2] == 0));
@@ -366,11 +367,12 @@ pub(super) mod tests {
         let dir = tempfile::tempdir().unwrap();
         let svg = dir.path().join("gradient.svg");
         std::fs::write(&svg, GRADIENT_SVG).unwrap();
-        let (pixels, width, height, text) =
+        let (pixels, width, height, text, natural) =
             rasterize_svg(&svg, 128, None, &FontDatabase::default()).expect("the fixture should parse");
         assert!(!text, "a text-free document survives a font change");
         // 1920x1080 viewBox, longest edge 128, preserves the aspect ratio.
         assert_eq!((width, height), (128, 72));
+        assert_eq!(natural, (1920, 1080), "the document's own size, not the raster's");
         assert_eq!(pixels.len(), (width * height * 4) as usize);
         let opaque = pixels.as_chunks::<4>().0.iter().filter(|px| px[3] > 0).count();
         assert_eq!(opaque, (width * height) as usize, "the fill covers its whole viewBox");

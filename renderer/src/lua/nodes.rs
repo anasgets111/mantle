@@ -603,7 +603,7 @@ mod meta_stub_tests {
             let literal = match *member {
                 // The engine resolves a handle before sibling rules apply, so wrap a sibling's
                 // literal: `image.source` needs a string signal, `list.items` an array. The bare
-                // `hover`/`geometry`/`scroll`/`elided` fall back to their own rows.
+                // `hover`/`geometry`/`scroll`/`elided`/`status` fall back to their own rows.
                 "Bound" => own
                     .as_ref()
                     .map(|l| around(&format!("state(\"probe\", {l})")))
@@ -710,6 +710,7 @@ mod meta_stub_tests {
             ("focused", _) => return Some("focused(\"probe\")".to_string()),
             ("focus_visible", _) => return Some("focus_visible(\"probe\")".to_string()),
             ("elided", _) => return Some("elided(\"probe\")".to_string()),
+            ("status", _) => return Some("image_status(\"probe\")".to_string()),
             ("scroll", _) => return Some("scroll(\"probe\")".to_string()),
             ("focus_target", _) => return Some("focus_target(\"probe\")".to_string()),
             ("reset_on_close", "ScrollSignal") => return Some("scroll(\"probe_reset\")".to_string()),

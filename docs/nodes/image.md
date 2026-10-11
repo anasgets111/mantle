@@ -48,6 +48,7 @@ return { panel {
 | `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint |
+| `status` | `Bound` | None | An [`image_status(name)`](../guide/signals.md#image_status-read-an-images-load) signal. The engine writes the load of `source`; see [load status](#load-status) |
 <!-- End of the generated table. -->
 
 ### transition
@@ -71,6 +72,11 @@ The first picture appears without a transition. A transition shader gets everyth
 `u_progress` is the eased progress `0..1`. A transition shader that fails to build logs once and
 the node falls back to the cross-dissolve.
 
+### Load status
+
+`status = image_status("name")` reports whether `source` is loading, ready (with the file's own
+size) or failed: see [image_status](../guide/signals.md#image_status-read-an-images-load).
+
 ## How do I…
 
 | Task | Answer |
@@ -82,6 +88,7 @@ the node falls back to the cross-dissolve.
 | Show many thumbnails without stutter | `async = true` on each, in a [`list`](list.md) |
 | Blur a wallpaper once | `source_blur = 20` |
 | Show a file that ships with the config | `source = mantle.config_dir .. "/img/logo.png"` |
+| Fade in once decoded, show a load error or a resolution | [Load status](#load-status) |
 
 ### Round an image's corners
 

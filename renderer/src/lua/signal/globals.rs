@@ -150,6 +150,7 @@ struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>, HashSet<
 /// change what any build reads without writing a cell, so it counts as writing every one.
 pub fn begin_evaluation(lua: &Lua) {
     super::note_everything_written();
+    super::image_status::shrink(lua);
     if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
         registry.1.clear();
     }
@@ -259,6 +260,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     install_hook(lua)?;
     crate::lua::app_data_or_default::<LayoutChanged>(lua);
     super::elision::register(lua)?;
+    super::image_status::register(lua)?;
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();
     let focused_dirty = dirty.clone();

@@ -207,6 +207,8 @@ pub enum PaintStyle {
         source_blur: f32,
         /// `radius`: rounds the visible picture, not the box.
         radius: Radii,
+        /// A bound `status`, which reports the source's own size.
+        wants_size: bool,
     },
     /// `capture` (ADR-0248): one output or window. An empty or unavailable target draws nothing.
     Capture {
@@ -319,6 +321,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 transition,
                 source_blur: image::source_blur.read(properties)?,
                 radius: Radii(image::radius.read(properties)?.0, image::corner_smoothing.read(properties)?, None),
+                wants_size: properties.contains_key("status"),
             }
         }
         "capture" => {

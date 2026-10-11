@@ -101,6 +101,8 @@ pub enum Draw {
         /// never distinguishes from a request it decided not to run.
         blur_px: u32,
         radius: node::Radii,
+        /// The node binds `status`, which reports the source's size.
+        wants_size: bool,
     },
     /// An output or window's contents (ADR-0248). `wayland::capture` owns the texture, keyed by `node`;
     /// this carries what a draw places it with and what the capture registry paces a source by,
@@ -324,6 +326,7 @@ impl DisplayList {
                                 tint: None,
                                 fit: *fit,
                                 blur_px: *blur_px,
+                                wants_size: false,
                             });
                         }
                     }

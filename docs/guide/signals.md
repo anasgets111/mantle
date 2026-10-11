@@ -86,7 +86,7 @@ snapshot.
 
 | Rule | Detail |
 | :--- | :--- |
-| Identity | One name, one signal. `hover`, `pointer`, `scroll`, `geometry` and `elided` names are separate namespaces |
+| Identity | One name, one signal. `hover`, `pointer`, `scroll`, `geometry`, `elided` and `image_status` names are separate namespaces |
 | Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
 | Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
 | Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
@@ -121,7 +121,7 @@ return rect {
 | Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
 | Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
 | Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed, and none can be removed: a call inside a callback adds another handler each time it runs, until the next reload |
-| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, pointer, scroll, geometry or elided signal it raises |
+| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, pointer, scroll, geometry, elided or image_status signal it raises |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
 fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
@@ -258,6 +258,38 @@ return column { width = 240, children = {
 } }
 ```
 
+### image_status: read an image's load
+
+Bind `image_status(name)` as an [`image`](../nodes/image.md)'s `status`. Two shown images on one
+name in one surface instance fail the pass, naming both. Across instances, such as a surface
+shown on several outputs, the name follows the first shown image by instance id (`bar@DP-1`
+before `bar@HDMI-A-1`) whose state is known, else the first one. The value follows that image's
+current `source`:
+
+| `state` | When |
+| :--- | :--- |
+| `"empty"` | `source` is `""`, and before the first pass |
+| `"loading"` | An `async` image's new `source` has not finished decoding, including while `retain` or `transition` still draws the old picture. Paint starts the decode, so an image clipped or scrolled out of view stays here |
+| `"ready"` | Decoded. `width` and `height` are the file's own size in pixels, absent if unreadable. When a cached thumbnail stands in, the size comes from reading the file's header, a whole-file scan for a JPEG, paid only by an image that binds `status` |
+| `"failed"` | The file is missing or does not decode |
+
+An inline image (`async = false`) decodes in the frame that draws it and goes straight to `"ready"`
+or `"failed"`. A hidden image keeps its last status. Each change schedules one follow-up pass over
+the signal's readers, as `geometry` does.
+
+Fade a picture in once it has decoded:
+
+```lua
+local load = image_status("cover")
+
+return image {
+    width = 160, height = 90, async = true, status = load,
+    source = "/usr/share/backgrounds/a.jpg",
+    opacity = load:map(function(s) return s.state == "ready" and 1 or 0 end),
+    animate = { opacity = 200 },
+}
+```
+
 ## How re-resolution works
 
 While a surface instance (one surface on one output) resolves, the engine records every signal it
@@ -272,6 +304,7 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A `delay` coming due or a `pulse` window closing | Every instance |
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
 | A text's `elided` result changing | One follow-up pass over the instances that read it |
+| An image's `image_status` changing | One follow-up pass over the instances that read it |
 | A wheel over a container whose `scroll` signal nothing else reads | Nothing: its children move where they are |
 | Any write while the session is locked | Every instance |
 | A reload, or a re-resolve that failed | Every instance |
@@ -343,6 +376,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `pointer(name)` | `{ x, y }` or nil signal | Bind it as a node's `pointer`. The pointer's position from that node's top-left corner while it is over the node, `nil` otherwise ([input](input.md#pointer-position)) |
 | `geometry(name)` | rect signal | Bind it as a node's `geometry`. Layout writes that node's `{ x, y, width, height }` in surface coordinates. Zero until the first layout |
 | `elided(name)` | boolean signal | Bind it as a text node's `elided`. Reports content removed by `elide` or `max_lines`; `false` until measured |
+| `image_status(name)` | `{ state, width?, height? }` signal | Bind it as an image's `status`. Its `source`'s load: `"empty"`, `"loading"`, `"ready"` with the file's size, or `"failed"` ([details](#image_status-read-an-images-load)) |
 
 `delay` and `pulse` take `ms` in `[1, 60000]` rounded to whole milliseconds, and raise outside that
 range. Both compare values with `==`, so a table value (every capability payload, for example)
@@ -361,6 +395,7 @@ Only `state` can be written from Lua. `:set` on any other kind raises an error t
 | Stored | A `persistent_table` key ([scripting](scripting.md)) | | | The table's own `:set(key, value)` |
 | Geometry | `geometry(name)` | | | Layout |
 | Elision | `elided(name)` | | | Text fitting |
+| Image status | `image_status(name)` | | | Layout and paint |
 | Hover | `hover(name)`, `hover_rect(name)` ([input](input.md)) | | | The pointer |
 | Pointer | `pointer(name)` ([input](input.md#pointer-position)) | | | The pointer, while read |
 | Scroll | `scroll(name)` ([input](input.md)) | | ✓ | The wheel and the layout clamp |
@@ -380,8 +415,8 @@ again after changing it in place is a write.
 | `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
 | ``delay: source must be a Signal or a `mantle` capability, got integer 5`` / the same for `pulse` | The first argument is not a signal or capability |
 | `delay: ms must be within [1, 60000]` / `pulse: ms must be within` | `ms` out of range, or rounds to 0 |
-| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry or elided signal |
-| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry or elided signal, which has none |
+| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry, elided or image_status signal |
+| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry, elided or image_status signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `index must be 1 or more` | `:reveal` on another kind, or an index below 1 |

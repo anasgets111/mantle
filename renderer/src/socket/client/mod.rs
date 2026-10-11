@@ -495,9 +495,7 @@ impl RendererClient {
     /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
     pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
         let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());
-        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
-            self.dirty.mark_cell(id);
-        }
+        self.mark_layout_readers();
         moved
     }
 
@@ -517,7 +515,8 @@ impl RendererClient {
     }
 
     /// Relays what a surface's paint actually drew into the retained scene, where a `retain`ing
-    /// `image` stops covering the gap and a `transition` starts (ADR-0183). Narrow on purpose: the
+    /// `image` stops covering the gap and a `transition` starts (ADR-0183), and `image_status`
+    /// learns a decode landed or failed. Narrow on purpose: the
     /// scene is not handed out mutably for a caller to walk itself.
     pub fn note_drawn_images(
         &mut self,
@@ -526,6 +525,18 @@ impl RendererClient {
         now: std::time::Instant,
     ) {
         self.scene.note_drawn_images(instance_id, drawn, now);
+        self.scene.note_image_loads(instance_id, drawn, self.loader.lua());
+        // Written after this turn's pass: its readers' pass is the next turn's, owed now.
+        self.owes_pass |= self.mark_layout_readers();
+    }
+
+    /// Marks the readers of each layout measurement written since the last take; whether any was.
+    fn mark_layout_readers(&mut self) -> bool {
+        let moved = crate::lua::signal::take_layout_changed(self.loader.lua());
+        for id in &moved {
+            self.dirty.mark_cell(*id);
+        }
+        !moved.is_empty()
     }
 
     /// Drops a departed instance's retained tree and its `(surface, output)` pair, whenever its
@@ -535,9 +546,7 @@ impl RendererClient {
         crate::lua::signal::forget_instance(self.loader.lua(), instance_id);
         self.scene.forget(instance_id, self.loader.lua());
         self.instances.retain(|instance| instance.instance_id != instance_id);
-        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
-            self.dirty.mark_cell(id);
-        }
+        self.mark_layout_readers();
     }
 
     /// This generation's `Lua` builds the `on_click` argument (ADR-0050 decision 3):

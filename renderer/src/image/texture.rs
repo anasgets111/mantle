@@ -30,7 +30,8 @@ pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: R
         // only thing that drops an entry, a shown source is pinned against it either way, and an
         // animation nobody draws held its whole ceiling for the life of the process (ADR-0235).
         let bytes = decoded.base.len() + decoded.deltas.iter().map(|delta| delta.pixels.len()).sum::<usize>();
-        upload(canvas, decoded).map(|(image, anim)| Slot::Ready { image, bytes, start: Instant::now(), anim })
+        let natural = decoded.natural;
+        upload(canvas, decoded).map(|(image, anim)| Slot::Ready { image, bytes, start: Instant::now(), anim, natural })
     });
     match result {
         Ok(slot) => slot,
