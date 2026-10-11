@@ -22,7 +22,7 @@ cited only as the why behind behavior the code confirms.
 | `.githooks/` | `pre-commit`, installed by `just hooks` |
 | `.github/workflows/` | `docs.yml` publishes the book; `release.yml` builds packages |
 | `docs/` | mdBook site at anasgets111.github.io/mantle. Writing rules and fence tags: `docs/development/documenting.md` |
-| `DECISIONS.md` | ADRs, numbered `## 0081.`, cited as ADR-0081 |
+| `DECISIONS.md` | ADRs, numbered `## 0081.`, cited as ADR-0081. 500+ KB: read one by number (`grep -n '^## 0081\.'`), never the whole file |
 | `CONTEXT.md` | Engine vocabulary, no implementation. User-facing terms: `docs/glossary.md` |
 
 ## Commands
