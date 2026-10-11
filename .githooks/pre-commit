@@ -16,6 +16,7 @@
 # staged.
 #
 # Install with `just hooks`. Skip once with `git commit --no-verify`.
+# Serialize with other builds: `git config mantle.buildWrapper <lock command>` (see below).
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -36,6 +37,14 @@ $rust || $docs || $lua || exit 0
 if ! command -v cargo >/dev/null || ! command -v just >/dev/null; then
     echo "pre-commit: cargo or just missing, skipping the checks" >&2
     exit 0
+fi
+
+# A checking commit is a full build; with `git config mantle.buildWrapper <cmd>` set it runs under that
+# command, a machine-wide build lock, which marks its child with MANTLE_BUILD_LOCK_HELD so this
+# re-entry does not wait on itself.
+wrapper="$(git config --get mantle.buildWrapper || true)"
+if [ -n "$wrapper" ] && [ -z "${MANTLE_BUILD_LOCK_HELD:-}" ]; then
+    TIMEOUT="${TIMEOUT:-1800}" exec "$wrapper" "$0" "$@"
 fi
 
 if [ -z "${STAGED_ONLY:-}" ]; then
