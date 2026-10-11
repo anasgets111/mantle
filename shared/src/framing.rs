@@ -9,6 +9,8 @@
 //! heap stays on glibc's free lists for the life of the session (a `malloc_trim` returned 4.5% of
 //! one), so an unscrubbed copy is not short-lived.
 
+use std::io::Read as _;
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
@@ -30,6 +32,15 @@ pub enum FramingError {
     FrameTooLarge { len: usize },
     #[error("failed to decode frame payload as JSON: {0}")]
     Decode(#[from] serde_json::Error),
+}
+
+impl From<FramingError> for std::io::Error {
+    fn from(err: FramingError) -> Self {
+        match err {
+            FramingError::Io(err) => err,
+            other => Self::other(other),
+        }
+    }
 }
 
 /// Writes a 4-byte big-endian length prefix followed by `payload`, then flushes so a buffered
@@ -66,6 +77,36 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
         return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
     }
     // Moving the allocation out leaves an empty `Vec` to drop; the bytes travel on to the caller.
+    Ok(std::mem::take(&mut *payload))
+}
+
+/// [`write_frame`] for synchronous writers, such as the PAM worker's stdout inside nonstick's
+/// callbacks, which cannot `.await`.
+pub fn write_frame_blocking(mut writer: impl std::io::Write, payload: &[u8]) -> Result<(), FramingError> {
+    if payload.len() > MAX_FRAME_LEN {
+        return Err(FramingError::FrameTooLarge { len: payload.len() });
+    }
+    writer.write_all(&(payload.len() as u32).to_be_bytes())?;
+    writer.write_all(payload)?;
+    writer.flush()?;
+    Ok(())
+}
+
+/// [`read_frame`] for synchronous readers, with the same limits and scrubbing on failure.
+pub fn read_frame_blocking(mut reader: impl std::io::Read) -> Result<Vec<u8>, FramingError> {
+    let mut len_bytes = [0u8; 4];
+    reader.read_exact(&mut len_bytes)?;
+    let len = u32::from_be_bytes(len_bytes) as usize;
+    if len > MAX_FRAME_LEN {
+        return Err(FramingError::FrameTooLarge { len });
+    }
+    let mut payload = Zeroizing::new(Vec::new());
+    if len <= SMALL_FRAME_LEN {
+        payload.resize(len, 0);
+        reader.read_exact(&mut payload)?;
+    } else if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
+        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+    }
     Ok(std::mem::take(&mut *payload))
 }
 
@@ -123,6 +164,24 @@ mod tests {
         write_frame(&mut a, b"hello").await.unwrap();
         let payload = read_frame(&mut b).await.unwrap();
         assert_eq!(payload, b"hello");
+    }
+
+    #[test]
+    fn blocking_frames_match_the_async_wire_format_and_limits() {
+        let mut wire = Vec::new();
+        write_frame_blocking(&mut wire, b"hello").unwrap();
+        assert_eq!(wire, [0, 0, 0, 5, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(read_frame_blocking(wire.as_slice()).unwrap(), b"hello");
+        let big = vec![1u8; SMALL_FRAME_LEN + 1];
+        let mut wire = Vec::new();
+        write_frame_blocking(&mut wire, &big).unwrap();
+        assert_eq!(read_frame_blocking(wire.as_slice()).unwrap(), big);
+        assert!(matches!(
+            write_frame_blocking(Vec::new(), &vec![0; MAX_FRAME_LEN + 1]),
+            Err(FramingError::FrameTooLarge { .. })
+        ));
+        let over = (MAX_FRAME_LEN as u32 + 1).to_be_bytes();
+        assert!(matches!(read_frame_blocking(over.as_slice()), Err(FramingError::FrameTooLarge { .. })));
     }
 
     #[tokio::test]

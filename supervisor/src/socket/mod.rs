@@ -790,7 +790,7 @@ mod tests {
         assert!(routes.is_pending(id), "the listener stamps a routed id, not the client's zero");
         routes.dispatched(id, 0);
         let refusal = shared::CallResult { id, outcome: shared::CallOutcome::Failed("no state".into()) };
-        routes.answer(0, &refusal).unwrap();
+        routes.answer(0, refusal.clone()).unwrap();
         let answer: shared::SupervisorFrame = framing::read_json_frame(&mut client).await.unwrap();
         assert_eq!(answer, shared::SupervisorFrame::CallResult(refusal));
     }

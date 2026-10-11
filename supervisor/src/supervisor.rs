@@ -188,20 +188,83 @@ impl Supervisor {
         }
     }
 
+    /// Routes one `secure_submit` by capability and action. Every arm that does not hand `secret`
+    /// on drops it, which scrubs it; arms are ordered, the last is the catch-all.
+    pub(crate) async fn route_secure_submit(&mut self, mut submit: shared::SecureSubmit) {
+        // `mem::take` moves the plaintext out of the `ZeroizeOnDrop` frame into a scrubbing owner.
+        let secret = shared::Zeroizing::new(std::mem::take(&mut submit.secret));
+        let generation_id = submit.generation_id;
+        match (submit.capability, submit.action.as_str(), submit.name.take()) {
+            // ADR-0028, ADR-0114.
+            (Capability::Polkit, "authenticate", None) => self.begin_polkit_authentication(secret, generation_id),
+            // ADR-0029: empty secret means open network; non-empty is the WPA-PSK password.
+            (Capability::Network, "connect", None) => self.capabilities.connect_prompted(generation_id, secret),
+            (Capability::Network, "vpn_secret", name) => {
+                if let Some(target) = name {
+                    self.capabilities.submit_vpn_secret(target, secret);
+                }
+            }
+            (Capability::Bluetooth, "pair", name) => {
+                if let Some(target) = name {
+                    self.capabilities.submit_pairing(target, secret);
+                }
+            }
+            (Capability::Lock, "authenticate", None) => self.begin_lock_authentication(secret, generation_id),
+            (Capability::Secrets, "store", name) => {
+                if let Some(name) = name.filter(|name| shared::valid_secret_name(name)) {
+                    self.capabilities.start(Capability::Secrets).await;
+                    self.capabilities.store_secret(name, secret);
+                }
+            }
+            // Other capability/actions (ADR-0015's textfield/IPC half) are not implemented. The
+            // length stays out of the log: it is the one thing about a misaddressed password worth
+            // an attacker's time.
+            (capability, action, _) => {
+                debug!(
+                    "generation {generation_id}'s secure_submit received: capability={capability:?} action={action:?}"
+                );
+            }
+        }
+    }
+
+    /// ADR-0042, ADR-0052: this and `record_pam_outcome` are the only unlock path. No pending
+    /// intent is needed; the lock submission is complete.
+    fn begin_lock_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
+        // Rejects no-lock and concurrent submissions. The acquisition travels through the worker so
+        // `pam_outcomes` matches this lock.
+        let Some(acquisition) = self.lock.try_begin_authentication() else {
+            debug!(
+                "generation {generation_id}'s secure_submit(lock, authenticate) arrived with no lock held, or with an attempt already in flight; dropping"
+            );
+            return;
+        };
+        // Pairs with `record_pam_outcome`'s answer. Without both, a worker that never reports is
+        // indistinguishable from a submit that never arrived.
+        info!("starting pam for lock acquisition {acquisition}");
+        self.push_lock_state();
+        // Spawn instead of await: Enter is unbounded and common, while pam_unix's ~2s failure delay
+        // would stall LockReport, reload, and process reap. The Supervisor runs as the user.
+        tokio::spawn(pam_worker::run_authentication(
+            nix::unistd::Uid::current().as_raw(),
+            secret,
+            acquisition,
+            self.pam_outcome_tx.clone(),
+        ));
+    }
+
     /// Starts one helper conversation for the onscreen challenge. Spawned like lock; `secret` is
-    /// zeroized here on rejection and by the helper otherwise.
-    pub(crate) fn begin_polkit_authentication(&mut self, mut secret: Vec<u8>, generation_id: u32) {
+    /// scrubbed on rejection here and by the helper otherwise.
+    fn begin_polkit_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
         match self.polkit.try_begin_authentication() {
             Some((uid, cookie)) => {
                 self.push_polkit_state();
                 let outcome_tx = self.polkit_outcome_tx.clone();
-                tokio::spawn(pam_worker::run_polkit_helper(uid, cookie, shared::Zeroizing::new(secret), outcome_tx));
+                tokio::spawn(pam_worker::run_polkit_helper(uid, cookie, secret, outcome_tx));
             }
             None => {
                 warn!(
                     "generation {generation_id}'s secure_submit(polkit, authenticate) arrived with no challenge on screen, or with an attempt already in flight; dropping"
                 );
-                shared::Zeroize::zeroize(&mut secret);
             }
         }
     }

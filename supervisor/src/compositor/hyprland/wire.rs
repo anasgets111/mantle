@@ -1,61 +1,21 @@
-//! Hyprland over its two instance-directory sockets (ADR-0118).
-//! Live against 0.56.2; the fixtures below still carry the shapes it was written to.
-//!
-//! 0.56 replaced the command socket's plain-text language with Lua: `dispatch <what>` is now
-//! sugar for `return hl.dispatch(<what>)`, so the pre-0.56 `dispatch workspace 2` reaches the
-//! parser as `hl.dispatch(workspace 2)` and dies on the space. Reads are untouched -- `j/` is
-//! still the legacy path -- so a stale write syntax leaves a strip that tracks the compositor
-//! perfectly and cannot drive it. Writes here target 0.56 and no earlier.
-//!
-//! Hyprland has no state event stream. `.socket2.sock` sends `event>>payload` lines; `.socket.sock`
-//! returns the `hyprctl -j` JSON. On a workspace/monitor/window event, re-read
-//! `workspaces`/`monitors`/`clients`/`activewindow`, reduce, and publish, once per burst: every
-//! line already buffered joins the one that woke the reader (a window opening sends four or
-//! five). A title change alone patches the last read from `windowtitlev2` without a request.
-//!
-//! How Hyprland's model lands on `WorkspaceRow`:
-//!
-//! - `id` is Hyprland's workspace id in decimal, opaque to configs. A positive id is the workspace's
-//!   number, also `number`, and goes into [`focus_command`] as is, so focusing a new number creates
-//!   it. Named workspaces have negative ids and no `number`; Hyprland reads a negative number as a
-//!   relative move, so [`named_selector`] swaps in `"name:<name>"`. `name` is set only when it
-//!   differs from the number.
-//! - Per-output active is `activeWorkspace`; focused is the active workspace of the monitor with
-//!   `focused: true`, matching niri's `is_active`/`is_focused` split.
-//! - `populated` is `windows`; `app_id` is the `class` of the lowest `focusHistoryID` (`0` focused,
-//!   higher older), giving ADR-0117's "focused, else first" a real order.
-//! - Focused window is `activewindow`, `{}` while a layer surface has focus. Using
-//!   `clients[].focusHistoryID == 0` would incorrectly name the last toplevel.
-//! - Specials ([`is_special`]) leave the rows and become `special` (ADR-0119),
-//!   shown on the monitor naming them in `specialWorkspace`; toggle with
-//!   [`toggle_special_command`]. A shown special does not replace
-//!   the focused monitor's regular workspace.
-//! - `active_client.fullscreen` is active-window `fullscreen`: int since Hyprland 0.42 (`0` none, `1`
-//!   maximized, `2` fullscreen), bool before; only the real value counts.
-//!
-//! `spawn_reader` also folds every `clients` entry into a `windows` row, from the same reads.
+//! `.socket.sock` JSON shapes and the reductions from them to capability rows.
 
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader};
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{Compositor, connect, run_in_order, toggle_needed};
-use crate::capabilities::keyboard::controller::LayoutSink;
-use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::capabilities::workspaces::controller::{FocusedWindow, SpecialWorkspace, StatePublisher, WorkspaceRow};
-use shared::{Capability, debug, error, warn};
+use crate::capabilities::windows::controller::WindowEntry;
+use crate::capabilities::workspaces::controller::{FocusedWindow, SpecialWorkspace, WorkspaceRow};
+use shared::debug;
 
 /// One `j/workspaces` entry. Hyprland's `windows` count identifies empty workspaces without a
 /// client scan.
 #[derive(Debug, Clone, Deserialize)]
-struct HyprlandWorkspace {
-    id: i64,
+pub(super) struct HyprlandWorkspace {
+    pub(super) id: i64,
     #[serde(default)]
-    name: String,
+    pub(super) name: String,
     #[serde(default)]
     monitor: String,
     #[serde(default)]
@@ -65,7 +25,7 @@ struct HyprlandWorkspace {
 /// One `j/monitors` entry: connector, shown workspace, and focus.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct HyprlandMonitor {
+pub(super) struct HyprlandMonitor {
     /// Numeric id, joined against a client's `monitor` field (`windows`' `output`); the name is
     /// the connector this capability and `workspaces` otherwise key on.
     #[serde(default)]
@@ -81,7 +41,7 @@ struct HyprlandMonitor {
 
 /// `{ "id": 3, "name": "3" }`, the monitor/client workspace reference.
 #[derive(Debug, Clone, Default, Deserialize)]
-struct WorkspaceRef {
+pub(super) struct WorkspaceRef {
     id: i64,
     #[serde(default)]
     name: String,
@@ -90,10 +50,10 @@ struct WorkspaceRef {
 /// One `j/clients` entry or `j/activewindow`. `mapped` defaults to `true` because `activewindow`
 /// omits it; an unmapped client has no surface to represent a workspace.
 #[derive(Debug, Clone, Deserialize)]
-struct HyprlandClient {
+pub(super) struct HyprlandClient {
     /// `windows`' opaque window id, passed back to select this client.
     #[serde(default)]
-    address: String,
+    pub(super) address: String,
     #[serde(default)]
     class: String,
     #[serde(default)]
@@ -112,14 +72,14 @@ struct HyprlandClient {
     fullscreen: FullscreenMode,
 }
 
-fn yes() -> bool {
+pub(super) fn yes() -> bool {
     true
 }
 
 /// Hyprland's `fullscreen` field: an int since 0.42 (`0` none, `1` maximized, `2` real
 /// fullscreen), bool before (`true` meant real fullscreen; there was no maximize).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-enum FullscreenMode {
+pub(super) enum FullscreenMode {
     #[default]
     None,
     Maximized,
@@ -136,7 +96,7 @@ impl FullscreenMode {
     }
 }
 
-fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<FullscreenMode, D::Error> {
+pub(super) fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<FullscreenMode, D::Error> {
     Ok(match serde_json::Value::deserialize(deserializer)? {
         serde_json::Value::Bool(true) => FullscreenMode::Fullscreen,
         serde_json::Value::Number(mode) => match mode.as_i64() {
@@ -149,7 +109,7 @@ fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<
 }
 
 /// Workspace representative: mapped, classed, and most recently focused.
-fn standing_client(clients: &[HyprlandClient], workspace_id: i64) -> Option<&HyprlandClient> {
+pub(super) fn standing_client(clients: &[HyprlandClient], workspace_id: i64) -> Option<&HyprlandClient> {
     clients
         .iter()
         .filter(|client| client.mapped && client.workspace.id == workspace_id && !client.class.is_empty())
@@ -157,7 +117,7 @@ fn standing_client(clients: &[HyprlandClient], workspace_id: i64) -> Option<&Hyp
 }
 
 /// The three lists reduced to the input rows; see the module doc for mappings.
-fn workspace_rows(
+pub(super) fn workspace_rows(
     workspaces: &[HyprlandWorkspace],
     monitors: &[HyprlandMonitor],
     clients: &[HyprlandClient],
@@ -190,12 +150,12 @@ fn workspace_rows(
 }
 
 /// Hyprland names every special `special` or `special:<name>`; a named workspace called `specials` is not one.
-fn is_special(name: &str) -> bool {
+pub(super) fn is_special(name: &str) -> bool {
     name == "special" || name.starts_with("special:")
 }
 
 /// Specials by name, the test the rest of the adaptor uses too.
-fn special_list(
+pub(super) fn special_list(
     workspaces: &[HyprlandWorkspace],
     monitors: &[HyprlandMonitor],
     clients: &[HyprlandClient],
@@ -222,7 +182,7 @@ fn special_list(
 /// `j/activewindow` reply: `{}` without a focused toplevel. Any other non-client shape is a
 /// protocol change, logged once per occurrence rather than treated as no focus. `read_state` uses
 /// this once for both [`FocusedWindow`] and `windows`' per-client focus comparison.
-fn parse_active_client(json: &str) -> Option<HyprlandClient> {
+pub(super) fn parse_active_client(json: &str) -> Option<HyprlandClient> {
     let value: serde_json::Value = match serde_json::from_str(json) {
         Ok(value) => value,
         Err(err) => {
@@ -242,7 +202,7 @@ fn parse_active_client(json: &str) -> Option<HyprlandClient> {
     }
 }
 
-fn to_focused_window(client: &HyprlandClient) -> FocusedWindow {
+pub(super) fn to_focused_window(client: &HyprlandClient) -> FocusedWindow {
     FocusedWindow {
         title: client.title.clone(),
         app_id: client.class.clone(),
@@ -254,7 +214,7 @@ fn to_focused_window(client: &HyprlandClient) -> FocusedWindow {
 /// Every mapped client, for `windows`. `focused` compares each address against
 /// `j/activewindow`'s: `focusHistoryID == 0` names the last toplevel, not necessarily the focused
 /// one.
-fn window_rows(
+pub(super) fn window_rows(
     clients: &[HyprlandClient],
     monitors: &[HyprlandMonitor],
     active_address: Option<&str>,
@@ -283,7 +243,7 @@ fn window_rows(
 /// exception: [`read_burst`] takes its v2, which names the window. Excludes `activelayout`
 /// (`keyboard`'s, also read by [`read_burst`]), `submap`, `screencast`, and similar events that do
 /// not move workspaces.
-const TRIGGERS: &[&str] = &[
+pub(super) const TRIGGERS: &[&str] = &[
     "workspace",
     "focusedmon",
     "createworkspace",
@@ -301,25 +261,25 @@ const TRIGGERS: &[&str] = &[
     "monitorremoved",
 ];
 
-fn is_trigger(line: &str) -> bool {
+pub(super) fn is_trigger(line: &str) -> bool {
     let name = line.split_once(">>").map_or(line, |(name, _)| name);
     TRIGGERS.contains(&name)
 }
 
 /// What one burst of events asks for.
 #[derive(Debug, Default, PartialEq)]
-struct Burst {
-    reread: bool,
+pub(super) struct Burst {
+    pub(super) reread: bool,
     /// An `activelayout`, answered by one `j/devices` read for `keyboard`.
-    layout: bool,
+    pub(super) layout: bool,
     /// `(address, title)` per `windowtitlev2`, the address as `j/clients` spells it.
-    titles: Vec<(String, String)>,
+    pub(super) titles: Vec<(String, String)>,
     /// Address per `urgent`, spelled as `j/clients` does.
-    urgent: Vec<String>,
+    pub(super) urgent: Vec<String>,
 }
 
 /// Blocks for one line, then takes every complete line already buffered. `None` at socket end.
-fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Option<Burst>> {
+pub(super) fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Option<Burst>> {
     let mut burst = Burst::default();
     let mut line = Vec::new();
     loop {
@@ -349,7 +309,7 @@ fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Op
 }
 
 /// Retitles `address` in the last read; a window it lacks waits for the next `openwindow` read.
-fn patch_title(state: &mut State, address: &str, title: &str) {
+pub(super) fn patch_title(state: &mut State, address: &str, title: &str) {
     if let Some(window) = state.3.iter_mut().find(|window| window.id == address) {
         window.title = title.to_string();
         if window.focused
@@ -363,7 +323,7 @@ fn patch_title(state: &mut State, address: &str, title: &str) {
 /// Stamps `urgent` on windows and their workspaces. `j/clients` has no urgent field, so urgency
 /// comes from `urgent` events and ends when the window gains focus or closes (assumed: Hyprland
 /// clears a window's urgency on focus and sends no event for it).
-fn mark_urgent(state: &mut State, urgent: &mut HashSet<String>) {
+pub(super) fn mark_urgent(state: &mut State, urgent: &mut HashSet<String>) {
     urgent.retain(|address| state.3.iter().any(|window| window.id == *address && !window.focused));
     for window in &mut state.3 {
         window.urgent = urgent.contains(&window.id);
@@ -376,349 +336,7 @@ fn mark_urgent(state: &mut State, urgent: &mut HashSet<String>) {
 /// Four parsed reads, plus the full window list folded from the same `clients`/`activewindow`.
 /// `None` logs the failed read and leaves the previous publish, so one dropped request costs a
 /// stale frame, not the run.
-type State = (Vec<WorkspaceRow>, Option<FocusedWindow>, Vec<SpecialWorkspace>, Vec<WindowEntry>);
-
-fn read<T: for<'de> Deserialize<'de>>(socket_path: &Path, name: &str) -> Option<T> {
-    let reply = match hyprland_request(socket_path, &format!("j/{name}")) {
-        Ok(reply) => reply,
-        Err(err) => {
-            debug!("Hyprland `{name}` request failed: {err}");
-            return None;
-        }
-    };
-    match serde_json::from_str(&reply) {
-        Ok(parsed) => Some(parsed),
-        Err(err) => {
-            debug!("Hyprland `{name}` reply did not parse: {err}");
-            None
-        }
-    }
-}
-
-fn read_state(socket_path: &Path) -> Option<State> {
-    let workspaces: Vec<HyprlandWorkspace> = read(socket_path, "workspaces")?;
-    let monitors: Vec<HyprlandMonitor> = read(socket_path, "monitors")?;
-    let clients: Vec<HyprlandClient> = read(socket_path, "clients")?;
-    let active = match hyprland_request(socket_path, "j/activewindow") {
-        Ok(reply) => reply,
-        Err(err) => {
-            debug!("Hyprland `activewindow` request failed; skipping this update: {err}");
-            return None;
-        }
-    };
-    let active_client = parse_active_client(&active);
-    Some((
-        workspace_rows(&workspaces, &monitors, &clients),
-        active_client.as_ref().map(to_focused_window),
-        special_list(&workspaces, &monitors, &clients),
-        window_rows(&clients, &monitors, active_client.as_ref().map(|client| client.address.as_str())),
-    ))
-}
-
-/// Runs `job` on the shared action thread with `.socket.sock`'s path.
-fn on_command_socket(job: impl FnOnce(&Path) + Send + 'static) {
-    let Some(signature) = hyprland_signature() else {
-        return debug!("HYPRLAND_INSTANCE_SIGNATURE is unset or empty; Hyprland write ignored");
-    };
-    run_in_order(move || job(&hyprland_socket_path(&signature, ".socket.sock")));
-}
-
-fn dispatch(what: String, capability: &'static str) {
-    on_command_socket(move |socket_path| hyprland_command(socket_path, &format!("dispatch {what}"), capability));
-}
-
-/// Hyprland reads a negative number as a relative move, so a named workspace goes by `name:`.
-fn named_selector(name: &str) -> String {
-    format!("\"name:{}\"", lua_escape(name))
-}
-
-/// Sends `build(selector)`: a number as is, a named workspace's name from a fresh `j/workspaces`.
-fn dispatch_to_workspace(id: &str, capability: &'static str, build: impl FnOnce(&str) -> String + Send + 'static) {
-    let Ok(parsed) = id.parse::<i64>() else {
-        warn!("{id:?} is not a Hyprland workspace id; ignored");
-        return;
-    };
-    if parsed > 0 {
-        return dispatch(build(id), capability);
-    }
-    on_command_socket(move |socket_path| {
-        let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(socket_path, "workspaces") else { return };
-        let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == parsed) else {
-            return warn!("no Hyprland workspace has id {parsed}; ignored");
-        };
-        hyprland_command(socket_path, &format!("dispatch {}", build(&named_selector(&workspace.name))), capability);
-    });
-}
-
-/// The table form, not `hl.dsp.focus(N)`: `focus` takes one table and reads the field, the same
-/// call that moves focus by `direction`. Parenthesised because Hyprland appends a "syntax might need
-/// to be updated" note to errors from a command with no `(` in it.
-fn focus_command(selector: &str) -> String {
-    format!("hl.dsp.focus({{ workspace = {selector} }})")
-}
-
-/// `dispatcher` is `hl.dsp.focus` or an `hl.dsp.window.*` name; every window write shares this
-/// table shape.
-fn window_dispatch_command(dispatcher: &str, id: &str, mode: Option<&str>) -> String {
-    let id = lua_escape(id);
-    let mode = mode.map(|value| format!(r#", mode = "{value}""#)).unwrap_or_default();
-    format!(r#"{dispatcher}({{ window = "address:{id}"{mode} }})"#)
-}
-
-fn window_dispatch(dispatcher: &str, id: &str, mode: Option<&str>) {
-    dispatch(window_dispatch_command(dispatcher, id, mode), Capability::Windows.as_str());
-}
-
-fn move_window_to_workspace_command(id: &str, selector: &str) -> String {
-    let id = lua_escape(id);
-    format!(r#"hl.dsp.window.move({{ window = "address:{id}", workspace = {selector}, follow = false }})"#)
-}
-
-/// Strip `special:`; the unnamed `special` passes the empty string, which the dispatcher reads as
-/// the unnamed one. The dispatcher adds the prefix, so a full name would become
-/// `special:special:term`.
-fn toggle_special_command(name: &str) -> String {
-    format!("hl.dsp.workspace.toggle_special(\"{}\")", lua_escape(special_argument(name)))
-}
-
-fn special_argument(name: &str) -> &str {
-    name.strip_prefix("special:").unwrap_or(if name == "special" { "" } else { name })
-}
-
-/// The command is Lua source now, and a quote in a name -- from a config or the compositor's own
-/// list -- would close the string and run the rest. `\\ddd` is padded to three digits: Lua reads up
-/// to three, so an unpadded escape swallows a following digit.
-fn lua_escape(name: &str) -> String {
-    name.chars()
-        .map(|c| match c {
-            '\\' => "\\\\".to_string(),
-            '"' => "\\\"".to_string(),
-            c if c.is_ascii_control() => format!("\\{:03}", c as u32),
-            c => c.to_string(),
-        })
-        .collect()
-}
-
-/// `$HYPRLAND_INSTANCE_SIGNATURE`, or `None` when it is unset or empty.
-///
-/// [`super::detect_compositor`] probes with `var_os`, which accepts bytes `var` rejects, so a session
-/// detected as Hyprland can still have no usable signature. An empty one builds
-/// `$XDG_RUNTIME_DIR/hypr//.socket.sock`, which resolves and never connects.
-fn hyprland_signature() -> Option<String> {
-    std::env::var("HYPRLAND_INSTANCE_SIGNATURE").ok().filter(|signature| !signature.is_empty())
-}
-
-/// A socket in Hyprland's per-instance directory,
-/// `$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/`. `"socket2.sock"` pushes
-/// newline-terminated `event>>payload` lines; `"socket.sock"` answers one plain-text command per
-/// connection (`j/workspaces` for JSON, `dispatch ...` for a write).
-fn hyprland_socket_path(signature: &str, name: &str) -> PathBuf {
-    let runtime_dir = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/tmp".to_string());
-    hyprland_socket_path_in(&runtime_dir, signature, name)
-}
-
-/// The `join` half of [`hyprland_socket_path`], split from `$XDG_RUNTIME_DIR` lookup so tests avoid
-/// `set_var`. `setenv` rewrites process-wide `environ` and races every concurrent `getenv` in the
-/// test binary, even for unrelated variables.
-fn hyprland_socket_path_in(runtime_dir: &str, signature: &str, name: &str) -> PathBuf {
-    PathBuf::from(runtime_dir).join("hypr").join(signature).join(name)
-}
-
-/// One `.socket.sock` command. Hyprland answers once per connection and closes it: `j/<what>`
-/// returns the `hyprctl -j` JSON, a write returns `ok` or the reason it refused (ADR-0118).
-pub(super) fn hyprland_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
-    let mut stream = connect(socket_path)?;
-    stream.write_all(command.as_bytes())?;
-    let mut reply = String::new();
-    stream.read_to_string(&mut reply)?;
-    Ok(reply)
-}
-
-/// A write and its reply check, blocking; `capability` prefixes the log line. An unread reply
-/// makes a refusal silent: a bad device, an index out of range.
-fn hyprland_command(socket_path: &Path, command: &str, capability: &str) {
-    match hyprland_request(socket_path, command) {
-        Ok(reply) if reply.trim() == "ok" => {
-            debug!(2; "{capability}: Hyprland command `{command}` succeeded");
-        }
-        Ok(reply) => debug!("{capability}: Hyprland refused `{command}`: {}", reply.trim()),
-        Err(err) => debug!("{capability}: Hyprland `{command}` request failed: {err}"),
-    }
-}
-
-impl LayoutSink {
-    /// One `j/devices` read, on Hyprland's `activelayout` event and once at reader start.
-    fn read_hyprland(&self, socket_path: &Path) {
-        let reply = match hyprland_request(socket_path, "j/devices") {
-            Ok(reply) => reply,
-            Err(err) => return debug!("Hyprland `devices` request failed; layout not updated this round: {err}"),
-        };
-        let Some(keyboard) = parse_hyprland_devices(&reply) else {
-            return debug!("Hyprland `devices` reply held no usable keyboard entry; layout not updated this round");
-        };
-        self.apply_hyprland(keyboard);
-    }
-
-    fn apply_hyprland(&self, keyboard: HyprlandKeyboard) {
-        let count = keyboard.layout.split(',').filter(|s| !s.is_empty()).count() as u32;
-        self.write(keyboard.active_keymap, keyboard.active_layout_index, count);
-    }
-}
-
-/// Needed fields from `j/devices`'s `keyboards` entries; comma-separated `layout` only supplies the
-/// count. `main` is Hyprland's `m_active`, reassigned on every key event, so it is the keyboard
-/// being typed on, media and power-button nodes included. That is Hyprland's own answer and is not
-/// narrowed here.
-#[derive(Debug, Clone, Deserialize)]
-struct HyprlandKeyboard {
-    active_keymap: String,
-    layout: String,
-    #[serde(default, deserialize_with = "layout_index")]
-    active_layout_index: u32,
-    #[serde(default)]
-    main: bool,
-}
-
-/// `0` for an absent, null or out-of-range `active_layout_index`. `#[serde(default)]` covers only
-/// an absent key, and `parse_hyprland_devices` drops an entry that fails to deserialize, so one bad
-/// value costs the whole layout rather than one field. Same tolerance as `fullscreen_mode`.
-fn layout_index<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32, D::Error> {
-    Ok(serde_json::Value::deserialize(deserializer)?.as_u64().and_then(|index| u32::try_from(index).ok()).unwrap_or(0))
-}
-
-fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
-    let root: serde_json::Value = serde_json::from_str(json).ok()?;
-    let keyboards = root.get("keyboards")?.as_array()?;
-    // `"none"`/`"error"` is what Hyprland reports for a device xkb resolved no layout for, which a
-    // `wtype` virtual keyboard is while it holds `main`. Either draws as the layout name.
-    let parsed: Vec<HyprlandKeyboard> = keyboards
-        .iter()
-        .filter_map(|keyboard| HyprlandKeyboard::deserialize(keyboard).ok())
-        .filter(|k| !matches!(k.active_keymap.as_str(), "none" | "error"))
-        .collect();
-    parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
-}
-
-/// Hyprland over its two instance-directory sockets.
-pub struct Hyprland;
-
-impl Compositor for Hyprland {
-    /// Connects to the event socket before the first state read, so an intervening change remains a
-    /// line to process. One OS thread then re-reads once per burst with a trigger until socket end or
-    /// no listener. Also drives `mantle.windows` from the same reads, and `keyboard`'s layout.
-    fn spawn_reader(
-        &self,
-        mut publisher: StatePublisher,
-        mut windows_publisher: WindowsPublisher,
-        keyboard: LayoutSink,
-    ) {
-        let Some(signature) = hyprland_signature() else {
-            return debug!(
-                "HYPRLAND_INSTANCE_SIGNATURE is unset or empty; workspace and window reporting disabled for this run"
-            );
-        };
-        let events_path = hyprland_socket_path(&signature, ".socket2.sock");
-        let command_path = hyprland_socket_path(&signature, ".socket.sock");
-        let stream = match UnixStream::connect(&events_path) {
-            Ok(stream) => stream,
-            Err(err) => {
-                error!(
-                    "failed to connect to Hyprland's event socket at {}; workspace and window reporting disabled for this run: {err}",
-                    events_path.display()
-                );
-                return;
-            }
-        };
-
-        macro_rules! publish {
-            ($rows:expr, $focused:expr, $special:expr, $windows:expr) => {
-                let workspaces_alive = publisher.publish($rows, $focused, $special, None);
-                let windows_alive = windows_publisher.publish($windows);
-                if !workspaces_alive && !windows_alive {
-                    return;
-                }
-            };
-        }
-
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            keyboard.read_hyprland(&command_path);
-            let mut last = read_state(&command_path);
-            let mut urgent = HashSet::new();
-            loop {
-                if let Some((rows, focused, special, windows)) = &last {
-                    publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
-                }
-                let burst = match read_burst(&mut reader) {
-                    Ok(Some(burst)) => burst,
-                    Ok(None) => break,
-                    Err(_) => {
-                        error!("Hyprland event socket read failed; workspaces and windows will no longer update");
-                        return;
-                    }
-                };
-                if burst.layout {
-                    keyboard.read_hyprland(&command_path);
-                }
-                urgent.extend(burst.urgent);
-                // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
-                if burst.reread {
-                    let Some(mut state) = read_state(&command_path) else { continue };
-                    mark_urgent(&mut state, &mut urgent);
-                    last = Some(state);
-                } else if let Some(state) = &mut last {
-                    burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
-                }
-            }
-            error!("Hyprland event socket closed; workspaces and windows will no longer update");
-        });
-    }
-
-    /// `workspaces:focus(id)`; a new number creates the empty slot a strip can pad into.
-    fn focus_workspace(&self, id: &str) {
-        dispatch_to_workspace(id, Capability::Workspaces.as_str(), focus_command);
-    }
-
-    fn focus_window(&self, id: &str) {
-        window_dispatch("hl.dsp.focus", id, None);
-    }
-
-    fn close_window(&self, id: &str) {
-        window_dispatch("hl.dsp.window.close", id, None);
-    }
-
-    /// Hyprland only toggles, so a write is sent only on a real change.
-    fn set_fullscreen(&self, id: &str, fullscreen: bool, current: Option<bool>) {
-        if toggle_needed(current, fullscreen) {
-            window_dispatch("hl.dsp.window.fullscreen", id, None);
-        }
-    }
-
-    /// Same dispatcher as fullscreen, with `mode = "maximized"`.
-    fn set_maximized(&self, id: &str, maximized: bool, current: Option<bool>) {
-        if toggle_needed(current, maximized) {
-            window_dispatch("hl.dsp.window.fullscreen", id, Some("maximized"));
-        }
-    }
-
-    fn move_window(&self, id: &str, workspace_id: &str) {
-        let id = id.to_string();
-        dispatch_to_workspace(workspace_id, Capability::Windows.as_str(), move |selector| {
-            move_window_to_workspace_command(&id, selector)
-        });
-    }
-
-    /// `workspaces:toggle_special(name)`.
-    fn toggle_special(&self, name: &str) {
-        dispatch(toggle_special_command(name), Capability::Workspaces.as_str());
-    }
-
-    /// `switchxkblayout main <index>` over `.socket.sock`. `main` is also Hyprland's device target
-    /// for that keyboard, so no device name is tracked here.
-    fn switch_layout(&self, index: usize) {
-        on_command_socket(move |path| hyprland_command(path, &format!("switchxkblayout main {index}"), "keyboard"));
-    }
-}
+pub(super) type State = (Vec<WorkspaceRow>, Option<FocusedWindow>, Vec<SpecialWorkspace>, Vec<WindowEntry>);
 
 #[cfg(test)]
 mod tests {
@@ -770,7 +388,6 @@ mod tests {
             "focusHistoryID": focus_history_id, "inhibitingIdle": false
         })
     }
-
     #[test]
     fn workspace_rows_carry_every_field_the_reduction_reads() {
         let rows = workspace_rows(
@@ -1072,147 +689,5 @@ mod tests {
         assert_eq!(specials[1].app_id, None);
         assert_eq!(specials[1].window_id, None);
         assert_eq!(specials[1].shown_on, None, "exists but is hidden");
-    }
-
-    #[test]
-    fn the_toggle_argument_is_the_name_without_its_prefix_and_nothing_for_the_unnamed_special() {
-        assert_eq!(special_argument("special:term"), "term");
-        assert_eq!(special_argument("special"), "");
-        assert_eq!(special_argument("term"), "term", "a config passing the short name is not punished");
-    }
-
-    /// 0.56 reads the command as Lua, so both writes are checked as source. Captured from a live
-    /// 0.56.2 socket, which answers `ok` to each of these and a parse error to what they replaced.
-    #[test]
-    fn both_writes_are_the_lua_dispatchers_0_56_accepts() {
-        assert_eq!(focus_command("3"), "hl.dsp.focus({ workspace = 3 })");
-        assert_eq!(focus_command(r#""name:chat""#), r#"hl.dsp.focus({ workspace = "name:chat" })"#);
-        assert_eq!(toggle_special_command("special:term"), r#"hl.dsp.workspace.toggle_special("term")"#);
-        assert_eq!(
-            toggle_special_command("special"),
-            r#"hl.dsp.workspace.toggle_special("")"#,
-            "the unnamed special is the empty argument, not a missing one"
-        );
-        assert_eq!(
-            toggle_special_command(r#"special:a") hl.dsp.exit(--"#),
-            r#"hl.dsp.workspace.toggle_special("a\") hl.dsp.exit(--")"#,
-            "a quote in a name stays inside the string"
-        );
-        assert_eq!(
-            toggle_special_command("special:a\n5"),
-            r#"hl.dsp.workspace.toggle_special("a\0105")"#,
-            "a control byte is escaped, padded so the digit after it stays a digit"
-        );
-        assert_eq!(
-            toggle_special_command("special:é"),
-            r#"hl.dsp.workspace.toggle_special("é")"#,
-            "a non-ASCII name reaches the socket as itself, not as its bytes read as codepoints"
-        );
-    }
-
-    #[test]
-    fn a_named_workspace_is_addressed_by_its_escaped_name() {
-        assert_eq!(named_selector("chat"), r#""name:chat""#);
-        assert_eq!(named_selector(r#"a"b"#), r#""name:a\"b""#);
-    }
-
-    /// `focuswindow`/`closewindow` as top-level dispatchers do not exist ("attempt to call a nil
-    /// value"); windows go through `hl.dsp.focus`/`hl.dsp.window.*` like every other 0.56 write.
-    #[test]
-    fn window_writes_are_the_lua_dispatchers_0_56_actually_has() {
-        assert_eq!(
-            window_dispatch_command("hl.dsp.focus", "0xa11ce", None),
-            r#"hl.dsp.focus({ window = "address:0xa11ce" })"#
-        );
-        assert_eq!(
-            window_dispatch_command("hl.dsp.window.close", "0xa11ce", None),
-            r#"hl.dsp.window.close({ window = "address:0xa11ce" })"#
-        );
-        assert_eq!(
-            window_dispatch_command("hl.dsp.window.fullscreen", "0xa11ce", None),
-            r#"hl.dsp.window.fullscreen({ window = "address:0xa11ce" })"#
-        );
-        assert_eq!(
-            window_dispatch_command("hl.dsp.window.fullscreen", "0xa11ce", Some("maximized")),
-            r#"hl.dsp.window.fullscreen({ window = "address:0xa11ce", mode = "maximized" })"#
-        );
-        assert_eq!(
-            move_window_to_workspace_command("0x55d1c0a3b2c0", "3"),
-            r#"hl.dsp.window.move({ window = "address:0x55d1c0a3b2c0", workspace = 3, follow = false })"#
-        );
-        assert_eq!(
-            move_window_to_workspace_command(r#"0x"bad"#, "1"),
-            r#"hl.dsp.window.move({ window = "address:0x\"bad", workspace = 1, follow = false })"#
-        );
-    }
-
-    #[test]
-    fn hyprland_socket_path_joins_runtime_dir_hypr_signature_and_name() {
-        assert_eq!(
-            hyprland_socket_path_in("/run/user/1000", "abc123", "socket2.sock"),
-            PathBuf::from("/run/user/1000/hypr/abc123/socket2.sock")
-        );
-    }
-
-    #[test]
-    fn parse_hyprland_devices_reads_the_main_keyboard_and_gives_up_on_nothing_usable() {
-        // `main` moves to whichever keyboard was typed on last, so array order names the wrong one.
-        let two = r#"{"keyboards":[
-            {"active_keymap":"English (US)","layout":"us,ara","active_layout_index":0,"main":false},
-            {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}
-        ]}"#;
-        let one = r#"{"mice":[],"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1}],"tablets":[]}"#;
-        let omitted = r#"{"keyboards":[{"active_keymap":"English (US)","layout":"us"}]}"#;
-        for (case, json, want) in [
-            ("first entry", one, Some(("Arabic (Egypt)", 1))),
-            ("main over array order", two, Some(("Arabic (Egypt)", 1))),
-            ("index omitted defaults to 0", omitted, Some(("English (US)", 0))),
-            ("empty keyboards", r#"{"keyboards":[]}"#, None),
-            ("malformed json", "not json", None),
-        ] {
-            let got = parse_hyprland_devices(json);
-            let got = got.as_ref().map(|k| (k.active_keymap.as_str(), k.active_layout_index));
-            assert_eq!(got, want, "{case}");
-        }
-    }
-
-    #[test]
-    fn apply_hyprland_layout_counts_the_configured_layouts_and_keeps_the_reported_index() {
-        // Regression: the index was pinned to `0`, so Lua could not cycle from the reported value.
-        let json = r#"{"keyboards":[{"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":true}]}"#;
-        let sink = LayoutSink::default();
-        sink.apply_hyprland(parse_hyprland_devices(json).expect("should parse"));
-        let guard = sink.state.lock().unwrap();
-        assert_eq!(
-            (guard.active_layout.as_str(), guard.active_layout_index, guard.layout_count),
-            ("Arabic (Egypt)", 1, 2)
-        );
-    }
-
-    #[test]
-    fn a_keyboard_entry_survives_an_index_hyprland_sends_in_an_unexpected_shape() {
-        // `#[serde(default)]` covers an absent key only; a null or negative value must not fail
-        // the whole entry and leave `KeyboardState` with no layout at all.
-        for index in ["null", "-1", "1.5", "\"1\""] {
-            let json = format!(
-                r#"{{"keyboards":[{{"active_keymap":"English (US)","layout":"us,ara","active_layout_index":{index}}}]}}"#
-            );
-            let keyboard = parse_hyprland_devices(&json).unwrap_or_else(|| panic!("{index} dropped the entry"));
-            assert_eq!(keyboard.active_layout_index, 0, "{index}");
-            assert_eq!(keyboard.active_keymap, "English (US)", "{index}");
-        }
-    }
-
-    #[test]
-    fn parse_hyprland_devices_skips_a_keyboard_whose_keymap_hyprland_left_unresolved() {
-        // `wtype` registers a virtual keyboard that takes `main` for the keystrokes it injects.
-        let json = r#"{"keyboards":[
-            {"active_keymap":"Arabic (Egypt)","layout":"us,ara","active_layout_index":1,"main":false},
-            {"active_keymap":"none","layout":"us,ara","active_layout_index":0,"main":true}
-        ]}"#;
-        assert_eq!(parse_hyprland_devices(json).expect("should parse").active_keymap, "Arabic (Egypt)");
-
-        let json = r#"{"keyboards":[{"active_keymap":"error","layout":"us,ara","main":true}]}"#;
-        assert!(parse_hyprland_devices(json).is_none(), "the last good layout stands instead");
     }
 }

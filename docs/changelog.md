@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: `mantle set`/`toggle` read a joined `--pid=N` or `--profile=N` after the state name as an option; it was stored as the value.
 - Fixed: a notification `image-path` or `app_icon` given as a `file://` URL with escapes (`%20`) or a `localhost` host resolves; it was refused.
 - Fixed: a tray item that leaves the bus while the tray starts is dropped; it could stay listed.
 

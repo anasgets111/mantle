@@ -1,6 +1,7 @@
 //! Routes `mantle call` answers back to the control client that asked (ADR-0197).
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::sync::{Arc, Mutex};
 
 use tokio::sync::mpsc;
@@ -55,39 +56,36 @@ impl CallRoutes {
     }
 
     /// Answers the caller and forgets it. Refuses a result from a generation that was not asked.
-    pub fn answer(&self, from_generation: u32, result: &shared::CallResult) -> Result<(), String> {
+    pub fn answer(&self, from_generation: u32, result: shared::CallResult) -> Result<(), String> {
         let entry = {
             let mut pending = self.0.lock().expect("call routes mutex poisoned");
-            let Some(entry) = pending.waiting.remove(&result.id) else {
+            let Entry::Occupied(slot) = pending.waiting.entry(result.id) else {
                 return Err(format!("no caller is waiting on call {}", result.id));
             };
-            match entry.dispatched_to {
+            match slot.get().dispatched_to {
                 // Not yet forwarded, so no generation can have been asked. Refused without removing
                 // the route: the call it belongs to has not been made, and consuming it here would
                 // strand the caller that is about to make it.
-                None => {
-                    pending.waiting.insert(result.id, entry);
-                    return Err(format!("call {} has not been dispatched yet", result.id));
-                }
+                None => return Err(format!("call {} has not been dispatched yet", result.id)),
                 Some(asked) if asked != from_generation => {
-                    pending.waiting.insert(result.id, entry);
                     return Err(format!(
                         "call {} was dispatched to generation {asked}, so generation {from_generation} cannot answer it",
                         result.id
                     ));
                 }
-                Some(_) => entry,
+                Some(_) => slot.remove(),
             }
         };
-        let payload = serde_json::to_vec(&shared::SupervisorFrame::CallResult(result.clone()))
-            .map_err(|err| format!("could not encode the answer to call {}: {err}", result.id))?;
-        entry.reply.try_send(payload).map_err(|err| format!("the caller of call {} is gone: {err}", result.id))
+        let id = result.id;
+        let payload = serde_json::to_vec(&shared::SupervisorFrame::CallResult(result))
+            .map_err(|err| format!("could not encode the answer to call {id}: {err}"))?;
+        entry.reply.try_send(payload).map_err(|err| format!("the caller of call {id} is gone: {err}"))
     }
 
     /// Answers the caller with a failure instead of a generation's result, for a call that never left.
     pub fn fail(&self, id: u64, generation_id: u32, reason: &str) {
         let result = shared::CallResult { id, outcome: shared::CallOutcome::Failed(reason.to_string()) };
-        let _ = self.answer(generation_id, &result);
+        let _ = self.answer(generation_id, result);
     }
 
     /// Whether this id still has a caller waiting, so a connection can forget the ones answered.
@@ -136,7 +134,7 @@ mod tests {
         let id = routes.open(tx).expect("the first call fits");
         routes.dispatched(id, 7);
 
-        routes.answer(7, &result(id)).expect("the generation that was asked may answer");
+        routes.answer(7, result(id)).expect("the generation that was asked may answer");
         let payload = rx.try_recv().expect("the caller is waiting on exactly this");
         let frame: SupervisorFrame = serde_json::from_slice(&payload).unwrap();
         assert_eq!(frame, SupervisorFrame::CallResult(result(id)));
@@ -150,7 +148,7 @@ mod tests {
         routes.dispatched(id, 7);
 
         // A respawn mid-call can leave the old generation's reply in flight.
-        let refusal = routes.answer(8, &result(id)).expect_err("a stale generation must be refused");
+        let refusal = routes.answer(8, result(id)).expect_err("a stale generation must be refused");
         assert!(refusal.contains('7') && refusal.contains('8'), "the refusal names both: {refusal}");
         assert!(rx.try_recv().is_err(), "nothing may reach the caller");
     }
@@ -163,21 +161,21 @@ mod tests {
 
         // The id exists but `main` has not forwarded it yet, so no generation was asked. Consuming
         // it here would strand the caller whose call is still on its way.
-        assert!(routes.answer(7, &result(id)).is_err());
+        assert!(routes.answer(7, result(id)).is_err());
         assert!(rx.try_recv().is_err());
         routes.dispatched(id, 7);
-        routes.answer(7, &result(id)).expect("the route survived the refusal");
+        routes.answer(7, result(id)).expect("the route survived the refusal");
         assert!(rx.try_recv().is_ok());
     }
 
     #[tokio::test]
     async fn an_id_nobody_waits_on_or_a_caller_that_hung_up_is_refused_rather_than_panicking() {
         let routes = CallRoutes::default();
-        assert!(routes.answer(7, &result(404)).is_err());
+        assert!(routes.answer(7, result(404)).is_err());
         let (tx, _rx) = mpsc::channel::<Vec<u8>>(4);
         let id = routes.open(tx).unwrap();
         routes.close(&[id]);
-        assert!(routes.answer(7, &result(id)).is_err(), "a closed route must not still accept an answer");
+        assert!(routes.answer(7, result(id)).is_err(), "a closed route must not still accept an answer");
     }
 
     #[tokio::test]

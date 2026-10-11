@@ -112,14 +112,7 @@ pub(super) fn publish<S: PartialEq>(state: &Mutex<S>, events: &UnboundedSender<(
 /// rule lives once: notifications for `Notify`'s properties and tray for the `StatusNotifierItem`
 /// and DBusMenu text an arbitrary application supplies.
 pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
-    if input.len() <= max_bytes {
-        return input.to_string();
-    }
-    let mut end = max_bytes;
-    while end > 0 && !input.is_char_boundary(end) {
-        end -= 1;
-    }
-    input[..end].to_string()
+    input[..input.floor_char_boundary(max_bytes)].to_string()
 }
 
 /// The next agent prompt's request ID, unique across agents.

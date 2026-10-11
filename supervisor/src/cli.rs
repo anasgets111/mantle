@@ -165,16 +165,30 @@ fn verbose_count(arg: &str) -> Option<u8> {
     (!vees.is_empty() && vees.bytes().all(|b| b == b'v')).then_some(vees.len() as u8)
 }
 
+/// Every option `parse` handles: exact spellings, then `--name=` prefixes. A test feeds each to
+/// `parse`, so a flag added there but missing here fails.
+const FLAGS: &[&str] = &[
+    "-c",
+    "--config",
+    "-d",
+    "--detach",
+    "--detached",
+    "--force",
+    "-f",
+    "--follow",
+    "-V",
+    "--version",
+    "-h",
+    "--help",
+    "--profile",
+    "--pid",
+];
+const FLAG_PREFIXES: &[&str] = &["--config=", "--pid=", "--profile="];
+
 /// Whether `arg` is one of the options this parser knows, rather than a value that merely begins
 /// with a dash. `-1` is a `set` value; `-c` is an option even where a value is expected.
 fn is_option(arg: &str) -> bool {
-    matches!(
-        arg,
-        "-c" | "--config" | "-d" | "--detach" | "--force" | "-f" | "--follow" | "-V" | "--version" | "-h" | "--help"
-    ) || arg == "--pid"
-        || arg.starts_with("--config=")
-        || arg.starts_with("--profile")
-        || verbose_count(arg).is_some()
+    FLAGS.contains(&arg) || FLAG_PREFIXES.iter().any(|p| arg.starts_with(p)) || verbose_count(arg).is_some()
 }
 
 /// JSON when `raw` parses, a string otherwise, so bare words (keybind values) need no extra quotes.
@@ -404,6 +418,31 @@ mod tests {
                 "{args:?}"
             );
             assert_eq!(parsed.config_dir.as_deref(), Some(std::path::Path::new(path)), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn joined_flags_after_a_state_name_are_options_and_a_dash_number_is_a_value() {
+        use shared::{SetState, StateWrite};
+        let parsed = parse_args(&["toggle", "open", "--pid=5"]).unwrap();
+        assert_eq!(parsed.pid, Some(5));
+        assert_eq!(parsed.command, Command::SetState(SetState { name: "open".into(), write: StateWrite::Toggle }));
+        let parsed = parse_args(&["set", "x", "-1"]).unwrap();
+        assert_eq!(
+            parsed.command,
+            Command::SetState(SetState { name: "x".into(), write: StateWrite::Set(serde_json::json!(-1)) })
+        );
+    }
+
+    #[test]
+    fn every_listed_flag_is_one_parse_recognizes() {
+        for flag in FLAGS.iter().chain(&["-v", "-vv", "--verbose"]) {
+            let result = parse_args(&[flag]);
+            assert!(!matches!(&result, Err(e) if e.starts_with("unknown argument")), "{flag}");
+        }
+        for prefix in FLAG_PREFIXES {
+            let flag = format!("{prefix}5");
+            assert!(!matches!(parse_args(&[&flag]), Err(e) if e.starts_with("unknown argument")), "{flag}");
         }
     }
 

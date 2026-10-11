@@ -27,9 +27,14 @@ async fn wait_or_classify(child: &mut Child, grace: Duration) -> io::Result<Opti
 
 /// Sends `signal` to `pgid`; `ESRCH` is success because the group may die before `kill(2)` lands.
 pub(crate) fn signal_group_best_effort(pgid: Pid, signal: Signal) -> io::Result<()> {
-    match killpg(pgid, signal) {
-        Ok(()) | Err(Errno::ESRCH) => Ok(()),
-        Err(err) => Err(err.into()),
+    gone_is_ok(killpg(pgid, signal)).map_err(Into::into)
+}
+
+/// Maps a `kill(2)`/`killpg(2)` result so `ESRCH` (target already gone) is success.
+pub(crate) fn gone_is_ok(result: Result<(), Errno>) -> Result<(), Errno> {
+    match result {
+        Err(Errno::ESRCH) => Ok(()),
+        other => other,
     }
 }
 

@@ -105,9 +105,8 @@ const STOP_WAIT: Duration = Duration::from_secs(10);
 /// Supervisor exits, so a caller may start the next shell as soon as this returns.
 pub fn stop(instance: &Instance) -> Result<(), Box<dyn std::error::Error>> {
     let pid = nix::unistd::Pid::from_raw(instance.pid as i32);
-    match nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM) {
-        Ok(()) | Err(nix::errno::Errno::ESRCH) => {}
-        Err(err) => return Err(format!("cannot signal pid {}: {err}", instance.pid).into()),
+    if let Err(err) = crate::process::gone_is_ok(nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM)) {
+        return Err(format!("cannot signal pid {}: {err}", instance.pid).into());
     }
     let deadline = std::time::Instant::now() + STOP_WAIT;
     while is_live(&instance.dir) {

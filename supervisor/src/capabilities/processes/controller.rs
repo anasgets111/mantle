@@ -23,11 +23,9 @@
 pub use shared::state::processes::{ProcessesState, SessionProcess};
 
 use std::collections::HashMap;
-use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
-use nix::errno::Errno;
 use nix::sys::signal::{Signal, kill};
 use nix::unistd::Pid;
 use shared::{debug, error, warn};
@@ -210,7 +208,7 @@ async fn supervise(
             request = requests.recv() => match request {
                 Some(Request::Signal(signal)) => {
                     // The process, not the group: a pause belongs to the program that was named.
-                    if let Err(err) = kill_best_effort(pid, signal) {
+                    if let Err(err) = crate::process::gone_is_ok(kill(pid, signal)) {
                         warn!("{name:?} could not be sent {signal}: {err}");
                     }
                 }
@@ -250,15 +248,6 @@ async fn supervise(
 fn declared_stop_signal(entries: &Entries, name: &str) -> Signal {
     let guard = entries.lock().expect("processes entries mutex poisoned");
     guard.get(name).map_or(Signal::SIGTERM, |entry| entry.stop_signal)
-}
-
-/// `ESRCH` is success here as in `process::signal_group_best_effort`: the target may die between
-/// the check and the signal.
-fn kill_best_effort(pid: Pid, signal: Signal) -> io::Result<()> {
-    match kill(pid, signal) {
-        Ok(()) | Err(Errno::ESRCH) => Ok(()),
-        Err(err) => Err(err.into()),
-    }
 }
 
 #[cfg(test)]

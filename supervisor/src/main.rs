@@ -32,7 +32,7 @@ use capabilities::Capabilities;
 use capabilities::lock::{self, LockController};
 use generation::{Renderer, renderer_binary_path};
 use polkit::PolkitAgent;
-use shared::{Capability, RendererFrame, SupervisorFrame, Zeroize, debug, info, notice, warn};
+use shared::{Capability, RendererFrame, SupervisorFrame, debug, notice, warn};
 use socket::send_frame_logged;
 use supervisor::Supervisor;
 
@@ -431,84 +431,11 @@ async fn run_supervisor(
                 // caller's deadline expiring rather than a wrong answer, which is the safe way
                 // round when a Renderer was replaced mid-call.
                 RendererFrame::CallResult(result) => {
-                    if let Err(why) = call_routes.answer(inbound.generation_id, &result) {
+                    if let Err(why) = call_routes.answer(inbound.generation_id, result) {
                         warn!("dropped a `mantle call` answer: {why}");
                     }
                 }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Polkit && submit.action == "authenticate" && submit.name.is_none() => {
-                    // ADR-0028, ADR-0114. Before the catch-all arm because matches are ordered.
-                    // `mem::take` gives plaintext to the worker, which zeroizes every return path.
-                    let secret = std::mem::take(&mut submit.secret);
-                    supervisor.begin_polkit_authentication(secret, submit.generation_id);
-                }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Network && submit.action == "connect" && submit.name.is_none() => {
-                    // ADR-0029: empty secret means open network; non-empty is the WPA-PSK password.
-                    // Before the catch-all for the same ordering reason as polkit. `Zeroizing`
-                    // scrubs it on every path, a dropped request included.
-                    let secret = shared::Zeroizing::new(std::mem::take(&mut submit.secret));
-                    supervisor.capabilities.connect_prompted(submit.generation_id, secret);
-                }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Network && submit.action == "vpn_secret" => {
-                    if let Some(target) = submit.name.take() {
-                        supervisor.capabilities.submit_vpn_secret(target, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
-                    }
-                }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Bluetooth && submit.action == "pair" => {
-                    if let Some(target) = submit.name.take() {
-                        supervisor.capabilities.submit_pairing(target, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
-                    }
-                }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Lock && submit.action == "authenticate" && submit.name.is_none() => {
-                    // ADR-0042, ADR-0052: this arm and `pam_outcomes` are the only unlock path,
-                    // so `unlock_and_destroy` follows successful authentication at one call site.
-                    // It must precede the catch-all. Unlike polkit/network, no pending intent is
-                    // needed; the lock submission is complete.
-                    // `try_begin_authentication` rejects no-lock and concurrent submissions. Its
-                    // acquisition travels through the worker so `pam_outcomes` matches this lock.
-                    if let Some(acquisition) = supervisor.lock.try_begin_authentication() {
-                        // Pairs with `record_pam_outcome`'s answer. Without both, a worker that
-                        // never reports is indistinguishable from a submit that never arrived.
-                        info!("starting pam for lock acquisition {acquisition}");
-                        supervisor.push_lock_state();
-                        // `mem::take` gives plaintext to `run_authentication`, which zeroizes on
-                        // panic and shutdown cancellation too. Spawn instead of await: Enter is
-                        // unbounded and common, while pam_unix's ~2s failure delay would stall
-                        // LockReport, reload, and process reap. The Supervisor runs as the user.
-                        let secret = std::mem::take(&mut submit.secret);
-                        let outcome_tx = supervisor.pam_outcome_tx.clone();
-                        tokio::spawn(pam_worker::run_authentication(
-                            nix::unistd::Uid::current().as_raw(),
-                            shared::Zeroizing::new(secret),
-                            acquisition,
-                            outcome_tx,
-                        ));
-                    } else {
-                        debug!(
-                            "generation {}'s secure_submit(lock, authenticate) arrived with no lock held, or with an attempt already in flight; dropping",
-                            submit.generation_id
-                        );
-                        submit.secret.zeroize();
-                    }
-                }
-                RendererFrame::SecureSubmit(mut submit) if submit.capability == Capability::Secrets && submit.action == "store" => {
-                    if let Some(name) = submit.name.take().filter(|name| shared::valid_secret_name(name)) {
-                        supervisor.capabilities.start(Capability::Secrets).await;
-                        supervisor.capabilities.store_secret(name, shared::Zeroizing::new(std::mem::take(&mut submit.secret)));
-                    }
-                }
-                RendererFrame::SecureSubmit(mut submit) => {
-                    // Channel-forward/log placeholder for other capability/actions (ADR-0015's
-                    // textfield/IPC half), none implemented yet. The length is deliberately absent:
-                    // a misaddressed password reaches this arm, and its length is the one thing
-                    // about it worth an attacker's time.
-                    debug!(
-                        "generation {}'s secure_submit received: capability={:?} action={:?}",
-                        submit.generation_id,
-                        submit.capability,
-                        submit.action
-                    );
-                    submit.secret.zeroize();
-                }
+                RendererFrame::SecureSubmit(submit) => supervisor.route_secure_submit(submit).await,
                 }
             },
             else => break,

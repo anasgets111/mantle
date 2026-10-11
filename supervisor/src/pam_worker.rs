@@ -103,36 +103,16 @@ impl<R: std::io::Read, W: std::io::Write> ConversationAdapter for RelayConversat
     }
 }
 
-/// Blocking mirror of `shared::framing`'s wire format: nonstick's conversation callbacks are
-/// synchronous FFI, so a worker round trip cannot `.await`.
-fn write_frame(mut writer: impl std::io::Write, message: &shared::PamMessage) -> std::io::Result<()> {
+/// Blocking because nonstick's conversation callbacks are synchronous FFI.
+fn write_frame(writer: impl std::io::Write, message: &shared::PamMessage) -> std::io::Result<()> {
     let payload = serde_json::to_vec(message).map_err(std::io::Error::other)?;
-    if payload.len() > shared::framing::MAX_FRAME_LEN {
-        return Err(std::io::Error::other(format!("frame length {} exceeds the limit", payload.len())));
-    }
-    writer.write_all(&(payload.len() as u32).to_be_bytes())?;
-    writer.write_all(&payload)?;
-    writer.flush()
+    Ok(shared::framing::write_frame_blocking(writer, &payload)?)
 }
 
-/// [`write_frame`]'s read half. The payload buffer is `Zeroizing`, matching
-/// `shared::framing::read_frame`: only a `Response` ever carries a secret, but every frame is
-/// scrubbed alike rather than teaching this function which ones do.
-fn read_frame(mut reader: impl std::io::Read) -> std::io::Result<shared::PamMessage> {
-    use std::io::Read as _;
-    let mut len = [0u8; 4];
-    reader.read_exact(&mut len)?;
-    let len = u32::from_be_bytes(len) as usize;
-    if len > shared::framing::MAX_FRAME_LEN {
-        return Err(std::io::Error::other(format!("frame length {len} exceeds the limit")));
-    }
-    let mut payload = shared::Zeroizing::new(Vec::new());
-    if len <= shared::framing::SMALL_FRAME_LEN {
-        payload.resize(len, 0);
-        reader.read_exact(&mut payload)?;
-    } else if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
-        return Err(std::io::ErrorKind::UnexpectedEof.into());
-    }
+/// [`write_frame`]'s read half. The wire buffer is `Zeroizing`: only a `Response` carries a secret,
+/// but every frame is scrubbed alike.
+fn read_frame(reader: impl std::io::Read) -> std::io::Result<shared::PamMessage> {
+    let payload = shared::Zeroizing::new(shared::framing::read_frame_blocking(reader)?);
     serde_json::from_slice(&payload).map_err(std::io::Error::other)
 }
 
