@@ -13,6 +13,7 @@ version is 0.x, a minor release can break the Lua API.
 - Fixed: Tab on the only control, while it holds focus, reaches `on_key` instead of being swallowed.
 - Changed: Tab on a lone plain `textfield` that does not hold focus focuses it; it used to reach `on_key`.
 - Changed: Tab on the only control, while it holds focus, no longer shows the focus outline; the key reaches `on_key` instead.
+- Added: `on_key_release(key)` on any node hears a key going up whose press was offered to `on_key`, routed the same way; `key` is `{ name, text, modifiers }`. `mantle input key` now sends the release after the press. See [key handlers](guide/input.md#key-handlers).
 
 ## 0.7.0 - 2026-10-11
 

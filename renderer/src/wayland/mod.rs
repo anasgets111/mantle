@@ -65,7 +65,7 @@ mod idle_profile;
 mod input;
 #[cfg(test)]
 pub(crate) use input::apply_hover_write;
-pub(crate) use input::{DragPhase, Escape, KeyPress, MouseButton, SubmitKey};
+pub(crate) use input::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 mod layer;
 mod lock;
 mod main_loop;
@@ -232,6 +232,8 @@ pub struct App {
     repeat_info: Option<(std::time::Duration, std::time::Duration)>,
     /// The held key and when it next repeats.
     repeating: Option<(KeyEvent, std::time::Instant)>,
+    /// Keys pressed while Lua could hear them, held for `on_key_release`.
+    pressed_keys: Vec<KeyEvent>,
     /// Native, Lua-invisible keystroke buffer until Enter (ADR-0005/ADR-0009/ADR-0027). Its
     /// lifetime follows `focused_secure_submit`; destination changes zeroize it.
     secure_buffer: shared::SecureBuffer,

@@ -275,7 +275,7 @@ focus.
 | `click X Y [button]` | `move`, `press`, `release` |
 | `drag X1 Y1 X2 Y2 [button]` | `move` to the start, `press`, `move` to the end, `release`: an `on_drag` runs `"start"`, `"move"` and `"end"` |
 | `wheel X Y DY` | `DY` notches at `X`, `Y`, positive scrolling down. `on_wheel` gets the negated count, as for a real wheel |
-| `key <combo>` | One key press: `Return`, `Down`, `a`, or with modifiers, `ctrl+a`, `shift+Tab`. Only `ctrl` and `shift` are modifiers; names are xkb keysyms in any case. `on_key` sees `alt` and `super` as not held |
+| `key <combo>` | One key press and its release: `Return`, `Down`, `a`, or with modifiers, `ctrl+a`, `shift+Tab`. Only `ctrl` and `shift` are modifiers; names are xkb keysyms in any case. `on_key` sees `alt` and `super` as not held |
 | `type <text>` | The text as one commit, as an input method or a paste delivers it, so `max_length` and `on_change` apply. Fails when no `textfield` in that surface is focused, or the text is empty or holds a control character |
 
 `<surface>` is the id the config declares. A surface with an instance per output is named

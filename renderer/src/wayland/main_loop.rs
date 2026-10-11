@@ -127,6 +127,7 @@ pub fn run(
         held: Held::default(),
         repeat_info: None,
         repeating: None,
+        pressed_keys: Vec::new(),
         field_input_surfaces: Vec::new(),
         caret_blink: input::caret_blink(),
         caret_epoch: std::time::Instant::now(),

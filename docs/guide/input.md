@@ -254,7 +254,7 @@ return panel {
 
 ## Keyboard controls and accessibility
 
-A node with `on_click`, `submits_secure = true` or `on_key` becomes a keyboard control when it has a nonempty
+A node with `on_click`, `submits_secure = true`, `on_key` or `on_key_release` becomes a keyboard control when it has a nonempty
 `accessible_name`. The name is announced through AT-SPI. Give every `textfield` an
 `accessible_name` too; fields take focus through their existing callbacks or `secure_submit`.
 Keys reach controls only on the surface with keyboard focus. Panels use
@@ -319,6 +319,14 @@ Ctrl chords (Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste while a field takes t
 
 A key typed into a `secure_submit` field never reaches `on_key`, and while one is armed no `on_key` on
 that surface is called.
+
+`on_key_release(key)` hears a key going up, routed the same way: focused node first, then each
+ancestor, then the surface; `true` stops it. `key` is the press's `name` and `text` with the
+modifiers held at release, and no `repeat`. A release is heard only when its press was offered to
+`on_key`, whether or not a handler took it: never for a key a field typed or pasted with, a Tab that
+moved focus, an Enter or Space that activated a control, a key typed into an armed `secure_submit`
+field, a bare modifier, a key already held when the keyboard entered, or after the keyboard left. Like `on_key`, it makes a node
+focusable only with an `accessible_name`. `mantle input key` sends the release right after the press.
 
 ```lua
 local picked = state("picked", 1)

@@ -229,6 +229,8 @@ impl App {
         if gone {
             debug!(2; "the surface holding the focused secure_submit field is gone; dropping it and scrubbing its buffer");
             self.focus_secure_submit(None);
+            // No `leave` follows either, so no press held there may be released into what is left.
+            self.pressed_keys.clear();
         }
     }
 

@@ -13,13 +13,18 @@ pub(crate) struct KeyPress {
     text: Option<String>,
     /// `(ctrl, shift, alt, super)`.
     modifiers: [bool; 4],
-    repeat: bool,
+    /// `None` for a release, which has no `repeat` field.
+    repeat: Option<bool>,
 }
 
+/// One key release as `on_key_release` receives it: a [`KeyPress`] without `repeat`.
+pub(crate) struct KeyRelease(KeyPress);
+
 spelled!(KeyPress => "KeyPress");
+spelled!(KeyRelease => "KeyRelease");
 
 impl KeyPress {
-    pub(super) fn new(event: &KeyEvent, modifiers: [bool; 4], repeat: bool) -> Self {
+    pub(super) fn new(event: &KeyEvent, modifiers: [bool; 4], repeat: Option<bool>) -> Self {
         // Text a key types, never a control character: Return and Escape carry C0 text, and so does
         // any Ctrl chord.
         let text = event.utf8.as_deref().filter(|text| !text.is_empty() && !text.chars().any(char::is_control));
@@ -41,8 +46,16 @@ impl IntoLua for KeyPress {
         table.set("name", self.name)?;
         table.set("text", self.text)?;
         table.set("modifiers", crate::lua::marshal::modifiers_table(lua, self.modifiers)?)?;
-        table.set("repeat", self.repeat)?;
+        if let Some(repeat) = self.repeat {
+            table.set("repeat", repeat)?;
+        }
         Ok(Value::Table(table))
+    }
+}
+
+impl IntoLua for KeyRelease {
+    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
+        self.0.into_lua(lua)
     }
 }
 
@@ -52,17 +65,35 @@ pub(super) fn lua_hears(secure_armed: bool, keysym: Keysym) -> bool {
     !secure_armed && !keysym.is_modifier_key()
 }
 
-/// The `on_key` of every node on `path` (root first), innermost first. Empty when the path ends at
-/// a masked field, so a destination-bound field never has a handler above it called.
-pub(super) fn key_handlers(path: &[&layout::ResolvedNode]) -> Vec<Function> {
+/// Holds a press offered to `on_key` for its `on_key_release`, when Lua hears it: never a key typed
+/// into an armed secure field. A key a field, Tab or activation took is never offered, so its
+/// release stays silent too.
+pub(super) fn note_press(pressed: &mut Vec<KeyEvent>, event: &KeyEvent, secure_armed: bool) {
+    if lua_hears(secure_armed, event.keysym) {
+        pressed.push(event.clone());
+    }
+}
+
+/// The held press a release of `raw_code` ends; `None` for one never offered to `on_key`, or pressed
+/// before the keyboard entered (`leave` empties the list). A new press of the key drops a stale one.
+pub(super) fn take_press(pressed: &mut Vec<KeyEvent>, raw_code: u32) -> Option<KeyEvent> {
+    let at = pressed.iter().position(|held| held.raw_code == raw_code)?;
+    Some(pressed.swap_remove(at))
+}
+
+/// The `on_key` (or, for a `release`, `on_key_release`) of every node on `path` (root first),
+/// innermost first. Empty when the path ends at a masked field, so a destination-bound field never
+/// has a handler above it called.
+pub(super) fn key_handlers(path: &[&layout::ResolvedNode], release: bool) -> Vec<Function> {
     if matches!(path.last().and_then(|node| focused_field(&[node])), Some(FieldTarget::Masked { .. })) {
         return Vec::new();
     }
-    path.iter().rev().filter_map(|node| common::on_key.read(&node.properties).ok().flatten()).collect()
+    let field = if release { common::on_key_release } else { common::on_key };
+    path.iter().rev().filter_map(|node| field.read(&node.properties).ok().flatten()).collect()
 }
 
 /// Calls `handlers` in order until one returns `true`; whether one did.
-pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: KeyPress, what: &str) -> bool {
+pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: impl IntoLua, what: &str) -> bool {
     if handlers.is_empty() {
         return false;
     }
@@ -76,7 +107,7 @@ pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: KeyPress, what: &st
                 break;
             }
             Ok(_) => {}
-            Err(err) => crate::lua::warn_raised(handler, Err(err), format_args!("{what}: on_key")),
+            Err(err) => crate::lua::warn_raised(handler, Err(err), format_args!("{what}: key handler")),
         }
     }
     crate::lua::focus::end_callback(lua);
@@ -84,9 +115,9 @@ pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: KeyPress, what: &st
 }
 
 impl App {
-    /// The `on_key` handlers a key arriving now reaches: from the focused control, else the focused
-    /// surface's root alone.
-    pub(super) fn key_handlers_now(&self, event: &KeyEvent) -> (String, Vec<Function>) {
+    /// The `on_key` (or `on_key_release`) handlers a key arriving now reaches: from the focused
+    /// control, else the focused surface's root alone.
+    pub(super) fn key_handlers_now(&self, event: &KeyEvent, release: bool) -> (String, Vec<Function>) {
         let none = (String::new(), Vec::new());
         if !lua_hears(self.focused_secure_submit.is_some(), event.keysym) {
             return none;
@@ -101,15 +132,27 @@ impl App {
             Some(id) => layout::hit::path_to_node(tree, id).unwrap_or_default(),
             None => vec![tree],
         };
-        let handlers = key_handlers(&path);
+        let handlers = key_handlers(&path, release);
         (surface_id, handlers)
     }
 
     /// Bubbles `event` through `on_key`; whether a handler took it.
     pub(super) fn deliver_on_key(&mut self, event: &KeyEvent, repeat: bool) -> bool {
-        let (surface_id, handlers) = self.key_handlers_now(event);
+        if !repeat {
+            note_press(&mut self.pressed_keys, event, self.focused_secure_submit.is_some());
+        }
+        let (surface_id, handlers) = self.key_handlers_now(event, false);
         let modifiers = self.modifiers_held();
-        deliver(self.client.lua(), &handlers, KeyPress::new(event, modifiers, repeat), &surface_id)
+        deliver(self.client.lua(), &handlers, KeyPress::new(event, modifiers, Some(repeat)), &surface_id)
+    }
+
+    /// Bubbles the release of `press` through `on_key_release`, routed as `on_key` is now. `press`
+    /// supplies the name and text: an SCTK release carries no text, and its keysym follows modifiers
+    /// let go first.
+    pub(super) fn deliver_on_key_release(&mut self, press: &KeyEvent) {
+        let (surface_id, handlers) = self.key_handlers_now(press, true);
+        let key = KeyRelease(KeyPress::new(press, self.modifiers_held(), None));
+        deliver(self.client.lua(), &handlers, key, &surface_id);
     }
 
     /// `(ctrl, shift, alt, super)` on the seat's keyboard, for `on_key` and the pointer handlers.
@@ -142,7 +185,7 @@ mod tests {
     }
 
     fn press(keysym: Keysym, utf8: Option<&str>, modifiers: [bool; 4], repeat: bool) -> KeyPress {
-        KeyPress::new(&key(keysym, utf8), modifiers, repeat)
+        KeyPress::new(&key(keysym, utf8), modifiers, Some(repeat))
     }
 
     #[test]
@@ -175,16 +218,54 @@ mod tests {
         let (root, middle, leaf) = (node("root", "nil"), node("middle", "false"), node("leaf", "nil"));
         let bare = hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false);
         let path = [&root, &bare, &middle, &leaf];
-        let handlers = key_handlers(&path);
+        let handlers = key_handlers(&path, false);
         assert_eq!(handlers.len(), 3, "a node without on_key is skipped");
         assert!(!deliver(&lua, &handlers, press(Keysym::Down, None, [false; 4], false), "t"));
         assert_eq!(log(&lua), ["leaf:Down", "middle:Down", "root:Down"]);
 
         lua.globals().set("log", lua.create_table().unwrap()).unwrap();
         let stopper = node("middle", "true");
-        let handlers = key_handlers(&[&root, &stopper, &leaf]);
+        let handlers = key_handlers(&[&root, &stopper, &leaf], false);
         assert!(deliver(&lua, &handlers, press(Keysym::Down, None, [false; 4], false), "t"));
         assert_eq!(log(&lua), ["leaf:Down", "middle:Down"], "the surface never hears a handled key");
+    }
+
+    #[test]
+    fn a_release_bubbles_through_on_key_release_alone_without_repeat() {
+        let lua = lua_with_log();
+        let node = |field: &'static str, tag: &str, ret: &str| {
+            with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), field, handler(&lua, tag, ret))
+        };
+        let root = node("on_key_release", "root", "nil");
+        let stopper = node("on_key_release", "middle", "true");
+        let pressed_only = node("on_key", "leaf", "nil");
+        assert!(key_handlers(&[&root], false).is_empty(), "on_key never hears a release handler");
+        let handlers = key_handlers(&[&root, &stopper, &pressed_only], true);
+        let seen: Function = lua
+            .load("return function(k) return k['repeat'] == nil and k.text == 'a' and k.modifiers.ctrl end")
+            .eval()
+            .unwrap();
+        let release = || KeyRelease(KeyPress::new(&key(Keysym::a, Some("a")), [true, false, false, false], None));
+        assert!(deliver(&lua, &[seen], release(), "t"), "a release has no repeat field");
+        assert!(deliver(&lua, &handlers, release(), "t"));
+        assert_eq!(log(&lua), ["middle:a"], "true stops it before the surface");
+    }
+
+    #[test]
+    fn only_a_press_offered_to_on_key_has_its_release_delivered() {
+        let mut pressed = Vec::new();
+        let at = |raw_code| KeyEvent { raw_code, ..key(Keysym::a, Some("a")) };
+        note_press(&mut pressed, &at(30), false);
+        note_press(&mut pressed, &at(31), true);
+        note_press(&mut pressed, &KeyEvent { raw_code: 42, ..key(Keysym::Shift_L, None) }, false);
+        assert_eq!(take_press(&mut pressed, 30).map(|press| press.utf8), Some(Some("a".to_string())));
+        assert!(take_press(&mut pressed, 30).is_none(), "one release per press");
+        assert!(take_press(&mut pressed, 31).is_none(), "typed into an armed secure field");
+        assert!(take_press(&mut pressed, 42).is_none(), "a bare modifier");
+        assert!(
+            take_press(&mut pressed, 50).is_none(),
+            "taken by a field or Tab, or pressed before the keyboard entered"
+        );
     }
 
     #[test]
@@ -195,7 +276,7 @@ mod tests {
             "on_key",
             handler(&lua, "surface", "true"),
         );
-        assert!(deliver(&lua, &key_handlers(&[&root]), press(Keysym::F5, None, [false; 4], false), "t"));
+        assert!(deliver(&lua, &key_handlers(&[&root], false), press(Keysym::F5, None, [false; 4], false), "t"));
         assert_eq!(log(&lua), ["surface:F5"]);
     }
 
@@ -208,7 +289,7 @@ mod tests {
             "on_key",
             handler(&lua, "parent", "nil"),
         );
-        let handlers = key_handlers(&[&parent, &field]);
+        let handlers = key_handlers(&[&parent, &field], false);
         assert!(!deliver(&lua, &handlers, press(Keysym::Down, None, [false; 4], false), "t"));
         assert_eq!(log(&lua), ["field:Down", "parent:Down"]);
     }
@@ -226,7 +307,7 @@ mod tests {
             "on_key",
             handler(&lua, "root", "nil"),
         );
-        assert!(key_handlers(&[&root, &secret]).is_empty(), "no handler above a secure field hears its keys");
+        assert!(key_handlers(&[&root, &secret], false).is_empty(), "no handler above a secure field hears its keys");
         assert!(lua_hears(false, Keysym::a));
         assert!(!lua_hears(true, Keysym::a), "an armed secure field silences the surface");
         assert!(!lua_hears(false, Keysym::Shift_L), "a bare modifier is no key");
@@ -240,6 +321,14 @@ mod tests {
         assert!(!layout::scene::is_named_control(&keyed));
         let named = with_property(keyed, "accessible_name", Value::String(lua.create_string("Grid").unwrap()));
         assert!(layout::scene::is_named_control(&named));
+        let released = with_property(
+            hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false),
+            "on_key_release",
+            handler(&lua, "r", "nil"),
+        );
+        assert!(!layout::scene::is_named_control(&released));
+        let named = with_property(released, "accessible_name", Value::String(lua.create_string("Grid").unwrap()));
+        assert!(layout::scene::is_named_control(&named), "on_key_release alone makes a named node focusable");
     }
 
     #[test]

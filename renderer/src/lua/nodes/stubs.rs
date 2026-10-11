@@ -408,11 +408,14 @@ const SURFACES_HEADER: &str = r##"---@meta
 ---@field alt boolean
 ---@field super boolean
 
----A key press, as `on_key` receives it.
----@class KeyPress
+---A key release, as `on_key_release` receives it.
+---@class KeyRelease
 ---@field name string The xkb keysym name the active layout gives the key: `"a"`, `"A"` with Shift, `"Return"`, `"Escape"`, `"space"`, `"Down"`, `"Page_Down"`, `"F5"`, `"KP_Enter"`. Case matters; the names `mantle input key` accepts.
 ---@field text? string What the key types, `nil` for a key that types nothing, such as Return, an arrow or any Ctrl chord.
 ---@field modifiers Modifiers Held modifiers.
+
+---A key press, as `on_key` receives it.
+---@class KeyPress: KeyRelease
 ---@field repeat boolean `true` for an auto-repeat, not the first press.
 ---@alias PopupAnchor {POPUP_ANCHOR}
 "##;

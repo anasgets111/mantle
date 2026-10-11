@@ -72,6 +72,7 @@ pub(crate) fn is_named_control(node: &crate::layout::ResolvedNode) -> bool {
 
     common::accessible_name.read(&node.properties).is_ok_and(|name| !name.is_empty())
         && (common::on_key.read(&node.properties).ok().flatten().is_some()
+            || common::on_key_release.read(&node.properties).ok().flatten().is_some()
             || pointer::on_click.read(&node.properties).ok().flatten().is_some()
             || pointer::submits_secure.read(&node.properties).is_ok_and(|yes| yes))
 }

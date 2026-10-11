@@ -8,7 +8,7 @@ mod clipboard;
 mod inject;
 pub(in crate::wayland) mod keyboard;
 pub(super) use clipboard::{ClipboardSource, PendingPaste};
-pub(crate) use keyboard::{Escape, KeyPress, SubmitKey};
+pub(crate) use keyboard::{Escape, KeyPress, KeyRelease, SubmitKey};
 pub(crate) use pointer::{DragPhase, MouseButton};
 mod pointer;
 mod text_input;
@@ -107,6 +107,7 @@ impl SeatHandler for App {
                 // No keyboard means no leave; clear stale focus and its half-typed secret
                 // (ADR-0050 decision 4).
                 self.keyboard_focus = None;
+                self.pressed_keys.clear();
                 self.set_control_focus(None);
                 self.focus_secure_submit(None);
                 self.data_device = None;

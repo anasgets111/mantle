@@ -16,7 +16,7 @@ mod rows;
 mod secure;
 pub(in crate::wayland::input) use edit::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
-pub(crate) use on_key::KeyPress;
+pub(crate) use on_key::{KeyPress, KeyRelease};
 
 keywords! {
     /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
@@ -335,6 +335,7 @@ impl KeyboardHandler for App {
         // release that would stop a repeat does not arrive either.
         self.held = Held::default();
         self.repeating = None;
+        self.pressed_keys.clear();
         debug!(2; "keyboard focus left {left}");
     }
 
@@ -348,6 +349,7 @@ impl KeyboardHandler for App {
         serial: u32,
         event: KeyEvent,
     ) {
+        on_key::take_press(&mut self.pressed_keys, event.raw_code);
         if self.held.ctrl {
             self.prune_secure_focus();
             self.prune_text_field_focus();
@@ -394,8 +396,8 @@ impl KeyboardHandler for App {
         self.apply_key(&event, true, None);
     }
 
-    // SCTK release events have no `utf8` and edit no buffer; all a release does is stop the
-    // repeat it started, and only if a newer press has not already taken it over.
+    // SCTK release events have no `utf8` and edit no buffer. A release stops the repeat it started,
+    // unless a newer press has taken it over, and reaches `on_key_release` if its press was heard.
     fn release_key(
         &mut self,
         _conn: &Connection,
@@ -407,6 +409,7 @@ impl KeyboardHandler for App {
         if self.repeating.as_ref().is_some_and(|(held, _)| held.raw_code == event.raw_code) {
             self.repeating = None;
         }
+        self.release_offered_key(event.raw_code);
     }
 
     /// Shift turns a caret motion into a selection and Ctrl reaches editing bindings (ADR-0236); all
@@ -500,7 +503,7 @@ impl App {
     /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
     fn arm_repeat(&mut self, event: KeyEvent) {
         let repeats = !matches!(self.field_key_action(&event, true), KeyAction::Ignore)
-            || !self.key_handlers_now(&event).1.is_empty();
+            || !self.key_handlers_now(&event, false).1.is_empty();
         self.repeating =
             self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
     }
@@ -571,7 +574,7 @@ impl App {
     }
 
     /// `mantle input key`: [`Self::apply_key`] with no serial and no repeat, so the clipboard chords
-    /// that need the compositor's selection are refused.
+    /// that need the compositor's selection are refused, then the key's `on_key_release`.
     pub(in crate::wayland::input) fn inject_key(
         &mut self,
         surface_id: &str,
@@ -582,7 +585,19 @@ impl App {
         {
             return Err("copy, cut and paste need the compositor's clipboard".to_string());
         }
-        self.with_injected_keyboard(surface_id, modifiers, |app| app.apply_key(event, false, None))
+        self.with_injected_keyboard(surface_id, modifiers, |app| {
+            on_key::take_press(&mut app.pressed_keys, event.raw_code);
+            app.apply_key(event, false, None);
+            app.release_offered_key(event.raw_code);
+        })
+    }
+
+    /// The release of `raw_code`, to `on_key_release` when its press was offered to `on_key`.
+    fn release_offered_key(&mut self, raw_code: u32) {
+        let Some(press) = on_key::take_press(&mut self.pressed_keys, raw_code) else { return };
+        self.prune_secure_focus();
+        self.prune_control_focus();
+        self.deliver_on_key_release(&press);
     }
 
     /// `mantle input type`: the commit path of an input method, so `max_length` and `on_change`

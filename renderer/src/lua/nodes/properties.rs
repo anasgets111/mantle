@@ -28,7 +28,7 @@ use crate::layout::node::{
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Modifiers, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
-use crate::wayland::{DragPhase, Escape, KeyPress, MouseButton, SubmitKey};
+use crate::wayland::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use mlua::Value;
 
 /// What an absent key means.
@@ -269,7 +269,7 @@ props! {
         ///
         /// Book: Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal
         id: Structural<Id>;
-        /// Spoken name for a control. A node with `on_click`, `submits_secure` or `on_key` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
+        /// Spoken name for a control. A node with `on_click`, `submits_secure`, `on_key` or `on_key_release` becomes keyboard focusable when this is set. Give each textfield a name for screen readers.
         accessible_name: Bound<Text> = absent(Lua(r#""""#));
         /// A `focus_target(name)` handle. `:request()` from an `on_click`, an `on_key`, or an edit typed or
         /// committed into a field (`on_change`, `on_submit`, `on_cancel`) moves keyboard focus here, if this node
@@ -317,6 +317,10 @@ props! {
         ///
         /// Book: A key press or repeat, from the focused node up through its ancestors to the surface; `true` stops it ([key handlers](../guide/input.md#key-handlers)). Needs `accessible_name` to take focus
         on_key(key: KeyPress) -> Option<bool>;
+        /// A key released, routed like `on_key`: the focused node first, then each ancestor, then the surface root; a handler that returns `true` stops it. Only a release whose press was offered to `on_key`, taken or not: never one a field typed with, a Tab that moved focus, an Enter or Space that activated a control, one pressed while a `secure_submit` field was armed or before the keyboard entered the surface, nor one after it left. `key` is the press's name and text with the modifiers held now. Without `accessible_name` the node is not focusable and hears only what its descendants pass up.
+        ///
+        /// Book: A key release, routed like `on_key`; `true` stops it ([key handlers](../guide/input.md#key-handlers)). Needs `accessible_name` to take focus
+        on_key_release(key: KeyRelease) -> Option<bool>;
     }
     /// The pointer handlers. The innermost node under the pointer with a handler for the event takes it (ADR-0050); a node with no handler for the event is skipped by that scan.
     mod pointer(ALL) {
