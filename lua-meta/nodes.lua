@@ -201,7 +201,7 @@
 ---@field text_align? "start"|"center"|"end"|Bound Default `"start"`. Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction (ADR-0211). Matters only when the box is wider than the text.
 ---@field wrap? "none"|"word"|Bound Default `"none"`. `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis).
 ---@field max_lines? number|Bound Default `0`. Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
----@field elide? "none"|"end"|Bound Default `"none"`. `"end"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+---@field elide? "none"|"end"|"start"|"middle"|Bound Default `"none"`. Replaces what does not fit with `…`: `"end"` keeps the start, `"start"` the end, `"middle"` both. Under `wrap` it applies to the last kept line as `"end"`.
 ---@field elided? Bound An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
 ---@field on_link? fun(href: string) Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
 

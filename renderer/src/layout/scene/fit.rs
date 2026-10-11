@@ -34,7 +34,7 @@ pub(super) fn fit_text_to_box(
         return;
     }
     if content_width <= 0.0 {
-        if *elide == node::Elide::End {
+        if *elide != node::Elide::None {
             *elided = true;
             *content = "".into();
             runs.clear();
@@ -48,11 +48,8 @@ pub(super) fn fit_text_to_box(
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
             let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
-            if *elide == node::Elide::End && width > content_width {
-                let mut fitted = Fitted::new(content, runs);
-                let cut = elide_cut(content, runs, 0..content.len(), face, content_width, shaping);
-                fitted.push_source(0..cut);
-                fitted.push_ellipsis(cut, content.len());
+            if *elide != node::Elide::None && width > content_width {
+                let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
                 Some((fitted.text, fitted.runs))
             } else {
@@ -123,7 +120,8 @@ impl<'s> Fitted<'s> {
 /// `text::atlas::TextPainter::draw_text` to walk, with its runs re-based to the result.
 ///
 /// The cap keeps the first shaped lines. Elision makes room for an ellipsis on the last retained
-/// line without pulling content from a dropped line across a wrap or paragraph break.
+/// line without pulling content from a dropped line across a wrap or paragraph break. Under a wrap
+/// every `elide` but `"none"` ellipsizes the end: `"start"` and `"middle"` are single-line modes.
 fn wrapped_to_fit<'s>(
     content: &'s str,
     runs: &'s [StyleRun],
@@ -141,7 +139,7 @@ fn wrapped_to_fit<'s>(
         if index > 0 {
             fitted.text.push('\n');
         }
-        let ellipsis = fitted.elided && elide == node::Elide::End && index + 1 == cap;
+        let ellipsis = fitted.elided && elide != node::Elide::None && index + 1 == cap;
         let cut =
             if ellipsis { elide_cut(content, runs, range.clone(), face, content_width, shaping) } else { range.end };
         let rtl = shaped.shaped.get(index).is_some_and(|line| line.rtl);
@@ -196,19 +194,62 @@ fn elide_cut(
         return region.end;
     }
     let cuts: Vec<usize> = slice.grapheme_indices(true).map(|(index, _)| region.start + index).collect();
-    // Largest index whose prefix plus an ellipsis fits; zero is always admissible.
-    let (mut low, mut high) = (0usize, cuts.len() - 1);
+    cuts[largest_fitting(cuts.len() - 1, |index| fits(cuts[index]))]
+}
+
+/// The largest `index` in `0..=max` for which `fits` holds, assuming it holds for every smaller one;
+/// `0` is admissible without being asked.
+fn largest_fitting(max: usize, fits: impl Fn(usize) -> bool) -> usize {
+    let (mut low, mut high) = (0, max);
     while low < high {
         // Rounded up, so `mid` is always above `low` and the loop cannot stall; `high` is only ever
         // assigned `mid - 1`, and `mid` is at least 1 whenever this body runs.
         let mid = low + (high - low).div_ceil(2);
-        if fits(cuts[mid]) {
+        if fits(mid) {
             low = mid;
         } else {
             high = mid - 1;
         }
     }
-    cuts[low]
+    low
+}
+
+/// `text` on one line with the part that does not fit replaced by an ellipsis, keeping the most
+/// graphemes that fit `width`: `End` keeps a head, `Start` a tail, `Middle` both, the tail taking
+/// the odd grapheme. Logical order: "start" is the start of the string even in right-to-left text.
+/// A direction mark keeps the paragraph's direction when the kept part has lost its first strong
+/// character (ADR-0211).
+fn elide_edges<'s>(
+    text: &'s str,
+    runs: &'s [StyleRun],
+    elide: node::Elide,
+    face: &node::Typeface,
+    width: f32,
+    shaping: &ShapingHandle,
+) -> Fitted<'s> {
+    let mut cuts: Vec<usize> = text.grapheme_indices(true).map(|(index, _)| index).collect();
+    cuts.push(text.len());
+    let n = cuts.len() - 1;
+    let rtl = matches!(unicode_bidi::get_base_direction(text), unicode_bidi::Direction::Rtl);
+    let build = |kept: usize| {
+        let (head, tail) = match elide {
+            node::Elide::End => (cuts[kept], text.len()),
+            node::Elide::Start => (0, cuts[n - kept]),
+            _ => (cuts[kept / 2], cuts[n - kept.div_ceil(2)]),
+        };
+        let mut fitted = Fitted::new(text, runs);
+        let line = format!("{}\u{2026}{}", &text[..head], &text[tail..]);
+        push_direction_mark(&mut fitted, &line, rtl);
+        fitted.push_source(0..head);
+        // The replaced character's style, or the first kept one when the head is gone.
+        fitted.push_ellipsis(if elide == node::Elide::Start { tail } else { head }, text.len());
+        fitted.push_source(tail..text.len());
+        fitted
+    };
+    build(largest_fitting(n - 1, |kept| {
+        let fitted = build(kept);
+        measured_width(&fitted.text, &fitted.runs, face, shaping) <= width
+    }))
 }
 
 #[cfg(test)]
@@ -314,6 +355,148 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `content` under `elide` at every width from 1 to 259: the drawn text and the `elided` signal.
+    fn sweep(content: &str, elide: &str) -> Vec<(String, bool)> {
+        let (lua, surface) = surface_from(&format!(
+            r#"w = state("w", 1)
+            cut = elided("t")
+            return panel {{ id = "bar", child = text {{
+                content = "{content}", width = w, elide = "{elide}", elided = cut
+            }} }}"#
+        ));
+        let shaping = ShapingHandle::spawn();
+        let mut scene = Scene::new();
+        (1..260)
+            .map(|width| {
+                lua.load(format!("w:set({width})")).exec().unwrap();
+                apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+                (drawn_text(&scene), lua.load("return cut:get()").eval::<bool>().unwrap())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn start_and_middle_keep_the_edges_and_a_fitting_string_keeps_all() {
+        let name = "holiday-photos-final.tar.gz";
+        for elide in ["start", "middle"] {
+            let drawn = sweep(name, elide);
+            let mut odd_and_even = std::collections::BTreeSet::new();
+            for (text, cut) in &drawn {
+                assert_eq!(*cut, text != name, "{elide}: {text:?}");
+                if !cut {
+                    continue;
+                }
+                let (head, tail) = if elide == "start" {
+                    ("", text.strip_prefix('…').unwrap())
+                } else {
+                    text.split_once('…').unwrap()
+                };
+                assert!(name.starts_with(head) && name.ends_with(tail), "{elide}: {text:?}");
+                let (head, tail) = (head.chars().count(), tail.chars().count());
+                if elide == "middle" {
+                    assert!(tail == head || tail == head + 1, "{text:?}");
+                    odd_and_even.insert(tail - head);
+                }
+            }
+            assert_eq!(drawn.last().unwrap().0, name, "the widest box keeps it all");
+            assert_eq!(odd_and_even.len(), if elide == "middle" { 2 } else { 0 }, "both split parities occur");
+        }
+    }
+
+    #[test]
+    fn start_and_middle_never_split_a_grapheme() {
+        let graphemes = ["1️⃣", "👩‍👩‍👧‍👦", "👍🏽", "é", "x", "y"];
+        let content = graphemes.concat();
+        for elide in ["start", "middle"] {
+            for (drawn, cut) in sweep(&content, elide) {
+                if !cut {
+                    continue;
+                }
+                let (head, tail) = if elide == "start" {
+                    ("", drawn.strip_prefix('…').unwrap())
+                } else {
+                    drawn.split_once('…').unwrap()
+                };
+                let whole = |part: &str, from_end: bool| {
+                    let mut rest = part;
+                    while !rest.is_empty() {
+                        let found = graphemes
+                            .iter()
+                            .find(|g| if from_end { rest.ends_with(**g) } else { rest.starts_with(**g) });
+                        let Some(g) = found else { return false };
+                        rest = if from_end { &rest[..rest.len() - g.len()] } else { &rest[g.len()..] };
+                    }
+                    true
+                };
+                assert!(whole(head, false) && whole(tail, true), "{elide} split a grapheme: {drawn:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn start_and_middle_keep_the_styles_of_what_they_keep() {
+        for elide in ["start", "middle"] {
+            let (content, runs) = styled(&format!(
+                r##"panel {{ id = "bar", child = text {{ width = 70, font_size = 14, elide = "{elide}", content = {{
+                    {{ text = "Alice: ", bold = true }}, {{ text = "a long message that will not fit", italic = true }},
+                    {{ text = " END", bold = true }},
+                }} }} }}"##
+            ));
+            assert!(content.contains('\u{2026}'), "{elide}: {content:?}");
+            let styled_text: Vec<(&str, bool)> =
+                runs.iter().map(|run| (&content[run.range.clone()], run.bold)).collect();
+            assert!(styled_text.iter().any(|(text, bold)| *bold && " END".ends_with(text)), "{styled_text:?}");
+            if elide == "middle" {
+                assert!(styled_text.iter().any(|(text, bold)| *bold && "Alice: ".contains(text)), "{styled_text:?}");
+            } else {
+                // A dropped head supplies no style: the ellipsis wears the first kept glyph's.
+                assert_eq!(&content[runs[0].range.clone()], "…");
+                assert_eq!((runs[0].bold, runs[0].italic), (runs[1].bold, runs[1].italic), "{runs:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn start_and_middle_keep_a_right_to_left_paragraph_reading_right_to_left() {
+        let rtl = |text: &str| matches!(unicode_bidi::get_base_direction(text), unicode_bidi::Direction::Rtl);
+        for elide in ["start", "middle"] {
+            for (drawn, cut) in sweep("שלום world again", elide) {
+                assert!(!cut || rtl(&drawn), "{elide} flipped the paragraph direction: {drawn:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn start_and_middle_act_as_end_under_a_capped_wrap() {
+        let capped = |elide: &str| {
+            elided(&format!(
+                r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 2, elide = "{elide}" }} }}"#
+            ))
+        };
+        for elide in ["start", "middle"] {
+            assert_eq!(capped(elide), capped("end"));
+        }
+    }
+
+    #[test]
+    fn start_and_middle_in_a_box_with_no_content_width_show_nothing() {
+        for elide in ["start", "middle"] {
+            let (drawn, _) = text_box(&format!(
+                r#"panel {{ id = "bar", child = text {{ width = 20, padding = 10, content = "{LONG}", elide = "{elide}" }} }}"#
+            ));
+            assert_eq!(drawn, "", "{elide}");
+        }
+    }
+
+    #[test]
+    fn start_and_middle_treat_an_embedded_newline_as_one_more_character() {
+        // ponytail: without `wrap`, a newline is cut like any grapheme; line-wise elision is wrap's job.
+        let drawn = elided(
+            r#"panel { id = "bar", child = text { width = 60, content = "first line\nsecond line", elide = "start" } }"#,
+        );
+        assert!(drawn.starts_with('…') && "first line\nsecond line".ends_with(&drawn[3..]), "{drawn:?}");
     }
 
     fn drawn_text(scene: &Scene) -> String {

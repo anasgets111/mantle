@@ -72,7 +72,7 @@ return column { width = 320, padding = 16, spacing = 10, radius = 12,
 | `text_align` | `"start"\|"center"\|"end"\|Bound` | `"start"` | Aligns lines inside the node's own box; `"start"`/`"end"` follow each line's reading direction. Matters only when the box is wider than the text |
 | `wrap` | `"none"\|"word"\|Bound` | `"none"` | `"word"` breaks at words, mid-word when one word is too wide. Needs a bounded width (`width`, `"fill"` or a stretched cross axis) |
 | `max_lines` | `number\|Bound` | `0` | Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap` |
-| `elide` | `"none"\|"end"\|Bound` | `"none"` | `"end"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line |
+| `elide` | `"none"\|"end"\|"start"\|"middle"\|Bound` | `"none"` | Replaces what does not fit with `…`: `"end"` keeps the start, `"start"` the end, `"middle"` both. Under `wrap` it applies to the last kept line as `"end"` |
 | `elided` | `Bound` | None | An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content |
 | `on_link` | `fun(href: string)` | None | Click on a run with an `href`; the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on |
 <!-- End of the generated table. -->
@@ -148,6 +148,9 @@ node's width and an ancestor's `clip` cut it.
 Bind an [`elided(name)` signal](../guide/signals.md#elided-read-text-truncation) as `elided` to
 detect content removed by `elide` or `max_lines`. Wrapping alone keeps it `false`.
 Elision cuts at grapheme boundaries, preserving combining marks and emoji sequences.
+`elide = "start"` keeps the end of the line and `"middle"` keeps both ends, which suits file names
+whose extension matters; the end side takes the odd character. Both cut in logical order, so
+"start" is the start of the string even in right-to-left text, and both act as `"end"` under `wrap`.
 With `wrap = "word"`, `max_lines = N` and `elide = "end"`, the preview keeps the first N shaped
 lines and adds `…` to the last retained line. It shortens that line only as needed to fit the
 ellipsis; it never merges content from later lines into the preview.
@@ -157,6 +160,7 @@ ellipsis; it never merges content from later lines into the preview.
 | Task | Answer |
 | :--- | :--- |
 | Truncate a long title | `width` (or `"fill"`) plus `elide = "end"` |
+| Keep a file extension visible | `width` plus `elide = "middle"` |
 | Show at most two lines | `wrap = "word"`, `max_lines = 2`, `elide = "end"` and a bounded width, as in the card |
 | Bold one word | A [run](#runs) with `bold = true` |
 | Make a clickable link | A run with `href` plus `on_link` on the node ([`process.detach`](../guide/processes.md#processdetach) to open it) |
@@ -170,7 +174,7 @@ ellipsis; it never merges content from later lines into the preview.
 | Trap | Fix |
 | :--- | :--- |
 | A `wrap = "word"` text runs off the edge on one line | Wrapping needs a bounded width: set `width`, `"fill"`, or put it in a fixed-width column. A content-sized row offers none |
-| `elide = "end"` never ellipsizes | Same cause: the box is as wide as the text. Bound the width |
+| `elide` never ellipsizes | Same cause: the box is as wide as the text. Bound the width |
 | `max_lines` has no effect | It applies only under `wrap = "word"` |
 | `text_align = "center"` does nothing | The box is exactly as wide as the text. Give it a `width`, or centre the node with `align_h` |
 | `font = ""` raises | Omit `font` to use the chain |

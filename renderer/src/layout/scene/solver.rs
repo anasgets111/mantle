@@ -558,7 +558,7 @@ fn measure_leaf(
                 Measure::Text { content, runs, face, wrap, elide, max_lines, memo } => {
                     // Elided text shrinks to whatever it is given, so its min-content is nothing.
                     if *wrap == node::Wrap::None
-                        && *elide == node::Elide::End
+                        && *elide != node::Elide::None
                         && offered.width == taffy::AvailableSpace::MinContent
                     {
                         return clamp(taffy::Size { width: 0.0, height: face.line_height });
@@ -1046,19 +1046,21 @@ pub(super) mod tests {
     /// text elides; a capped stack keeps no floor, so it holds its cap over a wider child.
     #[test]
     fn elided_text_and_a_capped_stack_keep_no_min_content_floor() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            "panel { id = 'bar', child = column { width = 400, children = {
-                rect { width = 40, height = 20, children = { rect { children = {
-                    text { content = 'a long label that needs more than forty pixels', font_size = 12, width = 'fill', elide = 'end' } } } } },
-                rect { max_width = 100, children = { rect { width = 230, height = 20 } } },
-            } } }",
-        );
-        let column = &scene.surface("bar@TEST").unwrap().children[0];
-        let (narrow, capped) = (&column.children[0], &column.children[1]);
-        assert_eq!(narrow.children[0].rect.width, 40.0, "the wrapper stays in its 40 px parent");
-        let label = &narrow.children[0].children[0];
-        assert!(label.rect.width <= 40.0 && matches!(&label.paint, Some(PaintStyle::Text { elided: true, .. })));
-        assert_eq!(capped.rect.width, 100.0, "the cap holds over the 230 px child");
+        for elide in ["end", "start", "middle"] {
+            let (scene, _lua, _shaping, _surface) = applied(&format!(
+                "panel {{ id = 'bar', child = column {{ width = 400, children = {{
+                    rect {{ width = 40, height = 20, children = {{ rect {{ children = {{
+                        text {{ content = 'a long label that needs more than forty pixels', font_size = 12, width = 'fill', elide = '{elide}' }} }} }} }} }},
+                    rect {{ max_width = 100, children = {{ rect {{ width = 230, height = 20 }} }} }},
+                }} }} }}"
+            ));
+            let column = &scene.surface("bar@TEST").unwrap().children[0];
+            let (narrow, capped) = (&column.children[0], &column.children[1]);
+            assert_eq!(narrow.children[0].rect.width, 40.0, "{elide}: the wrapper stays in its 40 px parent");
+            let label = &narrow.children[0].children[0];
+            assert!(label.rect.width <= 40.0 && matches!(&label.paint, Some(PaintStyle::Text { elided: true, .. })));
+            assert_eq!(capped.rect.width, 100.0, "the cap holds over the 230 px child");
+        }
     }
 
     #[test]

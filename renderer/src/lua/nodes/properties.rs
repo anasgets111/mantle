@@ -442,7 +442,7 @@ props! {
         wrap: Bound<OneOf<Wrap>> = absent(Choice("none"));
         /// Line cap under `wrap = "word"`; `0` is unlimited, a negative value is refused. Ignored without `wrap`.
         max_lines: Bound<MaxLines> = absent(Number(0.0));
-        /// `"end"` ends an over-long line with an ellipsis; under `wrap` it applies to the last kept line.
+        /// Replaces what does not fit with `…`: `"end"` keeps the start, `"start"` the end, `"middle"` both. Under `wrap` it applies to the last kept line as `"end"`.
         elide: Bound<OneOf<Elide>> = absent(Choice("none"));
         /// An `elided(name)` signal; layout writes whether `elide` or `max_lines` removed content.
         elided: Handle;

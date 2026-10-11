@@ -285,8 +285,9 @@ impl Prop for FontVariations {
 }
 
 keywords! {
-    /// What to do with text too wide for its box. Only `"end"` is offered: middle elision needs a
-    /// grapheme budget across runs.
+    /// What to do with text too wide for its box. `"start"` and `"middle"` cut one line; under
+    /// `wrap = "word"` they ellipsize the last kept line's end like `"end"`. All cut at grapheme
+    /// boundaries in logical order.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
     pub enum Elide {
         /// Let the clip cut it off.
@@ -294,6 +295,11 @@ keywords! {
         None,
         /// Drop trailing characters and finish with a single-character ellipsis.
         End,
+        /// Drop leading characters and start with a single-character ellipsis.
+        Start,
+        /// Keep the start and end, with a single-character ellipsis between; the end gets the odd
+        /// character.
+        Middle,
     }
 }
 

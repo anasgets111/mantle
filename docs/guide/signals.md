@@ -227,7 +227,7 @@ column { width = 200, children = {
 ### elided: read text truncation
 
 Bind `elided(name)` as a text node's `elided` property. It starts `false`; after layout it is `true`
-when `elide = "end"` removes content or `max_lines` drops wrapped lines, including without an
+when `elide` removes content or `max_lines` drops wrapped lines, including without an
 ellipsis. Wrapping alone, box or ancestor clipping, scrolling and occlusion do not count.
 
 The result follows the shaped text, styled runs, font metrics and available width. Content changes,
