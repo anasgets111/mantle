@@ -165,7 +165,8 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
 - **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`) and
   runs the rows the hook skips; its commit runs the hook, and it fixes what fails. Never the full
   `just check`. A commit is a full build: commits and builds take one machine-wide lock, so only
-  one runs at a time.
+  one runs at a time. The hook takes it itself when `git config mantle.buildWrapper` names the
+  lock command (shared by every worktree).
 - **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
   branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
   no second check. If it has, the delegate rebases onto `main` and runs `git commit --amend
