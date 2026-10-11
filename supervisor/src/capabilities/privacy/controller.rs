@@ -17,6 +17,11 @@ use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceA
 
 use super::video::{enumerate_video_devices, find_device_openers, holds_device, is_video_name, read_comm};
 
+/// `app_name` if known, else `/proc/{pid}/comm`, else `pid {n}`.
+fn process_name(proc_root: &Path, pid: u32, app_name: Option<String>) -> String {
+    app_name.or_else(|| read_comm(proc_root, pid)).unwrap_or_else(|| format!("pid {pid}"))
+}
+
 /// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
 /// PipeWire `app_name` wins, then `/proc/{pid}/comm`, then `pid {n}`; no opener is dropped. Pure
 /// and unit-testable.
@@ -27,13 +32,9 @@ fn name_camera_users(proc_root: &Path, pids: &[u32], pipewire: &[VideoSourceApp]
     pids.iter()
         .copied()
         .map(|pid| {
-            let app_name = pipewire
-                .iter()
-                .find(|source| source.pid == pid as i32)
-                .and_then(|source| source.app_name.clone())
-                .or_else(|| read_comm(proc_root, pid))
-                .unwrap_or_else(|| format!("pid {pid}"));
-            PrivacyUser { app_name }
+            let named =
+                pipewire.iter().find(|source| source.pid == pid as i32).and_then(|source| source.app_name.clone());
+            PrivacyUser { app_name: process_name(proc_root, pid, named) }
         })
         .collect()
 }
@@ -48,8 +49,7 @@ fn name_capture_users(proc_root: &Path, apps: &[CaptureApp]) -> Vec<PrivacyUser>
         let app_name = app
             .app_name
             .clone()
-            .or_else(|| app.pid.and_then(|pid| read_comm(proc_root, pid as u32)))
-            .or_else(|| app.pid.map(|pid| format!("pid {pid}")))
+            .or_else(|| app.pid.map(|pid| process_name(proc_root, pid as u32, None)))
             .unwrap_or_else(|| format!("node {}", app.node_id));
         if !users.iter().any(|user| user.app_name == app_name) {
             users.push(PrivacyUser { app_name });

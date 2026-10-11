@@ -11,7 +11,7 @@ use crate::capabilities::shm_icons;
 
 use super::markup::parse_markup;
 use super::{MAX_APP_ICON_NAME_BYTES, MAX_BODY_BYTES, MAX_IMAGE_DIMENSION, NotificationSpan};
-use crate::capabilities::truncate_utf8_bytes;
+use crate::capabilities::{file_url_to_path, truncate_utf8_bytes};
 
 /// ADR-0033's trusted icon roots, with `$XDG_DATA_HOME` and `$HOME` resolved at runtime. Tests
 /// inject fixture roots.
@@ -25,8 +25,8 @@ pub(super) fn default_trusted_icon_roots() -> Vec<PathBuf> {
 /// Accepts only an existing regular file under a trusted absolute root (ADR-0033). Canonicalizing
 /// both sides rejects `..` traversal and symlinks escaping the root. Relative paths and bare theme
 /// names degrade to no icon.
-pub(super) fn validate_trusted_path(path: &str, trusted_roots: &[PathBuf]) -> Option<PathBuf> {
-    let candidate = Path::new(path);
+pub(super) fn validate_trusted_path(path: impl AsRef<Path>, trusted_roots: &[PathBuf]) -> Option<PathBuf> {
+    let candidate = path.as_ref();
     if !candidate.is_absolute() {
         return None;
     }
@@ -34,14 +34,12 @@ pub(super) fn validate_trusted_path(path: &str, trusted_roots: &[PathBuf]) -> Op
     if !canonical.is_file() {
         return None;
     }
-    let is_trusted =
-        trusted_roots.iter().any(|root| root.canonicalize().map(|root| canonical.starts_with(&root)).unwrap_or(false));
-    is_trusted.then_some(canonical)
+    trusted_roots.iter().any(|root| shm_icons::is_within(&canonical, root)).then_some(canonical)
 }
 
-/// Strips `file://` from `image-path`/`app_icon` hints.
-pub(super) fn strip_file_uri(path: &str) -> &str {
-    path.strip_prefix("file://").unwrap_or(path)
+/// `image-path`/`app_icon` hint as a path: a `file://` URI is decoded, anything else is kept as is.
+pub(super) fn hint_path(hint: &str) -> PathBuf {
+    file_url_to_path(hint).unwrap_or_else(|| PathBuf::from(hint))
 }
 
 /// Truncates and parses `Notify` body markup, then validates every `<img src>` path. Untrusted
@@ -152,7 +150,7 @@ pub(super) fn resolve_image_input(
 /// pass it to renderer lookup.
 pub(super) fn split_image_path_hint(hint: Option<String>) -> (Option<String>, Option<String>) {
     match hint.filter(|hint| !hint.is_empty()) {
-        Some(hint) if !strip_file_uri(&hint).contains('/') => (None, Some(hint)),
+        Some(hint) if !hint_path(&hint).to_string_lossy().contains('/') => (None, Some(hint)),
         hint => (hint, None),
     }
 }
@@ -166,11 +164,12 @@ pub(super) fn split_image_path_hint(hint: Option<String>) -> (Option<String>, Op
 /// A separator check, not `is_absolute`, keeps `../../etc/passwd` from becoming a theme name.
 pub(super) fn resolve_app_icon(app_icon: Option<String>, trusted_roots: &[PathBuf]) -> Option<String> {
     let app_icon = app_icon.filter(|icon| !icon.is_empty())?;
-    let stripped = strip_file_uri(&app_icon);
+    let path = hint_path(&app_icon);
+    let stripped = path.to_string_lossy();
     if !stripped.contains('/') {
-        return Some(truncate_utf8_bytes(stripped, MAX_APP_ICON_NAME_BYTES));
+        return Some(truncate_utf8_bytes(&stripped, MAX_APP_ICON_NAME_BYTES));
     }
-    validate_trusted_path(stripped, trusted_roots).map(|path| path.to_string_lossy().into_owned())
+    validate_trusted_path(path, trusted_roots).map(|path| path.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]
@@ -234,9 +233,25 @@ mod tests {
     }
 
     #[test]
-    fn strip_file_uri_strips_the_scheme_only_when_present() {
-        assert_eq!(strip_file_uri("file:///usr/share/icons/x.png"), "/usr/share/icons/x.png");
-        assert_eq!(strip_file_uri("/usr/share/icons/x.png"), "/usr/share/icons/x.png");
+    fn hint_path_decodes_a_file_uri_and_keeps_anything_else() {
+        assert_eq!(hint_path("file:///usr/share/icons/a%20b.png"), PathBuf::from("/usr/share/icons/a b.png"));
+        assert_eq!(hint_path("/usr/share/icons/x.png"), PathBuf::from("/usr/share/icons/x.png"));
+        assert_eq!(hint_path("battery-full"), PathBuf::from("battery-full"));
+    }
+
+    #[test]
+    fn a_percent_encoded_file_uri_resolves_under_a_trusted_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("a b.png");
+        std::fs::write(&file, b"x").unwrap();
+        let uri = format!("file://{}/a%20b.png", dir.path().display());
+        let roots = [dir.path().to_path_buf()];
+
+        assert_eq!(
+            resolve_app_icon(Some(uri.clone()), &roots),
+            Some(file.canonicalize().unwrap().to_string_lossy().into_owned())
+        );
+        assert_eq!(validate_trusted_path(hint_path(&uri), &roots), Some(file.canonicalize().unwrap()));
     }
 
     fn valid_rgba_image(width: i32, height: i32) -> RawImageData {

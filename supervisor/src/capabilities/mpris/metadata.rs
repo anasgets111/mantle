@@ -1,10 +1,9 @@
 //! Pure `Metadata` (`a{sv}`) parsing, album-art trust checks, and track identity comparison
 //! (ADR-0036).
 
-use std::os::unix::ffi::OsStringExt;
-use std::path::PathBuf;
-
 use zbus::zvariant::{OwnedValue, Value};
+
+use crate::capabilities::file_url_to_path;
 
 fn value_as_str<'a>(value: &'a Value<'_>) -> Option<&'a str> {
     match value {
@@ -97,63 +96,11 @@ pub(super) fn resolve_album_art_path(art_url: Option<&str>) -> String {
     if canonical.is_file() { canonical.to_string_lossy().into_owned() } else { String::new() }
 }
 
-/// A `file://` URL as a filesystem path: percent-decoded, with RFC 8089's optional `localhost`
-/// authority dropped.
-///
-/// Decoding is byte-wise because a path is bytes on Unix, not UTF-8: a filename the shell can
-/// open is not necessarily one `String` accepts.
-fn file_url_to_path(art_url: &str) -> Option<PathBuf> {
-    let rest = art_url.strip_prefix("file://")?;
-    let encoded = rest.strip_prefix("localhost").filter(|tail| tail.starts_with('/')).unwrap_or(rest);
-    let raw = encoded.as_bytes();
-    let mut bytes = Vec::with_capacity(raw.len());
-    let mut index = 0;
-    while index < raw.len() {
-        let escape = (raw[index] == b'%' && index + 2 < raw.len())
-            .then(|| Some(hex_digit(raw[index + 1])? * 16 + hex_digit(raw[index + 2])?))
-            .flatten();
-        match escape {
-            Some(byte) => {
-                bytes.push(byte);
-                index += 3;
-            }
-            None => {
-                bytes.push(raw[index]);
-                index += 1;
-            }
-        }
-    }
-    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
-}
-
-fn hex_digit(byte: u8) -> Option<u8> {
-    char::from(byte).to_digit(16).map(|digit| digit as u8)
-}
-
 /// Absolute target for `mpris:seek`/`seek_relative`, clamped to `[0, length]` before
 /// `SetPosition`/`Seek` (ADR-0036). Without a cached length, only the lower bound applies.
 pub(super) fn clamp_seek_target(target_us: i64, length_us: Option<i64>) -> i64 {
     let lower = target_us.max(0);
     length_us.map_or(lower, |length| lower.min(length))
-}
-
-#[cfg(test)]
-mod file_url_tests {
-    use super::*;
-
-    #[test]
-    fn file_url_to_path_decodes_escapes_and_drops_a_localhost_authority() {
-        // (url, expected path): `100%` in a filename is not an escape, and dropping it would rename the file.
-        for (url, expected) in [
-            ("file:///tmp/cover%20art.png", Some("/tmp/cover art.png")),
-            ("file://localhost/tmp/a.png", Some("/tmp/a.png")),
-            ("file:///home/someone/.cache/player/art_4.png", Some("/home/someone/.cache/player/art_4.png")),
-            ("file:///tmp/100%.png", Some("/tmp/100%.png")),
-            ("https://example.com/a.png", None),
-        ] {
-            assert_eq!(file_url_to_path(url), expected.map(PathBuf::from), "{url}");
-        }
-    }
 }
 
 #[cfg(test)]

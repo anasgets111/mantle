@@ -7,6 +7,9 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a notification `image-path` or `app_icon` given as a `file://` URL with escapes (`%20`) or a `localhost` host resolves; it was refused.
+- Fixed: a tray item that leaves the bus while the tray starts is dropped; it could stay listed.
+
 ## 0.6.1 - 2026-10-11
 
 - Fixed: a failed EGL surface, swap or dmabuf image call logs `EGL error 0x…` and is handled; it aborted the renderer through a panic inside the EGL bindings.

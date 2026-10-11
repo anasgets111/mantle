@@ -297,12 +297,11 @@ fn spawn_menu_signal_forwarder(
 /// Mantle's own tray reads this registry instead.
 pub(super) fn spawn_name_owner_changed_forwarder(
     connection: zbus::Connection,
-    dbus_proxy: zbus::fdo::DBusProxy<'static>,
+    mut stream: zbus::fdo::NameOwnerChangedStream,
     registry: ItemRegistry,
     events: UnboundedSender<()>,
-) -> JoinHandle<()> {
+) {
     tokio::spawn(async move {
-        let Ok(mut stream) = dbus_proxy.receive_name_owner_changed_with_args(&[(2, "")]).await else { return };
         while let Some(signal) = stream.next().await {
             let Ok(args) = signal.args() else { continue };
             let dropped_name = args.name.to_string();
@@ -353,7 +352,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
                 }
             }
         }
-    })
+    });
 }
 
 #[cfg(test)]

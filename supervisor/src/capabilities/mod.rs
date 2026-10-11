@@ -11,7 +11,8 @@
 //! `mantle.<name>`, and command `capability`. [`read_attr`] lives here, `polkit` in
 //! `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
-use std::path::Path;
+use std::os::unix::ffi::OsStringExt;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -136,6 +137,19 @@ pub(crate) async fn sent_by_owner(
     matches!((owner.await, header.sender()), (Ok(owner), Some(sender)) if owner.as_str() == sender.as_str())
 }
 
+/// Names leaving the bus (`new_owner == ""`), filtered by the bus so unrelated name changes never wake
+/// the caller. Subscribe before scanning existing names to miss no departure; failure logs once and
+/// says what `what` stays off.
+pub(crate) async fn name_departures(
+    dbus: &zbus::fdo::DBusProxy<'_>,
+    what: &str,
+) -> Option<zbus::fdo::NameOwnerChangedStream> {
+    dbus.receive_name_owner_changed_with_args(&[(2, "")])
+        .await
+        .inspect_err(|err| shared::error!("failed to subscribe to NameOwnerChanged; {what}: {err}"))
+        .ok()
+}
+
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.
@@ -144,6 +158,39 @@ where
     T: zbus::proxy::Defaults + From<zbus::Proxy<'static>>,
 {
     zbus::proxy::Builder::new(connection).path(path)?.build().await
+}
+
+/// A `file://` URL as a filesystem path: percent-decoded, with RFC 8089's optional `localhost`
+/// authority dropped.
+///
+/// Decoding is byte-wise because a path is bytes on Unix, not UTF-8: a filename the shell can
+/// open is not necessarily one `String` accepts.
+pub(crate) fn file_url_to_path(art_url: &str) -> Option<PathBuf> {
+    let rest = art_url.strip_prefix("file://")?;
+    let encoded = rest.strip_prefix("localhost").filter(|tail| tail.starts_with('/')).unwrap_or(rest);
+    let raw = encoded.as_bytes();
+    let mut bytes = Vec::with_capacity(raw.len());
+    let mut index = 0;
+    while index < raw.len() {
+        let escape = (raw[index] == b'%' && index + 2 < raw.len())
+            .then(|| Some(hex_digit(raw[index + 1])? * 16 + hex_digit(raw[index + 2])?))
+            .flatten();
+        match escape {
+            Some(byte) => {
+                bytes.push(byte);
+                index += 3;
+            }
+            None => {
+                bytes.push(raw[index]);
+                index += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    char::from(byte).to_digit(16).map(|digit| digit as u8)
 }
 
 #[cfg(test)]
@@ -169,6 +216,20 @@ mod tests {
             [("hello", 64, "hello"), ("hello world", 5, "hello"), ("héllo", 2, "h"), ("hello", 0, "")]
         {
             assert_eq!(truncate_utf8_bytes(input, cap), expected, "{input:?} cap {cap}");
+        }
+    }
+
+    #[test]
+    fn file_url_to_path_decodes_escapes_and_drops_a_localhost_authority() {
+        // (url, expected path): `100%` in a filename is not an escape, and dropping it would rename the file.
+        for (url, expected) in [
+            ("file:///tmp/cover%20art.png", Some("/tmp/cover art.png")),
+            ("file://localhost/tmp/a.png", Some("/tmp/a.png")),
+            ("file:///home/someone/.cache/player/art_4.png", Some("/home/someone/.cache/player/art_4.png")),
+            ("file:///tmp/100%.png", Some("/tmp/100%.png")),
+            ("https://example.com/a.png", None),
+        ] {
+            assert_eq!(file_url_to_path(url), expected.map(PathBuf::from), "{url}");
         }
     }
 }

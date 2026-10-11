@@ -10,6 +10,8 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
+use crate::capabilities::name_departures;
+
 use super::icon::icon_filename_stem;
 use super::menu::fetch_menu_via;
 use super::proxies::StatusNotifierWatcherClientProxy;
@@ -69,12 +71,15 @@ impl TrayController {
             }
             match zbus::fdo::DBusProxy::new(&connection).await {
                 Ok(dbus_proxy) => {
-                    spawn_name_owner_changed_forwarder(
-                        connection.clone(),
-                        dbus_proxy.clone(),
-                        registry.clone(),
-                        events.clone(),
-                    );
+                    // Subscribed before the scan, so a departure in between is not missed.
+                    if let Some(departures) = name_departures(&dbus_proxy, "vanished tray items stay listed").await {
+                        spawn_name_owner_changed_forwarder(
+                            connection.clone(),
+                            departures,
+                            registry.clone(),
+                            events.clone(),
+                        );
+                    }
                     adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
                 }
                 Err(err) => error!("failed to bind org.freedesktop.DBus for NameOwnerChanged tracking: {err}"),

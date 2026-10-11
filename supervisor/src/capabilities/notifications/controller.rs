@@ -14,8 +14,8 @@ use zbus::fdo::RequestNameFlags;
 
 use super::actions::{declares_action, parse_actions};
 use super::icon::{
-    ImageInput, RawImageData, default_trusted_icon_roots, delete_icon_file, encode_image_data_to_png,
-    image_data_is_valid, resolve_app_icon, resolve_image_input, sanitize_body, split_image_path_hint, strip_file_uri,
+    ImageInput, RawImageData, default_trusted_icon_roots, delete_icon_file, encode_image_data_to_png, hint_path,
+    image_data_is_valid, resolve_app_icon, resolve_image_input, sanitize_body, split_image_path_hint,
     validate_trusted_path, write_icon_png,
 };
 use super::queue::{
@@ -191,8 +191,9 @@ impl NotificationsController {
     ) -> Option<String> {
         match resolve_image_input(image_data, image_path, icon_data) {
             ImageInput::ImageData(raw) | ImageInput::IconData(raw) => spool_raw_image(id, &raw),
-            ImageInput::ImagePath(path) => validate_trusted_path(strip_file_uri(&path), &self.trusted_roots)
-                .map(|p| p.to_string_lossy().into_owned()),
+            ImageInput::ImagePath(path) => {
+                validate_trusted_path(hint_path(&path), &self.trusted_roots).map(|p| p.to_string_lossy().into_owned())
+            }
             ImageInput::None => None,
         }
     }
@@ -226,15 +227,47 @@ impl NotificationsController {
             let mut state = self.state.lock().expect("mutex poisoned");
             state.remove(id)
         };
-        let Some(removed) = removed else {
+        if removed.is_none() {
             debug!("dismiss({id}) ignored: no notification with that id is currently queued");
             return;
-        };
-        if let Some(path) = removed.image_path {
-            schedule_icon_deletion(path);
         }
-        self.emit_notification_closed(id, CloseReason::Dismissed).await;
+        self.retire(id, removed, CloseReason::Dismissed).await;
+    }
+
+    /// Tail of every removal: deletes the spooled icon, emits `NotificationClosed` when something
+    /// was removed, then pushes state.
+    async fn retire(&self, id: u32, removed: Option<Notification>, reason: CloseReason) {
+        if let Some(removed) = removed {
+            if let Some(path) = removed.image_path {
+                schedule_icon_deletion(path);
+            }
+            self.emit_notification_closed(id, reason).await;
+        }
         let _ = self.events.send(());
+    }
+
+    /// Reply/action gate: `Some(removed)` when the signal should fire, where `removed` is `None` for
+    /// a `resident` entry that stays.
+    fn take_unless_resident(
+        &self,
+        id: u32,
+        call: &str,
+        accepts: impl FnOnce(&Notification) -> bool,
+        refusal: &str,
+    ) -> Option<Option<Notification>> {
+        let mut state = self.state.lock().expect("mutex poisoned");
+        match state.queue.iter().position(|n| n.id == id) {
+            Some(index) if !accepts(&state.queue[index]) => {
+                debug!("{call} ignored: {refusal}");
+                None
+            }
+            Some(index) if state.queue[index].resident => Some(None),
+            Some(_) => Some(state.remove(id)),
+            None => {
+                debug!("{call} ignored: no notification with that id is currently queued");
+                None
+            }
+        }
     }
 
     /// `notifications:reply(id, text)` requires `has_reply`, emits `NotificationReplied(id, text)`,
@@ -245,30 +278,15 @@ impl NotificationsController {
     /// amendment says why. `Dismissed` rather than `ClosedByMethod`, because a sent reply is the
     /// user finishing with the notification.
     pub async fn reply(&self, id: u32, text: String) {
-        let outcome = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            match state.queue.iter().position(|n| n.id == id) {
-                Some(index) if !state.queue[index].has_reply => {
-                    debug!("reply({id}, ...) ignored: that notification does not accept an inline reply");
-                    None
-                }
-                Some(index) if state.queue[index].resident => Some(None),
-                Some(_) => Some(state.remove(id)),
-                None => {
-                    debug!("reply({id}, ...) ignored: no notification with that id is currently queued");
-                    None
-                }
-            }
-        };
+        let outcome = self.take_unless_resident(
+            id,
+            &format!("reply({id}, ...)"),
+            |n| n.has_reply,
+            "that notification does not accept an inline reply",
+        );
         let Some(removed) = outcome else { return };
         self.emit_notification_replied(id, text).await;
-        if let Some(removed) = removed {
-            if let Some(path) = removed.image_path {
-                schedule_icon_deletion(path);
-            }
-            self.emit_notification_closed(id, CloseReason::Dismissed).await;
-        }
-        let _ = self.events.send(());
+        self.retire(id, removed, CloseReason::Dismissed).await;
     }
 
     /// `notifications:invoke_action(id, key)` (ADR-0090) validates that the sender declared
@@ -276,30 +294,15 @@ impl NotificationsController {
     /// forwards unknown keys because a key the sender never offered means nothing to it. Unknown
     /// keys log/no-op; non-resident removal also emits `NotificationClosed`.
     pub async fn invoke_action(&self, id: u32, key: String) {
-        let outcome = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            match state.queue.iter().position(|n| n.id == id) {
-                Some(index) if !declares_action(&state.queue[index], &key) => {
-                    debug!("invoke_action({id}, {key:?}) ignored: that notification declares no such action");
-                    None
-                }
-                Some(index) if state.queue[index].resident => Some(None),
-                Some(_) => Some(state.remove(id)),
-                None => {
-                    debug!("invoke_action({id}, {key:?}) ignored: no notification with that id is currently queued");
-                    None
-                }
-            }
-        };
+        let outcome = self.take_unless_resident(
+            id,
+            &format!("invoke_action({id}, {key:?})"),
+            |n| declares_action(n, &key),
+            "that notification declares no such action",
+        );
         let Some(removed) = outcome else { return };
         self.emit_action_invoked(id, key).await;
-        if let Some(removed) = removed {
-            if let Some(path) = removed.image_path {
-                schedule_icon_deletion(path);
-            }
-            self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
-        }
-        let _ = self.events.send(());
+        self.retire(id, removed, CloseReason::ClosedByMethod).await;
     }
 
     /// `notifications:set_sound(urgency, path)` (ADR-0033) registers an existing file under the
@@ -543,8 +546,7 @@ impl NotificationsController {
             }
             (state.dnd || state.quiet, state.sound_registry.get(&urgency).cloned())
         };
-        let client_sound_file =
-            sound_file.and_then(|path| validate_trusted_path(strip_file_uri(&path), &self.sound_roots));
+        let client_sound_file = sound_file.and_then(|path| validate_trusted_path(hint_path(&path), &self.sound_roots));
         let named_sound = sound_name.and_then(|name| resolve_sound_name(&name, &self.sound_roots));
         let sound_path = resolve_sound_path(suppress_sound, client_sound_file, named_sound, tier_default_sound);
         if should_play_sound(silenced, urgency)
@@ -566,12 +568,8 @@ impl NotificationsController {
             let mut state = self.state.lock().expect("mutex poisoned");
             state.remove(id)
         };
-        if let Some(removed) = removed {
-            if let Some(path) = removed.image_path {
-                schedule_icon_deletion(path);
-            }
-            self.emit_notification_closed(id, CloseReason::ClosedByMethod).await;
-            let _ = self.events.send(());
+        if removed.is_some() {
+            self.retire(id, removed, CloseReason::ClosedByMethod).await;
         }
     }
 

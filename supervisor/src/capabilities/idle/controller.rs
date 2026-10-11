@@ -490,7 +490,11 @@ async fn watch_screensaver_peers(session_bus: zbus::Connection, controller: Idle
     };
     // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on the
     // session bus changes some name, and none of those need to wake this shell.
-    let Ok(mut names) = proxy.receive_name_owner_changed_with_args(&[(2, "")]).await else { return };
+    let Some(mut names) =
+        crate::capabilities::name_departures(&proxy, "a crashed screensaver client's hold would outlive it").await
+    else {
+        return;
+    };
     while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
         let Ok(args) = signal.args() else { continue };
         controller.screensaver_peer_left(&args.name.to_string()).await;

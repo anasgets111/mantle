@@ -30,8 +30,8 @@ pub fn remove_png(subdir: &str, path: &str) {
 }
 
 /// Canonicalizes both sides, so neither `..` nor a symlink escapes `root`.
-fn is_within(path: &str, root: &Path) -> bool {
-    match (Path::new(path).canonicalize(), root.canonicalize()) {
+pub(crate) fn is_within(path: impl AsRef<Path>, root: &Path) -> bool {
+    match (path.as_ref().canonicalize(), root.canonicalize()) {
         (Ok(path), Ok(root)) => path.starts_with(root),
         _ => false,
     }
