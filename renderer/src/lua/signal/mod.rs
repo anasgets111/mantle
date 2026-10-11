@@ -65,8 +65,15 @@ enum SignalKind {
     /// Engine-written, config-read boolean from `hover(name)` (ADR-0062), separate from `Live` so
     /// only `hover_handle` can write it and `hover = mantle.network` gets no writer. `paired_rect`
     /// links the boolean to `hover_rect(name)`'s cell; the rect half has `None` and is not a
-    /// trigger.
-    Hover { id: CellId, cell: Rc<RefCell<Value>>, paired_rect: Option<(CellId, Rc<RefCell<Value>>)>, dirty: DirtyFlag },
+    /// trigger. `entered` is what the last pointer event said, which layout never writes; see
+    /// [`Signal::pointer_crossed`]. The rect half has `None`.
+    Hover {
+        id: CellId,
+        cell: Rc<RefCell<Value>>,
+        paired_rect: Option<(CellId, Rc<RefCell<Value>>)>,
+        dirty: DirtyFlag,
+        entered: Option<Rc<Cell<bool>>>,
+    },
     /// Engine-written boolean from `focused(name)`; its own kind so the pointer and keyboard
     /// writers never write each other's signals.
     Focused { id: CellId, cell: Rc<RefCell<Value>>, dirty: DirtyFlag },
@@ -292,8 +299,9 @@ impl Signal {
                 cell: Rc::clone(&over),
                 paired_rect: Some((rect_id, Rc::clone(&rect))),
                 dirty: dirty.clone(),
+                entered: Some(Rc::default()),
             }),
-            Signal(SignalKind::Hover { id: rect_id, cell: rect, paired_rect: None, dirty }),
+            Signal(SignalKind::Hover { id: rect_id, cell: rect, paired_rect: None, dirty, entered: None }),
         )
     }
 
@@ -386,6 +394,16 @@ impl Signal {
     pub(crate) fn hover_handle(&self) -> Option<LiveSignalHandle> {
         let SignalKind::Hover { id, cell, dirty, .. } = &self.0 else { return None };
         Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
+    }
+
+    /// Records whether a pointer event put the pointer on this hover's node, and returns whether
+    /// that differs from the previous pointer event's answer: the edge `on_hover` fires on. Not the
+    /// signal, which layout also writes silently under a still pointer (ADR-0112 decision 8); judged
+    /// by it, the first motion after layout slid the node under or out from under the pointer
+    /// would see no edge. `false` for other kinds and the rect half.
+    pub(crate) fn pointer_crossed(&self, hovered: bool) -> bool {
+        let SignalKind::Hover { entered: Some(entered), .. } = &self.0 else { return false };
+        entered.replace(hovered) != hovered
     }
 
     /// Focus-within write end for `crate::wayland`; `None` for other kinds.

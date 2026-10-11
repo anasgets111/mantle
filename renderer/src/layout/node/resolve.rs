@@ -105,15 +105,15 @@ pub(crate) fn resolve_declared(
             return Err(invalid(property, format!("expected {expected}, got {}", preview_for_error(value))));
         }
     }
-    // `on_hover` fires on the crossing its node's own `hover` signal reports, so that signal is
-    // where the "was it hovered last pass" memory lives and there is no second one (ADR-0095).
+    // `on_hover` fires on the crossing its node's own `hover` signal reports through
+    // `Signal::pointer_crossed`, so that signal is where the pointer's record lives (ADR-0095).
     // Without a slot the callback is unreachable, and this is the kind of silence
     // `deserialize_lua_table`'s unknown-key rejection exists to end: a config that declared it
     // would watch a handler never fire with nothing anywhere saying why.
     if properties.contains_key("on_hover") && !properties.contains_key("hover") {
         return Err(invalid(
             "on_hover",
-            "declared without a `hover` slot on the same node -- add `hover = hover(\"a-name\")`, which is what remembers whether this node was hovered last pass, and so what tells its crossings from another node's",
+            "declared without a `hover` slot on the same node -- add `hover = hover(\"a-name\")`, which is what remembers whether the pointer was on this node, and so what tells its crossings from another node's",
         ));
     }
     Ok(properties)

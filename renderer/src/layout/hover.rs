@@ -25,7 +25,7 @@ pub struct HoverWrite {
     pub rect: Option<LogicalRect>,
     /// The node's `on_hover`, to be called on the crossing this write reports and not on every
     /// motion event inside the node (ADR-0095). Rides on the same write as the signal because the
-    /// signal is what remembers the previous answer: a callback has no memory of its own.
+    /// signal also carries the pointer's previous answer: a callback has no memory of its own.
     pub on_hover: Option<Function>,
 }
 
@@ -244,9 +244,9 @@ mod tests {
         assert_eq!(answers(&hover_writes_at(&tree, at(10.0, 10.0))), vec![false]);
     }
 
-    /// `on_hover` rides on the same write as the signal, because the signal is the memory: the
-    /// caller fires the callback on the crossing `set_changed` reports and never on a motion event
-    /// inside the node (ADR-0095).
+    /// `on_hover` rides on the same write as the signal, because the signal carries the pointer's
+    /// record: the caller fires the callback on the crossing `Signal::pointer_crossed` reports and
+    /// never on a motion event inside the node (ADR-0095).
     #[test]
     fn a_nodes_on_hover_is_carried_on_its_hover_write() {
         let lua = Lua::new();

@@ -146,7 +146,7 @@ survives reloads.
 | API | Contract |
 | :--- | :--- |
 | `hover = hover(name)` | Any node kind. `true` while the pointer is over the node or any of its children (hit-tested, so clipping and stacking apply). Pointer leaving the surface, or the surface closing, turns every hover off. When layout moves nodes under a still pointer, hover follows |
-| `on_hover(inside)` | Called with `true`/`false` on each crossing caused by the pointer. Layout moving nodes under a still pointer updates `hover` but does not call it. Refused unless the same node has `hover` |
+| `on_hover(inside)` | Called with `true`/`false` on each crossing caused by the pointer. Layout moving a node under or off a still pointer updates `hover` but does not call it; the next pointer motion does. Refused unless the same node has `hover` |
 | `hover_rect(name)` | Read-only signal of the node's rect from the last time its hover turned on. It keeps that rect after the pointer leaves, reads `{ x = 0, y = 0, width = 1, height = 1 }` before the first hover, and is updated before `on_hover` runs. Use it as a tooltip `popup`'s `anchor_rect` |
 | `cursor` | The pointer shape over a node: one of the [cursor names](../nodes/index.md#cursor-names), defaults in [common properties](../nodes/index.md#common-properties). The innermost node that sets one wins, and an explicit one beats a kind's default |
 

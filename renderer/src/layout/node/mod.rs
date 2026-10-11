@@ -808,8 +808,8 @@ mod tests {
         );
     }
 
-    /// The pairing rule (ADR-0095). `on_hover` fires on the crossing its node's `hover` signal
-    /// reports, so without a slot the callback is unreachable -- refused, rather than left to be a
+    /// The pairing rule (ADR-0095). `on_hover` fires on the crossing its node's `hover` signal's
+    /// pointer record reports, so without a slot the callback is unreachable -- refused, rather than left to be a
     /// handler a config watches never fire.
     #[test]
     fn on_hover_without_a_hover_slot_is_refused() {

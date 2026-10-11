@@ -311,7 +311,7 @@ props! {
         ///
         /// Book: One of the [cursor names](#cursor-names). The innermost node under the pointer that sets one wins
         cursor: Bound<Cursor> = absent(Prose(r#"`"pointer"` on a node with `on_click`, `on_press`, `on_drag`, `on_wheel` or `submits_secure` and on a link, `"text"` on a `textfield`, else the arrow"#));
-        /// Called on each hover edge from pointer Enter, Motion or Leave; layout changes under a still pointer do not call it. Refused without `hover` on the same node.
+        /// Called on each hover edge from pointer Enter, Motion or Leave; layout moving the node under or off a still pointer does not call it, and the next motion does. Refused without `hover` on the same node.
         on_hover(hovered: bool);
         /// A key pressed or repeating while the keyboard is on this node or one inside it, or, on a surface root, anywhere on that surface. It goes to the focused node first, then each ancestor, then the surface root; a handler that returns `true` stops it. A focused `textfield` takes the keys it edits with and passes on the rest (arrows at the caret's edge, Up, Down, paging, Tab, Ctrl chords); Tab moves control focus when it can. Never called while a `secure_submit` field is armed, or for a bare modifier. Without `accessible_name` the node is not focusable and hears only what its descendants pass up.
         ///

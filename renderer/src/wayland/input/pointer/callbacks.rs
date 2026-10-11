@@ -75,14 +75,10 @@ pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fir
     let Some(handle) = write.signal.hover_handle() else {
         return;
     };
-    // The boolean gates rect and callback writes.
-    let crossed = handle.set_changed(mlua::Value::Boolean(write.hovered));
-    if !crossed {
-        return;
-    }
     // Rects are edge-only, not merely an optimization: mlua table equality is identity, so
     // a fresh equal table would undo decision 4 on every motion.
-    if let Some(rect) = write.rect
+    if handle.set_changed(mlua::Value::Boolean(write.hovered))
+        && let Some(rect) = write.rect
         && let Some(rect_handle) = write.signal.hover_rect_handle()
     {
         match rect_table(lua, rect) {
@@ -91,9 +87,12 @@ pub(crate) fn apply_hover_write(lua: &Lua, write: layout::hover::HoverWrite, fir
             Err(err) => warn!("{surface_id}: could not build a hover rect: {err}"),
         }
     }
-    // Fire only on edges (ADR-0095): device-rate motion could call a handler hundreds of
-    // times across one node. Swallow handler errors like `fire_on_click`.
-    if fires_on_hover && let Some(on_hover) = &write.on_hover {
+    // Fire only on the pointer's own edges (ADR-0095): device-rate motion could call a handler
+    // hundreds of times across one node. Swallow handler errors like `fire_on_click`.
+    if fires_on_hover
+        && write.signal.pointer_crossed(write.hovered)
+        && let Some(on_hover) = &write.on_hover
+    {
         call_logged(on_hover, write.hovered, format_args!("{surface_id}: on_hover handler"));
     }
 }
@@ -131,6 +130,45 @@ mod tests {
         apply_hover_write(&lua, write, true, "bar");
 
         assert_eq!(*seen.borrow(), Some(140.0), "the handler saw this crossing, not the one before it");
+    }
+
+    /// Layout writes `hover` silently under a still pointer (ADR-0112 decision 8), so `on_hover`
+    /// judges an edge by what the last pointer event said, not by the signal: the first motion
+    /// after layout slid the node in or out still fires, and a still pointer never does.
+    #[test]
+    fn on_hover_fires_on_the_first_motion_after_layout_moved_the_node_under_or_off_the_pointer() {
+        let lua = Lua::new();
+        let (signal, rect_signal) =
+            crate::lua::signal::Signal::new_hover(crate::lua::signal::DirtyFlag::new(), mlua::Value::Boolean(false));
+        let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let sink = std::rc::Rc::clone(&seen);
+        let on_hover = lua
+            .create_function(move |lua, hovered: bool| {
+                let mlua::Value::Table(rect) = rect_signal.get_value(lua).unwrap() else { panic!("a rect table") };
+                sink.borrow_mut().push((hovered, rect.get::<f32>("x").unwrap()));
+                Ok(())
+            })
+            .unwrap();
+        let write = |hovered, x, pointer| {
+            let write = layout::hover::HoverWrite {
+                signal: signal.clone(),
+                hovered,
+                // `hover_writes` reports a rect only for a hovered node.
+                rect: hovered.then_some(LogicalRect { x, y: 0.0, width: 24.0, height: 24.0 }),
+                on_hover: Some(on_hover.clone()),
+            };
+            apply_hover_write(&lua, write, pointer, "bar");
+            std::mem::take(&mut *seen.borrow_mut())
+        };
+        let none = Vec::<(bool, f32)>::new();
+
+        assert_eq!(write(true, 10.0, false), none, "layout sliding the node under a still pointer is silent");
+        assert_eq!(write(false, 0.0, true), none, "a pointer that never entered does not leave");
+        assert_eq!(write(true, 10.0, false), none);
+        assert_eq!(write(true, 20.0, true), [(true, 10.0)], "the next motion fires, with the layout-time rect");
+        assert_eq!(write(true, 20.0, true), none, "motion that stays inside fires nothing");
+        assert_eq!(write(false, 0.0, false), none, "layout sliding it off is silent");
+        assert_eq!(write(false, 0.0, true), [(false, 10.0)], "the next motion outside it is the pointer's leave");
     }
 
     #[test]

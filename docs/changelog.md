@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - Added: `size` (bytes) on each `mantle.folders` entry; a symlink reports its target's size.
+- Changed: `on_hover` fires on the first pointer motion after layout moved its node under or off a still pointer; before, the pointer had to leave the node and come back.
 
 ## 0.7.0 - 2026-10-11
 
