@@ -12,7 +12,7 @@ it is history and may be stale, so cite an ADR only as a "why" pointer after the
 | `just docs` | Serves the book at `http://localhost:3000`, rebuilt on save |
 | `just book` | Builds the book as CI publishes it, then checks every link and anchor |
 | `just stubs` | Regenerates every `lua-meta/*.lua`, every `docs/capabilities/<name>.md` and the generated property tables |
-| `cargo test -p renderer doc_examples` | Runs every Lua block in `docs/` and checks every screenshot (part of `just check`) |
+| `cargo test -p renderer every_lua_block_in_the_docs` | Runs every Lua block in `docs/` and checks every screenshot (part of `just check`) |
 | `just shots` | Re-renders the screenshots that changed, deletes orphans, lists what moved |
 | `just rustdoc` | Rustdoc for the crates, warnings as errors. Not this book |
 

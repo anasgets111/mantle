@@ -29,7 +29,7 @@ cited only as the why behind behavior the code confirms.
 
 | Command | Use |
 | --- | --- |
-| `just` / `just check` | Full suite: fmt-check, test, lint, rustdoc, lua, types |
+| `just` / `just check` | Full suite: fmt-check, test, lint, rustdoc, lua, types. The commit hook runs the part the staged paths need |
 | `just fmt` | Format Rust and Lua |
 | `just book` | Build the docs and check local links and anchors. `just docs` serves them |
 | `just stubs` | Regenerate the generated files below |
@@ -41,7 +41,7 @@ cited only as the why behind behavior the code confirms.
 | `just preview-beat <from> <to>` | Play the demo from one edit to another, with screenshots in `target/demo-shots/<from>` |
 | `just demo-check` | Headless demo validation: planner tests, every edit's checkpoint through `mantle check` at three screens, layout fit, typing budget, line length |
 | `just heaptrack [renderer\|supervisor] [secs]` | Dev build under heaptrack for `secs` (default 900), then restore the installed shell |
-| `just tag-release X.Y.Z` | Set the version, run `just stubs check`, date the changelog's `Unreleased`, commit and tag `vX.Y.Z`. Pushing the tag publishes the release |
+| `just tag-release X.Y.Z` | Set the version, run `just stubs`, date the changelog's `Unreleased`, commit (the hook checks) and tag `vX.Y.Z`. Pushing the tag publishes the release |
 | `just hooks` | Install pre-commit checks chosen by staged paths; stale generated files are rewritten and the commit refused |
 
 ## Checks by change
@@ -56,7 +56,7 @@ Run the rows that match the change; combine rows across categories. Always run `
 | Lua examples, screenshot fixtures, images in `docs/` | `just book` and `cargo test -p renderer every_lua_block_in_the_docs` |
 | `demo/director` edits | `just lua demo-check` |
 | Lua configs | `just lua types` (needs `lua-language-server`). Types covers only the starter and stubs; check other runnable configs with `mantle -c DIR check` |
-| Rust, Cargo files, compiled fixtures, embedded files | `just check` |
+| Rust, Cargo files, compiled fixtures, embedded files | The commit hook; `just check` only when not committing |
 | Generated files or their sources | `just stubs`, then the checks for the changed sources and outputs |
 | Build tools, hooks, packaging, CI | Validate the changed script, recipe or workflow; run the affected checks |
 
@@ -165,8 +165,8 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
 - **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`) and
   runs the rows the hook skips; its commit runs the hook, and it fixes what fails. Never the full
   `just check`. A commit is a full build: commits and builds take one machine-wide lock, so only
-  one runs at a time. The hook takes it itself when `git config mantle.buildWrapper` names the
-  lock command (shared by every worktree).
+  one runs at a time. The hook and the justfile's build recipes take it when `git config
+  mantle.buildWrapper` names the lock command (shared by every worktree).
 - **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
   branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
   no second check. If it has, the delegate rebases onto `main` and runs `git commit --amend

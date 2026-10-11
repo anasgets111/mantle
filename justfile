@@ -6,15 +6,20 @@
 
 default: check
 
+# Builds take the machine-wide lock named by `git config mantle.buildWrapper`, the one the commit hook
+# takes, so a recipe never compiles beside another build. Unset, they run bare.
+lock := `git config --get mantle.buildWrapper || true`
+locked := if lock == "" { "" } else { "TIMEOUT=${TIMEOUT:-1800} " + lock }
+
 # Both binaries.
 build:
-    cargo build --workspace
+    {{locked}} cargo build --workspace
 
 release:
-    cargo build --workspace --release
+    {{locked}} cargo build --workspace --release
 
 # Sets the workspace version, refreshes what embeds it, dates the changelog's Unreleased section,
-# checks, commits and tags `v{{version}}`. Pushing the tag is left to you: it publishes the release.
+# commits (the hook checks) and tags `v{{version}}`. Pushing the tag is left to you: it publishes the release.
 tag-release version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -25,7 +30,7 @@ tag-release version:
     sed -i '/^\[workspace.package\]/,/^\[/ s/^version = ".*"/version = "{{version}}"/' Cargo.toml
     sed -i "0,/^## Unreleased$/ s//## Unreleased\n\n## {{version}} - $(date +%F)/" docs/changelog.md
     cargo update -w
-    just stubs check
+    just stubs
     git commit -qam "Release {{version}}"
     git tag -a "v{{version}}" -m "v{{version}}"
     echo "tagged v{{version}}; publish with: git push origin main v{{version}}"
@@ -45,19 +50,19 @@ run config="share/starter": build
 #   MANTLE_DEMO_MONITOR output the screenshots and recording capture (default: the shell's screen)
 #   MANTLE_DEMO_DIR     scratch config directory (default $XDG_RUNTIME_DIR/mantle-demo)
 demo out="":
-    cargo build --workspace --profile swap
+    {{locked}} cargo build --workspace --profile swap
     MANTLE_DEMO_OUT="{{out}}" demo/director/tools/run.sh
 
 # Like `demo`, it stops your shells for the take and restores them after.
 [doc('Play the demo from one edit (`09-media`, `typo`, ...) to the end, without recording.')]
 preview from:
-    cargo build --workspace --profile swap
+    {{locked}} cargo build --workspace --profile swap
     MANTLE_DEMO_FROM="{{from}}" demo/director/tools/run.sh
 
 # Plays edits `from` to `to` with screenshots in `target/demo-shots/<from>`. Stops your shells.
 [doc('Play the demo from edit `from` to edit `to` and screenshot each beat.')]
 preview-beat from to:
-    cargo build --workspace --profile swap
+    {{locked}} cargo build --workspace --profile swap
     MANTLE_DEMO_FROM="{{from}}" MANTLE_DEMO_TO="{{to}}" \
         MANTLE_DEMO_SHOTS="$(realpath -m "${CARGO_TARGET_DIR:-target}")/demo-shots/{{from}}" demo/director/tools/run.sh
 
@@ -69,7 +74,7 @@ demo-check:
 
 # Everything a change has to pass before it is done, on what would be committed.
 check:
-    just staged-only just fmt-check test lint rustdoc lua types
+    {{locked}} just staged-only just fmt-check test lint rustdoc lua types
 
 # Runs `command` on the staged tree. With both staged and unstaged edits, the unstaged ones are saved
 # as a patch, reverted, and re-applied on exit. A patch left by a killed run blocks the next.
@@ -97,16 +102,16 @@ hooks:
     @echo "core.hooksPath -> .githooks"
 
 test:
-    cargo test --workspace
+    {{locked}} cargo test --workspace
 
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    {{locked}} cargo clippy --workspace --all-targets -- -D warnings
 
 # Rustdoc warnings, which clippy does not check. For a link to a private item, demote it to a plain
 # backtick path; never widen visibility for rustdoc.
 [doc('Rustdoc warnings, including unresolved intra-doc links.')]
 rustdoc:
-    RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps
+    RUSTDOCFLAGS="-D warnings" {{locked}} cargo doc --workspace --no-deps
 
 # The book at http://localhost:3000, rebuilt on save.
 docs:
@@ -177,12 +182,12 @@ lua:
 # payload types, node and surface property tables from the renderer's property table.
 # Every golden test is named `the_generated_*`. Then show what moved.
 stubs:
-    UPDATE_STUBS=1 cargo test -p supervisor -p renderer the_generated_
+    UPDATE_STUBS=1 {{locked}} cargo test -p supervisor -p renderer the_generated_
     @git diff --stat -- lua-meta docs
 
 # Re-render the docs screenshots that moved past the tolerance, delete orphans, then show what moved.
 shots:
-    UPDATE_SHOTS=1 cargo test -p renderer every_lua_block_in_the_docs
+    UPDATE_SHOTS=1 {{locked}} cargo test -p renderer every_lua_block_in_the_docs
     @git status --short -- docs/images
 
 # Separate from `lint` because a diff and a warning fail differently, and folding them buries the
@@ -199,26 +204,33 @@ fmt:
 # Where `cargo install` put the shell that is actually running.
 cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 
+# Kills the installed shell, plus any process whose executable matches one of `patterns` (globs).
+# By the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches the
+# calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
+# copy from a `target/` one.
+[private]
+stop *patterns:
+    #!/usr/bin/env bash
+    set -f
+    for d in /proc/[0-9]*; do
+        exe="$(readlink "$d/exe" 2>/dev/null)" || continue
+        for p in "{{cargo_bin}}/mantle" "{{cargo_bin}}/mantle-renderer" {{patterns}}; do
+            case "$exe" in $p) kill "${d#/proc/}" || true; break;; esac
+        done
+    done
+
 # What `just swap` builds; `just profile=release swap` builds the shipped binary instead.
 profile := "swap"
 
 # The edit-build-swap-restart loop for the compositor-interaction bugs no unit test reaches, and the
 # only path that exercises an optimised build. `args` passes through to the new shell, as in
 # `just swap --profile=120`.
-#
-# Kills by the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches
-# the calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
-# copy from a `target/` one.
 [doc('Rebuild, swap both binaries under `cargo_bin`, and restart the shell detached.')]
 swap args="":
     #!/usr/bin/env bash
     set -euo pipefail
-    cargo build --workspace --profile {{profile}}
-    for d in /proc/[0-9]*; do
-        case "$(readlink "$d/exe" 2>/dev/null)" in
-            {{cargo_bin}}/mantle|{{cargo_bin}}/mantle-renderer) kill "${d#/proc/}" || true;;
-        esac
-    done
+    {{locked}} cargo build --workspace --profile {{profile}}
+    just stop
     # Copying over a running binary is ETXTBSY, so let both of those actually go first.
     sleep 2
     install -Dm755 target/{{profile}}/mantle          "{{cargo_bin}}/mantle"
@@ -261,13 +273,7 @@ heaptrack which="renderer" secs="900": build
     fi
     chmod +x "$work/prefix/mantle-renderer"
     rm -f "$work/{{which}}.zst"
-    stop() {
-        for d in /proc/[0-9]*; do
-            case "$(readlink "$d/exe" 2>/dev/null)" in
-                {{cargo_bin}}/mantle|"$work"/prefix/mantle|*/mantle-renderer) kill "${d#/proc/}" || true;;
-            esac
-        done
-    }
+    stop() { just stop "$work/prefix/mantle" '*/mantle-renderer'; }
     stop
     sleep 2
     if [ "{{which}}" = renderer ]; then
