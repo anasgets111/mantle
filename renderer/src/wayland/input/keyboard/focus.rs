@@ -76,12 +76,13 @@ fn next_index(len: usize, current: Option<usize>, backwards: bool) -> usize {
     }
 }
 
+/// `None` when there is nowhere to go, the focused control being the only one, so Tab reaches `on_key`.
 fn tab_target(controls: &[Control], current: Option<&FocusedControl>, backwards: bool) -> Option<usize> {
-    if controls.is_empty() || (controls.len() == 1 && controls[0].focus.kind == ControlKind::Plain) {
+    if controls.is_empty() {
         return None;
     }
     let current = current.and_then(|focus| controls.iter().position(|control| &control.focus == focus));
-    Some(next_index(controls.len(), current, backwards))
+    Some(next_index(controls.len(), current, backwards)).filter(|&next| Some(next) != current)
 }
 
 fn dispatch_tab(
@@ -327,7 +328,7 @@ impl App {
         self.sync_focused();
     }
 
-    /// Repaints only on a flip: Tab onto the sole, already focused control shows the outline.
+    /// Repaints only on a flip.
     pub(in crate::wayland) fn set_focus_visible(&mut self, visible: bool) {
         if self.focus_visible == visible {
             return;
@@ -663,7 +664,21 @@ mod tests {
         assert_eq!(focused, Some(list[1].focus.clone()), "Shift+Tab wraps backward");
 
         list.truncate(1);
-        assert!(!dispatch_tab(&list, None, false, |_| panic!("one plain field keeps Tab")));
+        assert!(dispatch_tab(&list, None, false, |_| ()), "an unfocused lone field takes focus");
+        let current = Some(list[0].focus.clone());
+        assert!(!dispatch_tab(&list, current.as_ref(), false, |_| panic!("the focused lone field keeps Tab")));
+    }
+
+    #[test]
+    fn tab_on_the_sole_focused_button_moves_nothing_and_reaches_on_key() {
+        let lua = Lua::new();
+        let button = named_button(&lua, "Open");
+        let mut list = Vec::new();
+        controls("panel@TEST", &button, &mut list);
+        let current = Some(list[0].focus.clone());
+        for backwards in [false, true] {
+            assert!(!dispatch_tab(&list, current.as_ref(), backwards, |_| panic!("nothing moves")));
+        }
     }
 
     #[test]

@@ -10,6 +10,9 @@ version is 0.x, a minor release can break the Lua API.
 - Added: `size` (bytes) on each `mantle.folders` entry; a symlink reports its target's size.
 - Changed: `on_hover` fires on the first pointer motion after layout moved its node under or off a still pointer; before, the pointer had to leave the node and come back.
 - Added: `text` `elide` accepts `"start"` (`…` then the end) and `"middle"` (start and end around a `…`, the end taking the odd character), cutting at grapheme boundaries; `elided(name)` is true for either. Under `wrap = "word"` both act as `"end"`.
+- Fixed: Tab on the only control, while it holds focus, reaches `on_key` instead of being swallowed.
+- Changed: Tab on a lone plain `textfield` that does not hold focus focuses it; it used to reach `on_key`.
+- Changed: Tab on the only control, while it holds focus, no longer shows the focus outline; the key reaches `on_key` instead.
 
 ## 0.7.0 - 2026-10-11
 

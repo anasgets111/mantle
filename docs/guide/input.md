@@ -263,7 +263,7 @@ focus scope.
 
 Tab moves to the next control in document order across the focused surface and its shown popups.
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
-When fewer than two controls can take focus, Tab reaches `on_key`.
+Tab on the only control, while it holds focus, moves nothing and reaches `on_key`.
 Enter or Space activates a named control once per press, calling `on_click(rect, "left", pointer)`
 with `pointer` at the node's centre, and running `submits_secure` when set. Pointer presses also focus
 named controls.
@@ -313,7 +313,7 @@ what its descendants pass up. That is how a container sees the keys of the field
 
 A focused plain `textfield` takes the keys it edits with (characters, Backspace, Delete, Enter, caret
 motion, Ctrl+A/Z/Y, and Escape, unless `escape = "pass"` or there is nothing to clear and no `on_cancel`) and passes the rest up:
-Up, Down, paging, Tab with fewer than two controls, an arrow at the caret's edge, F-keys and other
+Up, Down, paging, Tab when the field is the only control, an arrow at the caret's edge, F-keys and other
 Ctrl chords (Ctrl+C, Ctrl+X and Ctrl+V copy, cut and paste while a field takes them, and reach `on_key` otherwise). Tab moves control focus when it can, so
 `on_key` hears Tab only where nothing moves. Repeats arrive with `repeat = true`.
 
@@ -441,7 +441,7 @@ a press.
 | `on_change(text)` | Every edit that changes the text, with the whole draft. Caret moves call nothing |
 | `on_submit(text)` | Enter, with the whole draft (possibly `""`). The draft then clears and `on_change("")` follows; the field keeps focus. A held Enter does not repeat |
 | `on_cancel(cleared)` | Escape. The draft clears, the field drops focus, `on_change("")` fires if there was text, then `on_cancel` gets whether text was removed. Without `on_cancel`, Escape clears and the field keeps focus |
-| `on_key(key)` | The keys the field does not edit with, from its own `on_key` up ([key handlers](#key-handlers)): Up, Down, paging, Left and Right when the caret cannot move that way and Shift is up, and Tab when fewer than two controls can take focus. The draft is untouched |
+| `on_key(key)` | The keys the field does not edit with, from its own `on_key` up ([key handlers](#key-handlers)): Up, Down, paging, Left and Right when the caret cannot move that way and Shift is up, and Tab when the field is the only control. The draft is untouched |
 | `escape` | What Escape does: `"clear"` (the default) as under `on_cancel`; `"blur"` keeps the draft and drops focus, then calls `on_cancel(false)`; `"pass"` keeps the draft and focus and does not take the key, which goes up through `on_key` and then to the surface's `on_escape`. A `secure_submit` field ignores it |
 | `autofocus` | `true`: take the keys, with the draft reset to `initial_text` (`""` when unset) and a call to `on_change` with it, when the surface gains keyboard focus or the field appears under it. The first visible such field or [focusable control](#keyboard-controls-and-accessibility) in document order wins. A field never takes over from one already typing, nor re-takes one the user just clicked away from. A control arms only while no control holds focus, once per appearance or keyboard enter |
 | `focus_target` | A `focus_target(name)` handle. `:request()` from an `on_click`, `on_key`, or an edit typed or committed into the field (`on_change`, `on_submit`, `on_cancel`) focuses the first visible plain field with that name on the same keyboard-focused surface or a popup under it, after the callback's state changes appear. It keeps that field's draft and caret and does not call `on_change`. A key callback's request shows the focus outline |
@@ -468,7 +468,7 @@ a press.
 | Ctrl+V | Replaces selection with clipboard text; `on_change` | Appends clipboard text to the native buffer |
 | Up, Down, Page Up, Page Down | Pass up to `on_key` | Nothing |
 | Multiline: Return, Up, Down, Home, End | Return inserts a newline and `submit_key` submits; Up and Down move by visual row (from the first or last row they pass up to `on_key`); Home and End go to the row's ends, Ctrl+Home and Ctrl+End to the text's | Never multiline |
-| Tab, Shift+Tab | Moves between controls when at least two are available; otherwise passes up to `on_key` (`"ISO_Left_Tab"` for Shift+Tab) | Moves between controls when at least two are available |
+| Tab, Shift+Tab | Moves between controls; when the field is the only control, passes up to `on_key` (`"ISO_Left_Tab"` for Shift+Tab) | Moves between controls |
 | Any other Ctrl chord | Left to the compositor | Same |
 
 **Selection and clipboard.** Dragging or Shift+clicking with the pointer selects too. A
@@ -839,7 +839,7 @@ return panel {
 | A field with only `on_key`/`on_cancel` ignores clicks | Add `on_change` or `on_submit` |
 | Tab skips a button, or Tab does nothing | Give the button an `accessible_name`, and the panel a `keyboard_interactivity` other than `"none"` |
 | A clicked or `autofocus` field shows no focus outline | The outline follows keyboard navigation only. Bind `focus_visible(name)` to draw your own ring by the same rule, or `focused(name)` for a style that tracks any focus |
-| Tab stopped reaching `on_key` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_key` only when the field is the sole control |
+| Tab stopped reaching `on_key` | With two or more controls in the focus scope, Tab moves focus instead. It reaches `on_key` only when the focused node is the sole control |
 | The mouse wheel does nothing over a scrolling `row` | Rows scroll on the horizontal axis. Use a `column`, or an `on_wheel` on a node around it that moves the row |
 | A `scroll` container never scrolls | Bound its size on the scroll axis; content-sized means nothing overflows |
 | `on_hover` is refused | Add `hover = hover("name")` on the same node |
