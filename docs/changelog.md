@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Added: `size` (bytes) on each `mantle.folders` entry; a symlink reports its target's size.
+
 ## 0.7.0 - 2026-10-11
 
 ### Renamed

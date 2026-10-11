@@ -154,6 +154,7 @@
 ---@field modified integer Modification time in Unix seconds; `0` when unavailable.
 ---@field name string File name, e.g. `"sunrise.jpg"`.
 ---@field path string Absolute path.
+---@field size integer Size in bytes; a symlink reports its target's size.
 
 ---@class Folder
 ---@field entries FileEntry[] Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and sorted case-insensitively by name. Relisted 200 ms after the last change.

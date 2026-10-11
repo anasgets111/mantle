@@ -38,6 +38,7 @@ list {
 | `modified` | `integer` | Modification time in Unix seconds; `0` when unavailable. |
 | `name` | `string` | File name, e.g. `"sunrise.jpg"`. |
 | `path` | `string` | Absolute path. |
+| `size` | `integer` | Size in bytes; a symlink reports its target's size. |
 
 ### `Folder`
 

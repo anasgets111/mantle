@@ -34,4 +34,6 @@ pub struct FileEntry {
     pub path: String,
     /// Modification time in Unix seconds; `0` when unavailable.
     pub modified: i64,
+    /// Size in bytes; a symlink reports its target's size.
+    pub size: u64,
 }

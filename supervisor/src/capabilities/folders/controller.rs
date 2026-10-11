@@ -141,7 +141,12 @@ pub fn list_folder(dir: &Path, extensions: &[String]) -> std::io::Result<Vec<Fil
             continue;
         }
         let modified = metadata.modified().map_or(0, epoch_seconds);
-        entries.push(FileEntry { name: name.to_string(), path: entry.path().to_string_lossy().into_owned(), modified });
+        entries.push(FileEntry {
+            name: name.to_string(),
+            path: entry.path().to_string_lossy().into_owned(),
+            modified,
+            size: metadata.len(),
+        });
     }
     entries.sort_by_cached_key(|entry| (entry.name.to_lowercase(), entry.name.clone()));
     Ok(entries)
@@ -305,14 +310,16 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         touch(dir.path(), "b.jpg");
         touch(dir.path(), "A.png");
-        touch(dir.path(), "c.txt");
+        std::fs::write(dir.path().join("c.txt"), b"12345").unwrap();
+        std::os::unix::fs::symlink(dir.path().join("c.txt"), dir.path().join("link.txt")).unwrap();
         touch(dir.path(), ".hidden.jpg");
         std::fs::create_dir(dir.path().join("sub.jpg")).unwrap();
         let all = list_folder(dir.path(), &[]).unwrap();
         let names: Vec<&str> = all.iter().map(|entry| entry.name.as_str()).collect();
-        assert_eq!(names, ["A.png", "b.jpg", "c.txt"]);
+        assert_eq!(names, ["A.png", "b.jpg", "c.txt", "link.txt"]);
         assert_eq!(all[0].path, dir.path().join("A.png").to_string_lossy());
         assert!(all[0].modified > 0);
+        assert_eq!((all[0].size, all[2].size, all[3].size), (1, 5, 5), "a symlink reports its target's size");
 
         let images = list_folder(dir.path(), &["jpg".to_string(), "png".to_string()]).unwrap();
         let names: Vec<&str> = images.iter().map(|entry| entry.name.as_str()).collect();
