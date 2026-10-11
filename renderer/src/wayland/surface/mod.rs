@@ -530,7 +530,11 @@ impl App {
         if self.surfaces[index].map_state == MapState::AwaitingConfigure {
             self.surfaces[index].map_state = MapState::Mapped;
         }
-        self.apply_exclusive_zone(index);
+        // Only `Reserve` depends on the configured size; the rest went out before the first commit.
+        if matches!(&self.surfaces[index].role, TrackedRole::Panel { spec, .. } if spec.exclusive == node::Exclusive::Reserve)
+        {
+            self.apply_exclusive_zone(index);
+        }
         // Apply resolved state on first configure too: a full transparent panel can otherwise mark
         // the scene clean before its input region is ever set and swallow clicks behind it.
         self.apply_resolved_state(index);

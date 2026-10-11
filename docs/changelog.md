@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a panel with `exclusive_zone = "ignore"` or a fixed zone no longer maps at a transient size; the zone is sent before the first commit.
 - Added: `size` (bytes) on each `mantle.folders` entry; a symlink reports its target's size.
 - Changed: `on_hover` fires on the first pointer motion after layout moved its node under or off a still pointer; before, the pointer had to leave the node and come back.
 - Added: `text` `elide` accepts `"start"` (`…` then the end) and `"middle"` (start and end around a `…`, the end taking the odd character), cutting at grapheme boundaries; `elided(name)` is true for either. Under `wrap = "word"` both act as `"end"`.

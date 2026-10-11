@@ -171,6 +171,17 @@ fn exclusive_zone_for(anchor: node::Anchor, configured_size: (u32, u32)) -> i32 
         _ => 0,
     }
 }
+/// The zone `spec` asks for. Only `Reserve` needs the configured size, so every other mode is
+/// known before the first configure and must be sent before the first commit.
+fn zone_for(spec: &PanelSpec, configured_size: (u32, u32)) -> i32 {
+    match spec.exclusive {
+        node::Exclusive::Reserve => exclusive_zone_for(spec.topology.anchor, configured_size),
+        node::Exclusive::Zone(zone) => zone,
+        node::Exclusive::Respect => 0,
+        // `-1` is the protocol's "ignore every zone" sentinel.
+        node::Exclusive::Ignore => -1,
+    }
+}
 /// Double-buffered layer-shell changes: `margin`, `keyboard_interactivity`, size, and `exclusive_zone`
 /// (ADR-0038 decision 2). `None` means unchanged. Topology (`id`, `layer`, `anchor`,
 /// `output`, `namespace`) is absent because `get_layer_surface` consumes namespace/output, so an
@@ -238,6 +249,9 @@ impl App {
         layer.set_size(size.0, size.1);
         layer.set_keyboard_interactivity(keyboard_interactivity_for(spec.keyboard_interactivity));
         set_margin(&layer, spec.margin);
+        // Before the first commit: the protocol default `0` would configure the surface at the
+        // output minus other surfaces' zones, then again once `-1` arrived.
+        layer.set_exclusive_zone(zone_for(spec, (0, 0)));
         layer.commit();
         (layer, scale)
     }
@@ -360,13 +374,7 @@ impl App {
         let TrackedRole::Panel { layer: Some(layer), spec, .. } = &tracked.role else {
             return;
         };
-        let zone = match spec.exclusive {
-            node::Exclusive::Reserve => exclusive_zone_for(spec.topology.anchor, tracked.configured_size),
-            node::Exclusive::Zone(zone) => zone,
-            node::Exclusive::Respect => 0,
-            // `-1` is the protocol's "ignore every zone" sentinel.
-            node::Exclusive::Ignore => -1,
-        };
+        let zone = zone_for(spec, tracked.configured_size);
         layer.set_exclusive_zone(zone);
     }
 
@@ -659,6 +667,22 @@ mod tests {
         assert_eq!(exclusive_zone_for(node::Anchor::default(), (400, 300)), 0);
         let corner = node::Anchor { top: true, right: false, bottom: false, left: true };
         assert_eq!(exclusive_zone_for(corner, (400, 300)), 0);
+    }
+
+    #[test]
+    fn every_exclusive_mode_except_reserve_is_known_before_the_first_configure() {
+        let mut spec = panel("zones");
+        spec.topology.anchor = node::Anchor { top: true, right: true, bottom: false, left: true };
+        for (mode, zone) in [
+            (node::Exclusive::Ignore, -1),
+            (node::Exclusive::Respect, 0),
+            (node::Exclusive::Zone(24), 24),
+            (node::Exclusive::Reserve, 0),
+        ] {
+            spec.exclusive = mode;
+            assert_eq!(zone_for(&spec, (0, 0)), zone);
+        }
+        assert_eq!(zone_for(&spec, (1920, 32)), 32, "Reserve is corrected once the size is known");
     }
 
     fn panel(id: &str) -> PanelSpec {
