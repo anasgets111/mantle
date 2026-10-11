@@ -169,9 +169,9 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
   mantle.buildWrapper` names the lock command (shared by every worktree).
 - **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
   branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
-  no second check. If it has, the delegate rebases onto `main` and runs `git commit --amend
-  --no-edit`, so the hook checks the combined tree, then fast-forward. Then remove the worktree,
-  branch and target dir.
+  no second check. If it has, the delegate rebases onto `main`, then runs `git reset --soft main
+  && git commit -C ORIG_HEAD`: the hook picks its checks from staged paths, so an amend that stages
+  nothing checks nothing. Then fast-forward, and remove the worktree, branch and target dir.
 
 ## Skills
 
