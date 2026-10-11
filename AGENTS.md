@@ -136,17 +136,18 @@ They are embedded in the renderer, never checked in or touched by `just stubs`.
 
 ## Delegating to agents
 
-Any agent may coordinate others. The coordinator owns the result: it reviews, merges, commits,
-and writes `DECISIONS.md` and `docs/roadmap.md`.
+Any agent may coordinate others. The coordinator owns the result: it reviews, lands commits on
+`main`, and writes `DECISIONS.md` and `docs/roadmap.md`.
 
 - **Brief.** A delegate starts cold and cannot ask. Give it the files, the decisions already made,
   what must not change, the exact checks, an insertion ceiling, and permission to push back with
   evidence.
-- **Isolation.** One task per git worktree. Delegates never commit, stage or stash; the stash is
-  shared across worktrees. Research runs read-only.
-- **Shared outputs.** Delegates may run `just stubs` in their own worktree; after merging, the
-  coordinator regenerates once. Resolve changelog conflicts by hand; for generated files, take
-  either side, then run `just stubs`.
+- **Isolation.** One task per git worktree, on its own branch `wt/<name>` cut from `main`.
+  A delegate commits only there, one commit per change (`--amend` for follow-ups), and never
+  stashes: the stash is shared across worktrees. Research runs read-only.
+- **Shared outputs.** Delegates run `just stubs` and commit the regenerated files with their change.
+  On a rebase conflict in a generated file, take either side, then `just stubs`; resolve
+  changelog conflicts by hand.
 - **Build.** Cargo names workspace artifacts by path relative to the workspace root, so worktrees
   sharing one `CARGO_TARGET_DIR` overwrite each other's crates and test stale code. Give each its
   own target dir. A target that was shared keeps foreign artifacts cargo thinks are fresh:
@@ -157,17 +158,19 @@ and writes `DECISIONS.md` and `docs/roadmap.md`.
   then have three fresh read-only agents with no stake audit it, one lens each: decisions and
   bugs; size and duplication; tests, lifecycle, security and docs. Slop shows as a diff over its
   ceiling, helpers that duplicate existing code, a feature quietly narrowed, or tests that assert
-  nothing new. Grep for an existing equivalent of every new function, type and fixture. New files
-  are untracked: the coordinator runs `git add -N` on them before measuring or auditing, or
-  `git diff` hides them.
+  nothing new. Grep for an existing equivalent of every new function, type and fixture. Audit the
+  commit (`git show wt/<name>`), so new files are included.
 - **Sandbox.** A delegate's sandbox may block sockets, D-Bus and Wayland. Rerun failures it reports
   outside the sandbox before believing them.
-- **Checks.** A delegate never commits, so no hook runs for it. It iterates on the tests it touched
-  (`cargo test -p <crate> <filter>`), then before reporting runs `just fmt-check lint` (clippy
-  builds the tests too) and the rows the hook skips. Never the full `just check`: the coordinator's
-  commit runs the suite once.
-- **Merge.** Send gaps back to the same delegate, which keeps its context. Once a diff passes, apply
-  it to `main` with `git apply --3way` and commit; the hook checks the merged tree.
+- **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`) and
+  runs the rows the hook skips; its commit runs the hook, and it fixes what fails. Never the full
+  `just check`. A commit is a full build: commits and builds take one machine-wide lock, so only
+  one runs at a time.
+- **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
+  branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
+  no second check. If it has, the delegate rebases onto `main` and runs `git commit --amend
+  --no-edit`, so the hook checks the combined tree, then fast-forward. Then remove the worktree,
+  branch and target dir.
 
 ## Skills
 
