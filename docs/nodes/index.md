@@ -361,7 +361,7 @@ See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../gu
 Source: [node vocabulary](../../renderer/src/lua/nodes/properties.rs),
 [layout solver](../../renderer/src/layout/scene/solver.rs),
 [pass and reconciliation](../../renderer/src/layout/scene/pass.rs),
-[property resolution](../../renderer/src/layout/node/mod.rs),
+[property resolution](../../renderer/src/layout/node/resolve.rs),
 [geometry parsers](../../renderer/src/layout/node/style/mod.rs),
 [transforms](../../renderer/src/layout/node/style/transform.rs),
 [hit testing and cursors](../../renderer/src/layout/hit.rs) (names from the `cursor-icon` crate),

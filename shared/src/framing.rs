@@ -43,14 +43,37 @@ impl From<FramingError> for std::io::Error {
     }
 }
 
-/// Writes a 4-byte big-endian length prefix followed by `payload`, then flushes so a buffered
-/// writer never holds a frame back.
-pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<(), FramingError> {
+/// The length prefix for `payload`, refusing one over [`MAX_FRAME_LEN`].
+fn prefix(payload: &[u8]) -> Result<[u8; 4], FramingError> {
     if payload.len() > MAX_FRAME_LEN {
         return Err(FramingError::FrameTooLarge { len: payload.len() });
     }
-    let len = payload.len() as u32; // safe: bounded by MAX_FRAME_LEN above, which fits in u32.
-    writer.write_all(&len.to_be_bytes()).await?;
+    Ok((payload.len() as u32).to_be_bytes()) // safe: MAX_FRAME_LEN fits in u32.
+}
+
+/// The payload length a prefix announces, checked before any allocation.
+fn frame_len(prefix: [u8; 4]) -> Result<usize, FramingError> {
+    let len = u32::from_be_bytes(prefix) as usize;
+    if len > MAX_FRAME_LEN {
+        return Err(FramingError::FrameTooLarge { len });
+    }
+    Ok(len)
+}
+
+/// Scrubbing storage for a payload: sized up front when small, empty (so it grows as bytes arrive) when not.
+// ponytail: above SMALL_FRAME_LEN growth frees unscrubbed blocks; no secret is that large.
+fn payload_buf(len: usize) -> Zeroizing<Vec<u8>> {
+    Zeroizing::new(if len <= SMALL_FRAME_LEN { vec![0; len] } else { Vec::new() })
+}
+
+fn truncated() -> FramingError {
+    std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()
+}
+
+/// Writes a 4-byte big-endian length prefix followed by `payload`, then flushes so a buffered
+/// writer never holds a frame back.
+pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) -> Result<(), FramingError> {
+    writer.write_all(&prefix(payload)?).await?;
     writer.write_all(payload).await?;
     writer.flush().await?;
     Ok(())
@@ -64,17 +87,12 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(writer: &mut W, payload: &[u8]) 
 pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>, FramingError> {
     let mut len_bytes = [0u8; 4];
     reader.read_exact(&mut len_bytes).await?;
-    let len = u32::from_be_bytes(len_bytes) as usize;
-    if len > MAX_FRAME_LEN {
-        return Err(FramingError::FrameTooLarge { len });
-    }
-    // ponytail: above SMALL_FRAME_LEN growth frees unscrubbed blocks; no secret is that large.
-    let mut payload = Zeroizing::new(Vec::new());
+    let len = frame_len(len_bytes)?;
+    let mut payload = payload_buf(len);
     if len <= SMALL_FRAME_LEN {
-        payload.resize(len, 0);
         reader.read_exact(&mut payload).await?;
     } else if (&mut *reader).take(len as u64).read_to_end(&mut payload).await? < len {
-        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        return Err(truncated());
     }
     // Moving the allocation out leaves an empty `Vec` to drop; the bytes travel on to the caller.
     Ok(std::mem::take(&mut *payload))
@@ -83,10 +101,7 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
 /// [`write_frame`] for synchronous writers, such as the PAM worker's stdout inside nonstick's
 /// callbacks, which cannot `.await`.
 pub fn write_frame_blocking(mut writer: impl std::io::Write, payload: &[u8]) -> Result<(), FramingError> {
-    if payload.len() > MAX_FRAME_LEN {
-        return Err(FramingError::FrameTooLarge { len: payload.len() });
-    }
-    writer.write_all(&(payload.len() as u32).to_be_bytes())?;
+    writer.write_all(&prefix(payload)?)?;
     writer.write_all(payload)?;
     writer.flush()?;
     Ok(())
@@ -96,16 +111,12 @@ pub fn write_frame_blocking(mut writer: impl std::io::Write, payload: &[u8]) -> 
 pub fn read_frame_blocking(mut reader: impl std::io::Read) -> Result<Vec<u8>, FramingError> {
     let mut len_bytes = [0u8; 4];
     reader.read_exact(&mut len_bytes)?;
-    let len = u32::from_be_bytes(len_bytes) as usize;
-    if len > MAX_FRAME_LEN {
-        return Err(FramingError::FrameTooLarge { len });
-    }
-    let mut payload = Zeroizing::new(Vec::new());
+    let len = frame_len(len_bytes)?;
+    let mut payload = payload_buf(len);
     if len <= SMALL_FRAME_LEN {
-        payload.resize(len, 0);
         reader.read_exact(&mut payload)?;
     } else if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
-        return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into());
+        return Err(truncated());
     }
     Ok(std::mem::take(&mut *payload))
 }

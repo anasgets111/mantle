@@ -71,16 +71,12 @@ impl TrayController {
             }
             match zbus::fdo::DBusProxy::new(&connection).await {
                 Ok(dbus_proxy) => {
-                    // Subscribed before the scan, so a departure in between is not missed.
-                    if let Some(departures) = name_departures(&dbus_proxy, "vanished tray items stay listed").await {
-                        spawn_name_owner_changed_forwarder(
-                            connection.clone(),
-                            departures,
-                            registry.clone(),
-                            events.clone(),
-                        );
-                    }
+                    // Subscribe, scan, then forward: a departure during the scan is applied after the insert.
+                    let departures = name_departures(&dbus_proxy, "vanished tray items stay listed").await;
                     adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
+                    if let Some(departures) = departures {
+                        spawn_name_owner_changed_forwarder(connection.clone(), departures, registry, events);
+                    }
                 }
                 Err(err) => error!("failed to bind org.freedesktop.DBus for NameOwnerChanged tracking: {err}"),
             }

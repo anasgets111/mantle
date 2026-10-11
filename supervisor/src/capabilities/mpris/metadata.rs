@@ -3,7 +3,7 @@
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use crate::capabilities::file_url_to_path;
+use crate::capabilities::file_url::file_url_to_path;
 
 fn value_as_str<'a>(value: &'a Value<'_>) -> Option<&'a str> {
     match value {

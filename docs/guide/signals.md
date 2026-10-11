@@ -467,6 +467,6 @@ Source: [signal core](../../renderer/src/lua/signal/mod.rs),
 [globals](../../renderer/src/lua/signal/globals.rs),
 [read tracking](../../renderer/src/lua/signal/tracking.rs),
 [re-resolve](../../renderer/src/socket/client/resolve.rs),
-[property resolution](../../renderer/src/layout/node/mod.rs),
+[property resolution](../../renderer/src/layout/node/resolve.rs),
 [kept nodes](../../renderer/src/layout/scene/resolve.rs),
 [frozen subtrees](../../renderer/src/layout/scene/pass.rs).

@@ -11,7 +11,8 @@ use crate::capabilities::shm_icons;
 
 use super::markup::parse_markup;
 use super::{MAX_APP_ICON_NAME_BYTES, MAX_BODY_BYTES, MAX_IMAGE_DIMENSION, NotificationSpan};
-use crate::capabilities::{file_url_to_path, truncate_utf8_bytes};
+use crate::capabilities::file_url::file_url_to_path;
+use crate::capabilities::truncate_utf8_bytes;
 
 /// ADR-0033's trusted icon roots, with `$XDG_DATA_HOME` and `$HOME` resolved at runtime. Tests
 /// inject fixture roots.
@@ -31,6 +32,8 @@ pub(super) fn validate_trusted_path(path: impl AsRef<Path>, trusted_roots: &[Pat
         return None;
     }
     let canonical = candidate.canonicalize().ok()?;
+    // Every caller renders the path as a string; refuse one that would be lossy-converted.
+    canonical.to_str()?;
     if !canonical.is_file() {
         return None;
     }
@@ -252,6 +255,25 @@ mod tests {
             Some(file.canonicalize().unwrap().to_string_lossy().into_owned())
         );
         assert_eq!(validate_trusted_path(hint_path(&uri), &roots), Some(file.canonicalize().unwrap()));
+    }
+
+    #[test]
+    fn a_file_uri_that_escapes_or_decodes_badly_gets_no_icon() {
+        let dir = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("outside.png"), b"x").unwrap();
+        std::fs::write(dir.path().join("ok.png"), b"x").unwrap();
+        let roots = [dir.path().to_path_buf()];
+        let root = dir.path().display();
+        let traversal =
+            format!("file://{root}/%2e%2e/{}/outside.png", outside.path().file_name().unwrap().to_str().unwrap());
+        let bad_name = <std::ffi::OsString as std::os::unix::ffi::OsStringExt>::from_vec(b"\xff.png".to_vec());
+        std::fs::write(dir.path().join(bad_name), b"x").unwrap();
+        let non_utf8 = format!("file://{root}/%ff.png");
+        std::os::unix::fs::symlink(outside.path().join("outside.png"), dir.path().join("link.png")).unwrap();
+        for uri in [traversal, format!("file://{root}/ok.png%00"), non_utf8, format!("file://{root}/link.png")] {
+            assert_eq!(validate_trusted_path(hint_path(&uri), &roots), None, "{uri}");
+        }
     }
 
     fn valid_rgba_image(width: i32, height: i32) -> RawImageData {

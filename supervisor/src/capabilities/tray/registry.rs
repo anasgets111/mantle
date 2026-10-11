@@ -553,6 +553,28 @@ mod tests {
         assert!(!std::path::Path::new(&kept).exists(), "departure removes the rest");
     }
 
+    /// The departure lands while no forwarder runs yet (as during the startup scan); the
+    /// subscription buffers it, so the item inserted meanwhile is still removed.
+    #[tokio::test]
+    async fn an_item_whose_connection_drops_is_removed_once_the_forwarder_runs() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let host = bus.connection().await;
+        let dbus = zbus::fdo::DBusProxy::new(&host).await.unwrap();
+        let departures = crate::capabilities::name_departures(&dbus, "test").await.unwrap();
+        let app = bus.connection().await;
+        let unique = app.unique_name().unwrap().to_owned();
+        drop(app);
+        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let gone = entry(&host, "gone", 0).await;
+        registry.lock().unwrap().insert(key(unique.as_str()), gone);
+        let (events, mut pushed) = tokio::sync::mpsc::unbounded_channel();
+
+        spawn_name_owner_changed_forwarder(host.clone(), departures, registry.clone(), events);
+
+        crate::capabilities::test_support::within(pushed.recv()).await.expect("the forwarder announces the removal");
+        assert!(registry.lock().unwrap().is_empty());
+    }
+
     /// In-place updates must not move an item.
     #[tokio::test]
     async fn an_item_that_re_registers_holds_its_place() {

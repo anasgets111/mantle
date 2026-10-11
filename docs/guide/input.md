@@ -854,7 +854,7 @@ See also: [nodes](../nodes/index.md) ([`textfield`](../nodes/textfield.md), [`li
 [animation](animation.md) (press and hover motion), [capabilities](../capabilities/index.md) ([`lock`](../capabilities/lock.md),
 [`polkit`](../capabilities/polkit.md), [`network`](../capabilities/network.md)).
 
-Source: [pointer](../../renderer/src/wayland/input/pointer/mod.rs), [wheel](../../renderer/src/wayland/input/pointer/wheel.rs),
+Source: [pointer](../../renderer/src/wayland/input/pointer/mod.rs), [press and click](../../renderer/src/wayland/input/pointer/press.rs), [callbacks](../../renderer/src/wayland/input/pointer/callbacks.rs), [wheel](../../renderer/src/wayland/input/pointer/wheel.rs),
 [keyboard](../../renderer/src/wayland/input/keyboard/mod.rs), [text fields](../../renderer/src/wayland/input/keyboard/plain.rs),
 [secure fields](../../renderer/src/wayland/input/keyboard/secure.rs), [hit testing](../../renderer/src/layout/hit.rs),
 [hover](../../renderer/src/layout/hover.rs), [scroll](../../renderer/src/layout/scene/scroll.rs).

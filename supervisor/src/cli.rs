@@ -165,8 +165,8 @@ fn verbose_count(arg: &str) -> Option<u8> {
     (!vees.is_empty() && vees.bytes().all(|b| b == b'v')).then_some(vees.len() as u8)
 }
 
-/// Every option `parse` handles: exact spellings, then `--name=` prefixes. A test feeds each to
-/// `parse`, so a flag added there but missing here fails.
+/// Options `is_option` recognizes: exact spellings, then `--name=` prefixes. A test checks each is
+/// accepted by `parse`; a flag added only to `parse` must be listed here by hand.
 const FLAGS: &[&str] = &[
     "-c",
     "--config",

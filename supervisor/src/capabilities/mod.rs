@@ -11,8 +11,7 @@
 //! `mantle.<name>`, and command `capability`. [`read_attr`] lives here, `polkit` in
 //! `crate::polkit`, and `shm_icons` beside its two consumers (ADR-0076).
 
-use std::os::unix::ffi::OsStringExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -49,6 +48,7 @@ pub mod audio;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
+pub(crate) mod file_url;
 pub mod files;
 pub mod idle;
 pub mod keyboard;
@@ -151,49 +151,16 @@ pub(crate) async fn name_departures(
 /// Binds a macro-generated zbus proxy at `path`. A generated `<Proxy>::new` ties the proxy to
 /// `&Connection` even though its builder clones the connection, so stored proxies go through the
 /// builder to stay `'static`.
-pub async fn bind<T>(connection: &zbus::Connection, path: zbus::zvariant::OwnedObjectPath) -> zbus::Result<T>
+pub(crate) async fn bind<T>(connection: &zbus::Connection, path: zbus::zvariant::OwnedObjectPath) -> zbus::Result<T>
 where
     T: zbus::proxy::Defaults + From<zbus::Proxy<'static>>,
 {
     zbus::proxy::Builder::new(connection).path(path)?.build().await
 }
 
-/// A `file://` URL as a filesystem path: percent-decoded, with RFC 8089's optional `localhost`
-/// authority dropped.
-///
-/// Decoding is byte-wise because a path is bytes on Unix, not UTF-8: a filename the shell can
-/// open is not necessarily one `String` accepts.
-pub(crate) fn file_url_to_path(art_url: &str) -> Option<PathBuf> {
-    let rest = art_url.strip_prefix("file://")?;
-    let encoded = rest.strip_prefix("localhost").filter(|tail| tail.starts_with('/')).unwrap_or(rest);
-    let raw = encoded.as_bytes();
-    let mut bytes = Vec::with_capacity(raw.len());
-    let mut index = 0;
-    while index < raw.len() {
-        let escape = (raw[index] == b'%' && index + 2 < raw.len())
-            .then(|| Some(hex_digit(raw[index + 1])? * 16 + hex_digit(raw[index + 2])?))
-            .flatten();
-        match escape {
-            Some(byte) => {
-                bytes.push(byte);
-                index += 3;
-            }
-            None => {
-                bytes.push(raw[index]);
-                index += 1;
-            }
-        }
-    }
-    Some(PathBuf::from(std::ffi::OsString::from_vec(bytes)))
-}
-
-fn hex_digit(byte: u8) -> Option<u8> {
-    char::from(byte).to_digit(16).map(|digit| digit as u8)
-}
-
 /// An uncached `org.freedesktop.DBus.Properties` proxy for `destination`'s object at `path`; it has no
 /// properties of its own, so the cache only matters for the `GetAll`s and signals it serves.
-pub async fn properties_proxy<D, P>(
+pub(crate) async fn properties_proxy<D, P>(
     connection: &zbus::Connection,
     destination: D,
     path: P,
@@ -235,20 +202,6 @@ mod tests {
             [("hello", 64, "hello"), ("hello world", 5, "hello"), ("héllo", 2, "h"), ("hello", 0, "")]
         {
             assert_eq!(truncate_utf8_bytes(input, cap), expected, "{input:?} cap {cap}");
-        }
-    }
-
-    #[test]
-    fn file_url_to_path_decodes_escapes_and_drops_a_localhost_authority() {
-        // (url, expected path): `100%` in a filename is not an escape, and dropping it would rename the file.
-        for (url, expected) in [
-            ("file:///tmp/cover%20art.png", Some("/tmp/cover art.png")),
-            ("file://localhost/tmp/a.png", Some("/tmp/a.png")),
-            ("file:///home/someone/.cache/player/art_4.png", Some("/home/someone/.cache/player/art_4.png")),
-            ("file:///tmp/100%.png", Some("/tmp/100%.png")),
-            ("https://example.com/a.png", None),
-        ] {
-            assert_eq!(file_url_to_path(url), expected.map(PathBuf::from), "{url}");
         }
     }
 }

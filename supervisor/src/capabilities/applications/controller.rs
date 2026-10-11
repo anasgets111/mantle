@@ -252,13 +252,7 @@ mod tests {
         controller.launch("t").expect("launching a known entry must succeed");
 
         // Detached child: poll for the side effect because there is no handle to await.
-        for _ in 0..50 {
-            if touched.exists() {
-                return;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-        panic!("launch did not run the entry's command");
+        crate::capabilities::test_support::poll_until(|| touched.exists().then_some(())).await;
     }
 
     #[tokio::test]
