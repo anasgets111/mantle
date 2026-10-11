@@ -136,6 +136,43 @@ fn wheel_target(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, F
 pub(in crate::wayland) struct ActiveDrag {
     instance_id: String,
     target: DragTarget,
+    motion: Motion,
+}
+
+const VELOCITY_WINDOW_MS: u32 = 100;
+/// Shorter spans divide sensor jitter by almost nothing: 1 px 1 ms after a rest is not 1000 px/s.
+const VELOCITY_MIN_SPAN_MS: u32 = 8;
+
+/// The press and motions of a held drag, for `on_drag`'s surface-logical velocity in px/s.
+#[derive(Default)]
+struct Motion {
+    /// `(time, position)` within [`VELOCITY_WINDOW_MS`] of the newest, by the compositor's `u32`
+    /// millisecond clock, which wraps.
+    samples: std::collections::VecDeque<(u32, (f64, f64))>,
+    /// The last velocity measured over at least [`VELOCITY_MIN_SPAN_MS`].
+    velocity: (f64, f64),
+}
+
+impl Motion {
+    /// The velocity after the sample at `time`, if any. Zero when it is the window's only sample,
+    /// as for a pointer still that long; the last measured one over a span too short to measure,
+    /// and for an event with no time (a leave), so a flick off the edge keeps its speed.
+    fn velocity(&mut self, sample: Option<(u32, (f64, f64))>) -> (f64, f64) {
+        let Some((time, at)) = sample else { return self.velocity };
+        self.samples.push_back((time, at));
+        while self.samples.front().is_some_and(|(then, _)| time.wrapping_sub(*then) > VELOCITY_WINDOW_MS) {
+            self.samples.pop_front();
+        }
+        let Some(&(then, from)) = self.samples.front() else { return self.velocity };
+        let span = time.wrapping_sub(then);
+        if self.samples.len() == 1 {
+            self.velocity = (0.0, 0.0);
+        } else if span >= VELOCITY_MIN_SPAN_MS {
+            let seconds = f64::from(span) / 1000.0;
+            self.velocity = ((at.0 - from.0) / seconds, (at.1 - from.1) / seconds);
+        }
+        self.velocity
+    }
 }
 
 /// The `on_drag` node under a press; `id` is re-found each event so the pointer is mapped through
@@ -298,7 +335,7 @@ impl App {
         match *kind {
             // Left/right/middle only (ADR-0050 second amendment); other codes cannot arm or
             // fire a config handler.
-            PointerEventKind::Press { button, serial, .. } => {
+            PointerEventKind::Press { button, serial, time } => {
                 if pointer_button_name(button).is_none() {
                     return;
                 }
@@ -373,18 +410,19 @@ impl App {
                     && !pressed_a_field
                     && let Some(target) = hit.drag
                 {
-                    self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target });
-                    self.fire_on_drag(&instance_id, position, DragPhase::Start);
+                    let motion = Motion::default();
+                    self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target, motion });
+                    self.fire_on_drag(&instance_id, position, DragPhase::Start, Some(time));
                 }
                 // The compositor owns the pointer after a move or resize and may send no release,
                 // so a held drag ends here and nothing stays armed for one.
                 if self.send_toplevel_requests() {
-                    self.fire_on_drag(&instance_id, position, DragPhase::End);
+                    self.fire_on_drag(&instance_id, position, DragPhase::End, None);
                     self.armed = None;
                     self.armed_double = None;
                 }
             }
-            PointerEventKind::Release { button, serial, .. } => {
+            PointerEventKind::Release { button, serial, time } => {
                 let Some(name) = pointer_button_name(button) else {
                     return;
                 };
@@ -400,7 +438,7 @@ impl App {
                 // Release does not change focus; drag-off must not un-focus a textfield. End
                 // drag before click so a combined control commits before its click handler.
                 if button == BTN_LEFT {
-                    self.fire_on_drag(&instance_id, position, DragPhase::End);
+                    self.fire_on_drag(&instance_id, position, DragPhase::End, Some(time));
                 }
                 let hit = self.hit_under(index, position);
                 // A field's own `submits_secure` never sends: a right or middle click is no Enter.
@@ -461,7 +499,7 @@ impl App {
                 // End held drag at the last position; no release reaches this surface.
                 if let Some(&(_, position)) = self.pointer_at.as_ref() {
                     let instance_id = self.surfaces[index].surface_id.clone();
-                    self.fire_on_drag(&instance_id, position, DragPhase::End);
+                    self.fire_on_drag(&instance_id, position, DragPhase::End, None);
                 }
                 self.forget_pointer();
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
@@ -470,11 +508,14 @@ impl App {
             // Motion off the armed rect does not disarm; return and release still click. Enter
             // and Motion update hover and may fire `on_hover` on crossings.
             PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
-                let moved = matches!(*kind, PointerEventKind::Motion { .. });
+                let moved = match *kind {
+                    PointerEventKind::Motion { time } => Some(time),
+                    _ => None,
+                };
                 let instance_id = self.surfaces[index].surface_id.clone();
                 // Fires before the write: no `on_drag` handler can read `pointer_at`.
-                if moved {
-                    self.fire_on_drag(&instance_id, position, DragPhase::Move);
+                if moved.is_some() {
+                    self.fire_on_drag(&instance_id, position, DragPhase::Move, moved);
                     self.drag_selection(index, &instance_id, position);
                 }
                 self.pointer_at = Some((instance_id, position));
@@ -575,18 +616,23 @@ impl App {
     }
 
     /// Fire one held drag edge for `instance_id` (ADR-0116 decision 1); `end` clears it before the
-    /// callback so re-entry finds nothing held. Handler raises are logged and swallowed.
-    fn fire_on_drag(&mut self, instance_id: &str, position: (f64, f64), phase: DragPhase) {
-        let Some(drag) = self.drag.as_ref().filter(|drag| drag.instance_id == instance_id) else {
+    /// callback so re-entry finds nothing held. Handler raises are logged and swallowed. `time` is the
+    /// event's; an end without one (a leave, a closed surface, a compositor move) reports the last
+    /// motion's velocity.
+    fn fire_on_drag(&mut self, instance_id: &str, position: (f64, f64), phase: DragPhase, time: Option<u32>) {
+        let Some(drag) = self.drag.as_mut().filter(|drag| drag.instance_id == instance_id) else {
             return;
         };
+        let velocity = drag.motion.velocity(time.map(|time| (time, position)));
         let point = layout::hit::LogicalPoint::from_position(position);
         let (rect, local) = drag_local(self.client.scene().surface(instance_id), &drag.target, point);
         let handler = drag.target.handler.clone();
         if phase == DragPhase::End {
             self.drag = None;
         }
-        if let Err((what, e)) = call_on_drag(self.client.lua(), &handler, rect, local, phase, self.modifiers_held()) {
+        if let Err((what, e)) =
+            call_on_drag(self.client.lua(), &handler, rect, local, phase, self.modifiers_held(), velocity)
+        {
             crate::lua::report_raised(&handler, format!("{instance_id}: {what}"), &e);
         }
     }
@@ -655,7 +701,7 @@ impl App {
         let Some(&(_, position)) = self.pointer_at.as_ref().filter(|(at, _)| *at == surface_id) else {
             return;
         };
-        self.fire_on_drag(&surface_id, position, DragPhase::End);
+        self.fire_on_drag(&surface_id, position, DragPhase::End, None);
         self.forget_pointer();
         let tree = self.client.scene().surface(&surface_id);
         self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
@@ -916,6 +962,28 @@ mod tests {
         let pressed = (drag(gone.id).rect, pt(23.0, 4.0));
         assert_eq!(drag_local(Some(&root), &gone, point), pressed, "removed mid-drag");
         assert_eq!(drag_local(None, &gone, point), pressed, "surface gone");
+    }
+
+    #[test]
+    fn drag_velocity_spans_the_last_100_ms_of_event_time_and_a_still_pointer_reads_zero() {
+        let mut motion = Motion::default();
+        let mut at = |time, x: f64, y: f64| motion.velocity(Some((time, (x, y))));
+        assert_eq!(at(1000, 10.0, 10.0), (0.0, 0.0), "the press alone");
+        assert_eq!(at(1050, 20.0, 5.0), (200.0, -100.0));
+        assert_eq!(at(1100, 40.0, 5.0), (300.0, -50.0), "from the press, 100 ms back");
+        assert_eq!(at(1150, 40.0, 5.0), (200.0, 0.0), "the press fell out");
+        assert_eq!(at(1260, 40.0, 5.0), (0.0, 0.0), "still for 100 ms before release");
+        assert_eq!(at(1261, 41.0, 5.0), (0.0, 0.0), "1 px 1 ms after a rest is too short to measure");
+        assert_eq!(at(1270, 50.0, 5.0), (1000.0, 0.0));
+        assert_eq!(at(1272, 50.0, 5.0), (833.3333333333334, 0.0), "the span reaches back to the rest");
+        assert_eq!(motion.velocity(None), (833.3333333333334, 0.0), "a leave keeps the last motion's velocity");
+        let mut pruned = Motion::default();
+        pruned.velocity(Some((0, (0.0, 0.0))));
+        assert_eq!(pruned.velocity(Some((95, (95.0, 0.0)))), (1000.0, 0.0));
+        assert_eq!(pruned.velocity(Some((101, (140.0, 0.0)))), (1000.0, 0.0), "a 6 ms span keeps the last measured");
+        let mut wrapping = Motion::default();
+        wrapping.velocity(Some((u32::MAX - 9, (0.0, 0.0))));
+        assert_eq!(wrapping.velocity(Some((10, (20.0, 0.0)))), (1000.0, 0.0), "the u32 clock wraps");
     }
 
     /// ADR-0114: `submits_secure = true` alone makes a node a click target, with no Lua handler to call.

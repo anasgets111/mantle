@@ -52,7 +52,7 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 | `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored. On a `textfield` only right and middle fire, and only the field's own `on_click`, never an ancestor's; a left press edits the field and a `secure_submit` field fires none. The press focuses the field and keeps a selection it lands in, so `:cut()` and `:copy()` act on it |
 | `on_double_click(rect, button, pointer, modifiers)` | As `on_click` | Fires after `on_click` on the release completing a second click on the same node with the same button, within 400 ms and 4 px of the first click's release. See below |
 | `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. A `textfield` calls only its own, for right and middle. See below |
-| `on_drag(rect, pointer, phase, modifiers)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"` | Left button only. See below |
+| `on_drag(rect, pointer, phase, modifiers, velocity)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"`; `velocity` is `{ x, y }` in surface px per second | Left button only. See below |
 | `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submits_secure = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
 
@@ -71,7 +71,7 @@ never doubles; its right and middle clicks double on its own handler. Enter, Spa
 screen-reader activation never double-click, and a node with only `on_double_click` takes no
 keyboard focus. Wayland has no portable double-click setting, so the 400 ms and 4 px are fixed.
 
-**Modifiers.** Each pointer handler ends with `modifiers`, the `{ ctrl, shift, alt, super }` booleans
+**Modifiers.** Each pointer handler takes `modifiers` after its own arguments (only `on_drag`'s `velocity` follows it), the `{ ctrl, shift, alt, super }` booleans
 `on_key` reports, so a list can toggle on Ctrl-click or extend on Shift-click. Enter and Space
 activation report the keyboard's modifiers too. Wayland tells a client the modifiers only while one
 of its surfaces has keyboard focus; otherwise all four read `false`.
@@ -104,6 +104,15 @@ also seeks. Every pointer motion on that surface then calls `"move"`, wherever t
 `"end"` comes on the left release, when the pointer leaves the surface, or when the surface closes.
 `rect` stays the box from the press for the whole drag. On release, `"end"` fires first and the
 click (if the node also has `on_click`) after it; a leave ends the drag and cancels the click.
+
+`velocity` is how fast the pointer moved over the last 100 ms, in surface logical px per second,
+timed by the compositor's event clock rather than when the shell got round to the event. It is
+`{ x = 0, y = 0 }` on `"start"`, and on `"end"` when the pointer was still for 100 ms before the
+release. Motion spanning under 8 ms keeps the last measured value, so a 1 px twitch after a rest
+does not read as a flick. A drag that ends without a release (the pointer leaving the surface, the
+surface closing, a compositor move) reports the last motion's velocity, so a flick off the edge
+keeps its speed. The velocity on `"end"` is what a flick scroll keeps going with. `mantle input
+drag` reports zero.
 
 **Wheel.** `steps` is positive away from the user (scroll up) and negative toward. One notch is
 `1`; high-resolution wheels send fractions of a notch, and touchpads send distance divided by one

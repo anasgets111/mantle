@@ -107,7 +107,7 @@ spelled!(std::time::Duration => f32::lua());
 spelled!(std::path::PathBuf => String::lua());
 spelled!(crate::layout::hit::LogicalPoint => "{ x: number, y: number }");
 spelled!(super::VirtualNode => "Node");
-/// The `Modifiers` class the pointer handlers end with; the value is built by `marshal::modifiers_table`.
+/// The `Modifiers` class each pointer handler takes after its own arguments, before `on_drag`'s `velocity`; the value is built by `marshal::modifiers_table`.
 pub(crate) struct Modifiers;
 spelled!(Modifiers => "Modifiers");
 

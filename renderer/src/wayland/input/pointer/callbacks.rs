@@ -45,9 +45,9 @@ pub(super) fn call_on_press(
     on_press.call::<()>((rect, button, pointer, modifiers)).map_err(|e| ("on_press raised, ignoring it", e))
 }
 
-/// Call `on_drag` with the rect, pointer in node-local coordinates, and gesture phase (ADR-0116
-/// decision 1). Local coordinates avoid repeated subtraction in handlers; unclamped coordinates
-/// let each config apply its own `min`/`max`.
+/// Call `on_drag` with the rect, pointer in node-local coordinates, gesture phase (ADR-0116
+/// decision 1), modifiers and surface-logical velocity in px/s. Local coordinates avoid repeated
+/// subtraction in handlers; unclamped coordinates let each config apply its own `min`/`max`.
 pub(super) fn call_on_drag(
     lua: &Lua,
     on_drag: &Function,
@@ -55,12 +55,15 @@ pub(super) fn call_on_drag(
     local: layout::hit::LogicalPoint,
     phase: DragPhase,
     modifiers: [bool; 4],
+    (vx, vy): (f64, f64),
 ) -> Result<(), (&'static str, mlua::Error)> {
     let rect_argument = rect_table(lua, rect).map_err(|e| ("could not build on_drag's rect argument", e))?;
     let pointer = local_pointer_table(lua, local).map_err(|e| ("could not build on_drag's pointer argument", e))?;
     let modifiers = modifiers_table(lua, modifiers).map_err(|e| ("could not build on_drag's modifiers argument", e))?;
+    let velocity = local_pointer_table(lua, layout::hit::LogicalPoint { x: vx as f32, y: vy as f32 })
+        .map_err(|e| ("could not build on_drag's velocity argument", e))?;
     on_drag
-        .call::<()>((rect_argument, pointer, phase.name(), modifiers))
+        .call::<()>((rect_argument, pointer, phase.name(), modifiers, velocity))
         .map_err(|e| ("on_drag raised, ignoring it", e))
 }
 
@@ -177,21 +180,23 @@ mod tests {
         let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
         let sink = std::rc::Rc::clone(&seen);
         let handler = lua
-            .create_function(move |_, (rect, pointer, phase): (Table, Table, String)| {
+            .create_function(move |_, (rect, pointer, phase, _, velocity): (Table, Table, String, Table, Table)| {
                 sink.borrow_mut().push((
                     rect.get::<f32>("width").unwrap(),
                     pointer.get::<f32>("x").unwrap(),
                     pointer.get::<f32>("y").unwrap(),
                     phase,
+                    (velocity.get::<f32>("x").unwrap(), velocity.get::<f32>("y").unwrap()),
                 ));
                 Ok(())
             })
             .unwrap();
         let rect = LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 };
-        call_on_drag(&lua, &handler, rect, pt(20.0, 6.0), DragPhase::Start, [false; 4]).unwrap();
+        call_on_drag(&lua, &handler, rect, pt(20.0, 6.0), DragPhase::Start, [false; 4], (0.0, 0.0)).unwrap();
         // Past the right edge: unclamped, so the config's own clamp is what pins the slider.
-        call_on_drag(&lua, &handler, rect, pt(50.0, 6.0), DragPhase::End, [false; 4]).unwrap();
-        assert_eq!(*seen.borrow(), vec![(40.0, 20.0, 6.0, "start".to_string()), (40.0, 50.0, 6.0, "end".to_string())]);
+        call_on_drag(&lua, &handler, rect, pt(50.0, 6.0), DragPhase::End, [false; 4], (1200.0, -40.0)).unwrap();
+        let start = (40.0, 20.0, 6.0, "start".to_string(), (0.0, 0.0));
+        assert_eq!(*seen.borrow(), vec![start, (40.0, 50.0, 6.0, "end".to_string(), (1200.0, -40.0))]);
     }
 
     #[test]
@@ -230,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn the_pointer_handlers_end_with_the_held_modifiers() {
+    fn the_pointer_handlers_take_the_held_modifiers_fourth() {
         let lua = Lua::new();
         let note: Function = lua
             .load("seen = {} return function(name, m) seen[name] = (m.ctrl and 'c' or '-') .. (m.shift and 's' or '-') end")
@@ -239,7 +244,8 @@ mod tests {
         let handler = |name: &'static str| {
             let note = note.clone();
             lua.create_function(move |_, args: mlua::MultiValue| {
-                let held = args.into_iter().last().expect("a trailing modifiers table");
+                // Fourth for every handler; `on_drag`'s velocity follows it.
+                let held = args.into_iter().nth(3).expect("a modifiers table");
                 note.call::<()>((name, held))
             })
             .unwrap()
@@ -249,8 +255,17 @@ mod tests {
             PressTarget { rect, at: pt(1.0, 1.0), handler: handler("press"), id: layout::scene::NodeId::test(1) };
         call_on_press(&lua, &target.handler, &target, "left", [true, false, false, false]).unwrap();
         call_on_click(&lua, &handler("click"), rect, "left", pt(1.0, 1.0), [true, true, false, false]).unwrap();
-        call_on_drag(&lua, &handler("drag"), rect, pt(1.0, 1.0), DragPhase::Move, [false, true, false, false]).unwrap();
-        call_on_drag(&lua, &handler("idle"), rect, pt(1.0, 1.0), DragPhase::End, [false; 4]).unwrap();
+        call_on_drag(
+            &lua,
+            &handler("drag"),
+            rect,
+            pt(1.0, 1.0),
+            DragPhase::Move,
+            [false, true, false, false],
+            (0.0, 0.0),
+        )
+        .unwrap();
+        call_on_drag(&lua, &handler("idle"), rect, pt(1.0, 1.0), DragPhase::End, [false; 4], (0.0, 0.0)).unwrap();
         let seen: Table = lua.globals().get("seen").unwrap();
         let read = |name: &str| seen.get::<String>(name).unwrap();
         assert_eq!([read("press"), read("click"), read("drag"), read("idle")], ["c-", "cs", "-s", "--"]);
