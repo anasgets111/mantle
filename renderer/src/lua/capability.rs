@@ -208,12 +208,7 @@ impl UserData for Capability {
         methods.add_method("get", |lua, this, ()| this.signal.get_value(lua));
         // `fn` never sees the pre-push `nil`: the mapped signal holds `before` until the first push.
         methods.located_function("map", |lua, (ud, f, before): (mlua::AnyUserData, Function, Value)| {
-            let skip = lua.create_function(
-                move |_, value: Value| {
-                    if value.is_nil() { Ok(before.clone()) } else { f.call::<Value>(value) }
-                },
-            )?;
-            Signal::mapped(lua, ud, skip)
+            map_skipping_nil(lua, ud, f, before)
         });
         // The one non-rendering push reaction (ADR-0115): once per `StateSnapshot`, outside layout,
         // with new and old payloads, and input-callback powers (actions, `process.run`, state).
@@ -306,6 +301,21 @@ impl Capability {
         self.commands.send(&self.name, action, arguments);
         Ok(())
     }
+}
+
+/// A capability's `:map`, `mantle.idle`'s too: `f` never sees the pre-push `nil` (ADR-0359).
+pub(crate) fn map_skipping_nil(
+    lua: &Lua,
+    source: mlua::AnyUserData,
+    f: Function,
+    before: Value,
+) -> mlua::Result<mlua::AnyUserData> {
+    let skip = lua.create_function(
+        move |_, value: Value| {
+            if value.is_nil() { Ok(before.clone()) } else { f.call::<Value>(value) }
+        },
+    )?;
+    Signal::mapped(lua, source, skip)
 }
 
 /// `shared::action`'s `argument 1: invalid type: string "x", expected usize` as `bad argument #1:

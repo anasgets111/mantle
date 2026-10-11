@@ -232,9 +232,9 @@ impl UserData for IdleMember {
             this.announce();
             this.0.state().signal().get_value(lua)
         });
-        methods.located_function("map", |lua, (ud, f): (mlua::AnyUserData, Function)| {
+        methods.located_function("map", |lua, (ud, f, before): (mlua::AnyUserData, Function, mlua::Value)| {
             ud.borrow::<IdleMember>()?.announce();
-            crate::lua::signal::Signal::mapped(lua, ud, f)
+            crate::lua::capability::map_skipping_nil(lua, ud, f, before)
         });
         methods.located_method("on_change", |_, this, f: Function| {
             this.announce();
@@ -323,6 +323,27 @@ mod tests {
             assert!(err.contains(&format!("seconds must be within [1, 4294967], got integer {sec}")), "{err}");
         }
         lua.load("idle:cancel_threshold(-1)").exec().expect("an unknown handle is a no-op");
+    }
+
+    /// `mantle.idle:map` follows every capability's: no pre-push `nil`, `before` until the push.
+    #[test]
+    fn idle_map_skips_the_pre_push_nil_and_holds_before() {
+        let lua = Lua::new();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let commands = crate::lua::capability::CommandSender::new(0, tx);
+        let (state, handle) = Capability::new("idle", crate::lua::signal::DirtyFlag::new(), commands);
+        lua.globals().set("idle", IdleRegistry::new(state).member()).unwrap();
+        lua.load("calls = 0; idle_now = idle:map(function(s) calls = calls + 1; return s.idle end, false)")
+            .exec()
+            .unwrap();
+        let (held, calls): (bool, i64) = lua.load("return idle_now:get(), calls").eval().unwrap();
+        assert_eq!((held, calls), (false, 0), "fn must not run on the pre-push nil");
+
+        let pushed = lua.create_table().unwrap();
+        pushed.set("idle", true).unwrap();
+        handle.hydrate(mlua::Value::Table(pushed));
+        let (held, calls): (bool, i64) = lua.load("return idle_now:get(), calls").eval().unwrap();
+        assert_eq!((held, calls), (true, 1));
     }
 
     /// One start per generation, not per call.
