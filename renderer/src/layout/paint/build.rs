@@ -19,8 +19,8 @@ mod pixels;
 
 use super::{DisplayList, Draw, DrawCmd, LayerShader, UNCLIPPED, command_bounds, grow, grow_y, shadow_rect};
 use pixels::{
-    blended, fade, fade_border, fade_fill, in_buffer_pixels, layer_bounds, physical_blur, physical_edge, push_fill,
-    ring_cmd, scaled, split_fill_and_border,
+    affine_in_pixels, blended, fade, fade_border, fade_fill, in_buffer_pixels, layer_bounds, physical_blur,
+    physical_edge, push_fill, ring_cmd, scaled, split_fill_and_border,
 };
 
 /// Focused field and draw-safe content. Masked fields carry only destination and character count,
@@ -107,9 +107,9 @@ fn build_node(
     // The group matrix moves what is inside it, not the ancestors' clip, so the clip enters pre-matrix.
     // ponytail: a layer or shader inside a group gets only the rounded mapped clip, so a rotated child is cut by a bounding box.
     let outer = clip;
-    let (parent_clip, surface) = if let Some(matrix) = node.paint_matrix(rect) {
-        let physical = [matrix[0], matrix[1], matrix[2], matrix[3], matrix[4] * scale, matrix[5] * scale];
-        let inverse = node::invert_affine(physical);
+    let matrix = node.paint_matrix(rect).map(|matrix| affine_in_pixels(matrix, scale));
+    let (parent_clip, surface) = if let Some(matrix) = matrix {
+        let inverse = node::invert_affine(matrix);
         // An empty clip stays empty: `transformed` would flip its inverted corners into a real rect.
         let clip = match inverse {
             Some(inverse) if !clip.is_empty() => super::transformed(inverse, clip),
@@ -383,9 +383,10 @@ fn build_node(
         let draw = Draw::Layer { effect: Box::new(layered), shader, silhouette: false, commands };
         out.push(cmd(parent_clip.intersect(bounds).intersect(target), draw));
     }
-    if let Some(matrix) = node.paint_matrix(rect) {
+    if let Some(matrix) = matrix {
         let commands: Vec<DrawCmd> = out.drain(start..).collect();
-        out.push(cmd(outer, Draw::Transformed { matrix, commands }));
+        // Not through `cmd`: `in_buffer_pixels` skips scale 1, and the matrix is already in pixels.
+        out.push(DrawCmd { rect: px, clip: outer, draw: Draw::Transformed { matrix, commands } });
     }
 }
 
@@ -655,6 +656,24 @@ mod tests {
     use crate::layout::scene::LogicalSize;
 
     // display list (`build`), the seam that needs no EGL context
+
+    /// A fractional translation lands glyph quads between pixels, where NVIDIA and Intel sample
+    /// differently. Scale 1 matters: `in_buffer_pixels` returns early there.
+    #[test]
+    fn a_mid_slide_move_translates_by_whole_buffer_pixels_at_any_scale() {
+        let src = r##"return panel { id = 'bar', width = 100, height = 20, child = rect { width = 10, height = 10, background = "#ffffff" } }"##;
+        let mut tree = resolved_surface(&Lua::new(), src, LogicalSize { width: 100.0, height: 20.0 });
+        tree.children[0].movement = Some(Box::new(MoveTween::test((-19.4991, 7.5008))));
+        for (scale, expected) in [(1.0, [-19.0, 8.0]), (1.25, [-24.0, 9.0])] {
+            let list = build(&tree, scale, None);
+            let Some(Draw::Transformed { matrix, .. }) =
+                list.commands.iter().map(|cmd| &cmd.draw).find(|draw| matches!(draw, Draw::Transformed { .. }))
+            else {
+                panic!("moving subtree at scale {scale}");
+            };
+            assert_eq!(matrix[4..], expected, "scale {scale}");
+        }
+    }
 
     #[test]
     fn a_move_paints_into_a_parent_from_outside_the_final_layout_clip() {

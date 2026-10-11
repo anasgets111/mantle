@@ -6,6 +6,16 @@ pub(super) fn scaled(r: LogicalRect, k: f32) -> LogicalRect {
     LogicalRect { x: r.x * k, y: r.y * k, width: r.width * k, height: r.height * k }
 }
 
+/// A transform in buffer pixels: the linear part is the same in either unit; only its translation
+/// scales. A pure translation (a `move` mid-slide, or a `translate`) rounds to whole pixels, or its
+/// glyph quads land between pixels and drivers sample them differently: frame 4 of
+/// `cookbook/notifications-1.png` drew its text 1 px apart on NVIDIA and Intel.
+pub(super) fn affine_in_pixels(matrix: node::Affine, scale: f32) -> node::Affine {
+    let [a, b, c, d, x, y] = matrix;
+    let (x, y) = (x * scale, y * scale);
+    if [a, b, c, d] == [1.0, 0.0, 0.0, 1.0] { [a, b, c, d, x.round(), y.round()] } else { [a, b, c, d, x, y] }
+}
+
 /// `ring` around the box at `rect`, following its shape; `None` when its inner edge leaves no box.
 pub(super) fn ring_cmd(
     rect: LogicalRect,
@@ -95,12 +105,6 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
         Draw::NodeMask { invert, radius, split, commands } => {
             Draw::NodeMask { invert, radius: radius * scale, split, commands }
         }
-        // The affine's linear part is the same in either unit; only its translation scales.
-        Draw::Transformed { mut matrix, commands } => {
-            matrix[4] *= scale;
-            matrix[5] *= scale;
-            Draw::Transformed { matrix, commands }
-        }
         Draw::Shadow { shadow: cast, radius, knockout } => {
             Draw::Shadow { shadow: shadow(cast), radius: radius * scale, knockout }
         }
@@ -125,7 +129,9 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             shader: scale_shader(shader),
             mask,
         },
+        // `build_node` makes a `Transformed` in buffer pixels already, through `affine_in_pixels`.
         draw @ (Draw::Text { .. }
+        | Draw::Transformed { .. }
         | Draw::Icon { .. }
         | Draw::Image { .. }
         | Draw::Capture { .. }
