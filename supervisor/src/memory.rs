@@ -3,7 +3,9 @@
 //! for supervisor plus the live renderer (item 1, against the 50 MiB-per-monitor budget), both
 //! processes' USS, since PSS shifts when the other process maps or unmaps a shared page and
 //! only USS is that process alone (item 2), and GPU residency, never folded into PSS because
-//! real drivers omit it from `smaps`.
+//! real drivers omit it from `smaps`. A renderer with no DRM client falls back to [`nvml`].
+
+mod nvml;
 
 use std::collections::HashMap;
 use std::io;
@@ -63,6 +65,8 @@ pub(crate) struct Sample {
     /// only place that growth is visible.
     pub(crate) snapshots: Vec<SnapshotStat>,
     pub(crate) renderer: Option<(u32, ProcessMemory)>,
+    /// The renderer's VRAM in KiB from [`nvml`], read only when its `fdinfo` showed no DRM client.
+    pub(crate) renderer_nvml: Option<u64>,
 }
 
 /// Parses `smaps_rollup` into PSS and USS. Missing `Pss:` yields `None`: a truncated rollup is not
@@ -193,13 +197,19 @@ pub(crate) fn report_line(label: &str, sample: &Sample) -> String {
     }
     if let Some((generation_id, memory)) = &sample.renderer {
         line.push_str(&format!(
-            "; generation {generation_id} pss {:.1} MiB uss {:.1} MiB gpu {:.1} MiB ({:.1} MiB shared, {} drm client(s))",
+            "; generation {generation_id} pss {:.1} MiB uss {:.1} MiB ",
             mib(memory.rollup.pss),
-            mib(memory.rollup.uss),
-            mib(memory.gpu.resident),
-            mib(memory.gpu.shared),
-            memory.gpu.clients,
+            mib(memory.rollup.uss)
         ));
+        line.push_str(&match sample.renderer_nvml {
+            Some(kib) => format!("gpu {:.1} MiB (nvml)", mib(kib)),
+            None => format!(
+                "gpu {:.1} MiB ({:.1} MiB shared, {} drm client(s))",
+                mib(memory.gpu.resident),
+                mib(memory.gpu.shared),
+                memory.gpu.clients
+            ),
+        });
     }
     line
 }
@@ -253,7 +263,7 @@ pub(crate) fn sample(
             None
         }
     });
-    Ok(Sample { supervisor, malloc: Malloc::now(), snapshots, renderer })
+    Ok(Sample { supervisor, malloc: Malloc::now(), snapshots, renderer, renderer_nvml: None })
 }
 
 /// Builds the `--profile` steady-state sampler (ADR-0043 amendment), or `None`. `smaps_rollup` is
@@ -272,11 +282,18 @@ pub(crate) fn sampler(period: Option<Duration>) -> Option<tokio::time::Interval>
 pub(crate) fn log_sample(label: &str, generation_id: u32, child: &tokio::process::Child, snapshots: Vec<SnapshotStat>) {
     match sample(Path::new(PROC_ROOT), child.id().map(|pid| (generation_id, pid)), snapshots) {
         // A count that climbs between samples is a task leak.
-        Ok(sample) => info!(
-            "{}; tasks {}",
-            report_line(label, &sample),
-            tokio::runtime::Handle::current().metrics().num_alive_tasks()
-        ),
+        Ok(mut sample) => {
+            if let Some((_, memory)) = &sample.renderer
+                && memory.gpu.clients == 0
+            {
+                sample.renderer_nvml = child.id().and_then(nvml::resident_kib);
+            }
+            info!(
+                "{}; tasks {}",
+                report_line(label, &sample),
+                tokio::runtime::Handle::current().metrics().num_alive_tasks()
+            )
+        }
         Err(err) => debug!("{label} sample failed: {err}"),
     }
 }
@@ -524,7 +541,7 @@ drm-engine-video-enhance:\t0 ns\n";
 
     #[test]
     fn report_line_formats_total_supervisor_and_the_renderer_clause() {
-        let sample = Sample {
+        let mut sample = Sample {
             supervisor: ProcessMemory {
                 rollup: Rollup { pss: 8192, uss: 0 },
                 gpu: Gpu { resident: 0, shared: 0, clients: 0 },
@@ -543,6 +560,7 @@ drm-engine-video-enhance:\t0 ns\n";
                     gpu: Gpu { resident: 20480, shared: 3072, clients: 1 },
                 },
             )),
+            renderer_nvml: None,
         };
 
         assert_eq!(
@@ -551,6 +569,11 @@ drm-engine-video-enhance:\t0 ns\n";
              (malloc in_use 4.0 free 2.0 arena 6.0 mmap 1.0 MiB); \
              snapshots bytes/sent/deduped notifications=4096B/3/0 audio=512B/40/7; \
              generation 0 pss 50.0 MiB uss 40.0 MiB gpu 20.0 MiB (3.0 MiB shared, 1 drm client(s))"
+        );
+        sample.renderer_nvml = Some(178 * 1024);
+        assert!(
+            report_line("periodic", &sample).ends_with("uss 40.0 MiB gpu 178.0 MiB (nvml)"),
+            "an NVML reading replaces the DRM clause"
         );
     }
 
@@ -571,6 +594,7 @@ drm-engine-video-enhance:\t0 ns\n";
                     gpu: Gpu { resident: 999_999, shared: 999_999, clients: 1 },
                 },
             )),
+            renderer_nvml: None,
         };
         assert!(report_line("check", &sample).starts_with("check: total pss 2.0 MiB;"));
     }
