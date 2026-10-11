@@ -62,7 +62,10 @@ Run the rows that match the change; combine rows across categories. Always run `
 
 With staged and unstaged edits both present, `just check` sets tracked unstaged edits aside
 (untracked files stay). To check the working tree, run `just fmt-check test lint rustdoc lua types`.
-Report failed or unavailable checks; the pre-commit hook does not replace them.
+The commit is the gate: the hook (`just hooks`) runs, on the staged tree, the stub goldens plus
+fmt-check, test, lint and rustdoc for Rust paths, the docs-example test for docs, and `lua types`
+for Lua. Don't run those before committing; on failure, fix and recommit. The hook skips `just book`,
+`demo-check` and `mantle -c DIR check`: run those by hand. Report failed or unavailable checks.
 
 ## Ponytail mode
 
@@ -159,8 +162,12 @@ and writes `DECISIONS.md` and `docs/roadmap.md`.
   `git diff` hides them.
 - **Sandbox.** A delegate's sandbox may block sockets, D-Bus and Wayland. Rerun failures it reports
   outside the sandbox before believing them.
+- **Checks.** A delegate never commits, so no hook runs for it. It iterates on the tests it touched
+  (`cargo test -p <crate> <filter>`), then before reporting runs `just fmt-check lint` (clippy
+  builds the tests too) and the rows the hook skips. Never the full `just check`: the coordinator's
+  commit runs the suite once.
 - **Merge.** Send gaps back to the same delegate, which keeps its context. Once a diff passes, apply
-  it to `main` with `git apply --3way`, then run the checks once over the merged tree.
+  it to `main` with `git apply --3way` and commit; the hook checks the merged tree.
 
 ## Skills
 
