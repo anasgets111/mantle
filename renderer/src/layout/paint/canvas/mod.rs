@@ -280,73 +280,14 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 let under = retained.as_deref().map(|under| draw.of(std::path::Path::new(under)));
                 match dissolve {
                     Some(progress) => {
-                        // Asked for whether or not a pixel of it is visible yet: the answer is
-                        // about the texture, and it is what starts the run (ADR-0183).
-                        let to = file_texture(painter.canvas_mut(), walk.images, draw);
-                        if to.as_ref().is_some_and(|(_, _, exact)| *exact) {
-                            walk.drawn.push(DrawnImage { node: *node, source: source.clone() });
-                        }
-                        let from = under.and_then(|under| file_texture(painter.canvas_mut(), walk.images, under));
-
-                        // The stage takes the whole cross, both endpoints at once, which is the
-                        // only way an effect can be anything but a fade (ADR-0184) -- and, with no
-                        // effect named, the only way a fade composes exactly (ADR-0186). It needs
-                        // both textures and a context; without either, the two draws below take
-                        // the frame, which is why they were built first and why they stay.
-                        let crossed = match (walk.shaders.as_mut(), from, to) {
-                            (Some(shaders), Some((from, from_rect, _)), Some((to, to_rect, _))) => {
-                                let (params, files) =
-                                    shader.as_ref().map_or((&[][..], &[][..]), |(_, params, files)| {
-                                        (params.as_slice(), files.as_slice())
-                                    });
-                                let images = sampler_images(painter.canvas_mut(), walk.images, files);
-                                // The incoming picture's visible box, so the cross ends where the plain draw resumes.
-                                let seen = to_rect.intersect(rect);
-                                let round = LogicalRect {
-                                    x: (seen.x - rect.x) / scale,
-                                    y: (seen.y - rect.y) / scale,
-                                    width: seen.width / scale,
-                                    height: seen.height / scale,
-                                };
-                                let run = image_shader::Run {
-                                    cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
-                                    rect,
-                                    logical_size: (rect.width / scale, rect.height / scale),
-                                    transform: frame.transform,
-                                    clip: scissor,
-                                    target_size: frame.size,
-                                    target_origin: frame.origin,
-                                    opacity: *alpha,
-                                    radii: (radius.clone() * (1.0 / scale)).fit(round.width, round.height),
-                                    round,
-                                    progress: *progress,
-                                    params,
-                                    images: &images,
-                                };
-                                let effect = shader.as_ref().map(|(path, ..)| path.as_path());
-                                // SAFETY: `Shaders` is built only with `gl` current on this thread and shared
-                                // with the canvas, which is what `draw` requires.
-                                unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), effect, &run) }
-                            }
-                            _ => false,
-                        };
-                        // Last resort, and an approximation: the outgoing at its own full alpha
-                        // with the incoming fading in over it. Exact for opaque endpoints at full
-                        // opacity, and wrong otherwise -- at `alpha` 0.5 and `progress` 0.5 these
-                        // two draws compose to 0.625 where 0.5 is right, showing the surface's
-                        // ground through the middle (ADR-0181, corrected by ADR-0186).
-                        //
-                        // Reached when there is no GL context, when either endpoint has no texture
-                        // yet, or when even the engine's own shader would not build. The first is
-                        // the test harness; the rest are real and are why this stays.
-                        if !crossed {
-                            if let Some((id, fitted, _)) = from {
-                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, *alpha);
-                            }
-                            if let Some((id, fitted, _)) = to {
-                                fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, *alpha * *progress);
-                            }
-                        }
+                        let at = DrawnImage { node: *node, source: source.clone() };
+                        dissolve_image(
+                            painter,
+                            walk,
+                            (draw, under),
+                            (at, shader.as_ref(), *progress),
+                            (scissor, frame),
+                        );
                     }
                     // The named source has no texture: still decoding, or a failure the cache has
                     // already logged once. Either way the node keeps its last picture rather than
@@ -381,21 +322,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
             Draw::Shader { source, progress, params, images, alpha, .. } => {
                 if let Some(shaders) = walk.shaders.as_mut() {
                     let images = sampler_images(painter.canvas_mut(), walk.images, images);
-                    let run = image_shader::Run {
-                        cross: None,
-                        rect,
-                        logical_size: (rect.width / scale, rect.height / scale),
-                        transform: frame.transform,
-                        clip: scissor,
-                        target_size: frame.size,
-                        target_origin: frame.origin,
-                        opacity: *alpha,
-                        radii: node::Radii::default(),
-                        round: rect,
-                        progress: *progress,
-                        params,
-                        images: &images,
-                    };
+                    let run = shader_run(rect, scale, (scissor, frame), (*alpha, *progress), params, &images);
                     // SAFETY: as for `Draw::Image` above.
                     unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), Some(source), &run) };
                 }
@@ -434,6 +361,102 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
     }
     if pushed {
         painter.canvas_mut().restore();
+    }
+}
+
+/// A cross's config shader, its `params` and `images`.
+type CrossShader = (std::path::PathBuf, Vec<node::ShaderParam>, Vec<super::SamplerFile>);
+
+/// A [`Draw::Image`] mid cross-dissolve: `draw` fades in over `under`, and `drawn` is reported back
+/// if the incoming texture is exact. `at` is the scissor and frame it runs under.
+fn dissolve_image(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    (draw, under): (FileDraw<'_>, Option<FileDraw<'_>>),
+    (drawn, shader, progress): (DrawnImage, Option<&CrossShader>, f32),
+    (scissor, frame): (PhysicalRect, Frame),
+) {
+    let FileDraw { rect, alpha, radius, .. } = draw;
+    let scale = walk.scale;
+    // Asked for whether or not a pixel of it is visible yet: the answer is about the texture, and
+    // it is what starts the run (ADR-0183).
+    let to = file_texture(painter.canvas_mut(), walk.images, draw);
+    if to.as_ref().is_some_and(|(_, _, exact)| *exact) {
+        walk.drawn.push(drawn);
+    }
+    let from = under.and_then(|under| file_texture(painter.canvas_mut(), walk.images, under));
+
+    // The stage takes the whole cross, both endpoints at once, which is the only way an effect can
+    // be anything but a fade (ADR-0184) -- and, with no effect named, the only way a fade composes
+    // exactly (ADR-0186). It needs both textures and a context; without either, the two draws
+    // below take the frame, which is why they were built first and why they stay.
+    let crossed = match (walk.shaders.as_mut(), from, to) {
+        (Some(shaders), Some((from, from_rect, _)), Some((to, to_rect, _))) => {
+            let (params, files) =
+                shader.map_or((&[][..], &[][..]), |(_, params, files)| (params.as_slice(), files.as_slice()));
+            let images = sampler_images(painter.canvas_mut(), walk.images, files);
+            // The incoming picture's visible box, so the cross ends where the plain draw resumes.
+            let seen = to_rect.intersect(rect);
+            let round = LogicalRect {
+                x: (seen.x - rect.x) / scale,
+                y: (seen.y - rect.y) / scale,
+                width: seen.width / scale,
+                height: seen.height / scale,
+            };
+            let run = image_shader::Run {
+                cross: Some(image_shader::Cross { from, to, from_rect, to_rect }),
+                radii: (radius.clone() * (1.0 / scale)).fit(round.width, round.height),
+                round,
+                ..shader_run(rect, scale, (scissor, frame), (alpha, progress), params, &images)
+            };
+            let effect = shader.map(|(path, ..)| path.as_path());
+            // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the
+            // canvas, which is what `draw` requires.
+            unsafe { shaders.stage.draw(shaders.gl, painter.canvas_mut(), effect, &run) }
+        }
+        _ => false,
+    };
+    // Last resort, and an approximation: the outgoing at its own full alpha with the incoming
+    // fading in over it. Exact for opaque endpoints at full opacity, and wrong otherwise -- at
+    // `alpha` 0.5 and `progress` 0.5 these two draws compose to 0.625 where 0.5 is right, showing
+    // the surface's ground through the middle (ADR-0181, corrected by ADR-0186).
+    //
+    // Reached when there is no GL context, when either endpoint has no texture yet, or when even
+    // the engine's own shader would not build. The first is the test harness; the rest are real
+    // and are why this stays.
+    if !crossed {
+        if let Some((id, fitted, _)) = from {
+            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha);
+        }
+        if let Some((id, fitted, _)) = to {
+            fill_image_rounded(painter.canvas_mut(), id, fitted, rect, radius, alpha * progress);
+        }
+    }
+}
+
+/// The [`image_shader::Run`] fields a `shader` node and a cross-dissolve share; a node's rounds its whole box.
+fn shader_run<'a>(
+    rect: LogicalRect,
+    scale: f32,
+    (clip, frame): (PhysicalRect, Frame),
+    (opacity, progress): (f32, f32),
+    params: &'a [node::ShaderParam],
+    images: &'a [(&'a str, Option<femtovg::ImageId>)],
+) -> image_shader::Run<'a> {
+    image_shader::Run {
+        cross: None,
+        rect,
+        logical_size: (rect.width / scale, rect.height / scale),
+        transform: frame.transform,
+        clip,
+        target_size: frame.size,
+        target_origin: frame.origin,
+        opacity,
+        radii: node::Radii::default(),
+        round: rect,
+        progress,
+        params,
+        images,
     }
 }
 
@@ -623,13 +646,7 @@ fn apply_mask(
         // A missing mask image leaves the subtree unmasked, the answer an allocation failure
         // in `offscreen` gets too.
         MaskSource::Image(file) => {
-            let request = ImageRequest {
-                path: std::path::Path::new(file),
-                box_px: *box_px,
-                tint: None,
-                fit: Fit::Stretch,
-                blur_px: 0,
-            };
+            let request = ImageRequest::mask(std::path::Path::new(file), *box_px);
             walk.images
                 .image(painter.canvas_mut(), &request, Load::Inline)
                 .map(|id| Paint::image(id, rect.x, rect.y, rect.width, rect.height, 0.0, 1.0))

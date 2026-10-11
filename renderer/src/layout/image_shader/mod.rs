@@ -30,6 +30,7 @@
 mod blend;
 mod blur;
 mod contract;
+mod program;
 mod state;
 
 pub use blend::BlendPass;
@@ -48,7 +49,7 @@ use crate::layout::node;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 use blur::Blur;
 use contract::{FADE, VERTEX, Variant, assemble};
-use state::{State, quad_pass};
+use state::{State, attach, bind_quad, quad_pass};
 
 /// A compiled config shader and the uniform locations it turned out to have.
 struct Program {
@@ -239,181 +240,6 @@ impl ShaderStage {
         }
     }
 
-    /// Compiles [`contract::FADE`] on first use. Reported once if it will not build, which would mean the
-    /// engine's own shader is broken rather than a config's.
-    ///
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn ensure_fade(&mut self, gl: &glow::Context) {
-        if self.fade.is_some() {
-            return;
-        }
-        // SAFETY: caller's contract.
-        let built = unsafe { self.build(gl, Path::new("<engine cross-dissolve>"), FADE, Variant::Cross, &[]) };
-        self.fade = Some(built);
-    }
-
-    /// The shared quad, created on first use.
-    ///
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn ensure_quad(&mut self, gl: &glow::Context) -> Option<(glow::VertexArray, glow::Buffer)> {
-        if self.quad.is_none() {
-            // SAFETY: caller's contract.
-            self.quad = Some(unsafe { make_quad(gl) }?);
-        }
-        self.quad
-    }
-
-    /// Compiles and links `path` if this version of it is not already known. Answers whether a
-    /// program is ready.
-    ///
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn ensure_program(
-        &mut self,
-        gl: &glow::Context,
-        key: &ProgramKey,
-        images: &[(&str, Option<ImageId>)],
-    ) -> bool {
-        let (path, variant, _) = key;
-        let version = crate::image::FileVersion::read(path);
-        if let Some((known, program)) = self.programs.get(key)
-            && *known == version
-        {
-            return program.is_some();
-        }
-        // A superseded program is deleted here, while the context is current, rather than left for
-        // teardown: a config iterating on an effect would otherwise leak one program per save.
-        if let Some((_, Some(stale))) = self.programs.remove(key) {
-            // SAFETY: caller's contract.
-            unsafe { gl.delete_program(stale.program) };
-        }
-        let built = match std::fs::read_to_string(path) {
-            // SAFETY: caller's contract.
-            Ok(source) => unsafe { self.build(gl, path, &source, *variant, images) },
-            Err(err) => {
-                error!("{}: {err}", path.display());
-                None
-            }
-        };
-        let ready = built.is_some();
-        self.programs.insert(key.clone(), (version, built));
-        ready
-    }
-
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn build(
-        &mut self,
-        gl: &glow::Context,
-        path: &Path,
-        source: &str,
-        variant: Variant,
-        images: &[(&str, Option<ImageId>)],
-    ) -> Option<Program> {
-        // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
-        // after creating it, and by `destroy` at teardown.
-        unsafe {
-            let program = self.link(gl, path, &assemble(source, variant, images))?;
-            let named = |name: &str| gl.get_uniform_location(program, name);
-            let mut params = HashMap::default();
-            for index in 0..gl.get_active_uniforms(program) {
-                let Some(uniform) = gl.get_active_uniform(program, index) else { continue };
-                if uniform.name.starts_with("u_") || uniform.name.starts_with("mantle_") {
-                    continue;
-                }
-                // An image's sampler and `_size` are the engine's to set, not `params`'.
-                if images.iter().any(|(image, _)| uniform.name == *image || uniform.name == format!("{image}_size")) {
-                    continue;
-                }
-                let width = match uniform.utype {
-                    glow::FLOAT => 1,
-                    glow::FLOAT_VEC2 => 2,
-                    glow::FLOAT_VEC3 => 3,
-                    glow::FLOAT_VEC4 => 4,
-                    _ => {
-                        error!(
-                            "{}: `{}` is not a `float` or `vec2`-`vec4`, or an array of one, which is all `params` carries",
-                            path.display(),
-                            uniform.name
-                        );
-                        gl.delete_program(program);
-                        return None;
-                    }
-                };
-                // An array reports as `name[0]`, whose location is the first element's.
-                if let Some(location) = gl.get_uniform_location(program, &uniform.name) {
-                    let name = uniform.name.strip_suffix("[0]").unwrap_or(&uniform.name).to_string();
-                    params.insert(name, (location, width, uniform.size.max(1) as usize, std::cell::Cell::new(false)));
-                }
-            }
-            Some(Program {
-                program,
-                from: named("u_from"),
-                to: named("u_to"),
-                input: named("u_input"),
-                input_blurred: named("u_input_blurred"),
-                input_rect: named("u_input_rect"),
-                progress: named("u_progress"),
-                size: named("u_size"),
-                from_rect: named("u_from_rect"),
-                to_rect: named("u_to_rect"),
-                fill: named("u_fill"),
-                opacity: named("mantle_opacity"),
-                radii: named("mantle_radii"),
-                reach: named("mantle_reach"),
-                power: named("mantle_power"),
-                round: named("mantle_round"),
-                outline: named("mantle_outline"),
-                outline_len: named("mantle_outline_len"),
-                params,
-                images: images.iter().map(|(image, _)| (named(image), named(&format!("{image}_size")))).collect(),
-            })
-        }
-    }
-
-    /// The engine's vertex stage linked with `fragment`, reported once if either will not build.
-    ///
-    /// # Safety
-    ///
-    /// The context is current.
-    unsafe fn link(&mut self, gl: &glow::Context, path: &Path, fragment: &str) -> Option<glow::Program> {
-        // SAFETY: caller's contract. Every object created here is deleted on the paths that fail
-        // after creating it, and by `destroy` at teardown.
-        unsafe {
-            let vertex = match self.vertex {
-                Some(vertex) => vertex,
-                None => {
-                    let vertex = compile(gl, glow::VERTEX_SHADER, VERTEX, Path::new("<engine vertex stage>"))?;
-                    self.vertex = Some(vertex);
-                    vertex
-                }
-            };
-            let fragment = compile(gl, glow::FRAGMENT_SHADER, fragment, path)?;
-            let Ok(program) = gl.create_program() else {
-                gl.delete_shader(fragment);
-                return None;
-            };
-            gl.attach_shader(program, vertex);
-            gl.attach_shader(program, fragment);
-            gl.link_program(program);
-            gl.detach_shader(program, vertex);
-            gl.detach_shader(program, fragment);
-            gl.delete_shader(fragment);
-            if !gl.get_program_link_status(program) {
-                error!("{}: {}", path.display(), gl.get_program_info_log(program));
-                gl.delete_program(program);
-                return None;
-            }
-            Some(program)
-        }
-    }
-
     /// Draws the chosen program's quad. Takes no `self`: the program arrives by reference, which
     /// is what lets the caller pick between a config's and the engine's own without cloning either
     /// or holding a borrow of the map across the draw.
@@ -429,19 +255,14 @@ impl ShaderStage {
         (first, images): (u32, &[SamplerTexture]),
         run: &Run,
     ) -> bool {
-        let (vao, buffer) = quad;
         let (Some(width), Some(height)) = (positive(run.rect.width), positive(run.rect.height)) else {
             return false;
         };
 
         // SAFETY: caller's contract.
         unsafe {
-            gl.use_program(Some(program.program));
-            gl.bind_vertex_array(Some(vao));
-            gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
             let vertices = quad_corners(run.rect, (width, height), run.transform, run.target_size, run.target_origin);
-            let bytes: Vec<u8> = vertices.as_flattened().iter().flat_map(|value| value.to_ne_bytes()).collect();
-            gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, &bytes, glow::STREAM_DRAW);
+            bind_quad(gl, program.program, quad, vertices.as_flattened().try_into().expect("4 corners of 4"));
 
             if let Some((from, to, cross)) = cross {
                 gl.active_texture(glow::TEXTURE0);
@@ -611,27 +432,16 @@ impl ShaderStage {
         if !unsafe { self.ensure_program(gl, &key, run.images) } {
             return false;
         }
-        if self.framebuffer.is_none() {
-            // SAFETY: caller's contract.
-            self.framebuffer = unsafe { gl.create_framebuffer() }.ok();
-        }
-        let (Some(framebuffer), Some((_, Some(program)))) = (self.framebuffer, self.programs.get(&key)) else {
-            return false;
-        };
+        // SAFETY: caller's contract.
+        let Some(framebuffer) = (unsafe { self.ensure_framebuffer(gl) }) else { return false };
+        let Some((_, Some(program))) = self.programs.get(&key) else { return false };
         // Clip space to the target's own rows (the top is the last), `v_uv` in box fractions.
         let [x, y, w, h] = run.rect;
         let corners = [-1.0, 1.0, x, y, 1.0, 1.0, x + w, y, -1.0, -1.0, x, y + h, 1.0, -1.0, x + w, y + h];
         // SAFETY: caller's contract.
         unsafe {
             quad_pass(gl, canvas, (program.program, framebuffer), (vao, buffer), &corners, |gl| {
-                gl.framebuffer_texture_2d(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(target),
-                    0,
-                );
-                gl.viewport(0, 0, width as i32, height as i32);
+                attach(gl, target, width as i32, height as i32);
                 gl.active_texture(glow::TEXTURE1);
                 gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
                 gl.active_texture(glow::TEXTURE0);
@@ -649,44 +459,6 @@ impl ShaderStage {
             });
         }
         true
-    }
-
-    /// Frees every GL object while the context is still current. A context that has gone away takes
-    /// its objects with it, so this is for an orderly teardown and not for recovery.
-    ///
-    /// # Safety
-    ///
-    /// `gl` must be the context these were created on, current on this thread.
-    pub unsafe fn destroy(&mut self, gl: &glow::Context) {
-        // SAFETY: caller's contract.
-        unsafe {
-            for (_, program) in self.programs.values() {
-                if let Some(program) = program {
-                    gl.delete_program(program.program);
-                }
-            }
-            if let Some(Some(fade)) = self.fade.take() {
-                gl.delete_program(fade.program);
-            }
-            if let Some(Some(blur)) = self.blur.take() {
-                gl.delete_program(blur.program);
-                gl.delete_framebuffer(blur.framebuffer);
-            }
-            if let Some(Some(blending)) = self.blending.take() {
-                gl.delete_program(blending.program);
-            }
-            if let Some(framebuffer) = self.framebuffer.take() {
-                gl.delete_framebuffer(framebuffer);
-            }
-            if let Some(vertex) = self.vertex.take() {
-                gl.delete_shader(vertex);
-            }
-            if let Some((vao, buffer)) = self.quad.take() {
-                gl.delete_vertex_array(vao);
-                gl.delete_buffer(buffer);
-            }
-        }
-        self.programs.clear();
     }
 }
 
@@ -758,54 +530,6 @@ fn quad_corners(
         [ndc_x, ndc_y, u, v]
     };
     [corner(0.0, 0.0), corner(1.0, 0.0), corner(0.0, 1.0), corner(1.0, 1.0)]
-}
-
-/// # Safety
-///
-/// The context is current.
-unsafe fn compile(gl: &glow::Context, kind: u32, source: &str, path: &Path) -> Option<glow::Shader> {
-    // SAFETY: caller's contract.
-    unsafe {
-        let shader = gl.create_shader(kind).ok()?;
-        gl.shader_source(shader, source);
-        gl.compile_shader(shader);
-        if gl.get_shader_compile_status(shader) {
-            return Some(shader);
-        }
-        // `#line 1` ends the prelude, so a reported line number is the config's own.
-        error!("{}: {}", path.display(), gl.get_shader_info_log(shader));
-        gl.delete_shader(shader);
-        None
-    }
-}
-
-/// The vertex array and buffer every run reuses. The contents are rewritten per draw, because the
-/// corners carry the node's box, target and transform; only the layout is fixed here.
-///
-/// # Safety
-///
-/// The context is current.
-unsafe fn make_quad(gl: &glow::Context) -> Option<(glow::VertexArray, glow::Buffer)> {
-    // SAFETY: caller's contract.
-    unsafe {
-        let vao = gl.create_vertex_array().ok()?;
-        let Ok(buffer) = gl.create_buffer() else {
-            gl.delete_vertex_array(vao);
-            return None;
-        };
-        gl.bind_vertex_array(Some(vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-        // Four vertices of `[x, y, u, v]`, matching the two `layout(location = ...)` inputs the
-        // engine's vertex stage declares -- bound explicitly rather than left to the linker.
-        let stride = 4 * std::mem::size_of::<f32>() as i32;
-        gl.enable_vertex_attrib_array(0);
-        gl.vertex_attrib_pointer_f32(0, 2, glow::FLOAT, false, stride, 0);
-        gl.enable_vertex_attrib_array(1);
-        gl.vertex_attrib_pointer_f32(1, 2, glow::FLOAT, false, stride, 2 * std::mem::size_of::<f32>() as i32);
-        gl.bind_vertex_array(None);
-        gl.bind_buffer(glow::ARRAY_BUFFER, None);
-        Some((vao, buffer))
-    }
 }
 
 #[cfg(test)]

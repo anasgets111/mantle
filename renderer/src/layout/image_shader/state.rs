@@ -4,11 +4,60 @@ use femtovg::Canvas;
 use femtovg::renderer::OpenGl;
 use glow::HasContext;
 
+use super::ShaderStage;
 use crate::layout::node::MAX_SHADER_IMAGES;
 
 /// A quad over a whole target, in GL's row order: clip x, y, then the texture's u, v per corner.
 pub(super) const WHOLE: [f32; 16] =
     [-1.0, -1.0, 0.0, 0.0, 1.0, -1.0, 1.0, 0.0, -1.0, 1.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+
+impl ShaderStage {
+    /// The framebuffer every pass draws through, created on first use.
+    ///
+    /// # Safety
+    ///
+    /// The context is current.
+    pub(super) unsafe fn ensure_framebuffer(&mut self, gl: &glow::Context) -> Option<glow::Framebuffer> {
+        if self.framebuffer.is_none() {
+            // SAFETY: caller's contract.
+            self.framebuffer = unsafe { gl.create_framebuffer() }.ok();
+        }
+        self.framebuffer
+    }
+}
+
+/// Draws into `target` from its top-left, `width` by `height`; [`quad_pass`] detaches it after.
+///
+/// # Safety
+///
+/// Inside a [`quad_pass`] `draw`, with `target` a live texture of the context.
+pub(super) unsafe fn attach(gl: &glow::Context, target: glow::Texture, width: i32, height: i32) {
+    // SAFETY: caller's contract.
+    unsafe {
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
+        gl.viewport(0, 0, width, height);
+    }
+}
+
+/// Uses `program` with the quad bound and `corners` uploaded to it.
+///
+/// # Safety
+///
+/// The context is current, and `program`, `vao` and `buffer` belong to it.
+pub(super) unsafe fn bind_quad(
+    gl: &glow::Context,
+    program: glow::Program,
+    (vao, buffer): (glow::VertexArray, glow::Buffer),
+    corners: &[f32; 16],
+) {
+    // SAFETY: caller's contract.
+    unsafe {
+        gl.use_program(Some(program));
+        gl.bind_vertex_array(Some(vao));
+        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
+        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, corners.map(f32::to_ne_bytes).as_flattened(), glow::STREAM_DRAW);
+    }
+}
 
 /// One quad pass into `framebuffer`: `program` draws `corners` with blend and every test off, and
 /// the framebuffer, viewport and state femtovg left are put back before it records again. `draw`
@@ -32,10 +81,7 @@ pub(super) unsafe fn quad_pass(
         let previous = gl.get_parameter_framebuffer(glow::FRAMEBUFFER_BINDING);
         let mut viewport = [0; 4];
         gl.get_parameter_i32_slice(glow::VIEWPORT, &mut viewport);
-        gl.use_program(Some(program));
-        gl.bind_vertex_array(Some(vao));
-        gl.bind_buffer(glow::ARRAY_BUFFER, Some(buffer));
-        gl.buffer_data_u8_slice(glow::ARRAY_BUFFER, corners.map(f32::to_ne_bytes).as_flattened(), glow::STREAM_DRAW);
+        bind_quad(gl, program, (vao, buffer), corners);
         for slot in [glow::BLEND, glow::DEPTH_TEST, glow::STENCIL_TEST, glow::CULL_FACE, glow::SCISSOR_TEST] {
             gl.disable(slot);
         }

@@ -327,19 +327,14 @@ impl DisplayList {
                             });
                         }
                     }
-                    Draw::Clipped { mask, .. } | Draw::Backdrop { mask, .. } => {
-                        if let (Some(file), Some((_, box_px))) = (mask_file(&command.draw), mask) {
-                            out.push(image::ImageRequest {
-                                path: std::path::Path::new(file),
-                                box_px: *box_px,
-                                tint: None,
-                                fit: image::Fit::Stretch,
-                                blur_px: 0,
-                            });
+                    draw => {
+                        if let Draw::Clipped { mask, .. } | Draw::Backdrop { mask, .. } = draw
+                            && let (Some(file), Some((_, box_px))) = (mask_file(draw), mask)
+                        {
+                            out.push(image::ImageRequest::mask(std::path::Path::new(file), *box_px));
                         }
-                        command.draw.nested().into_iter().for_each(|nested| walk(nested, out));
+                        draw.nested().into_iter().for_each(|nested| walk(nested, out));
                     }
-                    draw => draw.nested().into_iter().for_each(|nested| walk(nested, out)),
                 }
             }
         }

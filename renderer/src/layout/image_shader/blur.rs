@@ -7,7 +7,7 @@ use femtovg::{Canvas, ImageId};
 use glow::HasContext;
 
 use super::ShaderStage;
-use super::state::{WHOLE, quad_pass};
+use super::state::{WHOLE, attach, quad_pass};
 use crate::layout::node;
 
 /// The engine's Gaussian, one axis a pass (ADR-0262). `u_step` is one source texel along that
@@ -60,10 +60,9 @@ pub struct BlurPass {
     pub tone: node::Tone,
 }
 
-/// [`BLUR`] linked, its uniforms, and the framebuffer its passes draw through.
+/// [`BLUR`] linked, and its uniforms.
 pub(super) struct Blur {
     pub(super) program: glow::Program,
-    pub(super) framebuffer: glow::Framebuffer,
     source: Option<glow::UniformLocation>,
     step: Option<glow::UniformLocation>,
     extent: Option<glow::UniformLocation>,
@@ -87,6 +86,8 @@ impl ShaderStage {
             // SAFETY: caller's contract.
             self.blur = Some(unsafe { self.build_blur(gl) });
         }
+        // SAFETY: caller's contract.
+        let Some(framebuffer) = (unsafe { self.ensure_framebuffer(gl) }) else { return false };
         let Some(Some(blur)) = &self.blur else { return false };
         let textures: Option<Vec<_>> = passes
             .iter()
@@ -102,18 +103,11 @@ impl ShaderStage {
         let Some(textures) = textures else { return false };
         // SAFETY: caller's contract.
         unsafe {
-            quad_pass(gl, canvas, (blur.program, blur.framebuffer), (vao, buffer), &WHOLE, |gl| {
+            quad_pass(gl, canvas, (blur.program, framebuffer), (vao, buffer), &WHOLE, |gl| {
                 gl.active_texture(glow::TEXTURE0);
                 gl.uniform_1_i32(blur.source.as_ref(), 0);
                 for (pass, (source, target, step, (width, height))) in passes.iter().zip(textures) {
-                    gl.framebuffer_texture_2d(
-                        glow::FRAMEBUFFER,
-                        glow::COLOR_ATTACHMENT0,
-                        glow::TEXTURE_2D,
-                        Some(target),
-                        0,
-                    );
-                    gl.viewport(0, 0, width, height);
+                    attach(gl, target, width, height);
                     gl.bind_texture(glow::TEXTURE_2D, Some(source));
                     gl.uniform_2_f32(blur.step.as_ref(), step[0], step[1]);
                     gl.uniform_2_f32(blur.extent.as_ref(), pass.extent[0], pass.extent[1]);
@@ -135,14 +129,9 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         unsafe {
             let program = self.link(gl, Path::new("<engine blur>"), BLUR)?;
-            let Ok(framebuffer) = gl.create_framebuffer() else {
-                gl.delete_program(program);
-                return None;
-            };
             let named = |name: &str| gl.get_uniform_location(program, name);
             Some(Blur {
                 program,
-                framebuffer,
                 source: named("u_source"),
                 step: named("u_step"),
                 extent: named("u_extent"),

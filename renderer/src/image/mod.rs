@@ -155,6 +155,11 @@ impl ImageRequest<'_> {
     pub(crate) fn sampler(path: &Path) -> ImageRequest<'_> {
         ImageRequest { path, box_px: (MAX_SAMPLER_EDGE, MAX_SAMPLER_EDGE), tint: None, fit: Fit::Stretch, blur_px: 0 }
     }
+
+    /// An image `mask`'s file, stretched over a box of `box_px`.
+    pub(crate) fn mask(path: &Path, box_px: (u32, u32)) -> ImageRequest<'_> {
+        ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0 }
+    }
 }
 
 crate::layout::node::prop::keywords! {

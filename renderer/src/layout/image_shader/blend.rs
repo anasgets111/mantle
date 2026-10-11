@@ -7,7 +7,7 @@ use femtovg::{Canvas, ImageId};
 use glow::HasContext;
 
 use super::ShaderStage;
-use super::state::{WHOLE, quad_pass};
+use super::state::{WHOLE, attach, quad_pass};
 use crate::layout::node::Blend;
 
 /// One W3C Compositing formula on premultiplied pixels: `u_source` over `u_backdrop` with the
@@ -112,11 +112,9 @@ impl ShaderStage {
             // SAFETY: caller's contract.
             self.blending = Some(unsafe { self.build_blend(gl) });
         }
-        if self.framebuffer.is_none() {
-            // SAFETY: caller's contract.
-            self.framebuffer = unsafe { gl.create_framebuffer() }.ok();
-        }
-        let (Some(Some(blending)), Some(framebuffer)) = (&self.blending, self.framebuffer) else { return false };
+        // SAFETY: caller's contract.
+        let Some(framebuffer) = (unsafe { self.ensure_framebuffer(gl) }) else { return false };
+        let Some(Some(blending)) = &self.blending else { return false };
         let (Ok(backdrop), Ok(source), Ok(target), Ok((width, height))) = (
             canvas.get_native_texture(pass.backdrop),
             canvas.get_native_texture(pass.source),
@@ -128,14 +126,7 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         unsafe {
             quad_pass(gl, canvas, (blending.program, framebuffer), (vao, buffer), &WHOLE, |gl| {
-                gl.framebuffer_texture_2d(
-                    glow::FRAMEBUFFER,
-                    glow::COLOR_ATTACHMENT0,
-                    glow::TEXTURE_2D,
-                    Some(target),
-                    0,
-                );
-                gl.viewport(0, 0, width as i32, height as i32);
+                attach(gl, target, width as i32, height as i32);
                 gl.active_texture(glow::TEXTURE1);
                 gl.bind_texture(glow::TEXTURE_2D, Some(source));
                 gl.active_texture(glow::TEXTURE0);
