@@ -238,67 +238,22 @@ async fn resync(
 
     // A full Metadata read failure keeps metadata-derived fields instead of resetting them and
     // causing a spurious track change.
-    let Ok(metadata) = metadata else {
-        debug!(
-            "Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round"
-        );
-        // Keeping the previous track's fields is by definition the same-track case.
-        let (position, position_updated_at) =
-            resolve_position(raw_position, previous_state, true, play_state, bus_name);
-        let Previous { state: kept, identity, trackid } = previous.unwrap_or_default();
-        let state = PlayerState {
-            id: player_id(bus_name).to_string(),
-            identity: player_identity,
-            play_state,
-            can_go_next,
-            can_go_previous,
-            can_seek,
-            can_play,
-            can_pause,
-            can_raise,
-            can_quit,
-            volume,
-            loop_status,
-            shuffle,
-            rate,
-            minimum_rate,
-            maximum_rate,
-            position,
-            position_updated_at,
-            desktop_entry,
-            ..kept
-        };
-        return Resynced { state, identity, trackid };
+    let parsed = match &metadata {
+        Ok(metadata) => Some(parse_metadata(metadata)),
+        Err(_) => {
+            debug!(
+                "Metadata read failed for {bus_name}; keeping the last known title/artist/art/length/trackid this round"
+            );
+            None
+        }
     };
-    let parsed = parse_metadata(&metadata);
-
-    let new_identity = parsed.track_identity();
-    let same_track = previous.as_ref().is_some_and(|p| p.identity == new_identity);
+    let new_identity = parsed.as_ref().map(|parsed| parsed.track_identity());
+    // Keeping the previous track's fields is by definition the same-track case.
+    let same_track = new_identity.as_ref().is_none_or(|new| previous.as_ref().is_some_and(|p| &p.identity == new));
     let (position, position_updated_at) =
         resolve_position(raw_position, previous_state, same_track, play_state, bus_name);
-    let kept = previous.map(|p| p.state).unwrap_or_default();
-
-    let local_art_path = resolve_album_art_path(parsed.art_url.as_deref());
-    let album_art_path = if !local_art_path.is_empty() {
-        local_art_path
-    } else if same_track {
-        kept.album_art_path
-    } else {
-        String::new()
-    };
-    let art_url = match parsed.art_url {
-        Some(url) => url,
-        None if same_track => kept.art_url,
-        None => String::new(),
-    };
-    let length = match parsed.length_us {
-        Some(length) if length >= 0 => Some(length),
-        _ if same_track => kept.length,
-        _ => None,
-    };
-
-    let trackid = parsed.trackid.clone();
-    let state = PlayerState {
+    let Previous { state: kept, identity, trackid } = previous.unwrap_or_default();
+    let mut state = PlayerState {
         id: player_id(bus_name).to_string(),
         identity: player_identity,
         play_state,
@@ -315,28 +270,46 @@ async fn resync(
         rate,
         minimum_rate,
         maximum_rate,
-        title: parsed.title,
-        artist: parsed.artist,
-        album: parsed.album,
-        album_artist: parsed.album_artist,
-        genre: parsed.genre,
-        album_art_path,
-        art_url,
         position,
         position_updated_at,
-        length,
-        // Keep artwork across same-track updates; players may drop metadata keys after a full
-        // description.
-        url: match parsed.url {
-            Some(url) => url,
-            None if same_track => kept.url,
-            None => String::new(),
-        },
         desktop_entry,
-        track_list: kept.track_list,
-        playlists: kept.playlists,
+        ..kept
     };
-    Resynced { state, identity: new_identity, trackid }
+    let (Some(parsed), Some(new_identity)) = (parsed, new_identity) else {
+        return Resynced { state, identity, trackid };
+    };
+
+    let local_art_path = resolve_album_art_path(parsed.art_url.as_deref());
+    state.album_art_path = if !local_art_path.is_empty() {
+        local_art_path
+    } else if same_track {
+        state.album_art_path
+    } else {
+        String::new()
+    };
+    state.art_url = match parsed.art_url {
+        Some(url) => url,
+        None if same_track => state.art_url,
+        None => String::new(),
+    };
+    state.length = match parsed.length_us {
+        Some(length) if length >= 0 => Some(length),
+        _ if same_track => state.length,
+        _ => None,
+    };
+    // Keep artwork across same-track updates; players may drop metadata keys after a full
+    // description.
+    state.url = match parsed.url {
+        Some(url) => url,
+        None if same_track => state.url,
+        None => String::new(),
+    };
+    state.title = parsed.title;
+    state.artist = parsed.artist;
+    state.album = parsed.album;
+    state.album_artist = parsed.album_artist;
+    state.genre = parsed.genre;
+    Resynced { state, identity: new_identity, trackid: parsed.trackid }
 }
 
 /// Binds `bus_name`, runs [`resync`], inserts the entry, then starts its forwarder. Logs and
