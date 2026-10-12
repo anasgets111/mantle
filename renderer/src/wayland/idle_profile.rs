@@ -24,7 +24,7 @@ pub struct Turn {
     pub typed: bool,
     /// A background image decode landed.
     pub decoded: bool,
-    /// The turn reached `repaint_mapped_surfaces`.
+    /// The turn reached `repaint_mapped_surfaces_where`.
     pub painted: bool,
     /// Surfaces that repaint actually drew and swapped. `painted` can exceed this because
     /// `App::paint_surface` builds every mapped surface's list, then skips unchanged lists:

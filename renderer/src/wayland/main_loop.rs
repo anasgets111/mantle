@@ -342,14 +342,14 @@ pub fn run(
             // The cue to repaint, and nothing more: what each node is now showing is settled by
             // the paint that follows, which is the only thing holding the exact cache keys
             // (ADR-0183).
-            app.forget_painted_lists_drawing(&landed);
+            app.mark_surfaces_stale_where(|list| list.draws_any_of(&landed));
         }
         // A capture frame lands from a `Dispatch` callback during `dispatch_pending` above, with
         // no GL context to upload it (ADR-0039); this is its repaint cue, the same role `landed`
         // plays for a decode.
         let captured = app.capture_cache.poll();
         if !captured.is_empty() {
-            app.mark_surfaces_stale_for_captures(&captured);
+            app.mark_surfaces_stale_where(|list| list.captures_any_of(&captured));
         }
         // What protocol state this turn owes; `surface_state_for_turn` carries the reasoning.
         let state = turn::surface_state_for_turn(
@@ -390,7 +390,7 @@ pub fn run(
                 &ticked,
                 &typed_surfaces,
             ]),
-            turn::Repaint::Everything => app.repaint_mapped_surfaces(),
+            turn::Repaint::Everything => app.repaint_mapped_surfaces_where(|_| true),
             turn::Repaint::Nothing => {}
         }
         phases.mark_repaint();

@@ -452,10 +452,14 @@ impl App {
         });
     }
 
-    /// Marks stale every surface whose last-painted list matches `stale_because`. Shared by
-    /// [`Self::forget_painted_lists_drawing`] and [`Self::mark_surfaces_stale_for_captures`], which
-    /// differ only in what a landed frame names.
-    fn mark_surfaces_stale_where(&mut self, stale_because: impl Fn(&layout::paint::DisplayList) -> bool) {
+    /// Marks stale every surface whose last-painted list matches `stale_because`. A decoded image
+    /// invalidates any list that draws its file (ADR-0122), making the next repaint upload the new
+    /// texture. A landed capture frame changes no `Draw::Capture` field (ADR-0248): `list` still
+    /// names the right node, the texture behind it is just new.
+    pub(in crate::wayland) fn mark_surfaces_stale_where(
+        &mut self,
+        stale_because: impl Fn(&layout::paint::DisplayList) -> bool,
+    ) {
         for surface in &mut self.surfaces {
             if surface.last_painted.as_ref().is_some_and(|(_, list)| stale_because(list)) {
                 // Marked, not cleared: this surface still shows the old texture until it
@@ -463,25 +467,6 @@ impl App {
                 surface.mark_stale();
             }
         }
-    }
-
-    /// Repaint every mapped surface after a changed scene because ADR-0044 decision 2 has one
-    /// global dirty flag. `paint_surface` skips unchanged lists, so protocol-only updates need
-    /// their own commit in [`App::apply_spec_change`]. A decoded image invalidates any list that
-    /// draws its file (ADR-0122), making the next repaint upload the new texture.
-    pub(in crate::wayland) fn forget_painted_lists_drawing(&mut self, files: &[std::path::PathBuf]) {
-        self.mark_surfaces_stale_where(|list| list.draws_any_of(files));
-    }
-
-    /// A landed capture frame changes no `Draw::Capture` field (ADR-0248), so the surface showing
-    /// it needs the same nudge a landed decode gets above: `list` still names the right node, the
-    /// texture behind it is just new.
-    pub(in crate::wayland) fn mark_surfaces_stale_for_captures(&mut self, nodes: &[layout::NodeId]) {
-        self.mark_surfaces_stale_where(|list| list.captures_any_of(nodes));
-    }
-
-    pub(in crate::wayland) fn repaint_mapped_surfaces(&mut self) {
-        self.repaint_mapped_surfaces_where(|_| true);
     }
 
     /// The surfaces this turn's pass, tick or keystroke named, plus any surface already `stale`.
@@ -517,7 +502,10 @@ impl App {
             .min()
     }
 
-    fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&TrackedSurface) -> bool) {
+    /// Repaint every wanted mapped surface after a changed scene because ADR-0044 decision 2 has
+    /// one global dirty flag. `paint_surface` skips unchanged lists, so protocol-only updates need
+    /// their own commit in [`App::apply_spec_change`].
+    pub(in crate::wayland) fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&TrackedSurface) -> bool) {
         let drawn = self.surfaces_drawn;
         for index in 0..self.surfaces.len() {
             if self.surfaces[index].map_state != MapState::Mapped {
