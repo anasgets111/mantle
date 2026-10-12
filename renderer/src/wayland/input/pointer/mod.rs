@@ -23,17 +23,6 @@ use drag::Motion;
 pub(in crate::wayland) use press::{ArmedClick, ArmedSerial, ClickedNode, LastClick};
 use press::{double_click, press_chooses_focus, release_completes_click, release_ends_press};
 
-enum HoverUpdate {
-    Pointer,
-    Layout,
-}
-
-impl HoverUpdate {
-    fn fires_on_hover(&self) -> bool {
-        matches!(self, Self::Pointer)
-    }
-}
-
 /// Innermost node with callable `on_click` or `submits_secure = true` in a hit path (ADR-0050 decision 1).
 /// Scan inward: the deepest node is often an unhandled `text` child, and a node without a handler
 /// is transparent. `layout::node::resolve_declared` refuses an `on_click` that is not a function.
@@ -66,7 +55,7 @@ fn local_pointer(
 /// that moves under its own drag reports one frame. A node gone from `root` keeps the press rect.
 fn drag_local(
     root: Option<&layout::ResolvedNode>,
-    drag: &DragTarget,
+    drag: &PressTarget,
     point: layout::hit::LogicalPoint,
 ) -> (LogicalRect, layout::hit::LogicalPoint) {
     let path = root.and_then(|root| layout::hit::path_to_node(root, drag.id)).unwrap_or_default();
@@ -74,7 +63,7 @@ fn drag_local(
     (rect, local_pointer(&path, rect, point))
 }
 
-/// Innermost node with callable `handler` (`on_press` or `on_double_click`); unhandled nodes are
+/// Innermost node with callable `handler` (`on_press`, `on_double_click` or `on_drag`); unhandled nodes are
 /// transparent, like `on_click`'s scan, and each handler has its own target.
 fn press_target(
     path: &[&layout::ResolvedNode],
@@ -92,6 +81,12 @@ fn press_target(
 
 fn on_press(node: &layout::ResolvedNode) -> Option<Function> {
     pointer::on_press.read(&node.properties).ok().flatten()
+}
+
+/// `on_drag` (ADR-0116 decision 1): unhandled nodes are transparent, so a handle inside a
+/// draggable track leaves the track draggable.
+fn on_drag(node: &layout::ResolvedNode) -> Option<Function> {
+    pointer::on_drag.read(&node.properties).ok().flatten()
 }
 
 fn on_double_click(node: &layout::ResolvedNode) -> Option<Function> {
@@ -116,15 +111,6 @@ fn handlers_under(
     (click, press_target(path, point, floor, on_press), press_target(path, point, floor, on_double_click))
 }
 
-/// Innermost node with callable `on_drag` (ADR-0116 decision 1); unhandled nodes are transparent,
-/// so a handle inside a draggable track leaves the track draggable.
-fn drag_target(path: &[&layout::ResolvedNode]) -> Option<DragTarget> {
-    path.iter().enumerate().rev().find_map(|(depth, node)| {
-        let handler = pointer::on_drag.read(&node.properties).ok().flatten()?;
-        Some(DragTarget { rect: layout::hit::absolute_rect(&path[..=depth])?, handler, id: node.id })
-    })
-}
-
 /// Innermost node with callable `on_wheel` (ADR-0116 decision 2).
 fn wheel_target(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, Function)> {
     path.iter().enumerate().rev().find_map(|(depth, node)| {
@@ -137,20 +123,14 @@ fn wheel_target(path: &[&layout::ResolvedNode]) -> Option<(usize, LogicalRect, F
 /// calls it wherever the pointer goes; config clamping keeps a slider pinned at its end.
 pub(in crate::wayland) struct ActiveDrag {
     instance_id: String,
-    target: DragTarget,
+    target: PressTarget,
     motion: Motion,
 }
 
-/// The `on_drag` node under a press; `id` is re-found each event so the pointer is mapped through
+/// The `on_press`, `on_double_click` or `on_drag` node under the pointer, with its rect and the
+/// node-local pointer. For a drag, `id` is re-found each event so the pointer is mapped through
 /// the node's current transform.
 #[derive(Clone)]
-struct DragTarget {
-    rect: LogicalRect,
-    handler: Function,
-    id: layout::scene::NodeId,
-}
-
-/// The `on_press` or `on_double_click` node under the pointer, with its rect and the node-local pointer.
 struct PressTarget {
     rect: LogicalRect,
     handler: Function,
@@ -202,7 +182,7 @@ struct PointerHit {
     /// this same walk so one event cannot get two answers.
     caret: Option<usize>,
     /// `on_drag` node under the press, with its rect (ADR-0116 decision 1).
-    drag: Option<DragTarget>,
+    drag: Option<PressTarget>,
     press: Option<PressTarget>,
     double: Option<PressTarget>,
 }
@@ -468,7 +448,7 @@ impl App {
                 }
                 self.forget_pointer();
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
-                self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
+                self.sync_hover(index, tree, &[], true);
             }
             // Motion off the armed rect does not disarm; return and release still click. Enter
             // and Motion update hover and may fire `on_hover` on crossings.
@@ -488,7 +468,7 @@ impl App {
                 let tree = self.client.scene().surface(&self.surfaces[index].surface_id);
                 let point = layout::hit::LogicalPoint::from_position(position);
                 let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
-                self.sync_hover(index, tree, &path, HoverUpdate::Pointer);
+                self.sync_hover(index, tree, &path, true);
                 // Chosen while the tree is still borrowed, shown once that borrow has ended.
                 let shape = layout::hit::cursor_under(&path, point, &self.shaping);
                 // The real pointer's cursor is not an injected event's to set.
@@ -545,7 +525,7 @@ impl App {
             caret: held
                 .and_then(|held| layout::hit::caret_at(&path, point, &held.buffer, held.selection.1, &self.shaping)),
             field,
-            drag: drag_target(&path),
+            drag: press_target(&path, point, 0, on_drag),
             press,
             double,
         }
@@ -636,7 +616,7 @@ impl App {
         let tree = self.client.scene().surface(surface_id);
         let point = layout::hit::LogicalPoint::from_position(*position);
         let path = tree.map(|tree| layout::hit::hit_path(tree, point)).unwrap_or_default();
-        self.sync_hover(index, tree, &path, HoverUpdate::Layout);
+        self.sync_hover(index, tree, &path, false);
         self.sync_pointer(index);
     }
 
@@ -669,7 +649,7 @@ impl App {
         self.fire_on_drag(&surface_id, position, DragPhase::End, None);
         self.forget_pointer();
         let tree = self.client.scene().surface(&surface_id);
-        self.sync_hover(index, tree, &[], HoverUpdate::Pointer);
+        self.sync_hover(index, tree, &[], true);
         self.sync_pointer(index);
     }
 
@@ -684,7 +664,7 @@ impl App {
         index: usize,
         tree: Option<&layout::ResolvedNode>,
         path: &[&layout::ResolvedNode],
-        update: HoverUpdate,
+        fires_on_hover: bool,
     ) {
         // Skip the expensive tree walk when no config registered `hover(name)`.
         if !crate::lua::signal::any_hover_registered(self.client.lua()) {
@@ -696,7 +676,7 @@ impl App {
         let writes = layout::hover::hover_writes(tree, path);
         let lua = self.client.lua();
         for write in writes {
-            apply_hover_write(lua, write, update.fires_on_hover(), &self.surfaces[index].surface_id);
+            apply_hover_write(lua, write, fires_on_hover, &self.surfaces[index].surface_id);
         }
     }
 
@@ -766,12 +746,6 @@ mod tests {
     }
 
     #[test]
-    fn pointer_hover_updates_fire_callbacks_but_layout_refreshes_do_not() {
-        assert!(HoverUpdate::Pointer.fires_on_hover(), "Enter, Motion, and Leave are user input");
-        assert!(!HoverUpdate::Layout.fires_on_hover(), "layout movement under a resting pointer is silent");
-    }
-
-    #[test]
     fn the_innermost_on_drag_or_on_wheel_node_takes_it_and_a_bare_node_is_transparent() {
         let lua = Lua::new();
         let handler = || Value::Function(lua.create_function(|_, ()| Ok(())).unwrap());
@@ -785,14 +759,16 @@ mod tests {
         root.children.push(track);
 
         let on_thumb = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        let DragTarget { rect, .. } = drag_target(&on_thumb).expect("the track carries the on_drag");
+        let press_at = layout::hit::LogicalPoint { x: 20.0, y: 12.0 };
+        let PressTarget { rect, .. } =
+            press_target(&on_thumb, press_at, 0, on_drag).expect("the track carries the on_drag");
         assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
         let (depth, rect, _) = wheel_target(&on_thumb).expect("the thumb carries an on_wheel");
         assert_eq!((depth, rect), (2, LogicalRect { x: 15.0, y: 6.0, width: 20.0, height: 20.0 }), "innermost");
         let beside = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 45.0, y: 12.0 });
         assert_eq!(wheel_target(&beside).map(|(depth, ..)| depth), Some(1), "the track, past the thumb");
         let bare = hit_node(&lua, "column", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(drag_target(&[&bare]).is_none() && wheel_target(&[&bare]).is_none());
+        assert!(press_target(&[&bare], press_at, 0, on_drag).is_none() && wheel_target(&[&bare]).is_none());
     }
 
     #[test]
@@ -905,9 +881,10 @@ mod tests {
             root.children.push(node);
             (root, id)
         };
-        let drag = |id| DragTarget {
+        let drag = |id| PressTarget {
             rect: LogicalRect { x: 2.0, y: 4.0, width: 40.0, height: 24.0 },
             handler: lua.create_function(|_, ()| Ok(())).unwrap(),
+            at: pt(0.0, 0.0),
             id,
         };
         let point = pt(25.0, 8.0);
