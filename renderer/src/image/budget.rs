@@ -33,7 +33,7 @@ impl Budget {
     fn acquire(&self, bytes: u64) -> Permit<'_> {
         let Ok(mut in_flight) = self.in_flight.lock() else { return Permit { budget: self, bytes: 0 } };
         loop {
-            if admits(*in_flight, bytes) {
+            if admits(*in_flight, bytes, DECODE_POOL_BYTES) {
                 *in_flight += bytes;
                 return Permit { budget: self, bytes };
             }
@@ -81,14 +81,15 @@ impl<'a> Charge<'a> {
     }
 }
 
-/// Whether `bytes` may start decoding with `in_flight` already charged.
+/// Whether `bytes` fits a pool of `limit` with `in_flight` already charged; the texture budget
+/// uses it too (ADR-0182, ADR-0248 decision 6).
 ///
 /// Pure so the rule is testable without threads, which is where the deadlock would be. An empty
-/// budget admits any size. `decode_within_limits` has already refused any output past
+/// pool admits any size. `decode_within_limits` has already refused any output past
 /// [`DECODE_POOL_BYTES`], so a larger charge runs only alone, and no decode waits on waiters that
 /// are all waiting on it.
-fn admits(in_flight: u64, bytes: u64) -> bool {
-    in_flight == 0 || in_flight + bytes <= DECODE_POOL_BYTES
+pub(super) fn admits(in_flight: u64, bytes: u64, limit: u64) -> bool {
+    in_flight == 0 || in_flight + bytes <= limit
 }
 
 /// Holds a [`Budget`] charge for as long as the pixels it paid for are being produced. RAII because
@@ -124,14 +125,15 @@ mod tests {
         // A 6024x3401 wallpaper decodes to 78 MiB. Alone it fits and always did; under the old
         // 64 MiB per-decode cap it was refused unread while three quarters of the pool sat idle.
         let wallpaper = 6024 * 3401 * 4;
-        assert!(admits(0, wallpaper), "a lone wallpaper decode fits the pool it is charged against");
-        assert!(admits(wallpaper, wallpaper), "and so does a second, at 156 MiB of 256");
-        assert!(!admits(wallpaper * 3, wallpaper), "a fourth does not, and waits for one to finish");
+        assert!(admits(0, wallpaper, DECODE_POOL_BYTES), "a lone wallpaper decode fits the pool it is charged against");
+        assert!(admits(wallpaper, wallpaper, DECODE_POOL_BYTES), "and so does a second, at 156 MiB of 256");
+        assert!(!admits(wallpaper * 3, wallpaper, DECODE_POOL_BYTES), "a fourth does not, and waits for one to finish");
 
         // Nothing in flight admits anything, so no decode is too big to ever run and no set of
         // waiters can be waiting only on each other.
-        assert!(admits(0, DECODE_POOL_BYTES), "an empty budget admits a decode at the ceiling");
-        assert!(!admits(1, DECODE_POOL_BYTES), "and one byte of company is enough to make it wait");
+        assert!(admits(0, DECODE_POOL_BYTES, DECODE_POOL_BYTES), "an empty budget admits a decode at the ceiling");
+        assert!(!admits(1, DECODE_POOL_BYTES, DECODE_POOL_BYTES), "and one byte of company is enough to make it wait");
+        assert!(admits(5, 5, 10), "a charge landing exactly on the limit is admitted");
     }
 
     /// ADR-0187. The permit is RAII because `decode_raster` has a dozen `?` exits; a decode that

@@ -59,13 +59,6 @@ pub(crate) fn upload_plan(rects: &[DamageRect], full: DamageRect) -> Vec<DamageR
     rects
 }
 
-/// Whether `bytes` fits the shared texture budget (ADR-0182, ADR-0248 decision 6). An empty pool
-/// admits any size, as `image::budget::admits` does for the decode pool. Nothing here evicts
-/// another capture to make room; past the ceiling a fresh source is refused and logs once.
-pub(crate) fn fits_budget(resident_before: usize, bytes: usize, budget: usize) -> bool {
-    resident_before == 0 || resident_before + bytes <= budget
-}
-
 /// wl_shm's `Argb8888`/`Xrgb8888` are BGRX in memory on a little-endian machine; femtovg wants
 /// RGBA. Outputs and XRGB buffers are opaque; an ARGB window keeps its premultiplied alpha.
 ///
@@ -244,10 +237,11 @@ impl CaptureCache {
 
     /// Whether `bytes` fits the shared budget alongside everything else charged to it, less
     /// `node`'s own current entry (about to be replaced). Warns once per node while it does not,
-    /// shared by [`Self::install_texture`] and [`Self::upload_landed`].
+    /// shared by [`Self::install_texture`] and [`Self::upload_landed`]. Nothing evicts another capture
+    /// to make room; past the ceiling a fresh source is refused.
     fn admits(&mut self, node: NodeId, bytes: usize, width: u32, height: u32) -> bool {
         let others = self.resident_bytes() - self.entries.get(&node).map_or(0, |e| e.bytes);
-        if fits_budget(others, bytes, self.texture_budget) {
+        if super::budget::admits(others as u64, bytes as u64, self.texture_budget as u64) {
             self.over_budget_warned.remove(&node);
             return true;
         }
@@ -427,9 +421,6 @@ mod tests {
 
     #[test]
     fn the_budget_admits_a_lone_capture_but_refuses_a_second_once_full() {
-        assert!(fits_budget(0, 100, 10), "a lone capture fits even past the budget");
-        assert!(fits_budget(5, 5, 10));
-        assert!(!fits_budget(6, 5, 10));
         let mut cache = CaptureCache::default();
         cache.set_texture_budget(10);
         assert!(cache.admits(crate::layout::scene::NodeId::test(1), 100, 5, 5));
