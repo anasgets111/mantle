@@ -125,7 +125,7 @@ fn orientation_str(transform: wl_output::Transform) -> &'static str {
     }
 }
 
-/// Per-output fields as a JSON array, pushed through the same `Loader::to_lua_value` as
+/// Per-output fields as a JSON array, pushed through the same `json::to_lua` as
 /// capability `StateSnapshot`s (ADR-0041 decision 2).
 pub(super) fn screens_payload(screens: &[Screen]) -> serde_json::Value {
     serde_json::Value::Array(

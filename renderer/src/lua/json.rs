@@ -7,8 +7,8 @@
 
 use mlua::{Lua, LuaSerdeExt, Table, Value};
 
-/// The sole JSON-to-Lua mapping, used by pushed capability payloads (`Loader::to_lua_value`) and
-/// `json.decode`.
+/// The sole JSON-to-Lua mapping, used by pushed capability payloads (`StateSnapshot`s) and
+/// `json.decode`, so `null` maps one way everywhere.
 ///
 /// mlua's serde bridge defaults `serialize_none_to_null`/`serialize_unit_to_null` to true, mapping
 /// `Value::Null` to truthy lightuserdata. Then `if payload.field` treats null as real data. Disable

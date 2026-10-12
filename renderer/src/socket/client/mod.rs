@@ -254,7 +254,7 @@ impl RendererClient {
     /// Hydrates only `snapshot.capability`; no Lua evaluation (module docs). `&self` is needed for
     /// the lazy `capabilities` registration.
     fn apply_state_snapshot(&self, snapshot: StateSnapshot) -> mlua::Result<()> {
-        let value = self.loader.to_lua_value(&snapshot.payload)?;
+        let value = crate::lua::json::to_lua(self.loader.lua(), &snapshot.payload)?;
         let handle = self.capability_handle(&snapshot.capability)?;
         let previous = handle.hydrate(value);
         // Run `on_change` handlers (ADR-0115) after hydration and before layout. This is the only
@@ -363,7 +363,7 @@ impl RendererClient {
         if self.screens_payload == payload {
             return false;
         }
-        match self.loader.to_lua_value(&payload) {
+        match crate::lua::json::to_lua(self.loader.lua(), &payload) {
             Ok(value) => {
                 let previous = self.screens_handle.hydrate(value);
                 self.screens_handle.notify_change(self.loader.lua(), previous);

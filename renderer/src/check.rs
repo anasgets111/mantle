@@ -122,7 +122,7 @@ pub(crate) fn samples(set: &str) -> serde_json::Map<String, serde_json::Value> {
 fn push_samples(namespace: &Namespace, loader: &Loader, set: &str) -> mlua::Result<()> {
     for (capability, payload) in &samples(set) {
         let Some(handle) = namespace.capabilities.get(capability) else { continue };
-        let previous = handle.hydrate(loader.to_lua_value(payload)?);
+        let previous = handle.hydrate(crate::lua::json::to_lua(loader.lua(), payload)?);
         handle.notify_change(loader.lua(), previous);
     }
     Ok(())

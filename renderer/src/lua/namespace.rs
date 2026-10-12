@@ -68,7 +68,13 @@ pub(crate) fn build(
     // Seed with an empty list, not `nil`, so `mantle.screens` loops zero times; pass it to
     // `new_live` rather than `set` so initialization does not dirty an unapplied scene.
     let screens_payload = serde_json::Value::Array(Vec::new());
-    let screens = seeded_member("screens", loader.to_lua_value(&screens_payload)?, &table, dirty.clone(), commands)?;
+    let screens = seeded_member(
+        "screens",
+        super::json::to_lua(loader.lua(), &screens_payload)?,
+        &table,
+        dirty.clone(),
+        commands,
+    )?;
     table.set("version", version_table(loader)?)?;
     // Parent of the loaded `shell.lua`, so config can name adjacent files without disagreeing with
     // `shared::config_dir()`. Static string beside `version`, not a pushing capability.
