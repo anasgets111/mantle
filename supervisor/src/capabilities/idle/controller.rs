@@ -295,7 +295,7 @@ impl IdleController {
     /// call (leak) or lets an inhibit/release pair write `fd` out of order (clobber).
     pub async fn inhibit(&self, generation_id: u32, reason: &str) {
         let mut state = self.inhibit.state.lock().await;
-        if apply_inhibit(&mut state.counts, generation_id).should_open_fd {
+        if apply_inhibit(&mut state.counts, generation_id) {
             self.open_shared_fd(&mut state, generation_id, reason).await;
         }
     }
@@ -335,8 +335,8 @@ impl IdleController {
             let mut state = self.inhibit.state.lock().await;
             let hold = super::state::IdleInhibitor { who, why };
             let reason = hold.why.clone();
-            let (cookie, transition) = apply_screensaver_inhibit(&mut state, peer, hold);
-            if transition.should_open_fd {
+            let (cookie, open_fd) = apply_screensaver_inhibit(&mut state, peer, hold);
+            if open_fd {
                 self.open_shared_fd(&mut state, SCREENSAVER_HOLDER, &reason).await;
             }
             (cookie, screensaver_holds(&state))
@@ -353,8 +353,8 @@ impl IdleController {
     pub async fn screensaver_release(&self, cookie: u32) -> bool {
         let holds = {
             let mut state = self.inhibit.state.lock().await;
-            let Some(transition) = apply_screensaver_release(&mut state, cookie) else { return false };
-            if transition.should_close_fd {
+            let Some(close_fd) = apply_screensaver_release(&mut state, cookie) else { return false };
+            if close_fd {
                 state.fd = None;
             }
             screensaver_holds(&state)
@@ -367,8 +367,8 @@ impl IdleController {
     async fn screensaver_peer_left(&self, departed: &str) {
         let holds = {
             let mut state = self.inhibit.state.lock().await;
-            let Some(transition) = drop_screensaver_peer(&mut state, departed) else { return };
-            if transition.should_close_fd {
+            let Some(close_fd) = drop_screensaver_peer(&mut state, departed) else { return };
+            if close_fd {
                 state.fd = None;
             }
             screensaver_holds(&state)
@@ -389,7 +389,7 @@ impl IdleController {
     /// `state` lock as [`IdleController::inhibit`]. Dropping `OwnedFd` closes the logind lock.
     pub async fn release_inhibit(&self, generation_id: u32) {
         let mut state = self.inhibit.state.lock().await;
-        if apply_release_inhibit(&mut state.counts, generation_id).should_close_fd {
+        if apply_release_inhibit(&mut state.counts, generation_id) {
             state.fd = None;
         }
     }
@@ -444,7 +444,7 @@ impl IdleController {
         self.gate.lock().expect("mutex poisoned").forget(generation_id);
 
         let mut state = self.inhibit.state.lock().await;
-        if cleanup_generation_inhibit(&mut state.counts, generation_id).should_close_fd {
+        if cleanup_generation_inhibit(&mut state.counts, generation_id) {
             state.fd = None;
         }
     }

@@ -10,35 +10,27 @@ use std::collections::{BTreeMap, HashMap};
 use super::controller::IdleController;
 use super::state::IdleInhibitor;
 
-/// One refcount transition's fd action: open at 0->1 or close at ->0, never both.
-/// [`apply_inhibit`] reports only `should_open_fd`; the others only `should_close_fd`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InhibitTransition {
-    pub should_open_fd: bool,
-    pub should_close_fd: bool,
-}
-
 fn total(counts: &HashMap<u32, u32>) -> u32 {
     counts.values().sum()
 }
 
-/// `idle:inhibit(reason)`'s refcount half: increments `generation_id`; `should_open_fd` is true
-/// only when the global total was zero before this call (ADR-0032's 0->1 rule).
-pub fn apply_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> InhibitTransition {
+/// `idle:inhibit(reason)`'s refcount half: increments `generation_id`; true only when the
+/// global total was zero before this call (ADR-0032's 0->1 rule), so the caller opens the fd.
+pub fn apply_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> bool {
     let total_before = total(counts);
     *counts.entry(generation_id).or_insert(0) += 1;
-    InhibitTransition { should_open_fd: total_before == 0, should_close_fd: false }
+    total_before == 0
 }
 
-/// `idle:release_inhibit()` decrements `generation_id`; `should_close_fd` is true only when the
+/// `idle:release_inhibit()` decrements `generation_id`; true (close the fd) only when the
 /// global total reaches zero. Releasing an empty generation is a silent `saturating_sub` no-op.
-pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> InhibitTransition {
+pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> bool {
     let total_before = total(counts);
     if let Some(count) = counts.get_mut(&generation_id) {
         *count = count.saturating_sub(1);
     }
     let total_after = total(counts);
-    InhibitTransition { should_open_fd: false, should_close_fd: total_before > 0 && total_after == 0 }
+    total_before > 0 && total_after == 0
 }
 
 /// Every `ScreenSaver` client at once, as one entry in [`InhibitState::counts`]. Generation ids
@@ -48,11 +40,7 @@ pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
 
 /// `ScreenSaver.Inhibit`: records the hold and reports the same 0->1 transition a config's hold
 /// does. The cookie is the client's handle for releasing it.
-pub(crate) fn apply_screensaver_inhibit(
-    state: &mut InhibitState,
-    peer: String,
-    hold: IdleInhibitor,
-) -> (u32, InhibitTransition) {
+pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, hold: IdleInhibitor) -> (u32, bool) {
     let cookie = state.next_cookie;
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
@@ -62,14 +50,14 @@ pub(crate) fn apply_screensaver_inhibit(
 
 /// `ScreenSaver.UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
 /// a client releasing twice would otherwise drop someone else's hold.
-pub(crate) fn apply_screensaver_release(state: &mut InhibitState, cookie: u32) -> Option<InhibitTransition> {
+pub(crate) fn apply_screensaver_release(state: &mut InhibitState, cookie: u32) -> Option<bool> {
     state.screensaver.remove(&cookie)?;
     Some(apply_release_inhibit(&mut state.counts, SCREENSAVER_HOLDER))
 }
 
 /// Every cookie a departed peer held (ADR-0231). A client that crashes mid-video sends no
 /// `UnInhibit`, so without this the session never idles again.
-pub(crate) fn drop_screensaver_peer(state: &mut InhibitState, departed: &str) -> Option<InhibitTransition> {
+pub(crate) fn drop_screensaver_peer(state: &mut InhibitState, departed: &str) -> Option<bool> {
     let cookies: Vec<u32> =
         state.screensaver.iter().filter(|(_, (peer, _))| peer == departed).map(|(cookie, _)| *cookie).collect();
     // Fold rather than return each: only the last release can reach zero, and the caller closes
@@ -79,11 +67,11 @@ pub(crate) fn drop_screensaver_peer(state: &mut InhibitState, departed: &str) ->
 
 /// Inhibit half of `reset_registrations` (ADR-0006/ADR-0032): zero `generation_id`'s count;
 /// close the fd when the global total reaches zero, so a crashed last holder releases it.
-pub fn cleanup_generation_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> InhibitTransition {
+pub fn cleanup_generation_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32) -> bool {
     let total_before = total(counts);
     counts.remove(&generation_id);
     let total_after = total(counts);
-    InhibitTransition { should_open_fd: false, should_close_fd: total_before > 0 && total_after == 0 }
+    total_before > 0 && total_after == 0
 }
 
 #[zbus::proxy(
@@ -179,23 +167,19 @@ mod tests {
 
     // ---- apply_inhibit / apply_release_inhibit (inhibit refcount arithmetic, TDD seam 2) ----
 
-    const OPEN: InhibitTransition = InhibitTransition { should_open_fd: true, should_close_fd: false };
-    const CLOSE: InhibitTransition = InhibitTransition { should_open_fd: false, should_close_fd: true };
-    const NONE: InhibitTransition = InhibitTransition { should_open_fd: false, should_close_fd: false };
-
     #[test]
     fn the_fd_opens_on_the_first_hold_and_closes_on_the_last_release() {
         let mut counts = HashMap::new();
-        assert_eq!(apply_inhibit(&mut counts, 1), OPEN);
-        assert_eq!(apply_inhibit(&mut counts, 2), NONE, "a second concurrent generation does not reopen");
-        assert_eq!(apply_release_inhibit(&mut counts, 1), NONE, "generation 2 still holds an inhibit");
+        assert!(apply_inhibit(&mut counts, 1));
+        assert!(!apply_inhibit(&mut counts, 2), "a second concurrent generation does not reopen");
+        assert!(!apply_release_inhibit(&mut counts, 1), "generation 2 still holds an inhibit");
         assert_eq!(counts.get(&1), Some(&0));
         assert_eq!(counts.get(&2), Some(&1));
-        assert_eq!(apply_release_inhibit(&mut counts, 1), NONE);
+        assert!(!apply_release_inhibit(&mut counts, 1));
         assert_eq!(counts.get(&1), Some(&0), "must not underflow below zero");
-        assert_eq!(apply_release_inhibit(&mut counts, 42), NONE);
+        assert!(!apply_release_inhibit(&mut counts, 42));
         assert!(!counts.contains_key(&42));
-        assert_eq!(apply_release_inhibit(&mut counts, 2), CLOSE);
+        assert!(apply_release_inhibit(&mut counts, 2));
     }
 
     // ---- ScreenSaver holds (ADR-0231): the inbound half, sharing one fd with the config's ----
@@ -216,10 +200,10 @@ mod tests {
         let (first, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
 
         assert_eq!(first, 1, "0 is a cookie some clients reject");
-        assert!(transition.should_open_fd);
+        assert!(transition);
         let (second, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio"));
         assert_eq!(second, 2);
-        assert!(!transition.should_open_fd, "the same client's second hold is already covered");
+        assert!(!transition, "the same client's second hold is already covered");
         assert_eq!(state.screensaver.len(), 2);
     }
 
@@ -231,11 +215,11 @@ mod tests {
         apply_inhibit(&mut state.counts, 1);
 
         let (cookie, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
-        assert!(!transition.should_open_fd, "generation 1 already opened it");
+        assert!(!transition, "generation 1 already opened it");
 
         let transition = apply_screensaver_release(&mut state, cookie).expect("a live cookie");
-        assert!(!transition.should_close_fd, "generation 1 still holds it");
-        assert!(apply_release_inhibit(&mut state.counts, 1).should_close_fd, "and now the last holder is gone");
+        assert!(!transition, "generation 1 still holds it");
+        assert!(apply_release_inhibit(&mut state.counts, 1), "and now the last holder is gone");
     }
 
     #[test]
@@ -258,9 +242,9 @@ mod tests {
 
         let transition = drop_screensaver_peer(&mut state, ":1.42").expect("that peer held two");
 
-        assert!(!transition.should_close_fd, ":1.99 still holds one");
+        assert!(!transition, ":1.99 still holds one");
         assert_eq!(state.screensaver.keys().copied().collect::<Vec<u32>>(), vec![survivor]);
-        assert!(drop_screensaver_peer(&mut state, ":1.99").expect("the last holder").should_close_fd);
+        assert!(drop_screensaver_peer(&mut state, ":1.99").expect("the last holder"));
         assert_eq!(drop_screensaver_peer(&mut state, ":1.42"), None, "a peer holding nothing releases nothing");
     }
 
@@ -274,9 +258,9 @@ mod tests {
 
         let transition = cleanup_generation_inhibit(&mut state.counts, 1);
 
-        assert!(!transition.should_close_fd, "the browser still holds the session awake");
+        assert!(!transition, "the browser still holds the session awake");
         assert_eq!(state.screensaver.len(), 1);
-        assert!(apply_screensaver_release(&mut state, cookie).expect("a live cookie").should_close_fd);
+        assert!(apply_screensaver_release(&mut state, cookie).expect("a live cookie"));
     }
 
     // ---- cleanup_generation_inhibit (TDD seam 5, inhibit half) ----
@@ -287,11 +271,11 @@ mod tests {
         apply_inhibit(&mut counts, 1);
         apply_inhibit(&mut counts, 2);
 
-        assert_eq!(cleanup_generation_inhibit(&mut counts, 99), NONE, "untracked generation");
-        assert_eq!(cleanup_generation_inhibit(&mut counts, 1), NONE);
+        assert!(!cleanup_generation_inhibit(&mut counts, 99), "untracked generation");
+        assert!(!cleanup_generation_inhibit(&mut counts, 1));
         assert!(!counts.contains_key(&1));
         assert_eq!(counts.get(&2), Some(&1), "generation 2's own count must be untouched");
-        assert_eq!(cleanup_generation_inhibit(&mut counts, 2), CLOSE);
+        assert!(cleanup_generation_inhibit(&mut counts, 2));
         assert!(counts.is_empty());
     }
 
