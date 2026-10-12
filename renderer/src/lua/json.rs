@@ -160,6 +160,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lua::tests::lua_registered;
 
     fn encoded(lua: &Lua, chunk: &str) -> Result<String, String> {
         lua.load(chunk).eval::<String>().map_err(|err| err.to_string())
@@ -167,7 +168,7 @@ mod tests {
 
     #[test]
     fn encode_writes_compact_sorted_json_that_decode_reads_back() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         let text = encoded(&lua, r#"return json.encode({ b = { 1, 2.5, "x" }, a = true, c = { n = "é" } })"#);
         assert_eq!(text.as_deref(), Ok(r#"{"a":true,"b":[1,2.5,"x"],"c":{"n":"é"}}"#));
         let same: bool = lua
@@ -179,7 +180,7 @@ mod tests {
 
     #[test]
     fn encode_mirrors_decodes_null_mapping() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         assert_eq!(encoded(&lua, "return json.encode({ 1, nil, 3 })").as_deref(), Ok("[1,null,3]"), "a hole is null");
         assert_eq!(encoded(&lua, "return json.encode(nil)").as_deref(), Ok("null"));
         assert_eq!(encoded(&lua, "return json.encode({})").as_deref(), Ok("[]"));
@@ -189,7 +190,7 @@ mod tests {
 
     #[test]
     fn encode_refuses_what_json_cannot_hold_instead_of_writing_null() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         for (chunk, needle) in [
             ("return json.encode({ f = print })", "function"),
             ("return json.encode({ 0/0 })", "no JSON form"),
@@ -214,22 +215,18 @@ mod tests {
 
     #[test]
     fn the_deepest_table_encode_accepts_decodes_again() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         let chunk = format!(
             "local t = {{}} for _ = 2, {MAX_DEPTH} do t = {{ t }} end return json.decode(json.encode(t)) ~= nil"
         );
         assert!(lua.load(&chunk).eval::<bool>().unwrap(), "encode wrote JSON decode refuses");
     }
 
-    fn lua_with_json() -> Lua {
-        crate::lua::tests::lua_registered(register)
-    }
-
     /// A config polling an untrusted subprocess must get nil plus a message, never a raised error,
     /// a stack overflow, or a Lua argument error past its error check.
     #[test]
     fn decode_failure_returns_nil_and_a_message() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         let deep = format!("{}1{}", "[".repeat(10_000), "]".repeat(10_000));
         for (input, case) in [
             (br#"{"volume":"#.to_vec(), "malformed input"),
@@ -248,7 +245,7 @@ mod tests {
 
     #[test]
     fn decode_maps_a_null_field_to_an_absent_key_exactly_as_a_pushed_capability_payload_does() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         let (key_count, absent): (i64, bool) = lua
             .load(
                 r#"
@@ -266,7 +263,7 @@ mod tests {
 
     #[test]
     fn decode_returns_one_value_on_success_so_it_can_be_forwarded_straight_into_another_call() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         // A trailing nil would make three-argument `table.insert` treat the value as a position.
         let count: i64 = lua.load(r#"local t = {} table.insert(t, json.decode('{"a":1}')) return #t"#).eval().unwrap();
         assert_eq!(count, 1);
@@ -274,7 +271,7 @@ mod tests {
 
     #[test]
     fn decode_of_a_bare_top_level_null_is_indistinguishable_from_a_decode_failure() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         let (value, message): (Value, Option<String>) = lua.load(r#"return json.decode('null')"#).eval().unwrap();
         assert_eq!(value, Value::Nil);
         assert_eq!(
@@ -287,7 +284,7 @@ mod tests {
     /// `layout` null nested two levels deep.
     #[test]
     fn decode_reads_a_real_niri_focused_window_line_including_its_nested_nulls() {
-        let lua = lua_with_json();
+        let lua = lua_registered(register);
         lua.globals()
             .set(
                 "line",

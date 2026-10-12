@@ -76,19 +76,16 @@ pub fn declared_chain(lua: &Lua) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn lua_with_fonts() -> Lua {
-        crate::lua::tests::lua_registered(register)
-    }
+    use crate::lua::tests::lua_registered;
 
     #[test]
     fn a_config_that_never_mentions_fonts_declares_no_chain() {
-        assert!(declared_chain(&lua_with_fonts()).is_empty());
+        assert!(declared_chain(&lua_registered(register)).is_empty());
     }
 
     #[test]
     fn a_declared_chain_is_read_back_in_the_order_it_was_written() {
-        let lua = lua_with_fonts();
+        let lua = lua_registered(register);
         lua.load(r#"fonts { "CaskaydiaCove Nerd Font Propo", "Noto Sans", "Noto Color Emoji" }"#).exec().unwrap();
         assert_eq!(
             declared_chain(&lua),
@@ -108,7 +105,7 @@ mod tests {
             (r#"fonts { "Noto Sans", 12 }"#, "entry 2"),
             (r#"fonts("Noto Sans")"#, "expected a table, got string"),
         ] {
-            let lua = lua_with_fonts();
+            let lua = lua_registered(register);
             let err = lua.load(call).exec().unwrap_err().to_string();
             assert!(err.contains(needle), "{call}: the message must name the problem: {err}");
             assert!(declared_chain(&lua).is_empty(), "{call}: a refused call records nothing");
@@ -117,7 +114,7 @@ mod tests {
 
     #[test]
     fn the_last_declaration_wins_rather_than_the_two_being_appended() {
-        let lua = lua_with_fonts();
+        let lua = lua_registered(register);
         lua.load(r#"fonts { "A" } fonts { "B" }"#).exec().unwrap();
         assert_eq!(declared_chain(&lua), vec!["B"]);
     }

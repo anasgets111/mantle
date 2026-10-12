@@ -118,11 +118,7 @@ pub fn clear(lua: &Lua) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A VM with `action` installed and nothing else; dispatch needs no scene.
-    fn lua() -> Lua {
-        crate::lua::tests::lua_registered(register)
-    }
+    use crate::lua::tests::lua_registered;
 
     fn failure(outcome: shared::CallOutcome) -> String {
         match outcome {
@@ -133,7 +129,7 @@ mod tests {
 
     #[test]
     fn arguments_arrive_in_order_and_the_answer_may_be_any_json() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("sum", function(a, b) return { total = a + b } end)"#).exec().unwrap();
         let outcome = dispatch(&lua, "sum", &[serde_json::json!(2), serde_json::json!(3)]);
         assert_eq!(outcome, shared::CallOutcome::Returned(serde_json::json!({ "total": 5 })));
@@ -141,7 +137,7 @@ mod tests {
 
     #[test]
     fn returning_nothing_and_returning_nil_are_the_same_answer() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("quiet", function() end)"#).exec().unwrap();
         lua.load(r#"action("nil", function() return nil end)"#).exec().unwrap();
         // Lua cannot tell them apart, so neither may this: inventing a difference here would invent
@@ -152,20 +148,20 @@ mod tests {
 
     #[test]
     fn an_undeclared_name_is_a_failure_that_names_it_rather_than_a_panic() {
-        let why = failure(dispatch(&lua(), "no.such.thing", &[]));
+        let why = failure(dispatch(&lua_registered(register), "no.such.thing", &[]));
         assert!(why.contains("no.such.thing"), "the caller has only this line to debug with: {why}");
     }
 
     #[test]
     fn a_handler_that_raises_answers_the_caller_instead_of_killing_the_frame() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("boom", function() error("no") end)"#).exec().unwrap();
         assert!(failure(dispatch(&lua, "boom", &[])).contains("no"));
     }
 
     #[test]
     fn a_returned_value_that_cannot_be_json_is_a_failure_not_a_silent_null() {
-        let lua = lua();
+        let lua = lua_registered(register);
         // A function has no JSON form. Answering `null` would report success for a config that
         // returned something it cannot send.
         lua.load(r#"action("fn", function() return function() end end)"#).exec().unwrap();
@@ -175,7 +171,7 @@ mod tests {
 
     #[test]
     fn an_answer_past_the_size_limit_fails_that_call_rather_than_the_connection() {
-        let lua = lua();
+        let lua = lua_registered(register);
         // A frame over `framing::MAX_FRAME_LEN` cannot be written, and the writer treats a failed
         // write as a dead socket. One config's runaway return must not cost the connection.
         //
@@ -194,7 +190,7 @@ mod tests {
 
     #[test]
     fn a_returned_error_table_is_a_value_and_not_a_failure() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("t", function() return { error = "nope" } end)"#).exec().unwrap();
         // A config returning a table shaped like an error is still returning a table; only a raise
         // is a failure, or the two could never be told apart.
@@ -203,7 +199,7 @@ mod tests {
 
     #[test]
     fn two_declarations_of_one_name_are_refused_rather_than_the_last_one_winning() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("dup", function() return 1 end)"#).exec().unwrap();
         let err = lua.load(r#"action("dup", function() return 2 end)"#).exec().unwrap_err().to_string();
         assert!(err.contains("dup"), "which module collided is the whole message: {err}");
@@ -213,14 +209,14 @@ mod tests {
 
     #[test]
     fn an_empty_name_is_refused_because_nothing_could_ask_for_it() {
-        let lua = lua();
+        let lua = lua_registered(register);
         let err = lua.load(r#"action("", function() end)"#).exec().unwrap_err().to_string();
         assert!(err.contains("needs a name"), "{err}");
     }
 
     #[test]
     fn a_registration_made_before_an_evaluation_raised_does_not_survive_it() {
-        let lua = lua();
+        let lua = lua_registered(register);
         // `shell.lua` may declare several actions and then fail. Clearing before evaluation cannot
         // reach these, so the caller clears again on failure; without it a rejected config keeps
         // answering `mantle call`.
@@ -232,7 +228,7 @@ mod tests {
 
     #[test]
     fn the_listing_is_every_declared_name_sorted_and_empty_after_a_clear() {
-        let lua = lua();
+        let lua = lua_registered(register);
         assert_eq!(names(&lua), serde_json::json!([]), "a config with no actions lists nothing");
         lua.load(r#"action("rec.toggle", function() end) action("audio.mute", function() end)"#).exec().unwrap();
         assert_eq!(names(&lua), serde_json::json!(["audio.mute", "rec.toggle"]));
@@ -242,7 +238,7 @@ mod tests {
 
     #[test]
     fn clearing_leaves_nothing_answering_so_a_reload_cannot_run_the_old_closure() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"action("gone", function() return 1 end)"#).exec().unwrap();
         clear(&lua);
         failure(dispatch(&lua, "gone", &[]));

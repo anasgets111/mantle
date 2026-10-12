@@ -243,11 +243,7 @@ pub fn discard(lua: &Lua) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// A VM with `timer` installed and nothing else; dispatch needs no scene.
-    fn lua() -> Lua {
-        crate::lua::tests::lua_registered(register)
-    }
+    use crate::lua::tests::lua_registered;
 
     /// Runs whatever is due a day from now, which is every timer any of these tests arms.
     fn fire_everything(lua: &Lua) {
@@ -261,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_due_timer_runs_its_callback_once() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = 0; timer(1, function() fired = fired + 1 end)").exec().unwrap();
 
         fire_everything(&lua);
@@ -272,7 +268,7 @@ mod tests {
 
     #[test]
     fn a_timer_that_is_not_due_yet_does_not_run() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = false; timer(60000, function() fired = true end)").exec().unwrap();
 
         dispatch_due(&lua, Instant::now());
@@ -282,7 +278,7 @@ mod tests {
 
     #[test]
     fn cancel_stops_a_timer_that_has_not_fired() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = false; timer(1, function() fired = true end):cancel()").exec().unwrap();
 
         fire_everything(&lua);
@@ -294,7 +290,7 @@ mod tests {
     /// set when the first one cancels it.
     #[test]
     fn a_callback_can_cancel_another_timer_due_in_the_same_batch() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(
             r#"
             fired = false
@@ -313,7 +309,7 @@ mod tests {
 
     #[test]
     fn a_callback_cancelling_itself_is_a_no_op_rather_than_an_error() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(
             r#"
             fired = 0
@@ -332,7 +328,7 @@ mod tests {
     /// Re-arming is how a config repeats, so it must not be able to spin one turn forever.
     #[test]
     fn a_timer_armed_by_a_callback_waits_for_a_later_turn() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(
             r#"
             fired = 0
@@ -354,7 +350,7 @@ mod tests {
     /// order correctly even if `arm` inserted before its equals instead of after.
     #[test]
     fn two_timers_due_at_the_very_same_instant_fire_in_the_order_they_were_armed() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(r#"order = ""; first = function() order = order .. "a" end"#).exec().unwrap();
         lua.load(r#"second = function() order = order .. "b" end"#).exec().unwrap();
         let due = Instant::now();
@@ -372,7 +368,7 @@ mod tests {
 
     #[test]
     fn the_next_deadline_is_the_earliest_armed_one() {
-        let lua = lua();
+        let lua = lua_registered(register);
         assert!(next_deadline(&lua).is_none(), "nothing armed keeps the poll loop timeout-free");
 
         lua.load("timer(60000, function() end); timer(10, function() end)").exec().unwrap();
@@ -385,7 +381,7 @@ mod tests {
     /// would cancel whatever reused its number.
     #[test]
     fn clear_disarms_everything_and_a_stale_handle_cannot_cancel_a_later_timer() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("stale_fired = false; kept = timer(1, function() stale_fired = true end)").exec().unwrap();
 
         begin_evaluation(&lua);
@@ -402,7 +398,7 @@ mod tests {
     /// armed instead is left for a later turn like any other.
     #[test]
     fn a_callback_can_clear_the_rest_of_the_batch() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("second_fired = false; armed_fired = false").exec().unwrap();
         lua.load(r#"timer(1, function() CLEAR(); timer(1, function() armed_fired = true end) end)"#).exec().unwrap();
         lua.load("timer(2, function() second_fired = true end)").exec().unwrap();
@@ -423,7 +419,7 @@ mod tests {
 
     #[test]
     fn a_raising_callback_does_not_take_the_rest_of_the_batch_with_it() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load(
             r#"
             fired = false
@@ -442,7 +438,7 @@ mod tests {
     /// The dispatch loop hands the callback itself to the reporter, so the log line can say where it was defined.
     #[test]
     fn a_raising_callback_is_logged_with_where_it_was_defined() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("\n\ntimer(1, function() error('boom') end)").set_name("@widgets/clock.lua").exec().unwrap();
 
         fire_everything(&lua);
@@ -456,7 +452,7 @@ mod tests {
     /// An evaluation whose output nothing applies must not leave its timers running.
     #[test]
     fn a_discarded_evaluations_timers_never_fire() {
-        let lua = lua();
+        let lua = lua_registered(register);
         begin_evaluation(&lua);
         lua.load("fired = false; timer(1, function() fired = true end)").exec().unwrap();
 
@@ -471,7 +467,7 @@ mod tests {
     /// armed later from a callback would otherwise stage forever and never fire.
     #[test]
     fn a_discard_leaves_the_registry_ready_for_a_callback_to_arm_into() {
-        let lua = lua();
+        let lua = lua_registered(register);
         begin_evaluation(&lua);
         discard(&lua);
         lua.load("fired = false; timer(1, function() fired = true end)").exec().unwrap();
@@ -484,7 +480,7 @@ mod tests {
 
     #[test]
     fn an_applied_evaluations_timers_fire_once_promoted() {
-        let lua = lua();
+        let lua = lua_registered(register);
         begin_evaluation(&lua);
         lua.load("fired = false; timer(1, function() fired = true end)").exec().unwrap();
         promote(&lua);
@@ -498,7 +494,7 @@ mod tests {
     /// A config cancelling at its top level is cancelling something still staged.
     #[test]
     fn cancel_reaches_a_timer_the_same_evaluation_armed() {
-        let lua = lua();
+        let lua = lua_registered(register);
         begin_evaluation(&lua);
         lua.load("fired = false; timer(1, function() fired = true end):cancel()").exec().unwrap();
         promote(&lua);
@@ -509,7 +505,7 @@ mod tests {
 
     #[test]
     fn an_interval_fires_once_per_due_turn_until_cancelled() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = 0; handle = interval(1, function() fired = fired + 1 end)").exec().unwrap();
 
         fire_after_days(&lua, 1);
@@ -525,7 +521,7 @@ mod tests {
 
     #[test]
     fn an_interval_keeps_its_period_and_skips_ahead_after_a_late_turn() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("interval(1000, function() end)").exec().unwrap();
         let first = next_deadline(&lua).unwrap();
 
@@ -539,7 +535,7 @@ mod tests {
 
     #[test]
     fn an_interval_can_cancel_itself_from_its_own_callback() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = 0; local h; h = interval(1, function() fired = fired + 1; h:cancel() end)").exec().unwrap();
 
         fire_after_days(&lua, 1);
@@ -550,7 +546,7 @@ mod tests {
 
     #[test]
     fn an_evaluation_clears_a_running_interval() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = 0; interval(1, function() fired = fired + 1 end)").exec().unwrap();
         fire_everything(&lua);
 
@@ -563,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_raising_interval_keeps_running() {
-        let lua = lua();
+        let lua = lua_registered(register);
         lua.load("fired = 0; interval(1, function() fired = fired + 1; error('boom') end)").exec().unwrap();
 
         fire_after_days(&lua, 1);
@@ -574,7 +570,7 @@ mod tests {
 
     #[test]
     fn a_duration_outside_the_range_is_refused_rather_than_clamped() {
-        let lua = lua();
+        let lua = lua_registered(register);
 
         assert!(lua.load("timer(0, function() end)").exec().is_err());
         let err = lua.load("timer(-1, function() end)").exec().unwrap_err().to_string();
