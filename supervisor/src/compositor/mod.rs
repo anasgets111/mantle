@@ -14,8 +14,8 @@ use std::time::Duration;
 use shared::{debug, warn};
 
 use crate::capabilities::keyboard::controller::LayoutSink;
-use crate::capabilities::windows::controller::StatePublisher as WindowsPublisher;
-use crate::capabilities::workspaces::controller::StatePublisher;
+use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
+use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher};
 use crate::capabilities::{RETRY_MAX, STABLE};
 
 mod hyprland;
@@ -158,6 +158,15 @@ fn connect(path: &Path) -> std::io::Result<UnixStream> {
     stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
     Ok(stream)
+}
+
+fn focused_window(windows: &[WindowEntry]) -> Option<FocusedWindow> {
+    windows.iter().find(|window| window.focused).map(|window| FocusedWindow {
+        title: window.title.clone(),
+        app_id: window.app_id.clone(),
+        floating: window.floating.unwrap_or(false),
+        fullscreen: window.fullscreen,
+    })
 }
 
 /// Runs `job` after every earlier one on a single shared thread, so rapid write actions reach the

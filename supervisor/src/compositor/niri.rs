@@ -9,11 +9,11 @@ use std::path::Path;
 
 use shared::{debug, warn};
 
-use super::{Compositor, End, connect, keep_following, lost, run_in_order, socket_var};
+use super::{Compositor, End, connect, focused_window, keep_following, lost, run_in_order, socket_var};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::workspaces::controller::{StatePublisher, WorkspaceRow};
 
 /// niri workspaces reduced to the common input. Clone `name` and `output` per event; a session has
 /// only a handful of workspaces.
@@ -73,21 +73,6 @@ fn window_rows(
             urgent: window.is_urgent,
         })
         .collect()
-}
-
-/// niri flags focus on each window, so search here rather than in `derive_state`. Clone only the
-/// winner; even a fifty-window session builds one `FocusedWindow` per event.
-///
-/// Wire `title`/`app_id` are `Option` but the payload makes them non-nullable, so default to empty.
-/// A window reporting neither is still a real toplevel.
-fn focused_window(windows: &HashMap<u64, niri_ipc::Window>) -> Option<FocusedWindow> {
-    windows.values().find(|window| window.is_focused).map(|window| FocusedWindow {
-        title: window.title.clone().unwrap_or_default(),
-        app_id: window.app_id.clone().unwrap_or_default(),
-        floating: window.is_floating,
-        // niri-ipc 26.4.0 has no fullscreen field (ADR-0056 decision 5); absent, not `false`.
-        fullscreen: None,
-    })
 }
 
 /// niri's three state parts, reset together.
@@ -170,10 +155,10 @@ fn follow(
         }
 
         let rows = workspace_rows(&parts.workspaces.workspaces, &parts.windows.windows);
-        let focused = focused_window(&parts.windows.windows);
-        let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, Some(parts.overview.is_open));
-        let windows_alive =
-            windows_publisher.publish(window_rows(&parts.windows.windows, &parts.workspaces.workspaces));
+        let windows = window_rows(&parts.windows.windows, &parts.workspaces.workspaces);
+        let workspaces_alive =
+            publisher.publish(&rows, focused_window(&windows).as_ref(), None, Some(parts.overview.is_open));
+        let windows_alive = windows_publisher.publish(windows);
         if !workspaces_alive && !windows_alive {
             return End::Unwanted;
         }
@@ -482,7 +467,8 @@ mod tests {
             (14, window(14, "Sign in | Slack", "slack", false, false)),
         ]);
 
-        let focused = focused_window(&windows).expect("a flagged window is the focused one");
+        let focused =
+            focused_window(&window_rows(&windows, &HashMap::new())).expect("a flagged window is the focused one");
 
         assert_eq!(focused.title, "src/main.rs - Neovim");
         assert_eq!(focused.app_id, "kitty");
@@ -494,7 +480,7 @@ mod tests {
         // Real: focusing a layer-shell surface leaves every toplevel unfocused.
         let windows = map(vec![(14, window(14, "Sign in | Slack", "slack", false, false))]);
 
-        assert_eq!(focused_window(&windows), None);
+        assert_eq!(focused_window(&window_rows(&windows, &HashMap::new())), None);
     }
 
     #[test]
@@ -504,7 +490,8 @@ mod tests {
         bare.title = None;
         bare.app_id = None;
 
-        let focused = focused_window(&map(vec![(2, bare)])).expect("a titleless window is still focused");
+        let focused = focused_window(&window_rows(&map(vec![(2, bare)]), &HashMap::new()))
+            .expect("a titleless window is still focused");
 
         assert_eq!((focused.title.as_str(), focused.app_id.as_str()), ("", ""));
     }

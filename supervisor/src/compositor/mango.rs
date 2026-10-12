@@ -14,11 +14,11 @@ use std::path::Path;
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{Compositor, End, REQUEST_TIMEOUT, keep_following, lost, run_in_order, socket_var, toggle_needed};
+use super::{Compositor, End, connect, focused_window, keep_following, lost, run_in_order, socket_var, toggle_needed};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::workspaces::controller::{StatePublisher, WorkspaceRow};
 
 #[derive(Deserialize)]
 struct Monitors {
@@ -137,15 +137,6 @@ fn window_rows(clients: &[Client]) -> Vec<WindowEntry> {
         .collect()
 }
 
-fn focused_window(clients: &[Client]) -> Option<FocusedWindow> {
-    clients.iter().find(|client| client.is_focused).map(|client| FocusedWindow {
-        title: client.title.clone(),
-        app_id: client.appid.clone(),
-        floating: client.is_floating,
-        fullscreen: Some(client.is_fullscreen),
-    })
-}
-
 /// What one read of the watch stream holds.
 enum Burst {
     End,
@@ -212,9 +203,9 @@ fn follow<R: Read>(
             last_layout = layout;
         }
         let rows = workspace_rows(&monitors, &clients);
-        let focused = focused_window(&clients);
-        let workspaces_alive = publisher.publish(&rows, focused.as_ref(), None, None);
-        let windows_alive = windows_publisher.publish(window_rows(&clients));
+        let windows = window_rows(&clients);
+        let workspaces_alive = publisher.publish(&rows, focused_window(&windows).as_ref(), None, None);
+        let windows_alive = windows_publisher.publish(windows);
         if !workspaces_alive && !windows_alive {
             return End::Unwanted;
         }
@@ -265,8 +256,7 @@ fn mango_send(socket_path: &Path, command: &str) -> std::io::Result<UnixStream> 
     if command.contains(['\n', '\r']) {
         return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "newline in a mango command"));
     }
-    let mut stream = UnixStream::connect(socket_path)?;
-    stream.set_write_timeout(Some(REQUEST_TIMEOUT))?;
+    let mut stream = connect(socket_path)?;
     stream.write_all(format!("{command}\n").as_bytes())?;
     Ok(stream)
 }
@@ -285,8 +275,6 @@ fn mango_read_line(reader: &mut impl BufRead, max: u64) -> std::io::Result<Optio
 /// One mango `get` or `dispatch`: a single JSON line back, then mango closes the connection.
 fn mango_request(socket_path: &Path, command: &str) -> std::io::Result<String> {
     let stream = mango_send(socket_path, command)?;
-    // A stalled mango must not wedge the reader or the shared action thread.
-    stream.set_read_timeout(Some(REQUEST_TIMEOUT))?;
     Ok(mango_read_line(&mut std::io::BufReader::new(stream), MANGO_LINE_MAX)?.unwrap_or_default())
 }
 
@@ -325,7 +313,11 @@ impl Compositor for Mango {
             keep_following(
                 "mango",
                 RETRY_FIRST,
-                || mango_send(&path, "watch all-monitors").map(BufReader::new),
+                || {
+                    let stream = mango_send(&path, "watch all-monitors")?;
+                    stream.set_read_timeout(None)?;
+                    Ok(BufReader::new(stream))
+                },
                 |stream| follow(stream, &path, &mut publisher, &mut windows_publisher, &keyboard),
             );
         });
@@ -424,7 +416,7 @@ mod tests {
             (player.fullscreen, player.floating, player.minimized, player.focused),
             (Some(true), Some(true), Some(true), true)
         );
-        assert_eq!(focused_window(&clients()).map(|w| w.title), Some("Player".to_string()));
+        assert_eq!(focused_window(&windows).map(|w| w.title), Some("Player".to_string()));
     }
 
     #[test]

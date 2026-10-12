@@ -12,11 +12,11 @@ use std::path::Path;
 use serde::Deserialize;
 use shared::{debug, warn};
 
-use super::{Compositor, End, connect, keep_following, lost, run_in_order, socket_var};
+use super::{Compositor, End, connect, focused_window, keep_following, lost, run_in_order, socket_var};
 use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
-use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher, WorkspaceRow};
+use crate::capabilities::workspaces::controller::{StatePublisher, WorkspaceRow};
 
 const EVENT_INPUT: u32 = (1 << 31) | 21;
 
@@ -137,15 +137,6 @@ fn workspace_rows(workspaces: &[SwayWorkspace], windows: &[WindowEntry]) -> Vec<
             }
         })
         .collect()
-}
-
-fn focused_window(windows: &[WindowEntry]) -> Option<FocusedWindow> {
-    windows.iter().find(|window| window.focused).map(|window| FocusedWindow {
-        title: window.title.clone(),
-        app_id: window.app_id.clone(),
-        floating: window.floating.unwrap_or(false),
-        fullscreen: window.fullscreen,
-    })
 }
 
 /// Re-reads workspaces and the tree on fresh connections and publishes. `false` once nobody listens.
