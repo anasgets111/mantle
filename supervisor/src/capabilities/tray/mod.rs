@@ -13,8 +13,6 @@
 
 pub use shared::state::tray::TrayState;
 
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use shared::action::TrayAction;
 
 /// Well-known bus name and object path for `org.kde.StatusNotifierWatcher`.
@@ -60,10 +58,6 @@ pub mod registry;
 pub mod watcher;
 
 pub use controller::TrayController;
-
-fn unix_timestamp_u32() -> u32 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0)
-}
 
 /// `mantle.tray` dispatch (ADR-0037): spawns every write action (ADR-0031).
 pub fn dispatch(controller: &TrayController, envelope: &shared::CommandEnvelope) {

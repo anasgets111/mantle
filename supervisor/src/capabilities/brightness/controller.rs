@@ -74,8 +74,21 @@ pub struct BrightnessController {
 }
 
 impl super::super::Writer for BrightnessController {
-    async fn write(&self, value: f64) {
-        self.set(value).await
+    /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
+    async fn write(&self, pct: f64) {
+        let Some((name, max)) =
+            self.device.lock().expect("mutex poisoned").as_ref().map(|device| (device.name.clone(), device.max))
+        else {
+            debug!("set called but no backlight device was found; ignored");
+            return;
+        };
+        let raw = raw_from_percent(pct, max) as u32;
+        // logind refuses SetBrightness from a non-active session (for example a background VT).
+        // Log that error; do not retry it.
+        if let Err(err) = set_brightness(&self.system_bus, "backlight", &name, raw).await {
+            warn!("SetBrightness(backlight, {name}, {raw}) failed: {err}");
+        }
+        // State changes arrive through the udev watch/poll loop, not an optimistic local update.
     }
 }
 
@@ -91,23 +104,6 @@ impl BrightnessController {
 
     pub fn snapshot(&self) -> BrightnessState {
         *self.state.lock().expect("brightness state mutex poisoned")
-    }
-
-    /// `brightness:set(pct)`. Logs and returns when this machine has no backlight device.
-    pub async fn set(&self, pct: f64) {
-        let Some((name, max)) =
-            self.device.lock().expect("mutex poisoned").as_ref().map(|device| (device.name.clone(), device.max))
-        else {
-            debug!("set called but no backlight device was found; ignored");
-            return;
-        };
-        let raw = raw_from_percent(pct, max) as u32;
-        // logind refuses SetBrightness from a non-active session (for example a background VT).
-        // Log that error; do not retry it.
-        if let Err(err) = set_brightness(&self.system_bus, "backlight", &name, raw).await {
-            warn!("SetBrightness(backlight, {name}, {raw}) failed: {err}");
-        }
-        // State changes arrive through the udev watch/poll loop, not an optimistic local update.
     }
 
     /// Selects the device again, for one added or removed since, and publishes its reading on

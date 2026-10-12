@@ -95,7 +95,3 @@ pub(super) async fn subscribe_object_manager(
     let owners = object_manager.inner().receive_owner_changed().await?;
     Ok((added, removed, owners))
 }
-
-pub(super) async fn bind_agent_manager(connection: &zbus::Connection) -> zbus::Result<AgentManager1Proxy<'static>> {
-    AgentManager1Proxy::new(connection).await
-}

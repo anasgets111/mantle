@@ -37,8 +37,20 @@ pub struct KeyboardController {
 }
 
 impl super::super::Writer for KeyboardController {
-    async fn write(&self, value: f64) {
-        self.set_backlight(value).await
+    /// `keyboard:set_backlight(pct)`. Logs and returns without keyboard-backlight hardware.
+    async fn write(&self, pct: f64) {
+        let Some(led) = self.backlight.as_ref() else {
+            debug!("set_backlight called but this machine has no keyboard backlight; ignored");
+            return;
+        };
+        let name = led.dir.file_name().unwrap_or_default().to_string_lossy();
+        let raw = raw_from_percent(pct, led.max) as u32;
+        if let Err(err) = set_brightness(&self.system_bus, "leds", &name, raw).await {
+            debug!("SetBrightness(leds, {name}, {raw}) failed: {err}");
+        }
+        // `brightness_hw_changed` reports only hardware changes, so read this write back.
+        self.state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
+        let _ = self.events.send(());
     }
 }
 
@@ -70,22 +82,6 @@ impl KeyboardController {
             events: events_tx,
             writes: Default::default(),
         }
-    }
-
-    /// `keyboard:set_backlight(pct)`. Logs and returns without keyboard-backlight hardware.
-    pub async fn set_backlight(&self, pct: f64) {
-        let Some(led) = self.backlight.as_ref() else {
-            debug!("set_backlight called but this machine has no keyboard backlight; ignored");
-            return;
-        };
-        let name = led.dir.file_name().unwrap_or_default().to_string_lossy();
-        let raw = raw_from_percent(pct, led.max) as u32;
-        if let Err(err) = set_brightness(&self.system_bus, "leds", &name, raw).await {
-            debug!("SetBrightness(leds, {name}, {raw}) failed: {err}");
-        }
-        // `brightness_hw_changed` reports only hardware changes, so read this write back.
-        self.state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
-        let _ = self.events.send(());
     }
 
     /// `keyboard:switch_layout(index)`; synchronous because `Compositor::switch_layout` is

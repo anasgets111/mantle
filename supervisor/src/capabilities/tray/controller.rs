@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::SystemTime;
 
 use enumflags2::BitFlags;
 use shared::action::ScrollOrientation;
@@ -10,6 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
+use crate::capabilities::clock::controller::epoch_seconds;
 use crate::capabilities::name_departures;
 
 use super::icon::icon_filename_stem;
@@ -20,7 +22,7 @@ use super::registry::{
     ItemEntry, ItemKey, ItemRegistry, ordered_items, register_item, spawn_name_owner_changed_forwarder, store_menu,
 };
 use super::watcher::StatusNotifierWatcher;
-use super::{DEFAULT_ITEM_OBJECT_PATH, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH, unix_timestamp_u32};
+use super::{DEFAULT_ITEM_OBJECT_PATH, TrayState, WATCHER_BUS_NAME, WATCHER_OBJECT_PATH};
 
 #[derive(Clone)]
 pub struct TrayController {
@@ -162,7 +164,7 @@ impl TrayController {
             return;
         };
         let data = Value::I32(0);
-        if let Err(err) = menu.event(menu_item_id, "clicked", &data, unix_timestamp_u32()).await {
+        if let Err(err) = menu.event(menu_item_id, "clicked", &data, epoch_seconds(SystemTime::now()) as u32).await {
             debug!("activate_menu_item({id:?}, {menu_item_id}) failed: {err}");
         }
     }

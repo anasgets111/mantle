@@ -9,7 +9,7 @@ use tokio::sync::oneshot;
 use zbus::message::Header;
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
 
-use super::proxies::bind_agent_manager;
+use super::proxies::AgentManager1Proxy;
 use super::registry::DeviceRegistry;
 use super::{AGENT_OBJECT_PATH, BluetoothSignal, PairingKind, PairingRequest};
 
@@ -380,7 +380,7 @@ pub(super) async fn export_agent(
 /// `bluetoothd`, which forgets its agents when it exits. Each step logs and continues, since a
 /// missing `bluetoothd` must not take down the Supervisor.
 pub(super) async fn register_with_bluez(connection: &zbus::Connection) {
-    let agent_manager = match bind_agent_manager(connection).await {
+    let agent_manager = match AgentManager1Proxy::new(connection).await {
         Ok(proxy) => proxy,
         Err(err) => {
             debug!("failed to bind org.bluez.AgentManager1 (bluetoothd not running?): {err}");
