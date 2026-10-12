@@ -100,15 +100,25 @@ pub(super) struct Authoritative {
 /// How the authoritative Renderer ended (ADR-0058 decision 2). `Clean` is not a crash, so
 /// `main`'s shutdown reap is never reported as one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum RendererDeparture {
+pub(crate) enum RendererDeparture {
     Clean,
     Failed { code: i32 },
     Signalled { signal: i32 },
 }
 
+impl std::fmt::Display for RendererDeparture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Clean => f.write_str("exited cleanly"),
+            Self::Failed { code } => write!(f, "exited with code {code}"),
+            Self::Signalled { signal } => write!(f, "was killed by signal {signal}"),
+        }
+    }
+}
+
 /// Check the signal first: a signalled child has no exit code, so `code()` first returns `None` and
 /// loses what happened.
-pub(super) fn classify_departure(status: std::process::ExitStatus) -> RendererDeparture {
+pub(crate) fn classify_departure(status: std::process::ExitStatus) -> RendererDeparture {
     use std::os::unix::process::ExitStatusExt;
 
     if let Some(signal) = status.signal() {
@@ -155,18 +165,13 @@ impl RestartBrake {
 /// not unlock when a lock client dies, so losing a Renderer holding `ext_session_lock_v1` costs the
 /// session, not just the bar.
 pub(super) fn departure_report(departure: RendererDeparture, generation_id: u32, lock_active: bool) -> String {
-    let what = match departure {
-        RendererDeparture::Clean => "exited cleanly".to_string(),
-        RendererDeparture::Failed { code } => format!("exited with code {code}"),
-        RendererDeparture::Signalled { signal } => format!("was killed by signal {signal}"),
-    };
     let lock = if lock_active {
         ", and it held the session lock: the compositor does not unlock when a lock client dies, so the session stays \
          locked until a replacement takes the lock over (ADR-0058)"
     } else {
         ""
     };
-    format!("generation {generation_id}'s renderer {what}{lock}")
+    format!("generation {generation_id}'s renderer {departure}{lock}")
 }
 
 #[cfg(test)]

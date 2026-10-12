@@ -382,20 +382,11 @@ async fn exchange_over(
 /// reports signal 15. That is not the ambiguity it looks like: this runs only when the pipe already
 /// closed, which a live process does not do, so in practice the status is the worker's own.
 fn post_mortem(reaped: &std::io::Result<std::process::ExitStatus>) -> String {
-    use std::os::unix::process::ExitStatusExt;
-
-    let status = match reaped {
-        Ok(status) => status,
-        Err(err) => return format!("could not be reaped, so how it died is unknown: {err}"),
-    };
-    if let Some(signal) = status.signal() {
-        return format!("was killed by signal {signal}");
-    }
-    match status.code() {
-        // The worker prints its own reason to the inherited stderr before returning non-zero, so a
-        // code here is a pointer to that line rather than the whole story.
-        Some(code) => format!("exited with status {code}"),
-        None => format!("ended in a way no exit status describes: {status}"),
+    match reaped {
+        // The worker prints its own reason to the inherited stderr before exiting non-zero, so a code
+        // here points at that line rather than telling the whole story.
+        Ok(status) => crate::generation::classify_departure(*status).to_string(),
+        Err(err) => format!("could not be reaped, so how it died is unknown: {err}"),
     }
 }
 
@@ -611,7 +602,7 @@ mod tests {
     /// The 2026-09-08 lockout: the worker vanished and "early eof" was the entire diagnosis.
     #[tokio::test]
     async fn a_worker_that_dies_without_answering_reports_how_it_died() {
-        for (script, expected) in [("exit 3", "exited with status 3"), ("kill -KILL $$", "was killed by signal 9")] {
+        for (script, expected) in [("exit 3", "exited with code 3"), ("kill -KILL $$", "was killed by signal 9")] {
             let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
                 .expect("failed to spawn the fake worker");
 
