@@ -149,7 +149,7 @@ Bind an [`elided(name)` signal](../guide/signals.md#elided-read-text-truncation)
 detect content removed by `elide` or `max_lines`. Wrapping alone keeps it `false`.
 Elision cuts at grapheme boundaries, preserving combining marks and emoji sequences.
 `elide = "start"` keeps the end of the line and `"middle"` keeps both ends, which suits file names
-whose extension matters; the end side takes the odd character. Both cut in logical order, so
+whose extension matters; the end side takes the odd grapheme. Both cut in logical order, so
 "start" is the start of the string even in right-to-left text, and both act as `"end"` under `wrap`.
 With `wrap = "word"`, `max_lines = N` and `elide = "end"`, the preview keeps the first N shaped
 lines and adds `…` to the last retained line. It shortens that line only as needed to fit the

@@ -231,12 +231,7 @@ fn elide_edges<'s>(
     cuts.push(text.len());
     let n = cuts.len() - 1;
     let rtl = matches!(unicode_bidi::get_base_direction(text), unicode_bidi::Direction::Rtl);
-    let build = |kept: usize| {
-        let (head, tail) = match elide {
-            node::Elide::End => (cuts[kept], text.len()),
-            node::Elide::Start => (0, cuts[n - kept]),
-            _ => (cuts[kept / 2], cuts[n - kept.div_ceil(2)]),
-        };
+    let build = |head: usize, tail: usize| {
         let mut fitted = Fitted::new(text, runs);
         let line = format!("{}\u{2026}{}", &text[..head], &text[tail..]);
         push_direction_mark(&mut fitted, &line, rtl);
@@ -246,10 +241,26 @@ fn elide_edges<'s>(
         fitted.push_source(tail..text.len());
         fitted
     };
-    build(largest_fitting(n - 1, |kept| {
-        let fitted = build(kept);
-        measured_width(&fitted.text, &fitted.runs, face, shaping) <= width
-    }))
+    let (head, tail) = match elide {
+        node::Elide::End | node::Elide::None => {
+            (elide_cut(text, runs, 0..text.len(), face, width, shaping), text.len())
+        }
+        node::Elide::Start | node::Elide::Middle => {
+            let at = |kept: usize| {
+                if elide == node::Elide::Start {
+                    (0, cuts[n - kept])
+                } else {
+                    (cuts[kept / 2], cuts[n - kept.div_ceil(2)])
+                }
+            };
+            at(largest_fitting(n - 1, |kept| {
+                let (head, tail) = at(kept);
+                let fitted = build(head, tail);
+                measured_width(&fitted.text, &fitted.runs, face, shaping) <= width
+            }))
+        }
+    };
+    build(head, tail)
 }
 
 #[cfg(test)]
@@ -459,10 +470,12 @@ mod tests {
     }
 
     #[test]
-    fn start_and_middle_keep_a_right_to_left_paragraph_reading_right_to_left() {
+    fn every_elide_keeps_a_right_to_left_paragraph_reading_right_to_left() {
         let rtl = |text: &str| matches!(unicode_bidi::get_base_direction(text), unicode_bidi::Direction::Rtl);
-        for elide in ["start", "middle"] {
-            for (drawn, cut) in sweep("שלום world again", elide) {
+        // "123 שלום" cut by "end" keeps only "123…", which has no strong character left.
+        for (text, elide) in [("שלום world again", "start"), ("שלום world again", "middle"), ("123 שלום", "end")]
+        {
+            for (drawn, cut) in sweep(text, elide) {
                 assert!(!cut || rtl(&drawn), "{elide} flipped the paragraph direction: {drawn:?}");
             }
         }
@@ -492,7 +505,7 @@ mod tests {
 
     #[test]
     fn start_and_middle_treat_an_embedded_newline_as_one_more_character() {
-        // ponytail: without `wrap`, a newline is cut like any grapheme; line-wise elision is wrap's job.
+        // A newline is cut like any grapheme without `wrap`; line-wise elision is wrap's job.
         let drawn = elided(
             r#"panel { id = "bar", child = text { width = 60, content = "first line\nsecond line", elide = "start" } }"#,
         );
