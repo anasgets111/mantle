@@ -186,7 +186,7 @@ async fn relist(
 
 /// Listing events: entries appearing, finishing writes, or going away. Exclude `MODIFY`, which a
 /// copy emits per chunk; `CLOSE_WRITE` marks its end. `DELETE_SELF`/`MOVE_SELF` catch folder loss.
-fn watch_mask() -> WatchMask {
+pub(crate) fn watch_mask() -> WatchMask {
     WatchMask::CREATE
         | WatchMask::MOVED_TO
         | WatchMask::MOVED_FROM

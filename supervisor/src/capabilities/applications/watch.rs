@@ -81,13 +81,7 @@ fn events(
 /// through its nearest existing ancestor, whose `CREATE` announces it.
 fn watch(dirs: &[PathBuf]) -> std::io::Result<Inotify> {
     let inotify = Inotify::init()?;
-    let changes = WatchMask::CREATE
-        | WatchMask::DELETE
-        | WatchMask::MOVED_TO
-        | WatchMask::MOVED_FROM
-        | WatchMask::CLOSE_WRITE
-        | WatchMask::DELETE_SELF
-        | WatchMask::MOVE_SELF;
+    let changes = crate::capabilities::folders::controller::watch_mask();
     for dir in dirs {
         let mut walked = Vec::new();
         walk(dir, 0, &mut walked, &mut Vec::new());
