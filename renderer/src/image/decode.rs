@@ -126,7 +126,7 @@ pub(super) fn decode(
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height, text, natural) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
-        let natural = Some(natural);
+        let natural = plausible(natural);
         let pixels = blur_rgba(pixels, width, height, *blur_px, true)?;
         return Ok(Decoded {
             base: pixels,
@@ -504,9 +504,13 @@ fn decode_raster(
 /// the whole file for its markers, so it runs on a worker and only for a bound `status`.
 fn header_size(path: &Path) -> Option<Natural> {
     refuse_irregular(path).ok()?;
-    let size = ::image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?;
-    let plausible = 1..=MAX_DECODE_EDGE;
-    (plausible.contains(&size.0) && plausible.contains(&size.1)).then_some(size)
+    plausible(::image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()?)
+}
+
+/// A reported source size only when both edges are in `1..=MAX_DECODE_EDGE`.
+pub(super) fn plausible(size: Natural) -> Option<Natural> {
+    let edges = 1..=MAX_DECODE_EDGE;
+    (edges.contains(&size.0) && edges.contains(&size.1)).then_some(size)
 }
 
 /// Reads at most `cap` bytes of `path`, or `None` if the file has more than that.
@@ -744,6 +748,16 @@ pub(super) mod tests {
             decode_within_limits(&big, MAX_DECODE_EDGE, Charge::Free, &|| false).is_err(),
             "a decode nobody wants any more must be abandoned rather than paid for"
         );
+    }
+
+    #[test]
+    fn a_sub_pixel_svg_reports_no_size() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tiny.svg");
+        std::fs::write(&path, r#"<svg xmlns="http://www.w3.org/2000/svg" width="0.4" height="0.4"/>"#).unwrap();
+        let key = CacheKey { box_px: (8, 8), ..super::super::tests::key(&path, 8, Default::default()) };
+        let decoded = decode(&key, None, None, Charge::Free, &|| true, 0, &Default::default()).unwrap();
+        assert_eq!(decoded.natural, None, "a 0px width is no size");
     }
 
     #[test]
