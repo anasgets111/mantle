@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.7.1 - 2026-10-12
+
 - Fixed: `elide = "end"` on one line keeps a right-to-left paragraph reading right to left when the kept head loses its first strong character (`"123 שלום"` cut to `"123…"`).
 - Changed: a `move` or `translate` paints at whole buffer pixels, so a slide of under one pixel steps instead of gliding; before, drivers sampled fractional glyph positions differently.
 - Fixed: a panel with `exclusive_zone = "ignore"` or a fixed zone no longer maps at a transient size; the zone is sent before the first commit.
