@@ -207,7 +207,7 @@ cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 # Kills the installed shell, plus any process whose executable matches one of `patterns` (globs).
 # By the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches the
 # calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
-# copy from a `target/` one.
+# copy from a `target/` one. A replaced binary reads "<path> (deleted)", stripped before matching.
 [private]
 stop *patterns:
     #!/usr/bin/env bash
@@ -216,6 +216,7 @@ stop *patterns:
     set -f
     for d in "${procs[@]}"; do
         exe="$(readlink "$d/exe" 2>/dev/null)" || continue
+        exe="${exe% (deleted)}"
         for p in "{{cargo_bin}}/mantle" "{{cargo_bin}}/mantle-renderer" {{patterns}}; do
             case "$exe" in $p) kill "${d#/proc/}" || true; break;; esac
         done
