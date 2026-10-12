@@ -18,7 +18,11 @@ use crate::capabilities::properties_proxy;
     default_service = "org.freedesktop.UPower",
     default_path = "/org/freedesktop/UPower"
 )]
-trait UPower {
+pub(crate) trait UPower {
+    /// `OnBattery` is a manager-wide answer across all UPower supplies, not a device property. This
+    /// matters for a docked laptop with two mains adapters; UPower aggregates it.
+    #[zbus(property)]
+    fn on_battery(&self) -> zbus::Result<bool>;
     fn enumerate_devices(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
     #[zbus(signal)]
     fn device_added(&self, device: OwnedObjectPath) -> zbus::Result<()>;

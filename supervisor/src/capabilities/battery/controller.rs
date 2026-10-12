@@ -30,7 +30,7 @@ pub(super) fn from_upower(state: u32) -> BatteryStatus {
 
 /// UPower's `DisplayDevice`, the composite of every battery. Its documented path is fixed, so
 /// this reads it directly instead of calling `GetDisplayDevice()`.
-pub(super) const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
+pub(crate) const DISPLAY_DEVICE: &str = "/org/freedesktop/UPower/devices/DisplayDevice";
 
 /// UPower's `Type` value for a battery.
 const UPOWER_TYPE_BATTERY: u32 = 2;

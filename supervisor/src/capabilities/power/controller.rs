@@ -10,21 +10,10 @@ use futures_util::{Stream, StreamExt, stream, stream_select};
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::capabilities::battery::peripherals::UPowerProxy;
 use crate::capabilities::{properties_proxy, publish};
 use zbus::proxy::CacheProperties;
 use zbus::zvariant::OwnedValue;
-
-/// `OnBattery` is a manager-wide answer across all UPower supplies, not a device property. This
-/// matters for a docked laptop with two mains adapters; UPower aggregates it.
-#[zbus::proxy(
-    interface = "org.freedesktop.UPower",
-    default_service = "org.freedesktop.UPower",
-    default_path = "/org/freedesktop/UPower"
-)]
-trait UPower {
-    #[zbus(property)]
-    fn on_battery(&self) -> zbus::Result<bool>;
-}
 
 /// The composite `DisplayDevice`, not `battery_BAT0`: UPower sums every battery there. `EnergyRate`
 /// is a positive watt magnitude while charging or discharging; `mantle.power` wants no direction,
@@ -271,7 +260,7 @@ mod tests {
         bus.builder()
             .serve_at("/org/freedesktop/UPower", FakeUPower { on_battery })
             .unwrap()
-            .serve_at("/org/freedesktop/UPower/devices/DisplayDevice", FakeDisplayDevice { energy_rate })
+            .serve_at(crate::capabilities::battery::controller::DISPLAY_DEVICE, FakeDisplayDevice { energy_rate })
             .unwrap()
             .name("org.freedesktop.UPower")
             .unwrap()

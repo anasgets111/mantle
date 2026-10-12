@@ -5,7 +5,7 @@
 //! announce and cannot tell a reached charge limit from running on battery (ADR-0080).
 
 pub mod controller;
-mod peripherals;
+pub(crate) mod peripherals;
 
 pub use controller::BatteryController;
 
