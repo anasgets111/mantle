@@ -222,17 +222,10 @@ impl ImageCache {
             return *image;
         };
         let now = Instant::now();
-        let (id, next, playing) = match node_clock {
+        let (own_id, target, next, playing) = match node_clock {
             None => {
-                let id = match *image {
-                    Some(id) => id,
-                    None => *image.insert(first_frame(canvas, anim)?),
-                };
                 let (target, next) = frame_at(&anim.delays, clock.elapsed(true, now));
-                let mut current = anim.current;
-                replay(canvas, id, anim, &mut current, target);
-                anim.current = current;
-                (id, next, true)
+                (None, target, next, true)
             }
             Some((node, playing)) => {
                 let sharing = node_textures(&self.clocks, key);
@@ -259,23 +252,24 @@ impl ImageCache {
                     self.resident_bytes += bytes;
                     own.texture = Some(NodeTexture { key: key.clone(), image, current: 0, bytes });
                 }
-                let id = match &mut own.texture {
-                    Some(texture) => {
-                        replay(canvas, texture.image, anim, &mut texture.current, target);
-                        texture.image
-                    }
-                    None => {
-                        let id = match *image {
-                            Some(id) => id,
-                            None => *image.insert(first_frame(canvas, anim)?),
-                        };
-                        let mut current = anim.current;
-                        replay(canvas, id, anim, &mut current, target);
-                        anim.current = current;
-                        id
-                    }
+                let own_id = own.texture.as_mut().map(|texture| {
+                    replay(canvas, texture.image, anim, &mut texture.current, target);
+                    texture.image
+                });
+                (own_id, target, next, playing)
+            }
+        };
+        let id = match own_id {
+            Some(id) => id,
+            None => {
+                let id = match *image {
+                    Some(id) => id,
+                    None => *image.insert(first_frame(canvas, anim)?),
                 };
-                (id, next, playing)
+                let mut current = anim.current;
+                replay(canvas, id, anim, &mut current, target);
+                anim.current = current;
+                id
             }
         };
         if let Some(next) = next.filter(|_| playing) {
@@ -346,14 +340,14 @@ impl ImageCache {
 mod tests {
     use super::*;
 
-    /// `image.playing` is each node's: its own texture and frame, a paused one owing no repaint;
-    /// a dissolve's two files keep two clocks; a scrolled-out node frees its texture but keeps its
-    /// time, also across a resize; a node gone from every tree frees all; past the budget a node
-    /// shares the slot's texture.
     fn own(cache: &mut ImageCache, node: u64) -> &mut NodeClock {
         &mut cache.clocks.get_mut(&NodeId::test(node)).unwrap()[0]
     }
 
+    /// `image.playing` is each node's: its own texture and frame, a paused one owing no repaint;
+    /// a dissolve's two files keep two clocks; a scrolled-out node frees its texture but keeps its
+    /// time, also across a resize; a node gone from every tree frees all; past the budget a node
+    /// shares the slot's texture.
     #[test]
     fn each_node_plays_a_gif_on_its_own_clock_and_texture() {
         use super::super::decode::tests::gif_fixture;
