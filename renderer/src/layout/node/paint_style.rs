@@ -261,7 +261,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
     fields::common::focus_target.read(properties)?;
     let style = match kind {
         // All containers and surface roles paint as a box; a `list` carries one for its `clip` (ADR-0328).
-        "rect" | "row" | "column" | "list" | "panel" | "window" | "popup" | "lock" => {
+        _ if boxed => {
             let (radius, border, widths) = (
                 parse_radius(properties)?,
                 paint::border_color.read(properties)?,

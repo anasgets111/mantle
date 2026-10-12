@@ -6,7 +6,7 @@ use crate::lua::nodes::{DeserializeError, VirtualNode, deserialize_lua_table};
 
 use super::*;
 
-/// A `lock` is in `BOX_KINDS` (`crate::lua::nodes`) and accepts the common and box properties;
+/// A `lock` is a box kind (`paint_style`'s `boxed`) and accepts the common and box properties;
 /// [`lock_spec`] refuses only `visible`, `width`, and `height` (ADR-0052 decision 2). `child` is
 /// walked into the retained tree, so the spec carries no layout field. It stays a struct rather
 /// than `SurfaceSpec::Lock(String)`, giving [`lock_spec`] a place to attach those refusals. There
