@@ -7,21 +7,6 @@ use std::time::Duration;
 use shared::action::SysinfoConfigure;
 use shared::debug;
 
-/// Whether a metric task ticks or parks with zero wakeups (ADR-0035), reevaluated when its
-/// `watch::Receiver` reports an interval change.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PollMode {
-    /// `interval == 0`: no timer; await only `watch::Receiver::changed()`.
-    Dormant,
-    /// `interval != 0`: race `tokio::time::interval_at(_).tick()` against
-    /// `watch::Receiver::changed()`.
-    Ticking(Duration),
-}
-
-pub fn poll_mode(interval: Duration) -> PollMode {
-    if interval.is_zero() { PollMode::Dormant } else { PollMode::Ticking(interval) }
-}
-
 /// Owns the poll tasks and their state. Not `Clone`: synchronous, non-blocking `configure`
 /// uses `&SysinfoController` directly.
 pub struct SysinfoController {
@@ -136,32 +121,30 @@ where
     let mut fresh = true;
     loop {
         let interval = *interval_rx.borrow_and_update();
-        match poll_mode(interval) {
-            PollMode::Dormant => {
-                fresh = true;
-                if interval_rx.changed().await.is_err() {
-                    return; // every SysinfoController that could reconfigure this task is gone
-                }
+        if interval.is_zero() {
+            // ADR-0035: no timer while parked; wake only on an interval change.
+            fresh = true;
+            if interval_rx.changed().await.is_err() {
+                return; // every SysinfoController that could reconfigure this task is gone
             }
-            PollMode::Ticking(duration) => {
-                // One sample on entry, not on every reconfigure: a reload would re-sample and blip cpu.
-                let first = std::mem::take(&mut fresh);
-                if first {
-                    tick(true).await;
-                }
-                // On the clock's second, so a whole-second interval lands in `clock`'s push turn.
-                let second = crate::capabilities::clock::controller::next_wall_clock_second();
-                let mut ticker = tokio::time::interval_at(if first { second + duration } else { second }, duration);
-                loop {
-                    tokio::select! {
-                        _ = ticker.tick() => tick(false).await,
-                        changed = interval_rx.changed() => {
-                            if changed.is_err() {
-                                return;
-                            }
-                            break; // interval reconfigured -- rebuild dormant/ticking in the outer loop
-                        }
+            continue;
+        }
+        // One sample on entry, not on every reconfigure: a reload would re-sample and blip cpu.
+        let first = std::mem::take(&mut fresh);
+        if first {
+            tick(true).await;
+        }
+        // On the clock's second, so a whole-second interval lands in `clock`'s push turn.
+        let second = crate::capabilities::clock::controller::next_wall_clock_second();
+        let mut ticker = tokio::time::interval_at(if first { second + interval } else { second }, interval);
+        loop {
+            tokio::select! {
+                _ = ticker.tick() => tick(false).await,
+                changed = interval_rx.changed() => {
+                    if changed.is_err() {
+                        return;
                     }
+                    break; // interval reconfigured -- rebuild dormant/ticking in the outer loop
                 }
             }
         }
@@ -195,9 +178,7 @@ async fn run_cpu_task(
             if let Some(prev) = previous.take() {
                 let percent = super::cpu::delta_percent(&prev, &sample);
                 publish_if_changed(&state, &signal_tx, |state| {
-                    let changed = state.cpu_percent != percent;
-                    state.cpu_percent = percent;
-                    changed
+                    replace_if_sampled(&mut state.cpu_percent, Some(percent))
                 });
             }
             *previous = Some(sample);
@@ -219,10 +200,8 @@ async fn run_ram_task(
         Ok(info) => {
             let (ram_percent, swap_percent) = super::ram::compute_percentages(&info);
             publish_if_changed(&state, &signal_tx, |state| {
-                let changed = state.ram_percent != ram_percent || state.swap_percent != swap_percent;
-                state.ram_percent = ram_percent;
-                state.swap_percent = swap_percent;
-                changed
+                replace_if_sampled(&mut state.ram_percent, Some(ram_percent))
+                    | replace_if_sampled(&mut state.swap_percent, Some(swap_percent))
             });
         }
         Err(err) => debug!("failed to read /proc/meminfo: {err}"),
@@ -243,10 +222,8 @@ async fn run_temp_task(
         let temp_cores = super::temp::sample_temp_cores(&mut core_inputs, &hwmon_root);
         let temp_gpu = super::temp::sample_temp_gpu(&mut gpu_input, &hwmon_root);
         publish_if_changed(&state, &signal_tx, |state| {
-            let changed = state.temp_cores != temp_cores || state.temp_gpu != temp_gpu;
-            state.temp_cores = temp_cores;
-            state.temp_gpu = temp_gpu;
-            changed
+            replace_if_sampled(&mut state.temp_cores, Some(temp_cores))
+                | replace_if_sampled(&mut state.temp_gpu, Some(temp_gpu))
         });
     })
     .await
@@ -302,10 +279,8 @@ async fn run_net_task(
                     let elapsed = (now - prev_time).as_secs_f64();
                     let (rx, tx) = super::net::delta_rate(&prev_sample, &sample, elapsed);
                     publish_if_changed(&state, &signal_tx, |state| {
-                        let changed = state.net_rx_bytes_sec != rx || state.net_tx_bytes_sec != tx;
-                        state.net_rx_bytes_sec = rx;
-                        state.net_tx_bytes_sec = tx;
-                        changed
+                        replace_if_sampled(&mut state.net_rx_bytes_sec, Some(rx))
+                            | replace_if_sampled(&mut state.net_tx_bytes_sec, Some(tx))
                     });
                 }
                 *previous = Some((sample, now));
@@ -339,15 +314,6 @@ mod tests {
         tx.send(std::time::Duration::from_secs(60)).unwrap();
         tokio::task::yield_now().await;
         assert_eq!(samples(), 2);
-    }
-
-    #[test]
-    fn poll_mode_is_dormant_at_zero_and_ticking_otherwise() {
-        assert_eq!(super::poll_mode(std::time::Duration::ZERO), super::PollMode::Dormant);
-        assert_eq!(
-            super::poll_mode(std::time::Duration::from_secs(5)),
-            super::PollMode::Ticking(std::time::Duration::from_secs(5))
-        );
     }
 
     /// `publish_if_changed` needs a state and a channel; both tasks and this test build them the
