@@ -76,24 +76,24 @@ fn next_index(len: usize, current: Option<usize>, backwards: bool) -> usize {
     }
 }
 
-/// `None` when there is nowhere to go, the focused control being the only one, so Tab reaches `on_key`.
-fn tab_target(controls: &[Control], current: Option<&FocusedControl>, backwards: bool) -> Option<usize> {
-    if controls.is_empty() {
-        return None;
-    }
-    let current = current.and_then(|focus| controls.iter().position(|control| &control.focus == focus));
-    Some(next_index(controls.len(), current, backwards)).filter(|&next| Some(next) != current)
-}
-
+/// `None` when no control can take Tab; else whether focus moved. Tab on the only control, while it
+/// holds focus, moves nothing (`Some(false)`) but still shows the outline and reaches `on_key`.
 fn dispatch_tab(
     controls: &[Control],
     current: Option<&FocusedControl>,
     backwards: bool,
     mut focus: impl FnMut(Control),
-) -> bool {
-    let Some(index) = tab_target(controls, current, backwards) else { return false };
-    focus(controls[index].clone());
-    true
+) -> Option<bool> {
+    if controls.is_empty() {
+        return None;
+    }
+    let current = current.and_then(|focus| controls.iter().position(|control| &control.focus == focus));
+    let next = next_index(controls.len(), current, backwards);
+    let moved = Some(next) != current;
+    if moved {
+        focus(controls[next].clone());
+    }
+    Some(moved)
 }
 
 /// Enter and Space are consumed on repeat too, but activate once per press. The press serial
@@ -467,7 +467,7 @@ impl App {
                         })
                     })
                 });
-            let moved = dispatch_tab(&list, current.map(|index| &list[index].focus), backwards, |next| {
+            let tabbed = dispatch_tab(&list, current.map(|index| &list[index].focus), backwards, |next| {
                 if let Some(target) = next.masked {
                     self.focus_secure_submit(Some(FocusedField {
                         surface_id: next.focus.surface_id.clone(),
@@ -482,10 +482,10 @@ impl App {
                     self.focus_control(Some(next.focus));
                 }
             });
-            if moved {
+            if tabbed.is_some() {
                 self.set_focus_visible(true);
             }
-            return moved;
+            return tabbed == Some(true);
         }
         false
     }
@@ -644,7 +644,7 @@ mod tests {
         let mut list = Vec::new();
         controls("panel@TEST", &button, &mut list);
         let mut focused = None;
-        assert!(dispatch_tab(&list, None, false, |control| focused = Some(control.focus)));
+        assert_eq!(dispatch_tab(&list, None, false, |control| focused = Some(control.focus)), Some(true));
         assert_eq!(focused.as_ref().map(|focus| focus.id), Some(button.id));
 
         let field = plain_textfield(&lua);
@@ -654,30 +654,37 @@ mod tests {
         controls("panel@TEST", &root, &mut list);
         focused = Some(list[0].focus.clone());
         let current = focused.clone();
-        assert!(dispatch_tab(&list, current.as_ref(), false, |control| focused = Some(control.focus)));
+        assert_eq!(dispatch_tab(&list, current.as_ref(), false, |control| focused = Some(control.focus)), Some(true));
         assert_eq!(focused, Some(list[1].focus.clone()));
         let current = focused.clone();
-        assert!(dispatch_tab(&list, current.as_ref(), false, |control| focused = Some(control.focus)));
+        assert_eq!(dispatch_tab(&list, current.as_ref(), false, |control| focused = Some(control.focus)), Some(true));
         assert_eq!(focused, Some(list[0].focus.clone()), "Tab wraps to the first field");
         let current = focused.clone();
-        assert!(dispatch_tab(&list, current.as_ref(), true, |control| focused = Some(control.focus)));
+        assert_eq!(dispatch_tab(&list, current.as_ref(), true, |control| focused = Some(control.focus)), Some(true));
         assert_eq!(focused, Some(list[1].focus.clone()), "Shift+Tab wraps backward");
 
         list.truncate(1);
-        assert!(dispatch_tab(&list, None, false, |_| ()), "an unfocused lone field takes focus");
+        assert_eq!(dispatch_tab(&list, None, false, |_| ()), Some(true), "an unfocused lone field takes focus");
         let current = Some(list[0].focus.clone());
-        assert!(!dispatch_tab(&list, current.as_ref(), false, |_| panic!("the focused lone field keeps Tab")));
+        assert_eq!(
+            dispatch_tab(&list, current.as_ref(), false, |_| panic!("the focused lone field keeps Tab")),
+            Some(false)
+        );
     }
 
     #[test]
-    fn tab_on_the_sole_focused_button_moves_nothing_and_reaches_on_key() {
+    fn tab_on_the_sole_focused_button_moves_nothing_but_shows_the_outline() {
         let lua = Lua::new();
         let button = named_button(&lua, "Open");
         let mut list = Vec::new();
         controls("panel@TEST", &button, &mut list);
         let current = Some(list[0].focus.clone());
         for backwards in [false, true] {
-            assert!(!dispatch_tab(&list, current.as_ref(), backwards, |_| panic!("nothing moves")));
+            assert_eq!(
+                dispatch_tab(&list, current.as_ref(), backwards, |_| panic!("nothing moves")),
+                Some(false),
+                "no move, yet Tab still shows the outline"
+            );
         }
     }
 

@@ -13,9 +13,8 @@ version is 0.x, a minor release can break the Lua API.
 - Added: `size` (bytes) on each `mantle.folders` entry; a symlink reports its target's size.
 - Changed: `on_hover` fires on the first pointer motion after layout moved its node under or off a still pointer; before, the pointer had to leave the node and come back.
 - Added: `text` `elide` accepts `"start"` (`…` then the end) and `"middle"` (start and end around a `…`, the end taking the odd grapheme), cutting at grapheme boundaries; `elided(name)` is true for either. Under `wrap = "word"` both act as `"end"`.
-- Fixed: Tab on the only control, while it holds focus, reaches `on_key` instead of being swallowed.
+- Fixed: Tab on the only control, while it holds focus, shows the focus outline and reaches `on_key` instead of being swallowed.
 - Changed: Tab on a lone plain `textfield` that does not hold focus focuses it; it used to reach `on_key`.
-- Changed: Tab on the only control, while it holds focus, no longer shows the focus outline; the key reaches `on_key` instead.
 - Added: `on_key_release(key)` on any node hears a key going up whose press was offered to `on_key`, routed the same way; `key` is `{ name, text, modifiers }`. `mantle input key` now sends the release after the press. See [key handlers](guide/input.md#key-handlers).
 - Added: `on_double_click(rect, button, pointer, modifiers)` fires after `on_click` on a second click on the same node with the same button within 400 ms and 4 px; it takes the innermost node with `on_double_click`, so single clicks still reach an ancestor's `on_click`. See [pointer](guide/input.md#pointer).
 - Added: `on_drag` takes a fifth argument, `velocity = { x, y }` in surface px per second over the last 100 ms of motion; on `"end"` it is the release velocity, or the last motion's when the pointer leaves the surface, for flick scrolling. See [pointer](guide/input.md#pointer).

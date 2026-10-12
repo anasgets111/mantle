@@ -282,7 +282,7 @@ focus scope.
 
 Tab moves to the next control in document order across the focused surface and its shown popups.
 Shift+Tab moves backward, and both wrap. Hidden, leaving and zero-size controls are skipped.
-Tab on the only control, while it holds focus, moves nothing and reaches `on_key`.
+Tab on the only control, while it holds focus, moves nothing, shows the outline and reaches `on_key`.
 Enter or Space activates a named control once per press, calling `on_click(rect, "left", pointer)`
 with `pointer` at the node's centre, and running `submits_secure` when set. Pointer presses also focus
 named controls.
