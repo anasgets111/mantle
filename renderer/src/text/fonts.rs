@@ -32,7 +32,7 @@ pub const DEFAULT_CHAIN: &[&str] = &["sans-serif", "Noto Sans CJK JP", "Noto Col
 pub struct ResolvedFonts {
     pub db: Database,
     pub primary_family: String,
-    /// Every file already in `db`, so a family loaded later by [`load_family`] can tell a new file
+    /// Every file already in `db`, so a family loaded later by [`load_chain`] can tell a new file
     /// from one the declared chain already mapped (ADR-0144). Carried out of resolution rather
     /// than rebuilt from `db.faces()`, which would have to re-derive it on every runtime load.
     pub loaded_paths: HashSet<PathBuf>,
@@ -60,21 +60,6 @@ pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
         Some(primary_family) => ResolvedFonts { db, primary_family, loaded_paths },
         None => system_fallback(chain),
     }
-}
-
-/// Loads one family a node named by hand into an already-built database, and returns the family
-/// name shaping should ask Parley for (ADR-0144).
-///
-/// The counterpart to `resolve_chain` for `text { font = "..." }`: same `fc_match`, same
-/// hit-versus-substitution check, same bold/italic variant load, into the database the declared
-/// chain already filled. Reusing that one database is what keeps the declared chain's CJK and
-/// emoji faces working as fallback behind a named family, and what keeps this from being a second
-/// independent font discovery -- the divergence ADR-0043 decision 2 closed.
-///
-/// `None` for a family nothing on the system answers. The caller draws in the declared chain and
-/// logs it once at `-vvv`; a missing font is a diagnostic, not a dead node.
-pub fn load_family(db: &mut Database, name: &str, loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
-    load_chain(db, &[name], loaded_paths)
 }
 
 /// Loads a face covering `ch`, for a codepoint every face the chain loaded drew as a box
@@ -109,7 +94,13 @@ pub fn load_covering(db: &mut Database, ch: char, loaded_paths: &mut HashSet<Pat
 
 /// Loads every entry of one chain into `db` and returns the first that hit, which is that chain's
 /// primary family, along with that primary's bold, italic and bold-italic files.
-fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
+///
+/// A one-name chain is `text { font = "..." }` loaded by hand into the database the declared chain
+/// already filled (ADR-0144): same `fc_match`, same hit-versus-substitution check. Reusing that
+/// database keeps the declared chain's CJK and emoji faces working as fallback behind the named
+/// family, and keeps this from being a second font discovery (ADR-0043 decision 2). `None` for a
+/// family nothing answers: the caller draws in the declared chain and logs it once at `-vvv`.
+pub(crate) fn load_chain(db: &mut Database, chain: &[&str], loaded_paths: &mut HashSet<PathBuf>) -> Option<String> {
     let mut primary_family: Option<String> = None;
 
     for &name in chain {
@@ -201,7 +192,7 @@ fn system_fallback(chain: &[&str]) -> ResolvedFonts {
         String::new()
     });
     // Every face in the database came from the scan rather than a named file, so nothing here has
-    // a path a later `load_family` could collide with.
+    // a path a later `load_chain` could collide with.
     ResolvedFonts { db, primary_family, loaded_paths: HashSet::new() }
 }
 
@@ -346,7 +337,7 @@ mod tests {
         let mut resolved = resolve_chain(&[TEST_FAMILY]);
         let before = resolved.db.faces().count();
 
-        let hit = load_family(&mut resolved.db, named, &mut resolved.loaded_paths);
+        let hit = load_chain(&mut resolved.db, &[named], &mut resolved.loaded_paths);
         assert_eq!(hit.as_deref(), Some(named), "the named family resolves to itself, not a substitute");
         assert!(resolved.db.faces().count() > before, "its faces joined the same database");
         for family in [TEST_FAMILY, named] {
@@ -361,7 +352,7 @@ mod tests {
     /// chain, so the database comes back untouched. A family the chain already loaded must not
     /// map its file a second time.
     #[test]
-    fn load_family_leaves_the_database_unchanged_for_known_and_unknown_families() {
+    fn load_chain_leaves_the_database_unchanged_for_known_and_unknown_families() {
         if !fc_match_available() || !fc_lists(TEST_FAMILY) {
             eprintln!("fc-match or {TEST_FAMILY:?} not available, skip");
             return;
@@ -369,7 +360,7 @@ mod tests {
         for (family, expected) in [("ZZ No Such Family 9184", None), (TEST_FAMILY, Some(TEST_FAMILY))] {
             let mut resolved = resolve_chain(&[TEST_FAMILY]);
             let before = resolved.db.faces().count();
-            assert_eq!(load_family(&mut resolved.db, family, &mut resolved.loaded_paths).as_deref(), expected);
+            assert_eq!(load_chain(&mut resolved.db, &[family], &mut resolved.loaded_paths).as_deref(), expected);
             assert_eq!(resolved.db.faces().count(), before, "{family:?} must not change the database");
         }
     }

@@ -32,7 +32,7 @@ pub(super) struct WorkerFonts {
     /// outcomes are remembered, so a font that is simply not installed costs one `fc-match` rather
     /// than one per measurement.
     families: HashMap<Arc<str>, Option<String>>,
-    /// Every file already loaded, so `load_family` can tell a new one from a repeat.
+    /// Every file already loaded, so `load_chain` can tell a new one from a repeat.
     loaded_paths: HashSet<PathBuf>,
     /// Codepoints already looked up by [`WorkerFonts::cover`], found or not, so one nothing on the
     /// system covers costs a single `fc-match` for the life of the process rather than one per
@@ -91,7 +91,7 @@ impl WorkerFonts {
                 self.families.clear();
                 ensured.lock().unwrap_or_else(PoisonError::into_inner).clear();
             }
-            let hit = fonts::load_family(&mut self.db, asked, &mut self.loaded_paths);
+            let hit = fonts::load_chain(&mut self.db, &[&**asked], &mut self.loaded_paths);
             self.families.insert(Arc::clone(asked), hit);
             self.chain_data = font_chain_data(&mut self.db);
             self.register_faces();
