@@ -125,7 +125,12 @@ pub(crate) struct CpuBudget<'lua> {
     lua: &'lua Lua,
     /// No outer evaluation had started its CPU clock, so an overrun is this evaluation's own.
     pub(super) fresh: bool,
+    /// The outermost evaluation paused the collector, with the heap at this many bytes.
+    gc_paused_at: Option<usize>,
 }
+
+/// Lua 5.4's default basic step, `2^LUAI_GCSTEPSIZE` bytes of allocation paid per `gc_step`.
+const GC_STEP_BYTES: usize = 8 * 1024;
 
 /// Installs the instruction hook for the life of the VM, once, before any config code runs.
 ///
@@ -215,9 +220,17 @@ impl<'lua> CpuBudget<'lua> {
             )));
         }
         let fresh = stack.first().is_none_or(|outer| outer.cpu.get().is_none());
+        // Garbage collection runs inside whichever allocation pays the heap's debt, so a getter
+        // was charged for collecting what a capability push or another getter left: 6 budget
+        // errors in 8 runs of a 56-image palette scan, none with the collector stopped. Paused
+        // here, the evaluation's own allocation is paid for on exit, outside the budget.
+        let gc_paused_at = (stack.is_empty() && lua.gc_is_running()).then(|| {
+            lua.gc_stop();
+            lua.used_memory()
+        });
         let deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(CPU_CAP));
         stack.push(deadline);
-        Ok(Self { lua, fresh })
+        Ok(Self { lua, fresh, gc_paused_at })
     }
 
     /// Calls `f` under its own budget, erroring when the call raised or ran past the cap: the one
@@ -245,6 +258,17 @@ impl Drop for CpuBudget<'_> {
     fn drop(&mut self) {
         if let Ok(Some(mut stack)) = self.lua.try_app_data_mut::<Vec<Deadline>>() {
             stack.pop();
+        }
+        // After the pop: a finalizer reading a signal opens a budget of its own.
+        if let Some(before) = self.gc_paused_at {
+            self.lua.gc_restart();
+            let grown = self.lua.used_memory().saturating_sub(before);
+            for _ in 0..grown.div_ceil(GC_STEP_BYTES) {
+                // A finished cycle has collected everything the evaluation dropped.
+                if self.lua.gc_step().unwrap_or(true) {
+                    break;
+                }
+            }
         }
     }
 }
@@ -540,5 +564,31 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the long call must be stopped and named: {err}");
         assert!(start.elapsed() > CPU_CAP, "the haystack must outlast the cap for this to prove anything");
+    }
+
+    #[test]
+    fn a_getter_runs_with_the_collector_paused_and_pays_for_its_garbage_after() {
+        let lua = lua_with_signal("a", Value::Integer(1));
+        let inside: bool =
+            lua.load("return computed({a}, function() return collectgarbage('isrunning') end):get()").eval().unwrap();
+        assert!(!inside, "collection inside a getter is charged to its budget");
+        assert!(lua.gc_is_running(), "the collector must run again once the getter returns");
+
+        // From a finished cycle, one getter drops ~8 MiB. Paid on exit, a whole cycle runs and
+        // frees it; unpaid, the restart alone leaves it for later allocations to collect.
+        lua.gc_collect().unwrap();
+        let before = lua.used_memory();
+        lua.load("computed({a}, function() local g = {} for i = 1, 8 do g[i] = string.rep(i, 1 << 20) end return #g end):get()")
+            .exec()
+            .unwrap();
+        let grown = lua.used_memory().saturating_sub(before);
+        assert!(grown < 1 << 20, "the getter's garbage must be collected as it returns, {grown} bytes left");
+    }
+
+    #[test]
+    fn a_config_that_stopped_the_collector_keeps_it_stopped_across_a_getter() {
+        let lua = lua_with_signal("a", Value::Integer(1));
+        lua.load("collectgarbage('stop') computed({a}, function() return 1 end):get()").exec().unwrap();
+        assert!(!lua.gc_is_running());
     }
 }

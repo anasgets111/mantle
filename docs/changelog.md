@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a getter, handler or callback is no longer failed with "exceeded the 2.5ms CPU budget" for garbage collection it didn't cause; the collector pauses while config code runs under the budget and catches up after.
+
 ## 0.7.1 - 2026-10-12
 
 - Fixed: `elide = "end"` on one line keeps a right-to-left paragraph reading right to left when the kept head loses its first strong character (`"123 שלום"` cut to `"123…"`).
