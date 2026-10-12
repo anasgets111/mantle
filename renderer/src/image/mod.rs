@@ -98,7 +98,9 @@ const MAX_INFLIGHT_DECODES: usize = 64;
 const MAX_DECODE_EDGE: u32 = 8_192;
 
 /// 16 MiB a sampler image, 128 MiB for a node's eight: they are decoded inline and pinned past the texture budget.
-const MAX_SAMPLER_EDGE: u32 = 2_048;
+/// A shader's `images` entry is requested as a mask over a box of this size: whole and uncropped (a
+/// larger file is downscaled), since a sampler reads texels and not a fitted picture.
+pub(crate) const MAX_SAMPLER_EDGE: u32 = 2_048;
 
 /// Decoded pixels the background pool holds at once, and the most one decode may produce.
 ///
@@ -158,20 +160,6 @@ pub(crate) struct ImageRequest<'a> {
 }
 
 impl ImageRequest<'_> {
-    /// A shader's `images` entry: whole and uncropped, at its own size up to [`MAX_SAMPLER_EDGE`]
-    /// a side (a larger file is downscaled), since a sampler reads texels and not a fitted picture.
-    pub(crate) fn sampler(path: &Path) -> ImageRequest<'_> {
-        ImageRequest {
-            path,
-            box_px: (MAX_SAMPLER_EDGE, MAX_SAMPLER_EDGE),
-            tint: None,
-            fit: Fit::Stretch,
-            blur_px: 0,
-            wants_size: false,
-            clock: None,
-        }
-    }
-
     /// An image `mask`'s file, stretched over a box of `box_px`.
     pub(crate) fn mask(path: &Path, box_px: (u32, u32)) -> ImageRequest<'_> {
         ImageRequest { path, box_px, tint: None, fit: Fit::Stretch, blur_px: 0, wants_size: false, clock: None }

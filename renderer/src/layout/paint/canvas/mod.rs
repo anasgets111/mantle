@@ -690,7 +690,13 @@ fn sampler_images<'a>(
     cache: &mut ImageCache,
     files: &'a [super::SamplerFile],
 ) -> Vec<(&'a str, Option<ImageId>)> {
-    let mut load = |path: &str| cache.image(canvas, &ImageRequest::sampler(std::path::Path::new(path)), Load::Inline);
+    let mut load = |path: &str| {
+        cache.image(
+            canvas,
+            &ImageRequest::mask(std::path::Path::new(path), (image::MAX_SAMPLER_EDGE, image::MAX_SAMPLER_EDGE)),
+            Load::Inline,
+        )
+    };
     files.iter().map(|(name, path, _)| (name.as_str(), load(path))).collect()
 }
 

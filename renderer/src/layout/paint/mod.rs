@@ -318,7 +318,12 @@ impl DisplayList {
                     }
                     _ => &[],
                 };
-                out.extend(files.iter().map(|(_, path, _)| image::ImageRequest::sampler(std::path::Path::new(path))));
+                out.extend(files.iter().map(|(_, path, _)| {
+                    image::ImageRequest::mask(
+                        std::path::Path::new(path),
+                        (image::MAX_SAMPLER_EDGE, image::MAX_SAMPLER_EDGE),
+                    )
+                }));
                 match &command.draw {
                     Draw::Image { node, source, box_px, fit, blur_px, retained, playing, .. } => {
                         for path in std::iter::once(source).chain(retained.iter()) {
