@@ -512,6 +512,13 @@ impl ImageCache {
         loop {
             match self.pool.results.try_recv() {
                 Ok(result) => {
+                    // A size-only answer (no pixels) arriving at a slot that went Pending again must
+                    // not land as that slot's pixels nor cancel its real job.
+                    let size_only = result.1.as_ref().is_ok_and(|decoded| decoded.base.is_empty());
+                    let slot = self.entries.get(&result.0).map(|entry| &entry.slot);
+                    if size_only && matches!(slot, Some(Slot::Pending)) {
+                        continue;
+                    }
                     // A decode that finished just as its entry was evicted has nowhere to go.
                     // `upload_landed` would skip it anyway; dropping it here also keeps its path
                     // out of the repaint cue, which would otherwise redraw for nothing.
@@ -719,7 +726,7 @@ impl ImageCache {
             Slot::Failed => return Some(Loaded::Failed),
             Slot::Pending => return None,
         };
-        if loaded == Loaded::Ready(None) && request.wants_size && !std::mem::replace(&mut entry.sized, true) {
+        if loaded == Loaded::Ready(None) && request.wants_size && !entry.sized {
             let job = Job {
                 fonts: self.fonts.clone(),
                 key: key.clone(),
@@ -728,8 +735,21 @@ impl ImageCache {
                 size_only: true,
                 animation_bytes: 0,
             };
-            if self.admit(&key) && self.pool.jobs.try_send(job).is_err() {
-                self.unwant(&key);
+            // `sized` only once queued, so a refused send is asked again next draw.
+            if self.admit(&key) {
+                match self.pool.jobs.try_send(job) {
+                    Ok(()) => {}
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                        self.unwant(&key);
+                        self.deferred = Some(Instant::now());
+                        return Some(loaded);
+                    }
+                    // No worker will ever answer; asking again every draw would only repeat this.
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => self.unwant(&key),
+                }
+                if let Some(entry) = self.entries.get_mut(&key) {
+                    entry.sized = true;
+                }
             }
         }
         Some(loaded)
@@ -1293,6 +1313,72 @@ mod tests {
         assert_eq!(cache.poll(), vec![png.clone()], "a cancelled decode owes the same invalidation a landed one does");
         assert!(cache.poll().is_empty(), "and it is reported once, not on every turn after");
         assert!(!cache.pool.wanted.lock().unwrap().contains(&key), "a worker must see the decode is no longer wanted");
+    }
+
+    fn size_only_answer() -> Decoded {
+        Decoded {
+            base: Vec::new(),
+            delays: Vec::new(),
+            deltas: Vec::new(),
+            width: 0,
+            height: 0,
+            natural: Some((2, 2)),
+            premultiplied: false,
+            text: false,
+        }
+    }
+
+    #[test]
+    fn a_size_request_the_pipeline_refused_is_asked_again_and_a_stray_answer_never_lands_as_pixels() {
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("fixture.png");
+        std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
+        let mut cache = ImageCache::inline();
+        let (jobs, queue) = std::sync::mpsc::sync_channel(8);
+        cache.pool.jobs = jobs;
+        let request = ImageRequest {
+            path: &png,
+            box_px: (8, 8),
+            tint: None,
+            fit: Fit::Contain,
+            blur_px: 0,
+            wants_size: true,
+            clock: None,
+        };
+        let key = cache.key_for(&request);
+        cache.insert(
+            key.clone(),
+            Slot::Ready { image: None, bytes: 0, clock: Clock::default(), anim: None, natural: None },
+        );
+        for n in 0..MAX_INFLIGHT_DECODES as u32 {
+            cache.admit(&super::tests::key(format!("/busy{n}.png"), 8, FileVersion::default()));
+        }
+        assert_eq!(cache.loaded(&request), Some(Loaded::Ready(None)));
+        assert!(queue.try_recv().is_err() && !cache.entries[&key].sized, "refused, so not marked as asked");
+        cache.pool.wanted.lock().unwrap().clear();
+        cache.loaded(&request);
+        assert!(queue.try_recv().is_ok_and(|job| job.size_only), "the next draw asks again");
+        assert!(cache.entries[&key].sized);
+
+        // No worker left: marked asked, and no immediate repaint for an answer that cannot come.
+        cache.entries.get_mut(&key).unwrap().sized = false;
+        drop(queue);
+        cache.take_deferred();
+        let before = Instant::now();
+        cache.loaded(&request);
+        assert!(cache.entries[&key].sized, "sized");
+        // Only the file-version recheck (in the future) may be owed, not an immediate repaint.
+        assert!(cache.take_deferred().is_none_or(|due| due > before), "deferred");
+
+        // The slot went Pending again before the stale size-only answer arrived.
+        let (results, inbox) = std::sync::mpsc::channel();
+        cache.pool.results = inbox;
+        cache.entries.get_mut(&key).unwrap().slot = Slot::Pending;
+        cache.pool.wanted.lock().unwrap().insert(key.clone());
+        results.send((key.clone(), Ok(size_only_answer()))).unwrap();
+        assert!(cache.poll().is_empty());
+        assert!(cache.landed.is_empty(), "no pixels to upload");
+        assert!(cache.pool.wanted.lock().unwrap().contains(&key), "the real job is still wanted");
     }
 
     #[test]
