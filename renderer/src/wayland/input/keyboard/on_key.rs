@@ -65,19 +65,21 @@ pub(super) fn lua_hears(secure_armed: bool, keysym: Keysym) -> bool {
     !secure_armed && !keysym.is_modifier_key()
 }
 
-/// Holds a press offered to `on_key` for its `on_key_release`, when Lua hears it: never a key typed
-/// into an armed secure field. A key a field, Tab or activation took is never offered, so its
-/// release stays silent too.
-pub(super) fn note_press(pressed: &mut Vec<KeyEvent>, event: &KeyEvent, secure_armed: bool) {
-    if lua_hears(secure_armed, event.keysym) {
-        pressed.push(event.clone());
-    }
+/// A press offered to `on_key` for its `on_key_release` (never one typed into an armed secure
+/// field), with the surface and control it was routed from: its release goes there even if the
+/// press moved focus.
+pub(crate) struct HeldPress {
+    event: KeyEvent,
+    route: KeyRoute,
 }
+
+/// The surface and focused control `on_key` bubbles from; `None` control is the surface root alone.
+pub(super) type KeyRoute = (String, Option<layout::scene::NodeId>);
 
 /// The held press a release of `raw_code` ends; `None` for one never offered to `on_key`, or pressed
 /// before the keyboard entered (`leave` empties the list). A new press of the key drops a stale one.
-pub(super) fn take_press(pressed: &mut Vec<KeyEvent>, raw_code: u32) -> Option<KeyEvent> {
-    let at = pressed.iter().position(|held| held.raw_code == raw_code)?;
+pub(super) fn take_press(pressed: &mut Vec<HeldPress>, raw_code: u32) -> Option<HeldPress> {
+    let at = pressed.iter().position(|held| held.event.raw_code == raw_code)?;
     Some(pressed.swap_remove(at))
 }
 
@@ -115,44 +117,49 @@ pub(super) fn deliver(lua: &Lua, handlers: &[Function], key: impl IntoLua, what:
 }
 
 impl App {
-    /// The `on_key` (or `on_key_release`) handlers a key arriving now reaches: from the focused
-    /// control, else the focused surface's root alone.
-    pub(super) fn key_handlers_now(&self, event: &KeyEvent, release: bool) -> (String, Vec<Function>) {
-        let none = (String::new(), Vec::new());
+    /// Where a key arriving now bubbles from: the focused control, else the focused surface's root
+    /// alone; `None` when Lua hears no such key or nothing holds the keyboard.
+    pub(super) fn key_route(&self, event: &KeyEvent) -> Option<KeyRoute> {
         if !lua_hears(self.focused_secure_submit.is_some(), event.keysym) {
-            return none;
+            return None;
         }
-        let (surface_id, control) = match (&self.focused_control, &self.keyboard_focus) {
-            (Some(control), _) => (control.surface_id.clone(), Some(control.id)),
-            (None, Some(id)) => (id.clone(), None),
-            (None, None) => return none,
-        };
-        let Some(tree) = self.client.scene().surface(&surface_id) else { return none };
+        match (&self.focused_control, &self.keyboard_focus) {
+            (Some(control), _) => Some((control.surface_id.clone(), Some(control.id))),
+            (None, Some(id)) => Some((id.clone(), None)),
+            (None, None) => None,
+        }
+    }
+
+    /// The `on_key` (or `on_key_release`) handlers of `route`.
+    pub(super) fn route_handlers(&self, (surface_id, control): &KeyRoute, release: bool) -> Vec<Function> {
+        let Some(tree) = self.client.scene().surface(surface_id) else { return Vec::new() };
         let path = match control {
-            Some(id) => layout::hit::path_to_node(tree, id).unwrap_or_default(),
+            Some(id) => layout::hit::path_to_node(tree, *id).unwrap_or_default(),
             None => vec![tree],
         };
-        let handlers = key_handlers(&path, release);
-        (surface_id, handlers)
+        key_handlers(&path, release)
     }
 
     /// Bubbles `event` through `on_key`; whether a handler took it.
     pub(super) fn deliver_on_key(&mut self, event: &KeyEvent, repeat: bool) -> bool {
-        if !repeat {
-            note_press(&mut self.pressed_keys, event, self.focused_secure_submit.is_some());
-        }
-        let (surface_id, handlers) = self.key_handlers_now(event, false);
+        let Some(route) = self.key_route(event) else { return false };
+        let handlers = self.route_handlers(&route, false);
         let modifiers = self.modifiers_held();
-        deliver(self.client.lua(), &handlers, KeyPress::new(event, modifiers, Some(repeat)), &surface_id)
+        let key = KeyPress::new(event, modifiers, Some(repeat));
+        let taken = deliver(self.client.lua(), &handlers, key, &route.0);
+        if !repeat {
+            self.pressed_keys.push(HeldPress { event: event.clone(), route });
+        }
+        taken
     }
 
-    /// Bubbles the release of `press` through `on_key_release`, routed as `on_key` is now. `press`
-    /// supplies the name and text: an SCTK release carries no text, and its keysym follows modifiers
-    /// let go first.
-    pub(super) fn deliver_on_key_release(&mut self, press: &KeyEvent) {
-        let (surface_id, handlers) = self.key_handlers_now(press, true);
-        let key = KeyRelease(KeyPress::new(press, self.modifiers_held(), None));
-        deliver(self.client.lua(), &handlers, key, &surface_id);
+    /// Bubbles the release of `press` through `on_key_release` from where its press was routed.
+    /// `press` supplies the name and text: an SCTK release carries no text, and its keysym follows
+    /// modifiers let go first.
+    pub(super) fn deliver_on_key_release(&mut self, press: &HeldPress) {
+        let handlers = self.route_handlers(&press.route, true);
+        let key = KeyRelease(KeyPress::new(&press.event, self.modifiers_held(), None));
+        deliver(self.client.lua(), &handlers, key, &press.route.0);
     }
 
     /// `(ctrl, shift, alt, super)` on the seat's keyboard, for `on_key` and the pointer handlers.
@@ -252,20 +259,23 @@ mod tests {
     }
 
     #[test]
-    fn only_a_press_offered_to_on_key_has_its_release_delivered() {
-        let mut pressed = Vec::new();
-        let at = |raw_code| KeyEvent { raw_code, ..key(Keysym::a, Some("a")) };
-        note_press(&mut pressed, &at(30), false);
-        note_press(&mut pressed, &at(31), true);
-        note_press(&mut pressed, &KeyEvent { raw_code: 42, ..key(Keysym::Shift_L, None) }, false);
-        assert_eq!(take_press(&mut pressed, 30).map(|press| press.utf8), Some(Some("a".to_string())));
-        assert!(take_press(&mut pressed, 30).is_none(), "one release per press");
-        assert!(take_press(&mut pressed, 31).is_none(), "typed into an armed secure field");
-        assert!(take_press(&mut pressed, 42).is_none(), "a bare modifier");
+    fn a_release_ends_its_press_and_keeps_the_route_the_press_had() {
+        let at = |raw_code| KeyEvent { raw_code, ..key(Keysym::Return, Some("\r")) };
+        let route = |surface: &str, control| (surface.to_string(), control);
+        let mut pressed = vec![
+            HeldPress { event: at(28), route: route("bar@TEST", Some(layout::scene::NodeId::test(1))) },
+            HeldPress { event: at(30), route: route("bar@TEST", None) },
+        ];
+        // The press activated control 1, whose `on_click` moved focus to control 2: the release
+        // still goes to control 1, never to a control that did not hear the press.
+        let held = take_press(&mut pressed, 28).expect("offered");
+        assert_eq!(held.route, route("bar@TEST", Some(layout::scene::NodeId::test(1))));
+        assert!(take_press(&mut pressed, 28).is_none(), "one release per press");
         assert!(
             take_press(&mut pressed, 50).is_none(),
             "taken by a field or Tab, or pressed before the keyboard entered"
         );
+        assert_eq!(take_press(&mut pressed, 30).map(|held| held.event.utf8), Some(Some("\r".to_string())));
     }
 
     #[test]

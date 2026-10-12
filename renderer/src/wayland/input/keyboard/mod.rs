@@ -16,7 +16,7 @@ mod rows;
 mod secure;
 pub(in crate::wayland::input) use edit::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
-pub(crate) use on_key::{KeyPress, KeyRelease};
+pub(crate) use on_key::{HeldPress, KeyPress, KeyRelease};
 
 keywords! {
     /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
@@ -503,7 +503,7 @@ impl App {
     /// only wake the loop to reach [`KeyAction::Ignore`]. A newer press takes the timer over.
     fn arm_repeat(&mut self, event: KeyEvent) {
         let repeats = !matches!(self.field_key_action(&event, true), KeyAction::Ignore)
-            || !self.key_handlers_now(&event, false).1.is_empty();
+            || self.key_route(&event).is_some_and(|route| !self.route_handlers(&route, false).is_empty());
         self.repeating =
             self.repeat_info.filter(|_| repeats).map(|(delay, _)| (event, std::time::Instant::now() + delay));
     }
@@ -592,11 +592,9 @@ impl App {
         })
     }
 
-    /// The release of `raw_code`, to `on_key_release` when its press was offered to `on_key`.
+    /// The release of `raw_code`, to the `on_key_release` of where its press was offered to `on_key`.
     fn release_offered_key(&mut self, raw_code: u32) {
         let Some(press) = on_key::take_press(&mut self.pressed_keys, raw_code) else { return };
-        self.prune_secure_focus();
-        self.prune_control_focus();
         self.deliver_on_key_release(&press);
     }
 

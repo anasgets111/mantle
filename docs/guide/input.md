@@ -342,10 +342,11 @@ that surface is called.
 `on_key_release(key)` hears a key going up, routed the same way: focused node first, then each
 ancestor, then the surface; `true` stops it. `key` is the press's `name` and `text` with the
 modifiers held at release, and no `repeat`. A release is heard only when its press was offered to
-`on_key`, whether or not a handler took it: never for a key a field typed or pasted with, a Tab that
-moved focus, an Enter or Space that activated a control, a key typed into an armed `secure_submit`
-field, a bare modifier, a key already held when the keyboard entered, or after the keyboard left. Like `on_key`, it makes a node
-focusable only with an `accessible_name`. `mantle input key` sends the release right after the press.
+`on_key`, whether or not a handler took it, and goes to the node that press was routed from even
+if the press moved focus: never for a key a field typed or pasted with, a Tab that moved focus, a
+key typed into an armed `secure_submit` field, a bare modifier, a key already held when the
+keyboard entered, or after the keyboard left. Like `on_key`, it makes a node focusable only with
+an `accessible_name`. `mantle input key` sends the release right after the press.
 
 ```lua
 local picked = state("picked", 1)

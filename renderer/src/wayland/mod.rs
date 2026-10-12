@@ -237,7 +237,7 @@ pub struct App {
     /// The held key and when it next repeats.
     repeating: Option<(KeyEvent, std::time::Instant)>,
     /// Keys pressed while Lua could hear them, held for `on_key_release`.
-    pressed_keys: Vec<KeyEvent>,
+    pressed_keys: Vec<input::keyboard::HeldPress>,
     /// Native, Lua-invisible keystroke buffer until Enter (ADR-0005/ADR-0009/ADR-0027). Its
     /// lifetime follows `focused_secure_submit`; destination changes zeroize it.
     secure_buffer: shared::SecureBuffer,
