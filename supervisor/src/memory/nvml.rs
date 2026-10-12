@@ -30,7 +30,7 @@ struct ProcessInfo {
 
 /// The renderer's VRAM in KiB across every NVIDIA device, or `None` without NVML or without a
 /// graphics context for `pid`. Loads, queries and unloads each call: kept loaded, NVML and the
-/// `libcuda` it pulls in held 20 MiB of supervisor PSS, against 3 MiB left after `nvmlShutdown`
+/// `libcuda` it pulls in held 20 MiB of supervisor PSS, against 1 MiB left after `nvmlShutdown`
 /// and `dlclose`, for about 4 ms of init per sample.
 pub(super) fn resident_kib(pid: u32) -> Option<u64> {
     // SAFETY: a NUL-terminated name; the handle is closed below and not used after.
@@ -93,7 +93,7 @@ unsafe fn graphics_processes(handle: *mut c_void) -> Option<Vec<ProcessInfo>> {
 }
 
 /// One device's graphics processes. The list can grow between the sizing call and the read, so
-/// the buffer gets slack and one retry; a third miss skips the device for this sample.
+/// the buffer gets slack and one retry; a second miss skips the device for this sample.
 unsafe fn device_processes(processes: GraphicsProcesses, device: Device) -> Vec<ProcessInfo> {
     let mut infos = vec![ProcessInfo::default(); 32];
     for _ in 0..2 {

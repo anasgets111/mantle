@@ -284,7 +284,8 @@ pub(crate) fn log_sample(label: &str, generation_id: u32, child: &tokio::process
         // A count that climbs between samples is a task leak.
         Ok(mut sample) => {
             if let Some((_, memory)) = &sample.renderer
-                && memory.gpu.clients == 0
+                // Not `clients == 0`: a client with no memory keys leaves resident at 0 too.
+                && memory.gpu.resident == 0
             {
                 sample.renderer_nvml = child.id().and_then(nvml::resident_kib);
             }
@@ -388,6 +389,13 @@ drm-engine-video-enhance:\t0 ns\n";
             parse_drm_client(DRM_FIXTURE),
             Some(DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 279968, shared: 192368 })
         );
+    }
+
+    #[test]
+    fn a_drm_client_without_memory_keys_folds_to_zero_resident() {
+        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\n";
+        let gpu = fold_drm_clients(parse_drm_client(text));
+        assert_eq!(gpu, Gpu { resident: 0, shared: 0, clients: 1 });
     }
 
     #[test]
