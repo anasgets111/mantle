@@ -242,12 +242,6 @@ mod tests {
         }
     }
 
-    fn test_subject() -> Subject {
-        let mut subject_details = HashMap::new();
-        subject_details.insert("session-id".to_string(), OwnedValue::try_from(Value::from("c1")).unwrap());
-        Subject { subject_kind: "unix-session".to_string(), subject_details }
-    }
-
     /// A second registration would ask polkitd for another agent on one subject. Every generation
     /// sends its own starts, so it is reachable (ADR-0070 decision 3).
     #[tokio::test]
@@ -260,8 +254,8 @@ mod tests {
         let (challenges_tx, _challenges_rx) = mpsc::unbounded_channel();
         let mut agent = PolkitAgent::new(challenges_tx);
 
-        agent.register_for(&agent_side, test_subject());
-        agent.register_for(&agent_side, test_subject());
+        agent.register_for(&agent_side, session_subject("c1".into()));
+        agent.register_for(&agent_side, session_subject("c1".into()));
 
         calls_rx.recv().await.expect("the first register must reach the Authority");
         assert!(calls_rx.try_recv().is_err(), "the second register must be a no-op");
@@ -283,7 +277,7 @@ mod tests {
         let first = authority(calls_tx.clone()).await.unwrap();
         let agent_side = bus.connection().await;
         let (requests_tx, mut requests) = mpsc::unbounded_channel();
-        PolkitAgent::new(requests_tx).register_for(&agent_side, test_subject());
+        PolkitAgent::new(requests_tx).register_for(&agent_side, session_subject("c1".into()));
 
         let (subject, locale, object_path) = within(calls_rx.recv()).await.unwrap();
         assert_eq!(subject.subject_kind, "unix-session");

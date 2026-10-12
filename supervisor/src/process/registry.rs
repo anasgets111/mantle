@@ -366,6 +366,7 @@ pub(crate) async fn reap_processes(processes: &mut LiveProcesses) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::process::sh_args;
 
     /// Drains a `BoundedLines` over an in-memory reader, so the cap is exercised without a child.
     async fn lines_of(input: &[u8]) -> Vec<String> {
@@ -500,10 +501,6 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::channel(1024);
         registry.register(generation_id, tx, std::sync::Arc::new(tokio::sync::Notify::new()));
         (registry, rx)
-    }
-
-    fn sh_args(script: &str) -> Vec<String> {
-        vec!["-c".to_string(), script.to_string()]
     }
 
     #[tokio::test]

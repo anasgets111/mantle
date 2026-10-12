@@ -180,16 +180,17 @@ pub(crate) async fn exited(pids: &[u32]) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) fn sh_args(script: &str) -> Vec<String> {
+    vec!["-c".to_string(), script.to_string()]
+}
+
+#[cfg(test)]
 mod tests {
     use std::os::unix::process::ExitStatusExt;
 
     use tokio::io::{AsyncBufReadExt, BufReader};
 
     use super::*;
-
-    fn sh_args(script: &str) -> Vec<String> {
-        vec!["-c".to_string(), script.to_string()]
-    }
 
     #[tokio::test]
     async fn wait_or_classify_reports_still_running_against_a_long_lived_child_within_a_short_grace() {
@@ -360,7 +361,7 @@ mod tests {
         // for the handover would make the test's timing part of what it asserts, for nothing.
         // The rename lands the pid whole; `>` alone lets the poll below read an empty file.
         let script = format!("printf %s \"$PPID\" > {0}.part && mv {0}.part {0}", out.display());
-        spawn_detached("sh", &["-c".to_string(), script]).expect("spawn");
+        spawn_detached("sh", &sh_args(&script)).expect("spawn");
 
         crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
         let recorded = std::fs::read_to_string(&out).expect("the detached program must have run");

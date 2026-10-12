@@ -565,7 +565,7 @@ mod tests {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let child = process::spawn_group_leader_piped(
             "sh",
-            &["-c".to_string(), "echo ':: Synchronizing package databases...'; echo '(1/2) installing nss (3.127-1 -> 3.128-1)'; echo '(2/2) upgrading gnome-autoar'; exit 0".to_string()],
+            &process::sh_args("echo ':: Synchronizing package databases...'; echo '(1/2) installing nss (3.127-1 -> 3.128-1)'; echo '(2/2) upgrading gnome-autoar'; exit 0"),
         )
         .expect("spawn a stub install script");
 
@@ -591,8 +591,7 @@ mod tests {
     #[tokio::test]
     async fn run_install_with_child_reports_pacmans_own_exit_code_rather_than_a_sentence() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
-        let child = process::spawn_group_leader_piped("sh", &["-c".to_string(), "exit 1".to_string()])
-            .expect("spawn a failing stub");
+        let child = process::spawn_group_leader_piped("sh", &process::sh_args("exit 1")).expect("spawn a failing stub");
 
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
         run_install_with_child(Arc::new(StubBackend), Arc::clone(&state), events_tx, child).await;
@@ -612,7 +611,7 @@ mod tests {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let child = process::spawn_group_leader_piped(
             "sh",
-            &["-c".to_string(), "echo ':: Synchronizing package databases...'; echo 'error: target not found' 1>&2; echo '(1/1) upgrading nss'; exit 0".to_string()],
+            &process::sh_args("echo ':: Synchronizing package databases...'; echo 'error: target not found' 1>&2; echo '(1/1) upgrading nss'; exit 0"),
         )
         .expect("spawn a chatty stub");
 
@@ -633,7 +632,7 @@ mod tests {
     async fn an_install_with_more_than_a_pipeful_of_stderr_finishes() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let script = "i=0; while [ \"$i\" -lt 80 ]; do printf '%01024d\\n' 0 >&2; i=$((i+1)); done; echo drained >&2";
-        let child = process::spawn_group_leader_piped("sh", &["-c".into(), script.into()]).unwrap();
+        let child = process::spawn_group_leader_piped("sh", &process::sh_args(script)).unwrap();
         let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::time::timeout(

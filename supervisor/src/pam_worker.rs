@@ -582,7 +582,7 @@ mod tests {
         // `shared::framing`: 4-byte big-endian length, then JSON. `{"Outcome":"Success"}` is 21
         // bytes. No `Prompt` is sent, so nothing is written back; the script need not drain stdin.
         let script = r#"printf '\000\000\000\025{"Outcome":"Success"}'"#;
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
+        let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
             .expect("failed to spawn the fake worker");
 
         let outcome = exchange_over(child, b"the-password", TEST_TIMEOUT).await.expect("exchange_over failed");
@@ -594,7 +594,7 @@ mod tests {
     async fn exchange_over_still_reaps_the_worker_when_the_frame_read_fails() {
         // Malformed frame, then a hang. Read must fail and the process must still be reaped.
         let script = r#"printf '\000\000\000\004evil'; sleep 30"#;
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
+        let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
             .expect("failed to spawn the fake worker");
         let pid = child.id().expect("freshly spawned child has a pid");
 
@@ -612,9 +612,8 @@ mod tests {
     #[tokio::test]
     async fn a_worker_that_dies_without_answering_reports_how_it_died() {
         for (script, expected) in [("exit 3", "exited with status 3"), ("kill -KILL $$", "was killed by signal 9")] {
-            let child =
-                crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
-                    .expect("failed to spawn the fake worker");
+            let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
+                .expect("failed to spawn the fake worker");
 
             let err = exchange_over(child, b"the-password", TEST_TIMEOUT)
                 .await
@@ -664,7 +663,7 @@ mod tests {
         // A sleeping worker models a PAM module blocked on unreachable network auth. Return an
         // error within `timeout` and still reap it.
         let script = "sleep 30";
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &["-c".to_string(), script.to_string()], &[])
+        let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
             .expect("failed to spawn the fake worker");
         let pid = child.id().expect("freshly spawned child has a pid");
 

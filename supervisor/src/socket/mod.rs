@@ -607,7 +607,8 @@ mod tests {
     async fn a_hung_up_renderer_that_ignores_the_eof_is_killed() {
         let registry = GenerationRegistry::default();
         let mut child =
-            crate::process::spawn_group_leader("sh", &["-c".into(), "trap '' HUP TERM; sleep 30".into()], &[]).unwrap();
+            crate::process::spawn_group_leader("sh", &crate::process::sh_args("trap '' HUP TERM; sleep 30"), &[])
+                .unwrap();
         registry.expect_generation(5, child.id().unwrap());
         let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
         registry.register(5, tx, Arc::new(tokio::sync::Notify::new()));
