@@ -11,6 +11,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use udev::MonitorSocket;
 
+use super::super::lock::logind::Login1SessionProxy;
 use super::super::scale::{raw_from_percent, read_percent};
 use super::super::{publish, read_attr, read_parsed, udev_watch};
 
@@ -47,19 +48,8 @@ fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
         })
 }
 
-/// `org.freedesktop.login1.Session.SetBrightness` on fixed `session/auto`, which logind resolves
-/// to the caller's session. Built per write because writes are rare; `keyboard` reuses it for LEDs.
-#[zbus::proxy(
-    interface = "org.freedesktop.login1.Session",
-    default_service = "org.freedesktop.login1",
-    default_path = "/org/freedesktop/login1/session/auto"
-)]
-pub(crate) trait Login1Session {
-    #[zbus(name = "SetBrightness")]
-    fn set_brightness(&self, subsystem: &str, name: &str, brightness: u32) -> zbus::Result<()>;
-}
-
-/// `SetBrightness(subsystem, name, raw)` through a fresh [`Login1SessionProxy`].
+/// `Session.SetBrightness(subsystem, name, raw)` on logind's `session/auto`. Built per write because
+/// writes are rare; `keyboard` reuses it for LEDs.
 pub(crate) async fn set_brightness(bus: &zbus::Connection, subsystem: &str, name: &str, raw: u32) -> zbus::Result<()> {
     Login1SessionProxy::new(bus).await?.set_brightness(subsystem, name, raw).await
 }

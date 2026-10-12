@@ -92,6 +92,10 @@ pub fn cleanup_generation_inhibit(counts: &mut HashMap<u32, u32>, generation_id:
     default_path = "/org/freedesktop/login1"
 )]
 pub(crate) trait Login1Manager {
+    /// `"auto"` resolves the caller's own session.
+    #[zbus(name = "GetSession")]
+    fn get_session(&self, session_id: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
+
     #[zbus(name = "Inhibit")]
     fn inhibit(&self, what: &str, who: &str, why: &str, mode: &str) -> zbus::Result<zbus::zvariant::OwnedFd>;
 

@@ -20,19 +20,18 @@ use futures_util::StreamExt;
 use shared::{error, warn};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
-#[zbus::proxy(
-    interface = "org.freedesktop.login1.Manager",
-    default_service = "org.freedesktop.login1",
-    default_path = "/org/freedesktop/login1"
-)]
-pub(crate) trait Login1SessionLookup {
-    /// `"auto"` resolves the caller's own session, used by every fallback below.
-    #[zbus(name = "GetSession")]
-    fn get_session(&self, session_id: &str) -> zbus::Result<zbus::zvariant::OwnedObjectPath>;
-}
+use crate::capabilities::idle::inhibit::Login1ManagerProxy;
 
-#[zbus::proxy(interface = "org.freedesktop.login1.Session", default_service = "org.freedesktop.login1")]
+/// `default_path` is logind's `session/auto`, the caller's own session; `SessionBridge` overrides it.
+#[zbus::proxy(
+    interface = "org.freedesktop.login1.Session",
+    default_service = "org.freedesktop.login1",
+    default_path = "/org/freedesktop/login1/session/auto"
+)]
 pub(crate) trait Login1Session {
+    #[zbus(name = "SetBrightness")]
+    fn set_brightness(&self, subsystem: &str, name: &str, brightness: u32) -> zbus::Result<()>;
+
     /// `loginctl show-session`'s `LockedHint`; settable only by the session owner.
     #[zbus(name = "SetLockedHint")]
     fn set_locked_hint(&self, locked: bool) -> zbus::Result<()>;
@@ -47,7 +46,7 @@ pub(crate) trait Login1Session {
 /// This process's logind session path. Prefer `$XDG_SESSION_ID`, then `"auto"`; they differ only
 /// when the variable was inherited from elsewhere, and there the explicit session name wins.
 async fn resolve_session_path(connection: &zbus::Connection) -> Option<zbus::zvariant::OwnedObjectPath> {
-    let manager = Login1SessionLookupProxy::new(connection).await.ok()?;
+    let manager = Login1ManagerProxy::new(connection).await.ok()?;
     let explicit = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.is_empty());
     if let Some(id) = explicit
         && let Ok(path) = manager.get_session(&id).await
