@@ -494,25 +494,19 @@ impl App {
     pub(in crate::wayland::input) fn prune_text_field_focus(&mut self) {
         let scene = self.client.scene();
         let mut parked = std::mem::take(&mut self.parked_drafts);
-        forget_gone_drafts(&mut parked, |surface_id, id| {
+        let alive = |surface_id: &str, id| {
             self.surface_is_live(surface_id)
                 && scene.surface(surface_id).is_some_and(|tree| layout::hit::contains_node(tree, id))
-        });
-        self.parked_drafts = parked;
-        let Some(field) = self.focused_text_field.as_ref() else {
-            return;
         };
+        let focused_alive = self.focused_text_field.as_ref().map(|field| alive(&field.surface_id, field.id));
+        forget_gone_drafts(&mut parked, alive);
+        self.parked_drafts = parked;
         // Liveness of the surface and of the node, not of the keyboard (ADR-0108): a field whose
         // surface lost the keyboard keeps its draft and simply takes no keys until it is back
         // ([`App::text_field_takes_keys`]). A field whose node is gone -- the reply was sent or
         // closed and the row removed -- has nowhere to show a draft, and its callbacks belong to a
         // card that no longer exists, so the next key is what finally lets it go.
-        let node_exists = self
-            .client
-            .scene()
-            .surface(&field.surface_id)
-            .is_some_and(|tree| layout::hit::contains_node(tree, field.id));
-        if self.surface_is_live(&field.surface_id) && node_exists {
+        if focused_alive != Some(false) {
             return;
         }
         debug!(2; "the focused textfield is gone; dropping what was typed");
