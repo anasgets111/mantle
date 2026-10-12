@@ -269,13 +269,13 @@ current `source`:
 | `state` | When |
 | :--- | :--- |
 | `"empty"` | `source` is `""`, and before the first pass |
-| `"loading"` | An `async` image's new `source` has not finished decoding, including while `retain` or `transition` still draws the old picture. Paint starts the decode, so an image clipped or scrolled out of view stays here |
+| `"loading"` | The image's new `source` has not finished decoding, including while `retain` or `transition` still draws the old picture. Paint starts the decode, so an image clipped or scrolled out of view stays here |
 | `"ready"` | Decoded. `width` and `height` are the file's own size in pixels, absent if unreadable. When a cached thumbnail stands in, the size comes from reading the file's header, a whole-file scan for a JPEG, paid only by an image that binds `status` |
 | `"failed"` | The file is missing or does not decode |
 
-An inline image (`async = false`) decodes in the frame that draws it and goes straight to `"ready"`
-or `"failed"`. A hidden image keeps its last status. Each change schedules one follow-up pass over
-the signal's readers, as `geometry` does.
+An inline image (`async = false`) decodes in the frame that draws it, so `"loading"` lasts until
+that frame and moves to `"ready"` or `"failed"`. A hidden image keeps its last status. Each change
+schedules one follow-up pass over the signal's readers, as `geometry` does.
 
 Fade a picture in once it has decoded:
 

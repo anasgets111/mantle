@@ -4,7 +4,7 @@ use mlua::Lua;
 use shared::debug;
 
 use super::{NodeId, ResolvedNode, Scene};
-use crate::image::{Load, Loaded, Natural};
+use crate::image::{Loaded, Natural};
 use crate::layout::node::{self, LayoutError, PaintStyle};
 use crate::layout::paint::DrawnImage;
 use crate::lua::signal::{Signal, image_status};
@@ -20,7 +20,7 @@ impl Scene {
         }
         for (key, tree) in &self.surfaces {
             let (mut seen, mut clash) = (HashMap::new(), None);
-            each_bound(tree, true, &mut |node, _, _, shown| {
+            each_bound(tree, true, &mut |node, _, shown| {
                 let Some(cell) = node::signal_at(&node.properties, "status").as_ref().and_then(image_status::cell)
                 else {
                     return;
@@ -42,19 +42,19 @@ impl Scene {
     }
 
     /// Writes each name from the first shown image bound to it, by instance id, whose state is
-    /// known: empty, or what paint last found for its `source`. With none known, the first one's
-    /// async `source` reads loading; an inline one decodes in the next paint and waits for it.
+    /// known: empty, or what paint last found for its `source`. With none known, `source` reads
+    /// loading, so a source change never leaves the old one's status up while paint skips the node.
     pub(crate) fn publish_image_status(&mut self, lua: &Lua) {
         if !image_status::any_registered(lua) {
             self.image_loads.clear();
             return;
         }
         let (mut bound, mut cells) = (HashSet::new(), HashSet::new());
-        let mut chosen: HashMap<_, (Signal, Option<State>, Load)> = HashMap::new();
+        let mut chosen: HashMap<_, (Signal, Option<State>)> = HashMap::new();
         let mut surfaces: Vec<_> = self.surfaces.iter().collect();
         surfaces.sort_unstable_by_key(|(key, _)| key.as_str());
         for (_, tree) in surfaces {
-            each_bound(tree, true, &mut |node, source, load, shown| {
+            each_bound(tree, true, &mut |node, source, shown| {
                 let Some(signal) = node::signal_at(&node.properties, "status") else { return };
                 let Some(cell) = image_status::cell(&signal) else { return };
                 bound.insert(node.id);
@@ -68,18 +68,15 @@ impl Scene {
                     Some((drawn, Loaded::Failed)) if drawn == source => Some(("failed", None)),
                     _ => None,
                 };
-                let first = chosen.entry(cell).or_insert_with(|| (signal.clone(), state, load));
+                let first = chosen.entry(cell).or_insert_with(|| (signal.clone(), state));
                 if first.1.is_none() && state.is_some() {
-                    *first = (signal, state, load);
+                    *first = (signal, state);
                 }
             });
         }
-        for (signal, state, load) in chosen.into_values() {
-            logged(match state {
-                Some((state, size)) => image_status::write(lua, &signal, state, size),
-                None if load == Load::Background => image_status::write(lua, &signal, "loading", None),
-                None => Ok(()),
-            });
+        for (signal, state) in chosen.into_values() {
+            let (state, size) = state.unwrap_or(("loading", None));
+            logged(image_status::write(lua, &signal, state, size));
         }
         self.image_loads.retain(|node, _| bound.contains(node));
         image_status::note_bound(lua, cells);
@@ -91,7 +88,7 @@ impl Scene {
     pub fn note_image_loads(&mut self, instance_id: &str, drawn: &[DrawnImage], lua: &Lua) {
         let Some(tree) = self.surfaces.get(instance_id) else { return };
         let (loads, mut changed) = (&mut self.image_loads, false);
-        each_bound(tree, false, &mut |node, source, _, _| {
+        each_bound(tree, false, &mut |node, source, _| {
             if node.properties.contains_key("status")
                 && let Some(found) = drawn.iter().find(|image| image.node == node.id && image.source == source)
             {
@@ -114,17 +111,17 @@ fn logged(written: mlua::Result<()>) {
     }
 }
 
-/// Calls `visit` for every `image` under `node` with its `source`, load, and whether it and its
+/// Calls `visit` for every `image` under `node` with its `source` and whether it and its
 /// ancestors are in flow; only shown ones when `hidden` is false. A hidden or leaving image keeps
 /// its record but never speaks for its name.
-fn each_bound(node: &ResolvedNode, hidden: bool, visit: &mut dyn FnMut(&ResolvedNode, &str, Load, bool)) {
-    fn walk(node: &ResolvedNode, shown: bool, hidden: bool, visit: &mut dyn FnMut(&ResolvedNode, &str, Load, bool)) {
+pub(super) fn each_bound(node: &ResolvedNode, hidden: bool, visit: &mut dyn FnMut(&ResolvedNode, &str, bool)) {
+    fn walk(node: &ResolvedNode, shown: bool, hidden: bool, visit: &mut dyn FnMut(&ResolvedNode, &str, bool)) {
         let shown = shown && node.in_flow();
         if !shown && !hidden {
             return;
         }
-        if let Some(PaintStyle::Image { source, load, .. }) = &node.paint {
-            visit(node, source, *load, shown);
+        if let Some(PaintStyle::Image { source, .. }) = &node.paint {
+            visit(node, source, shown);
         }
         for child in &node.children {
             walk(child, shown, hidden, visit);
@@ -191,9 +188,12 @@ mod tests {
 
         lua.load(r#"inline:set(true); path:set("/w/good.png")"#).exec().unwrap();
         pass(&mut scene);
-        assert_eq!(status(&lua), "empty", "an inline decode lands in the paint, never loading");
+        assert_eq!(status(&lua), "loading");
         paint(&mut scene, "/w/good.png", good);
         assert_eq!(status(&lua), "ready 4000x3000");
+        lua.load(r#"path:set("/w/other.png")"#).exec().unwrap();
+        pass(&mut scene);
+        assert_eq!(status(&lua), "loading", "a source paint never reaches does not keep the old one's status");
     }
 
     #[test]

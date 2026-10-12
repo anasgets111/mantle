@@ -445,19 +445,18 @@ impl Scene {
     /// ponytail: O(nodes) after each pass while any GIF clock exists. Upgrade: the ids reconcile
     /// removes, plus the images whose `source` changed.
     pub fn animated_image_nodes(&self) -> std::collections::HashSet<NodeId> {
-        fn walk(node: &ResolvedNode, out: &mut std::collections::HashSet<NodeId>) {
-            let animated = |path: &str| crate::image::is_animated(std::path::Path::new(path));
-            if let Some(PaintStyle::Image { source, .. }) = &node.paint
-                && (animated(source)
-                    || node.displayed_source.as_deref().is_some_and(animated)
-                    || node.dissolve.as_ref().is_some_and(|dissolve| animated(&dissolve.from)))
-            {
-                out.insert(node.id);
-            }
-            node.children.iter().for_each(|child| walk(child, out));
-        }
+        let animated = |path: &str| crate::image::is_animated(std::path::Path::new(path));
         let mut out = std::collections::HashSet::new();
-        self.surfaces.values().for_each(|tree| walk(tree, &mut out));
+        self.surfaces.values().for_each(|tree| {
+            image_status::each_bound(tree, true, &mut |node, source, _| {
+                if animated(source)
+                    || node.displayed_source.as_deref().is_some_and(animated)
+                    || node.dissolve.as_ref().is_some_and(|dissolve| animated(&dissolve.from))
+                {
+                    out.insert(node.id);
+                }
+            });
+        });
         out
     }
 

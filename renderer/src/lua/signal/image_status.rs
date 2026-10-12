@@ -14,7 +14,10 @@ spelled!(ImageStatus => r#"{ state: "empty"|"loading"|"ready"|"failed", width: i
 /// Names, and the cells the last successful pass bound: a reload keeps those names' values and
 /// drops the rest.
 #[derive(Default)]
-struct Registry(HashMap<String, Signal>, HashSet<CellId>);
+struct Registry {
+    names: HashMap<String, Signal>,
+    bound: HashSet<CellId>,
+}
 
 pub(super) fn register(lua: &Lua) -> mlua::Result<()> {
     lua_fn!(
@@ -30,7 +33,7 @@ pub(super) fn register(lua: &Lua) -> mlua::Result<()> {
         ) -> SignalOf<ImageStatus> {
             let empty = Value::Table(lua.create_table_from([("state", "empty")])?);
             let signal = crate::lua::app_data_or_default::<Registry>(lua)
-                .0
+                .names
                 .entry(name)
                 .or_insert_with(|| Signal(SignalKind::ImageStatus(next_cell_id(), Rc::new(RefCell::new(empty)))))
                 .clone();
@@ -40,13 +43,13 @@ pub(super) fn register(lua: &Lua) -> mlua::Result<()> {
 }
 
 pub(crate) fn any_registered(lua: &Lua) -> bool {
-    lua.app_data_ref::<Registry>().is_some_and(|registry| !registry.0.is_empty())
+    lua.app_data_ref::<Registry>().is_some_and(|registry| !registry.names.is_empty())
 }
 
 /// Notes the cells the scene binds after a successful pass, which the next evaluation keeps.
 pub(crate) fn note_bound(lua: &Lua, cells: HashSet<CellId>) {
     if let Some(mut registry) = lua.app_data_mut::<Registry>() {
-        registry.1 = cells;
+        registry.bound = cells;
     }
 }
 
@@ -54,8 +57,8 @@ pub(crate) fn note_bound(lua: &Lua, cells: HashSet<CellId>) {
 /// so a reload that fails keeps them all.
 pub(super) fn shrink(lua: &Lua) {
     if let Some(mut registry) = lua.app_data_mut::<Registry>() {
-        let Registry(signals, bound) = &mut *registry;
-        signals.retain(|_, signal| cell(signal).is_some_and(|cell| bound.contains(&cell)));
+        let Registry { names, bound } = &mut *registry;
+        names.retain(|_, signal| cell(signal).is_some_and(|cell| bound.contains(&cell)));
     }
 }
 
@@ -93,7 +96,7 @@ mod tests {
         let kept = super::super::from_userdata(&lua.globals().get("kept").unwrap()).unwrap();
         note_bound(&lua, cell(&kept).into_iter().collect());
         shrink(&lua);
-        let names: Vec<String> = lua.app_data_ref::<Registry>().unwrap().0.keys().cloned().collect();
+        let names: Vec<String> = lua.app_data_ref::<Registry>().unwrap().names.keys().cloned().collect();
         assert_eq!(names, ["kept"]);
     }
 }
