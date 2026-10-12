@@ -154,16 +154,13 @@ impl RendererClient {
         // Capability commands and `process` all use this write path.
         let commands = CommandSender::new(generation_id, outbound_tx);
         let process_registry = ProcessRegistry::new(commands.clone());
-        loader
-            .register_process(process_registry.clone())
+        lua::process::register(loader.lua(), process_registry.clone())
             .map_err(|err| format!("failed to register the process global: {err}"))?;
         let palette_registry = PaletteRegistry::new(Some(waker.clone()));
-        loader
-            .register_palette(palette_registry.clone())
+        lua::palette::register(loader.lua(), palette_registry.clone())
             .map_err(|err| format!("failed to register the palette global: {err}"))?;
         let file_registry = FileRegistry::new(Some(waker));
-        loader
-            .register_file(file_registry.clone())
+        lua::file::register(loader.lua(), file_registry.clone())
             .map_err(|err| format!("failed to register the file global: {err}"))?;
         let client = Self::new(
             loader,
@@ -725,11 +722,11 @@ mod tests {
         let loader = Loader::new(dirty.clone(), shell_lua_path.parent().unwrap()).unwrap();
         let commands = CommandSender::new(0, outbound_tx);
         let process_registry = ProcessRegistry::new(commands.clone());
-        loader.register_process(process_registry.clone()).unwrap();
+        lua::process::register(loader.lua(), process_registry.clone()).unwrap();
         let palette_registry = PaletteRegistry::new(None);
-        loader.register_palette(palette_registry.clone()).unwrap();
+        lua::palette::register(loader.lua(), palette_registry.clone()).unwrap();
         let file_registry = FileRegistry::checking();
-        loader.register_file(file_registry.clone()).unwrap();
+        lua::file::register(loader.lua(), file_registry.clone()).unwrap();
         let client = RendererClient::new(
             loader,
             shell_lua_path.to_path_buf(),

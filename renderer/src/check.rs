@@ -152,9 +152,10 @@ fn evaluate(config_dir: &Path) -> Result<(LoadOutput, Vec<SurfaceSpec>, Namespac
     // `palette.quantize` here either.
     let (outbound_tx, _outbound_rx) = tokio::sync::mpsc::unbounded_channel();
     let commands = CommandSender::new(0, outbound_tx);
-    loader.register_process(ProcessRegistry::new(commands.clone())).map_err(|err| err.to_string())?;
-    loader.register_palette(PaletteRegistry::new(None)).map_err(|err| err.to_string())?;
-    loader.register_file(FileRegistry::checking()).map_err(|err| err.to_string())?;
+    crate::lua::process::register(loader.lua(), ProcessRegistry::new(commands.clone()))
+        .map_err(|err| err.to_string())?;
+    crate::lua::palette::register(loader.lua(), PaletteRegistry::new(None)).map_err(|err| err.to_string())?;
+    crate::lua::file::register(loader.lua(), FileRegistry::checking()).map_err(|err| err.to_string())?;
     let namespace = namespace::build(&loader, &dirty, &commands, &shell_lua).map_err(|err| err.to_string())?;
 
     let (output, specs) =

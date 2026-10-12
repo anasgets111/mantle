@@ -251,22 +251,6 @@ impl Loader {
         &self.lua
     }
 
-    /// Registers the `process` table (`process.run`/`ProcessHandle:kill()`), whose closures need
-    /// the registry.
-    pub fn register_process(&self, registry: process::ProcessRegistry) -> mlua::Result<()> {
-        process::register(&self.lua, registry)
-    }
-
-    /// See [`Self::register_process`].
-    pub fn register_palette(&self, registry: palette::PaletteRegistry) -> mlua::Result<()> {
-        palette::register(&self.lua, registry)
-    }
-
-    /// See [`Self::register_process`].
-    pub fn register_file(&self, registry: file::FileRegistry) -> mlua::Result<()> {
-        file::register(&self.lua, registry)
-    }
-
     /// Gives the loader the `mantle.idle` registry from `lua::namespace::build`, so
     /// [`Self::evaluate_file`] clears thresholds before re-running `shell.lua`. The member is a
     /// namespace field; `process` is a global.
@@ -856,9 +840,9 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         let loader = Loader::new(dirty.clone(), dir.path()).unwrap();
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let commands = capability::CommandSender::new(0, tx);
-        loader.register_process(process::ProcessRegistry::new(commands.clone())).unwrap();
-        loader.register_palette(palette::PaletteRegistry::new(None)).unwrap();
-        loader.register_file(file::FileRegistry::checking()).unwrap();
+        process::register(loader.lua(), process::ProcessRegistry::new(commands.clone())).unwrap();
+        palette::register(loader.lua(), palette::PaletteRegistry::new(None)).unwrap();
+        file::register(loader.lua(), file::FileRegistry::checking()).unwrap();
         namespace::build(&loader, &dirty, &commands, &dir.path().join("shell.lua")).unwrap();
         (dir, loader)
     }
