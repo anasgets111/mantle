@@ -324,19 +324,9 @@ mod tests {
     fn selection_copy_requires_a_nonempty_range_and_keeps_large_text() {
         let field = FocusedTextField {
             surface_id: String::new(),
-            id: layout::scene::NodeId::test(1),
-            buffer: "hello world".into(),
-            history: super::keyboard::EditHistory::default(),
             selection: (5, 0),
             typing: true,
-            selecting: false,
-            span: Default::default(),
-            click: None,
-            goal_x: None,
-            on_change: None,
-            on_submit: None,
-            on_cancel: None,
-            escape: Escape::Clear,
+            ..super::keyboard::tests::draft(1, "hello world")
         };
         assert_eq!(selected_text(&field).as_deref(), Some("hello"));
         let mut empty = field.clone();

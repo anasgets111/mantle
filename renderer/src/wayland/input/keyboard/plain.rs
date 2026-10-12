@@ -915,22 +915,8 @@ mod tests {
         let buttons = tree_with(&lua, vec![flat, shown]);
         assert_eq!(requested(&buttons, "go").map(|control| control.id), Some(shown_id));
 
-        let mut previous = FocusedTextField {
-            surface_id: "panel@TEST".into(),
-            id,
-            buffer: "draft".into(),
-            selection: (2, 4),
-            history: EditHistory::default(),
-            typing: false,
-            selecting: false,
-            span: Default::default(),
-            click: None,
-            goal_x: None,
-            on_change: None,
-            on_submit: None,
-            on_cancel: None,
-            escape: Escape::Clear,
-        };
+        let mut previous =
+            FocusedTextField { surface_id: "panel@TEST".into(), id, selection: (2, 4), ..draft(1, "draft") };
         previous.history.record((String::new(), (0, 0)), None);
         let target = shown_field();
         let resumed = requested_focus("panel@TEST".into(), target, Some(&previous));

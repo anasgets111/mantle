@@ -335,10 +335,11 @@ mod meta_stub_tests {
     #[test]
     fn the_stubs_declare_the_same_properties_the_engine_accepts() {
         let source = meta("nodes.lua") + &meta("surfaces.lua");
-        let classes = parse_classes(&source);
+        let classes = parse_typed_classes(&source);
         for kind in super::node_kinds() {
             let class = format!("{}Props", capitalize(kind));
-            let declared = fields_of(&classes, &class);
+            let declared: BTreeSet<String> =
+                typed_fields(&classes, &class).into_iter().map(|field| field.name).collect();
             let expected: BTreeSet<String> = super::accepted_properties(kind).into_iter().map(str::to_string).collect();
             assert_eq!(declared, expected, "lua-meta's {class} is out of step with the property table for `{kind}`");
 
@@ -398,39 +399,6 @@ mod meta_stub_tests {
     fn capitalize(name: &str) -> String {
         let mut chars = name.chars();
         chars.next().map(|first| first.to_ascii_uppercase().to_string() + chars.as_str()).unwrap_or_default()
-    }
-
-    /// Each `---@class Name: Parent, Parent` and its own `---@field` names, less the `[string]` guard.
-    fn parse_classes(source: &str) -> Vec<(String, Vec<String>, BTreeSet<String>)> {
-        let mut classes: Vec<(String, Vec<String>, BTreeSet<String>)> = Vec::new();
-        for line in source.lines() {
-            if let Some(rest) = line.strip_prefix("---@class ") {
-                let (name, parents) = match rest.split_once(':') {
-                    Some((name, parents)) => (name.trim(), parents.split(',').map(|p| p.trim().to_string()).collect()),
-                    None => (rest.trim(), Vec::new()),
-                };
-                classes.push((name.to_string(), parents, BTreeSet::new()));
-            } else if let Some(rest) = line.strip_prefix("---@field ")
-                && let Some((name, _)) = rest.split_once(char::is_whitespace)
-                && !name.starts_with('[')
-                && let Some(current) = classes.last_mut()
-            {
-                current.2.insert(name.trim_end_matches('?').to_string());
-            }
-        }
-        classes
-    }
-
-    /// One class's fields plus every parent's, which is what completion offers on it.
-    fn fields_of(classes: &[(String, Vec<String>, BTreeSet<String>)], name: &str) -> BTreeSet<String> {
-        let Some((_, parents, own)) = classes.iter().find(|(class, ..)| class == name) else {
-            panic!("lua-meta declares no `{name}` class");
-        };
-        let mut fields = own.clone();
-        for parent in parents {
-            fields.extend(fields_of(classes, parent));
-        }
-        fields
     }
 
     fn rust_sources(root: PathBuf) -> Vec<PathBuf> {
@@ -835,7 +803,7 @@ mod meta_stub_tests {
     /// One `---@class`: name, parents, and own fields in order.
     type TypedClass = (String, Vec<String>, Vec<Field>);
 
-    /// [`parse_classes`] with each field's declared type.
+    /// Each `---@class Name: Parent, Parent` with its `---@field`s and their declared types.
     fn parse_typed_classes(source: &str) -> Vec<TypedClass> {
         let mut classes: Vec<TypedClass> = Vec::new();
         for line in source.lines() {
