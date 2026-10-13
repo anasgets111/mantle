@@ -26,7 +26,7 @@ use super::state::{
     AudioCommand, AudioState, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState,
     PrivacySources,
 };
-use super::streams::{NodeKind, apply_capture_info_event, apply_info_event, apply_video_info_event, classify};
+use super::streams::{NodeKind, apply_capture_info_event, apply_info_event, classify, prop_u32};
 use super::write::{apply_command, cap_default_sink};
 
 /// Runs the listener until process exit. Sends [`AudioState`] on every relevant
@@ -37,8 +37,8 @@ use super::write::{apply_command, cap_default_sink};
 /// `std::thread::spawn`, never async.
 ///
 /// `updates` currently reaches only a `main()` log (ADR-0017); `privacy_updates` feeds
-/// `privacy::PrivacyController`, enriching cameras (ADR-0034) and fully describing microphones
-/// and screencasts (ADR-0137). ponytail: no shutdown path; `main_loop.run()` ends at process exit
+/// `privacy::PrivacyController`, describing cameras (ADR-0034), microphones and screencasts
+/// (ADR-0137). ponytail: no shutdown path; `main_loop.run()` ends at process exit
 /// until Phase 7/8's reload orchestrator needs a `quit()` trigger.
 ///
 /// An unreachable or lost PipeWire is retried, so a restart or a late start at login recovers. A
@@ -169,8 +169,20 @@ fn run_inner(
     let state_for_done = Rc::clone(&state);
     let barrier_for_done = Rc::clone(&barrier);
     let state_for_error = Rc::clone(&state);
+    let state_for_info = Rc::clone(&state);
     let _core_listener = core
         .add_listener_local()
+        // The daemon's pid is in its core props only, not its registry global.
+        // ponytail: only the daemon is excluded, not the client that registered a camera source;
+        // a setup hosting cameras in wireplumber shows "wireplumber", visible rather than hidden.
+        .info(move |info| {
+            let pid = info.props().and_then(|props| prop_u32(props, *keys::APP_PROCESS_ID));
+            let mut state = state_for_info.borrow_mut();
+            if pid.is_some() && state.camera.core_pid != pid {
+                state.camera.core_pid = pid;
+                state.publish_privacy();
+            }
+        })
         .done(move |id, seq| {
             if id != pw::core::PW_ID_CORE || barrier_for_done.get() != Some(seq.seq()) {
                 return;
@@ -264,12 +276,19 @@ pub(super) fn record_node_props(
     changed
 }
 
-/// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders; ignores the rest.
+/// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders and records the
+/// `Link` globals the camera graph needs; ignores the rest.
 fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
     match obj.type_ {
         ObjectType::Node => on_node_global(state, registry, obj),
         ObjectType::Device => bind_device(state, registry, obj),
         ObjectType::Metadata => bind_default_metadata(state, registry, obj),
+        ObjectType::Link => {
+            let mut state = state.borrow_mut();
+            if obj.props.is_some_and(|props| state.camera.add_link(obj.id, props)) {
+                state.publish_privacy();
+            }
+        }
         _ => {}
     }
 }
@@ -299,6 +318,14 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
         return;
     };
 
+    // A camera source is read from its globals; its consumers are the nodes that get bound.
+    if kind == NodeKind::Video {
+        let mut state = state.borrow_mut();
+        if obj.props.is_some_and(|props| state.camera.add_source(obj.id, props)) {
+            state.publish_privacy();
+        }
+        return;
+    }
     let node: pw::node::Node = match registry.bind(obj) {
         Ok(node) => node,
         Err(_) => return,
@@ -323,13 +350,8 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
                 state_mut.publish_audio();
             }
             let apps = match kind {
-                NodeKind::Audio => return,
-                NodeKind::Video => {
-                    if apply_video_info_event(&mut state_mut.video_sources, node_id, has_props_change, info.props()) {
-                        state_mut.publish_privacy();
-                    }
-                    return;
-                }
+                NodeKind::Audio | NodeKind::Video => return,
+                NodeKind::CameraStream => &mut state_mut.camera_streams,
                 NodeKind::Microphone => &mut state_mut.microphones,
                 NodeKind::Screencast => &mut state_mut.screencasts,
             };
@@ -340,7 +362,7 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
         })
         // Per-app streams carry the same channelVolumes/mute pod, parser, and cube-root conversion
         // as master sinks (verified live).
-        // Video sources have no useful Props param, so this does not run for them.
+        // Only audio streams carry a Props pod.
         .param(move |_seq, param_type, _index, _next, param| {
             if param_type != pw::spa::param::ParamType::Props {
                 return;

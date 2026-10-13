@@ -13,7 +13,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use crate::capabilities::publish;
 use tokio::sync::watch;
 
-use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources, VideoSourceApp};
+use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources};
 
 use super::video::{enumerate_video_devices, find_device_openers, holds_device, is_video_name, read_comm};
 
@@ -22,46 +22,38 @@ fn process_name(proc_root: &Path, pid: u32, app_name: Option<String>) -> String 
     app_name.or_else(|| read_comm(proc_root, pid)).unwrap_or_else(|| format!("pid {pid}"))
 }
 
-/// Names scanned opener pids against the latest PipeWire `Video/Source` snapshot. A matching
-/// PipeWire `app_name` wins, then `/proc/{pid}/comm`, then `pid {n}`; no opener is dropped. Pure
-/// and unit-testable.
-///
-/// Takes `pids` rather than finding them: a new PipeWire `Video/Source` renames an existing opener,
-/// not the `/dev/videoN` set. A fresh scan would spend the expensive scan for a string.
-fn name_camera_users(proc_root: &Path, pids: &[u32], pipewire: &[VideoSourceApp]) -> Vec<PrivacyUser> {
-    pids.iter()
-        .copied()
-        .map(|pid| {
-            let named =
-                pipewire.iter().find(|source| source.pid == pid as i32).and_then(|source| source.app_name.clone());
-            PrivacyUser { app_name: process_name(proc_root, pid, named) }
-        })
-        .collect()
+/// Adds `app_name` unless a row already has it: browsers open one node per tab, but users need one
+/// Firefox row.
+fn push_unique(users: &mut Vec<PrivacyUser>, app_name: String) {
+    if !users.iter().any(|user| user.app_name == app_name) {
+        users.push(PrivacyUser { app_name });
+    }
 }
 
 /// Names PipeWire captures by client `application.name`, then `/proc/{pid}/comm`, then `pid {n}`,
-/// finally node id. Portal-created streams may have no pid, but remain captures.
-///
-/// Deduplicated by name, not node: browsers open one node per tab, but users need one Firefox row.
+/// finally node id. Portal-created streams may have no pid, but remain captures. Deduplicated by
+/// name, not node.
 fn name_capture_users(proc_root: &Path, apps: &[CaptureApp]) -> Vec<PrivacyUser> {
-    let mut users: Vec<PrivacyUser> = Vec::new();
+    let mut users = Vec::new();
     for app in apps {
         let app_name = app
             .app_name
             .clone()
-            .or_else(|| app.pid.map(|pid| process_name(proc_root, pid as u32, None)))
+            .or_else(|| app.pid.map(|pid| process_name(proc_root, pid, None)))
             .unwrap_or_else(|| format!("node {}", app.node_id));
-        if !users.iter().any(|user| user.app_name == app_name) {
-            users.push(PrivacyUser { app_name });
-        }
+        push_unique(&mut users, app_name);
     }
     users
 }
 
-/// Test-only scan-plus-name convenience. Production calls the halves in sequence and retains pids.
-#[cfg(test)]
-fn resolve_camera_users(proc_root: &Path, devices: &[PathBuf], pipewire: &[VideoSourceApp]) -> Vec<PrivacyUser> {
-    name_camera_users(proc_root, &find_device_openers(proc_root, devices), pipewire)
+/// PipeWire camera consumers by stream, then raw V4L2 openers by `/proc` name. The daemon holds the
+/// camera for a consumer already listed (or none running), so it is dropped (ADR-0034).
+fn name_camera_users(proc_root: &Path, opener_pids: &[u32], pipewire: &PrivacySources) -> Vec<PrivacyUser> {
+    let mut users = name_capture_users(proc_root, &pipewire.cameras);
+    for &pid in opener_pids.iter().filter(|&&pid| Some(pid) != pipewire.pipewire_pid) {
+        push_unique(&mut users, process_name(proc_root, pid, None));
+    }
+    users
 }
 
 pub struct PrivacyController {
@@ -102,7 +94,7 @@ async fn run_privacy_task(
     mut sources: watch::Receiver<PrivacySources>,
     events: UnboundedSender<()>,
 ) {
-    let mut devices = enumerate_video_devices(&dev_root);
+    let devices = enumerate_video_devices(&dev_root);
     let mut inotify_stream = watch_video_devices(&dev_root, &devices);
     // Whatever the mixer last published, not an empty seed: this capability starts on first config
     // read, which can be long after the mixer hydrated.
@@ -118,7 +110,7 @@ async fn run_privacy_task(
     let mut mixer_alive = true;
     loop {
         tokio::select! {
-            event = next_device_event(&mut inotify_stream, &mut devices) => {
+            event = next_device_event(&mut inotify_stream) => {
                 // An open or an emptied set pays for the scan, a readlink of every fd in `/proc`, so
                 // it runs off the two async workers.
                 let rescan = match event {
@@ -126,22 +118,7 @@ async fn run_privacy_task(
                     // A close only removes pids: recheck the known openers instead of walking `/proc`.
                     // A pid that dropped out may have passed the fd to a child no open announced: walk.
                     DeviceEvent::Closed if opener_pids.is_empty() => false,
-                    DeviceEvent::Closed => {
-                        // A copy goes in so a panicked task leaves the known set, not an empty one.
-                        let (root, watched, mut pids) = (proc_root.clone(), devices.clone(), opener_pids.clone());
-                        let recheck = move || {
-                            pids.retain(|&pid| holds_device(&root, pid, &watched));
-                            pids
-                        };
-                        match tokio::task::spawn_blocking(recheck).await {
-                            Ok(kept) => {
-                                let dropped = kept.len() < opener_pids.len();
-                                opener_pids = kept;
-                                dropped
-                            }
-                            Err(_) => true,
-                        }
-                    }
+                    DeviceEvent::Closed => recheck_openers(&proc_root, watched_devices(&inotify_stream), &mut opener_pids).await,
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
                         continue;
@@ -153,7 +130,7 @@ async fn run_privacy_task(
                     }
                 };
                 if rescan {
-                    let (root, watched) = (proc_root.clone(), devices.clone());
+                    let (root, watched) = (proc_root.clone(), watched_devices(&inotify_stream));
                     if let Ok(pids) = tokio::task::spawn_blocking(move || find_device_openers(&root, &watched)).await {
                         opener_pids = pids;
                     }
@@ -176,11 +153,30 @@ async fn run_privacy_task(
     }
 }
 
+/// Drops openers that no longer hold a device; whether any left. A panicked task keeps the known
+/// set and reports true, so the caller walks `/proc`.
+async fn recheck_openers(proc_root: &Path, watched: Vec<PathBuf>, opener_pids: &mut Vec<u32>) -> bool {
+    // A copy goes in so a panicked task leaves the known set, not an empty one.
+    let (root, mut pids) = (proc_root.to_path_buf(), opener_pids.clone());
+    let recheck = move || {
+        pids.retain(|&pid| holds_device(&root, pid, &watched));
+        pids
+    };
+    match tokio::task::spawn_blocking(recheck).await {
+        Ok(kept) => {
+            let dropped = kept.len() < opener_pids.len();
+            *opener_pids = kept;
+            dropped
+        }
+        Err(_) => true,
+    }
+}
+
 /// Rebuilds all three lists every time. The PipeWire lists are cheap walks, and one write prevents
 /// a config observing one list a push behind.
 fn rebuild(proc_root: &Path, opener_pids: &[u32], pipewire: &PrivacySources) -> PrivacyState {
     PrivacyState {
-        camera_users: name_camera_users(proc_root, opener_pids, &pipewire.cameras),
+        camera_users: name_camera_users(proc_root, opener_pids, pipewire),
         microphone_users: name_capture_users(proc_root, &pipewire.microphones),
         screencast_users: name_capture_users(proc_root, &pipewire.screencasts),
     }
@@ -209,7 +205,13 @@ fn watch_video_devices(dev_root: &Path, devices: &[PathBuf]) -> Option<VideoWatc
     }
     match inotify.into_event_stream(vec![0u8; 4096]) {
         // An app probing every node opens and closes each; one scan answers the whole burst.
-        Ok(stream) => Some(VideoWatch { events: stream.ready_chunks(64), watches, root: dev_root.to_path_buf(), dir }),
+        Ok(stream) => Some(VideoWatch {
+            events: stream.ready_chunks(64),
+            watches,
+            root: dev_root.to_path_buf(),
+            dir,
+            devices: devices.to_vec(),
+        }),
         Err(err) => {
             warn!("failed to start the inotify event stream; camera detection disabled for this run: {err}");
             None
@@ -231,6 +233,12 @@ struct VideoWatch {
     root: PathBuf,
     /// The `dev_root` watch, whose create/delete events add and drop device watches.
     dir: WatchDescriptor,
+    /// The `videoN` nodes now present, kept current by create/delete events.
+    devices: Vec<PathBuf>,
+}
+
+fn watched_devices(watch: &Option<VideoWatch>) -> Vec<PathBuf> {
+    watch.as_ref().map(|watch| watch.devices.clone()).unwrap_or_default()
 }
 
 /// Camera watch event. The enum names cases and lets [`next_device_event`] flatten a missing watch.
@@ -244,7 +252,7 @@ enum DeviceEvent {
 /// Next device open/close or node create/delete, or a never-completing future without a watch.
 /// `select!` still needs an arm future in that case. A node that appears or goes keeps `devices`
 /// and its watch current; a replugged node is a new inode, so the old watch is gone with it.
-async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<PathBuf>) -> DeviceEvent {
+async fn next_device_event(watch: &mut Option<VideoWatch>) -> DeviceEvent {
     let Some(watch) = watch.as_mut() else { return std::future::pending().await };
     loop {
         match watch.events.next().await {
@@ -260,10 +268,10 @@ async fn next_device_event(watch: &mut Option<VideoWatch>, devices: &mut Vec<Pat
                     let name = event.name.as_deref().and_then(|name| name.to_str()).filter(|n| is_video_name(n));
                     let Some(name) = name else { continue };
                     let path = watch.root.join(name);
-                    devices.retain(|device| *device != path);
+                    watch.devices.retain(|device| *device != path);
                     if event.mask.contains(EventMask::CREATE) {
                         watch_device(&mut watch.watches, &path);
-                        devices.push(path);
+                        watch.devices.push(path);
                     }
                     relevant = true;
                     opened = true;
@@ -292,37 +300,14 @@ mod tests {
     use crate::capabilities::privacy::video::write_fd_symlink;
     use crate::capabilities::test_support::within;
 
-    fn video_source(pid: i32, app_name: &str) -> VideoSourceApp {
-        VideoSourceApp { node_id: 1, pid, app_name: Some(app_name.to_string()) }
-    }
-
-    /// Keeps scan and naming separate: a PipeWire snapshot can be answered without scanning. This
-    /// root has no `/dev/video0` symlink, so an empty scan can still name the previous pid set.
     #[test]
-    fn a_pipewire_snapshot_names_the_openers_already_found_rather_than_scanning_again() {
-        let root = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(root.path().join("1234")).unwrap();
-        std::fs::write(root.path().join("1234").join("comm"), "raw-binary-name\n").unwrap();
-
-        assert_eq!(
-            name_camera_users(root.path(), &[1234], &[video_source(1234, "Cheese")]),
-            vec![PrivacyUser { app_name: "Cheese".to_string() }]
-        );
-        assert!(
-            resolve_camera_users(root.path(), &[PathBuf::from("/dev/video0")], &[]).is_empty(),
-            "a scan of the same root finds nobody, so the answer above came from the pid set"
-        );
-    }
-
-    #[test]
-    fn resolve_camera_users_names_by_source_priority() {
-        // (comm file, PipeWire sources, devices the pid has open, expected name)
+    fn raw_openers_are_named_by_comm_then_pid() {
+        // (comm file, devices the pid has open, expected name)
         let both = [PathBuf::from("/dev/video0"), PathBuf::from("/dev/video1")];
-        for (comm, sources, opened, expected) in [
-            (Some("raw-binary-name\n"), vec![video_source(1234, "Firefox")], &["/dev/video0"][..], "Firefox"),
-            (Some("mpv\n"), vec![], &["/dev/video0"][..], "mpv"),
-            (None, vec![], &["/dev/video0"][..], "pid 1234"),
-            (Some("mpv\n"), vec![], &["/dev/video0", "/dev/video1"][..], "mpv"),
+        for (comm, opened, expected) in [
+            (Some("mpv\n"), &["/dev/video0"][..], "mpv"),
+            (None, &["/dev/video0"][..], "pid 1234"),
+            (Some("mpv\n"), &["/dev/video0", "/dev/video1"][..], "mpv"),
         ] {
             let root = tempfile::tempdir().unwrap();
             for (fd, device) in opened.iter().enumerate() {
@@ -331,12 +316,33 @@ mod tests {
             if let Some(comm) = comm {
                 std::fs::write(root.path().join("1234").join("comm"), comm).unwrap();
             }
-            let users = resolve_camera_users(root.path(), &both, &sources);
+            let users = name_camera_users(root.path(), &find_device_openers(root.path(), &both), &Default::default());
             assert_eq!(users, vec![PrivacyUser { app_name: expected.to_string() }], "{expected}");
         }
     }
 
-    fn capture(node_id: u32, pid: Option<i32>, app_name: Option<&str>) -> CaptureApp {
+    /// PipeWire's daemon holds the camera for a consumer (pid 7842); the consumer is the answer.
+    #[test]
+    fn pipewire_openers_give_way_to_the_streams_that_use_them() {
+        let root = tempfile::tempdir().unwrap();
+        for (pid, comm) in [(7842, "pipewire"), (1234, "ffmpeg"), (55, "Firefox")] {
+            std::fs::create_dir_all(root.path().join(pid.to_string())).unwrap();
+            std::fs::write(root.path().join(pid.to_string()).join("comm"), comm).unwrap();
+        }
+        let sources = PrivacySources {
+            cameras: vec![capture(94, None, Some("Firefox")), capture(95, Some(77), None)],
+            pipewire_pid: Some(7842),
+            ..PrivacySources::default()
+        };
+        let names = |users: Vec<PrivacyUser>| users.into_iter().map(|user| user.app_name).collect::<Vec<_>>();
+        assert_eq!(
+            names(name_camera_users(root.path(), &[55, 1234, 7842], &sources)),
+            ["Firefox", "pid 77", "ffmpeg"],
+            "the daemon is dropped, a raw opener kept, and a name seen twice listed once"
+        );
+    }
+
+    fn capture(node_id: u32, pid: Option<u32>, app_name: Option<&str>) -> CaptureApp {
         CaptureApp { node_id, pid, app_name: app_name.map(str::to_string), running: true }
     }
 
@@ -367,16 +373,15 @@ mod tests {
         // Five devices, since inotify merges identical queued events on one watch. Held open: closes
         // of dropped files landed after the read in loaded full-suite runs and split the burst.
         let dev = tempfile::tempdir().unwrap();
-        let mut devices: Vec<_> = (0..5).map(|n| dev.path().join(format!("video{n}"))).collect();
+        let devices: Vec<_> = (0..5).map(|n| dev.path().join(format!("video{n}"))).collect();
         devices.iter().for_each(|path| drop(std::fs::File::create(path).unwrap()));
         let mut stream = watch_video_devices(dev.path(), &devices);
         let _opened: Vec<_> = devices.iter().map(|path| std::fs::File::open(path).unwrap()).collect();
 
-        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened));
+        assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
         // Only a second Opened splits the burst: a child forked by a parallel test holds copies of
         // these fds, and its exec closes them later as a stray Closed.
-        let another_open =
-            async { while !matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened) {} };
+        let another_open = async { while !matches!(next_device_event(&mut stream).await, DeviceEvent::Opened) {} };
         let second = tokio::time::timeout(std::time::Duration::from_millis(100), another_open).await;
         assert!(second.is_err(), "five queued opens must cost one scan, not five");
     }
@@ -386,12 +391,12 @@ mod tests {
         let dev = tempfile::tempdir().unwrap();
         let node = dev.path().join("video0");
         drop(std::fs::File::create(&node).unwrap());
-        let mut devices = vec![node.clone()];
+        let devices = vec![node.clone()];
         let mut stream = watch_video_devices(dev.path(), &devices);
         let file = std::fs::File::open(&node).unwrap();
-        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Opened));
+        assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
         drop(file);
-        assert!(matches!(next_device_event(&mut stream, &mut devices).await, DeviceEvent::Closed));
+        assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Closed));
     }
 
     /// Pids 1111 and 3333 opened the camera; pid 2222 got 1111's fd by fork, so no open event named it.
@@ -455,16 +460,13 @@ mod tests {
     #[tokio::test]
     async fn a_non_camera_node_in_dev_is_not_an_event() {
         let dev = tempfile::tempdir().unwrap();
-        let mut devices = Vec::new();
-        let mut watch = watch_video_devices(dev.path(), &devices);
+        let mut watch = watch_video_devices(dev.path(), &[]);
         std::fs::write(dev.path().join("loop0"), "").unwrap();
         std::fs::remove_file(dev.path().join("loop0")).unwrap();
-        let quiet =
-            tokio::time::timeout(std::time::Duration::from_millis(200), next_device_event(&mut watch, &mut devices))
-                .await;
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(200), next_device_event(&mut watch)).await;
         assert!(quiet.is_err());
         std::fs::write(dev.path().join("video0"), "").unwrap();
-        assert!(matches!(within(next_device_event(&mut watch, &mut devices)).await, DeviceEvent::Opened));
+        assert!(matches!(within(next_device_event(&mut watch)).await, DeviceEvent::Opened));
     }
 
     #[tokio::test]

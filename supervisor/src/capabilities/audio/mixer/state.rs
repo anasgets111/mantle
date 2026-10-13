@@ -13,7 +13,7 @@ use tokio::sync::watch;
 #[cfg(test)]
 use super::devices::{AudioDevice, BluetoothCodecs};
 use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
-use super::streams::{AppStream, CaptureApp, VideoSourceApp, running};
+use super::streams::{AppStream, CameraGraph, CaptureApp, running};
 use crate::capabilities::audio::master;
 use crate::capabilities::scale::percent_from_fraction;
 
@@ -22,7 +22,10 @@ use crate::capabilities::scale::percent_from_fraction;
 /// the same registry events; separate senders would add orderings where one list is a push behind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PrivacySources {
-    pub cameras: Vec<VideoSourceApp>,
+    /// Running `Stream/Input/Video` nodes linked to a camera source (ADR-0034).
+    pub cameras: Vec<CaptureApp>,
+    /// The PipeWire daemon, which holds the camera for its clients; the kernel scan skips it.
+    pub pipewire_pid: Option<u32>,
     pub microphones: Vec<CaptureApp>,
     pub screencasts: Vec<CaptureApp>,
 }
@@ -63,7 +66,9 @@ pub(super) struct MixerState {
     pub(super) last_sent: Option<AudioState>,
     /// Maps are keyed by node id; `BTreeMap` publishes them in id order.
     pub(super) apps: BTreeMap<u32, AppStream>,
-    pub(super) video_sources: BTreeMap<u32, VideoSourceApp>,
+    pub(super) camera: CameraGraph,
+    /// `Stream/Input/Video` nodes, idle ones included; [`CameraGraph`] says which read a camera.
+    pub(super) camera_streams: BTreeMap<u32, CaptureApp>,
     /// `Stream/Input/Audio` nodes, idle ones included (ADR-0137).
     pub(super) microphones: BTreeMap<u32, CaptureApp>,
     /// `Stream/Output/Video` nodes, idle ones included (ADR-0137).
@@ -104,7 +109,8 @@ impl MixerState {
             hydrated: false,
             last_sent: None,
             apps: BTreeMap::new(),
-            video_sources: BTreeMap::new(),
+            camera: CameraGraph::default(),
+            camera_streams: BTreeMap::new(),
             microphones: BTreeMap::new(),
             screencasts: BTreeMap::new(),
             nodes: HashMap::new(),
@@ -212,7 +218,7 @@ impl MixerState {
     }
 
     /// Drops everything tracked under a removed global. Audio publishes only if a map that feeds
-    /// it lost an entry (ports and links are most removals); privacy only for its three kinds.
+    /// it lost an entry (ports and links are most removals); privacy only for camera links and sources and its capture streams.
     pub(super) fn remove_global(&mut self, id: u32) {
         self.nodes.remove(&id);
         self.sink_nodes.remove(&id);
@@ -239,7 +245,8 @@ impl MixerState {
         if audio {
             self.publish_audio();
         }
-        let mut privacy = self.video_sources.remove(&id).is_some();
+        let mut privacy = self.camera.remove(id);
+        privacy |= self.camera_streams.remove(&id).is_some();
         privacy |= self.microphones.remove(&id).is_some();
         privacy |= self.screencasts.remove(&id).is_some();
         if privacy {
@@ -254,7 +261,8 @@ impl MixerState {
             return;
         }
         let _ = self.privacy_updates.send(PrivacySources {
-            cameras: self.video_sources.values().cloned().collect(),
+            cameras: self.camera.consumers(&self.camera_streams),
+            pipewire_pid: self.camera.core_pid,
             microphones: running(&self.microphones),
             screencasts: running(&self.screencasts),
         });
@@ -482,6 +490,28 @@ mod tests {
         let codecs: Vec<&str> = card.codecs.iter().map(|codec| codec.codec.as_str()).collect();
         assert_eq!(codecs, ["SBC", "AAC"], "off names no codec and LDAC is unavailable");
         assert_eq!(card.active, Some(2));
+    }
+
+    #[test]
+    fn publish_privacy_carries_camera_consumers_and_the_daemon_pid_until_the_stream_goes() {
+        let (updates, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        let camera = HashMap::from([("device.id".to_string(), "54".to_string())]);
+        let link = HashMap::from([
+            ("link.output.node".to_string(), "63".to_string()),
+            ("link.input.node".to_string(), "94".to_string()),
+        ]);
+        state.camera.core_pid = Some(7842);
+        state.camera.add_source(63, &camera);
+        state.camera.add_link(70, &link);
+        state.camera_streams.insert(94, CaptureApp { node_id: 94, pid: None, app_name: None, running: true });
+
+        state.publish_privacy();
+        assert_eq!((privacy_rx.borrow().cameras.len(), privacy_rx.borrow().pipewire_pid), (1, Some(7842)));
+
+        state.remove_global(94);
+        assert!(privacy_rx.borrow().cameras.is_empty(), "a removed stream must leave the camera list");
     }
 
     /// A config drawing volume but not privacy starts the mixer and never reads this channel.

@@ -22,7 +22,7 @@ rect {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `camera_users` | `PrivacyUser[]` | One entry per process holding a `/dev/videoN` open; empty when none is. Only devices present when `privacy` started are watched. |
+| `camera_users` | `PrivacyUser[]` | Apps using a camera, one per name: running PipeWire video streams linked to a camera, and processes holding a `/dev/videoN` open outside PipeWire. Empty when none is. |
 | `microphone_users` | `PrivacyUser[]` | Apps with a running PipeWire audio capture, one per name. Idle streams and sink-monitor captures are absent; a muted microphone still counts. |
 | `screencast_users` | `PrivacyUser[]` | Apps with a running PipeWire screen-capture stream, one per name. wlr-screencopy tools such as `wf-recorder` and `grim` never appear. |
 
@@ -44,17 +44,18 @@ None: read-only, so any method but `get`, `map` and `on_change` raises.
 | :--- | :--- |
 | Running `Stream/Input/Audio` PipeWire nodes | `microphone_users` |
 | Running `Stream/Output/Video` and portal `Video/Source` PipeWire nodes | `screencast_users` |
-| `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users`. A PipeWire `Video/Source` from the same pid only supplies the name |
+| Running `Stream/Input/Video` PipeWire nodes linked to a camera `Video/Source` | `camera_users`, named by the app. A viewer of a screen-share source is not counted |
+| `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users` for apps using V4L2 directly. The PipeWire daemon is skipped, since it holds the device for the apps above |
 
 The PipeWire half shares [`audio`'s thread](audio.md#backend). `privacy` pushes its first `/proc`
 scan as soon as it starts. While PipeWire is down, or before it first answers, the microphone and
-screencast lists are empty and cameras lose their PipeWire names; all refill when it reconnects.
+screencast lists are empty and cameras used through PipeWire are missing; all refill when it
+reconnects.
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
-| A webcam plugged in after `privacy` started never shows | The device list is read once at start. Restart the Supervisor |
 | `grim` or `wf-recorder` never shows in `screencast_users` | wlr-screencopy bypasses PipeWire; only portal screen captures appear |
 
 Source: [`supervisor/src/capabilities/privacy/`](../../supervisor/src/capabilities/privacy/)

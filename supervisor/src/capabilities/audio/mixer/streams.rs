@@ -4,7 +4,7 @@
 
 pub use shared::state::audio::AppStream;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use pipewire::keys;
@@ -15,9 +15,11 @@ use super::PropsLookup;
 /// `media.class` for playback streams, verified in `pw-dump`.
 const STREAM_OUTPUT_AUDIO: &str = "Stream/Output/Audio";
 
-/// `media.class` for camera capture (ADR-0034). PipeWire sees only portal-routed cameras, so this
-/// supplements `mantle.privacy`'s kernel detection with a name-enrichment source.
+/// `media.class` for camera and portal screencast sources (ADR-0034).
 const VIDEO_SOURCE: &str = "Video/Source";
+
+/// `media.class` for a video reader: a camera consumer when linked to a camera source (ADR-0034).
+const STREAM_INPUT_VIDEO: &str = "Stream/Input/Video";
 
 /// `media.class` for app audio capture (ADR-0137), distinct from `source_volume`, a device
 /// setting that says nothing about whether anything is listening.
@@ -64,6 +66,7 @@ fn is_screencast_source(props: &impl PropsLookup) -> bool {
 pub(super) enum NodeKind {
     Audio,
     Video,
+    CameraStream,
     Microphone,
     Screencast,
 }
@@ -74,6 +77,7 @@ pub(super) fn classify(props: &impl PropsLookup) -> Option<NodeKind> {
         Some(STREAM_OUTPUT_AUDIO) => Some(NodeKind::Audio),
         Some(VIDEO_SOURCE) => Some(if is_screencast_source(props) { NodeKind::Screencast } else { NodeKind::Video }),
         Some(STREAM_INPUT_AUDIO) => Some(NodeKind::Microphone),
+        Some(STREAM_INPUT_VIDEO) => Some(NodeKind::CameraStream),
         Some(STREAM_OUTPUT_VIDEO) => Some(NodeKind::Screencast),
         _ => None,
     }
@@ -158,37 +162,55 @@ fn upsert_or_remove<V: PartialEq>(map: &mut BTreeMap<u32, V>, node_id: u32, pars
     }
 }
 
-/// `Video/Source` data for `mantle.privacy` name enrichment (ADR-0034): `pid` matches a
-/// kernel-detected `/dev/videoN` opener and `app_name` supplies its nicer PipeWire name. No
-/// `process_name`: privacy already falls back to `/proc/{pid}/comm`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct VideoSourceApp {
-    pub node_id: u32,
-    pub pid: i32,
-    pub app_name: Option<String>,
+/// Which `Stream/Input/Video` nodes read a camera (ADR-0034), from registry globals alone. A link
+/// from a camera source to a stream makes that stream a camera consumer; a viewer of a portal
+/// screencast stays out.
+#[derive(Debug, Default)]
+pub(super) struct CameraGraph {
+    /// Camera source nodes.
+    sources: BTreeSet<u32>,
+    /// `Link` id -> (output node, input node), kept only for links leaving a camera source.
+    links: BTreeMap<u32, (u32, u32)>,
+    /// The daemon's `application.process.id`, from the core `info` event.
+    pub(super) core_pid: Option<u32>,
 }
 
-/// Parses a `Video/Source` with valid `application.process.id` into [`VideoSourceApp`].
-fn parse_video_source_props(node_id: u32, props: &impl PropsLookup) -> Option<VideoSourceApp> {
-    if classify(props) != Some(NodeKind::Video) {
-        return None;
-    }
-    let pid = props.get_prop(*keys::APP_PROCESS_ID)?.parse().ok()?;
-    let app_name = props.get_prop(*keys::APP_NAME).map(str::to_string);
-    Some(VideoSourceApp { node_id, pid, app_name })
+pub(super) fn prop_u32(props: &impl PropsLookup, key: &str) -> Option<u32> {
+    props.get_prop(key)?.parse().ok()
 }
 
-/// Applies a bound `Video/Source` `info`, with the same PROPS gating as [`apply_info_event`].
-pub(super) fn apply_video_info_event(
-    sources: &mut BTreeMap<u32, VideoSourceApp>,
-    node_id: u32,
-    has_props_change: bool,
-    props: Option<&impl PropsLookup>,
-) -> bool {
-    if !has_props_change {
-        return false;
+impl CameraGraph {
+    /// Records a `Video/Source` that is a camera: the device-backed node has `device.id` and
+    /// `media.role = "Camera"`, a portal screencast has neither. Whether it was one.
+    pub(super) fn add_source(&mut self, id: u32, props: &impl PropsLookup) -> bool {
+        let camera = props.get_prop(*keys::MEDIA_ROLE) == Some("Camera") || props.get_prop(*keys::DEVICE_ID).is_some();
+        camera && self.sources.insert(id)
     }
-    upsert_or_remove(sources, node_id, props.and_then(|props| parse_video_source_props(node_id, props)))
+
+    /// Whether the link leaves a camera source, so the consumers changed. A node's global precedes
+    /// the links that name it.
+    pub(super) fn add_link(&mut self, id: u32, props: &impl PropsLookup) -> bool {
+        let (Some(output), Some(input)) =
+            (prop_u32(props, *keys::LINK_OUTPUT_NODE), prop_u32(props, *keys::LINK_INPUT_NODE))
+        else {
+            return false;
+        };
+        self.sources.contains(&output) && self.links.insert(id, (output, input)) != Some((output, input))
+    }
+
+    /// Forgets a removed global of any kind, and the links that name it so a reused id inherits
+    /// none; whether the consumers changed.
+    pub(super) fn remove(&mut self, id: u32) -> bool {
+        let source = self.sources.remove(&id);
+        let links = self.links.len();
+        self.links.retain(|&link, &mut (output, input)| link != id && output != id && input != id);
+        source || self.links.len() != links
+    }
+
+    /// Running streams linked to a camera source.
+    pub(super) fn consumers(&self, streams: &BTreeMap<u32, CaptureApp>) -> Vec<CaptureApp> {
+        running(streams).into_iter().filter(|app| self.links.values().any(|&(_, input)| input == app.node_id)).collect()
+    }
 }
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
@@ -198,7 +220,7 @@ pub struct CaptureApp {
     pub node_id: u32,
     /// `application.process.id`, which portal-created streams may omit because the owner is the
     /// portal. A naming hint, never an identity.
-    pub pid: Option<i32>,
+    pub pid: Option<u32>,
     /// `application.name`, if the client set one.
     pub app_name: Option<String>,
     /// Whether PipeWire reports `Running`. `Idle`/`Suspended` means the app holds the device open
@@ -206,8 +228,7 @@ pub struct CaptureApp {
     pub running: bool,
 }
 
-/// Parses `props` for `kind`. Unlike [`parse_video_source_props`], `pid` is optional: camera users
-/// cross-reference `/dev/videoN` openers by pid, but these lists have only PipeWire, so dropping a
+/// Parses `props` for `kind`. `pid` is optional: these lists have only PipeWire, so dropping a
 /// pid-less node would drop the capture.
 fn parse_capture_props(node_id: u32, kind: NodeKind, props: &impl PropsLookup) -> Option<CaptureApp> {
     if classify(props) != Some(kind) {
@@ -218,7 +239,7 @@ fn parse_capture_props(node_id: u32, kind: NodeKind, props: &impl PropsLookup) -
     }
     Some(CaptureApp {
         node_id,
-        pid: props.get_prop(*keys::APP_PROCESS_ID).and_then(|pid| pid.parse().ok()),
+        pid: prop_u32(props, *keys::APP_PROCESS_ID),
         app_name: props.get_prop(*keys::APP_NAME).or_else(|| props.get_prop(*keys::NODE_NAME)).map(str::to_string),
         // Set by the caller from this `info` event.
         running: false,
@@ -270,23 +291,6 @@ mod tests {
         ])
     }
 
-    #[test]
-    fn parse_video_source_props_matches_a_real_video_source_node() {
-        let source = parse_video_source_props(7, &camera_stream_props()).expect("should parse as a video source");
-        assert_eq!(source, VideoSourceApp { node_id: 7, pid: 42, app_name: Some("Firefox".to_string()) });
-    }
-
-    #[test]
-    fn parse_video_source_props_rejects_a_non_video_source_media_class() {
-        assert!(parse_video_source_props(7, &zen_browser_stream_props()).is_none());
-    }
-
-    #[test]
-    fn parse_video_source_props_rejects_a_stream_missing_the_pid() {
-        let props = HashMap::from([("media.class".to_string(), "Video/Source".to_string())]);
-        assert!(parse_video_source_props(7, &props).is_none());
-    }
-
     fn capture_props(media_class: &str) -> HashMap<String, String> {
         HashMap::from([
             ("media.class".to_string(), media_class.to_string()),
@@ -296,12 +300,13 @@ mod tests {
     }
 
     #[test]
-    fn classify_tells_the_four_node_kinds_apart_by_media_class() {
+    fn classify_tells_the_node_kinds_apart_by_media_class() {
         for (media_class, expected) in [
             ("Stream/Output/Audio", NodeKind::Audio),
             ("Video/Source", NodeKind::Video),
             ("Stream/Input/Audio", NodeKind::Microphone),
             ("Stream/Output/Video", NodeKind::Screencast),
+            ("Stream/Input/Video", NodeKind::CameraStream),
         ] {
             let props = HashMap::from([("media.class".to_string(), media_class.to_string())]);
             assert_eq!(classify(&props), Some(expected), "{media_class}");
@@ -440,27 +445,6 @@ mod tests {
         );
 
         assert!(running(&apps).is_empty());
-    }
-
-    #[test]
-    fn apply_video_info_event_ignores_a_state_only_event() {
-        let mut sources = BTreeMap::new();
-        apply_video_info_event(&mut sources, 1, true, Some(&camera_stream_props()));
-        let empty: HashMap<String, String> = HashMap::new();
-        apply_video_info_event(&mut sources, 1, false, Some(&empty));
-        assert_eq!(sources.len(), 1, "a non-PROPS info event must not drop an already-tracked source");
-    }
-
-    #[test]
-    fn apply_video_info_event_removes_when_a_props_bearing_event_no_longer_parses() {
-        let mut sources = BTreeMap::new();
-        apply_video_info_event(&mut sources, 1, true, Some(&camera_stream_props()));
-        assert_eq!(sources.len(), 1);
-
-        let non_video_props = HashMap::from([("media.class".to_string(), "Audio/Sink".to_string())]);
-        apply_video_info_event(&mut sources, 1, true, Some(&non_video_props));
-
-        assert!(sources.is_empty());
     }
 
     fn zen_browser_stream_props() -> HashMap<String, String> {
@@ -610,5 +594,76 @@ mod tests {
         std::fs::write(proc.path().join(&pid).join("comm"), "second\n").unwrap();
         apply_info_event(proc.path(), &mut apps, 1, true, Some(&props));
         assert_eq!(apps[&1].process_name.as_deref(), Some("first"));
+    }
+
+    fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
+        pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect()
+    }
+
+    /// Global props of the real UVC camera node (`pw-cli ls Node`).
+    fn camera_source() -> HashMap<String, String> {
+        props(&[
+            ("media.class", "Video/Source"),
+            ("media.role", "Camera"),
+            ("device.id", "54"),
+            ("object.path", "v4l2:/dev/video0"),
+        ])
+    }
+
+    fn camera_graph() -> CameraGraph {
+        let mut graph = CameraGraph::default();
+        assert!(graph.add_source(63, &camera_source()));
+        graph
+    }
+
+    fn link(output: &str, input: &str) -> HashMap<String, String> {
+        props(&[("link.output.node", output), ("link.input.node", input)])
+    }
+
+    fn video_stream(node_id: u32, running: bool) -> BTreeMap<u32, CaptureApp> {
+        let app = CaptureApp { node_id, pid: None, app_name: Some("ffmpeg".to_string()), running };
+        BTreeMap::from([(node_id, app)])
+    }
+
+    #[test]
+    fn a_stream_linked_to_a_camera_source_is_a_consumer_until_it_stops_or_unlinks() {
+        let mut graph = camera_graph();
+        assert!(graph.add_link(70, &link("63", "94")));
+        let consumers = |graph: &CameraGraph, running| graph.consumers(&video_stream(94, running));
+        assert_eq!(consumers(&graph, true).len(), 1);
+        assert!(consumers(&graph, false).is_empty(), "an idle stream holds the camera without reading");
+        assert!(graph.remove(70));
+        assert!(consumers(&graph, true).is_empty());
+    }
+
+    #[test]
+    fn only_a_device_backed_or_camera_role_source_is_a_camera() {
+        let mut graph = CameraGraph::default();
+        let portal = props(&[("media.class", "Video/Source"), ("node.name", "unlisted-portal-source")]);
+        assert!(!graph.add_source(80, &portal), "a screencast with an unlisted name is not a camera");
+        assert!(graph.add_source(81, &props(&[("media.role", "Camera")])));
+        assert!(graph.add_source(82, &props(&[("device.id", "54")])));
+        assert!(!graph.add_link(71, &link("80", "94")), "a viewer of that source is no camera user");
+        assert!(graph.consumers(&video_stream(94, true)).is_empty());
+    }
+
+    #[test]
+    fn removing_a_node_or_link_id_drops_every_link_naming_it() {
+        for (removed, why) in
+            [(63, "the camera source"), (94, "the consumer, so a reused id inherits no link"), (70, "the link")]
+        {
+            let mut graph = camera_graph();
+            graph.add_link(70, &link("63", "94"));
+            assert!(graph.remove(removed), "{why}");
+            assert!(graph.consumers(&video_stream(94, true)).is_empty(), "{why}");
+        }
+    }
+
+    #[test]
+    fn a_pid_prop_parses_once_as_u32() {
+        let pid = |value: &str| prop_u32(&props(&[("application.process.id", value)]), "application.process.id");
+        assert_eq!(pid("7842"), Some(7842));
+        assert_eq!(pid("-1"), None);
+        assert_eq!(pid("daemon"), None);
     }
 }

@@ -355,8 +355,8 @@ impl Capabilities {
                     self.keyboard = Some(spawn_worker(build, signals, handle, self.senders.keyboard.clone()));
                 }
             }
-            // Camera `/dev/videoN` inotify plus `/proc` scan, enriched by `privacy_sources`
-            // (ADR-0034); microphone/screencast share that channel (ADR-0137).
+            // Camera `/dev/videoN` inotify plus `/proc` scan, joined with PipeWire camera
+            // consumers from `privacy_sources` (ADR-0034); microphone/screencast share that channel (ADR-0137).
             Capability::Privacy => {
                 if self.privacy.is_none() {
                     self.ensure_mixer_thread();

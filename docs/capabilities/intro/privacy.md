@@ -18,15 +18,16 @@ rect {
 | :--- | :--- |
 | Running `Stream/Input/Audio` PipeWire nodes | `microphone_users` |
 | Running `Stream/Output/Video` and portal `Video/Source` PipeWire nodes | `screencast_users` |
-| `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users`. A PipeWire `Video/Source` from the same pid only supplies the name |
+| Running `Stream/Input/Video` PipeWire nodes linked to a camera `Video/Source` | `camera_users`, named by the app. A viewer of a screen-share source is not counted |
+| `/proc/*/fd` links to a `/dev/videoN`, rescanned on each inotify open or close of the device | `camera_users` for apps using V4L2 directly. The PipeWire daemon is skipped, since it holds the device for the apps above |
 
 The PipeWire half shares [`audio`'s thread](audio.md#backend). `privacy` pushes its first `/proc`
 scan as soon as it starts. While PipeWire is down, or before it first answers, the microphone and
-screencast lists are empty and cameras lose their PipeWire names; all refill when it reconnects.
+screencast lists are empty and cameras used through PipeWire are missing; all refill when it
+reconnects.
 
 ## Gotchas
 
 | Trap | Fix |
 | :--- | :--- |
-| A webcam plugged in after `privacy` started never shows | The device list is read once at start. Restart the Supervisor |
 | `grim` or `wf-recorder` never shows in `screencast_users` | wlr-screencopy bypasses PipeWire; only portal screen captures appear |

@@ -14,8 +14,8 @@ pub struct PrivacyUser {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PrivacyState {
-    /// One entry per process holding a `/dev/videoN` open; empty when none is. Only devices present
-    /// when `privacy` started are watched.
+    /// Apps using a camera, one per name: running PipeWire video streams linked to a camera, and
+    /// processes holding a `/dev/videoN` open outside PipeWire. Empty when none is.
     pub camera_users: Vec<PrivacyUser>,
     /// Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and
     /// sink-monitor captures are absent; a muted microphone still counts.

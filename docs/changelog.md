@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: `mantle.privacy` names apps using the camera through PipeWire (browsers, Snapshot, OBS) instead of listing `pipewire`.
+
 ## 0.7.2 - 2026-10-13
 
 - Changed: icon names containing `/` no longer resolve through the icon theme; `.svgz` theme icons and `~/.icons` are found.

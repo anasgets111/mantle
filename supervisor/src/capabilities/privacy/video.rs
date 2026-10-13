@@ -51,8 +51,7 @@ pub fn holds_device(proc_root: &Path, pid: u32, devices: &[PathBuf]) -> bool {
         .any(|fd_entry| std::fs::read_link(fd_entry.path()).is_ok_and(|target| devices.contains(&target)))
 }
 
-/// Reads `<proc_root>/<pid>/comm`, the fallback for raw V4L2 users without a matching PipeWire
-/// `Video/Source` node (ADR-0034).
+/// Reads `<proc_root>/<pid>/comm`, the name of a raw V4L2 user (ADR-0034).
 pub fn read_comm(proc_root: &Path, pid: u32) -> Option<String> {
     std::fs::read_to_string(proc_root.join(pid.to_string()).join("comm")).ok().map(|text| text.trim_end().to_string())
 }

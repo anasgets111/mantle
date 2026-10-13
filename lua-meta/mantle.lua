@@ -604,7 +604,7 @@
 ---@field profiles? string[] Available profiles in daemon order, e.g. `{"power-saver", "balanced", "performance"}`.
 
 ---@class PrivacyState
----@field camera_users PrivacyUser[] One entry per process holding a `/dev/videoN` open; empty when none is. Only devices present when `privacy` started are watched.
+---@field camera_users PrivacyUser[] Apps using a camera, one per name: running PipeWire video streams linked to a camera, and processes holding a `/dev/videoN` open outside PipeWire. Empty when none is.
 ---@field microphone_users PrivacyUser[] Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and sink-monitor captures are absent; a muted microphone still counts.
 ---@field screencast_users PrivacyUser[] Apps with a running PipeWire screen-capture stream, one per name (ADR-0137). wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
 

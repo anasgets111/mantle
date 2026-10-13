@@ -39,7 +39,7 @@ mod write;
 
 pub use registry::{AudioCommandSender, command_channel, run};
 pub use state::{AudioCommand, PrivacySources};
-pub use streams::{CaptureApp, VideoSourceApp};
+pub use streams::CaptureApp;
 // `main.rs` names this for `ensure_mixer_thread`'s sender, which lazy start (ADR-0070) keeps
 // alive beyond thread construction.
 pub use state::AudioState;

@@ -829,7 +829,15 @@ second forever, for a change the kernel already announces.
 1. Detect raw V4L2 opens through device events plus fd inspection. The proposed streaming sysfs flag
    was absent on the webcam despite a recent kernel.
 2. Use PipeWire only for application-name enrichment; raw camera clients never appear there. Fall
-   back to process names.
+   back to process names. Superseded by item 3 for PipeWire camera users.
+3. Amendment: a camera used through PipeWire (Firefox, Snapshot, OBS) is held open by the daemon,
+   so the scan named `pipewire`, and the hardware `Video/Source` carried no client pid. PipeWire
+   camera users now come from running `Stream/Input/Video` nodes linked to a camera source,
+   named like microphones. A camera source is a `Video/Source` with `device.id` or
+   `media.role = "Camera"`; portal screencasts have neither. The scan drops only the daemon's own
+   pid (core info), never the client that registered a source, which any client could fake to hide
+   its raw V4L2 use. Before PipeWire hydrates, and briefly after a reconnect, the daemon can show
+   as "pipewire". Pid enrichment is removed.
 
 ### 0034.4. Arch update checking uses the `alpm` crate, not `checkupdates`/`expac` subprocesses
 
