@@ -18,7 +18,7 @@ pub use malloc::Malloc;
 pub use paths::{
     CHECK_ENV, CONFIG_DIR_ENV, EXIT_COMPOSITOR_GONE, GENERATION_ID_ENV, INSTANCE_DIR_ENV, PROFILE_ENV, VERBOSE_ENV,
     config_dir, control_socket_path, expand_home, expand_tilde, instance_dir, profile_interval, runtime_root,
-    session_locked_flag_path, shell_lua_path, xdg_dir,
+    session_locked_flag_path, shell_lua_path, xdg_data_dirs, xdg_dir,
 };
 pub use secure_buffer::SecureBuffer;
 pub use zeroize::{Zeroize, Zeroizing};

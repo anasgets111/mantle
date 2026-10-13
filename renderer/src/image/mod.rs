@@ -26,6 +26,7 @@ pub mod capture;
 mod decode;
 mod file;
 mod fit;
+mod icon_index;
 pub mod icons;
 pub mod quantize;
 mod svg;

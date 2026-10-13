@@ -108,6 +108,17 @@ pub fn xdg_dir(var: &str, home_relative: &str) -> Option<PathBuf> {
     xdg_dir_from(std::env::var_os(var), std::env::var_os("HOME"), home_relative)
 }
 
+/// `$XDG_DATA_HOME` then each absolute `$XDG_DATA_DIRS` entry. An empty or unset dirs value is
+/// `/usr/local/share:/usr/share`: a login shell often leaves the variable unset, and skipping
+/// `/usr/share` then finds nothing.
+pub fn xdg_data_dirs(data_home: Option<PathBuf>, data_dirs: Option<&str>) -> Vec<PathBuf> {
+    let dirs = data_dirs.filter(|value| !value.is_empty()).unwrap_or("/usr/local/share:/usr/share");
+    data_home
+        .into_iter()
+        .chain(dirs.split(':').filter(|entry| Path::new(entry).is_absolute()).map(PathBuf::from))
+        .collect()
+}
+
 /// [`xdg_dir`] with its lookups passed as parameters.
 fn xdg_dir_from(value: Option<OsString>, home: Option<OsString>, home_relative: &str) -> Option<PathBuf> {
     value

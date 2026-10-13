@@ -1249,8 +1249,16 @@ undecided.
 
 ## 0054. The icon theme resolver lives in the renderer, and `image` is the node that draws a file
 
-1. Resolve icon themes in the Renderer with freedesktop-icons; a synchronous Supervisor lookup would
-block the dispatch thread and require a missing request/response protocol.
+1. Resolve icon themes in the Renderer; a synchronous Supervisor lookup would block the dispatch
+thread and require a missing request/response protocol.
+
+Amendment: the `freedesktop-icons` crate is gone. The renderer parses `index.theme` itself. Distance
+is `Size * Scale` against the requested device pixels. `Inherits` keeps `hicolor` where it was
+listed; it is also the implicit last fallback. Every data-dir copy of a theme contributes parents,
+so an empty home `Inherits` does not hide the system copy's parents. A copy of a theme with no
+`index.theme` of its own uses the index from the first base that has one. Bases are `~/.icons`, then
+each data dir's `icons`; after `hicolor`, a bare `<base>/<name>.<ext>` is tried, then each data
+dir's `pixmaps` and `/usr/share/pixmaps`.
 
 2. Absolute icon names draw files directly; other names use theme resolution.
 

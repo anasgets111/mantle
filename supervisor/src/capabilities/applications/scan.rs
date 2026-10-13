@@ -42,12 +42,7 @@ pub struct ScanResult {
 /// Injected, like `ClockController::new`, so precedence is testable without changing the process
 /// environment.
 pub fn application_dirs(data_home: Option<PathBuf>, data_dirs: Option<String>) -> Vec<PathBuf> {
-    let dirs = data_dirs.filter(|value| !value.is_empty()).unwrap_or_else(|| "/usr/local/share:/usr/share".to_string());
-    data_home
-        .into_iter()
-        .chain(dirs.split(':').filter(|part| Path::new(part).is_absolute()).map(PathBuf::from))
-        .map(|dir| dir.join("applications"))
-        .collect()
+    shared::xdg_data_dirs(data_home, data_dirs.as_deref()).into_iter().map(|dir| dir.join("applications")).collect()
 }
 
 /// Scans `dirs` in order; the first occurrence of each desktop id wins.

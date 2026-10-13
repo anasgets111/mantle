@@ -39,7 +39,6 @@ unicode-segmentation.workspace = true
 # (ADR-0234). Already compiled for `png`, so declaring it adds no crate.
 # ponytail: kept at 1.1.9 so it shares miniz_oxide 0.8 with png 0.18; drop the pin when png moves to miniz_oxide 0.9.
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
-freedesktop-icons = "0.4.0"
 glow = "0.18.0"
 # femtovg declares `image` with `default-features = false` and turns no format on, so its own
 # `load_image_file` answers every PNG with `Unsupported(Exact(Png))`. `image::decode::decode_raster` calls
