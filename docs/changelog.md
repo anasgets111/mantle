@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.7.2 - 2026-10-13
+
 - Changed: icon names containing `/` no longer resolve through the icon theme; `.svgz` theme icons and `~/.icons` are found.
 - Changed: `mantle.secrets` stores through the Secret Service directly: a locked keyring shows its unlock prompt and a missing default keyring is created, and the store waits for that prompt; `timed_out` means a service call over 25 s, and is final.
 - Fixed: a getter, handler or callback is no longer failed with "exceeded the 2.5ms CPU budget" for garbage collection it didn't cause; the collector pauses while config code runs under the budget and catches up after.
