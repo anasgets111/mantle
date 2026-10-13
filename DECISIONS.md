@@ -813,6 +813,10 @@ second forever, for a change the kernel already announces.
 
 1. Evdev supplies initial/live lock LEDs; sysfs is a static fallback. Physical Caps Lock changed
    sysfs but emitted no inotify events. Missing access defaults false with a diagnostic.
+
+   Amendment: the `evdev` crate is gone. The same LEDs are `EVIOCGBIT`, `EVIOCGLED`, and `AsyncFd`
+   on the first readable `/dev/input/event*` with `LED_CAPSL`, via nix's ioctl macros; `SYN_DROPPED`
+   triggers an `EVIOCGLED` resync. Sysfs stays the one-shot fallback.
 2. Keep a narrow keyboard-layout trait for Hyprland/niri, not a workspace abstraction.
 3. Select one primary keyboard and expose index-based switching; Lua computes cycling. ADR-0205
    keeps the one-keyboard selection and corrects what "primary" means on Hyprland.

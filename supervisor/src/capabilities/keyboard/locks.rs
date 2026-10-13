@@ -1,6 +1,6 @@
 //! Lock-state monitoring for `mantle.keyboard` (ADR-0034). Sysfs LED `brightness` files do not
-//! emit inotify `MODIFY` when `input_leds` changes them; evdev `EV_LED` is primary and sysfs is a
-//! read-once fallback.
+//! emit inotify `MODIFY` when `input_leds` changes them. `EV_LED` on the input device is primary
+//! and sysfs is a read-once fallback.
 
 use std::io;
 use std::path::{Path, PathBuf};

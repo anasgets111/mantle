@@ -3,7 +3,10 @@
 
 pub use shared::state::keyboard::KeyboardState;
 
-use std::os::unix::fs::FileExt;
+use std::fs::File;
+use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -135,31 +138,133 @@ fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: 
     });
 }
 
-/// Publishes the LED snapshot of the first `evdev::enumerate()` device exposing `LED_CAPSL` and
-/// returns the stream carrying its live changes. `EV_LED` is queued per open fd, so there is no
-/// subscribe-before-read race. Silent when nothing is readable: that is the ordinary state between
-/// a keyboard being unplugged and plugged back in. Verified live rather than unit-tested, because
-/// enumeration scans real `/dev/input` nodes (ADR-0034).
-fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<evdev::EventStream> {
-    let (_, device) = evdev::enumerate()
-        .find(|(_, device)| device.supported_leds().is_some_and(|leds| leds.contains(evdev::LedCode::LED_CAPSL)))?;
-    match device.get_led_state() {
-        Ok(led_state) => {
-            let mut guard = state.lock().expect("mutex poisoned");
-            guard.caps_lock = led_state.contains(evdev::LedCode::LED_CAPSL);
-            guard.num_lock = led_state.contains(evdev::LedCode::LED_NUML);
-            guard.scroll_lock = led_state.contains(evdev::LedCode::LED_SCROLLL);
-        }
-        Err(err) => {
-            debug!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}")
-        }
-    }
-    device.into_event_stream().inspect_err(|err| debug!("failed to open an EV_LED event stream: {err}")).ok()
+/// `linux/input-event-codes.h`: `EV_SYN` 0, `SYN_REPORT` 0, `SYN_DROPPED` 3, `EV_LED` 0x11,
+/// `LED_NUML` 0, `LED_CAPSL` 1, `LED_SCROLLL` 2.
+const EV_SYN: u16 = 0x00;
+const SYN_REPORT: u16 = 0x00;
+const SYN_DROPPED: u16 = 0x03;
+const EV_LED: u16 = 0x11;
+const LED_NUML: u16 = 0x00;
+const LED_CAPSL: u16 = 0x01;
+const LED_SCROLLL: u16 = 0x02;
+
+/// `struct input_event` on this ABI: `timeval` (16) + type + code + value.
+const INPUT_EVENT_SIZE: usize = 24;
+const _: () = assert!(std::mem::size_of::<libc::input_event>() == INPUT_EVENT_SIZE);
+const _: () = assert!(std::mem::offset_of!(libc::input_event, type_) == 16);
+const _: () = assert!(std::mem::offset_of!(libc::input_event, code) == 18);
+const _: () = assert!(std::mem::offset_of!(libc::input_event, value) == 20);
+
+nix::ioctl_read_buf!(eviocgbit_types, b'E', 0x20, u8);
+nix::ioctl_read_buf!(eviocgbit_leds, b'E', 0x20 + 0x11, u8);
+nix::ioctl_read_buf!(eviocgled, b'E', 0x19, u8);
+
+fn bit_set(bits: &[u8], index: u16) -> bool {
+    let index = usize::from(index);
+    bits.get(index / 8).is_some_and(|byte| byte & (1 << (index % 8)) != 0)
 }
 
-/// Uses evdev first (ADR-0034); sysfs (`locks::resolve_lock_leds`) is a read-once fallback, so
-/// neither source leaves all locks at their logged `false` defaults.
-fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<evdev::EventStream> {
+fn event_fields(packet: &[u8; INPUT_EVENT_SIZE]) -> (u16, u16, i32) {
+    const TYPE: usize = std::mem::offset_of!(libc::input_event, type_);
+    const CODE: usize = std::mem::offset_of!(libc::input_event, code);
+    const VALUE: usize = std::mem::offset_of!(libc::input_event, value);
+    (
+        u16::from_ne_bytes([packet[TYPE], packet[TYPE + 1]]),
+        u16::from_ne_bytes([packet[CODE], packet[CODE + 1]]),
+        i32::from_ne_bytes([packet[VALUE], packet[VALUE + 1], packet[VALUE + 2], packet[VALUE + 3]]),
+    )
+}
+
+/// Applies one `input_event`. `true` only for `EV_LED` of caps, num, or scroll. `value != 0` is on.
+fn apply_lock_event(state: &mut KeyboardState, packet: &[u8; INPUT_EVENT_SIZE]) -> bool {
+    let (event_type, code, value) = event_fields(packet);
+    if event_type != EV_LED {
+        return false;
+    }
+    let on = value != 0;
+    match code {
+        LED_CAPSL => state.caps_lock = on,
+        LED_NUML => state.num_lock = on,
+        LED_SCROLLL => state.scroll_lock = on,
+        _ => return false,
+    }
+    true
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Stream {
+    Ignore,
+    Apply,
+    Resync,
+}
+
+/// Kernel evdev protocol: after `SYN_DROPPED` the queue is unreliable until the next `SYN_REPORT`,
+/// where the state must be re-read. `dropped` carries that window across packets.
+fn classify(dropped: &mut bool, packet: &[u8; INPUT_EVENT_SIZE]) -> Stream {
+    match event_fields(packet) {
+        (EV_SYN, SYN_DROPPED, _) => {
+            *dropped = true;
+            Stream::Ignore
+        }
+        (EV_SYN, SYN_REPORT, _) if std::mem::take(dropped) => Stream::Resync,
+        _ if *dropped => Stream::Ignore,
+        _ => Stream::Apply,
+    }
+}
+
+/// `EV_LED` in the event bitmap, then `LED_CAPSL` in the LED bitmap. `EV_MAX` is 0x1f (4 bytes)
+/// and `LED_MAX` is 0x0f (2 bytes).
+fn supports_caps_led(file: &File) -> bool {
+    let mut events = [0u8; 4];
+    let mut leds = [0u8; 2];
+    // SAFETY: `file` is an open evdev fd and each buffer is the size its ioctl is encoded with.
+    unsafe {
+        eviocgbit_types(file.as_raw_fd(), &mut events).is_ok()
+            && bit_set(&events, EV_LED)
+            && eviocgbit_leds(file.as_raw_fd(), &mut leds).is_ok()
+            && bit_set(&leds, LED_CAPSL)
+    }
+}
+
+/// Publishes the device's current LED bitmap.
+fn sync_locks(file: &File, state: &Mutex<KeyboardState>) -> nix::Result<()> {
+    let mut bits = [0u8; 2];
+    // SAFETY: `file` is an open evdev fd and `bits` is the size the ioctl is encoded with.
+    unsafe { eviocgled(file.as_raw_fd(), &mut bits)? };
+    let mut guard = state.lock().expect("mutex poisoned");
+    guard.caps_lock = bit_set(&bits, LED_CAPSL);
+    guard.num_lock = bit_set(&bits, LED_NUML);
+    guard.scroll_lock = bit_set(&bits, LED_SCROLLL);
+    Ok(())
+}
+
+/// First readable `/dev/input/event*` that exposes `LED_CAPSL`. Publishes its LED bitmap and
+/// returns the fd for live `EV_LED` events. The kernel queues those per open fd, so there is no
+/// subscribe-before-read race. Silent when nothing is readable: that is the ordinary gap between
+/// unplug and replug.
+///
+/// ponytail: the directory is `/dev/input` and the first `event*` with `LED_CAPSL` wins. A test
+/// cannot mount device nodes the way `leds_root` stands in for sysfs. Upgrade: take the directory
+/// the same way, once a fixture can expose event nodes.
+fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
+    let entries = std::fs::read_dir("/dev/input").ok()?;
+    let file = entries.flatten().find_map(|entry| {
+        let path = entry.path();
+        if !path.file_name()?.to_str()?.starts_with("event") {
+            return None;
+        }
+        let file = File::options().read(true).custom_flags(libc::O_NONBLOCK).open(&path).ok()?;
+        supports_caps_led(&file).then_some(file)
+    })?;
+    if let Err(err) = sync_locks(&file, state) {
+        debug!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}");
+    }
+    AsyncFd::new(file).inspect_err(|err| debug!("failed to open an EV_LED event stream: {err}")).ok()
+}
+
+/// Uses the input device first (ADR-0034); sysfs (`locks::resolve_lock_leds`) is a read-once
+/// fallback, so neither source leaves all locks at their logged `false` defaults.
+fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
     if let Some(stream) = open_led_stream(state) {
         return Some(stream);
     }
@@ -188,34 +293,45 @@ fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<evdev
     None
 }
 
-/// Forwards `EV_LED` changes until the stream ends, which unplugging the keyboard does with
-/// `ENODEV`. `false` means the signal receiver is gone and the watch should stop for good.
-async fn pump_leds(
-    stream: &mut evdev::EventStream,
-    state: &Mutex<KeyboardState>,
-    events: &UnboundedSender<()>,
-) -> bool {
+/// Forwards `EV_LED` changes until the fd ends, which unplugging the keyboard does with `ENODEV`.
+/// `false` means the signal receiver is gone and the watch should stop for good.
+async fn pump_leds(fd: &AsyncFd<File>, state: &Mutex<KeyboardState>, events: &UnboundedSender<()>) -> bool {
+    let mut dropped = false;
     loop {
-        let event = match stream.next_event().await {
-            Ok(event) => event,
+        let mut ready = match fd.readable().await {
+            Ok(ready) => ready,
             Err(err) => {
                 debug!("evdev LED stream ended ({err}); waiting for a keyboard to appear");
                 return true;
             }
         };
-        let evdev::EventSummary::Led(_, code, value) = event.destructure() else { continue };
-        let on = value != 0;
-        {
-            let mut guard = state.lock().expect("mutex poisoned");
-            match code {
-                evdev::LedCode::LED_CAPSL => guard.caps_lock = on,
-                evdev::LedCode::LED_NUML => guard.num_lock = on,
-                evdev::LedCode::LED_SCROLLL => guard.scroll_lock = on,
-                _ => continue,
+        loop {
+            let mut buf = [0u8; INPUT_EVENT_SIZE * 32];
+            match ready.try_io(|fd| fd.get_ref().read(&mut buf)) {
+                Ok(Ok(0)) => {
+                    debug!("evdev LED stream ended (eof); waiting for a keyboard to appear");
+                    return true;
+                }
+                // The kernel returns whole events only, so `as_chunks` leaves no remainder.
+                Ok(Ok(n)) => {
+                    let mut changed = false;
+                    for packet in buf[..n].as_chunks::<INPUT_EVENT_SIZE>().0 {
+                        changed |= match classify(&mut dropped, packet) {
+                            Stream::Ignore => false,
+                            Stream::Apply => apply_lock_event(&mut state.lock().expect("mutex poisoned"), packet),
+                            Stream::Resync => sync_locks(fd.get_ref(), state).is_ok(),
+                        };
+                    }
+                    if changed && events.send(()).is_err() {
+                        return false;
+                    }
+                }
+                Ok(Err(err)) => {
+                    debug!("evdev LED stream ended ({err}); waiting for a keyboard to appear");
+                    return true;
+                }
+                Err(_would_block) => break,
             }
-        }
-        if events.send(()).is_err() {
-            return false;
         }
     }
 }
@@ -223,7 +339,7 @@ async fn pump_leds(
 /// Re-opens the stream on every `input` uevent: a replugged keyboard is a new `/dev/input/event*`
 /// node, which the fd that died with the old one never sees. Without this the locks stay frozen
 /// where the unplug left them until the shell restarts.
-async fn watch_locks(first: Option<evdev::EventStream>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
+async fn watch_locks(first: Option<AsyncFd<File>>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let mut stream = first;
     let mut watch = udev_watch("input")
         .inspect_err(|err| {
@@ -231,8 +347,8 @@ async fn watch_locks(first: Option<evdev::EventStream>, state: Arc<Mutex<Keyboar
         })
         .ok();
     loop {
-        if let Some(mut live) = stream.take() {
-            if !pump_leds(&mut live, &state, &events).await {
+        if let Some(live) = stream.take() {
+            if !pump_leds(&live, &state, &events).await {
                 return;
             }
             continue;
@@ -298,5 +414,43 @@ mod tests {
         std::fs::write(dir.join("brightness"), "2\n").unwrap();
         let led = find_backlight(root.path()).expect("kbd_backlight with max > 0");
         assert_eq!(read_percent(&led.dir, led.max), Some(67));
+    }
+
+    fn input_event(type_: u16, code: u16, value: i32) -> [u8; 24] {
+        let mut packet = [0u8; 24];
+        packet[16..18].copy_from_slice(&type_.to_ne_bytes());
+        packet[18..20].copy_from_slice(&code.to_ne_bytes());
+        packet[20..24].copy_from_slice(&value.to_ne_bytes());
+        packet
+    }
+
+    #[test]
+    fn ev_led_packet_updates_only_that_lock() {
+        let mut state = KeyboardState::default();
+        assert!(apply_lock_event(&mut state, &input_event(0x11, 0x01, 1)));
+        assert!(state.caps_lock && !state.num_lock && !state.scroll_lock);
+        assert!(apply_lock_event(&mut state, &input_event(0x11, 0x00, 5)));
+        assert!(state.caps_lock && state.num_lock && !state.scroll_lock);
+        assert!(apply_lock_event(&mut state, &input_event(0x11, 0x02, -1)));
+        assert!(state.caps_lock && state.num_lock && state.scroll_lock);
+        assert!(apply_lock_event(&mut state, &input_event(0x11, 0x01, 0)));
+        assert!(!state.caps_lock && state.num_lock && state.scroll_lock);
+
+        assert!(!apply_lock_event(&mut state, &input_event(0x01, 0x01, 1)), "EV_KEY is ignored");
+        assert!(!state.caps_lock, "a non-LED event must not turn caps back on");
+        assert!(!apply_lock_event(&mut state, &input_event(0x11, 0x07, 1)), "LED_MUTE is ignored");
+        assert!(state.num_lock && state.scroll_lock);
+    }
+
+    #[test]
+    fn syn_dropped_ignores_events_until_syn_report_then_resyncs() {
+        let mut dropped = false;
+        let led = input_event(0x11, 0x01, 1);
+        assert_eq!(classify(&mut dropped, &led), Stream::Apply);
+        assert_eq!(classify(&mut dropped, &input_event(0, 3, 0)), Stream::Ignore);
+        assert_eq!(classify(&mut dropped, &led), Stream::Ignore);
+        assert_eq!(classify(&mut dropped, &input_event(0, 0, 0)), Stream::Resync);
+        assert_eq!(classify(&mut dropped, &led), Stream::Apply);
+        assert_eq!(classify(&mut dropped, &input_event(0, 0, 0)), Stream::Apply, "plain SYN_REPORT needs no resync");
     }
 }
