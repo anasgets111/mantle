@@ -334,8 +334,9 @@
 ---The `tray:scroll` axis, sent to the item as spelled.
 
 ---@alias SecretStatus "pending"|"stored"|"unavailable"|"timed_out"
----Status of one named write. `unavailable` includes a missing, locked, or failing service;
----`timed_out` means the 30-second cancellation was requested and the write may still finish.
+---Status of one named write. `unavailable` is a missing or failing service, a dismissed prompt, or
+---a service that exits mid-prompt; `timed_out` is a service call over 25 seconds, is final, and
+---the name accepts a new write.
 
 ---@class SessionProcess
 ---One declared program: its current run, or what is left of its last one.

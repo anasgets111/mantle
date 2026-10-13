@@ -6944,16 +6944,25 @@ Amends ADR-0031 §4, §5, §7 and ADR-0074.
 ## 0279. Named secure submissions use the session Secret Service
 
 `secure_submit = { capability = "secrets", action = "store", name = … }` sends UTF-8 bytes
-through the existing native secure frame. The Supervisor stores them with libsecret under schema
-`io.github.anasgets111.mantle.Secret` and public attribute `name`. This schema is the lookup
-contract for other applications, so changing it would strand stored entries. A duplicate name
-replaces its earlier item through libsecret's schema matching.
+through the existing native secure frame. The Supervisor stores them with the session Secret
+Service under schema `io.github.anasgets111.mantle.Secret` and public attribute `name`. This
+schema is the lookup contract for other applications, so changing it would strand stored entries.
+A duplicate name replaces its earlier item (`CreateItem` with `replace` true).
+
+The session algorithm is `plain`: the bytes cross the session bus unencrypted. Any process
+running as the user can already read an unlocked collection's secrets over the same bus, so session
+encryption adds no boundary and a DH session would pull a crypto stack for nothing. zbus's own
+message buffer holds the bytes unzeroized and is out of reach.
 
 No fallback file is written. An encrypted file would need a separate key source, and a plaintext
 file would break the secure submission contract. A missing or failing service publishes
-`unavailable` in `mantle.secrets.entries[name]`; the status contains no value bytes. After 30
-seconds the Supervisor requests cancellation and reports `timed_out`. It still holds the name
-until the worker returns, so a slow first write cannot overwrite a newer one.
+`unavailable` in `mantle.secrets.entries[name]`; the status contains no value bytes. The store
+works like libsecret: it creates a missing default collection and unlocks a locked one, each time
+through the service's own `org.freedesktop.Secret.Prompt` (empty window id, first `Completed`
+signal; a dismissed prompt fails the store). A prompt waits for the user's answer: gnome-keyring
+keeps its dialog open on `Dismiss` and still unlocks from it, so a timeout would only lose the
+secret. Each service call times out after 25 seconds, reports `timed_out` as the final state, and
+the name is free again then. A service that vanishes mid-prompt fails the store.
 
 ## 0280. Parley shapes text while FemtoVG keeps painting it
 

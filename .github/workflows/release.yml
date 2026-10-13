@@ -26,7 +26,7 @@ jobs:
           DEBIAN_FRONTEND=noninteractive apt-get install -qy --no-install-recommends \
             ca-certificates curl build-essential pkg-config clang libclang-dev \
             libpipewire-0.3-dev libpam0g-dev libudev-dev libwayland-dev libxkbcommon-dev \
-            libegl-dev libgbm-dev libglib2.0-dev libsecret-1-dev
+            libegl-dev libgbm-dev
       - name: nfpm
         run: |
           curl -fsSLo /tmp/nfpm.deb https://github.com/goreleaser/nfpm/releases/download/v2.47.0/nfpm_2.47.0_amd64.deb
