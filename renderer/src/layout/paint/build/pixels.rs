@@ -32,13 +32,14 @@ pub(super) fn ring_cmd(
     let px = scaled(rect, scale);
     let (px, draw) = if let Some(outline) = &radius.2 {
         // The stroke's centre line is the contour moved out half a band; `inset` moves inward.
-        let polygon = outline.polygon(LogicalRect { x: 0.0, y: 0.0, ..rect }, 0.1);
-        if polygon.len() < 3 {
+        let mut loops = outline.polygon(LogicalRect { x: 0.0, y: 0.0, ..rect }, 0.1);
+        loops.retain(|polygon| polygon.len() >= 3);
+        if loops.is_empty() {
             return None;
         }
         let (mut segments, mut points) = (Vec::new(), Vec::new());
-        for element in inset(&polygon, -f64::from(offset + width / 2.0)).elements() {
-            let (op, at) = match *element {
+        for element in inset(&loops, -f64::from(offset + width / 2.0)) {
+            let (op, at) = match element {
                 kurbo::PathEl::MoveTo(at) => (PathOp::M, Some(at)),
                 kurbo::PathEl::LineTo(at) => (PathOp::L, Some(at)),
                 _ => (PathOp::Z, None),

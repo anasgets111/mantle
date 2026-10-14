@@ -103,9 +103,9 @@ pub(super) fn paint_shape_inset(
 ) {
     let Draw::InsetShadow { shadow, widths, .. } = &command.draw else { return };
     let (rect, clip) = (command.rect, command.clip);
-    let polygon = shape.polygon(rect, 0.25);
+    let (loops, voids) = (shape.polygon(rect, 0.25), shape.voids(rect));
     let (dx, dy) = (f64::from(shadow.offset.0), f64::from(shadow.offset.1));
-    let mut hole = inset(&polygon, f64::from(widths.top + shadow.spread));
+    let mut hole = inset(&loops, f64::from(widths.top + shadow.spread));
     hole.apply_affine(kurbo::Affine::translate((dx, dy)));
     // Room for the blur to read solid shadow from past the clip's edges.
     let room = (1.5 * shadow.blur + shadow.offset.0.abs().max(shadow.offset.1.abs())).ceil() as i32 + 2;
@@ -123,11 +123,14 @@ pub(super) fn paint_shape_inset(
         kurbo::Rect::new(f64::from(x0), f64::from(y0), f64::from(x0) + size.0 as f64, f64::from(y0) + size.1 as f64)
             .to_path(0.1);
     outside.extend(hole);
-    canvas.fill_path(&femtovg_path(&outside, [false, true].into_iter()), &Paint::color(Color::black()));
+    canvas.fill_path(
+        &femtovg_path(&outside, std::iter::once(false).chain(voids.iter().map(|void| !void))),
+        &Paint::color(Color::black()),
+    );
     canvas.restore();
     canvas.set_render_target(target);
     let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target) else { return };
-    let pad = femtovg_path(&inset(&polygon, f64::from(widths.top)), std::iter::empty());
+    let pad = femtovg_path(&inset(&loops, f64::from(widths.top)), voids.into_iter());
     let (w, h) = (size.0 as f32, size.1 as f32);
     painter.canvas_mut().fill_path(&pad, &Paint::image(cast, x0 as f32, y0 as f32, w, h, 0.0, 1.0));
 }
@@ -705,6 +708,22 @@ mod tests {
         let clip = r##"clip = "rounded", children = { rect { width = 32, height = 32, background = "#0000FFFF" } }"##;
         let Some(px) = at(clip, &[top, (16, 16)]) else { return };
         assert!(near(px[0], (0, 0, 255)) && near(px[1], white), "children cut to the contour: {px:?}");
+    }
+
+    /// A melt whose 8 px bars ring a void: the void stays empty, and the border and an inset
+    /// shadow band its edge on the bar's side, not in the void.
+    #[test]
+    fn a_melts_void_is_empty_and_banded_from_the_bar_side() {
+        let (red, white, black) = ((255, 0, 0), (255, 255, 255), (0, 0, 0));
+        let fill = r##"background = "#FF0000FF""##;
+        let border = format!(r##"{fill}, border_width = 2, border_color = "#000000FF""##);
+        let inset = format!(r##"{fill}, shadows = {{ {{ inset = true, spread = 2, color = "#000000FF" }} }}"##);
+        for (what, effect) in [("border", &border), ("inset", &inset)] {
+            let effect = format!("shape = {}, {effect}", crate::layout::node::melt::RING);
+            let Some(px) = paint_effect_at(&effect, &[(20, 32), (23, 32), (25, 32), (32, 32)]) else { return };
+            assert!(near(px[0], red) && near(px[1], black), "{what}: the bar and its void-side band: {px:?}");
+            assert!(near(px[2], white) && near(px[3], white), "{what}: an empty void: {px:?}");
+        }
     }
 
     /// ADR-0331. An inset shadow darkens a band just inside the edge and leaves the centre, the

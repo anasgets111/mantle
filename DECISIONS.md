@@ -8467,6 +8467,31 @@ Ceilings: other surfaces' exclusive zones and output transforms are ignored, the
 readback is synchronous (upgrade: PBO), wlr only (upgrade: crop ext's full frame). Fractional scale
 and the no-wlr fallback are untested live.
 
+## 0364. A melted `shape` is traced on the CPU into the outline every consumer reads
+
+`shape = { melt = k, parts = { {left, top, right, bottom, radius}, ... } }` joins 1 to 8 rounded
+boxes with fillets of radius `k`: an n-ary round union (hg_sdf `fOpUnionRound`) of exact rounded-box
+distance fields. A tab collapsing into a panel, tweened point by point as a `commands` contour, loses
+fillet tangency mid-tween and spurs (a 178° turn measured); the melt keeps every frame tangent (under
+~12°) because the field, not the points, is tweened. `animate.shape` tweens the parts and `k`; it
+snaps between a contour and a melt, or between different part counts.
+
+The field is traced by marching squares on a rectilinear grid, lines every 4 px plus one through the
+middle of each part under 8 px on its thin axis, culled by a quadtree on the field's Lipschitz bound,
+then projected onto the zero set by Newton steps and refined to 0.02 px chords. So any part from a
+quarter pixel up shows and grows continuously, and the work is the perimeter at 4 px plus the thin
+parts' own perimeter (1000x1000 beside a 0.5 px line: 0.8 ms; a 400x300 collapse: ~0.11 ms per
+tween frame, release). The outline is the one `Shape` hands every consumer: fill, border band, inset
+shadow, ring, input region and hit test. Loops carry hole flags from winding, so a void stays empty
+and clicks miss it. A still melt traces once per unscaled size, shared by every scaled copy.
+
+Rejected: tweening fillets as contour commands (spurs, above); melting sibling nodes (the shape is
+one node's outline; siblings would need a cross-node field and layout); a GPU field per pixel (every
+other consumer needs geometry, not pixels); kurbo `simplify_bezpath`/`fit_to_bezpath` (the tangent
+threshold merges nothing on a polyline, and the outline is implicit). Ceilings (`ponytail:`): the
+field is clipped 1024 px outside the box; `mantle_sdf` measures the biggest outline only, thinned to
+256 points; rounded boxes are the only parts; the outline is G1 polyline, not exact arcs.
+
 ## 0365. Desktop input presents the least opaque pixel, capped at 88%, with unknown holes and a hysteretic unmix (amends ADR-0363)
 
 A shader written the backdrop way, returning `mantle_input` outside its shape, painted an opaque copy
@@ -8490,6 +8515,7 @@ cap, a change behind smaller than about 25 levels waits for a larger one.
 
 Background: pleamar presents its glass at a constant 0.88 and blurs premultiplied with unknown holes;
 we took the cap and the holes, and kept the least-opaque conversion so unbent pixels stay fully live.
+
 ## 0368. Desktop input presents its own output held to 88%, gated by a sample compare, a request stamp and a hysteresis (amends ADR-0365)
 
 Presenting the least opaque pixel made the presented alpha depend per pixel on the unmixed desktop

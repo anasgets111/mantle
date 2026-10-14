@@ -90,7 +90,7 @@ colours and no short `#RGB` form.
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px; a number sets all four corners, a missing corner is `0`. Corners too big for a side shrink together, so `radius = 999` makes a pill or circle. Shadows round by the mean corner |
 | `corner_shape` | `"round"\|"scoop"\|Bound` | `"round"` | `"scoop"` cuts each corner inward as a quarter circle centred on the corner point; fill, clip, glass, shadow and the `compositor_blur` region follow |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `compositor_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation |
-| `shape` | `Shape\|Bound` | None | The box's shape as one closed contour, in place of `radius`; see [Shape](#shape) |
+| `shape` | `Shape\|Bound` | None | The box's shape as one closed contour or a melt, in place of `radius`; see [Shape](#shape) |
 | `border_color` | `Color\|BorderColors\|Gradient\|Bound` | None | A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate` |
 | `border_width` | `number\|Edges\|Bound`, `[0, 8192]` | `0` | Px per edge; a number sets all four, a missing edge is `0`. Borders draw inside the box and take no layout space |
 | `ring` | `Ring\|Bound` | None | A stroke of `width` px and `color` around the box, `offset` px outside its edge; see [Ring](#ring) |
@@ -225,6 +225,71 @@ point up to about 8 corners, more beyond (and straight segments past 256 are thi
 reads the exact curves, so it and `mantle_sdf` can differ by a fraction of a pixel. A shadow
 on a shape is the silhouette's, blurred offscreen like `shadow_mode = "content"`, and an inset
 shadow takes one offscreen blur per paint where a rounded box takes one gradient quad.
+
+### Melt
+
+`shape = { melt = k, parts = { .. } }` joins up to 8 rounded boxes into one outline: where two
+parts come within `k` px of each other, a fillet of about `k` px joins them, tangent to both, and
+elsewhere each part keeps its own edge. A circle tab grows out of a panel's corner, and two
+bubbles drift together and fuse. Each part is
+`{ left = .., top = .., right = .., bottom = .., radius = r }`. Its edges take the
+[point forms](#shape) above, so `"100%"` follows the box. `radius` is held to half the shorter side,
+so `radius = 999` makes a circle or pill. `melt` is `[0, 256]`, default `0`, a plain union.
+
+The engine computes the fillets, so a tween stays smooth at every frame. A hand-built contour
+cannot: `animate.shape` moves each fillet's centre in a straight line, which pulls the fillet off
+the circle it should touch and leaves a spur on the edge until the tween ends. A melt tweens
+each part's edges and radius plus `melt`, between two melts with the same number of parts. A
+melt against a contour or a different count snaps. A still melt is traced once. A tween traces
+it every frame, which averages 0.1 ms over a 400 by 300 panel collapsing into its tab.
+
+Everything that follows `shape` follows a melt. Two separate blobs paint, take clicks and claim
+their regions as two. In the frame where two blobs first touch, the neck between them pinches to
+a point, as in any metaball. Parts that ring a hole leave it empty: the fill, clicks and an inset
+shadow skip it, and a border bands its edge from the parts' side. A part shows from a quarter pixel
+across and grows from there, so a 2 px divider draws. The outline is cut 1024 px outside the box.
+`mantle_sdf` measures only the biggest outline, so a hole reads as inside and the other blobs
+as outside.
+
+<!-- shot-alt: Left, a dark panel whose top-left corner swells into a blue-bordered circle tab, then shrinks into the tab and grows back. Right, two lilac bubbles drift together, fuse through a smooth neck and part again. -->
+<!-- shot: frames=0..1500/100 -->
+```lua,shot
+local function tab(right, bottom, melt)
+    return { melt = melt, parts = {
+        { left = 0, top = 0, right = 48, bottom = 48, radius = 999 },
+        { left = 24, top = 24, right = right, bottom = bottom, radius = 14 },
+    } }
+end
+
+local function bubbles(at)
+    return { melt = 16, parts = {
+        { left = 0, top = 0, right = 40, bottom = 40, radius = 999 },
+        { left = at, top = 0, right = at + 40, bottom = 40, radius = 999 },
+    } }
+end
+
+local function loop(a, b)
+    return { duration = 1500, easing = "in_out_cubic", keyframes = { a, b, a }, loops = "infinite" }
+end
+
+return row {
+    spacing = 24,
+    children = {
+        rect {
+            width = 200, height = 120,
+            background = "#1E1E2E", border_width = 2, border_color = "#89B4FA",
+            shape = tab(200, 120, 12),
+            animate = { shape = loop(tab(200, 120, 12), tab(40, 40, 6)) },
+        },
+        rect {
+            width = 120, height = 40, align_v = "center",
+            background = "#CBA6F7",
+            shape = bubbles(80),
+            animate = { shape = loop(bubbles(80), bubbles(30)) },
+        },
+    },
+}
+```
 
 ## Gradients
 

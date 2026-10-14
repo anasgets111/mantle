@@ -8,6 +8,7 @@ use kurbo::Shape as _;
 use kurbo::{BezPath, ParamCurve, ParamCurveDeriv, PathEl, Point};
 use mlua::Value;
 
+use super::melt::{Melt, PartInput};
 use super::prop::Prop;
 use super::vector_path::{COORD_MAX, PathCommand, PathData, PathOp, Segment, Tweened, push};
 use super::{LayoutError, Property, input, invalid, preview_for_error, style::parse_percent};
@@ -36,10 +37,12 @@ lua_shape! {
 }
 
 lua_shape! {
-    /// One closed contour: an `M`, at least two more commands, then `Z`.
+    /// Either one closed contour of `commands` (an `M`, at least two more commands, then `Z`), or `parts` joined by a `melt` px fillet (default `0`).
     #[alias = "Shape"]
     struct ShapeInput {
-        commands: Vec<ShapeCommand>,
+        commands: Option<Vec<ShapeCommand>>,
+        melt: Option<f32>,
+        parts: Option<Vec<PartInput>>,
     }
 }
 
@@ -47,9 +50,9 @@ lua_shape! {
 /// is; an edge's name holds it to its own axis, `0` for x.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub(crate) struct Coord {
-    px: f32,
-    share: f32,
-    axis: Option<usize>,
+    pub(super) px: f32,
+    pub(super) share: f32,
+    pub(super) axis: Option<usize>,
 }
 
 spelled!(Coord => "ShapePoint");
@@ -86,42 +89,81 @@ impl super::input::Input for Coord {
     }
 }
 
-/// A box's own contour, replacing its rounded rectangle.
+/// A box's own outline, replacing its rounded rectangle.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Shape {
+pub enum Shape {
     /// Each number's px part; a coordinate also has its share of the box in `shares`.
-    path: PathData,
-    shares: Vec<[f32; 2]>,
+    Contour {
+        path: PathData,
+        shares: Vec<[f32; 2]>,
+    },
+    Melt(Melt),
 }
 
 /// The vertex cap of the polyline `mantle_sdf` measures, two to each `vec4` of `mantle_shape`.
 pub const SDF_POINTS: usize = 256;
 
 impl Shape {
-    /// The contour of a box at `rect`, each placed coordinate held to [`COORD_MAX`].
+    /// The outline of a box at `rect`, each placed coordinate held to [`COORD_MAX`].
     pub fn bez(&self, rect: LogicalRect) -> BezPath {
-        let mut path = self.path.clone();
-        for (n, share) in path.points.iter_mut().zip(&self.shares) {
-            if *share != [0.0; 2] {
-                *n = (*n + share[0] * rect.width + share[1] * rect.height).clamp(-COORD_MAX, COORD_MAX);
+        match self {
+            Self::Contour { path, shares } => {
+                let mut path = path.clone();
+                for (n, share) in path.points.iter_mut().zip(shares) {
+                    *n = place(*n, *share, (rect.width, rect.height));
+                }
+                path.bez((rect.x, rect.y))
             }
+            Self::Melt(melt) => melt.placed(rect) * melt.traced(rect).path.clone(),
         }
-        path.bez((rect.x, rect.y))
     }
 
-    /// The contour flattened to within `tolerance` px.
-    pub fn polygon(&self, rect: LogicalRect, tolerance: f64) -> Vec<Point> {
+    /// Each loop of the outline flattened to within `tolerance` px; a melt is already chords.
+    pub fn polygon(&self, rect: LogicalRect, tolerance: f64) -> Vec<Vec<Point>> {
+        if let Self::Melt(melt) = self {
+            let placed = melt.placed(rect);
+            return melt.traced(rect).loops.iter().map(|l| l.iter().map(|p| placed * *p).collect()).collect();
+        }
         let mut out = Vec::new();
         kurbo::flatten(self.bez(rect), tolerance, |element| {
             if let PathEl::MoveTo(p) | PathEl::LineTo(p) = element {
                 out.push(p);
             }
         });
-        apart(out)
+        vec![apart(out)]
     }
 
-    /// At most [`SDF_POINTS`] vertices, cut every 3° of turn, or every 6°, 12° and so on until they fit.
+    /// Whether each loop of [`polygon`](Self::polygon) bounds a void, which paint fills as a hole.
+    pub fn voids(&self, rect: LogicalRect) -> Vec<bool> {
+        match self {
+            Self::Contour { .. } => vec![false],
+            Self::Melt(melt) => melt.traced(rect).voids.clone(),
+        }
+    }
+
+    /// Whether the outline at `rect` holds `p`, by the non-zero rule paint uses.
+    pub fn contains(&self, rect: LogicalRect, p: Point) -> bool {
+        match self {
+            Self::Contour { .. } => self.bez(rect).contains(p),
+            Self::Melt(melt) => melt.traced(rect).path.contains(melt.placed(rect).inverse() * p),
+        }
+    }
+
+    /// At most [`SDF_POINTS`] vertices, all `mantle_shape` holds, whatever the kind.
+    /// ponytail: a melt gives its biggest loop, so blobs past it and voids read as outside and inside;
+    /// more needs a loop break in `mantle_shape`.
     pub fn sdf_polygon(&self, rect: LogicalRect) -> Vec<Point> {
+        let out = if let Self::Melt(melt) = self { melt.sdf_loop(rect) } else { self.contour_sdf(rect) };
+        // ponytail: past 256 at the coarsest pass, every nth vertex; upgrade by merging segments.
+        if out.len() <= SDF_POINTS {
+            out
+        } else {
+            out.iter().copied().step_by(out.len().div_ceil(SDF_POINTS)).collect()
+        }
+    }
+
+    /// Vertices cut every 3° of turn, or every 6°, 12° and so on until [`SDF_POINTS`] fit.
+    fn contour_sdf(&self, rect: LogicalRect) -> Vec<Point> {
         let segments: Vec<_> = self.bez(rect).segments().map(|s| s.to_cubic()).collect();
         let turns: Vec<f64> = segments
             .iter()
@@ -138,12 +180,8 @@ impl Shape {
                 let n = (turn / step).ceil().max(1.0);
                 (0..n as usize).map(move |i| c.eval(i as f64 / n))
             }));
-            if out.len() <= SDF_POINTS {
+            if out.len() <= SDF_POINTS || step > PI {
                 return out;
-            }
-            if step > PI {
-                // ponytail: over 256 segments even one chord each; every nth vertex, upgrade by merging segments.
-                return out.iter().copied().step_by(out.len().div_ceil(SDF_POINTS)).collect();
             }
             step *= 2.0;
         }
@@ -151,7 +189,10 @@ impl Shape {
 
     /// `rect` grown to hold the contour, which may reach past it.
     pub fn bounds(&self, rect: LogicalRect) -> LogicalRect {
-        let b = self.bez(rect).bounding_box();
+        let b = match self {
+            Self::Contour { .. } => self.bez(rect).bounding_box(),
+            Self::Melt(melt) => melt.placed(rect).transform_rect_bbox(melt.traced(rect).bounds),
+        };
         let (x0, y0) = ((b.x0 as f32).min(rect.x), (b.y0 as f32).min(rect.y));
         let (x1, y1) = ((b.x1 as f32).max(rect.x + rect.width), (b.y1 as f32).max(rect.y + rect.height));
         LogicalRect { x: x0, y: y0, width: x1 - x0, height: y1 - y0 }
@@ -161,16 +202,27 @@ impl Shape {
     /// A point is linear in its px and its share, so one written in px and the other in `"NN%"`
     /// lerps as the two resolved against the box would, at every size.
     pub fn lerp(&self, to: &Self, t: f32) -> Option<Self> {
-        let path = self.path.lerp(&to.path, t)?;
-        let shares = self.shares.iter().zip(&to.shares).map(|(a, b)| [0, 1].map(|i| a[i] + (b[i] - a[i]) * t));
-        Some(Self { path, shares: shares.collect() })
+        match (self, to) {
+            (Self::Contour { path, shares }, Self::Contour { path: to, shares: to_shares }) => {
+                let path = path.lerp(to, t)?;
+                let shares = shares.iter().zip(to_shares).map(|(a, b)| [0, 1].map(|i| a[i] + (b[i] - a[i]) * t));
+                Some(Self::Contour { path, shares: shares.collect() })
+            }
+            (Self::Melt(a), Self::Melt(b)) => a.lerp(b, t).map(Self::Melt),
+            _ => None,
+        }
     }
 
     /// Every px value, which display scaling multiplies; shares of the box scale with the box.
     pub fn scaled(&self, k: f32) -> Self {
-        let mut path = self.path.clone();
-        path.for_each_pixel(|n| *n *= k);
-        Self { path, shares: self.shares.clone() }
+        match self {
+            Self::Contour { path, shares } => {
+                let mut path = path.clone();
+                path.for_each_pixel(|n| *n *= k);
+                Self::Contour { path, shares: shares.clone() }
+            }
+            Self::Melt(melt) => Self::Melt(melt.scaled(k)),
+        }
     }
 }
 
@@ -206,8 +258,13 @@ pub fn distance(polygon: &[Point], p: Point) -> f64 {
     if inside { -nearest.sqrt() } else { nearest.sqrt() }
 }
 
+/// `n` px plus its `share` of a box `size`, held to [`COORD_MAX`].
+pub(super) fn place(n: f32, share: [f32; 2], (w, h): (f32, f32)) -> f32 {
+    (n + share[0] * w + share[1] * h).clamp(-COORD_MAX, COORD_MAX)
+}
+
 /// `points` as a closed path.
-fn closed(points: impl IntoIterator<Item = Point>) -> BezPath {
+pub(super) fn closed(points: impl IntoIterator<Item = Point>) -> BezPath {
     let mut path = BezPath::new();
     for (i, p) in points.into_iter().enumerate() {
         if i == 0 { path.move_to(p) } else { path.line_to(p) }
@@ -216,19 +273,28 @@ fn closed(points: impl IntoIterator<Item = Point>) -> BezPath {
     path
 }
 
-/// `polygon` moved `by` px inward (outward if negative), mitres held to four times `by`.
-pub fn inset(polygon: &[Point], by: f64) -> BezPath {
-    let n = polygon.len();
-    // The area's sign says which side of each edge is inside.
-    let area = closed(polygon.iter().copied()).area();
-    let normal = |i: usize| {
-        let e = polygon[(i + 1) % n] - polygon[i];
-        kurbo::Vec2::new(-e.y, e.x).normalize() * area.signum()
+/// The sign of the biggest loop's area, whose winding says which side of every loop is inside.
+pub(super) fn winding(loops: &[Vec<Point>]) -> f64 {
+    let areas = loops.iter().map(|l| closed(l.iter().copied()).area());
+    areas.max_by(|a, b| a.abs().total_cmp(&b.abs())).unwrap_or(0.0).signum()
+}
+
+/// Every loop moved `by` px into the shape (out of it if negative), mitres held to four times `by`;
+/// a void's loop moves away from the void.
+pub fn inset(loops: &[Vec<Point>], by: f64) -> BezPath {
+    let side = winding(loops);
+    let one = |polygon: &Vec<Point>| {
+        let n = polygon.len();
+        let normal = |i: usize| {
+            let e = polygon[(i + 1) % n] - polygon[i];
+            kurbo::Vec2::new(-e.y, e.x).normalize() * side
+        };
+        closed((0..n).map(move |i| {
+            let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
+            polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
+        }))
     };
-    closed((0..n).map(|i| {
-        let m = (normal((i + n - 1) % n) + normal(i)) / 2.0;
-        polygon[i] + m * by / m.hypot2().max(1.0 / 16.0)
-    }))
+    loops.iter().flat_map(one).collect()
 }
 
 /// `shape = { commands = { .. } }`.
@@ -258,10 +324,18 @@ impl Prop for Shape {
             Some(value) => return Err(invalid(name, format!("expected a table, got {}", preview_for_error(value)))),
         };
         // Counted before any command is read, as `PathCommands` does.
-        if let Ok(Value::Table(commands)) = table.get::<Value>("commands") {
-            input::array_len(&format!("{name}.commands"), &commands, MAX_COMMANDS)?;
+        for (key, limit) in [("commands", MAX_COMMANDS), ("parts", super::melt::MAX_PARTS)] {
+            if let Ok(Value::Table(list)) = table.get::<Value>(key) {
+                input::array_len(&format!("{name}.{key}"), &list, limit)?;
+            }
         }
-        let commands = ShapeInput::read(name, table)?.commands;
+        let commands = match ShapeInput::read(name, table)? {
+            ShapeInput { commands: Some(commands), melt: None, parts: None } => commands,
+            ShapeInput { commands: None, melt, parts: Some(parts) } => {
+                return Ok(Some(Rc::new(Shape::Melt(Melt::read(name, melt.unwrap_or(0.0), parts)?))));
+            }
+            _ => return Err(invalid(name, "either `commands`, or `parts` with an optional `melt`")),
+        };
         let (mut segments, mut points, mut shares) = (Vec::new(), Vec::new(), Vec::new());
         for (i, ShapeCommand { op, points: coords, radius, corner_smoothing }) in commands.into_iter().enumerate() {
             let name = format!("{name}.commands[{}]", i + 1);
@@ -295,7 +369,7 @@ impl Prop for Shape {
         {
             return Err(invalid(name, "one closed contour: M, at least two commands, then Z, with no other M or Z"));
         }
-        Ok(Some(Rc::new(Shape { path: PathData { segments: segments.into(), points }, shares })))
+        Ok(Some(Rc::new(Shape::Contour { path: PathData { segments: segments.into(), points }, shares })))
     }
 }
 
@@ -344,7 +418,8 @@ mod tests {
             assert_eq!((b.x, b.y, b.width), (0.0, 0.0, w));
             assert!((b.height - (h + 8.0)).abs() < 0.5, "{b:?}");
             assert_eq!(tail.bez(at(w, h)).elements()[0], PathEl::MoveTo(Point::new(f64::from(w) / 2.0, 0.0)));
-            let inside = |x: f32, y: f32| distance(&tail.polygon(at(w, h), 0.25), Point::new(x.into(), y.into())) < 0.0;
+            let inside =
+                |x: f32, y: f32| distance(&tail.polygon(at(w, h), 0.25)[0], Point::new(x.into(), y.into())) < 0.0;
             assert!(inside(w / 2.0, h + 4.0) && !inside(w / 2.0 - 7.0, h + 4.0), "the tail at {w}x{h}");
             assert!(!inside(0.5, 0.5), "a rounded corner");
         }
@@ -392,15 +467,19 @@ mod tests {
     }
 
     /// `inset` moves either winding inward and returns a path, so a hole built from it needs no
-    /// point list.
+    /// point list; a void wound against the outline moves away from the void, into the shape.
     #[test]
     fn inset_moves_each_winding_of_a_contour_inward() {
-        let square = [Point::new(0.0, 0.0), Point::new(10.0, 0.0), Point::new(10.0, 10.0), Point::new(0.0, 10.0)];
-        let reversed: Vec<_> = square.iter().rev().copied().collect();
-        for polygon in [square.to_vec(), reversed] {
-            let b = inset(&polygon, 2.0).bounding_box();
+        let square = |a: f64, b: f64| vec![Point::new(a, a), Point::new(b, a), Point::new(b, b), Point::new(a, b)];
+        let reversed = |l: Vec<Point>| l.into_iter().rev().collect::<Vec<_>>();
+        for polygon in [square(0.0, 10.0), reversed(square(0.0, 10.0))] {
+            let b = inset(&[polygon], 2.0).bounding_box();
             assert_eq!((b.x0, b.y0, b.x1, b.y1), (2.0, 2.0, 8.0, 8.0));
         }
+        let ringed = inset(&[square(0.0, 10.0), reversed(square(4.0, 6.0))], 1.0);
+        let void = ringed.elements().iter().skip_while(|e| !matches!(e, PathEl::ClosePath)).skip(1);
+        let b = void.copied().collect::<BezPath>().bounding_box();
+        assert_eq!((b.x0, b.y0, b.x1, b.y1), (3.0, 3.0, 7.0, 7.0));
     }
 
     #[test]
@@ -486,10 +565,14 @@ mod tests {
         let mid = from.lerp(&to, 0.5).unwrap();
         // Half of 0 and half of 50% of 40.
         assert_eq!(mid.bez(at(40.0, 20.0)).elements()[0], PathEl::MoveTo(Point::new(10.0, 0.0)));
-        assert_eq!((mid.path.points[4], mid.path.points[5]), (4.0, 0.5));
+        let points = |s: &Shape| match s {
+            Shape::Contour { path, .. } => path.points.clone(),
+            Shape::Melt(_) => unreachable!(),
+        };
+        assert_eq!((points(&mid)[4], points(&mid)[5]), (4.0, 0.5));
         let under = from.lerp(&to, -1.0).unwrap();
         let over = from.lerp(&to, 2.0).unwrap();
-        assert_eq!((under.path.points[4], under.path.points[5], over.path.points[5]), (0.0, 0.0, 1.0));
+        assert_eq!((points(&under)[4], points(&under)[5], points(&over)[5]), (0.0, 0.0, 1.0));
         let other = parse(
             "{ commands = { { op = 'M', points = { 0, 0 } }, { op = 'L', points = { 40, 0 } }, \
              { op = 'L', points = { 0, 20 } }, { op = 'Z', points = {} } } }",

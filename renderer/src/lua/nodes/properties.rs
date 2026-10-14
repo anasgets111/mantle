@@ -358,9 +358,9 @@ props! {
         corner_shape: Bound<OneOf<CornerShape>> = absent(Choice("round"));
         /// Continuous corners, as Figma's corner smoothing: `0` is the circular arc, `0.6` is close to iOS. A smoothed corner spreads up to `(1 + corner_smoothing) * radius` along each side, less where the side is short. Refused with `corner_shape = "scoop"`. Fill, border, clip, mask, `effect.backdrop` and the `compositor_blur` region follow; a `"box"` shadow stays the circular mean-radius approximation.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
-        /// The box's shape as one closed contour of path commands, in place of `radius`, `corner_shape` and `corner_smoothing`, which it refuses. Points follow the box's size and may reach past it. Fill, border, shadows, clip, mask, glass, `effect.shader`'s `mantle_sdf`, hit testing and the `compositor_blur` region follow; the border takes one width and one colour or gradient. Tweens under `animate` between shapes with the same commands, else snaps.
+        /// The box's shape as one closed contour of path commands, or rounded boxes melted into one outline, in place of `radius`, `corner_shape` and `corner_smoothing`, which it refuses. Points follow the box's size and may reach past it. Fill, border, shadows, clip, mask, glass, `effect.shader`'s `mantle_sdf`, hit testing and the `compositor_blur` region follow; the border takes one width and one colour or gradient. Tweens under `animate` between shapes with the same commands or the same number of parts, else snaps.
         ///
-        /// Book: The box's shape as one closed contour, in place of `radius`; see [Shape](#shape)
+        /// Book: The box's shape as one closed contour or a melt, in place of `radius`; see [Shape](#shape)
         shape: Bound<Shape>;
         /// A string sets all four edges; a missing edge has none. An edge draws only with both a colour and a width. A gradient runs along the whole outline and refuses a per-edge one; it snaps under `animate`.
         border_color: Bound<ColorOrEdges>;

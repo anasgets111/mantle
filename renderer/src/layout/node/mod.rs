@@ -10,6 +10,7 @@ mod content;
 pub(crate) mod corner;
 pub(crate) mod input;
 mod list;
+pub(crate) mod melt;
 mod paint_style;
 pub(crate) mod shape;
 mod vector_path;
@@ -174,10 +175,7 @@ impl Radii {
     /// Whether the shape of a box at `rect` holds `(x, y)`.
     pub fn contains(&self, rect: LogicalRect, point: crate::layout::hit::LogicalPoint) -> bool {
         match &self.2 {
-            // Non-zero, the fill rule paint uses.
-            Some(outline) => {
-                kurbo::Shape::contains(&outline.bez(rect), kurbo::Point::new(f64::from(point.x), f64::from(point.y)))
-            }
+            Some(outline) => outline.contains(rect, kurbo::Point::new(f64::from(point.x), f64::from(point.y))),
             None => rect.contains(point),
         }
     }

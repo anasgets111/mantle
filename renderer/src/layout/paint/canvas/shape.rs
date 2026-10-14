@@ -51,7 +51,7 @@ const HAIR: f32 = 0.05;
 /// scoop and a smoothed corner take the same rule from [`Radii::fit`].
 pub(super) fn box_path(rect: LogicalRect, radii: &Radii) -> Path {
     if let Some(outline) = &radii.2 {
-        return femtovg_path(&outline.bez(rect), std::iter::empty());
+        return femtovg_path(&outline.bez(rect), outline.voids(rect).into_iter());
     }
     let LogicalRect { x, y, width: w, height: h } = rect;
     let [tl, tr, br, bl] = radii.0;
@@ -194,9 +194,10 @@ pub(super) fn paint_border(
         if let Some(paint) = uniform_paint
             && widths.top > 0.0
         {
-            let mut bez = outline.bez(rect);
+            let (mut bez, voids) = (outline.bez(rect), outline.voids(rect));
             bez.extend(inset(&outline.polygon(rect, 0.1), f64::from(widths.top)));
-            canvas.fill_path(&femtovg_path(&bez, [false, true].into_iter()), &paint);
+            let holes = voids.iter().copied().chain(voids.iter().map(|void| !void));
+            canvas.fill_path(&femtovg_path(&bez, holes), &paint);
         }
         return;
     }

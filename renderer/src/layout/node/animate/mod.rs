@@ -1294,6 +1294,24 @@ mod tests {
         );
     }
 
+    /// `animate.shape` between two melts of two parts tweens each part's edges and the melt.
+    #[test]
+    fn melts_tween_part_by_part() {
+        let lua = Lua::new();
+        let melt = |right: u32, melt: u32| {
+            let src = format!(
+                "return {{ melt = {melt}, parts = {{ {{ left = 0, top = 0, right = 20, bottom = 20 }}, \
+                 {{ left = 10, top = 10, right = {right}, bottom = 40 }} }} }}"
+            );
+            Animatable::from_value("shape", Some(&lua.load(src).eval().unwrap())).unwrap().unwrap()
+        };
+        let Animatable::Shape(mid) = melt(100, 0).lerp(&melt(60, 8), 0.5, "shape") else { panic!("a shape") };
+        let Animatable::Shape(expected) = melt(80, 4) else { panic!("a shape") };
+        assert_eq!(*mid, *expected);
+        let rect = crate::text::snap::LogicalRect { x: 0.0, y: 0.0, width: 10.0, height: 10.0 };
+        assert!((mid.bounds(rect).width - 80.0).abs() < 0.1, "the tweened part reaches x = 80");
+    }
+
     #[test]
     fn paths_tween_point_by_point_only_between_matching_ops() {
         let lua = Lua::new();

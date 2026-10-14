@@ -8,6 +8,7 @@
 
 use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::Shape;
+use crate::layout::node::melt::PartInput;
 use crate::layout::node::prop::Keyword;
 use crate::layout::node::shape::{AnchorInput, ShapeCommand};
 use crate::layout::node::{
@@ -19,10 +20,11 @@ use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 26] = [
+const NODE_SHAPES: [fn(String) -> String; 27] = [
     fill::<PathCommand>,
     fill::<AnchorInput>,
     fill::<ShapeCommand>,
+    fill::<PartInput>,
     fill::<Shape>,
     fill::<EdgesInput>,
     fill::<CornersInput>,
@@ -345,6 +347,7 @@ const NODES_HEADER: &str = r##"---@meta
 ---@alias ShapeAnchor {ShapeAnchor}
 ---@alias ShapePoint number|Percent|ShapeAnchor
 ---@alias ShapeCommand {ShapeCommand}
+---@alias ShapePart {ShapePart}
 ---@alias Shape {Shape}
 ---@alias Gradient {Gradient} At least 2 stops. `angle` is degrees clockwise from the top: `"linear"` default `180`, `"conic"` default `0`, `"radial"` refuses it.
 ---@alias BackgroundLayer Color|Gradient|Bound|{ fill: Color|Gradient|Bound, blend?: Blend|Bound, [string]: "no such property" } First on top. `{ fill = .., blend = .. }` is the table form of a colour or gradient; `blend` defaults to `"normal"`.

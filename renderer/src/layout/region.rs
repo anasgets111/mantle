@@ -226,12 +226,16 @@ fn push_shape(
                 push_rounded_rect(snap_to_physical(rect, scale), radii * scale, &mut upright);
                 let left = upright.iter().flat_map(|r| [(r.x0, r.y0), (r.x0, r.y1)]);
                 let right = upright.iter().rev().flat_map(|r| [(r.x1, r.y1), (r.x1, r.y0)]);
-                left.chain(right)
-                    .map(|(x, y)| kurbo::Point::new(f64::from(x) / f64::from(scale), f64::from(y) / f64::from(scale)))
-                    .collect()
+                vec![
+                    left.chain(right)
+                        .map(|(x, y)| {
+                            kurbo::Point::new(f64::from(x) / f64::from(scale), f64::from(y) / f64::from(scale))
+                        })
+                        .collect(),
+                ]
             }
         };
-        let contour: Vec<_> = contour.into_iter().map(to_physical).collect();
+        let contour: Vec<Vec<_>> = contour.into_iter().map(|l| l.into_iter().map(to_physical).collect()).collect();
         push_outline(&contour, (visible.y0, visible.y1), &mut strips);
     }
     // ponytail: the cut is the clip's bounding box; a rotated clip over-blurs its corners.
@@ -244,21 +248,19 @@ fn tilted(matrix: node::Affine) -> bool {
     matrix[1] != 0.0 || matrix[2] != 0.0
 }
 
-/// An outline's polygon as strips: each row's spans between crossings of its centre line, rows
+/// An outline's loops as strips: each row's spans between crossings of its centre line, rows
 /// with the same spans merged into one strip each. Only rows inside `rows` are scanned.
-fn push_outline(polygon: &[kurbo::Point], rows: (i32, i32), out: &mut Vec<PhysicalRect>) {
+fn push_outline(loops: &[Vec<kurbo::Point>], rows: (i32, i32), out: &mut Vec<PhysicalRect>) {
     let (mut top, mut bottom) = (f64::INFINITY, f64::NEG_INFINITY);
-    polygon.iter().for_each(|p| (top, bottom) = (top.min(p.y), bottom.max(p.y)));
-    if polygon.len() < 3 {
-        return;
-    }
+    let loops: Vec<_> = loops.iter().filter(|polygon| polygon.len() >= 3).collect();
+    loops.iter().flat_map(|l| l.iter()).for_each(|p| (top, bottom) = (top.min(p.y), bottom.max(p.y)));
+    let edges = loops.iter().flat_map(|l| (0..l.len()).map(|i| (l[i], l[(i + 1) % l.len()])));
     let spans = |row: i32| {
         let y = f64::from(row) + 0.5;
-        let mut xs: Vec<i32> = (0..polygon.len())
-            .filter_map(|i| {
-                let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
-                ((a.y <= y) != (b.y <= y)).then(|| (a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x)).round() as i32)
-            })
+        let mut xs: Vec<i32> = edges
+            .clone()
+            .filter(|(a, b)| (a.y <= y) != (b.y <= y))
+            .map(|(a, b)| (a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x)).round() as i32)
             .collect();
         xs.sort_unstable();
         xs.as_chunks::<2>().0.iter().map(|&[a, b]| (a, b)).filter(|(a, b)| a < b).collect::<Vec<_>>()
@@ -701,6 +703,21 @@ mod tests {
         assert!(covers(32, 52) && covers(32, 32) && covers(47, 32), "the tail, the body and its edge");
         assert!(!covers(16, 16) && !covers(37, 54) && !covers(32, 58), "a corner, beside and past the tail");
         assert!(strips.iter().all(|s| !s.is_empty()));
+    }
+
+    /// A melt's region is each of its loops: two bubbles apart leave the ground between them out,
+    /// and the bridge they melt into is in.
+    #[test]
+    fn a_melt_region_follows_each_blob_and_the_bridge() {
+        let bubbles = |gap: f64| {
+            let (mut strips, shape) = (Vec::new(), crate::layout::node::melt::bubbles(gap));
+            let radii = node::Radii([0.0; 4], 0.0, Some(shape));
+            push_rounded_rect(PhysicalRect { x0: 0, y0: 0, x1: 100, y1: 40 }, radii, &mut strips);
+            move |x: i32, y: i32| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1)
+        };
+        let (apart, joined) = (bubbles(12.0), bubbles(1.0));
+        assert!(apart(20, 20) && apart(72, 20) && !apart(46, 20), "two blobs and the ground between");
+        assert!(joined(40, 20) && joined(40, 12) && !joined(40, 1), "the bridge, below its waist");
     }
 
     /// A rotated box blurs where it is drawn: the diamond's centre and edge are in, and points
