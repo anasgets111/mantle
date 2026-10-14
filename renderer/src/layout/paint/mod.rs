@@ -154,7 +154,8 @@ pub enum Draw {
     /// What the target already holds under the node's box, blurred by `sigma`, recoloured by `tone`
     /// and drawn through its `radius` at `alpha` (ADR-0256), then the `shader` reading it drawn over
     /// it. `clip` covers the 3 sigma the blur reads and the shader's padding. A `mask` scales the
-    /// glass's coverage, with the physical box an image mask is cached under.
+    /// glass's coverage, with the physical box an image mask is cached under. `desktop` names the
+    /// node whose capture of the desktop behind the surface goes under what the target holds.
     Backdrop {
         sigma: f32,
         tone: node::Tone,
@@ -162,8 +163,13 @@ pub enum Draw {
         alpha: f32,
         shader: Option<LayerShader>,
         mask: Option<(node::Mask, (u32, u32))>,
+        desktop: Option<NodeId>,
     },
 }
+
+/// Set once any list holds an `input = "desktop"` backdrop, so shells without one never walk
+/// their lists for them.
+pub(crate) static DESKTOP_READS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Whether `draw` reads what its target holds under it: a backdrop, or a layer blending onto it.
 fn reads_under(draw: &Draw) -> bool {
@@ -246,7 +252,10 @@ fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy
 /// Whether `draw`'s pixels can change under an unchanged command: a decode or capture landing, a
 /// GIF frame (ADR-0258).
 fn volatile(draw: &Draw) -> bool {
-    matches!(draw, Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. }) || mask_file(draw).is_some()
+    matches!(
+        draw,
+        Draw::Image { .. } | Draw::Icon { .. } | Draw::Capture { .. } | Draw::Backdrop { desktop: Some(_), .. }
+    ) || mask_file(draw).is_some()
 }
 
 /// The file an image `mask` reads, which changes under an unchanged list as an `image`'s does.
@@ -281,7 +290,10 @@ impl DisplayList {
     /// Whether any `capture` in this list is one of `nodes` (ADR-0248): a landed frame names the
     /// node it uploads for, mirroring [`Self::draws_any_of`]'s file-name lookup for `image`.
     pub fn captures_any_of(&self, nodes: &[NodeId]) -> bool {
-        any_draw_matches(&self.commands, |draw| matches!(draw, Draw::Capture { node, .. } if nodes.contains(node)))
+        any_draw_matches(
+            &self.commands,
+            |draw| matches!(draw, Draw::Capture { node, .. } | Draw::Backdrop { desktop: Some(node), .. } if nodes.contains(node)),
+        )
     }
 
     /// Every `capture` node in this list, for `wayland::App::sync_captures` (ADR-0248):
@@ -304,6 +316,43 @@ impl DisplayList {
             }
         }
         walk(&self.commands, out)
+    }
+
+    /// Every `input = "desktop"` backdrop in this list and the area it reads, in buffer pixels:
+    /// what `wayland::capture` captures behind the surface and reads back from it. The area is the
+    /// bounds under the enclosing matrices cut to `surface`, as `read_target` copies it and
+    /// stretches the capture over; a rotated one reads its bounding box, so the lens samples
+    /// slightly off. A read with nothing on the surface is left out.
+    ///
+    /// ponytail: inside an offscreen (`Clipped`, `NodeMask`, `Layer`) the canvas matrix differs
+    /// from the composed one, so the read can sit off. Upgrade path: walk those as `read_target`.
+    pub fn desktop_reads(&self, surface: PhysicalRect, out: &mut Vec<(NodeId, PhysicalRect)>) {
+        // No walk at all in a process no `input = "desktop"` was ever built in.
+        if !DESKTOP_READS.load(std::sync::atomic::Ordering::Relaxed) {
+            return;
+        }
+        fn walk(
+            commands: &[DrawCmd],
+            matrix: node::Affine,
+            surface: PhysicalRect,
+            out: &mut Vec<(NodeId, PhysicalRect)>,
+        ) {
+            for command in commands {
+                match &command.draw {
+                    Draw::Backdrop { desktop: Some(node), .. } => {
+                        let read = transformed(matrix, command.clip).intersect(surface);
+                        if !read.is_empty() {
+                            out.push((*node, read));
+                        }
+                    }
+                    Draw::Transformed { matrix: inner, commands } => {
+                        walk(commands, node::compose_affine(matrix, *inner), surface, out)
+                    }
+                    draw => draw.nested().into_iter().for_each(|nested| walk(nested, matrix, surface, out)),
+                }
+            }
+        }
+        walk(&self.commands, node::IDENTITY_AFFINE, surface, out)
     }
 
     /// Requests whose textures the next paint would select, including an async stand-in if the
@@ -532,7 +581,7 @@ fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> Lo
 }
 
 /// Identity clip before any scissor is pushed.
-const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
+pub(crate) const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
 
 #[cfg(test)]
 mod tests {
@@ -730,8 +779,52 @@ mod tests {
                 alpha: 1.0,
                 shader: None,
                 mask: None,
+                desktop: None,
             },
         }
+    }
+
+    /// A desktop backdrop is read, and repaints when its capture lands; at opacity 0 it draws
+    /// nothing and so is never read, which keeps a hidden node from capturing the screen.
+    #[test]
+    fn a_desktop_backdrop_is_read_only_while_it_draws() {
+        let glass = |opacity: f32| {
+            effect_surface(&format!(
+                r#"rect {{ width = 40, height = 20, opacity = {opacity},
+                    effect = {{ shader = {{ source = "/s.frag", input = "desktop" }} }} }}"#
+            ))
+        };
+        let (list, mut reads) = (glass(1.0), Vec::new());
+        list.desktop_reads(UNCLIPPED, &mut reads);
+        let [(node, _)] = reads[..] else { panic!("one read: {reads:?}") };
+        assert!(list.captures_any_of(&[node]), "a landed desktop repaints its surface");
+        assert!(list.commands.iter().any(|cmd| volatile(&cmd.draw)), "under an unchanged list");
+        reads.clear();
+        glass(0.0).desktop_reads(UNCLIPPED, &mut reads);
+        assert!(reads.is_empty(), "{reads:?}");
+    }
+
+    /// A desktop read lies under its own and its ancestors' translate and scale, cut to the
+    /// surface as `read_target` copies it. The panel is 200x100 and the 40x20 box sits at (40, 40).
+    #[test]
+    fn a_desktop_read_follows_the_enclosing_translate_and_scale() {
+        let surface = PhysicalRect { x0: 0, y0: 0, x1: 200, y1: 100 };
+        let read = |style: &str| {
+            let list = effect_surface(&format!(
+                r#"rect {{ width = 40, height = 20, {style},
+                    effect = {{ shader = {{ source = "/s.frag", input = "desktop" }} }} }}"#
+            ));
+            let mut reads = Vec::new();
+            list.desktop_reads(surface, &mut reads);
+            reads.pop().map(|(_, rect)| rect)
+        };
+        let rect = |x0, y0, x1, y1| Some(PhysicalRect { x0, y0, x1, y1 });
+        assert_eq!(read("translate = { x = 100, y = 30 }"), rect(140, 70, 180, 90));
+        // Scale 2 about the centre (60, 50): 40 wide x 20 tall becomes 80 x 40.
+        assert_eq!(read("scale = 2"), rect(20, 30, 100, 70));
+        assert_eq!(read("scale = 2, translate = { x = 5, y = 3 }"), rect(25, 33, 105, 73));
+        assert_eq!(read("translate = { x = 130, y = 50 }"), rect(170, 90, 200, 100), "cut to the surface");
+        assert_eq!(read("translate = { x = 300 }"), None, "none of it on the surface");
     }
 
     /// ADR-0256. A later glass repainting reaches an earlier one whose read it covers, and a read

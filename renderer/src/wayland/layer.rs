@@ -111,6 +111,24 @@ fn measured_ceiling(spec: &PanelSpec, output: layout::LogicalSize) -> layout::Lo
         height: axis(output.height, anchor.top, margin.top, anchor.bottom, margin.bottom),
     }
 }
+/// A panel's top-left on its output in logical px, as layer-shell places it: against an anchored
+/// edge plus its margin, centred between two anchored edges or none.
+///
+/// ponytail: blind to zones other surfaces reserve, which push a non-`"ignore"` panel inward, as
+/// [`measured_ceiling`] is. Upgrade path: subtract the zones of this shell's own reserving panels.
+pub(super) fn layer_origin(spec: &PanelSpec, size: (f32, f32), output: (f32, f32)) -> (f32, f32) {
+    let (anchor, margin) = (spec.topology.anchor, spec.margin);
+    let axis = |near: bool, near_margin: f32, far: bool, far_margin: f32, size: f32, out: f32| match (near, far) {
+        (true, false) => near_margin,
+        (false, true) => out - size - far_margin,
+        (true, true) => near_margin + (out - near_margin - far_margin - size) / 2.0,
+        (false, false) => (out - size) / 2.0,
+    };
+    (
+        axis(anchor.left, margin.left, anchor.right, margin.right, size.0, output.0),
+        axis(anchor.top, margin.top, anchor.bottom, margin.bottom, size.1, output.1),
+    )
+}
 /// What `RendererClient::set_measured_axes` is given for this panel: which axes it measures, and
 /// the ceiling those axes are solved against.
 pub(super) fn measurement(spec: &PanelSpec, output: layout::LogicalSize) -> ((bool, bool), layout::LogicalSize) {
@@ -507,6 +525,20 @@ impl LayerShellHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_panel_sits_against_its_anchored_edges() {
+        let mut spec = panel("p");
+        spec.margin = node::EdgeInsets { top: 10.0, right: 20.0, bottom: 30.0, left: 40.0 };
+        let mut place = |top, right, bottom, left| {
+            spec.topology.anchor = node::Anchor { top, right, bottom, left };
+            layer_origin(&spec, (400.0, 100.0), (1920.0, 1200.0))
+        };
+        assert_eq!(place(true, false, false, true), (40.0, 10.0), "top-left corner");
+        assert_eq!(place(false, true, true, false), (1500.0, 1070.0), "bottom-right corner");
+        assert_eq!(place(true, true, false, true), (40.0 + 730.0, 10.0), "top edge, centred between margins");
+        assert_eq!(place(false, false, false, false), (760.0, 550.0), "none: centred, margins ignored");
+    }
 
     #[test]
     fn every_layer_kind_maps_to_its_protocol_level() {

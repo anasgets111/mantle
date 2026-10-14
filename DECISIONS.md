@@ -8442,3 +8442,78 @@ on the container, or a placed `:scroll_to`/`:scroll_by`/`:reveal` stops it.
 
 Trade-off: no Lua knob until a config needs one; `stop_scroll` and the scroll methods already end a
 run. A plain `scroll:set()` during the 0.75 s run is overwritten by it.
+
+## 0363. A shader reads the desktop behind a panel by wlr-screencopy, unmixed from its own pixels
+
+`effect.shader.input = "desktop"` gives a backdrop shader what other clients show behind the
+surface, so refraction is config shader code instead of a per-compositor blur protocol. The frame
+comes from wlr-screencopy `capture_output_region`, the region snapped outward to whole logical
+pixels and resampled nearest. No protocol excludes our own surface (niri block-out and Hyprland
+noscreenshare paint black), so the capture holds us too: each pixel is unmixed as
+`(capture - ours) / (1 - α)` against a readback of what the surface presented. Where α ≥ 247 the
+last desktop seen there is kept, and a change of 3/255 or less counts as settled, which breaks the
+self-capture loop (a naive loop drew 600 paints per 10 s, since niri reports whole-region damage on
+every output redraw). Capture runs at 30 fps while the desktop behind changes and 4 fps once
+settled, so a change behind settled glass shows up to 250 ms late. Placement comes from the
+layer-shell anchor and margins; `"active"` uses the entered output. With no capture possible the
+input falls back to `"backdrop"`. Unused, it costs nothing.
+
+The privacy line: a config can opt a node into reading other apps' pixels, only while that node is
+drawn, and nothing is logged or persisted. Cost is opt-in eye candy: 0.05% renderer CPU and
++1.5 MB for static glass, 4.25% for a lens over a 60 fps animation.
+
+Rejected: capturing while hidden (flicker), a GPU unmix pass, ext-image-copy-capture (no region).
+Ceilings: other surfaces' exclusive zones and output transforms are ignored, the `glReadPixels`
+readback is synchronous (upgrade: PBO), wlr only (upgrade: crop ext's full frame). Fractional scale
+and the no-wlr fallback are untested live.
+
+## 0365. Desktop input presents the least opaque pixel, capped at 88%, with unknown holes and a hysteretic unmix (amends ADR-0363)
+
+A shader written the backdrop way, returning `mantle_input` outside its shape, painted an opaque copy
+of the desktop over the whole read area; the surface cannot see behind an opaque pixel, so the copy
+froze into a stale rectangle, and desktop shaders had to return `vec4(0.0)` where they did not bend.
+Now one pass in the blend program (`LEAST_OPAQUE`) turns the output X over the unmixed desktop D into
+the least opaque P that shows the same colour C = X + (1 − X.a)·D: per channel P.a ≥ (C − D)/(1 − D)
+above D and (D − C)/D below it, the max wins, and within 1.5/255 of D (8-bit rounding plus slack) P.a
+is 0, so the pixel stays live. Shaders now follow the backdrop contract in both modes.
+
+P.a is capped at 0.88, rgb scaled with it: the next unmix divides by 1 − α, multiplying rounding by
+8 at 0.88 and 25 at 0.96, which turned pleamar's glass black. The cost is a 12% ghost of the live
+desktop through any strongly differing pixel. Where the surface covers a pixel at 235/255 or more,
+the unmix reads noise, so the desktop there is unknown (alpha 0, premultiplied) instead of a value
+kept forever; the pass presents it as X·0.88, independent of D, so it cannot flip known and unknown,
+and a blurred read divides by its alpha to fill holes. The unmix keeps a pixel unless a channel moves
+more than 3 + 3·(1/(1 − α) − 1) levels: compositor-versus-readback differences of a few levels,
+amplified, otherwise re-triggered a capture every frame (586,363 changed pixels in 24 s over a still
+background; now one capture, and 3 to 8 renderer ticks per 10 s). Trade-off: under glass near the
+cap, a change behind smaller than about 25 levels waits for a larger one.
+
+Background: pleamar presents its glass at a constant 0.88 and blurs premultiplied with unknown holes;
+we took the cap and the holes, and kept the least-opaque conversion so unbent pixels stay fully live.
+## 0368. Desktop input presents its own output held to 88%, gated by a sample compare, a request stamp and a hysteresis (amends ADR-0365)
+
+Presenting the least opaque pixel made the presented alpha depend per pixel on the unmixed desktop
+D, so where the frost was close to D the sharp live desktop showed through and D's noise (±8 levels
+at the cap) reached the screen as speckle and doubled text. The surface now presents the output
+itself held to 0.88, and nothing where it shows the desktop (within 1.5/255); D's error no longer
+reaches the screen directly. Gates, in order:
+
+1. A capture whose sampled bytes (one in 13) match the last one's within 3 is not unmixed and
+   repaints nothing: pleamar's loop breaker. A change narrower than the step can go unseen.
+2. A pixel is unmixed only once its presented value has outlasted one capture request, since a
+   capture may still show the paint before its request and the unmix error is multiplied by
+   1/(1 − α). A capture that only skipped such pixels keeps the live rate.
+3. D holds unless it moves more than 3 + 2·(1/(1 − α) − 1) levels: 3 over clear paint, about 17
+   at the cap.
+
+Pixels covered at 92% or more stay unknown and are staged as the nearest known pixel in their row.
+
+Measured, release: without the hysteresis, the stamp alone cycled every 0.5 s (rounding amplified
+past 3 levels, about 7,800 pixels repainting), 5 to 7 ticks per 10 s idle; with it, 1 to 2. Choosing
+between the last two paints by distance to the previous D sustained a limit cycle at 18 to 19.
+Raising the unknown cutoff to 97% unmixed a rim lit to 93% at 14x noise and speckled it worse than
+the row fill. Paint drawn over the glass adds to its 88%, so a config keeps the total under 92%.
+
+Limit: a shader that changes a pixel before every capture request never unmixes it, and the desktop
+under it freezes; the upgrade is a copy of the presented pixels per request. Memory is about 20
+bytes per read pixel plus the texture.

@@ -8,12 +8,12 @@ use glow::HasContext;
 
 use super::ShaderStage;
 use super::state::{WHOLE, attach, quad_pass};
-use crate::layout::node::Blend;
 
 /// One W3C Compositing formula on premultiplied pixels: `u_source` over `u_backdrop` with the
-/// blend `B(cb, cs)` of `u_mode`, a [`Blend`]'s index, on straight sRGB. `u_map` takes a target
+/// blend `B(cb, cs)` of `u_mode`, a [`Blend`](crate::layout::node::Blend)'s index, on straight sRGB. `u_map` takes a target
 /// coordinate to the source's, which is clear outside it. Plus-lighter and plus-darker are
-/// Apple's sums, clamped.
+/// Apple's sums, clamped. [`PRESENT`] reads `u_backdrop` as a program's output and `u_source`
+/// as the ground it lands on, unknown where its alpha is 0.
 const BLEND: &str = r#"#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -22,6 +22,12 @@ uniform sampler2D u_backdrop;
 uniform sampler2D u_source;
 uniform mat3 u_map;
 uniform int u_mode;
+// The most a presented pixel may cover. The next capture is unmixed by dividing by 1 - alpha, which
+// multiplies its 8-bit rounding by 1 / (1 - alpha): 8x at this cap, 25x at 0.96, where the glass
+// went black in a reference engine. A pixel that differs from the ground keeps a 12% ghost of it live.
+const float MAX_ALPHA = 0.88;
+// One 8-bit step: the output's rounding moves what it shows by up to this, and equal is not different.
+const float TOL = 1.5 / 255.0;
 
 float lum(vec3 c) { return dot(c, vec3(0.3, 0.59, 0.11)); }
 float sat(vec3 c) { return max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b); }
@@ -70,6 +76,12 @@ void main() {
         fragColor = min(b + s, 1.0);
     } else if (u_mode == 17) {
         fragColor = vec4(max(vec3(0.0), a - (b.a - b.rgb) - (s.a - s.rgb)), a);
+    } else if (u_mode == 18) {
+        // The output as presented over the ground: nothing where it shows the ground, else itself held
+        // to the cap. It never depends on the ground per pixel, so the ground's noise stays off screen.
+        vec3 g = s.rgb / max(s.a, 1e-6);
+        bool same = s.a >= 0.5 && all(lessThanEqual(abs(b.rgb + (1.0 - b.a) * g - g), vec3(TOL)));
+        fragColor = same ? vec4(0.0) : b * min(1.0, MAX_ALPHA / max(b.a, 1e-6));
     } else {
         vec3 cb = b.a > 0.0 ? b.rgb / b.a : vec3(0.0);
         vec3 cs = s.a > 0.0 ? s.rgb / s.a : vec3(0.0);
@@ -79,6 +91,10 @@ void main() {
 }
 "#;
 
+/// [`BlendPass::mode`] for the pass that turns a program's output over an opaque ground into the
+/// pixel presented over it: nothing where the output shows the ground, else the output held to the cap.
+pub const PRESENT: i32 = 18;
+
 /// One [`ShaderStage::blend`] pass: `source` blended over `backdrop` into `target`, which is
 /// `backdrop`'s size; `map` is the column-major matrix from a target coordinate to `source`'s.
 pub struct BlendPass {
@@ -86,7 +102,8 @@ pub struct BlendPass {
     pub source: ImageId,
     pub target: ImageId,
     pub map: [f32; 9],
-    pub mode: Blend,
+    /// A [`Blend`](crate::layout::node::Blend)'s index, or [`PRESENT`].
+    pub mode: i32,
 }
 
 /// [`BLEND`] linked, and its uniforms.
@@ -134,7 +151,7 @@ impl ShaderStage {
                 gl.uniform_1_i32(blending.backdrop.as_ref(), 0);
                 gl.uniform_1_i32(blending.source.as_ref(), 1);
                 gl.uniform_matrix_3_f32_slice(blending.map.as_ref(), false, &pass.map);
-                gl.uniform_1_i32(blending.mode.as_ref(), pass.mode as i32);
+                gl.uniform_1_i32(blending.mode.as_ref(), pass.mode);
                 gl.draw_arrays(glow::TRIANGLE_STRIP, 0, 4);
             });
         }

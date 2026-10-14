@@ -164,6 +164,11 @@ impl CaptureCache {
         (self.targets.get(&node) == Some(target)).then(|| self.get(node)).flatten()
     }
 
+    /// Whether `node` has a capture coming and no frame yet: a desktop read waits for one.
+    pub(crate) fn awaits(&self, node: NodeId) -> bool {
+        self.targets.contains_key(&node) && !self.entries.contains_key(&node)
+    }
+
     /// Schedules a paint even when a dma-buf frame still awaits its first GPU import.
     pub(crate) fn invalidate(&mut self, node: NodeId) {
         self.landed.push(node);
@@ -303,8 +308,7 @@ impl CaptureCache {
         }
         let pending: Vec<(NodeId, PendingFrame)> = self.pending.drain().collect();
         for (node, mut frame) in pending {
-            let opaque = !frame.has_alpha || self.targets.get(&node).is_none_or(CaptureTarget::is_output);
-            bgrx_to_rgba(&mut frame.pixels, opaque);
+            bgrx_to_rgba(&mut frame.pixels, !frame.has_alpha);
             let bytes = rgba_bytes(frame.width, frame.height);
             if !self.admits(node, bytes, frame.width, frame.height) {
                 continue;

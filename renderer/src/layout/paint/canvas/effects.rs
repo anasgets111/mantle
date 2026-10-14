@@ -247,7 +247,7 @@ fn composite(
             };
             let ([x, y], [ux, uy], [vx, vy]) = (to_image(0.0, 0.0), to_image(1.0, 0.0), to_image(0.0, 1.0));
             let map = [ux - x, uy - y, 0.0, vx - x, vy - y, 0.0, x, y, 1.0];
-            let pass = image_shader::BlendPass { backdrop: read.copy, source: image, target, map, mode: blend };
+            let pass = image_shader::BlendPass { backdrop: read.copy, source: image, target, map, mode: blend as i32 };
             let Shaders { gl, stage } = walk.shaders.as_mut()?;
             // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
             unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then(|| read.paint(target, 1.0))
@@ -432,9 +432,29 @@ pub(super) fn draw_backdrop(
     command: &DrawCmd,
     target: RenderTarget,
 ) {
-    let Draw::Backdrop { sigma, tone, radius, alpha, shader, mask } = &command.draw else { return };
+    let Draw::Backdrop { sigma, tone, radius, alpha, shader, mask, desktop } = &command.draw else { return };
+    // Nothing while a capture is coming, so the first one sees the desktop through this box; with
+    // none coming, the surface's own pixels alone, as `input = "backdrop"`.
+    let desktop = match *desktop {
+        Some(node) if walk.captures.awaits(node) => return,
+        Some(node) => walk.captures.get(node).map(|(image, ..)| image),
+        None => None,
+    };
     let (rect, clip, alpha) = (command.rect, command.clip, *alpha);
     let Some(read) = read_target(painter, walk, clip) else { return };
+    if let Some(image) = desktop {
+        // The capture covers the read area: stretched under the surface's own pixels there.
+        let canvas = painter.canvas_mut();
+        canvas.save();
+        canvas.set_render_target(RenderTarget::Image(read.copy));
+        canvas.reset_transform();
+        canvas.reset_scissor();
+        canvas.global_composite_operation(CompositeOperation::DestinationOver);
+        let (width, height) = (read.size.0 as f32, read.size.1 as f32);
+        fill_image(canvas, image, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
+        canvas.restore();
+        canvas.set_render_target(target);
+    }
     let frost = (*sigma > 0.0 || !tone.is_identity())
         .then(|| blurred(painter, walk, read.copy, read.size, (*sigma, *tone)).unwrap_or(read.copy));
     let area = LogicalRect {
@@ -446,6 +466,15 @@ pub(super) fn draw_backdrop(
     let inputs = (read.copy, frost.unwrap_or(read.copy));
     // A program that fails to build leaves the frost.
     let out = shader.as_ref().and_then(|shader| shaded(painter, walk, inputs, read.size, rect, read.at, shader));
+    // Presented: the output held to the cap, nothing where it is the desktop; a failed pass draws nothing,
+    // as the raw output is an opaque copy of the desktop, which freezes.
+    let out = match (out, desktop) {
+        (Some(out), Some(desktop)) => match present(painter, walk, read.size, desktop, out) {
+            Some(out) => Some(out),
+            None => return,
+        },
+        (out, _) => out,
+    };
     let (image, path) = match (out, frost) {
         (Some(out), _) => (out, box_path(area, &Radii::default())),
         (None, Some(frost)) => (frost, box_path(rect, radius)),
@@ -463,6 +492,24 @@ pub(super) fn draw_backdrop(
         }
         None => replace(canvas, &path, &read.paint(image, alpha), alpha),
     }
+}
+
+/// A shader's `out` as presented over the `desktop` capture.
+fn present(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    size: (usize, usize),
+    desktop: ImageId,
+    out: ImageId,
+) -> Option<ImageId> {
+    let result = scratch(painter, walk, size)?;
+    // The capture is top-down and a scratch is bottom-up, as `composite` maps its image.
+    let map = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 1.0];
+    let pass =
+        image_shader::BlendPass { backdrop: out, source: desktop, target: result, map, mode: image_shader::PRESENT };
+    let Shaders { gl, stage } = walk.shaders.as_mut()?;
+    // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
+    unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then_some(result)
 }
 
 /// `image`, one of a read's pixels, with its alpha scaled by `mask` over `rect`.
@@ -780,24 +827,118 @@ mod tests {
     #[test]
     fn a_backdrop_shader_reads_the_ground_under_the_node() {
         let dir = tempfile::tempdir().unwrap();
-        let run = |name: &str, body: &str, keys: &str| {
+        let run = |name: &str, body: &str, keys: &str, input: &str| {
             let frag = dir.path().join(name);
             std::fs::write(&frag, format!("void main() {{ fragColor = {body}; }}")).unwrap();
             let src = format!(
                 r##"return panel {{ id = "bar", width = 64, height = 32, background = {{ gradient = "linear", angle = 90,
                     stops = {{ {{ 0, "#FF0000" }}, {{ 0.5, "#FF0000" }}, {{ 0.5, "#00FF00" }}, {{ 1, "#00FF00" }} }} }},
-                    child = rect {{ width = 32, height = 32, effect = {{ {keys} shader = {{ source = "{}", input = "backdrop",
+                    child = rect {{ width = 32, height = 32, effect = {{ {keys} shader = {{ source = "{}", input = "{input}",
                     padding = 32 }} }} }} }}"##,
                 frag.display()
             );
             paint_with_gl(&src, (64, 32), &[(16, 16), (48, 16)])
         };
-        let Some(px) = run("swap.frag", "vec4(mantle_input(v_uv).bgr, 1.0)", "") else { return };
-        assert!(near(px[0], (0, 0, 255)) && near(px[1], (0, 255, 0)), "the red under the box, swizzled: {px:?}");
-        let Some(px) = run("bend.frag", "mantle_input(v_uv + vec2(1.0, 0.0))", "") else { return };
+        // With no desktop capture coming, `"desktop"` reads the surface's own pixels, as `"backdrop"` does.
+        for input in ["backdrop", "desktop"] {
+            let Some(px) = run("swap.frag", "vec4(mantle_input(v_uv).bgr, 1.0)", "", input) else { return };
+            assert!(
+                near(px[0], (0, 0, 255)) && near(px[1], (0, 255, 0)),
+                "{input}: the red under the box, swizzled: {px:?}"
+            );
+        }
+        let Some(px) = run("bend.frag", "mantle_input(v_uv + vec2(1.0, 0.0))", "", "backdrop") else { return };
         assert!(near(px[0], (0, 255, 0)), "a box's width to the right, inside the padding: {px:?}");
-        let Some(px) = run("grey.frag", "mantle_input_blurred(v_uv)", "backdrop = { saturate = 0 },") else { return };
+        let Some(px) = run("grey.frag", "mantle_input_blurred(v_uv)", "backdrop = { saturate = 0 },", "backdrop")
+        else {
+            return;
+        };
         assert!(near(px[0], (54, 54, 54)), "the filtered copy: {px:?}");
+    }
+
+    /// A desktop shader's output is presented as itself, held to 88% (224 of 255) so the next capture
+    /// can unmix it, except where it shows the capture: returning the input, or nothing, leaves the
+    /// surface clear there (a stale opaque copy of the desktop would freeze).
+    #[test]
+    fn a_desktop_shader_presents_only_what_differs_from_the_desktop() {
+        use crate::image::capture::{DamageRect, PendingFrame};
+        use crate::layout::node::CaptureTarget;
+        let dir = tempfile::tempdir().unwrap();
+        let Some(instance) = init_headless_egl(64, 32) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 32) else { return };
+        let gl = test_gl(&instance);
+        let mut stage = image_shader::ShaderStage::default();
+        let frosted = "backdrop = { blur = 4 },";
+        // The capture is grey (100) over black, top then bottom: a half that differs and one that does not.
+        let grey = |level: u32| format!("vec4(vec3({level}.0 / 255.0), 1.0)");
+        // `unknown`: a capture with alpha 0 everywhere. `red`: the red expected at the top, if checked.
+        let cases = [
+            ("", "mantle_input(v_uv)".to_string(), [0, 0], false, None),
+            ("", "vec4(0.0)".to_string(), [0, 0], false, None),
+            ("", "vec4(1.0)".to_string(), [224, 224], false, None),
+            ("", grey(100), [0, 224], false, None),
+            ("", grey(101), [0, 224], false, None),
+            ("", grey(102), [224, 224], false, None),
+            ("", "vec4(0.5, 0.0, 0.0, 0.5)".to_string(), [128, 128], false, Some(128)),
+            ("", "vec4(1.0)".to_string(), [224, 224], true, None),
+            (frosted, "mantle_input_blurred(v_uv)".to_string(), [0, 0], false, None),
+        ];
+        for (keys, body, [top, bottom], unknown, red) in cases {
+            let frag = dir.path().join("s.frag");
+            std::fs::write(&frag, format!("void main() {{ fragColor = {body}; }}")).unwrap();
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 64, height = 32, child = rect {{ width = 32, height = 32,
+                    effect = {{ {keys} shader = {{ source = "{}", input = "desktop" }} }} }} }}"##,
+                frag.display()
+            );
+            let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 32.0 });
+            let list = build(&root, 1.0, None);
+            let mut reads = Vec::new();
+            list.desktop_reads(PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 32 }, &mut reads);
+            let node = reads[0].0;
+            let mut captures = CaptureCache::default();
+            captures.set_target(node, CaptureTarget::Output("DP-1".into()));
+            let pixels = if unknown {
+                [0; 4].repeat(32 * 32)
+            } else {
+                [[100, 100, 100, 255].repeat(32 * 16), [0, 0, 0, 255].repeat(32 * 16)].concat()
+            };
+            captures.stage(
+                node,
+                PendingFrame {
+                    has_alpha: true,
+                    width: 32,
+                    height: 32,
+                    y_offset: 0,
+                    pixels,
+                    damage: vec![DamageRect::full(32, 32)],
+                },
+            );
+            let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
+            let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 32 };
+            let _ = execute(
+                "t",
+                &mut painter,
+                &mut ImageCache::new(),
+                &mut captures,
+                &list,
+                1.0,
+                (64.0, 32.0),
+                &[whole],
+                shaders,
+            );
+            for (y, alpha) in [(4, top), (28, bottom)] {
+                let px = pixel_at(painter.canvas_mut(), 16, y);
+                assert!(px.3.abs_diff(alpha) <= 1, "{body} at {y}: {px:?}");
+            }
+            if let Some(red) = red {
+                assert!(
+                    pixel_at(painter.canvas_mut(), 16, 4).0.abs_diff(red) <= 2,
+                    "{body}: the tint keeps its colour"
+                );
+            }
+        }
     }
 
     /// The output replaces the ground, so a program returning its input leaves a translucent ground

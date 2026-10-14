@@ -106,8 +106,26 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
                     wlr.damage.push(DamageRect { x, y, width, height });
                 }
             }
+            Event::Flags { flags } => {
+                if let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id) {
+                    wlr.y_invert =
+                        matches!(flags, WEnum::Value(f) if f.contains(zwlr_screencopy_frame_v1::Flags::YInvert));
+                }
+            }
             Event::Ready { .. } => {
                 proxy.destroy();
+                // ponytail: a y-inverted dma-buf copy stays flipped; compositors that set it are expected to offer shm too.
+                if let Some(CaptureSource { proto: Some(Proto::Wlr(wlr)), .. }) = state.captures.sources.get_mut(id)
+                    && wlr.y_invert
+                    && !wlr.dmabuf_active
+                    && let Some(buffer) = wlr.buffer.as_mut()
+                {
+                    buffer.flip_rows();
+                    let height = buffer.height;
+                    for d in &mut wlr.damage {
+                        d.y = height.saturating_sub(d.y + d.height);
+                    }
+                }
                 land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 state.request_next_if_live(*id);
             }

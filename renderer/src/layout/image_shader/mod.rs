@@ -33,7 +33,7 @@ mod contract;
 mod program;
 mod state;
 
-pub use blend::BlendPass;
+pub use blend::{BlendPass, PRESENT};
 pub use blur::BlurPass;
 
 use rustc_hash::FxHashMap as HashMap;

@@ -213,6 +213,9 @@ fn build_node(
         && (!clip.is_empty() || padded_read)
     {
         let shader = effect.backdrop_shader.clone().map(|shader| layer_shader(shader, radius.clone()));
+        if effect.desktop {
+            super::DESKTOP_READS.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         let draw = Draw::Backdrop {
             sigma: effect.backdrop,
             tone: effect.backdrop_tone,
@@ -223,6 +226,7 @@ fn build_node(
                 .backdrop_mask
                 .clone()
                 .map(|mask| (mask, (physical_edge(rect.width, scale), physical_edge(rect.height, scale)))),
+            desktop: effect.desktop.then_some(node.id),
         };
         out.push(cmd(parent_clip.intersect(read), draw));
     }
@@ -2383,7 +2387,8 @@ mod tests {
                 radius: Radii::from(6.0),
                 alpha: 0.5,
                 shader: None,
-                mask: None
+                mask: None,
+                desktop: None
             }
         );
         assert_eq!(list.commands[at].clip, PhysicalRect { x0: 28, y0: 28, x1: 92, y1: 72 });

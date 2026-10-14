@@ -79,7 +79,10 @@ pub(crate) fn resolve_declared(
         let input = effect.get::<mlua::Table>("shader").and_then(|shader| shader.get::<mlua::LuaString>("input"));
         for (key, reads) in [
             ("effect.backdrop", effect.contains_key("backdrop").unwrap_or(false)),
-            ("effect.shader.input", input.is_ok_and(|input| input.as_bytes() == b"backdrop".as_slice())),
+            (
+                "effect.shader.input",
+                input.is_ok_and(|input| [b"backdrop".as_slice(), b"desktop"].contains(&&*input.as_bytes())),
+            ),
         ] {
             if reads {
                 return Err(invalid(key, format!("`{kind}` has no backdrop; it is for box kinds only")));

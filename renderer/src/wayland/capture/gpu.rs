@@ -71,7 +71,9 @@ impl CaptureRegistry {
         self.ensure_probed(egl);
         let support_available = matches!(self.dmabuf_probe, DmabufProbe::Supported(_));
         let opaque = self.sources.get(&id).is_some_and(|source| source.target.is_output());
-        let previously_failed = self.sources.get(&id).is_some_and(|source| source.dmabuf_failed);
+        // A desktop source is unmixed on the CPU, so it stays on shm.
+        let previously_failed =
+            self.sources.get(&id).is_some_and(|source| source.dmabuf_failed || source.desktop.is_some());
         if !(support_available && !previously_failed) || self.dmabuf_manager.is_none() {
             return false;
         }

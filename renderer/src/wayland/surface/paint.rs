@@ -293,6 +293,7 @@ impl App {
         }
 
         let t_gl = timing.then(Instant::now);
+        self.place_desktop_reads(index, &list);
         let Some(egl) = self.egl.as_ref() else {
             return;
         };
@@ -400,6 +401,7 @@ impl App {
                     .is_some_and(|tree| tree.needs_frames(std::time::Instant::now(), &mut None));
             }
         }
+        self.captures.read_presented(self.gl.as_ref(), &list, surface_rect);
         // Straight after this surface's `execute` and before any other paint runs, which is what
         // scopes a cache-wide flag to the surface that earned it (ADR-0185).
         let deferred = self.image_cache.take_deferred();

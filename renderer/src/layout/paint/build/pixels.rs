@@ -121,13 +121,14 @@ pub(super) fn in_buffer_pixels(draw: Draw, scale: f32) -> Draw {
             silhouette,
             commands,
         },
-        Draw::Backdrop { sigma, tone, radius, alpha, shader, mask } => Draw::Backdrop {
+        Draw::Backdrop { sigma, tone, radius, alpha, shader, mask, desktop } => Draw::Backdrop {
             sigma: sigma * scale,
             tone,
             radius: radius * scale,
             alpha,
             shader: scale_shader(shader),
             mask,
+            desktop,
         },
         // `build_node` makes a `Transformed` in buffer pixels already, through `affine_in_pixels`.
         draw @ (Draw::Text { .. }

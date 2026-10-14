@@ -686,7 +686,7 @@ rect {
 | Key | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string` | required | Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused |
-| `input` | `"content"` or `"backdrop"` | `"content"` | What `u_input` holds: the node's painted subtree, or what the surface painted under the box (see [Backdrop input](#backdrop-input)) |
+| `input` | `"content"`, `"backdrop"` or `"desktop"` | `"content"` | What `u_input` holds: the node's painted subtree, what the surface painted under the box (see [Backdrop input](#backdrop-input)), or that over the desktop behind the surface (see [Desktop input](#desktop-input)) |
 | `params` | `table<string, number\|number[]>` | `{}` | Uniforms by name, as on a [`shader` node](../nodes/shader.md#the-frag-file); missing ones are `0` |
 | `images` | `table<string, string>` | `{}` | Raster files to sample, by sampler name, with the rules, `<name>_size` and sampling of a [`shader` node's `images`](../nodes/shader.md#images). Clamped to the edge (`fract(uv)` tiles), premultiplied, sRGB as stored; `.png`, `.jpg`, `.jpeg` or `.webp` only, a side over 2048 px downscaled. They take the units after `u_input` and `u_input_blurred`, so a refraction can read a displacement map |
 | `progress` | `number`, `[-8192, 8192]` | `0` | Becomes `u_progress`, as on a [`shader` node](../nodes/shader.md#the-frag-file). [animate](animation.md) `effect` to move it |
@@ -773,6 +773,54 @@ void main() {
     fragColor = mix(mantle_input(v_uv), mantle_input_blurred(bent), inside);
 }
 ```
+
+#### Desktop input
+
+`input = "desktop"` is `"backdrop"` with the desktop behind the surface under it: windows, the
+wallpaper and other clients' layers, so a lens bends what is on screen, not only what this shell
+drew. The engine captures the read area through `wlr-screencopy`, and the capture holds this surface
+too, so it takes out what the surface last presented there. Until the first capture lands the
+program does not run and the area shows through.
+
+The shader contract is [Backdrop input](#backdrop-input)'s: return `mantle_input(uv)` to leave a
+pixel. What the surface presents of the output is the output itself, at most 88% opaque so the next
+capture can still unmix it, except where it shows the desktop: there nothing is presented and the
+live desktop stays. Frost with `effect.backdrop`
+and bend with the shader: both run in this renderer, so `compositor_blur` is not needed.
+
+This reads other clients' pixels through screen capture, which the compositor may refuse or ask
+about. Nothing is captured while the node does not draw: hidden, at `opacity = 0`, or on an unmapped
+surface.
+
+```lua
+panel {
+    id = "lens",
+    layer = "overlay",
+    anchor = { top = true },
+    margin = { top = 40 },
+    exclusive_zone = "ignore",
+    width = 320,
+    height = 96,
+    child = rect {
+        width = "fill",
+        height = "fill",
+        radius = 48,
+        effect = { shader = { source = mantle.config_dir .. "/shaders/lens.frag", input = "desktop" } },
+    },
+}
+```
+
+| Case | Result |
+| :--- | :--- |
+| A pixel this surface covers opaquely | Where paint drawn after the glass (its children, later siblings) covers a pixel at 92% or more, nothing behind it can be seen, so the desktop there is unknown. Unknown pixels read as the nearest known one in their row in `mantle_input` and `mantle_input_blurred`, so a sharp read under text shows a plausible desktop, not black. The output there is presented like any other pixel. Paint over the glass (a border, a rim light) adds to its 88%: keep the total under 92%, or the rim reads as its row neighbour |
+| A pixel the output leaves as the desktop | Presented transparent (within 1.5/255 per channel), so it stays live. Any other pixel is presented as the program wrote it, held to 88% opaque: past that the unmix would multiply rounding by 8 or more, and the glass would go black. An opaque frost shows 88% frost and a 12% ghost of the live desktop; a translucent tint keeps its own alpha. An antialiased edge between the two is a 1 px ring |
+| Cost of a settled glass | A capture whose sampled bytes (one in 13) match the last one's within 3 levels is not unmixed and repaints nothing, so a change smaller than a sample step can go unseen. A pixel is unmixed once its presented value has outlasted one capture request, so a shader that changes a pixel before every request freezes the desktop under it. The unmixed desktop holds unless it moves more than 3 levels over clear paint, about 17 under glass at the 88% cap, so a smaller change behind nearly opaque glass waits for a larger one |
+| Cost | At most 30 captures a second while what is behind changes, 4 once a capture shows no change, none while the node does not draw. A change behind a settled glass shows up to 250 ms late |
+| Memory | About 20 bytes per buffer pixel of the read area: the capture, the unmixed desktop, the surface's last two paints there and a stamp each, plus its texture. A 1920x48 bar at scale 1 is about 1.8 MB |
+| `output = "active"` | Placed on the output the surface entered, from its first repaint after it maps |
+| A `panel` other zones push inward | Placed from its anchor and margins only, so the capture is offset by the zone |
+| A `window` or `popup`, or a compositor without `wlr-screencopy` | No capture: the program reads this surface's pixels alone, as `"backdrop"` |
+| Inside a `rotate` | The capture is of the rotated box's bounding rectangle, so the lens samples slightly off; `scale` and `translate` place it exactly |
 
 ## Blend modes
 

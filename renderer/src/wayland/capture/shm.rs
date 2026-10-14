@@ -19,6 +19,31 @@ pub(super) struct NegotiatedBuffer {
     format: wl_shm::Format,
 }
 
+impl NegotiatedBuffer {
+    /// The landed pixels, their size and their row stride in bytes.
+    pub(super) fn rows(&mut self) -> Option<(&[u8], (u32, u32), usize)> {
+        let size = (self.width, self.height);
+        Some((self.pool.canvas(&self.buffer)?, size, self.stride as usize))
+    }
+
+    /// Reverses the landed rows in place: a `y_invert` capture arrives bottom-up, and every
+    /// consumer (staging, the desktop unmix) reads top-down.
+    pub(super) fn flip_rows(&mut self) {
+        let (height, stride) = (self.height as usize, self.stride as usize);
+        if let Some(canvas) = self.pool.canvas(&self.buffer) {
+            flip_rows(canvas, stride, height);
+        }
+    }
+}
+
+fn flip_rows(canvas: &mut [u8], stride: usize, height: usize) {
+    let rows = &mut canvas[..stride * height];
+    for y in 0..height / 2 {
+        let (top, bottom) = rows.split_at_mut((height - 1 - y) * stride);
+        top[y * stride..][..stride].swap_with_slice(&mut bottom[..stride]);
+    }
+}
+
 /// Preferred shm formats: both are wl_shm-mandatory.
 pub(super) fn pick_format(candidates: &[wl_shm::Format]) -> Option<wl_shm::Format> {
     [wl_shm::Format::Xrgb8888, wl_shm::Format::Argb8888].into_iter().find(|preferred| candidates.contains(preferred))
@@ -65,15 +90,26 @@ pub(super) fn stage_landed(
     id: NodeId,
     negotiated: &mut NegotiatedBuffer,
     damage: Vec<DamageRect>,
+    opaque: bool,
 ) {
-    let (width, height, stride) = (negotiated.width, negotiated.height, negotiated.stride as usize);
-    let Some(buffer) = negotiated.pool.canvas(&negotiated.buffer) else { return };
-    cache.stage_shm(id, buffer, (width, height), stride, negotiated.format == wl_shm::Format::Argb8888, damage);
+    let has_alpha = !opaque && negotiated.format == wl_shm::Format::Argb8888;
+    let Some((buffer, (width, height), stride)) = negotiated.rows() else { return };
+    cache.stage_shm(id, buffer, (width, height), stride, has_alpha, damage);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn flipping_rows_reverses_them_and_leaves_padding_with_its_row() {
+        let mut odd = [1, 1, 9, 2, 2, 9, 3, 3, 9];
+        flip_rows(&mut odd, 3, 3);
+        assert_eq!(odd, [3, 3, 9, 2, 2, 9, 1, 1, 9]);
+        let mut even = [1, 1, 2, 2];
+        flip_rows(&mut even, 2, 2);
+        assert_eq!(even, [2, 2, 1, 1]);
+    }
 
     #[test]
     fn preferred_formats_are_tried_in_order() {

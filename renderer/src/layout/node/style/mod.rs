@@ -398,6 +398,8 @@ pub struct Effect {
     pub backdrop_tone: Tone,
     /// `effect.backdrop.mask`: scales the glass's coverage.
     pub backdrop_mask: Option<Mask>,
+    /// `input = "desktop"`: `backdrop_shader` reads the desktop behind the surface under its input.
+    pub desktop: bool,
     pub content_shadow: bool,
     /// `blend`: how the finished subtree composites onto the backdrop, after every filter.
     pub blend: Blend,
@@ -458,6 +460,8 @@ keywords! {
         Content,
         /// What the surface painted under the node.
         Backdrop,
+        /// What shows under the node: the surface's pixels over the desktop behind the surface.
+        Desktop,
     }
 }
 
@@ -760,7 +764,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         Tone::from([saturate.unwrap_or(1.0), brightness.unwrap_or(1.0), contrast.unwrap_or(1.0)])
     };
     let backdrop = filters.backdrop.unwrap_or_default();
-    let (mut shader, mut backdrop_shader) = (None, None);
+    let (mut shader, mut backdrop_shader, mut desktop) = (None, None, false);
     if let Some(keys) = filters.shader {
         let program = EffectShader {
             source: keys.source,
@@ -772,6 +776,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         match keys.input.unwrap_or_default() {
             ShaderInput::Content => shader = Some(program),
             ShaderInput::Backdrop => backdrop_shader = Some(program),
+            ShaderInput::Desktop => (backdrop_shader, desktop) = (Some(program), true),
         }
     }
     let mut effect = Effect {
@@ -784,6 +789,7 @@ pub fn parse_effect(properties: &PropMap) -> Result<Effect, LayoutError> {
         backdrop: backdrop.blur.unwrap_or(0.0),
         backdrop_tone: tone(backdrop.saturate, backdrop.brightness, backdrop.contrast),
         backdrop_mask: backdrop.mask,
+        desktop,
         content_shadow,
         blend: common::blend.read(properties)?,
     };
@@ -1285,7 +1291,10 @@ mod tests {
             parse(r#"return { effect = { shader = { source = "/s.frag", input = "backdrop", padding = 4 } } }"#);
         let under = under.unwrap();
         assert_eq!((under.shader.is_none(), under.backdrop_shader.as_ref().map(|s| s.padding)), (true, Some(4.0)));
-        assert!(!under.layers());
+        assert!(!under.layers() && !under.desktop);
+        // The desktop is a backdrop shader's input with the capture behind the surface under it.
+        let desktop = parse(r#"return { effect = { shader = { source = "/s.frag", input = "desktop" } } }"#).unwrap();
+        assert!(desktop.desktop && desktop.backdrop_shader.is_some() && desktop.shader.is_none());
         let tilde = parse(r#"return { effect = { shader = { source = "~/s.frag" } } }"#);
         match shared::expand_tilde("~/s.frag") {
             Ok(expanded) => {

@@ -34,6 +34,7 @@ use super::App;
 use super::dmabuf::{DmabufShape, DmabufSwapchain, FormatModifier};
 use super::egl::EglState;
 
+mod desktop;
 mod ext;
 mod gpu;
 mod shm;
@@ -131,6 +132,8 @@ struct WlrProto {
     /// Whether this frame copies into the dma-buf slot. `dmabuf_shape` is not enough: a frame
     /// with no `linux_dmabuf` offer copies through shm while the shape stays set.
     dmabuf_active: bool,
+    /// The frame's `flags` event said its rows run bottom-up; `Ready` flips them upright.
+    y_invert: bool,
 }
 
 enum Proto {
@@ -169,6 +172,9 @@ struct CaptureSource {
     /// Set on any dma-buf failure, permanent for this source (amendment decision 4): no env
     /// escape hatch, no retry short of the source being recreated for a new target.
     dmabuf_failed: bool,
+    /// An `input = "desktop"` source's desktop unmixed so far (premultiplied BGRA): its frames
+    /// are unmixed, not drawn.
+    desktop: Option<Vec<u8>>,
 }
 
 impl CaptureSource {
@@ -190,6 +196,7 @@ impl CaptureSource {
             dmabuf: DmabufSwapchain::default(),
             dmabuf_shape: None,
             dmabuf_failed: false,
+            desktop: None,
         }
     }
 
@@ -221,6 +228,8 @@ pub(super) struct CaptureRegistry {
     pending_import: Vec<NodeId>,
     /// Textures and `EGLImage`s a discarded buffer left behind, freed at the same point.
     pending_free: Vec<(khr::Image, ImageId, glow::NativeTexture)>,
+    /// Each placed desktop read, by node (`desktop::Read`).
+    desktops: HashMap<NodeId, desktop::Read>,
 }
 
 impl CaptureRegistry {
@@ -240,6 +249,7 @@ impl CaptureRegistry {
             dmabuf_probe: DmabufProbe::default(),
             pending_import: Vec::new(),
             pending_free: Vec::new(),
+            desktops: HashMap::new(),
         }
     }
 
@@ -329,6 +339,7 @@ impl App {
                 }
             }
         }
+        self.desktop_captures(&mut wanted);
 
         let gone: Vec<NodeId> = self.captures.sources.keys().copied().filter(|id| !wanted.contains_key(id)).collect();
         for id in gone {
@@ -342,6 +353,10 @@ impl App {
         let has_windows = self.captures.backend.ext.is_some() && self.captures.backend.windows.is_some();
         for (id, node) in wanted {
             let protocol = match &node.target {
+                // ponytail: wlr only, which crops at the source. Upgrade path: crop ext's frame.
+                CaptureTarget::Output(_) if self.captures.desktops.contains_key(&id) => {
+                    has_wlr.then_some(Protocol::Wlr)
+                }
                 CaptureTarget::Output(_) => pick_protocol(node.region.is_some(), has_ext, has_wlr),
                 CaptureTarget::Window(_) => has_windows.then_some(Protocol::Ext),
             };
@@ -352,6 +367,11 @@ impl App {
                 }
                 continue;
             };
+            if self.captures.desktops.contains_key(&id)
+                && let Some(source) = self.captures.sources.get_mut(&id)
+            {
+                source.desktop.get_or_insert_default();
+            }
             let info = match &node.target {
                 CaptureTarget::Output(name) => {
                     self.wl_output_named(name).and_then(|output| self.output_state.info(&output))
@@ -433,6 +453,9 @@ impl App {
                 warn!("capture target `{}` is not available; drawing nothing", target.name());
             }
             return;
+        }
+        if let Some(read) = self.captures.desktops.get_mut(&id) {
+            read.requests += 1;
         }
         let Some(source) = self.captures.sources.get_mut(&id) else { return };
         source.in_flight = true;
@@ -578,7 +601,16 @@ fn land_ready_frame(captures: &mut CaptureRegistry, cache: &mut CaptureCache, id
         None => return,
     };
     if let Some(negotiated) = buffer {
-        stage_landed(cache, *id, negotiated, damage);
+        match (source.desktop.as_mut(), captures.desktops.get_mut(id)) {
+            // A settled desktop drops to the idle rate; the repaint a change causes restores it.
+            (Some(known), Some(read)) => {
+                if !desktop::stage(cache, *id, negotiated, known, read) {
+                    source.live = Some(desktop::DESKTOP_IDLE_FPS);
+                }
+            }
+            (Some(_), None) => {}
+            (None, _) => stage_landed(cache, *id, negotiated, damage, source.target.is_output()),
+        }
     }
     source.captured = true;
     source.in_flight = false;
@@ -610,6 +642,7 @@ mod tests {
             dmabuf_probe: DmabufProbe::Pending,
             pending_import: Vec::new(),
             pending_free: Vec::new(),
+            desktops: HashMap::new(),
         }
     }
 

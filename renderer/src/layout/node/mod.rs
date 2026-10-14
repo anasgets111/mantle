@@ -740,8 +740,10 @@ mod tests {
             let src = format!("return {{ effect = {{ shader = {{ source = '/s.frag', input = '{input}' }} }} }}");
             resolve_declared(&rect_props(&lua, &src), "text", false, &lua)
         };
-        let err = reads("backdrop").unwrap_err();
-        assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.shader.input"));
+        for input in ["backdrop", "desktop"] {
+            let err = reads(input).unwrap_err();
+            assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "effect.shader.input"));
+        }
         assert!(reads("content").is_ok(), "a content shader is every kind's");
     }
 
