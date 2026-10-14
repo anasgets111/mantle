@@ -64,7 +64,7 @@ pub(super) fn read_delayed(
     let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
     let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
     note_read(lua, own);
-    let answer = cell.follow(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
+    let answer = cell.follow(fresh, hold, crate::lua::timer::now(lua), |at| arm_wake(lua, at, own));
     let (pending, at) = cell.pending.unzip();
     due.set(at);
     ud.set_nth_user_value(HELD_SLOT, cell.held)?;
@@ -85,7 +85,7 @@ pub(super) fn read_pulse(
     let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
     let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
     note_read(lua, own);
-    let open = cell.fire(fresh, hold, Instant::now(), |at| arm_wake(lua, at, own));
+    let open = cell.fire(fresh, hold, crate::lua::timer::now(lua), |at| arm_wake(lua, at, own));
     until.set(cell.until);
     ud.set_nth_user_value(HELD_SLOT, cell.seen)?;
     Ok(Value::Boolean(open))

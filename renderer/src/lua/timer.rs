@@ -28,6 +28,20 @@ const MAX_MS: u64 = 24 * 60 * 60 * 1000;
 
 type TimerId = u64;
 
+/// Pins [`now`] for the docs shot harness, which steps `delay`, `pulse`, `timer` and tween starts by frame time.
+#[cfg(test)]
+pub struct SimClock(pub Instant);
+
+/// The clock behind `timer`, `interval`, `delay`, `pulse` and a layout pass's tween starts.
+pub fn now(lua: &Lua) -> Instant {
+    #[cfg(test)]
+    if let Some(clock) = lua.app_data_ref::<SimClock>() {
+        return clock.0;
+    }
+    let _ = lua;
+    Instant::now()
+}
+
 struct Entry {
     due: Instant,
     id: TimerId,
@@ -121,7 +135,7 @@ fn start(lua: &Lua, name: &str, ms: Num, callback: Function, repeat: bool) -> ml
     let ms = ms.0;
     let period = Duration::from_secs_f64(ms / 1000.0);
     let every = repeat.then_some(period);
-    let id = super::app_data_or_default::<TimerRegistry>(lua).arm(Instant::now() + period, callback, every)?;
+    let id = super::app_data_or_default::<TimerRegistry>(lua).arm(now(lua) + period, callback, every)?;
     Ok(TimerHandle(id))
 }
 

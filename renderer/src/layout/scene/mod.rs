@@ -298,7 +298,7 @@ impl Scene {
         admit: impl FnOnce(&Scene, Option<LayoutError>) -> Result<Option<LayoutError>, LayoutError>,
     ) -> Result<Option<LayoutError>, LayoutError> {
         // One clock reading for the pass, so every tween it starts shares a start.
-        let now = Instant::now();
+        let now = crate::lua::timer::now(lua);
         // A hook interruption can look like an arbitrary `InvalidProperty`; report the pass budget
         // instead whenever the deadline was exceeded.
         let blame_the_budget =

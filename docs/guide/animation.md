@@ -59,6 +59,18 @@ return column {
 
 Run `mantle set go true` to start the race in your shell, then `mantle set go false` to reset it.
 
+## Mental model
+
+A motion has two inputs: the **target**, the value a pass resolves, and the **entry**, how to get
+there (`duration`, `easing`, `delay`, `from`, `keyframes` or `spring`). Both are ordinary Lua
+values, so either may be a signal.
+
+- A changed target starts a tween from the value on screen. The same target resolved again does not.
+- A changed entry retimes the run under way; it starts nothing by itself. Keyframes are the
+  exception: new frames, timing or `loops` start a new run.
+- An entry field read from a signal is how one property gets different timing per direction
+  ([recipe](#use-different-timing-for-opening-and-closing)).
+
 ## How a tween starts
 
 `animate` is a table from property names to entries. When a pass resolves a different value for a
@@ -459,7 +471,7 @@ Hiding a surface skips the exit, so drop the child from `children` and hold the 
 fades in on show; the shot plays the hide, down and out over 150 ms:
 
 <!-- shot-alt: A volume card with a speaker icon, a level bar at 42% and its percentage slides down and fades away. -->
-<!-- shot: frames=0@900,30,60,90,120,150@400 -->
+<!-- shot: frames=0@900,30,60,90,120,140@400 -->
 ```lua,shot
 local shown = state("osd_shown", false)
 -- Keep the surface mapped 150 ms past `shown`, so the card's exit can play.
@@ -519,6 +531,9 @@ return panel {
 | Fade a popup in and out | [Fade a tooltip](#fade-a-tooltip-popup-in-and-out) |
 | Stagger a list's entrance | [Stagger](#stagger-a-lists-entrance) |
 | Slide a notification out when dismissed | [Slide out](#slide-a-notification-out) |
+| Fade content in after a panel grows, but out at once on close | [Different timing per direction](#use-different-timing-for-opening-and-closing) |
+| Run phases in order: content out, container resizes, content swaps | [Sequence phases](#sequence-phases) |
+| Grow a card out of a small shape | [Grow a container](#grow-a-container-out-of-a-small-shape) |
 
 ### Fade a tooltip popup in and out
 
@@ -678,6 +693,156 @@ return panel {
     height = 400,
     child = column { spacing = 8, children = { slot(NOTES[1]), slot(NOTES[2]), slot(NOTES[3]) } },
 }
+```
+
+### Use different timing for opening and closing
+
+`delay`, `duration` and the rest of an entry accept a signal, read on the same pass that moves the
+target. Derive the timing from the state that moves it. Here the label waits 200 ms for the pill to
+grow, then fades in; on close the same entry resolves `delay = 0`, so it fades out while the pill
+shrinks.
+
+<!-- shot-alt: A round pill with a bell icon grows to the right into a wide card, then the text "New message" fades in once the card has finished growing. -->
+<!-- shot: frames=0..480/30@1000 -->
+```lua,shot
+local open = state("open", false)
+-- 200 ms to wait for the grow on the way in, none on the way out.
+local wait = open:map(function(on) return on and 200 or 0 end)
+
+return rect {
+    width = open:map(function(on) return on and 200 or 56 end),
+    height = 56,
+    radius = 28,
+    background = "#1e1e2e",
+    clip = "rounded",
+    animate = { width = { duration = 200, easing = "out_cubic" } },
+    children = {
+        row {
+            width = 200,
+            height = 56,
+            padding = 16,
+            spacing = 10,
+            children = {
+                icon { name = "notification-symbolic", size = 24, foreground = "#89b4fa", align_v = "center" },
+                text {
+                    content = "New message",
+                    font_size = 14,
+                    foreground = "#cdd6f4",
+                    align_v = "center",
+                    opacity = open:map(function(on) return on and 1 or 0 end),
+                    animate = { opacity = { duration = 150, delay = wait } },
+                },
+            },
+        },
+    },
+}
+```
+
+The row keeps its full width, so the label never rewraps as the pill moves; `clip = "rounded"` cuts
+what the pill has not grown over yet.
+
+### Sequence phases
+
+An `exit` cannot do this: a leaving node takes no flow space, so its parent closes up at once and
+there is nothing left to resize around. Keep the container's size in state instead and stage each
+phase with `delay(signal, ms)`, which lags a state by a fixed time. Each phase is a signal that
+changes `ms` later than the one before; the phase durations must add up to those offsets. A fade
+that only needs to wait can take `delay` in its own entry instead, as in the
+[recipe above](#use-different-timing-for-opening-and-closing).
+
+| Time | Signal | Moves |
+| :--- | :--- | :--- |
+| 0 ms | `page` | Content fades out (150 ms) |
+| 150 ms | `delay(page, 150)` | Container height eases to the new page's (250 ms) |
+| 400 ms | `delay(page, 400)` | Content swaps while invisible, then fades in (150 ms) |
+
+<!-- shot-alt: A card fades its text out, grows taller, then fades in three lines of text in place of the one. -->
+<!-- shot: frames=0..700/25 -->
+```lua,shot
+local page = state("page", "short")
+local PAGES = {
+    short = { height = 64, lines = { "Sync finished" } },
+    tall = { height = 112, lines = { "Sync finished", "48 files uploaded", "2 conflicts need review" } },
+}
+
+local resized = delay(page, 150)
+local swapped = delay(page, 400)
+
+return rect {
+    width = 240,
+    height = resized:map(function(p) return PAGES[p].height end),
+    radius = 14,
+    background = "#1e1e2e",
+    clip = "rounded",
+    animate = { height = { duration = 250, easing = "out_cubic" } },
+    children = {
+        column {
+            padding = 16,
+            spacing = 4,
+            -- Visible only while the page and the swapped content agree.
+            opacity = computed({ page, swapped }, function(now, shown) return now == shown and 1 or 0 end),
+            animate = { opacity = 150 },
+            children = swapped:map(function(p)
+                local out = {}
+                for i, line in ipairs(PAGES[p].lines) do
+                    out[i] = text { content = line, font_size = i == 1 and 14 or 12, foreground = "#cdd6f4" }
+                end
+                return out
+            end),
+        },
+    },
+}
+```
+
+### Grow a container out of a small shape
+
+Animate `width` and `height` with `from` set to the small size. `from` applies to a node's first
+layout, so the card is built when the state turns on. Eased runs end exactly on the size; a
+`spring` with damping below critical overshoots it and rings. Give the children a fixed size so they
+do not rewrap while the box moves, and set `clip = "rounded"` so they are cut to the moving box and
+its `radius`.
+
+<!-- shot-alt: Two dark cards grow from small circles at the centre of their slots. The left eases to its size and stops; the right overshoots its size and settles back. -->
+<!-- shot: frames=0..600/30@1000 -->
+```lua,shot
+local go = state("go", false)
+local EASED = { duration = 350, easing = "out_cubic", from = 40 }
+local SPRING = { spring = { stiffness = 300, damping = 16 }, from = 40 }
+
+local function card(label, timing)
+    return rect {
+        width = 176,
+        height = 96,
+        radius = 20,
+        background = "#1e1e2e",
+        clip = "rounded",
+        align_h = "center",
+        align_v = "center",
+        animate = { width = timing, height = timing },
+        children = {
+            column {
+                width = 176,
+                height = 96,
+                padding = 16,
+                spacing = 4,
+                children = {
+                    text { content = label, font_size = 14, font_weight = 700, foreground = "#cdd6f4" },
+                    text { content = "Grows from 40 px", font_size = 12, foreground = "#a6adc8" },
+                },
+            },
+        },
+    }
+end
+
+local function slot(label, timing)
+    return rect {
+        width = 216,
+        height = 136,
+        children = go:map(function(on) return on and { card(label, timing) } or {} end),
+    }
+end
+
+return row { spacing = 8, children = { slot("Eased", EASED), slot("Spring", SPRING) } }
 ```
 
 ## Gotchas

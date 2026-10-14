@@ -73,7 +73,7 @@ fn check(config_dir: &Path) -> Result<String, String> {
 /// failing pass is one `<error>` entry, which may span lines, then `(<passes>)` on its own line,
 /// unless every pass failed alike: a static error does not depend on the data.
 fn lay_out_passes(
-    output: &LoadOutput,
+    output: &crate::lua::LoadOutput,
     specs: &[SurfaceSpec],
     namespace: &Namespace,
     loader: &Loader,
@@ -108,7 +108,7 @@ fn lay_out_passes(
 /// named `DP-1`, the name a screenshot shows, plus one per other `output` a panel names, so a
 /// monitor-pinned panel is laid out too.
 fn lay_out(
-    output: &LoadOutput,
+    output: &crate::lua::LoadOutput,
     specs: &[SurfaceSpec],
     loader: &Loader,
     shaping: &ShapingHandle,
@@ -958,9 +958,31 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         }
     }
 
-    /// The latest time any tween in `node` started: the instant a shot's frames count from.
-    fn last_start(node: &ResolvedNode) -> Option<Instant> {
-        node.tweens.iter().map(|tween| tween.started).chain(node.children.iter().filter_map(last_start)).max()
+    /// Moves the shot's clock to `to`, firing each `timer`, `delay` and `pulse` wake due on the way
+    /// at its own deadline, in order, and laying out after each so the tweens it starts begin there.
+    fn run_clock(
+        to: Instant,
+        output: &crate::lua::LoadOutput,
+        scene: &mut Scene,
+        instances: &[SurfaceInstance],
+        shaping: &ShapingHandle,
+        lua: &mlua::Lua,
+    ) -> Result<(), String> {
+        let set = |at: Instant| lua.set_app_data(crate::lua::timer::SimClock(at));
+        // ponytail: 10000 wakes per move, which stops a 1 ms `interval` over a 10 s frame gap from hanging a shot.
+        for _ in 0..10_000 {
+            let due = [crate::lua::timer::next_deadline(lua), crate::lua::signal::next_wake_deadline(lua)];
+            let Some(at) = due.into_iter().flatten().min().filter(|at| *at <= to) else { break };
+            set(at);
+            crate::lua::timer::dispatch_due(lua, at);
+            crate::lua::signal::take_due_wake(lua, at).into_iter().for_each(crate::lua::signal::note_write);
+            crate::lua::signal::run_state_handlers(lua);
+            scene
+                .apply_locked(&output.surfaces, instances, shaping, lua, false, true)
+                .map_err(|err| err.to_string())?;
+        }
+        set(to);
+        Ok(())
     }
 
     /// Every visible surface `source` declares, stacked top to bottom 8 px apart with each popup
@@ -987,6 +1009,8 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         }
         let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
         let lua = loader.lua();
+        let origin = Instant::now();
+        lua.set_app_data(crate::lua::timer::SimClock(origin));
         // A push, as the Supervisor's would arrive: `on_change` runs too, once every fake holds its
         // value, in name order, so a handler reading another capability sees it.
         let push = |fakes: mlua::Table| -> Result<(), String> {
@@ -1014,7 +1038,7 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         if pointer.is_some() || after.is_some() {
             // Settle the first layout's tweens, so the frames count from these changes alone rather
             // than from however long the first pass took.
-            scene.tick(&instances, shaping, lua, Instant::now() + Duration::from_secs(10));
+            scene.tick(&instances, shaping, lua, origin + Duration::from_secs(10));
             if let Some(pointer) = pointer {
                 rest_pointer(&pointer, &scene, &instances, lua)?;
             }
@@ -1029,14 +1053,16 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false, true)
                 .map_err(|err| err.to_string())?;
         }
-        let start =
-            instances.iter().filter_map(|instance| scene.surface(&instance.instance_id)).filter_map(last_start).max();
+        let start = origin;
         let times: Vec<u64> = if frames.is_empty() { vec![10_000] } else { frames.to_vec() };
         let mut placed = Vec::new();
         for ms in times {
-            if let Some(start) = start {
-                scene.tick(&instances, shaping, lua, start + Duration::from_millis(ms));
+            let at = start + Duration::from_millis(ms);
+            // A still is drawn with every tween finished, not with every wake come due.
+            if !frames.is_empty() {
+                run_clock(at, &output, &mut scene, &instances, shaping, lua)?;
             }
+            scene.tick(&instances, shaping, lua, at);
             // Surfaces first, stacked; then each popup on its parent, where the compositor puts it.
             let mut parts: Vec<(String, Part)> = Vec::new();
             let mut popups = Vec::new();
@@ -1364,6 +1390,41 @@ return panel { id = "bar", layer = "top", height = 20, child = row { children = 
         let hovered = |name: &str| lua.load(format!("return {name}:get()")).eval::<bool>().unwrap();
         assert!(hovered("under"));
         assert!(!hovered("beside"));
+    }
+
+    /// `delay` and `timer` fire at their own simulated instant, not on the real clock.
+    #[test]
+    fn a_shot_clock_fires_a_delay_and_a_timer_at_their_frame() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = r#"
+page = state("page", "a")
+held = delay(page, 100)
+return panel { id = "bar", layer = "top", height = 20, child = rect {
+    height = 20, width = held:map(function(p) return p == "a" and 10 or 30 end) } }
+"#;
+        std::fs::write(dir.path().join("shell.lua"), source).unwrap();
+        let (output, specs, _, loader) = super::evaluate(dir.path()).unwrap();
+        let shaping = ShapingHandle::spawn_with(None);
+        let (mut scene, instances) = super::lay_out(&output, &specs, &loader, &shaping, OUTPUT).unwrap();
+        let lua = loader.lua();
+        let origin = Instant::now();
+        lua.set_app_data(crate::lua::timer::SimClock(origin));
+        lua.load("fired = false timer(50, function() fired = true end) page:set('b')").exec().unwrap();
+        scene.apply_locked(&output.surfaces, &instances, &shaping, lua, false, true).unwrap();
+        let width = |scene: &Scene| scene.surface(&instances[0].instance_id).unwrap().children[0].rect.width;
+        let fired = || lua.load("return fired").eval::<bool>().unwrap();
+        let run = |scene: &mut Scene, ms| {
+            run_clock(origin + Duration::from_millis(ms), &output, scene, &instances, &shaping, lua).unwrap()
+        };
+
+        run(&mut scene, 0);
+        assert_eq!((width(&scene), fired()), (10.0, false));
+        run(&mut scene, 60);
+        assert_eq!((width(&scene), fired()), (10.0, true), "the timer is due, the delay is not");
+        run(&mut scene, 99);
+        assert_eq!(width(&scene), 10.0);
+        run(&mut scene, 101);
+        assert_eq!(width(&scene), 30.0);
     }
 
     fn lay_out(block: &str, shaping: &ShapingHandle) -> Result<(), String> {
