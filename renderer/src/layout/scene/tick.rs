@@ -240,6 +240,7 @@ pub(super) fn prepare_retained(
         list_memo,
         child_table,
         resolve_memo,
+        site,
         ..
     } = node;
     let paint = if relayout || refit { node::paint_style(kind, &properties)? } else { old_paint };
@@ -277,6 +278,7 @@ pub(super) fn prepare_retained(
         list_memo,
         child_table,
         resolve_memo,
+        site,
         scrolled: old_scroll,
     };
     if !node.style.visible {

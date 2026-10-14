@@ -687,6 +687,7 @@ return panel {
 | A node's first value snaps; nothing fades in | Give the entry `from` |
 | `from` does nothing | The node must set the property too: `opacity = 1` beside `opacity = { from = 0, ... }` |
 | An exit never plays | Exit runs only when the parent stops returning the child. Switch `children`, and keep the surface up with `delay` |
+| `animate.exit` never plays and the log says `shell.lua:120 replaced shell.lua:95 in place` | `children` swapped one id-less node for another of its kind, so the old node was reused. Give the siblings distinct `id`s |
 | A held key makes an eased value trail behind | Use a `spring`; it keeps its velocity through each new target |
 | A keyframe run plays once and never again | Same list, same run. Toggle the entry off and on, for example with `pulse` |
 | A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |

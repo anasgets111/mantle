@@ -37,6 +37,7 @@ use crate::layout::node::{
 };
 use crate::layout::paint::DrawnImage;
 use crate::layout::secure_submit::lock_stays_authenticatable;
+use crate::lua::location::Site;
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
@@ -119,6 +120,8 @@ pub struct Scene {
     tick_split: TickSplit,
     /// What paint last found for each image bound to an `image_status`.
     image_loads: image_status::Loads,
+    /// Replacements already warned about, so a pass that repeats one stays quiet.
+    swap_warnings: std::collections::HashSet<(Site, Site)>,
 }
 
 struct InstanceResolveGuard<'a>(&'a Lua);
@@ -580,6 +583,7 @@ struct PreparedNode {
     /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
     child_table: Option<pass::ChildTable>,
     resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
+    site: Option<Site>,
     /// The retained [`ResolvedNode::scrolled`]: a `multiline` field keeps it across passes.
     scrolled: f32,
 }

@@ -17,6 +17,7 @@ use super::{
     LayoutStyle, LogicalSize, NodeId, PreparedNode, ResolvedNode, Scene, close, ensure_node_admissible, open_span,
 };
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
+use crate::lua::location::Site;
 use crate::lua::nodes::VirtualNode;
 use crate::lua::signal::ComputedFrame;
 use crate::text::shaping::ShapingHandle;
@@ -395,6 +396,7 @@ pub(super) fn prepare(
         list_memo,
         child_table,
         resolve_memo: Some(resolve_memo),
+        site: None,
         scrolled: old_scroll,
     };
     if !node.style.visible {
@@ -425,6 +427,12 @@ pub(super) fn prepare(
         // check again, so every caller checks before it resolves (see `ensure_node_admissible`).
         ensure_node_admissible(child_kind, depth + 1)?;
 
+        if let Some(old) = &matched_candidates[index]
+            && let Some(pair) = replaced_in_place(old, child_kind, &child_raw, site)
+            && scene.swap_warnings.insert(pair)
+        {
+            shared::warn!("{}", swap_message(pair));
+        }
         let mut reusable = reusable_for(&mut matched_candidates[index], child_kind, &mut unclaimed);
 
         // This child's one resolve and one parse for this pass, both here rather than inside the
@@ -444,7 +452,10 @@ pub(super) fn prepare(
         // A broken child does not stop its siblings, so one pass names every broken node. Too deep
         // does: a node holding itself twice would otherwise walk 2^64 paths to the cap.
         match child {
-            Ok(child) => node.children.push(child),
+            Ok(mut child) => {
+                child.site = site;
+                node.children.push(child);
+            }
             Err(err @ LayoutError::TreeTooDeep { .. }) => return Err(err),
             Err(err) => failed.extend(err.into_each().into_iter().map(here)),
         }
@@ -458,6 +469,32 @@ pub(super) fn prepare(
     finish_leavers(tree, &mut node, leaving, unclaimed, old_mask_target, thawing, lua, now)?;
     set_solver_children(tree, taffy_id, &node.children)?;
     Ok(node)
+}
+
+/// The (old, new) build sites when an id-less, visible `old` with an `animate.exit` is paired by
+/// position with a node of its kind built on another line, so the exit never plays. A keyed
+/// `list` row carries its key as `id` and is excluded with the rest.
+///
+/// ponytail: the site is the constructor's call line, so two calls of one helper share it and a
+/// swap between them goes unflagged. Upgrade: record the first config frame outside helpers, or
+/// compare props.
+fn replaced_in_place(old: &ResolvedNode, kind: &str, fresh: &PropMap, site: Option<Site>) -> Option<(Site, Site)> {
+    let (old_site, site) = (old.site?, site?);
+    let exits = || {
+        let animate = fields::common::animate.read(&old.properties).ok().flatten()?;
+        animate.get::<Value>("exit").ok().filter(|exit| !exit.is_nil())
+    };
+    (old_site != site
+        && old.kind == kind
+        && old.visible
+        && !old.leaving
+        && !(old.properties.contains_key("id") || fresh.contains_key("id"))
+        && exits().is_some())
+    .then_some((old_site, site))
+}
+
+fn swap_message((old, new): (Site, Site)) -> String {
+    format!("{new} replaced {old} in place, so its animate.exit did not run; give the siblings distinct ids")
 }
 
 /// The previous child at this position, or `None` when its kind changed and it leaves instead.
@@ -651,6 +688,7 @@ fn finish(
         list_memo,
         child_table,
         resolve_memo,
+        site,
         scrolled: kept_scroll,
     } = prepared;
     let layout = tree.layout(taffy_id).map_err(taffy_failed)?;
@@ -731,6 +769,7 @@ fn finish(
         list_memo,
         child_table,
         resolve_memo,
+        site,
     };
     retarget_move(&mut node, prior_position, now);
     Ok(node)
@@ -1475,6 +1514,63 @@ mod tests {
             "a is gone, not leaving: {:?}",
             list.children.iter().map(|c| c.leaving).collect::<Vec<_>>()
         );
+    }
+
+    const EXIT: &str = "animate = { exit = { duration = 100, opacity = 0 } }";
+
+    /// Builds `kids = { sheet() }` (`sheet` is its props), runs `prelude`, then swaps in `other()`,
+    /// a global constructor of `bubble` props, over a second pass.
+    fn swapped(sheet: &str, bubble: &str, prelude: &str, other: &str) -> Scene {
+        let (mut scene, lua, shaping, surface) = applied(&format!(
+            r#"function sheet() return rect {{ width = 10, height = 10, {sheet} }} end
+               function bubble() return rect {{ width = 20, height = 10, {bubble} }} end
+               return panel {{ id = "bar", child = row {{ children = state("kids", {{ sheet() }}) }} }}"#
+        ));
+        let surfaces = std::slice::from_ref(&surface);
+        lua.load(prelude).exec().unwrap();
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        lua.load(format!(r#"state("kids", {{}}):set({{ {other}() }})"#)).exec().unwrap();
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        scene
+    }
+
+    #[test]
+    fn an_id_less_child_replaced_by_another_site_with_an_exit_is_flagged_once() {
+        let scene = swapped(EXIT, "", "", "bubble");
+        assert_eq!(scene.swap_warnings.len(), 1, "a repeated pass adds nothing");
+        let pair = *scene.swap_warnings.iter().next().unwrap();
+        assert_eq!(
+            swap_message(pair),
+            "shell.lua:2 replaced shell.lua:1 in place, so its animate.exit did not run; give the siblings distinct ids"
+        );
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(row.children.iter().all(|c| !c.leaving), "the sheet's node was reused, not left");
+    }
+
+    #[test]
+    fn a_swap_that_loses_no_exit_is_not_flagged() {
+        let quiet = |scene: Scene| assert!(scene.swap_warnings.is_empty());
+        quiet(swapped(EXIT, "", "", "sheet")); // same line, same node again
+        quiet(swapped("", "", "", "bubble")); // nothing to skip
+        let hidden = format!(r#"visible = state("shown", true), {EXIT}"#);
+        quiet(swapped(&hidden, "", r#"state("shown", true):set(false)"#, "bubble"));
+        let scene = swapped(&format!(r#"id = "a", {EXIT}"#), r#"id = "b""#, "", "bubble");
+        assert!(scene.swap_warnings.is_empty());
+        let row = &scene.surface("bar@TEST").unwrap().children[0];
+        assert!(row.children.iter().any(|c| c.leaving), "distinct ids let the exit run");
+    }
+
+    #[test]
+    fn a_keyed_list_row_is_not_flagged() {
+        let (mut scene, lua, shaping, surface) = applied(&format!(
+            r#"function row_for(n) return rect {{ width = 10, height = 10, {EXIT} }} end
+               return panel {{ id = "bar", child = row {{ children = {{ list {{
+                   items = state("items", {{ "a" }}), key = function(n) return n end, each = row_for }} }} }} }}"#
+        ));
+        lua.load(r#"state("items", {}):set({ "b" })"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(scene.swap_warnings.is_empty());
     }
 
     /// The 2026-09-08 lock screen: `on \`lock_screen@eDP-1\`` and a property name, on a surface

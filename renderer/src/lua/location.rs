@@ -220,7 +220,7 @@ fn raised_line(handler: &mlua::Function, head: String, err: &mlua::Error, now: I
 /// constructed, for an error that surfaces in a later layout pass, when that line is no longer on
 /// the stack (ADR-0268). One Lua integer, the chunk's index in [`CHUNKS`] above the line, so
 /// recording one makes no string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Site(i64);
 
 thread_local! {

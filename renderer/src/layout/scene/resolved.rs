@@ -38,6 +38,7 @@ impl ResolvedNode {
             list_memo: None,
             child_table: None,
             resolve_memo: None,
+            site: None,
         }
     }
 
@@ -232,6 +233,8 @@ pub struct ResolvedNode {
     /// What `properties` were resolved from, so a pass that finds it unchanged keeps them. Shared,
     /// so the rollback copy of the tree does not copy the raw values it holds.
     pub resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
+    /// The line that built it, so a pass can tell a re-render from a different node taking its place.
+    pub(crate) site: Option<Site>,
 }
 
 impl ResolvedNode {
