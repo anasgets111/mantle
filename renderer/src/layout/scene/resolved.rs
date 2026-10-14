@@ -362,6 +362,23 @@ impl ResolvedNode {
                 || self.children.iter().any(ResolvedNode::animating))
     }
 
+    /// [`animating`](Self::animating) less the tweens that hold one value from `now`: only those
+    /// ask for frame callbacks. `hold` takes the earliest instant a holding tween moves again, which
+    /// is meaningful only when this answers `false`.
+    pub fn needs_frames(&self, now: std::time::Instant, hold: &mut Option<std::time::Instant>) -> bool {
+        self.visible
+            && (self.movement.is_some()
+                || self.dissolve.is_some()
+                || self.tweens.iter().filter(|tween| !tween.resting).any(|tween| match tween.holds_until(now) {
+                    Some(at) => {
+                        *hold = Some(hold.map_or(at, |held| held.min(at)));
+                        false
+                    }
+                    None => true,
+                })
+                || self.children.iter().any(|child| child.needs_frames(now, hold)))
+    }
+
     /// Whether every tween still running in this tree moves a paint-only property, which is what
     /// lets [`Scene::tick`] advance it in place instead of laying it out again
     /// (`node::is_paint_only`).

@@ -292,6 +292,9 @@ pub(super) struct TrackedSurface {
     /// A frame callback requested and not answered yet. A repaint waits for it rather than drawing
     /// a second frame into the same refresh, which the compositor would never show.
     pub(super) frame_pending: bool,
+    /// When a tree that only holds (a `delay`, a keyframe segment that ends where it began) moves
+    /// again; it asks for no frame callback until then.
+    pub(super) hold_until: Option<std::time::Instant>,
     /// A repaint passed over for `frame_pending`, owed once the callback lands even if no tween
     /// ticks then.
     pub(super) paint_deferred: bool,
@@ -318,6 +321,7 @@ impl TrackedSurface {
             dirty: true,
             stale: None,
             frame_pending: false,
+            hold_until: None,
             paint_deferred: false,
             blur_effect: None,
             last_blur_region: Vec::new(),

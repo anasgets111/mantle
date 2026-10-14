@@ -102,6 +102,18 @@ impl Sequence {
         last
     }
 
+    /// How much longer the segment `elapsed` into the run sits on one value, when it ends where it began.
+    pub(super) fn hold_left(&self, elapsed: Duration) -> Option<Duration> {
+        let mut at = Duration::from_nanos((elapsed.as_nanos() % self.cycle.as_nanos()) as u64);
+        for pair in self.frames.windows(2) {
+            if at < pair[1].duration {
+                return (pair[0].value == pair[1].value).then(|| pair[1].duration - at);
+            }
+            at -= pair[1].duration;
+        }
+        None
+    }
+
     /// Whether a run that started `elapsed` ago has played out. An infinite one never has.
     pub(super) fn done(&self, elapsed: Duration) -> bool {
         self.loops.is_some_and(|loops| elapsed >= self.cycle * loops)
@@ -481,6 +493,44 @@ mod tests {
         let source = format!("return {{ animate = {{ {property} = {entry} }} }}");
         let spec = parse_animate("rect", &rect_props(&lua, &source)).unwrap().0.remove(property).unwrap();
         spec.sequence().unwrap()
+    }
+
+    /// A blink that mostly holds asks for no frames through the hold, only a wake at its end, and
+    /// needs them again inside the moving segment and through a `delay`'s lead-in.
+    #[test]
+    fn a_hold_segment_and_a_delay_wake_at_their_end_and_a_moving_segment_wants_frames() {
+        let ms = Duration::from_millis;
+        let entry = |delay: u64| {
+            let lua = Lua::new();
+            let source = format!(
+                "return {{ animate = {{ scale = {{ duration = 100, loops = \"infinite\", delay = {delay},
+                    keyframes = {{ 1, {{ value = 1, duration = 3600 }}, {{ value = 0.1, duration = 70 }}, {{ value = 1, duration = 120 }} }} }} }} }}"
+            );
+            parse_animate("rect", &rect_props(&lua, &source)).unwrap().0.remove("scale").unwrap()
+        };
+        let started = Instant::now();
+        let tween = |spec| Tween {
+            property: "scale",
+            from: Animatable::Number(1.0),
+            to: Animatable::Number(1.0),
+            started,
+            spec,
+            reversal: None,
+            resting: false,
+            shown: None,
+        };
+        let run = tween(entry(0));
+        assert_eq!(run.holds_until(started + ms(1000)), Some(started + ms(3600)));
+        assert_eq!(run.holds_until(started + ms(3600)), None, "moving from the boundary");
+        assert_eq!(run.holds_until(started + ms(3700)), None, "the return segment moves too");
+        assert_eq!(run.holds_until(started + ms(3790 + 10)), Some(started + ms(3790 + 3600)), "and the next lap holds");
+        let late = tween(entry(500));
+        assert_eq!(
+            late.holds_until(started + ms(100)),
+            Some(started + ms(500)),
+            "the lead-in holds until the delay ends"
+        );
+        assert_eq!(late.holds_until(started + ms(500)), Some(started + ms(4100)), "then the first segment holds");
     }
 
     /// A spring segment rings past its end frame in real seconds, lands exactly on it once settled,

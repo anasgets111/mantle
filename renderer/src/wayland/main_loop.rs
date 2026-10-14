@@ -295,8 +295,9 @@ pub fn run(
         // worth re-deriving.
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
         // arrives with a push is answered by this repaint, not repeated next turn.
-        let due = std::mem::take(&mut app.animation_frames_due);
         let now = std::time::Instant::now();
+        app.wake_holds(now);
+        let due = std::mem::take(&mut app.animation_frames_due);
         // Before the pass, so a reader of a smooth scroll lays out from the offset this frame draws.
         let scrolled = app.client.advance_scrolls(&due, now);
         if !scrolled.is_empty() {
@@ -495,6 +496,7 @@ pub fn run(
                 .next_wake_deadline()
                 .into_iter()
                 .chain(app.next_stale_deadline())
+                .chain(app.next_hold_deadline())
                 .chain(app.next_repeat_deadline())
                 .chain(app.next_caret_deadline())
                 .chain(app.captures.next_request_deadline())

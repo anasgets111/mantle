@@ -214,8 +214,8 @@ impl App {
         // Whatever this paint commits answers a deferred repaint, and it asks for its own callback.
         self.surfaces[index].paint_deferred = false;
         self.surfaces[index].frame_pending = false;
+        let mut animating = self.frames_wanted(index, &surface_id);
         let tree = self.client.scene().surface(&surface_id);
-        let mut animating = tree.is_some_and(layout::ResolvedNode::animating);
 
         let control = self.outline_control(&surface_id);
         let is_clean =
@@ -393,7 +393,11 @@ impl App {
                 // `animating` was taken above, and the frame callback below is the only thing that
                 // will ever advance it. Missing this is the tween-gate mistake again: motion
                 // begun where nothing was looking for it (ADR-0183).
-                animating |= self.client.scene().surface(&surface_id).is_some_and(layout::ResolvedNode::animating);
+                animating |= self
+                    .client
+                    .scene()
+                    .surface(&surface_id)
+                    .is_some_and(|tree| tree.needs_frames(std::time::Instant::now(), &mut None));
             }
         }
         // Straight after this surface's `execute` and before any other paint runs, which is what
@@ -485,6 +489,30 @@ impl App {
     /// copies its content and style runs, an image or icon its name.
     pub(in crate::wayland) fn repaint_surfaces_named(&mut self, named: &[&[String]]) {
         self.repaint_mapped_surfaces_where(|s| turn::narrowed_repaint_covers(named, &s.surface_id, s.due_a_repaint()));
+    }
+
+    /// Whether `surface_id`'s tree needs frame callbacks; a tree that only holds arms its wake instead.
+    fn frames_wanted(&mut self, index: usize, surface_id: &str) -> bool {
+        let mut hold = None;
+        let now = std::time::Instant::now();
+        let wanted = self.client.scene().surface(surface_id).is_some_and(|tree| tree.needs_frames(now, &mut hold));
+        self.surfaces[index].hold_until = if wanted { None } else { hold };
+        wanted
+    }
+
+    /// When the earliest holding tween moves again, so the poll loop sleeps through a hold.
+    pub(in crate::wayland) fn next_hold_deadline(&self) -> Option<std::time::Instant> {
+        self.surfaces.iter().filter(|s| s.map_state == MapState::Mapped).filter_map(|s| s.hold_until).min()
+    }
+
+    /// Answers a hold that ended as the frame callback would have: the surface ticks this turn.
+    pub(in crate::wayland) fn wake_holds(&mut self, now: std::time::Instant) {
+        for tracked in self.surfaces.iter_mut().filter(|s| s.hold_until.is_some_and(|at| at <= now)) {
+            tracked.hold_until = None;
+            if !self.animation_frames_due.contains(&tracked.surface_id) {
+                self.animation_frames_due.push(tracked.surface_id.clone());
+            }
+        }
     }
 
     pub(in crate::wayland) fn take_repaint_split(&mut self) -> RepaintSplit {

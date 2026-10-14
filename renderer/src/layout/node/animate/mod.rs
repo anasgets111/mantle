@@ -607,6 +607,20 @@ impl Tween {
         self.from.lerp(&self.to, progress, self.property)
     }
 
+    /// When the value next changes, if it is constant from `now` until then: a `delay` lead-in or
+    /// a keyframe segment that ends where it began. `None` when it moves or has played out.
+    pub fn holds_until(&self, now: Instant) -> Option<Instant> {
+        if self.done(now) {
+            return None;
+        }
+        let lead = self.spec.delay.saturating_sub(now.saturating_duration_since(self.started));
+        if !lead.is_zero() {
+            return Some(now + lead);
+        }
+        let Motion::Sequence(sequence) = &self.spec.motion else { return None };
+        sequence.hold_left(self.progressed(now)).map(|left| now + left)
+    }
+
     pub fn done(&self, now: Instant) -> bool {
         let elapsed = self.progressed(now);
         match &self.spec.motion {
