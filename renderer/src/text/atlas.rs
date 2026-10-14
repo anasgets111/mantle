@@ -253,14 +253,20 @@ impl TextPainter {
             .map(|(_, _, images, ..)| images.clone())
     }
 
+    /// Keeps `images` for `command`, answering the images of one it replaces for the pool.
     pub fn keep_layer(
         &mut self,
         surface: &str,
         command: &DrawCmd,
         images: (Vec<ImageId>, ImageId),
         size: (usize, usize),
-    ) {
+    ) -> Vec<(ImageId, (usize, usize))> {
+        let old = self.layers.iter().position(|(on, kept, ..)| on == surface && kept == command);
+        let old = old.map(|at| self.layers.swap_remove(at));
         self.layers.push((surface.to_owned(), command.clone(), images, size, self.paints));
+        old.into_iter()
+            .flat_map(|(.., (casts, content), size, _)| casts.into_iter().chain([content]).map(move |id| (id, size)))
+            .collect()
     }
 
     /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or

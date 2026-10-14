@@ -619,6 +619,15 @@ mod tests {
         close(actual.0, expected.0) && close(actual.1, expected.1) && close(actual.2, expected.2)
     }
 
+    /// Text in a rotated node must not turn the node into a backdrop root: a glass child still reads the ground.
+    #[test]
+    fn a_glass_beside_text_in_a_rotated_node_still_reads_the_ground() {
+        let effect = r##"rotate = 10, children = { rect { width = 32, height = 32,
+            effect = { backdrop = { brightness = 0 } } }, text { content = "4" } }"##;
+        let Some(px) = paint_effect_at(effect, &[(32, 32)]) else { return };
+        assert!(near(px[0], (0, 0, 0)), "the glass blackens the white ground: {px:?}");
+    }
+
     /// A box at (16, 16) whose `shape` hangs a tail to y = 56 below its centre: the fill, a border, an
     /// inset shadow, a knocked-out shadow, a backdrop and a rounded clip all take the one contour, so
     /// the tail is filled, its base carries no line, and its sides carry the band.

@@ -13,6 +13,7 @@ version is 0.x, a minor release can break the Lua API.
 - Fixed: a `compositor_blur` region that changed while the rest of the surface did not was applied only at the next repaint; it now applies at once.
 - Fixed: a rotated or skewed box takes input across its rotated shape, not its upright bounding box; clicks in the empty corners pass through.
 - Fixed: `compositor_blur` follows `rotate` and skew instead of blurring the upright bounding box.
+- Fixed: text in a `rotate`d, skewed or non-uniformly scaled node drew ~1 px heavier per stroke; it now draws at its true weight.
 - Fixed: `mantle.privacy` names apps using the camera through PipeWire (browsers, Snapshot, OBS) instead of listing `pipewire`.
 
 ## 0.7.2 - 2026-10-13

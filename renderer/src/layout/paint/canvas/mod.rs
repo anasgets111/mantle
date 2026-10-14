@@ -238,21 +238,18 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                 if *centered {
                     rect.y += ((rect.height - face.line_height * scale) / 2.0).max(0.0);
                 }
-                painter.draw_text(
-                    TextDraw {
-                        text: content,
-                        runs,
-                        face,
-                        color: *color,
-                        align: *align,
-                        caret: *caret,
-                        caret_on: *caret_on,
-                        caret_style: *caret_style,
-                        wrap: *wrap,
-                    },
-                    rect,
-                    scale,
-                );
+                let draw = TextDraw {
+                    text: content,
+                    runs,
+                    face,
+                    color: *color,
+                    align: *align,
+                    caret: *caret,
+                    caret_on: *caret_on,
+                    caret_style: *caret_style,
+                    wrap: *wrap,
+                };
+                draw_text(painter, walk, command, draw, rect, target);
                 if let Some(t0) = t0 {
                     walk.split.text += t0.elapsed();
                 }
@@ -561,6 +558,76 @@ fn draw_node_mask(
     canvas.set_render_target(target);
     let path = box_path(rect, radius);
     canvas.fill_path(&path, &Paint::image(content, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0));
+}
+
+/// Draws `draw` at `rect`. Under a transform femtovg cannot bake into its glyph atlas (rotate, skew, flip,
+/// non-uniform scale, its test and 1e-3 tolerance) it fills each outline ~0.5 px fat per edge, so the
+/// run goes upright into a scratch at the transform's scale and is composited under it.
+fn draw_text(
+    painter: &mut TextPainter,
+    walk: &mut Walk<'_, '_>,
+    command: &DrawCmd,
+    draw: TextDraw<'_>,
+    rect: LogicalRect,
+    target: RenderTarget,
+) {
+    let m = painter.canvas_mut().transform().0;
+    let baked =
+        m[1].abs() < 1e-3 && m[2].abs() < 1e-3 && (m[0] - m[3]).abs() < 1e-3 * m[0].abs().max(1.0) && m[0] > 0.0;
+    // Sixteenths, so a rotation tween at one scale reuses the raster.
+    let scale = ((m[0] * m[3] - m[1] * m[2]).abs().sqrt() * 16.0).round() / 16.0;
+    // ponytail: the raster is kept per command in the layer cache, so one command under two scales
+    // in a frame redraws each; a blinking caret is not kept. Margin of one em.
+    // Ink past the box (a descender under a tight line, an italic's overhang) is kept by the margin.
+    let margin = draw.face.font_size * walk.scale;
+    let area = super::grow(rect, margin);
+    let size = ((area.width * scale).ceil() as usize, (area.height * scale).ceil() as usize);
+    if baked || !scale.is_finite() || size.0 == 0 || size.1 == 0 {
+        painter.draw_text(draw, rect, walk.scale);
+        return;
+    }
+    let steady = draw.caret.is_none();
+    let kept = painter.layer(walk.surface, command).map(|(_, image)| image);
+    let kept = kept.filter(|&image| painter.canvas_mut().image_size(image).is_ok_and(|(w, h)| (w, h) == size));
+    let image = match kept {
+        Some(image) => image,
+        None => {
+            let Some(image) = scratch(painter, walk, size) else {
+                painter.draw_text(draw, rect, walk.scale);
+                return;
+            };
+            raster(painter, walk, draw, rect, (image, area, scale, size));
+            // A blinking caret changes the pixels under an unchanged command.
+            if steady {
+                walk.scratch.retain(|(id, _)| *id != image);
+                let old = painter.keep_layer(walk.surface, command, (Vec::new(), image), size);
+                walk.scratch.extend(old);
+            }
+            image
+        }
+    };
+    let canvas = painter.canvas_mut();
+    canvas.set_render_target(target);
+    fill_image(canvas, image, area, 1.0);
+}
+
+/// `draw` upright into `image`, which covers `area` at `scale`.
+fn raster(
+    painter: &mut TextPainter,
+    walk: &Walk<'_, '_>,
+    draw: TextDraw<'_>,
+    rect: LogicalRect,
+    (image, area, scale, size): (ImageId, LogicalRect, f32, (usize, usize)),
+) {
+    let canvas = painter.canvas_mut();
+    canvas.save();
+    canvas.set_render_target(RenderTarget::Image(image));
+    canvas.reset_scissor();
+    canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
+    canvas.reset_transform();
+    canvas.set_transform(&femtovg::Transform2D([scale, 0.0, 0.0, scale, -area.x * scale, -area.y * scale]));
+    painter.draw_text(draw, rect, walk.scale);
+    painter.canvas_mut().restore();
 }
 
 /// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
@@ -1553,6 +1620,62 @@ pub(crate) mod tests {
         let below = (25..45).flat_map(|y| (0..80).map(move |x| (x, y)));
         let lit = below.filter(|&(x, y)| pixel_at(painter.canvas_mut(), x, y).3 > 0).count();
         assert!(lit > 0, "no descender ink under the line box");
+    }
+
+    /// femtovg fills an outline under rotate, skew or non-uniform scale ~0.5 px fat per edge,
+    /// so a glyph drew 1.3-1.7x its ink.
+    #[test]
+    fn transformed_text_keeps_the_ink_of_upright_text() {
+        let Some(instance) = init_headless_egl(100, 100) else { return };
+        let config = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/shots/fonts/fonts.conf");
+        let shaping = ShapingHandle::spawn_with(Some(config));
+        shaping.set_chain(&["Noto Sans".into()]);
+        let Some(mut painter) = text_painter(&instance, &shaping, 100, 100) else { return };
+        let mut ink = |transform: &str| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 100, height = 100, padding = 30, child = rect {{ width = 40,
+                height = 40, {transform}, children = {{ text {{ content = "4", font_size = 50, font_weight = 600,
+                foreground = "#FFFFFFFF" }} }} }} }}"##
+            );
+            let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 100.0 });
+            painter.canvas_mut().clear_rect(0, 0, 100, 100, femtovg::Color::rgba(0, 0, 0, 0));
+            paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+            let image = painter.canvas_mut().screenshot().expect("screenshot");
+            image.pixels().map(|p| f32::from(p.a) / 255.0).sum::<f32>()
+        };
+        let upright = ink("rotate = 0");
+        for transform in ["rotate = 20", "rotate = 45", "rotate = 90", "scale = { x = 1.5, y = 0.667 }"] {
+            let turned = ink(transform);
+            assert!((turned / upright - 1.0).abs() < 0.1, "{transform}: ink {turned} against upright {upright}");
+        }
+    }
+
+    /// A turning run keeps one raster: a second angle composites the image the first drew.
+    #[test]
+    fn rotating_text_reuses_its_raster() {
+        let Some(instance) = init_headless_egl(100, 100) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 100, 100) else { return };
+        let mut kept = |turn: u32| {
+            let src = format!(
+                r##"return panel {{ id = "bar", width = 100, height = 100, padding = 30, child = rect {{ width = 40,
+                height = 40, rotate = {turn}, children = {{ text {{ content = "4", font_size = 20 }} }} }} }}"##
+            );
+            let root = resolved_surface(&Lua::new(), &src, LogicalSize { width: 100.0, height: 100.0 });
+            paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+            fn text(commands: &[DrawCmd]) -> Option<&DrawCmd> {
+                commands.iter().find_map(|c| match c.draw {
+                    Draw::Text { .. } => Some(c),
+                    _ => c.draw.nested().and_then(text),
+                })
+            }
+            let list = build(&root, 1.0, None);
+            let command = text(&list.commands).expect("a text run");
+            (painter.layer("test", command).map(|(_, image)| image), painter.census().2)
+        };
+        let (first, layers) = kept(10);
+        assert!(first.is_some() && layers == 1, "one raster kept: {layers}");
+        assert_eq!(kept(25), (first, 1), "the new angle composites the same image");
     }
 
     #[test]
