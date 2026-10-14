@@ -151,7 +151,7 @@ fn push_rounded_rect(rect: PhysicalRect, radii: node::Radii, out: &mut Vec<Physi
     if let Some(outline) = &radii.2 {
         let (x, y) = (rect.x0 as f32, rect.y0 as f32);
         let box_rect = LogicalRect { x, y, width: width as f32, height: height as f32 };
-        return push_outline(&outline.polygon(box_rect, 0.5), out);
+        return push_outline(&outline.polygon(box_rect, 0.5), (i32::MIN, i32::MAX), out);
     }
     // Corners shrink together, the same rule the painter's arcs follow.
     let radii = radii.fit(width as f32, height as f32);
@@ -202,24 +202,51 @@ fn push_shape(
     (matrix, scale, clip): (node::Affine, f32, LogicalRect),
     out: &mut Vec<PhysicalRect>,
 ) {
-    // The radius travels with the box, so scale it the way the box was scaled. An axis-aligned
-    // matrix scales x and y alike here; a rotation would not, and a rounded rotated box is
-    // approximated by the larger of the two.
-    let grow = ((matrix[0] * matrix[0] + matrix[1] * matrix[1]).sqrt())
-        .max((matrix[2] * matrix[2] + matrix[3] * matrix[3]).sqrt());
-    let mut strips = Vec::new();
-    push_rounded_rect(
-        snap_to_physical(node::transformed_bounds(matrix, rect), scale),
-        radii * scale * grow,
-        &mut strips,
-    );
     let visible = snap_to_physical(node::transformed_bounds(matrix, clip), scale);
+    let mut strips = Vec::new();
+    if !tilted(matrix) {
+        // Axis-aligned: the radius travels with the box, so scale it the way the box was scaled.
+        let grow = matrix[0].abs().max(matrix[3].abs());
+        push_rounded_rect(
+            snap_to_physical(node::transformed_bounds(matrix, rect), scale),
+            radii * scale * grow,
+            &mut strips,
+        );
+    } else {
+        // A rotation or skew: map the contour, since a wl_region holds no tilted shape.
+        let to_physical = |p: kurbo::Point| {
+            let (x, y) = node::apply_affine(matrix, p.x as f32, p.y as f32);
+            kurbo::Point::new(f64::from(x * scale), f64::from(y * scale))
+        };
+        let contour = match &radii.2 {
+            Some(outline) => outline.polygon(rect, 0.5),
+            // The upright strips' left edges down and right edges back up: corners come from `push_rounded_rect`.
+            None => {
+                let mut upright = Vec::new();
+                push_rounded_rect(snap_to_physical(rect, scale), radii * scale, &mut upright);
+                let left = upright.iter().flat_map(|r| [(r.x0, r.y0), (r.x0, r.y1)]);
+                let right = upright.iter().rev().flat_map(|r| [(r.x1, r.y1), (r.x1, r.y0)]);
+                left.chain(right)
+                    .map(|(x, y)| kurbo::Point::new(f64::from(x) / f64::from(scale), f64::from(y) / f64::from(scale)))
+                    .collect()
+            }
+        };
+        let contour: Vec<_> = contour.into_iter().map(to_physical).collect();
+        push_outline(&contour, (visible.y0, visible.y1), &mut strips);
+    }
+    // ponytail: the cut is the clip's bounding box; a rotated clip over-blurs its corners.
+    // ponytail: a tilted edge gives ~one strip per row, so a rotation tween sends a big region per frame, input regions too (a spinner); coarser rows or a cap.
     out.extend(strips.into_iter().map(|strip| strip.intersect(visible)).filter(|cut| !cut.is_empty()));
 }
 
+/// Whether `matrix` rotates or skews, so the box cannot stay upright.
+fn tilted(matrix: node::Affine) -> bool {
+    matrix[1] != 0.0 || matrix[2] != 0.0
+}
+
 /// An outline's polygon as strips: each row's spans between crossings of its centre line, rows
-/// with the same spans merged into one strip each.
-fn push_outline(polygon: &[kurbo::Point], out: &mut Vec<PhysicalRect>) {
+/// with the same spans merged into one strip each. Only rows inside `rows` are scanned.
+fn push_outline(polygon: &[kurbo::Point], rows: (i32, i32), out: &mut Vec<PhysicalRect>) {
     let (mut top, mut bottom) = (f64::INFINITY, f64::NEG_INFINITY);
     polygon.iter().for_each(|p| (top, bottom) = (top.min(p.y), bottom.max(p.y)));
     if polygon.len() < 3 {
@@ -236,7 +263,10 @@ fn push_outline(polygon: &[kurbo::Point], out: &mut Vec<PhysicalRect>) {
         xs.sort_unstable();
         xs.as_chunks::<2>().0.iter().map(|&[a, b]| (a, b)).filter(|(a, b)| a < b).collect::<Vec<_>>()
     };
-    let (first, last) = (top.floor() as i32, bottom.ceil() as i32);
+    let (first, last) = ((top.floor() as i32).max(rows.0), (bottom.ceil() as i32).min(rows.1));
+    if first >= last {
+        return;
+    }
     let (mut open, mut from) = (spans(first), first);
     for row in first + 1..=last {
         let next = if row < last { spans(row) } else { Vec::new() };
@@ -291,16 +321,21 @@ fn collect_input_regions(
     // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
     if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
         let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), scale);
-        match &node.paint {
-            // The contour's own strips: the ground beside a tail takes no input.
-            Some(PaintStyle::Box { radius, .. }) if radius.2.is_some() => {
-                push_shape(rect, radius.clone(), (matrix, scale, own_clip), out);
-            }
-            _ if !bounds.is_empty() => {
-                claimed = Some(bounds);
+        let radius = match &node.paint {
+            Some(PaintStyle::Box { radius, .. }) => radius.clone(),
+            _ => node::Radii::default(),
+        };
+        // The contour's own strips: the ground beside a tail, or a tilted box's corners, take no input.
+        if radius.2.is_some() || tilted(matrix) {
+            let before = out.len();
+            push_shape(rect, radius, (matrix, scale, own_clip), out);
+            // A bar thinner than a pixel rasterises to nothing but still takes input.
+            if out.len() == before && !bounds.is_empty() {
                 out.push(bounds);
             }
-            _ => {}
+        } else if !bounds.is_empty() {
+            claimed = Some(bounds);
+            out.push(bounds);
         }
         if node.clips_children() {
             return;
@@ -666,6 +701,56 @@ mod tests {
         assert!(covers(32, 52) && covers(32, 32) && covers(47, 32), "the tail, the body and its edge");
         assert!(!covers(16, 16) && !covers(37, 54) && !covers(32, 58), "a corner, beside and past the tail");
         assert!(strips.iter().all(|s| !s.is_empty()));
+    }
+
+    /// A rotated box blurs where it is drawn: the diamond's centre and edge are in, and points
+    /// inside its axis-aligned bounding box but outside the diamond are out.
+    #[test]
+    fn a_rotated_boxs_region_is_rotated_not_its_bounding_box() {
+        let spin = node::Transform { rotate: 45.0, ..node::Transform::default() };
+        let rotated = |radius: node::Radii| {
+            let mut card = region_node(1, "rect", (100.0, 100.0, 32.0, 32.0), solid_paint(), Vec::new());
+            card.compositor_blur = true;
+            card.transform = spin;
+            if let Some(PaintStyle::Box { radius: r, .. }) = &mut card.paint {
+                *r = radius;
+            }
+            let root = region_node(2, "panel", (0.0, 0.0, 400.0, 400.0), None, vec![card]);
+            blur_regions(&root, 1.0)
+        };
+        let covers =
+            |s: &[PhysicalRect], x: i32, y: i32| s.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+        // The 32 px square turned 45 degrees about (116, 116) is a diamond reaching 23 px out.
+        let tail = node::Radii([0.0; 4], 0.0, Some(node::shape::tail()));
+        for (radius, edge) in [(node::Radii::from(20.0), true), (node::Radii::from(0.0), true), (tail, false)] {
+            let strips = rotated(radius);
+            assert!(covers(&strips, 116, 116), "the centre");
+            assert!(!covers(&strips, 100, 100) && !covers(&strips, 132, 132), "bounding box corners");
+            assert!(covers(&strips, 116, 100) || !edge, "near an edge of the diamond");
+        }
+    }
+
+    /// A rotated box or leaf takes input where it is drawn: the diamond's centre, not the corners
+    /// of its upright bounding box.
+    #[test]
+    fn a_rotated_box_and_a_leaf_claim_input_by_their_rotated_shape() {
+        let lua = mlua::Lua::new();
+        let text = node::paint_style("text", &node::props_from_src(&lua, r#"return { kind = "text", content = "a" }"#));
+        let turned = node::Transform { rotate: 45.0, ..node::Transform::default() };
+        let skewed = node::Transform { rotate: 45.0, scale: (2.0, 0.5), ..node::Transform::default() };
+        for (kind, paint) in [("rect", solid_paint()), ("text", text.unwrap())] {
+            for (transform, inside, outside) in
+                [(turned, (116, 100), [(100, 100), (132, 132)]), (skewed, (136, 136), [(88, 88), (144, 88)])]
+            {
+                let mut card = region_node(1, kind, (100.0, 100.0, 32.0, 32.0), paint.clone(), Vec::new());
+                card.transform = transform;
+                let root = region_node(2, "panel", (0.0, 0.0, 400.0, 400.0), None, vec![card]);
+                let strips = overlay_input_regions(&root, 1.0);
+                let covers = |(x, y): (i32, i32)| strips.iter().any(|s| s.x0 <= x && x < s.x1 && s.y0 <= y && y < s.y1);
+                assert!(covers((116, 116)) && covers(inside), "{kind}: the centre and a point inside the shape");
+                assert!(!outside.into_iter().any(covers), "{kind}: bounding box corners pass through");
+            }
+        }
     }
 
     /// A solid `shape` claims its contour's strips, not its bounding box: the tail takes input and

@@ -136,8 +136,8 @@ focus-follows-mouse pass through to what is below. The engine rebuilds this regi
 
 | Node under the root | Claims input |
 | :--- | :--- |
-| A box (`rect`, `row`, `column`) with a `background` or a non-zero `border_width` | Its whole box, painted bounds under its own transform. `#00000000` counts |
-| `text`, `icon`, `image`, `capture`, `textfield` | Its box |
+| A box (`rect`, `row`, `column`) with a `background` or a non-zero `border_width` | Its whole box, painted bounds under its own transform; a rotated or skewed box claims its rotated shape. `#00000000` counts |
+| `text`, `icon`, `image`, `capture`, `textfield` | Its box, rotated with it |
 | Any node with `on_click`, `on_double_click`, `on_drag`, `on_wheel` or `submits_secure = true` | Its box, even with nothing painted |
 | A `shader` | Nothing; its alpha is unknown to the engine. Give it a handler for a hit area |
 | A `path` with a `fill`, or a `stroke` with `stroke_width` above 0, and at least one `L`, `Q` or `C` command | Its whole box, not the drawn shape. Otherwise nothing; give it a handler for a hit area |
