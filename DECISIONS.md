@@ -8516,6 +8516,50 @@ cap, a change behind smaller than about 25 levels waits for a larger one.
 Background: pleamar presents its glass at a constant 0.88 and blurs premultiplied with unknown holes;
 we took the cap and the holes, and kept the least-opaque conversion so unbent pixels stay fully live.
 
+## 0366. `settled(name)` is a signal the engine writes on a node's own motion edge
+
+A desktop mascot and a collapsing panel both swapped content on a `timer` matched to a tween's
+length, and the two drifted. `animate` (ADR-0145) rejects per-frame Lua and the engine never calls
+the shell on a tween's end; hover (ADR-0062) already solves this shape with a signal the engine
+writes.
+
+1. A node property `settled`, bound to a read-only `settled(name)` signal, written like `elided`.
+2. `true` at rest and initially; `false` from the pass that starts a tween on the node until the
+   tick that ends the last. The node's own `animate` tweens, its `move` and its scroll runs (wheel
+   and fling) count; descendants do not, which keeps the walk and the meaning local. Scroll runs
+   start and end outside a pass, so the client publishes their edge.
+3. A keyframe run is one motion: holds, a `delay` lead-in and every loop of an infinite run keep it
+   `false`. A counted run is `true` on its last frame.
+4. A hidden or leaving subtree is skipped and reads `true`, matching `animating`; a removed node's
+   name reads `true`.
+5. Written only on the edge, so readers get one follow-up pass before the frame is drawn. `elided`
+   and `settled` share one registry and one scene walk (`marks`), skipped until the shell's current
+   evaluation has called either.
+
+Trade-off: a node whose animated target reads its own `settled` bounces once per tween end. Not
+built: a per-property or descendant-inclusive signal (a shell composes them with `computed`), an
+`on_settled` callback (a callback has no memory, ADR-0062).
+
+## 0367. A keyframes entry may start on `"current"` and carries a `run` number
+
+ADR-0152 made a keyframe run depend only on its entry's presence and ADR-0153 added `pulse` to add
+and remove it: that cannot replay inside the window, snaps the property when it closes, and always
+opens on the fixed first frame, so a pupil mid-glance jumps. The mascot removed and re-added the
+entry 1 ms apart to replay.
+
+1. `run = <number>` is part of the run's identity: a different value starts the same frames again,
+   mid-run or not, without a snap. Numbers only, since a boolean would also restart on its falling
+   edge; non-finite numbers are refused, and so is `run` without `keyframes`.
+2. `"current"` is a bare first frame, not `from` (which means nothing on screen yet and stays
+   refused with `keyframes`). It is read once when the run starts: the running tween's last sample,
+   else the retained value, else the resolved value, so each loop returns to the captured value. A
+   property with none of these does not start the run, as the eased path does with no `from`.
+3. Internally the frame holds the second frame's value until replaced; it is never ticked or
+   painted. An `Option` frame would thread through every frame reader for no visible difference.
+
+`pulse` stays the gate for entries that should leave. Not built: a live frame other than the first,
+a restart that resets `delay` apart from `run`.
+
 ## 0368. Desktop input presents its own output held to 88%, gated by a sample compare, a request stamp and a hysteresis (amends ADR-0365)
 
 Presenting the least opaque pixel made the presented alpha depend per pixel on the unmixed desktop

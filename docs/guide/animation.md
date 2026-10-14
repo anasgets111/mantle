@@ -67,7 +67,7 @@ values, so either may be a signal.
 
 - A changed target starts a tween from the value on screen. The same target resolved again does not.
 - A changed entry retimes the run under way; it starts nothing by itself. Keyframes are the
-  exception: new frames, timing or `loops` start a new run.
+  exception: new frames, timing, `loops` or `run` start a new run.
 - An entry field read from a signal is how one property gets different timing per direction
   ([recipe](#use-different-timing-for-opening-and-closing)).
 
@@ -203,10 +203,11 @@ one of three motions: eased (`duration`), keyframes (`keyframes` + `duration`) o
 | `duration` | Whole ms, `[1, 60000]` | Required unless `spring` is set. With `keyframes` it is the default length of each segment |
 | `easing` | A name, `{ x1, y1, x2, y2 }`, or `{ steps = n }` | Default `"in_out_quad"`. Not with `spring` |
 | `delay` | Whole ms, `[0, 60000]` | Holds the start value first, like CSS `transition-delay`. Offsets a keyframe run once, not each loop |
-| `from` | A value of the property's shape | Start value for a property with nothing on screen yet. Refused with `keyframes` |
+| `from` | A value of the property's shape | Start value for a property with nothing on screen yet. Refused with `keyframes`, whose first frame is the start (`"current"` there takes the value on screen) |
 | `spring` | `{ stiffness, damping }` | `stiffness` in `(0, 100000]`, `damping` in `(0, 10000]`, both required. Refuses `easing`, and `duration` and `loops` unless `keyframes` is set ([spring segments](#spring-segments)) |
 | `keyframes` | At least 2 frames | See [keyframes](#keyframes) |
 | `loops` | Whole count `[1, 10000]` or `"infinite"` | Default 1. Only with `keyframes` |
+| `run` | A number | A different value starts a new run, even with the same frames and mid-run. Only with `keyframes` |
 
 A `duration` or `delay` that is not a number (`"200"`) is refused rather than read as absent.
 
@@ -300,15 +301,17 @@ owns the property: the value the pass resolves is ignored.
 | Rule | Detail |
 | :--- | :--- |
 | Frames | A bare value, or `{ value = v, duration = ms, easing = e }` overriding the entry's `duration` and `easing` for the segment that arrives at it. `spring = { stiffness, damping }` in place of `easing` springs that segment |
-| First frame | Where the run starts; its own `duration` and `easing` are never read |
+| First frame | Where the run starts; its own `duration` and `easing` are never read. The bare string `"current"` starts on the value on screen instead: mid-flight, the tween's last sample, else the value the node rests on. It is read once as the run starts, so each loop returns to that value, and it is only the first frame, never a table form. Works for every shape that tweens. A property the node does not set has no value on screen, so the run does not start |
 | Jump | A frame with `duration = 0` (allowed only on a frame) cuts straight to its value |
 | Hold | A segment between two equal values holds still for its duration |
 | List | At least 2 frames, no holes (`{ [1] = 0, [3] = 1 }` is refused), at least one segment that takes time |
 | End | A counted run holds its last frame as long as the entry stays. An `"infinite"` run never ends |
-| Continuity | The same list on the next pass is the same run; any change to the frames, timing or `loops` starts a new run from the first frame |
+| Continuity | The same list on the next pass is the same run; any change to the frames, timing, `loops` or `run` starts a new run from the first frame |
 
-To replay a finished run, take the entry away and put it back. [`pulse`](signals.md#pulse-mark-a-change) does both in
-one expression: it reads `true` for a window after its source changes.
+To replay a run, change `run`: a counter that goes up on each trigger starts the same frames again, whether
+the last run is over or not, and the property never snaps in between. [`pulse`](signals.md#pulse-mark-a-change)
+is the other way: it adds the entry for a window after its source changes and takes it away again, so the
+property snaps back when the window closes.
 
 <!-- shot-alt: A yellow star button swells, dips below its size, and settles in a short bounce. -->
 <!-- shot: frames=0@800,30,60,90,120,150,180,210,240,270,300,330,360@1000 -->
@@ -516,6 +519,53 @@ return panel {
     child = column {
         height = "fill",
         children = shown:map(function(on) return on and { card } or {} end),
+    },
+}
+```
+
+## settled: know when a node stops moving
+
+`settled = settled("name")` on a node gives a read-only signal the engine writes: `false` while any
+`animate` tween on that node is running, `true` otherwise. Swap content, unmount a node or start a
+second motion when the first ends, without a `timer` that guesses its duration.
+
+| Rule | Detail |
+| :--- | :--- |
+| Initial | `true`. The pass that starts a tween writes `false`; the frame that ends the last writes `true` |
+| Scope | The node's own `animate` entries, `move`, and a wheel or fling scroll run on it. A descendant's tween does not count; declare `settled` on the node that moves |
+| Writes | On the edge only, never per frame, and a retarget mid-run writes nothing. A reader re-resolves in one follow-up pass before the frame is drawn, like [`geometry`](signals.md#geometry-read-a-nodes-laid-out-rect) |
+| Keyframes | `false` for the whole run, a hold between equal values and a `delay` lead-in included. A counted run is `true` on its last frame; `loops = "infinite"` never is |
+| Hidden or leaving | `true`. A hidden subtree is frozen and a leaving node is not counted, so its exit tween does not clear the signal. A hidden subtree that shows again is `false` if a tween resumes |
+
+One name is one signal across reloads. Nodes that share it read `true` only when none of them moves.
+Nothing is walked until the shell has called `settled(...)` or `elided(...)` in its current evaluation.
+Do not drive a node's own animated target from its own `settled`: the target changes when the motion
+ends, which starts the next motion, and the node bounces once per tween end.
+
+The sheet below collapses over 300 ms; the note appears when the collapse ends, not when it starts. In
+the pass that sets `open`, `sheet_still` still reads `true`, but the follow-up pass runs before the
+frame is drawn, so the note never paints early:
+
+```lua
+local open = state("sheet_open", true)
+local sheet_still = settled("sheet")
+
+return column {
+    spacing = 8,
+    children = {
+        rect {
+            width = 200,
+            height = open:map(function(on) return on and 120 or 24 end),
+            background = "#313244",
+            settled = sheet_still,
+            on_click = function() open:set(not open:get()) end,
+            animate = { height = { duration = 300, easing = "out_cubic" } },
+        },
+        text {
+            content = "Collapsed",
+            foreground = "#cdd6f4",
+            visible = computed({ open, sheet_still }, function(on, still) return not on and still end),
+        },
     },
 }
 ```
@@ -845,6 +895,29 @@ end
 return row { spacing = 8, children = { slot("Eased", EASED), slot("Spring", SPRING) } }
 ```
 
+### Replay a keyframe run from where it is
+
+A pupil glances aside and back on each click. `run` counts the clicks, so identical frames play again on
+every one, and `"current"` starts each glance from wherever the pupil is, mid-glance or not. No timer takes
+the entry away and puts it back:
+
+```lua
+local looks = state("looks", 0)
+
+return rect {
+    width = 12,
+    height = 12,
+    radius = 6,
+    background = "#cdd6f4",
+    translate = { x = 0, y = 0 },
+    on_click = function() looks:set(looks:get() + 1) end,
+    animate = looks:map(function(n)
+        local glance = { "current", { x = 6, y = -4 }, { x = 0, y = 0 } }
+        return { translate = { duration = 150, easing = "out_cubic", run = n, keyframes = glance } }
+    end),
+}
+```
+
 ## Gotchas
 
 | Trap | Fix |
@@ -854,9 +927,9 @@ return row { spacing = 8, children = { slot("Eased", EASED), slot("Spring", SPRI
 | An exit never plays | Exit runs only when the parent stops returning the child. Switch `children`, and keep the surface up with `delay` |
 | `animate.exit` never plays and the log says `shell.lua:120 replaced shell.lua:95 in place` | `children` swapped one id-less node for another of its kind, so the old node was reused. Give the siblings distinct `id`s |
 | A held key makes an eased value trail behind | Use a `spring`; it keeps its velocity through each new target |
-| A keyframe run plays once and never again | Same list, same run. Toggle the entry off and on, for example with `pulse` |
+| A keyframe run plays once and never again | Same list, same run. Give the entry a `run` and count it up ([recipe](#replay-a-keyframe-run-from-where-it-is)), or gate the entry with `pulse` |
 | A `pulse`-driven run is cut short | Removing the entry snaps the property. Make the window at least `delay` plus every segment's `duration` times `loops` |
-| A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart |
+| A second click inside the `pulse` window does not replay the run | The click only extends the window; the entry never leaves, so the run does not restart. Use `run` |
 | Sliding with `margin` stutters on a large surface | Tween `translate`: it skips layout |
 | Removing a keyed item makes later items snap into the gap | Put `animate.move` on each item |
 | A looping motion driven by a `timer` costs CPU on every tick | Use `keyframes` with `loops = "infinite"` ([Lua cost](#lua-cost)) |

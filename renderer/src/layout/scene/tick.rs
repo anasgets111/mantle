@@ -54,7 +54,6 @@ impl Scene {
             }
         };
         let mut relaid = Vec::new();
-        let mut measured = false;
         for instance in instances {
             let key = instance.instance_id.as_str();
             let Some(retained) = self.surfaces.get_mut(key).filter(|tree| tree.animating()) else { continue };
@@ -101,7 +100,6 @@ impl Scene {
                     }
                     self.solver_trees.insert(key.to_string(), solver);
                     *retained = tree;
-                    measured = true;
                 }
                 Err(err) => {
                     debug!("{key}: relaying out a tween failed, snapping it: {err}");
@@ -109,8 +107,8 @@ impl Scene {
                 }
             }
         }
-        if measured {
-            self.publish_elision(lua);
+        if !relaid.is_empty() {
+            self.publish_marks(lua);
         }
         relaid
     }
@@ -1673,6 +1671,108 @@ mod tests {
         let second = child_tween(&scene);
         assert_eq!(second.to, node::Animatable::Number(40.0));
         assert_eq!(second.from, node::Animatable::Number(65.0), "from is the value the last tick displayed");
+    }
+
+    /// An opacity that runs `"current"` keyframes, replayed by a changing `run`.
+    const REPLAY: &str = r#"panel { id = "bar", child = rect { width = 10, height = 10, opacity = 1,
+        animate = state("n", 0):map(function(n)
+            return { opacity = { duration = 100, easing = "linear", run = n, keyframes = { "current", 0 } } }
+        end) } }"#;
+
+    fn replay_node(scene: &Scene) -> &ResolvedNode {
+        &scene.surface("bar@TEST").unwrap().children[0]
+    }
+
+    /// The first frame `"current"` is the value on screen when the run starts, mid-flight or not,
+    /// for a number here and a colour below.
+    #[test]
+    fn a_current_first_frame_starts_the_run_from_the_value_on_screen() {
+        let (mut scene, lua, shaping, surface) = applied(REPLAY);
+        let instances = [instance_at(&surface, full())];
+        let first = replay_node(&scene).tweens[0].started;
+        scene.tick(&instances, &shaping, &lua, first + std::time::Duration::from_millis(50));
+        assert!((replay_node(&scene).opacity - 0.5).abs() < 0.01, "from the node's own 1, halfway to 0");
+
+        lua.load(r#"state("n", 0):set(1)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let node = replay_node(&scene);
+        assert!(
+            (node.opacity - 0.5).abs() < 0.01,
+            "the replay opens where the last run was, not on 1: {}",
+            node.opacity
+        );
+        let second = node.tweens.iter().map(|t| t.started).max().unwrap();
+        scene.tick(&instances, &shaping, &lua, second + std::time::Duration::from_millis(50));
+        assert!((replay_node(&scene).opacity - 0.25).abs() < 0.01, "half of the way from 0.5 to 0");
+    }
+
+    /// Identical frames play again when `run` changes, even mid-run and after a finished one, and
+    /// never while it holds still.
+    #[test]
+    fn a_changed_run_replays_identical_frames_and_an_unchanged_pass_does_not() {
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"panel { id = "bar", child = rect { width = 10, height = 10, opacity = 1,
+                animate = state("n", 0):map(function(n)
+                    return { opacity = { duration = 100, easing = "linear", run = n, keyframes = { 1, 0 } } }
+                end) } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let began = replay_node(&scene).tweens[0].started;
+        scene.tick(&instances, &shaping, &lua, began + std::time::Duration::from_millis(200));
+        assert_eq!(replay_node(&scene).opacity, 0.0, "played out");
+
+        crate::lua::signal::begin_evaluation(&lua);
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert_eq!(replay_node(&scene).tweens[0].started, began, "the same run on a pass with the same `run`");
+
+        lua.load(r#"state("n", 0):set(1)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let node = replay_node(&scene);
+        assert!(node.tweens.iter().all(|t| t.started > began && !t.resting), "a new run, not the finished one");
+        assert!(scene.surface("bar@TEST").unwrap().animating(), "and it asks for frames");
+    }
+
+    /// `"current"` on a colour starts from the shade mid-flight, and on a property the node never
+    /// set there is nothing on screen, so the run does not start.
+    #[test]
+    fn a_current_colour_starts_from_the_shade_on_screen_and_an_unset_property_starts_nothing() {
+        let (mut scene, lua, shaping, surface) = applied(
+            r##"panel { id = "bar", child = text { content = "a", foreground = "#000000",
+                animate = state("n", 0):map(function(n)
+                    return {
+                        foreground = { duration = 100, easing = "linear", run = n, keyframes = { "current", "#ffffff" } },
+                        opacity = { duration = 100, keyframes = { "current", 0 } },
+                    }
+                end) } }"##,
+        );
+        let tween = |scene: &Scene, property| {
+            scene.surface("bar@TEST").unwrap().children[0].tweens.iter().find(|t| t.property == property).cloned()
+        };
+        assert!(tween(&scene, "opacity").is_none(), "no opacity on screen, no run");
+        let first = tween(&scene, "foreground").unwrap().started;
+        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, first + std::time::Duration::from_millis(50));
+
+        lua.load(r#"state("n", 0):set(1)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let node::Animatable::Color(from) = tween(&scene, "foreground").unwrap().from else { panic!("a colour") };
+        assert!((from.r - 0.5).abs() < 0.02, "the replay opens on the mid grey, got {from:?}");
+    }
+
+    /// A changed `run` restarts a counted run and an endless one alike, from their first frame.
+    #[test]
+    fn a_changed_run_restarts_counted_and_endless_loops() {
+        for loops in ["2", r#""infinite""#] {
+            let (mut scene, lua, shaping, surface) = applied(&format!(
+                r#"panel {{ id = "bar", child = rect {{ width = 10, height = 10, opacity = 1,
+                    animate = state("n", 0):map(function(n) return {{ opacity = {{ duration = 100, easing = "linear",
+                        loops = {loops}, run = n, keyframes = {{ 1, 0 }} }} }} end) }} }}"#
+            ));
+            let began = replay_node(&scene).tweens[0].started;
+            scene.tick(&[instance_at(&surface, full())], &shaping, &lua, began + std::time::Duration::from_millis(50));
+            lua.load(r#"state("n", 0):set(1)"#).exec().unwrap();
+            apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            assert!(replay_node(&scene).tweens[0].started > began && replay_node(&scene).opacity == 1.0, "{loops}");
+        }
     }
 
     #[test]

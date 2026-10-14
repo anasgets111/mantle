@@ -409,7 +409,7 @@ pub(crate) fn same_lua_value(a: &Value, b: &Value) -> bool {
 }
 
 /// The `Signal` held unresolved in `property`, or `None` for any other value. A structural slot
-/// (`hover`, `scroll`, `geometry`, `elided`) holding something else is inert rather than an error: the
+/// (`hover`, `scroll`, `geometry`, `elided`, `settled`) holding something else is inert rather than an error: the
 /// engine's write handles refuse every kind it must not write.
 pub(crate) fn signal_at(properties: &PropMap, property: &str) -> Option<signal::Signal> {
     let Some(Value::UserData(ud)) = properties.get(property) else {

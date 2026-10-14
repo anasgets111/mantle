@@ -316,7 +316,7 @@ const NODES_HEADER: &str = r##"---@meta
 --
 -- `Bound` in a union means the property also takes a signal, read again once it is written. It is
 -- `userdata`, not `Signal`, so table payloads are not mistaken for signals. `id` and callbacks take
--- no signal; `hover`, `focused`, `scroll`, `geometry`, `elided` and `status` take the handle itself. `[string]: "no such property"`
+-- no signal; `hover`, `focused`, `scroll`, `geometry`, `elided`, `settled` and `status` take the handle itself. `[string]: "no such property"`
 -- makes a misspelled key a type error.
 
 ---A node table, as one of the constructors below returns it. A class, so a `Surface` is not one;
@@ -361,7 +361,8 @@ const NODES_HEADER: &str = r##"---@meta
 --- - `delay`: ms `[0, 60000]` before it starts; offsets a sequence once, not per loop (ADR-0153).
 --- - `from`: start value when the node did not display the property last pass (a new node, or one that lacked it); otherwise the first value snaps (ADR-0146). Refused beside `keyframes`.
 --- - `spring`: replaces `duration`, `easing`, `keyframes` and `loops`, which are refused beside it.
---- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one.
+--- - `keyframes`: at least 2 values, no holes, at least one segment with time; walks instead of easing to the resolved value (ADR-0152). `loops` `[1, 10000]` or `"infinite"`, default `1`, only with `keyframes`. Bind `animate` to start or stop one. A first frame of `"current"` starts on the value on screen.
+--- - `run`: a different number starts a new `keyframes` run, even mid-run with the same frames.
 ---@alias MoveAnimation {MoveAnimation} `animate.move`: eased timing for a matched node's changed layout position. A bare number is `duration`; a table requires `duration`. `from`, `keyframes`, `loops` and `spring` are refused.
 ---@alias Animations {Animations} Property name to animation, plus `move` and `exit`; each kind's `animate` field names its own, e.g. `RectAnimations`. Names the node does not accept, `z` and `animate` are refused. Numbers, percents, colours and numeric `Edges`/`Corners`/`Axes` tween against the same shape; anything else snaps.
 ---@alias Exit {Exit} `animate.exit`: timing as in `Animation` (`duration` or `spring` required once a target is named) plus `property = target` pairs the node eases to after a pass drops it (ADR-0150). A target starts from the shown value, or from the identity: `1` for `opacity`/`scale`, `0.5` for `origin`, alpha 0 for a colour, `0` otherwise.

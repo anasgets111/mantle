@@ -8,10 +8,10 @@
 
 mod budget;
 mod dirty;
-pub(crate) mod elision;
 mod globals;
 mod held;
 pub(crate) mod image_status;
+pub(crate) mod marks;
 mod state_handlers;
 mod tracking;
 
@@ -106,6 +106,9 @@ enum SignalKind {
     Geometry(CellId, Rc<RefCell<Value>>),
     /// Text fitting result, published only after a successful retained-scene transaction.
     Elided(CellId, Rc<RefCell<Value>>),
+    /// `settled(name)`: whether every tween on the declaring node is at rest. Written on the edge
+    /// by the pass and the tick, never by Lua.
+    Settled(CellId, Rc<RefCell<Value>>),
     /// `image_status(name)`: an `image`'s load, written by the pass for a changed `source` and by
     /// paint once its decode lands or fails.
     ImageStatus(CellId, Rc<RefCell<Value>>),
@@ -162,6 +165,7 @@ impl SignalKind {
             SignalKind::Pulse { .. } => "a pulse",
             SignalKind::Geometry(..) => "a geometry",
             SignalKind::Elided(..) => "an elided",
+            SignalKind::Settled(..) => "a settled",
             SignalKind::ImageStatus(..) => "an image_status",
         }
     }
@@ -395,6 +399,10 @@ impl Signal {
         if let SignalKind::Elided(id, _) = &self.0 { Some(*id) } else { None }
     }
 
+    pub(crate) fn settled_id(&self) -> Option<CellId> {
+        if let SignalKind::Settled(id, _) = &self.0 { Some(*id) } else { None }
+    }
+
     /// Hover write end for `crate::wayland`; `None` for other kinds by design.
     pub(crate) fn hover_handle(&self) -> Option<LiveSignalHandle> {
         let SignalKind::Hover { id, cell, dirty, .. } = &self.0 else { return None };
@@ -442,6 +450,7 @@ impl Signal {
             | SignalKind::State { id, cell, .. }
             | SignalKind::Geometry(id, cell)
             | SignalKind::Elided(id, cell)
+            | SignalKind::Settled(id, cell)
             | SignalKind::ImageStatus(id, cell) => Some((*id, cell)),
             _ => None,
         }

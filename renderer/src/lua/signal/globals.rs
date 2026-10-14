@@ -259,7 +259,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
     // Before any config code runs, so every coroutine it ever creates inherits the hook.
     install_hook(lua)?;
     crate::lua::app_data_or_default::<LayoutChanged>(lua);
-    super::elision::register(lua)?;
+    super::marks::register(lua)?;
     super::image_status::register(lua)?;
     let hover_dirty = dirty.clone();
     let rect_dirty = dirty.clone();

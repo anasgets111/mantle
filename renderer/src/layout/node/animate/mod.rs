@@ -631,6 +631,19 @@ impl Tween {
     }
 }
 
+/// What `property` shows now: its running tween's last typed sample, else the retained node's value.
+fn displayed(
+    property: &'static str,
+    running: Option<&Tween>,
+    shown: Option<&PropMap>,
+) -> Result<Option<Animatable>, LayoutError> {
+    match (running.and_then(|tween| tween.shown.clone()), shown) {
+        (Some(sample), _) => Ok(Some(sample)),
+        (None, Some(shown)) => Animatable::from_value(property, shown.get(property)),
+        (None, None) => Ok(None),
+    }
+}
+
 /// Reconciles a node's tweens against the targets a pass just resolved, and writes the displayed
 /// value of each into `properties` for the parsers to read. `retained` is the node this one was
 /// matched to, as the tweens it carried and the properties it last displayed; `None` is a new
@@ -663,19 +676,39 @@ pub fn retarget(
         // target and reads nothing the pass resolved. The same list going round again is the same
         // run, played out or not; a different list is a new one, from its first frame.
         if let Motion::Sequence(sequence) = &spec.motion {
-            let carried = running.filter(|prior| prior.spec.motion == spec.motion);
+            let carried =
+                running.filter(|prior| matches!(&prior.spec.motion, Motion::Sequence(old) if old.same_run(sequence)));
             let mut tween = match carried {
-                Some(prior) => Tween { spec, shown: None, ..prior.clone() },
-                None => Tween {
-                    property,
-                    from: sequence.frames[0].value.clone(),
-                    to: sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
-                    started: now,
-                    spec,
-                    reversal: None,
-                    resting: false,
+                // The run keeps the motion it started with: a live first frame holds its start value.
+                Some(prior) => Tween {
+                    spec: AnimationSpec { motion: prior.spec.motion.clone(), ..spec },
                     shown: None,
+                    ..prior.clone()
                 },
+                None => {
+                    // `"current"` starts on what is on screen, else on the resolved value; a property
+                    // the node does not set has neither, so the run does not start.
+                    let sequence = if sequence.live_start {
+                        let start = match displayed(property, running, shown)? {
+                            Some(shown) => Some(shown),
+                            None => Animatable::from_value(property, properties.get(property))?,
+                        };
+                        let Some(start) = start else { continue };
+                        sequence.starting_at(start)
+                    } else {
+                        sequence.clone()
+                    };
+                    Tween {
+                        property,
+                        from: sequence.frames[0].value.clone(),
+                        to: sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
+                        started: now,
+                        spec: AnimationSpec { motion: Motion::Sequence(sequence), ..spec },
+                        reversal: None,
+                        resting: false,
+                        shown: None,
+                    }
+                }
             };
             // Against `now`, not against what the carried run was resting on: `advance` is the only
             // other place this is decided, and a pass can both finish a run it never ticked and
@@ -696,12 +729,7 @@ pub fn retarget(
             }
             continue;
         };
-        let displayed = match (running.and_then(|tween| tween.shown.clone()), shown) {
-            (Some(sample), _) => Some(sample),
-            (None, Some(shown)) => Animatable::from_value(property, shown.get(property))?,
-            (None, None) => None,
-        };
-        let Some(displayed) = displayed.or_else(|| spec.from.clone()) else { continue };
+        let Some(displayed) = displayed(property, running, shown)?.or_else(|| spec.from.clone()) else { continue };
         let retained_target = running.map_or(&displayed, |tween| &tween.to);
         let tween = match running {
             _ if *retained_target != target => {

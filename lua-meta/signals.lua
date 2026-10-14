@@ -24,6 +24,14 @@
 ---@return Signal<boolean>
 function elided(name) end
 
+---Read-only, initially true. Whether every `animate` tween on the node bound through
+---`settled` is at rest; false from the pass that starts one until the frame that ends the
+---last.
+---[docs](https://anasgets111.github.io/mantle/guide/animation.html#settled-know-when-a-node-stops-moving)
+---@param name string One name, one read-only signal, across reloads. Bind it as a node's `settled`.
+---@return Signal<boolean>
+function settled(name) end
+
 ---Read-only, initially `{ state = "empty" }`. The load of the `source` of the image bound
 ---through `status`: `"loading"` until its decode lands, then `"ready"` with the file's own
 ---`width` and `height` in pixels, or `"failed"`.

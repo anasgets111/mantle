@@ -463,9 +463,18 @@ impl RendererClient {
         now: std::time::Instant,
     ) -> Vec<String> {
         match self.scene.wheel(signal, delta, notch, now) {
-            crate::layout::scene::WheelScroll::Eased(animating) => animating,
+            crate::layout::scene::WheelScroll::Eased(animating) => {
+                self.publish_marks();
+                animating
+            }
             crate::layout::scene::WheelScroll::Write(offset) => self.write_scroll(signal, offset),
         }
+    }
+
+    /// Writes `settled` after a scroll run starts or ends outside a pass or tick, owing its readers a pass.
+    fn publish_marks(&mut self) {
+        self.scene.publish_marks(self.loader.lua());
+        self.mark_layout_readers();
     }
 
     /// Fingers lifted from `signal` at `velocity` px/s ([`Scene::fling`]): the instances to animate.
@@ -475,12 +484,15 @@ impl RendererClient {
         velocity: f32,
         now: std::time::Instant,
     ) -> Vec<String> {
-        self.scene.fling(signal, velocity, now)
+        let flung = self.scene.fling(signal, velocity, now);
+        self.publish_marks();
+        flung
     }
 
     /// Stops every run on `signal` ([`Scene::stop_scroll`]).
     pub fn stop_scroll(&mut self, signal: &crate::lua::signal::Signal) {
         self.scene.stop_scroll(signal);
+        self.publish_marks();
     }
 
     /// One frame of every smooth scroll in `due`, ahead of the pass so a reader lays out from the
@@ -490,6 +502,7 @@ impl RendererClient {
         for (signal, offset) in self.scene.advance_scrolls(due, now) {
             moved.extend(self.write_scroll(&signal, offset));
         }
+        self.publish_marks();
         moved
     }
 
@@ -507,7 +520,7 @@ impl RendererClient {
     /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
     pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
         let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());
-        self.mark_layout_readers();
+        self.publish_marks();
         moved
     }
 

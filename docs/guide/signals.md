@@ -86,7 +86,7 @@ snapshot.
 
 | Rule | Detail |
 | :--- | :--- |
-| Identity | One name, one signal. `hover`, `pointer`, `scroll`, `geometry`, `elided` and `image_status` names are separate namespaces |
+| Identity | One name, one signal. `hover`, `pointer`, `scroll`, `geometry`, `elided`, `settled` and `image_status` names are separate namespaces |
 | Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
 | Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
 | Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
@@ -121,7 +121,7 @@ return rect {
 | Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
 | Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
 | Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed, and none can be removed: a call inside a callback adds another handler each time it runs, until the next reload |
-| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, pointer, scroll, geometry, elided or image_status signal it raises |
+| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, pointer, scroll, geometry, elided, settled or image_status signal it raises |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
 fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
@@ -303,7 +303,7 @@ dirty, and the next pass re-resolves only the instances that read it.
 | A write to a signal no instance reads | Nothing |
 | A `delay` coming due or a `pulse` window closing | Every instance |
 | A `geometry` rect moving | One follow-up pass over the instances that read it |
-| A text's `elided` result changing | One follow-up pass over the instances that read it |
+| A text's `elided` result changing, or a node's `settled` flipping | One follow-up pass over the instances that read it |
 | An image's `image_status` changing | One follow-up pass over the instances that read it |
 | A wheel over a container whose `scroll` signal nothing else reads | Nothing: its children move where they are |
 | Any write while the session is locked | Every instance |
@@ -376,6 +376,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `pointer(name)` | `{ x, y }` or nil signal | Bind it as a node's `pointer`. The pointer's position from that node's top-left corner while it is over the node, `nil` otherwise ([input](input.md#pointer-position)) |
 | `geometry(name)` | rect signal | Bind it as a node's `geometry`. Layout writes that node's `{ x, y, width, height }` in surface coordinates. Zero until the first layout |
 | `elided(name)` | boolean signal | Bind it as a text node's `elided`. Reports content removed by `elide` or `max_lines`; `false` until measured |
+| `settled(name)` | boolean signal | Bind it as any node's `settled`. `false` while that node has an `animate` tween or `move` running; `true` at rest ([animation](animation.md#settled-know-when-a-node-stops-moving)) |
 | `image_status(name)` | `{ state, width?, height? }` signal | Bind it as an image's `status`. Its `source`'s load: `"empty"`, `"loading"`, `"ready"` with the file's size, or `"failed"` ([details](#image_status-read-an-images-load)) |
 
 `delay` and `pulse` take `ms` in `[1, 60000]` rounded to whole milliseconds, and raise outside that
@@ -395,6 +396,7 @@ Only `state` can be written from Lua. `:set` on any other kind raises an error t
 | Stored | A `persistent_table` key ([scripting](scripting.md)) | | | The table's own `:set(key, value)` |
 | Geometry | `geometry(name)` | | | Layout |
 | Elision | `elided(name)` | | | Text fitting |
+| Settled | `settled(name)` | | | Layout, tween ticks and scroll runs |
 | Image status | `image_status(name)` | | | Layout and paint |
 | Hover | `hover(name)`, `hover_rect(name)` ([input](input.md)) | | | The pointer |
 | Pointer | `pointer(name)` ([input](input.md#pointer-position)) | | | The pointer, while read |
@@ -415,8 +417,8 @@ again after changing it in place is a write.
 | `computed() dependencies: key` | The `computed` list has a named key; list the signals in `fn`'s order |
 | ``delay: source must be a Signal or a `mantle` capability, got integer 5`` / the same for `pulse` | The first argument is not a signal or capability |
 | `delay: ms must be within [1, 60000]` / `pulse: ms must be within` | `ms` out of range, or rounds to 0 |
-| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry, elided or image_status signal |
-| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry, elided or image_status signal, which has none |
+| `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry, elided, settled or image_status signal |
+| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry, elided, settled or image_status signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `index must be 1 or more` | `:reveal` on another kind, or an index below 1 |

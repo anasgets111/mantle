@@ -1152,6 +1152,27 @@ mod tests {
         assert_eq!(step(&mut client, ms(400)), (0, (205.0, 205.0)), "the run is gone");
     }
 
+    /// A smooth scroll run is motion: `settled` clears when a notch starts it, sets when a frame
+    /// ends it or a jump stops it, with no pass or tick to write it.
+    #[test]
+    fn a_scroll_run_clears_settled_and_its_end_or_stop_sets_it() {
+        let (mut client, signal, _dir) =
+            scrolled_row(r#"{ scroll = { duration = 100, easing = "linear" } }, settled = settled("w")"#);
+        let settled =
+            |client: &RendererClient| client.lua().load(r#"return settled("w"):get()"#).eval::<bool>().unwrap();
+        let t0 = std::time::Instant::now();
+        assert!(settled(&client));
+        client.wheel(&signal, 40.0, true, t0);
+        assert!(!settled(&client), "the notch started a run");
+        client.advance_scrolls(&["bar@TEST".to_string()], t0 + std::time::Duration::from_millis(100));
+        assert!(settled(&client), "the frame that ends it");
+
+        client.wheel(&signal, 40.0, true, t0);
+        assert!(!settled(&client));
+        client.stop_scroll(&signal);
+        assert!(settled(&client), "a stopped run");
+    }
+
     /// Under `animate.scroll` a `:reveal` eases the run to the child like a notch would.
     #[test]
     fn a_reveal_eases_under_animate_scroll() {

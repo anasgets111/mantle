@@ -151,6 +151,7 @@ lua_shape! {
         // Bare frames need the animated property's defaults; parse_sequence also rejects holes.
         keyframes: Value as Option<Vec<KeyframeInput>>,
         loops: Option<Loops>,
+        run: Option<f32>,
     }
 }
 
@@ -202,7 +203,7 @@ pub(super) fn parse_spec(property: &str, entry: &Value) -> Result<AnimationSpec,
 impl AnimationInput {
     fn into_animation(self, property: &str) -> Result<AnimationSpec, LayoutError> {
         let field = format!("animate.{property}");
-        let Self { duration, delay, easing, from, spring, keyframes, loops } = self;
+        let Self { duration, delay, easing, from, spring, keyframes, loops, run } = self;
         let from = match from {
             Value::Nil => None,
             value => Some(Animatable::from_value(property, Some(&value))?.ok_or_else(|| {
@@ -229,6 +230,9 @@ impl AnimationInput {
         } else if !keyed && loops.is_some() {
             return Err(invalid(&field, "`loops` counts the walks of a `keyframes` list, and this entry has none"));
         }
+        if !keyed && run.is_some() {
+            return Err(invalid(&field, "`run` replays a `keyframes` list, and this entry has none"));
+        }
         let motion = match spring {
             Some(constants) if !keyed => Motion::Spring(constants.into_spring(&field)?),
             spring => {
@@ -239,7 +243,8 @@ impl AnimationInput {
                     None => Curve::Eased(easing),
                 };
                 match parse_sequence(property, &field, &keyframes, duration, curve, loops)? {
-                    Some(sequence) => {
+                    Some(mut sequence) => {
+                        sequence.run = run;
                         if from.is_some() {
                             return Err(invalid(
                                 &field,

@@ -350,16 +350,18 @@ impl ResolvedNode {
                 .any(|handler| matches!(self.properties.get(*handler), Some(Value::Function(_))))
     }
 
+    /// Whether this node's own `animate` tweens or `move` are running, not its children's.
+    pub(in crate::layout) fn tweening(&self) -> bool {
+        self.tweens.iter().any(|tween| !tween.resting) || self.movement.is_some()
+    }
+
     /// Whether any visible node in this tree is mid-tween, which is what asks the compositor for
     /// another frame callback (`wayland::surface::App::paint_surface`). A hidden node's subtree is
     /// frozen (ADR-0124), tweens included: nothing advances them, so counting them would arm a
     /// callback chain that never ends. They wait there and the thaw's resolve settles them.
     pub fn animating(&self) -> bool {
         self.visible
-            && (self.tweens.iter().any(|tween| !tween.resting)
-                || self.movement.is_some()
-                || self.dissolve.is_some()
-                || self.children.iter().any(ResolvedNode::animating))
+            && (self.tweening() || self.dissolve.is_some() || self.children.iter().any(ResolvedNode::animating))
     }
 
     /// [`animating`](Self::animating) less the tweens that hold one value from `now`: only those

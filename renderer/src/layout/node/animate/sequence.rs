@@ -61,6 +61,12 @@ pub struct Sequence {
     /// both `at` and `done` want it on every tick of every running sequence, and the frames it
     /// sums are fixed when the entry is parsed.
     cycle: Duration,
+    /// The first frame was `"current"`: [`Self::starting_at`] fills in the value on screen when the
+    /// run starts. Until then `frames[0]` stands in with the second frame's value, which keeps the
+    /// frame list uniform; a run with no value to start from never begins, so it is never played.
+    pub live_start: bool,
+    /// The entry's `run`: a different value is a different run, whatever the frames.
+    pub run: Option<f32>,
 }
 
 impl Sequence {
@@ -69,7 +75,7 @@ impl Sequence {
     /// is a snap, which a config writes by leaving `animate` off the property (ADR-0152).
     fn new(frames: Vec<Keyframe>, loops: Option<u32>) -> Option<Self> {
         let cycle: Duration = frames.iter().skip(1).map(|frame| frame.duration).sum();
-        (!cycle.is_zero()).then_some(Self { frames: frames.into(), loops, cycle })
+        (!cycle.is_zero()).then_some(Self { frames: frames.into(), loops, cycle, live_start: false, run: None })
     }
 
     /// The value `elapsed` into the run: the segment holding that instant, eased. A segment of no
@@ -114,6 +120,23 @@ impl Sequence {
         None
     }
 
+    /// Whether `fresh`, parsed from this pass's entry, is the run `self` already started: the same
+    /// frames, `loops` and `run`. A live first frame matches whatever value it started on.
+    pub(super) fn same_run(&self, fresh: &Self) -> bool {
+        let head = fresh.live_start || self.frames[0] == fresh.frames[0];
+        head && self.live_start == fresh.live_start
+            && self.loops == fresh.loops
+            && self.run == fresh.run
+            && self.frames[1..] == fresh.frames[1..]
+    }
+
+    /// This sequence with its first frame set to `shown`, the value on screen as the run starts.
+    pub(super) fn starting_at(&self, shown: Animatable) -> Self {
+        let mut frames = self.frames.to_vec();
+        frames[0].value = shown;
+        Self { frames: frames.into(), ..self.clone() }
+    }
+
     /// Whether a run that started `elapsed` ago has played out. An infinite one never has.
     pub(super) fn done(&self, elapsed: Duration) -> bool {
         self.loops.is_some_and(|loops| elapsed >= self.cycle * loops)
@@ -121,6 +144,7 @@ impl Sequence {
 }
 
 const INFINITE: &str = "infinite";
+const CURRENT: &str = "current";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum Loops {
@@ -157,9 +181,16 @@ pub(super) fn parse_sequence(
         };
     };
     let mut frames = Vec::new();
+    let mut live_start = false;
     for (index, frame) in keyframes.sequence_values::<Value>().enumerate() {
         let frame = frame.map_err(|e| invalid(field, e.to_string()))?;
         let at = format!("{field}.keyframes[{}]", index + 1);
+        // Only the bare string on the first frame: it has no value to parse until the run starts.
+        if index == 0 && matches!(&frame, Value::String(word) if word.to_str().is_ok_and(|word| word == CURRENT)) {
+            live_start = true;
+            frames.push(Keyframe { value: Animatable::Number(0.0), duration, curve });
+            continue;
+        }
         let (value, duration, curve) = match frame {
             // A frame that names nothing of its own is still a table when the value is one, so an
             // explicit `value` key is what tells the two apart.
@@ -199,6 +230,9 @@ pub(super) fn parse_sequence(
             format!("`keyframes` is a list; it holds {entries} entries but only {} run from index 1", frames.len()),
         ));
     }
+    if live_start {
+        frames[0].value = frames[1].value.clone();
+    }
     let loops = match loops.unwrap_or(Loops::Count(1)) {
         Loops::Infinite => None,
         Loops::Count(count) if (1..=10_000).contains(&count) => Some(count),
@@ -206,7 +240,7 @@ pub(super) fn parse_sequence(
             return Err(invalid(field, format!("`loops` {}", out_of_range(1, 10_000, format!("integer {count}")))));
         }
     };
-    Sequence::new(frames, loops).map(Some).ok_or_else(|| {
+    Sequence::new(frames, loops).map(|sequence| Some(Sequence { live_start, ..sequence })).ok_or_else(|| {
         invalid(field, "every `keyframes` segment lasts no time: a sequence that takes none is a jump".to_string())
     })
 }
@@ -328,7 +362,7 @@ mod tests {
     #[test]
     fn a_malformed_keyframe_list_is_refused() {
         let lua = Lua::new();
-        let cases: [(&str, &[&str]); 7] = [
+        let cases: [(&str, &[&str]); 11] = [
             ("keyframes = { 1 }", &["at least two"]),
             ("keyframes = 3", &["`keyframes` is a list"]),
             (r#"keyframes = { 1, "fill" }"#, &["keyframes[2]"]),
@@ -338,11 +372,26 @@ mod tests {
             // passed the length check while the config quietly lost one.
             ("keyframes = { [1] = 1, [2] = 0, [4] = 1 }", &["3 entries", "index 1"]),
             ("from = 0, keyframes = { 1, 0 }", &["`from` and `keyframes`"]),
+            ("run = 0/0, keyframes = { 1, 0 }", &["must be finite"]),
+            ("run = 1/0, keyframes = { 1, 0 }", &["must be finite"]),
+            // `"current"` is a first frame only, and has no table form.
+            (r#"keyframes = { 1, "current" }"#, &["keyframes[2]"]),
+            (r#"keyframes = { { value = "current" }, 1 }"#, &["keyframes[1]"]),
         ];
         for (entry, wanted) in cases {
             let text = refused(&lua, &format!("return {{ animate = {{ opacity = {{ duration = 1, {entry} }} }} }}"));
             assert!(wanted.iter().all(|want| text.contains(want)), "{entry}: {text}");
         }
+    }
+
+    #[test]
+    fn run_without_keyframes_is_refused_by_name() {
+        let lua = Lua::new();
+        let text = refused(&lua, "return { animate = { opacity = { duration = 1, run = 1 } } }");
+        assert_eq!(
+            text,
+            "invalid value for `animate.opacity`: `run` replays a `keyframes` list, and this entry has none"
+        );
     }
 
     /// An endless sequence runs as long as the shell does, so the phase has to come from whole

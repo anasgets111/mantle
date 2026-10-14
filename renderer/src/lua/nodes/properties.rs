@@ -265,6 +265,10 @@ props! {
         ///
         /// Book: Per-property tweens, parent-relative layout `move` and an `exit` block ([animation](../guide/animation.md)). An ancestor that shifts needs its own `move`. Only a node already on screen animates, unless a property entry has `from`
         animate: Bound<Animations>;
+        /// A `settled(name)` signal; the engine writes whether every `animate` tween on this node is at rest, false from the pass that starts one until the frame that ends the last.
+        ///
+        /// Book: A `settled(name)` signal the engine sets to whether every `animate` tween on this node is at rest ([settled](../guide/animation.md#settled-know-when-a-node-stops-moving))
+        settled: Handle;
         /// Unique among siblings; matches this node across passes. Siblings without one match by position (ADR-0045).
         ///
         /// Book: Unique among siblings; matches this node across passes ([identity](#identity-and-reconciliation)). Never a signal

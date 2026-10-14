@@ -7,10 +7,10 @@
 //! [`solve`]: solver::solve
 
 mod census;
-mod elision;
 mod field;
 mod fit;
 mod image_status;
+mod marks;
 mod pass;
 mod resolve;
 mod resolved;
@@ -268,7 +268,7 @@ impl Scene {
             self.next_id = next_id_snapshot;
             self.seeds.truncate(seeds_snapshot);
         } else {
-            self.publish_elision(lua);
+            self.publish_marks(lua);
             self.publish_image_status(lua);
             self.forget_gone_fields();
         }
@@ -486,7 +486,7 @@ impl Scene {
     pub fn forget(&mut self, instance_id: &str, lua: &Lua) {
         self.surfaces.remove(instance_id);
         self.solver_trees.remove(instance_id);
-        self.publish_elision(lua);
+        self.publish_marks(lua);
         self.publish_image_status(lua);
     }
 
