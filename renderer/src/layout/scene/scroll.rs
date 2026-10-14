@@ -1,4 +1,4 @@
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mlua::{Lua, Value};
 use shared::debug;
@@ -8,6 +8,10 @@ use super::solver::{MainAxis, main_axis_of};
 use super::{LayoutStyle, LogicalSize, ResolvedNode, Scene};
 use crate::layout::node::{self, PropMap};
 use crate::lua::signal::{CellId, ScrollRequest, Signal};
+
+/// A fling coasts `velocity` x this long. `OutCubic` starts at 3 x distance / duration, so the run
+/// lasts 3 x this and hands over the speed the fingers had.
+const FLING_SECS: f32 = 0.25;
 
 /// What a wheel event does to a `scroll` signal: see [`Scene::wheel`].
 #[derive(Debug, PartialEq)]
@@ -56,6 +60,35 @@ impl Scene {
         }
         // A pass would clamp too, but after a getter read the unclamped offset (ADR-0069 decision 4).
         WheelScroll::Write((shown + delta).min(room.unwrap_or(f32::INFINITY)).max(0.0))
+    }
+
+    /// Fingers lifted from `signal`'s container at `velocity` px/s: an eased run to where the
+    /// offset would have coasted, clamped to the room, needing no `animate.scroll`. The surfaces
+    /// to animate.
+    pub fn fling(&mut self, signal: &Signal, velocity: f32, now: Instant) -> Vec<String> {
+        // ponytail: fixed bounds, no per-device tuning; below 100 px/s is a drift, above 8000 no
+        // faster. Upgrade: scale from the compositor's reported axis values if a device needs it.
+        if velocity.abs() < 100.0 {
+            return Vec::new();
+        }
+        let velocity = velocity.clamp(-8000.0, 8000.0);
+        let Some(cell) = signal.cell_id() else { return Vec::new() };
+        let motion =
+            node::Motion::Eased { duration: Duration::from_secs_f32(3.0 * FLING_SECS), easing: node::Easing::OutCubic };
+        let mut flung = Vec::new();
+        for (key, tree) in &mut self.surfaces {
+            let mut moves = false;
+            each_holder(tree, cell, false, &mut |node, axis| {
+                let target = (node.scrolled + velocity * FLING_SECS).clamp(0.0, room_of(node, axis));
+                let spec = node::AnimationSpec { motion: motion.clone(), delay: Duration::ZERO, from: None };
+                node::retarget_scroll(spec, &mut node.tweens, node.scrolled, target, now);
+                moves |= node::scroll_target(&node.tweens).is_some();
+            });
+            if moves {
+                flung.push(key.clone());
+            }
+        }
+        flung
     }
 
     /// Advances the scroll runs in the trees of `due` to `now`: each running signal and the offset
@@ -368,7 +401,11 @@ pub(super) fn ease_request(
 ) -> Result<(), node::LayoutError> {
     let Some(signal) = node::signal_at(properties, "scroll") else { return Ok(()) };
     let Some(request) = signal.pending_scroll() else { return Ok(()) };
-    let Some(spec) = node::scroll_spec(kind, properties)? else { return Ok(()) };
+    let Some(spec) = node::scroll_spec(kind, properties)? else {
+        // A request is placed at once; a fling still running would overwrite it next frame.
+        tweens.retain(|tween| tween.property != "scroll");
+        return Ok(());
+    };
     signal.take_scroll();
     let (content_main, padding_start) = viewport(style, size, axis);
     let room = room(children, axis, style.spacing, content_main);
@@ -449,6 +486,41 @@ mod tests {
         );
         let err = apply_at(&mut Scene::new(), &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap_err();
         assert!(err.to_string().contains("`keyframes` cannot drive it"), "{err}");
+    }
+
+    /// A lift runs the offset out to `velocity` x 0.25 s with no `animate.scroll`, stopping at the end.
+    /// (The scene does not write the offset back here, so the start stays 0.)
+    #[test]
+    fn a_fling_eases_to_where_the_offset_would_coast_and_stops_at_the_end() {
+        let lua = scene_lua();
+        let table: mlua::Table = lua.load(SCROLLED_COLUMN).eval().unwrap();
+        let surface = deserialize_lua_table(&table).unwrap();
+        let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
+        let signal = crate::lua::signal::from_userdata(&signal).unwrap();
+        let mut scene = Scene::new();
+        apply_at(&mut scene, &[surface], full(), &ShapingHandle::spawn(), &lua).unwrap();
+
+        let now = Instant::now();
+        assert_eq!(scene.fling(&signal, 400.0, now), ["bar@TEST"], "a run is under way");
+        let at = |scene: &mut Scene, ms| scene.advance_scrolls(&["bar@TEST".into()], now + Duration::from_millis(ms));
+        let mid = at(&mut scene, 100)[0].1;
+        assert!(mid > 0.0 && mid < 100.0, "moving and decelerating toward 400 x 0.25 = 100, at {mid}");
+        assert_eq!(at(&mut scene, 800)[0].1, 100.0, "arrived");
+
+        scene.fling(&signal, 99_000.0, now);
+        assert_eq!(at(&mut scene, 800)[0].1, 200.0, "200 px of room is all there is");
+
+        assert!(scene.fling(&signal, -400.0, now).is_empty(), "nothing above offset 0 to coast to");
+        assert!(scene.fling(&signal, 99.0, now).is_empty(), "a drift under 100 px/s stays put");
+        scene.fling(&signal, 400.0, now);
+        scene.stop_scroll(&signal);
+        assert!(at(&mut scene, 100).is_empty(), "a press or new scroll cancels the run");
+
+        scene.fling(&signal, 400.0, now);
+        lua.load(r#"scroll("s"):scroll_to(50)"#).exec().unwrap();
+        let again = deserialize_lua_table(&lua.load(SCROLLED_COLUMN).eval::<mlua::Table>().unwrap()).unwrap();
+        apply_at(&mut scene, &[again], full(), &ShapingHandle::spawn(), &lua).unwrap();
+        assert!(at(&mut scene, 100).is_empty(), "a placed `:scroll_to` is not overwritten by the fling");
     }
 
     /// ADR-0069. Scrolling moves children within a viewport the clip already cuts them to.

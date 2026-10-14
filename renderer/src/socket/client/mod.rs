@@ -468,6 +468,21 @@ impl RendererClient {
         }
     }
 
+    /// Fingers lifted from `signal` at `velocity` px/s ([`Scene::fling`]): the instances to animate.
+    pub fn fling(
+        &mut self,
+        signal: &crate::lua::signal::Signal,
+        velocity: f32,
+        now: std::time::Instant,
+    ) -> Vec<String> {
+        self.scene.fling(signal, velocity, now)
+    }
+
+    /// Stops every run on `signal` ([`Scene::stop_scroll`]).
+    pub fn stop_scroll(&mut self, signal: &crate::lua::signal::Signal) {
+        self.scene.stop_scroll(signal);
+    }
+
     /// One frame of every smooth scroll in `due`, ahead of the pass so a reader lays out from the
     /// offset this frame draws: the instances moved in place.
     pub fn advance_scrolls(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {

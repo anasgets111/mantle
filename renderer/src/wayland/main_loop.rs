@@ -106,6 +106,7 @@ pub fn run(
         pointer: None,
         cursor_shown: None,
         pointer_at: None,
+        finger_scroll: None,
         shm,
         keyboard: None,
         keyboard_focus: None,

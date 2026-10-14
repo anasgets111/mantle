@@ -18,7 +18,7 @@ pub(super) use keyboard::{FocusedField, FocusedTextField};
 
 #[cfg(test)]
 pub(crate) use pointer::apply_hover_write;
-pub(super) use pointer::{ActiveDrag, ArmedClick, ArmedSerial, ClickedNode, LastClick};
+pub(super) use pointer::{ActiveDrag, ArmedClick, ArmedSerial, ClickedNode, Fingers, LastClick};
 
 impl SeatHandler for App {
     fn seat_state(&mut self) -> &mut SeatState {

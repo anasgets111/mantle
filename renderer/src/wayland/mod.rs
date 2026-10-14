@@ -176,6 +176,8 @@ pub struct App {
     /// by `Leave`, and rewritten against hover signals after a re-resolve because scrolling moves
     /// rows under a still pointer and no `Motion` arrives to say so.
     pointer_at: Option<(String, (f64, f64))>,
+    /// The scroll under a touchpad's fingers, for the fling on lift.
+    finger_scroll: Option<input::Fingers>,
     /// `wl_shm` only for SCTK's XCursor fallback when `wp_cursor_shape_v1` is absent; all other
     /// rendering uses EGL.
     shm: Shm,

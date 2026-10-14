@@ -15,6 +15,7 @@ mod drag;
 mod position;
 mod press;
 mod wheel;
+pub(in crate::wayland) use wheel::Fingers;
 
 pub(crate) use callbacks::apply_hover_write;
 pub(in crate::wayland::input) use callbacks::call_on_click;
@@ -294,6 +295,7 @@ impl App {
                 // ADR-0051 amendment: preserve the "user asked again" stamp past disarm.
                 self.pointer_input_count += 1;
                 self.cancel_text_input_composition();
+                self.stop_glide_under(index, position);
                 let hit = self.hit_under(index, position);
                 // Read before the call consumes `hit.field`; a held draft is still a plain
                 // field (ADR-0108).
@@ -476,9 +478,9 @@ impl App {
                     self.show_cursor(shape);
                 }
             }
-            // Wheel (ADR-0069); use the event's own position.
-            PointerEventKind::Axis { horizontal, vertical, .. } => {
-                self.scroll_at(
+            // Wheel (ADR-0069); use the event's own position. Finger scrolls coast on lift.
+            PointerEventKind::Axis { time, horizontal, vertical, source } => {
+                let moved = self.scroll_at(
                     index,
                     position,
                     horizontal.absolute,
@@ -486,6 +488,7 @@ impl App {
                     vertical.absolute,
                     vertical.value120,
                 );
+                self.coast_after_fingers(time, source, moved, horizontal.stop || vertical.stop);
             }
         }
     }
@@ -627,6 +630,7 @@ impl App {
         self.last_click = None;
         self.cursor_shown = None;
         self.pointer_at = None;
+        self.finger_scroll = None;
     }
 
     /// The pointer half of `App::drop_role_object`'s scrub, for the one leave the compositor never

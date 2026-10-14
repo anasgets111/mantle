@@ -8429,3 +8429,16 @@ clock synchronously in the Renderer, before the first push, because the field is
    no longer give two values under one name.
 4. A `persistent_table` key its file lacks reads the declared default, so `set(key, nil)` reads it
    at once. The Supervisor still fills declared defaults into the file on `open` (ADR-0136).
+
+## 0362. Touchpad scrolls coast after the fingers lift, with no opt-out
+
+Wayland sends no kinetic events: a finger-source axis scroll ends with `axis_stop` and the client
+decides what follows. Stopping dead reads as broken next to GTK and browsers, so a `scroll`
+container coasts by default. The lift speed comes from drag's velocity sampler (the last 100 ms of
+finger travel); below 100 px/s nothing coasts, above 8000 px/s is capped. The run is the existing
+scroll tween, `out_cubic` over 0.75 s to `offset + v * 0.25 s`, clamped to the room, so it starts at
+the lift speed and needs no `animate.scroll`. Wheel notches never coast. A new scroll event, a press
+on the container, or a placed `:scroll_to`/`:scroll_by`/`:reveal` stops it.
+
+Trade-off: no Lua knob until a config needs one; `stop_scroll` and the scroll methods already end a
+run. A plain `scroll:set()` during the 0.75 s run is overwritten by it.
