@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a `compositor_blur` region that changed while the rest of the surface did not was applied only at the next repaint; it now applies at once.
 - Fixed: `mantle.privacy` names apps using the camera through PipeWire (browsers, Snapshot, OBS) instead of listing `pipewire`.
 
 ## 0.7.2 - 2026-10-13

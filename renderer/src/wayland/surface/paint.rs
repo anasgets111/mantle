@@ -277,7 +277,16 @@ impl App {
             tracked.dirty = false;
             tracked.stale = next_stale(owed, tracked.stale, None);
             tracked.last_painted = Some((paint_key, list));
-            if animating && let Some(surface) = tracked.request_frame(&self.queue_handle) {
+            // An owed paint with no tween still commits, so double-buffered state staged for it (the
+            // blur region) lands; it asks for no callback, so idle stays idle.
+            let surface = if animating {
+                tracked.request_frame(&self.queue_handle)
+            } else if owed {
+                tracked.role.wl_surface()
+            } else {
+                None
+            };
+            if let Some(surface) = surface {
                 surface.commit();
             }
             return;
