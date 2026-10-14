@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Changed: `mantle check` prints the source line under each error that names a `file.lua:N`, indented after `| `.
 - Fixed: a `compositor_blur` region that changed while the rest of the surface did not was applied only at the next repaint; it now applies at once.
 - Fixed: a rotated or skewed box takes input across its rotated shape, not its upright bounding box; clicks in the empty corners pass through.
 - Fixed: `compositor_blur` follows `rotate` and skew instead of blurring the upright bounding box.

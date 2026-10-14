@@ -257,6 +257,8 @@ stack traceback:
 When the stubs `mantle init` wrote differ from this `mantle`, `check` also prints one line asking
 you to run `mantle init` again.
 
+Under an error line that starts with `file.lua:N:`, `check` prints that source line, trimmed, after `    | `.
+
 It starts no programs and writes no state. On failure it prints only the error, not the config's
 `print` output.
 

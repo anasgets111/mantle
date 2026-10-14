@@ -29,6 +29,33 @@ use crate::text::shaping::ShapingHandle;
 /// last-variant branch runs, and the empty, so an empty-list branch runs. Each failing pass is
 /// reported.
 pub fn run(config_dir: &Path) -> Result<String, String> {
+    check(config_dir).map_err(|err| with_source_lines(config_dir, &err))
+}
+
+/// Puts the trimmed source line under each error line that starts with `<file>.lua:<line>:`, since
+/// Lua gives no column to point at. Traceback frames (tab-led) and unreadable files stay as they are.
+fn with_source_lines(config_dir: &Path, err: &str) -> String {
+    let mut out = Vec::new();
+    for line in err.lines() {
+        out.push(line.to_owned());
+        let at = line.trim_start().strip_prefix(&format!("{}: ", config_dir.display())).unwrap_or(line.trim_start());
+        let mut parts = at.splitn(3, ':');
+        let (Some(file), Some(number), Some(_)) = (parts.next(), parts.next(), parts.next()) else { continue };
+        let relative = Path::new(file).components().all(|part| matches!(part, std::path::Component::Normal(_)));
+        let Ok(number) = number.parse::<usize>() else { continue };
+        if !relative || !file.ends_with(".lua") || line.starts_with('\t') {
+            continue;
+        }
+        let Ok(source) = std::fs::read_to_string(config_dir.join(file)) else { continue };
+        if let Some(code) = source.lines().nth(number.saturating_sub(1)).map(str::trim).filter(|code| !code.is_empty())
+        {
+            out.push(format!("    | {code}"));
+        }
+    }
+    out.join("\n")
+}
+
+fn check(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
@@ -552,12 +579,45 @@ mod tests {
             if !must.iter().any(|want| want.contains("top-level return")) {
                 assert!(!err.contains("top-level return"), "{name}: not a top-level return error:\n{err}");
             }
+            // The random tempdir name can spell "u32" or "f64" by chance.
+            let body = err.replace(&dir_name, "");
             for rust_form in
                 ["String(", "Integer(", "usize", "f64", "i64", "i32", "u32", "u64", "converting", "C modules", "..="]
             {
-                assert!(!err.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
+                assert!(!body.contains(rust_form), "{name}: Rust form {rust_form:?} leaked:\n{err}");
             }
         }
+    }
+
+    /// Each `fixtures/errors/*.lua` is a broken `shell.lua` whose first line names a substring of the
+    /// error `mantle check` must print.
+    #[test]
+    fn every_error_fixture_fails_with_the_message_it_names() {
+        let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/errors");
+        let mut seen = 0;
+        for entry in std::fs::read_dir(&fixtures).unwrap() {
+            let path = entry.unwrap().path();
+            let source = std::fs::read_to_string(&path).unwrap();
+            let want = source.lines().next().and_then(|line| line.strip_prefix("-- expect: ")).expect("first line");
+            let dir = tempfile::tempdir().unwrap();
+            std::fs::write(dir.path().join("shell.lua"), &source).unwrap();
+            let err = super::run(dir.path()).expect_err(&format!("{} must fail", path.display()));
+            assert!(err.contains(want), "{}: missing {want:?} in:\n{err}", path.display());
+            if path.ends_with("misspelled_property.lua") {
+                assert!(err.contains("\n    | return panel {"), "the source line follows the error:\n{err}");
+            }
+            seen += 1;
+        }
+        assert!(seen > 0, "no fixtures found");
+    }
+
+    #[test]
+    fn an_error_with_a_line_prints_that_source_line_under_it() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("shell.lua"), "local x = 1\n  return panel { idd = \"bar\" }\n").unwrap();
+        let err = super::run(dir.path()).unwrap_err();
+        let (head, excerpt) = err.split_once('\n').unwrap();
+        assert!(head.contains("shell.lua:2:") && excerpt == "    | return panel { idd = \"bar\" }", "{err}");
     }
 
     /// mlua's userdata dispatch adds `[C]: in upvalue '__index'` and `__mlua_index:31` frames above
@@ -583,7 +643,10 @@ mod tests {
         .unwrap();
         let err = super::run(dir.path()).unwrap_err();
         assert!(err.starts_with(&format!("{}: shell.lua:1: rect: invalid value", dir.path().display())), "{err}");
-        assert!(err.ends_with("on `bar@HDMI-A-1`)"), "a static error fails every pass and names none: {err}");
+        assert!(
+            err.lines().next().unwrap().ends_with("on `bar@HDMI-A-1`)"),
+            "a static error fails every pass and names none: {err}"
+        );
     }
 
     /// An `each` runs only once a `list` has items, and every capability reads `nil` until
@@ -658,7 +721,11 @@ mod tests {
             let err = super::run(dir.path()).unwrap_err();
             assert!(err.starts_with(&format!("{}: shell.lua:", dir.path().display())), "{source}: {err}");
             assert!(err.ends_with(&format!("\n({pass})")), "{source}: {err}");
-            assert_eq!(err.matches("contnet").count(), 1, "{source}: {err}");
+            assert_eq!(
+                err.matches("contnet").count(),
+                2,
+                "once in the error, once in its source line: {source}: {err}"
+            );
         }
     }
 }
