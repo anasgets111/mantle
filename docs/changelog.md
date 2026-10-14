@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Added: `mantle check` warns when an outer shadow is cut off by its surface's edge (4 px or more, not on a side where a `panel` meets the output edge), naming the side and the room to add; the exit status is unchanged.
 - Changed: a looping `keyframes` animation, or a `delay`, asks for no frames while it holds one value and wakes at the end of the hold; a blink that rests 3.6 s no longer costs a tick per refresh.
 - Added: `effect.shader.input = "desktop"` gives a shader on a `panel` box the desktop behind it (wlr-screencopy), for lens and refraction effects. The capture follows `translate` and `scale` on the node or an ancestor; under `rotate` it reads the rotated box's bounds. The shader contract is `"backdrop"`'s: return `mantle_input` to leave a pixel. What it presents is the output itself at most 88% opaque, and nothing where the output shows the desktop; under opaque paint the desktop reads as the nearest known pixel in its row, and a capture that matches the last, or a pixel just repainted, is not unmixed.
 - Changed: `mantle check` prints the source line under each error that names a `file.lua:N`, indented after `| `.

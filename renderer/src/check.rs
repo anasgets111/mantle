@@ -9,7 +9,8 @@
 use std::path::Path;
 
 use crate::layout::instance::{OutputGeometry, SurfaceInstance, expand_instances};
-use crate::layout::node::SurfaceSpec;
+use crate::layout::node::{self, ClipShape, PaintStyle, PanelSpec, SurfaceSpec, SurfaceTopology};
+use crate::layout::paint::shadow_rect;
 use crate::layout::scene::{LogicalSize, Scene};
 use crate::lua::LoadOutput;
 use crate::lua::capability::CommandSender;
@@ -59,19 +60,24 @@ fn check(config_dir: &Path) -> Result<String, String> {
     let shell_lua = config_dir.join("shell.lua");
     let (output, specs, namespace, loader) = evaluate(config_dir)?;
     let size = LogicalSize { width: 1920.0, height: 1080.0 };
-    lay_out_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
-        failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
-    })?;
+    let warnings =
+        lay_out_passes(&output, &specs, &namespace, &loader, &ShapingHandle::spawn(), size).map_err(|failures| {
+            failures.iter().map(|failure| format!("{}: {failure}", config_dir.display())).collect::<Vec<_>>().join("\n")
+        })?;
     let mut report = format!("{}: ok, {} surface(s)\n", shell_lua.display(), specs.len());
     for spec in &specs {
         report.push_str(&format!("  {:<7} {}\n", spec.role(), spec.declared_id()));
+    }
+    for warning in warnings {
+        report.push_str(&format!("warning: {warning}\n"));
     }
     Ok(report)
 }
 
 /// Lays out with every capability `nil`, then after [`push_samples`] of each sample set; each
 /// failing pass is one `<error>` entry, which may span lines, then `(<passes>)` on its own line,
-/// unless every pass failed alike: a static error does not depend on the data.
+/// unless every pass failed alike: a static error does not depend on the data. On success, the
+/// warnings of every pass, one per cut shadow ([`shadow_cuts`]).
 fn lay_out_passes(
     output: &crate::lua::LoadOutput,
     specs: &[SurfaceSpec],
@@ -79,7 +85,8 @@ fn lay_out_passes(
     loader: &Loader,
     shaping: &ShapingHandle,
     size: LogicalSize,
-) -> Result<(), Vec<String>> {
+) -> Result<Vec<String>, Vec<String>> {
+    let mut cuts = Cuts::new();
     let mut failures: Vec<(String, Vec<&str>)> = Vec::new();
     let passes = [
         ("before capability data", None),
@@ -91,17 +98,123 @@ fn lay_out_passes(
         if let Some(set) = set {
             push_samples(namespace, loader, set).map_err(|err| vec![format!("{pass}: {err}")])?;
         }
-        if let Err(err) = lay_out(output, specs, loader, shaping, size) {
-            match failures.iter_mut().find(|(seen, _)| *seen == err) {
+        match lay_out(output, specs, loader, shaping, size) {
+            Ok((scene, instances)) => shadow_cuts(&scene, &instances, specs, &mut cuts),
+            Err(err) => match failures.iter_mut().find(|(seen, _)| *seen == err) {
                 Some((_, in_passes)) => in_passes.push(pass),
                 None => failures.push((err, vec![pass])),
-            }
+            },
         }
     }
     let each = |(err, in_passes): (String, Vec<&str>)| {
         if in_passes.len() == passes.len() { err } else { format!("{err}\n({})", in_passes.join(", ")) }
     };
-    if failures.is_empty() { Ok(()) } else { Err(failures.into_iter().map(each).collect()) }
+    if !failures.is_empty() {
+        return Err(failures.into_iter().map(each).collect());
+    }
+    Ok(cuts.into_iter().map(|(node, sides)| format!("{node}'s {}", cut_line(&sides))).collect())
+}
+
+/// A cut under this many px stays quiet. A blurred shadow's 3 sigma tail fades to nothing and a
+/// 1 to 3 px spread is a hairline; 4 px is the first cut that reads as an edge.
+const SHADOW_CUT_MIN: f32 = 4.0;
+
+/// Per `<role> "<surface>": <node>`: the worst `(missing, needed, available)` px seen on each of
+/// above, right, below, left, so the passes and the outputs of one panel make one line.
+type Cuts = std::collections::BTreeMap<String, [Option<(f32, i32, i32)>; 4]>;
+
+/// `needs 54 px above, 90 below (the surface has 0 on each)`; the room is per side when it differs.
+fn cut_line(sides: &[Option<(f32, i32, i32)>; 4]) -> String {
+    let cut: Vec<_> = ["above", "right", "below", "left"]
+        .into_iter()
+        .zip(sides)
+        .filter_map(|(s, c)| Some((s, c.as_ref()?)))
+        .collect();
+    let same = cut.iter().all(|(_, (_, _, has))| *has == cut[0].1.2);
+    let parts: Vec<String> = cut
+        .iter()
+        .enumerate()
+        .map(|(i, (side, (_, need, has)))| {
+            let px = if i == 0 { " px" } else { "" };
+            if same { format!("{need}{px} {side}") } else { format!("{need}{px} {side} (has {has})") }
+        })
+        .collect();
+    let room = match (same, cut.len()) {
+        (false, _) => String::new(),
+        (true, 1) => format!(" (the surface has {})", cut[0].1.2),
+        (true, _) => format!(" (the surface has {} on each)", cut[0].1.2),
+    };
+    format!("shadow is cut: needs {}{room}; grow the surface and pad the content", parts.join(", "))
+}
+
+/// Records every outer shadow that reaches past its surface's bounds by [`SHADOW_CUT_MIN`] or
+/// more, on a side the output does not already cut (a panel anchored there with margin <= 0).
+/// The reach is paint's own: `shadow_rect` grown by 3 sigma. A `clip` below the root cuts first,
+/// deliberately, so nothing under one is checked.
+fn shadow_cuts(scene: &Scene, instances: &[SurfaceInstance], specs: &[SurfaceSpec], cuts: &mut Cuts) {
+    for instance in instances {
+        let (Some(root), Some(spec)) = (
+            scene.surface(&instance.instance_id),
+            specs.iter().find(|spec| spec.declared_id() == instance.declared_id),
+        ) else {
+            continue;
+        };
+        // top, right, bottom, left
+        let at_output_edge = match spec {
+            SurfaceSpec::Panel(PanelSpec { topology: SurfaceTopology { anchor: a, .. }, margin: m, .. }) => {
+                [a.top && m.top <= 0.0, a.right && m.right <= 0.0, a.bottom && m.bottom <= 0.0, a.left && m.left <= 0.0]
+            }
+            _ => [false; 4],
+        };
+        let (width, height) = (root.rect.width, root.rect.height);
+        let mut stack = vec![(root, 0.0, 0.0)];
+        while let Some((node, ox, oy)) = stack.pop() {
+            let rect = node.at(ox, oy);
+            let mut name = None;
+            for shadow in node.layout_style.effect.shadows.iter().filter(|shadow| !shadow.inset) {
+                let seen = shadow_rect(rect, rect, *shadow);
+                let reach = 1.5 * shadow.blur;
+                let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
+                // top, right, bottom, left: (room the shadow needs, room the surface has)
+                let sides = [
+                    (rect.y - (seen.y - reach), rect.y),
+                    (seen.x + seen.width + reach - right, width - right),
+                    (seen.y + seen.height + reach - bottom, height - bottom),
+                    (rect.x - (seen.x - reach), rect.x),
+                ];
+                for (cut, (need, has)) in sides.into_iter().enumerate() {
+                    if at_output_edge[cut] || need - has < SHADOW_CUT_MIN {
+                        continue;
+                    }
+                    let key = name.get_or_insert_with(|| {
+                        match (node::fields::common::id.read(&node.properties), node.site) {
+                            (Ok(Some(id)), _) => {
+                                format!("{} \"{}\": {} \"{id}\"", spec.role(), instance.declared_id, node.kind)
+                            }
+                            (_, Some(site)) => {
+                                format!("{} \"{}\": {} at {site}", spec.role(), instance.declared_id, node.kind)
+                            }
+                            _ => format!("{} \"{}\": {}", spec.role(), instance.declared_id, node.kind),
+                        }
+                    });
+                    let worst = &mut cuts.entry(key.clone()).or_default()[cut];
+                    if worst.is_none_or(|(missing, ..)| need - has > missing) {
+                        *worst = Some((need - has, need.ceil() as i32, has.max(0.0).floor() as i32));
+                    }
+                }
+            }
+            let clips = !std::ptr::eq(node, root)
+                && matches!(node.paint, Some(PaintStyle::Box { clip: ClipShape::Box | ClipShape::Rounded, .. }));
+            if !clips {
+                stack.extend(
+                    node.children
+                        .iter()
+                        .filter(|child| child.visible && !child.leaving)
+                        .map(|child| (child, rect.x, rect.y)),
+                );
+            }
+        }
+    }
 }
 
 /// Lays the evaluated scene out through the production `Scene::apply_locked` on one `size` output
@@ -202,6 +315,45 @@ mod tests {
         let report = super::run(dir.path()).expect("the config must evaluate");
         assert!(report.contains("ok, 1 surface(s)"), "{report}");
         assert!(report.contains("panel   bar"), "the bar must be in the report:\n{report}");
+    }
+
+    /// `mantle check` on a panel `lens` (`props`) holding a pill `pill` with `shadow`.
+    fn shadow_report(props: &str, shadow: &str) -> String {
+        let dir = tempfile::tempdir().unwrap();
+        let source = format!(
+            "return panel {{ id = \"lens\", layer = \"top\", {props}, child = rect {{ id = \"pill\", width = \"fill\", \
+             height = \"fill\", background = \"#ffffff\", radius = 60, shadows = {{ {shadow} }} }} }}\n"
+        );
+        std::fs::write(dir.path().join("shell.lua"), source).unwrap();
+        super::run(dir.path()).expect("a cut shadow is a warning, not a failure")
+    }
+
+    const DROP: &str = r#"{ blur = 48, offset = { y = 18 } }"#;
+
+    #[test]
+    fn a_shadow_cut_at_the_surface_edge_warns_once_with_the_side_and_the_room_it_needs() {
+        let report = shadow_report("width = 360, height = 140", DROP);
+        let line = r#"warning: panel "lens": rect "pill"'s shadow is cut: needs 54 px above, 72 right, 90 below, 72 left (the surface has 0 on each); grow the surface and pad the content"#;
+        assert!(report.contains(line), "{report}");
+        assert_eq!(report.matches("warning:").count(), 1, "four passes and four sides, one line: {report}");
+        assert!(!shadow_report("width = 360, height = 140", "{ spread = 1 }").contains("warning"), "a hairline");
+        assert!(!shadow_report("width = 360, height = 140", r#"{ blur = 48, inset = true }"#).contains("warning"));
+    }
+
+    #[test]
+    fn a_surface_with_room_for_the_shadow_does_not_warn() {
+        assert!(!shadow_report("width = 560, height = 340, padding = 90", DROP).contains("warning"));
+    }
+
+    #[test]
+    fn a_side_on_the_output_edge_is_left_to_the_screen() {
+        let up = r#"{ blur = 48, offset = { y = -18 } }"#;
+        let loose = shadow_report("width = 360, height = 140", up);
+        let anchored = shadow_report("width = 360, height = 140, anchor = { top = true }", up);
+        assert!(loose.contains("needs 90 px above"), "{loose}");
+        assert!(!anchored.contains("above") && anchored.contains("below"), "{anchored}");
+        let lifted = shadow_report("width = 360, height = 140, anchor = { top = true }, margin = { top = 8 }", up);
+        assert!(lifted.contains("above"), "a margin leaves room past the screen edge: {lifted}");
     }
 
     #[test]
@@ -1432,6 +1584,7 @@ return panel { id = "bar", layer = "top", height = 20, child = rect {
         std::fs::write(dir.path().join("shell.lua"), shell(block)).unwrap();
         let (output, specs, namespace, loader) = super::evaluate(dir.path())?;
         super::lay_out_passes(&output, &specs, &namespace, &loader, shaping, OUTPUT)
+            .map(|_| ())
             .map_err(|failures| failures.join("\n"))
     }
 

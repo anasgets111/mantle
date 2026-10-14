@@ -224,7 +224,9 @@ real layout code, on one 1920x1080 output plus one per `output` name a panel pin
 | `with empty sample lists` | The first push with every list and map empty | An empty-state branch, such as "No notifications" |
 
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
-the config `print`ed. An error prints as `<config dir>: <error>` and exits 1; files in it are named
+the config `print`ed, then one `warning:` line per outer shadow the surface cuts off by 4 px or
+more, naming the side and the room it needs. A warning leaves the exit status at 0, and a side
+where a `panel` meets the output edge is skipped. An error prints as `<config dir>: <error>` and exits 1; files in it are named
 relative to the config directory. A layout error leads with the line that built the failing node
 and its kind (`text[1]`, with its index among `children`), then gives the path down to its parent
 and the surface instance. An error that only some passes hit ends with those passes on a line of

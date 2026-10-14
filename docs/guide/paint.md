@@ -945,7 +945,7 @@ column {
 ```
 
 [`hover`](input.md#hover) drives the shadow and [`animate`](animation.md) eases it. Leave room
-around the card when its parent clips: a scroll viewport or the surface cuts the shadow.
+around the card when its parent clips: a scroll viewport or the surface cuts the shadow; `mantle check` warns when the surface does.
 
 ### Pill button
 

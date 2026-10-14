@@ -569,7 +569,7 @@ fn grow(rect: LogicalRect, by: f32) -> LogicalRect {
 /// Where `area`, painted around a node's box `rect`, lands as that node's shadow: offset, and
 /// scaled about the box's centre until the box has grown by `spread` a side. For a box that is
 /// CSS's spread; for other content it is Qt's `shadowScale` (ADR-0254).
-fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> LogicalRect {
+pub(crate) fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Shadow) -> LogicalRect {
     let axis = |start: f32, size: f32, from: f32, span: f32, offset: f32| {
         let k = if size > 0.0 { ((size + 2.0 * shadow.spread) / size).max(0.0) } else { 1.0 };
         let centre = start + size / 2.0;
