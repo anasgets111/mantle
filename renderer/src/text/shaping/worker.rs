@@ -218,15 +218,17 @@ pub(super) fn shape(
         lines.push(trimmed.to_string());
         line_ranges.push(source_range.start..end);
         let metrics = line.metrics();
-        let line_width = (metrics.advance - metrics.trailing_whitespace).max(0.0);
+        // An empty line still reports the advance of a placeholder space that does not hang.
+        let line_width = if trimmed.is_empty() { 0.0 } else { (metrics.advance - metrics.hanging_advance).max(0.0) };
         width = width.max(line_width);
         let mut placed = Vec::new();
         let mut pen = metrics.inline_min_coord + metrics.offset;
         for run in line.runs() {
             let key = (run.font().data.id(), run.font().index);
             let face = fonts.faces.get(&key).copied();
-            let instance = coords.iter().position(|at| **at == *run.normalized_coords()).unwrap_or_else(|| {
-                coords.push(run.normalized_coords().into());
+            let bits = || run.normalized_coords().iter().map(|c| c.to_bits());
+            let instance = coords.iter().position(|at| at.iter().copied().eq(bits())).unwrap_or_else(|| {
+                coords.push(bits().collect());
                 coords.len() - 1
             }) as u32;
             for cluster in run.visual_clusters() {

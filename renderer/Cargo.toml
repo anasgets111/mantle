@@ -15,7 +15,7 @@ workspace = true
 
 [dependencies]
 # Fontique receives only the files selected by `text/fonts.rs`; system discovery stays off.
-parley = { version = "0.11.1", default-features = false, features = ["std"] }
+parley = { version = "0.12.0", default-features = false, features = ["std"] }
 # `swash` is what makes the text look hinted. Without the feature femtovg falls back to
 # `render_glyph`: it tessellates the font outline and supersamples it 8x on the GPU, which
 # runs no hinting bytecode and throws the subpixel position away, so every stem lands as two
