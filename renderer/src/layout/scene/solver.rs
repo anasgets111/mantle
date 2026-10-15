@@ -142,27 +142,12 @@ pub(super) fn taffy_style(
 
     let mut out = taffy::Style {
         // No shrink: fixed children keep their stated size, even when siblings overflow. Disable
-        // taffy's automatic minimum so a `Fill` item can collapse to zero.
-        // TODO(DioxusLabs/taffy#1081): give the cross axis a zero `min_size` too once that PR ships.
-        // taffy adds the container's margin to each child's cross minimum (`constants.margin`
-        // for `child.margin` in `determine_flex_base_size`); `Some(0) + margin` floors it, `None +
-        // margin` does not (ADR-0111).
+        // taffy's automatic minimum on both axes so a `Fill` item can collapse to zero.
         flex_shrink: 0.0,
-        // A declared `min_width`/`min_height` takes that axis over; the other keeps the default.
-        min_size: {
-            let automatic = match parent_axis {
-                Some(MainAxis::Horizontal) => {
-                    taffy::Size { width: length(0.0), height: taffy::LengthPercentageAuto::auto() }
-                }
-                Some(MainAxis::Vertical) => {
-                    taffy::Size { width: taffy::LengthPercentageAuto::auto(), height: length(0.0) }
-                }
-                None => taffy::Size { width: length(0.0), height: length(0.0) },
-            };
-            taffy::Size {
-                width: style.min_width.map_or(automatic.width, taffy::LengthPercentageAuto::length),
-                height: style.min_height.map_or(automatic.height, taffy::LengthPercentageAuto::length),
-            }
+        // A declared `min_width`/`min_height` takes that axis over.
+        min_size: taffy::Size {
+            width: length(style.min_width.unwrap_or(0.0)),
+            height: length(style.min_height.unwrap_or(0.0)),
         },
         padding: taffy::Rect {
             left: length(style.padding.left),
@@ -234,7 +219,6 @@ pub(super) fn taffy_style(
         // ADR-0023's stacking model is one auto-sized grid cell: children overlap and align
         // independently, while `Content` is their bounding union. `minmax(0, auto)` keeps the cell
         // at the content box when a child is larger; an `auto` minimum would grow to that child.
-        // Not `1fr`: taffy leaves item margins out of its max-content size (DioxusLabs/taffy#1177).
         None => {
             out.display = taffy::Display::Grid;
             // An auto-size, uncapped axis floors the track at the children's min-content (CSS
@@ -1635,8 +1619,8 @@ pub(super) mod tests {
         assert!(children[1].rect.width > children[0].rect.width + 5.0);
     }
 
-    /// taffy adds a flex container's own margin to its children's minimum cross size when it
-    /// measures them (see [`taffy_style`]'s `min_size`; fixed by DioxusLabs/taffy#1081). The card here is a column
+    /// taffy before 0.15 added a flex container's own margin to its children's minimum cross size when
+    /// it measured them (ADR-0111). The card here is a column
     /// with a left margin of most of the output, holding a body that wraps at the card's width.
     /// Its height has to be the wrapped body's, whatever the margin.
     #[test]
