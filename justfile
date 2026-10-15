@@ -182,7 +182,7 @@ lua:
 # payload types, node and surface property tables from the renderer's property table.
 # Every golden test is named `the_generated_*`. Then show what moved.
 stubs:
-    UPDATE_STUBS=1 {{locked}} cargo test -p supervisor -p renderer the_generated_
+    UPDATE_STUBS=1 {{locked}} cargo test --workspace the_generated_
     @git diff --stat -- lua-meta docs
 
 # Re-render the docs screenshots that moved past the tolerance, delete orphans, then show what moved.

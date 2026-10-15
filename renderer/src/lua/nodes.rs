@@ -766,7 +766,10 @@ mod meta_stub_tests {
         crate::lua::surfaces::surface_specs(&crate::lua::LoadOutput { surfaces: vec![virtual_node.clone()] })
             .map_err(|e| e.to_string())?;
         let mut scene = crate::layout::scene::Scene::new();
-        let shaping = crate::text::shaping::ShapingHandle::spawn();
+        // One worker for every probe: each spawn rediscovers the system fonts, 26 s over the run.
+        static SHAPING: std::sync::LazyLock<crate::text::shaping::ShapingHandle> =
+            std::sync::LazyLock::new(crate::text::shaping::ShapingHandle::spawn);
+        let shaping = &*SHAPING;
         // Keep `scene::tests::apply_at` `pub(super)`; widening a test helper is what the justfile's
         // `docs` baseline discourages. One instance and output suffice for this probe.
         let declared =
@@ -779,7 +782,7 @@ mod meta_stub_tests {
             available: crate::layout::LogicalSize { width: 1000.0, height: 500.0 },
             measured_axes: (false, false),
         }];
-        scene.apply(std::slice::from_ref(&virtual_node), &instances, &shaping, &lua).map_err(|e| format!("{e:?}"))?;
+        scene.apply(std::slice::from_ref(&virtual_node), &instances, shaping, &lua).map_err(|e| format!("{e:?}"))?;
         // A signal defers the evaluation-time spec, so the resolved one is where a bound value is checked.
         let resolved = &scene.surface(&instance_id).ok_or("the probe surface was not retained")?.properties;
         match virtual_node.kind {

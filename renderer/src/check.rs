@@ -1441,61 +1441,95 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
         files(&docs, "md", &mut paths);
         paths.sort();
         let shaping = ShapingHandle::spawn_with(Some(fixtures.join("fonts/fonts.conf")));
-        crate::image::icons::FIXTURE_ICONS.set(Some(fixtures.join("icons")));
-        let mut gpu = None;
-        let mut failures = Vec::new();
-        let mut images = HashSet::new();
-        for path in &paths {
-            let page = path.strip_prefix(&docs).unwrap().with_extension("");
-            let image_dir = docs.join("images").join(page.parent().unwrap());
-            let fakes_path = image_dir.join(format!("{}.fakes.lua", page.file_name().unwrap().to_string_lossy()));
-            let fakes = std::fs::read_to_string(&fakes_path).unwrap_or_default();
-            let mut shots = 0;
-            let blocks = blocks(&std::fs::read_to_string(path).unwrap());
-            // A block under `<!-- file: shaders/glow.frag -->` is that file in every shot's config
-            // directory, so a page's example files are the ones its shots load.
-            let page_files: Vec<(&str, &str)> = blocks
-                .iter()
-                .filter_map(|(.., body, above)| {
-                    Some((above.trim().strip_prefix("<!-- file:")?.strip_suffix("-->")?.trim(), body.as_str()))
+        let (docs, fixtures, shaping) = (&docs, &fixtures, &shaping);
+        // Pages split across threads, each with its own GPU context: one at a time took 10 s.
+        let threads = std::thread::available_parallelism().map_or(1, |n| n.get().min(4));
+        let (mut failures, mut images) = (Vec::new(), HashSet::new());
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..threads)
+                .map(|worker| {
+                    let paths = paths.iter().skip(worker).step_by(threads);
+                    scope.spawn(move || {
+                        crate::image::icons::FIXTURE_ICONS.set(Some(fixtures.join("icons")));
+                        let mut gpu = None;
+                        let mut failures = Vec::new();
+                        let mut images = HashSet::new();
+                        for path in paths {
+                            let page = path.strip_prefix(docs).unwrap().with_extension("");
+                            let image_dir = docs.join("images").join(page.parent().unwrap());
+                            let fakes_path =
+                                image_dir.join(format!("{}.fakes.lua", page.file_name().unwrap().to_string_lossy()));
+                            let fakes = std::fs::read_to_string(&fakes_path).unwrap_or_default();
+                            let mut shots = 0;
+                            let blocks = blocks(&std::fs::read_to_string(path).unwrap());
+                            // A block under `<!-- file: shaders/glow.frag -->` is that file in every shot's config
+                            // directory, so a page's example files are the ones its shots load.
+                            let page_files: Vec<(&str, &str)> = blocks
+                                .iter()
+                                .filter_map(|(.., body, above)| {
+                                    Some((
+                                        above.trim().strip_prefix("<!-- file:")?.strip_suffix("-->")?.trim(),
+                                        body.as_str(),
+                                    ))
+                                })
+                                .collect();
+                            for (line, info, source, above) in &blocks {
+                                if info != "lua" && !info.starts_with("lua,") {
+                                    continue;
+                                }
+                                let at = format!("docs/{}:{line}", page.with_extension("md").display());
+                                let outcome = match info.as_str() {
+                                    "lua" | "lua,must-fail" => lay_out(source, shaping).map(drop),
+                                    "lua,shot" => {
+                                        shots += 1;
+                                        let image = image_dir.join(format!(
+                                            "{}-{shots}.png",
+                                            page.file_name().unwrap().to_string_lossy()
+                                        ));
+                                        images.insert(image.clone());
+                                        let gpu = gpu.get_or_insert_with(|| Gpu::new(shaping));
+                                        frames(above).and_then(|frames| {
+                                            let lua = with_fixture_images(
+                                                pinned(&fakes) + &shell(source),
+                                                &fixtures.join("images"),
+                                            );
+                                            let (times, holds): (Vec<u64>, Vec<u16>) = frames.into_iter().unzip();
+                                            let shot = shoot(&lua, &page_files, shaping, gpu, &times)?;
+                                            compare(&shot, &holds, &image, update)
+                                        })
+                                    }
+                                    "lua,fragment" => mlua::Lua::new()
+                                        .load(source)
+                                        .into_function()
+                                        .map(drop)
+                                        .map_err(|err| err.to_string()),
+                                    "lua,no-check" => continue,
+                                    _ => Err(format!("unknown fence tag `{info}`")),
+                                };
+                                match (outcome, info == "lua,must-fail") {
+                                    (Ok(()), true) => failures.push(format!("{at}: a `lua,must-fail` block passed")),
+                                    (Err(err), false) => failures.push(format!("{at}: {err}")),
+                                    _ => {}
+                                }
+                            }
+                            if shots == 0 && fakes_path.exists() {
+                                failures.push(format!(
+                                    "{}: fakes for a page with no `lua,shot` block",
+                                    fakes_path.display()
+                                ));
+                            }
+                        }
+                        (failures, images)
+                    })
                 })
                 .collect();
-            for (line, info, source, above) in &blocks {
-                if info != "lua" && !info.starts_with("lua,") {
-                    continue;
-                }
-                let at = format!("docs/{}:{line}", page.with_extension("md").display());
-                let outcome = match info.as_str() {
-                    "lua" | "lua,must-fail" => lay_out(source, &shaping).map(drop),
-                    "lua,shot" => {
-                        shots += 1;
-                        let image =
-                            image_dir.join(format!("{}-{shots}.png", page.file_name().unwrap().to_string_lossy()));
-                        images.insert(image.clone());
-                        let gpu = gpu.get_or_insert_with(|| Gpu::new(&shaping));
-                        frames(above).and_then(|frames| {
-                            let lua = with_fixture_images(pinned(&fakes) + &shell(source), &fixtures.join("images"));
-                            let (times, holds): (Vec<u64>, Vec<u16>) = frames.into_iter().unzip();
-                            let shot = shoot(&lua, &page_files, &shaping, gpu, &times)?;
-                            compare(&shot, &holds, &image, update)
-                        })
-                    }
-                    "lua,fragment" => {
-                        mlua::Lua::new().load(source).into_function().map(drop).map_err(|err| err.to_string())
-                    }
-                    "lua,no-check" => continue,
-                    _ => Err(format!("unknown fence tag `{info}`")),
-                };
-                match (outcome, info == "lua,must-fail") {
-                    (Ok(()), true) => failures.push(format!("{at}: a `lua,must-fail` block passed")),
-                    (Err(err), false) => failures.push(format!("{at}: {err}")),
-                    _ => {}
-                }
+            for worker in workers {
+                let (worker_failures, worker_images) = worker.join().unwrap();
+                failures.extend(worker_failures);
+                images.extend(worker_images);
             }
-            if shots == 0 && fakes_path.exists() {
-                failures.push(format!("{}: fakes for a page with no `lua,shot` block", fakes_path.display()));
-            }
-        }
+        });
+        failures.sort();
         let mut committed = Vec::new();
         files(&docs.join("images"), "png", &mut committed);
         for orphan in
