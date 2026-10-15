@@ -580,6 +580,11 @@ pub(crate) fn shadow_rect(rect: LogicalRect, area: LogicalRect, shadow: node::Sh
     LogicalRect { x, y, width, height }
 }
 
+/// The area `shadow` can reach around `rect`: its `shadow_rect` grown by 3 sigma.
+pub(crate) fn shadow_reach(rect: LogicalRect, shadow: node::Shadow) -> LogicalRect {
+    grow(shadow_rect(rect, rect, shadow), 1.5 * shadow.blur)
+}
+
 /// Identity clip before any scissor is pushed.
 pub(crate) const UNCLIPPED: PhysicalRect = PhysicalRect { x0: i32::MIN, y0: i32::MIN, x1: i32::MAX, y1: i32::MAX };
 

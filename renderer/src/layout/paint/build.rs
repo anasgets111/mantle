@@ -17,7 +17,9 @@ use crate::text::snap::{LogicalRect, PhysicalRect, snap_to_physical};
 
 mod pixels;
 
-use super::{DisplayList, Draw, DrawCmd, LayerShader, UNCLIPPED, command_bounds, grow, grow_y, shadow_rect};
+use super::{
+    DisplayList, Draw, DrawCmd, LayerShader, UNCLIPPED, command_bounds, grow, grow_y, shadow_reach, shadow_rect,
+};
 use pixels::{
     affine_in_pixels, blended, fade, fade_border, fade_fill, in_buffer_pixels, layer_bounds, physical_blur,
     physical_edge, push_fill, ring_cmd, scaled, split_fill_and_border,
@@ -173,9 +175,10 @@ fn build_node(
     let mut layered = if casts { node::Effect { shadows: Vec::new(), ..effect.clone() } } else { effect.clone() };
     let own = layer_bounds(bounds, &layered, scale);
     let reach = if casts && radius.analytic() {
-        effect.shadows.iter().fold(own, |reach, shadow| {
-            reach.union(snap_to_physical(grow(shadow_rect(rect, rect, *shadow), 1.5 * shadow.blur), scale))
-        })
+        effect
+            .shadows
+            .iter()
+            .fold(own, |reach, shadow| reach.union(snap_to_physical(shadow_reach(rect, *shadow), scale)))
     } else if effect.layers() {
         layer_bounds(bounds, effect, scale)
     } else {

@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::layout::instance::{OutputGeometry, SurfaceInstance, expand_instances};
 use crate::layout::node::{self, ClipShape, PaintStyle, PanelSpec, SurfaceSpec, SurfaceTopology};
-use crate::layout::paint::shadow_rect;
+use crate::layout::paint::shadow_reach;
 use crate::layout::scene::{LogicalSize, Scene};
 use crate::lua::LoadOutput;
 use crate::lua::capability::CommandSender;
@@ -172,30 +172,26 @@ fn shadow_cuts(scene: &Scene, instances: &[SurfaceInstance], specs: &[SurfaceSpe
             let rect = node.at(ox, oy);
             let mut name = None;
             for shadow in node.layout_style.effect.shadows.iter().filter(|shadow| !shadow.inset) {
-                let seen = shadow_rect(rect, rect, *shadow);
-                let reach = 1.5 * shadow.blur;
+                let seen = shadow_reach(rect, *shadow);
                 let (right, bottom) = (rect.x + rect.width, rect.y + rect.height);
                 // top, right, bottom, left: (room the shadow needs, room the surface has)
                 let sides = [
-                    (rect.y - (seen.y - reach), rect.y),
-                    (seen.x + seen.width + reach - right, width - right),
-                    (seen.y + seen.height + reach - bottom, height - bottom),
-                    (rect.x - (seen.x - reach), rect.x),
+                    (rect.y - seen.y, rect.y),
+                    (seen.x + seen.width - right, width - right),
+                    (seen.y + seen.height - bottom, height - bottom),
+                    (rect.x - seen.x, rect.x),
                 ];
                 for (cut, (need, has)) in sides.into_iter().enumerate() {
                     if at_output_edge[cut] || need - has < SHADOW_CUT_MIN {
                         continue;
                     }
                     let key = name.get_or_insert_with(|| {
-                        match (node::fields::common::id.read(&node.properties), node.site) {
-                            (Ok(Some(id)), _) => {
-                                format!("{} \"{}\": {} \"{id}\"", spec.role(), instance.declared_id, node.kind)
-                            }
-                            (_, Some(site)) => {
-                                format!("{} \"{}\": {} at {site}", spec.role(), instance.declared_id, node.kind)
-                            }
-                            _ => format!("{} \"{}\": {}", spec.role(), instance.declared_id, node.kind),
-                        }
+                        let named = match (node::fields::common::id.read(&node.properties), node.site) {
+                            (Ok(Some(id)), _) => format!(" \"{id}\""),
+                            (_, Some(site)) => format!(" at {site}"),
+                            _ => String::new(),
+                        };
+                        format!("{} \"{}\": {}{named}", spec.role(), instance.declared_id, node.kind)
                     });
                     let worst = &mut cuts.entry(key.clone()).or_default()[cut];
                     if worst.is_none_or(|(missing, ..)| need - has > missing) {
