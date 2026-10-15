@@ -15,7 +15,7 @@ use futures_util::{FutureExt, StreamExt};
 use shared::debug;
 use tokio::task::JoinHandle;
 
-use super::collections::{TrackListState, read_playlists, read_track_list, spawn_collections_forwarder};
+use super::collections::{TrackListState, next_optional, read_playlists, read_track_list, spawn_collections_forwarder};
 use super::metadata::{TrackIdentity, parse_metadata, resolve_album_art_path};
 use super::proxies::{
     MprisPlayerProxy, MprisPlaylistsProxy, MprisRootProxy, MprisTrackListProxy, bind_player, bind_playlists, bind_root,
@@ -467,21 +467,11 @@ fn spawn_player_forwarder(
             let retry_deadline = retry_seeked_at;
             let fired = tokio::select! {
                 Some(status) = properties.next() => Some(Wake::Property { status }),
-                signal = async { match seeked.as_mut() { Some(stream) => stream.next().await, None => std::future::pending().await } } => {
+                signal = next_optional(&mut seeked) => {
                     Some(seeked_wake(signal, &mut seeked, &mut retry_seeked_at))
                 },
-                () = async move {
-                    match deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => std::future::pending().await,
-                    }
-                } => Some(Wake::Recheck),
-                () = async move {
-                    match retry_deadline {
-                        Some(deadline) => tokio::time::sleep_until(deadline).await,
-                        None => std::future::pending().await,
-                    }
-                } => Some(Wake::RetrySeeked),
+                () = sleep_until_opt(deadline) => Some(Wake::Recheck),
+                () = sleep_until_opt(retry_deadline) => Some(Wake::RetrySeeked),
                 else => None,
             };
             let Some(fired) = fired else {
@@ -597,6 +587,13 @@ fn seeked_wake(
             *retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
             Wake::Property { status: false }
         }
+    }
+}
+
+async fn sleep_until_opt(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 

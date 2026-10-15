@@ -37,6 +37,22 @@ pub(crate) fn is_within(path: impl AsRef<Path>, root: &Path) -> bool {
     }
 }
 
+/// Encodes 8-bit `data` of `color` as PNG via `png` (ADR-0031: pure Rust, encode-only, minimal
+/// dependency tree).
+pub(crate) fn encode_png(
+    width: u32,
+    height: u32,
+    color: png::ColorType,
+    data: &[u8],
+) -> Result<Vec<u8>, png::EncodingError> {
+    let mut buffer = Vec::new();
+    let mut encoder = png::Encoder::new(&mut buffer, width, height);
+    encoder.set_color(color);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.write_header()?.write_image_data(data)?;
+    Ok(buffer)
+}
+
 /// Writes encoded `png_bytes` to [`icon_dir`]`/{filename}`, creating missing directories. Overwrites
 /// the same path without cache-busting (ADR-0031, ADR-0033).
 pub fn write_png(subdir: &str, filename: &str, png_bytes: &[u8]) -> std::io::Result<String> {

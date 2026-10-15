@@ -646,8 +646,8 @@ fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usi
 
 /// Draws `commands` into a scratch target covering `clip` over `under`, masked over the node's box
 /// `rect`, returned for the caller to composite at `clip`. `None` when there is nothing to
-/// composite.
-/// Draws only `region` of the commands, and cuts nothing when that is `UNCLIPPED`.
+/// composite. `region` is the part of the commands to draw, and cuts nothing when it is `UNCLIPPED`.
+/// If no scratch image can be had, `unmasked_fallback` draws `commands` straight into `target`.
 #[allow(clippy::too_many_arguments)]
 fn offscreen(
     painter: &mut TextPainter,

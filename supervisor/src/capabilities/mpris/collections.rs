@@ -95,7 +95,7 @@ fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> Play
     PlaylistSummary { id: id.to_string(), name, icon }
 }
 
-async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
+pub(super) async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
     match stream {
         Some(stream) => stream.next().await,
         None => std::future::pending().await,

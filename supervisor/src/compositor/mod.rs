@@ -144,7 +144,8 @@ pub fn backend_or_unsupported(compositor: Option<CompositorKind>, what: &str) ->
     &Unsupported
 }
 
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
+/// Shorter in tests, which wait it out against a socket that never answers.
+const REQUEST_TIMEOUT: Duration = Duration::from_millis(if cfg!(test) { 1000 } else { 2000 });
 
 /// `var`'s socket path, or `None` when unset or empty.
 fn socket_var(var: &str) -> Option<PathBuf> {

@@ -41,8 +41,8 @@ use crate::capabilities::clock::controller::epoch_seconds;
 /// has nothing to finish; a session process is declared precisely because it is doing something
 /// long, and the first thing that will use this writes a video container whose index is appended
 /// on the way out. Killing it at 100ms would leave the file unplayable, which is the failure the
-/// declared stop signal exists to avoid.
-const STOP_GRACE: Duration = Duration::from_secs(5);
+/// declared stop signal exists to avoid. Tests wait it out in real time, so they get a shorter one.
+const STOP_GRACE: Duration = Duration::from_millis(if cfg!(test) { 2000 } else { 5000 });
 
 /// What [`supervise`] accepts while its program is up.
 enum Request {
@@ -298,14 +298,14 @@ mod tests {
     /// Polls `snapshot` until `predicate` holds. A real process is being waited on, so the exit
     /// lands whenever the kernel says so; a fixed sleep would either flake or be slow.
     async fn until(controller: &ProcessesController, name: &str, predicate: impl Fn(&SessionProcess) -> bool) {
-        // Twice `STOP_GRACE`, so a SIGKILL escalation fits; `within`'s five seconds would not.
+        // `within`'s five seconds plus `STOP_GRACE`, so a SIGKILL escalation fits.
         let wait = async {
             while !predicate(&session(controller, name)) {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         };
         let last = || session(controller, name);
-        tokio::time::timeout(STOP_GRACE * 2, wait)
+        tokio::time::timeout(STOP_GRACE + Duration::from_secs(5), wait)
             .await
             .unwrap_or_else(|_| panic!("timed out on {name:?}: {:?}", last()));
     }

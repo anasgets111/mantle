@@ -91,15 +91,8 @@ pub(super) fn image_data_is_valid(image: &RawImageData) -> bool {
 /// channel reorder is needed: freedesktop data is RGB(A) row-major, not ARGB network-byte-order
 /// pixmaps.
 pub(super) fn encode_image_data_to_png(image: &RawImageData) -> Result<Vec<u8>, png::EncodingError> {
-    let mut buffer = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut buffer, image.width as u32, image.height as u32);
-        encoder.set_color(if image.has_alpha { png::ColorType::Rgba } else { png::ColorType::Rgb });
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(&image.data)?;
-    }
-    Ok(buffer)
+    let color = if image.has_alpha { png::ColorType::Rgba } else { png::ColorType::Rgb };
+    shm_icons::encode_png(image.width as u32, image.height as u32, color, &image.data)
 }
 
 pub(super) fn write_icon_png(id: u32, png_bytes: &[u8]) -> std::io::Result<String> {

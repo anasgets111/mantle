@@ -83,8 +83,7 @@ pub(super) fn resolve_icon_source(icon_name: &str, pixmaps: &[IconPixmap], theme
     }
 }
 
-/// Encodes bounds-checked ARGB32 bytes (network order A, R, G, B) to PNG via `png` (ADR-0031:
-/// pure Rust, encode-only, minimal dependency tree).
+/// Encodes bounds-checked ARGB32 bytes (network order A, R, G, B) to PNG.
 fn encode_argb32_to_png(width: u32, height: u32, argb: &[u8]) -> Result<Vec<u8>, png::EncodingError> {
     let mut rgba = Vec::with_capacity(argb.len());
     let (chunks, _remainder) = argb.as_chunks::<4>();
@@ -95,15 +94,7 @@ fn encode_argb32_to_png(width: u32, height: u32, argb: &[u8]) -> Result<Vec<u8>,
         rgba.push(a);
     }
 
-    let mut buffer = Vec::new();
-    {
-        let mut encoder = png::Encoder::new(&mut buffer, width, height);
-        encoder.set_color(png::ColorType::Rgba);
-        encoder.set_depth(png::BitDepth::Eight);
-        let mut writer = encoder.write_header()?;
-        writer.write_image_data(&rgba)?;
-    }
-    Ok(buffer)
+    shm_icons::encode_png(width, height, png::ColorType::Rgba, &rgba)
 }
 
 /// An item id as a flat filename stem: [`super::registration::item_id`] ends in an object path and
