@@ -1171,6 +1171,10 @@ mod tests {
         assert!(!settled(&client));
         client.stop_scroll(&signal);
         assert!(settled(&client), "a stopped run");
+
+        client.loader.lua().load("s:reveal(5)").exec().unwrap();
+        client.stop_scroll(&signal);
+        assert!(signal.pending_scroll().is_some(), "a press stops runs, not a request queued this turn");
     }
 
     /// Under `animate.scroll` a `:reveal` eases the run to the child like a notch would.

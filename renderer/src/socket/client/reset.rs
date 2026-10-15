@@ -28,6 +28,8 @@ impl RendererClient {
             }
             for signal in &list {
                 lua::signal::reset(self.loader.lua(), signal);
+                // A request left pending would scroll the reopened surface away from the top.
+                signal.take_scroll();
                 self.scene.stop_scroll(signal);
                 self.owes_pass = true;
             }

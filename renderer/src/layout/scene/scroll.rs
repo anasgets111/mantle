@@ -112,8 +112,6 @@ impl Scene {
     /// such as `reset_on_close`, jumps like a touchpad.
     pub fn stop_scroll(&mut self, signal: &Signal) {
         let Some(cell) = signal.cell_id() else { return };
-        // A request left pending would scroll the reopened surface away from the top.
-        signal.take_scroll();
         for tree in self.surfaces.values_mut() {
             each_holder(tree, cell, true, &mut |node, _| node.tweens.retain(|tween| tween.property != "scroll"));
         }
