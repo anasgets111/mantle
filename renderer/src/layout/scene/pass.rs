@@ -59,7 +59,10 @@ pub(super) fn solve_instance(
             None => taffy::Dimension::auto(),
         },
     };
-    if tree.style(prepared.taffy).map_err(taffy_failed)?.size != root_style.size {
+    // A root's margin is the layer-shell anchor offset; taffy 0.15 would also inset the root by it.
+    root_style.margin = taffy::Rect::zero();
+    let current = tree.style(prepared.taffy).map_err(taffy_failed)?;
+    if (current.size, current.margin) != (root_style.size, root_style.margin) {
         tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
     }
     solve(tree, prepared.taffy, available, (shaping, drafts))?;

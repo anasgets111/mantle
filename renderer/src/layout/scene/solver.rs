@@ -144,7 +144,7 @@ pub(super) fn taffy_style(
         // No shrink: fixed children keep their stated size, even when siblings overflow. Disable
         // taffy's automatic minimum so a `Fill` item can collapse to zero.
         // TODO(DioxusLabs/taffy#1081): give the cross axis a zero `min_size` too once that PR ships.
-        // taffy 0.14 adds the container's margin to each child's cross minimum (`constants.margin`
+        // taffy adds the container's margin to each child's cross minimum (`constants.margin`
         // for `child.margin` in `determine_flex_base_size`); `Some(0) + margin` floors it, `None +
         // margin` does not (ADR-0111).
         flex_shrink: 0.0,
@@ -220,7 +220,7 @@ pub(super) fn taffy_style(
                 }
             }
             // `main` packs a line and `cross` the lines, unset (stretch) without `wrap`.
-            let (main, cross) = (Some(main_align(main)), wrap.then(|| main_align(cross)));
+            let (main, cross) = (main_align(main), if wrap { main_align(cross) } else { taffy::AlignContent::NORMAL });
             (out.justify_content, out.align_content) = (main, cross);
             if style.homogeneous {
                 out.display = taffy::Display::Grid;
@@ -234,7 +234,7 @@ pub(super) fn taffy_style(
         // ADR-0023's stacking model is one auto-sized grid cell: children overlap and align
         // independently, while `Content` is their bounding union. `minmax(0, auto)` keeps the cell
         // at the content box when a child is larger; an `auto` minimum would grow to that child.
-        // Not `1fr`: taffy 0.14 leaves item margins out of its max-content size (DioxusLabs/taffy#1177).
+        // Not `1fr`: taffy leaves item margins out of its max-content size (DioxusLabs/taffy#1177).
         None => {
             out.display = taffy::Display::Grid;
             // An auto-size, uncapped axis floors the track at the children's min-content (CSS
@@ -330,7 +330,7 @@ pub(super) fn new_solver_node(
 /// write dirties the node and its ancestors, and a pass that dirtied nothing is a pass taffy
 /// answers from its cache.
 ///
-/// A parentless node is a surface root, whose size [`solve_instance`] patches in afterwards;
+/// A parentless node is a surface root, whose size and margin [`solve_instance`] patch in afterwards;
 /// compared here, that patch would dirty every such root on every pass. A `text` measured from the
 /// same inputs keeps the context it has, whose memo is the size the solver last got for them.
 ///
@@ -349,7 +349,7 @@ pub(super) fn update_solver_node(
     let mut solver_style = taffy_style(kind, properties, style, parent_axis)?;
     let current = tree.style(id).map_err(taffy_failed)?;
     if tree.parent(id).is_none() {
-        solver_style.size = current.size;
+        (solver_style.size, solver_style.margin) = (current.size, current.margin);
     }
     // The slot [`fit_slots`] wrote is not rebuilt here; taking it back would dirty the node every pass.
     if let Some(Measure::Slots { wrap, .. }) = measure {
@@ -509,7 +509,7 @@ fn measure_leaf(
     style: &taffy::Style,
 ) -> taffy::LayoutOutput {
     // TODO(DioxusLabs/taffy#1166): remove `ceiling` and `clamp` once that PR ships in a release.
-    // taffy 0.14 lets a `flex_shrink = 0` item's flex basis beat its own max size in an
+    // taffy lets a `flex_shrink = 0` item's flex basis beat its own max size in an
     // intrinsic contribution (css-flexbox §9.9.3 clamps by min/max last), so a leaf measured
     // past `max_width` widened a content-sized row. Answering at the ceiling keeps the basis
     // under it. Ceilings are border-box pixels; the measure answers for the content box inside.
@@ -1635,7 +1635,7 @@ pub(super) mod tests {
         assert!(children[1].rect.width > children[0].rect.width + 5.0);
     }
 
-    /// taffy 0.14 adds a flex container's own margin to its children's minimum cross size when it
+    /// taffy adds a flex container's own margin to its children's minimum cross size when it
     /// measures them (see [`taffy_style`]'s `min_size`; fixed by DioxusLabs/taffy#1081). The card here is a column
     /// with a left margin of most of the output, holding a body that wraps at the card's width.
     /// Its height has to be the wrapped body's, whatever the margin.

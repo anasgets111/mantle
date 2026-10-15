@@ -67,7 +67,7 @@ serde_json.workspace = true
 shared.workspace = true
 # No `calloop`: the event loop is our own poll (`wake.rs`). 154 to 150.
 smithay-client-toolkit = { version = "0.21.1", default-features = false, features = ["xkbcommon"] }
-taffy = { version = "0.14.0", default-features = false, features = ["std", "flexbox", "grid", "taffy_tree"] }
+taffy = { version = "0.15.0", default-features = false, features = ["std", "flexbox", "grid", "taffy_tree"] }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "net", "macros", "sync"] }
 wayland-client.workspace = true
