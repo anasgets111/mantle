@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.7.3 - 2026-10-16
+
 - Added: a `keyframes` entry takes `"current"` as its first frame, to start the run on the value on screen instead of a fixed first frame, and a `run` number: a different value starts a new run with the same frames, even mid-run, so a counter replays an animation without taking the entry away and putting it back.
 - Added: `settled = settled("name")` on any node gives a read-only signal that is `false` while an `animate` tween on that node runs and `true` once the last ends, so content swaps when a collapse finishes instead of on a guessed `timer`.
 - Added: `mantle check` warns when an outer shadow is cut off by its surface's edge (4 px or more, not on a side where a `panel` meets the output edge), naming the side and the room to add; the exit status is unchanged.
