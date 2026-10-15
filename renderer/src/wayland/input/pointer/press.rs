@@ -40,7 +40,7 @@ pub(super) fn release_ends_press(armed: Option<&ArmedClick>, button: u32) -> boo
 
 /// Whether a release completes `armed` (ADR-0050 decision 2). It must hit a clickable node with the
 /// same instance, rect, link, and button; matching coordinates on a re-resolved plain rect is not
-/// the original click. `released_on` comes from [`click_target`], not raw position.
+/// the original click. `released_on` comes from `target::click_target`, not raw position.
 pub(super) fn release_completes_click(
     armed: Option<&ArmedClick>,
     instance_id: &str,
@@ -173,6 +173,7 @@ pub(super) fn press_chooses_focus(
 
 #[cfg(test)]
 mod tests {
+    use super::super::target::clickable;
     use super::*;
     use crate::layout::node::MoveTween;
     use crate::wayland::input::keyboard::tests::draft;

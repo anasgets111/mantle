@@ -229,7 +229,7 @@ pub struct ResolvedNode {
     pub list_memo: Option<Box<node::ListMemo>>,
     /// What its `children` or `child` table last read as, so a pass holding the same table skips
     /// reading it again.
-    pub child_table: Option<pass::ChildTable>,
+    pub child_table: Option<children::ChildTable>,
     /// What `properties` were resolved from, so a pass that finds it unchanged keeps them. Shared,
     /// so the rollback copy of the tree does not copy the raw values it holds.
     pub resolve_memo: Option<std::rc::Rc<ResolveMemo>>,

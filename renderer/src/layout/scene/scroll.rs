@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 use shared::debug;
 
-use super::pass::publish_geometry;
+use super::geometry::publish_geometry;
 use super::solver::{MainAxis, main_axis_of};
 use super::{LayoutStyle, LogicalSize, ResolvedNode, Scene};
 use crate::layout::node::{self, PropMap};

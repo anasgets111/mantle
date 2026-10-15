@@ -7,8 +7,10 @@
 //! [`solve`]: solver::solve
 
 mod census;
+mod children;
 mod field;
 mod fit;
+mod geometry;
 mod image_status;
 mod marks;
 mod pass;
@@ -41,7 +43,9 @@ use crate::lua::location::Site;
 use crate::lua::nodes::VirtualNode;
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
-use pass::{build_child_for_output, prepare, publish_geometry, solve_instance};
+use children::build_child_for_output;
+use geometry::publish_geometry;
+use pass::{prepare, solve_instance};
 use resolve::{DroppedValues, ResolveMemo, resolve};
 pub(crate) use solver::{MainAxis, main_axis_of};
 use solver::{forget_solver_nodes, new_solver_tree};
@@ -581,7 +585,7 @@ struct PreparedNode {
     /// Carried across the pass, or replaced by the build that ran; see [`ResolvedNode::list_memo`].
     list_memo: Option<Box<node::ListMemo>>,
     /// Carried across the pass, or replaced by the read that ran; see [`ResolvedNode::child_table`].
-    child_table: Option<pass::ChildTable>,
+    child_table: Option<children::ChildTable>,
     resolve_memo: Option<std::rc::Rc<ResolveMemo>>,
     site: Option<Site>,
     /// The retained [`ResolvedNode::scrolled`]: a `multiline` field keeps it across passes.
@@ -651,6 +655,27 @@ pub(super) mod tests {
     ) -> Result<(), LayoutError> {
         let instances: Vec<SurfaceInstance> = surfaces.iter().map(|surface| instance_at(surface, available)).collect();
         scene.apply(surfaces, &instances, shaping, lua)
+    }
+
+    /// Two outputs, `"LEFT"` and `"RIGHT"`, for the per-output child fixtures (ADR-0121).
+    pub(super) fn apply_on_two_outputs(
+        scene: &mut Scene,
+        surface: &VirtualNode,
+        shaping: &ShapingHandle,
+        lua: &Lua,
+    ) -> Result<(), LayoutError> {
+        let declared_id = node::fields::surface::id.read(&surface.properties).expect("the fixture declares an `id`");
+        let instances: Vec<SurfaceInstance> = ["LEFT", "RIGHT"]
+            .into_iter()
+            .map(|output| SurfaceInstance {
+                instance_id: format!("{declared_id}@{output}"),
+                declared_id: declared_id.clone(),
+                output: output.to_string(),
+                available: full(),
+                measured_axes: (false, false),
+            })
+            .collect();
+        scene.apply(std::slice::from_ref(surface), &instances, shaping, lua)
     }
 
     pub(super) fn instance_at(surface: &VirtualNode, available: LogicalSize) -> SurfaceInstance {
@@ -1509,7 +1534,7 @@ pub(super) mod tests {
     /// Ignored like [`list_pass_cost`]. 50 hover chips of `rect > row > (rect, text)` and a clock
     /// text written each pass, 203 nodes. On this machine, `props` (the resolve span less the list
     /// span) was 0.545 ms a pass reading every `children` table each pass, 0.325 ms keeping what
-    /// each table read (`pass::ChildTable`), 0.240 ms also keeping every node the clock write did
+    /// each table read (`children::ChildTable`), 0.240 ms also keeping every node the clock write did
     /// not reach (ADR-0270), 0.16 ms also keeping those nodes' parsed style and paint.
     #[test]
     #[ignore]

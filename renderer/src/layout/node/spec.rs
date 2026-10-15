@@ -117,7 +117,7 @@ impl Prop for VirtualNode {
 }
 
 /// A `panel`'s or `lock`'s `child`: a node, or a function of the output's connector name that
-/// `layout::scene::pass::build_child_for_output` calls before this reads its node (ADR-0121).
+/// `layout::scene::children::build_child_for_output` calls before this reads its node (ADR-0121).
 pub(crate) struct Root;
 
 impl LuaType for Root {

@@ -3,7 +3,8 @@ use std::time::{Duration, Instant};
 use mlua::{Lua, Value};
 use shared::debug;
 
-use super::pass::{prior_position, publish_geometry, solve_instance};
+use super::geometry::publish_geometry;
+use super::pass::{prior_position, solve_instance};
 use super::resolve::drop_injected_sizes;
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, set_solver_children, taffy_failed,

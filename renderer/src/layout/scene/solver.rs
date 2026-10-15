@@ -459,7 +459,7 @@ pub(super) fn measure_for(
     }
     Ok(match kind {
         // `node::paint_style` gives every `text` a `PaintStyle::Text` and `flow_kind` cannot route
-        // another kind here, so the arm is total, the same shape as `pass::children_of`'s
+        // another kind here, so the arm is total, the same shape as `children::children_of`'s
         // `unreachable!` arm.
         "text" => {
             let Some(PaintStyle::Text { content, runs, face, wrap, elide, max_lines, .. }) = paint else {
