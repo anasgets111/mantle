@@ -110,7 +110,8 @@ fn find_backlight(leds_root: &Path) -> Option<LedBacklight> {
 /// re-reads on each `POLLPRI`, which the kernel raises only for hardware changes (ADR-0034.1).
 fn watch_backlight(led: LedBacklight, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let watch = std::fs::File::open(led.dir.join("brightness_hw_changed"))
-        .and_then(|file| AsyncFd::with_interest(file, Interest::PRIORITY));
+        // SAFETY: the AsyncFd owns the file, so its fd stays open and unchanged until the AsyncFd drops.
+        .and_then(|file| Ok(unsafe { AsyncFd::register_with_interest(file, Interest::PRIORITY) }?));
     state.lock().expect("mutex poisoned").backlight_percent = read_percent(&led.dir, led.max);
     let watch = match watch {
         Ok(watch) => watch,
@@ -259,7 +260,8 @@ fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
     if let Err(err) = sync_locks(&file, state) {
         debug!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}");
     }
-    AsyncFd::new(file).inspect_err(|err| debug!("failed to open an EV_LED event stream: {err}")).ok()
+    // SAFETY: the AsyncFd owns the file, so its fd stays open and unchanged until the AsyncFd drops.
+    unsafe { AsyncFd::register(file) }.inspect_err(|err| debug!("failed to open an EV_LED event stream: {err}")).ok()
 }
 
 /// Uses the input device first (ADR-0034); sysfs (`locks::resolve_lock_leds`) is a read-once

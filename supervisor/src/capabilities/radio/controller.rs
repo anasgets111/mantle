@@ -89,7 +89,8 @@ impl RadioController {
     /// `events`, so no signal is ever sent (see `radio/mod.rs`).
     pub fn new(path: &Path, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(RadioState::default()));
-        let device = match open(path).and_then(|(file, writable)| Ok((AsyncFd::new(file)?, writable))) {
+        // SAFETY: the AsyncFd owns the file, so its fd stays open and unchanged until the AsyncFd drops.
+        let device = match open(path).and_then(|(file, writable)| Ok((unsafe { AsyncFd::register(file) }?, writable))) {
             Ok((fd, writable)) => {
                 let fd = Arc::new(fd);
                 if !writable {

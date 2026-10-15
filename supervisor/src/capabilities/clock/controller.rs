@@ -90,7 +90,8 @@ async fn run_clock_task(
         Ok(timer) => timer,
         Err(err) => return error!("cannot create the clock timer: {err}; mantle.clock keeps its first reading"),
     };
-    let readiness = match AsyncFd::new(timer.as_fd()) {
+    // SAFETY: `timer` outlives `readiness` in this fn, and the borrow keeps it from closing.
+    let readiness = match unsafe { AsyncFd::register(timer.as_fd()) } {
         Ok(readiness) => readiness,
         Err(err) => return error!("cannot poll the clock timer: {err}; mantle.clock keeps its first reading"),
     };

@@ -90,7 +90,9 @@ pub fn read_parsed<T: std::str::FromStr>(entry_dir: &Path, name: &str) -> Option
 
 /// A udev watch on `subsystem`, readable on its uevents.
 pub(crate) fn udev_watch(subsystem: &str) -> std::io::Result<tokio::io::unix::AsyncFd<udev::MonitorSocket>> {
-    tokio::io::unix::AsyncFd::new(udev::MonitorBuilder::new()?.match_subsystem(subsystem)?.listen()?)
+    let socket = udev::MonitorBuilder::new()?.match_subsystem(subsystem)?.listen()?;
+    // SAFETY: the AsyncFd owns the socket, so its fd stays open and unchanged until the AsyncFd drops.
+    Ok(unsafe { tokio::io::unix::AsyncFd::register(socket) }?)
 }
 
 /// Stores `next` and wakes `main.rs` when it differs from `state`; `false` once the receiver is
