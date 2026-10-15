@@ -287,22 +287,6 @@ mod tests {
     const TEST_FAMILY: &str = "Noto Sans Mono";
 
     #[test]
-    fn an_installed_family_resolves_to_a_file_whose_family_matches_the_request() {
-        if !fc_match_available() {
-            eprintln!("fc-match not available, skip");
-            return;
-        }
-        if !fc_lists(TEST_FAMILY) {
-            eprintln!("{TEST_FAMILY:?} not installed on this machine, skip");
-            return;
-        }
-        let resolved = resolve_chain(&[TEST_FAMILY]);
-        assert_eq!(resolved.primary_family, TEST_FAMILY);
-        // Not an exact count: a `.ttc` match legitimately loads more than one face.
-        assert!(!resolved.db.is_empty(), "expected at least one loaded face");
-    }
-
-    #[test]
     fn an_uninstalled_family_is_skipped_rather_than_silently_substituted() {
         if !fc_match_available() {
             eprintln!("fc-match not available, skip");

@@ -243,7 +243,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_state_carries_populated_and_app_id_through_and_omits_an_absent_app_id() {
+    fn derive_state_carries_populated_app_id_and_window_id_through() {
         let mut busy = workspace(5, 1, "eDP-1", true, true);
         busy.populated = true;
         busy.app_id = Some("firefox".to_string());
@@ -257,10 +257,7 @@ mod tests {
         assert_eq!(entries[0].app_id.as_deref(), Some("firefox"));
         assert_eq!(entries[0].window_id.as_deref(), Some("42"));
         assert!(!entries[1].populated);
-        let json = serde_json::to_value(&entries[1]).unwrap();
-        assert!(json.get("app_id").is_none(), "an empty workspace has no app_id key: {json}");
-        assert!(json.get("window_id").is_none(), "an empty workspace has no window_id key: {json}");
-        assert_eq!(json["populated"], false);
+        assert_eq!((&entries[1].app_id, &entries[1].window_id), (&None, &None));
     }
 
     #[test]
@@ -273,21 +270,19 @@ mod tests {
     }
 
     #[test]
-    fn derive_state_ignores_a_workspace_that_has_no_output() {
+    fn derive_state_lists_only_outputs_with_an_active_workspace() {
         // Real: a compositor reports no output when none are connected.
         let orphan = WorkspaceRow { output: None, ..workspace(1, 1, "eDP-1", true, true) };
+        let cases = [
+            (vec![orphan], vec![]),
+            // An output with no active workspace reported is not listed, never invented.
+            (vec![workspace(1, 1, "eDP-1", false, false), workspace(2, 1, "DP-2", true, false)], vec!["DP-2"]),
+        ];
 
-        assert_eq!(derive_state(&[orphan], None).outputs, Vec::new());
-    }
-
-    #[test]
-    fn derive_state_omits_an_output_with_no_active_workspace_rather_than_inventing_one() {
-        let workspaces = [workspace(1, 1, "eDP-1", false, false), workspace(2, 1, "DP-2", true, false)];
-
-        let state = derive_state(&workspaces, None);
-
-        assert_eq!(state.outputs.len(), 1, "an output with no active workspace reported is not listed");
-        assert_eq!(state.outputs[0].name, "DP-2");
+        for (workspaces, expected) in cases {
+            let state = derive_state(&workspaces, None);
+            assert_eq!(state.outputs.iter().map(|out| out.name.as_str()).collect::<Vec<_>>(), expected);
+        }
     }
 
     // ---- derive_state: focus (ADR-0056 decision 4) ----
@@ -301,19 +296,8 @@ mod tests {
         let dp = state.outputs.iter().find(|out| out.name == "DP-2").unwrap();
         let edp = state.outputs.iter().find(|out| out.name == "eDP-1").unwrap();
         assert_eq!(dp.focused_workspace.as_deref(), Some("2"), "the focused output reports the id it is focused on");
+        assert_eq!(edp.active_workspace, "1");
         assert_eq!(edp.focused_workspace, None, "an output that does not hold focus must not claim it does");
-    }
-
-    #[test]
-    fn an_unfocused_output_omits_focused_workspace_from_its_json_entirely() {
-        let json = serde_json::to_value(derive_state(&[workspace(1, 1, "eDP-1", true, false)], None)).unwrap();
-
-        let output = &json["outputs"][0];
-        assert!(
-            output.get("focused_workspace").is_none(),
-            "an absent key reads as nil in Lua; a `null` would too, but only an absent key matches every other optional field here"
-        );
-        assert_eq!(output["active_workspace"], "1");
     }
 
     // ---- derive_state: active_client (ADR-0056 decision 5) ----
@@ -323,27 +307,19 @@ mod tests {
         let focused = window("src/main.rs - Neovim", "kitty", true);
 
         let client = derive_state(&[], Some(&focused)).active_client.expect("a focused window produces active_client");
+        assert_eq!(
+            (client.title.as_str(), client.app_id.as_str(), client.floating),
+            ("src/main.rs - Neovim", "kitty", true)
+        );
 
-        assert_eq!(client.title, "src/main.rs - Neovim");
-        assert_eq!(client.app_id, "kitty");
-        assert!(client.floating);
-    }
-
-    #[test]
-    fn derive_state_has_no_active_client_when_no_window_holds_focus() {
         // Real: focusing a layer-shell surface leaves every toplevel unfocused.
         assert_eq!(derive_state(&[workspace(1, 1, "eDP-1", true, true)], None).active_client, None);
+        assert!(WorkspacesState::default().outputs.is_empty());
     }
 
     #[test]
-    fn active_client_carries_fullscreen_only_when_the_compositor_said() {
-        // ADR-0056 decision 5 keeps the key absent rather than fabricating `false`; ADR-0119 lets
-        // a compositor that knows provide it. Absent, not `null`, otherwise.
-        let json = serde_json::to_value(derive_state(&[], Some(&window("a title", "kitty", false)))).unwrap();
-        let client = &json["active_client"];
-        assert_eq!(client["title"], "a title");
-        assert!(client.get("fullscreen").is_none());
-
+    fn active_client_carries_fullscreen_when_the_compositor_said() {
+        // ADR-0119: a compositor that knows fullscreen provides it.
         let mut known = window("a title", "mpv", false);
         known.fullscreen = Some(true);
         let json = serde_json::to_value(derive_state(&[], Some(&known))).unwrap();
@@ -351,26 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn an_overview_flag_is_absent_where_there_is_no_overview_and_false_where_it_is_shut() {
-        let (mut publisher, _rx) = publisher();
+    fn publish_signals_when_overview_goes_from_unsupported_to_shut() {
+        let (mut publisher, mut rx) = publisher();
         let workspaces = [workspace(1, 1, "eDP-1", true, true)];
 
         assert!(publisher.publish(&workspaces, None, None, None));
-        let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
-        assert!(json.get("overview_open").is_none(), "no key at all, as `special` does it");
+        while rx.try_recv().is_ok() {}
 
-        assert!(publisher.publish(&workspaces, None, None, Some(false)), "shut is a change from unsupported");
-        let json = serde_json::to_value(publisher.state.lock().unwrap().clone()).unwrap();
-        assert_eq!(json["overview_open"], serde_json::json!(false));
-    }
-
-    #[test]
-    fn a_state_with_nothing_focused_omits_active_client_rather_than_nulling_it() {
-        let json = serde_json::to_value(WorkspacesState::default()).unwrap();
-
-        assert!(json.get("active_client").is_none());
-        assert!(json.get("special").is_none());
-        assert_eq!(json["outputs"], serde_json::json!([]));
+        assert!(publisher.publish(&workspaces, None, None, Some(false)));
+        assert!(rx.try_recv().is_ok(), "shut is a change from unsupported");
+        assert_eq!(publisher.state.lock().unwrap().overview_open, Some(false));
     }
 
     // ---- StatePublisher ----

@@ -248,43 +248,27 @@ mod tests {
     }
 
     #[test]
-    fn the_brake_stops_a_crash_loop_once_the_limit_is_reached_inside_the_window() {
-        let start = std::time::Instant::now();
-        let mut brake = RestartBrake::default();
-        for attempt in 0..3 {
-            assert!(brake.allow(start + Duration::from_secs(attempt)), "restart {attempt} is within the limit");
-        }
-
-        assert!(
-            !brake.allow(start + Duration::from_secs(4)),
-            "a config that kills every Renderer it is handed must wait out the cooldown"
-        );
-        assert!(brake.allow(start + Duration::from_secs(5)), "a refusal clears the window for the cooldown");
-    }
-
-    #[test]
-    fn the_brake_forgets_restarts_older_than_its_window() {
-        let start = std::time::Instant::now();
-        let mut brake = RestartBrake::default();
-        for attempt in 0..3 {
-            brake.allow(start + Duration::from_secs(attempt));
-        }
-
-        // An hour later is a new incident; counting it would refuse a shell healthy all day.
-        assert!(brake.allow(start + Duration::from_secs(3600)), "the window has long passed");
-    }
-
-    #[test]
-    fn a_slow_crash_loop_never_trips_the_brake() {
-        let start = std::time::Instant::now();
-        let mut brake = RestartBrake::default();
-
-        // One crash per window forever is a logged bug, not a restart loop.
-        for attempt in 0..10 {
-            assert!(
-                brake.allow(start + Duration::from_secs(attempt * 61)),
-                "crash {attempt} stands alone in its window"
-            );
+    fn the_brake_counts_restarts_inside_a_sliding_window() {
+        // (label, [(seconds from start, allowed)])
+        let slow: Vec<(u64, bool)> = (0..10).map(|attempt| (attempt * 61, true)).collect();
+        let cases: [(&str, &[(u64, bool)]); 3] = [
+            // A config that kills every Renderer it is handed must wait out the cooldown, and a
+            // refusal clears the window for it.
+            (
+                "a crash loop stops once the limit is reached inside the window",
+                &[(0, true), (1, true), (2, true), (4, false), (5, true)],
+            ),
+            // An hour later is a new incident; counting it would refuse a shell healthy all day.
+            ("restarts older than the window are forgotten", &[(0, true), (1, true), (2, true), (3600, true)]),
+            // One crash per window forever is a logged bug, not a restart loop.
+            ("a slow crash loop never trips the brake", &slow),
+        ];
+        for (label, timeline) in cases {
+            let start = std::time::Instant::now();
+            let mut brake = RestartBrake::default();
+            for &(at, allowed) in timeline {
+                assert_eq!(brake.allow(start + Duration::from_secs(at)), allowed, "{label}: restart at {at}s");
+            }
         }
     }
 }

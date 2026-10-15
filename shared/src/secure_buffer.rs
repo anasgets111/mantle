@@ -181,8 +181,11 @@ mod tests {
         assert_eq!(unsafe { *buf.bytes.as_ptr().add(6) }, 0, "the removed byte was left in the backing allocation");
     }
 
-    /// A multi-byte character is one Backspace, not one byte; `expose_secret` sends it straight to
-    /// the wire without a second decode to catch a split scalar (ADR-0005).
+    /// One keystroke, one deletion, whatever the typist composed. A multi-byte character is one
+    /// Backspace, not one byte; `expose_secret` sends it straight to the wire without a second
+    /// decode to catch a split scalar (ADR-0005). A base letter plus its combining mark is two
+    /// scalars, and a flag is two: scalar-wise deletion left the acute behind on a stripped `e` and
+    /// half a flag (ADR-0236).
     #[test]
     fn pop_grapheme_removes_a_whole_character_and_reports_an_empty_buffer() {
         let mut buf = SecureBuffer::new();
@@ -197,14 +200,7 @@ mod tests {
         assert!(buf.pop_grapheme());
         assert!(buf.is_empty());
         assert!(!buf.pop_grapheme());
-    }
 
-    /// One keystroke, one deletion, whatever the typist composed: a base letter plus its combining
-    /// mark is two scalars, and a flag is two. Scalar-wise deletion left the acute behind on a
-    /// stripped `e` and half a flag (ADR-0236).
-    #[test]
-    fn pop_grapheme_deletes_a_composed_character_whole() {
-        let mut buf = SecureBuffer::new();
         buf.push_str("e\u{301}\u{1F1E9}\u{1F1EA}");
         assert_eq!(buf.grapheme_count(), 2);
 

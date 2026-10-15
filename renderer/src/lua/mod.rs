@@ -921,13 +921,14 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         }
     }
 
-    /// Actual bug: mlua's default `serialize_none_to_null` maps JSON `null` to truthy
-    /// lightuserdata, so a live Telegram tray item's `icon_path = null` made `if item.icon_path`
-    /// assume a real path. Type checks still pass for that sentinel; only truthiness tells it from
-    /// nil. Live tray nulls sit inside `items[1]`, so a fix handling only the outer value fails.
     #[test]
-    fn to_lua_a_null_is_falsy_not_a_truthy_lightuserdata_sentinel() {
+    fn to_lua_maps_null_to_a_falsy_nil_with_an_array_hole_and_leaves_non_null_fields_unchanged() {
         let loader = test_loader();
+
+        /* Actual bug: mlua's default `serialize_none_to_null` maps JSON `null` to truthy
+        lightuserdata, so a live Telegram tray item's `icon_path = null` made `if item.icon_path`
+        assume a real path. Type checks still pass for that sentinel; only truthiness tells it from
+        nil. Live tray nulls sit inside `items[1]`, so a fix handling only the outer value fails. */
         for (json, expr) in [
             (serde_json::json!({ "icon_path": null }), "payload.icon_path"),
             (
@@ -940,14 +941,10 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
                 loader.lua().load(format!(r#"if {expr} then return "truthy" else return "falsy" end"#)).eval().unwrap();
             assert_eq!(result, "falsy", "{expr}");
         }
-    }
 
-    /// Trade-off: null-to-nil leaves an array hole; `ipairs` stops there, while `#` and direct
-    /// indexing see past it. No capability payload has a null element today, only optional fields,
-    /// but configs iterate capability lists with `ipairs`.
-    #[test]
-    fn to_lua_a_null_array_element_leaves_a_hole_ipairs_stops_at() {
-        let loader = test_loader();
+        /* Trade-off: null-to-nil leaves an array hole; `ipairs` stops there, while `#` and direct
+        indexing see past it. No capability payload has a null element today, only optional fields,
+        but configs iterate capability lists with `ipairs`. */
         let json = serde_json::json!({ "xs": [1, null, 3] });
         let value = json::to_lua(loader.lua(), &json).unwrap();
         loader.lua().globals().set("state", value).unwrap();
@@ -958,13 +955,9 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         // Indexing reaches past the hole; this is a hole, not truncation.
         let third: i64 = loader.lua().load("return state.xs[3]").eval().unwrap();
         assert_eq!(third, 3);
-    }
 
-    /// Negative control: disabling `serialize_none_to_null`/`serialize_unit_to_null` changes only
-    /// `Value::Null`, not ordinary numbers, strings, booleans, or arrays.
-    #[test]
-    fn to_lua_leaves_non_null_fields_unchanged() {
-        let loader = test_loader();
+        /* Negative control: disabling `serialize_none_to_null`/`serialize_unit_to_null` changes only
+        `Value::Null`, not ordinary numbers, strings, booleans, or arrays. */
         let json = serde_json::json!({
             "volume": 0.5,
             "muted": false,

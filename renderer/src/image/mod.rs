@@ -1167,65 +1167,63 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_evicts_the_least_recently_asked_for_idle_texture_and_never_a_pinned_one() {
-        // Three 12 MB wallpapers plus tiles: shown is pinned, tiles were asked after the older
-        // wallpaper, so the older wallpaper goes first without touching tiles.
-        let mb = 1 << 20;
-        let v = FileVersion::default();
-        let old = key("/w/old.jpg", 1920, v);
-        let older = key("/w/older.jpg", 1920, v);
-        let shown = key("/w/shown.jpg", 1920, v);
-        let tiles = key("/w/tiles.png", 232, v);
-        let candidates = vec![
-            (older.clone(), 12 * mb, 1),
-            (old.clone(), 12 * mb, 2),
-            (tiles.clone(), 7 * mb, 3),
-            (shown.clone(), 12 * mb, 4),
-        ];
-        let pinned = vec![shown.clone()];
-        // 31 MB idle against a 19 MB budget: the oldest goes and the rest stay.
-        let out = victims(candidates.clone().into_iter(), 19 * mb, &pinned);
-        assert_eq!(out, vec![older.clone()]);
-        // A tighter budget takes the next oldest, then the tiles, and stops at pinned even while
-        // over budget: oversized working sets do not thrash.
-        let out = victims(candidates.clone().into_iter(), 5 * mb, &pinned);
-        assert_eq!(out, vec![older, old, tiles]);
-        // Idle already under budget, nothing moves -- and the pinned 12 MB is not charged for.
-        assert!(victims(candidates.into_iter(), 31 * mb, &pinned).is_empty());
-    }
+    fn victims_evict_idle_textures_oldest_first_never_pinned_ones_and_a_pin_is_by_path_and_box() {
+        {
+            // Three 12 MB wallpapers plus tiles: shown is pinned, tiles were asked after the older
+            // wallpaper, so the older wallpaper goes first without touching tiles.
+            let mb = 1 << 20;
+            let v = FileVersion::default();
+            let old = key("/w/old.jpg", 1920, v);
+            let older = key("/w/older.jpg", 1920, v);
+            let shown = key("/w/shown.jpg", 1920, v);
+            let tiles = key("/w/tiles.png", 232, v);
+            let candidates = vec![
+                (older.clone(), 12 * mb, 1),
+                (old.clone(), 12 * mb, 2),
+                (tiles.clone(), 7 * mb, 3),
+                (shown.clone(), 12 * mb, 4),
+            ];
+            let pinned = vec![shown.clone()];
+            // 31 MB idle against a 19 MB budget: the oldest goes and the rest stay.
+            let out = victims(candidates.clone().into_iter(), 19 * mb, &pinned);
+            assert_eq!(out, vec![older.clone()]);
+            // A tighter budget takes the next oldest, then the tiles, and stops at pinned even while
+            // over budget: oversized working sets do not thrash.
+            let out = victims(candidates.clone().into_iter(), 5 * mb, &pinned);
+            assert_eq!(out, vec![older, old, tiles]);
+            // Idle already under budget, nothing moves -- and the pinned 12 MB is not charged for.
+            assert!(victims(candidates.into_iter(), 31 * mb, &pinned).is_empty());
+        }
 
-    #[test]
-    fn a_pin_the_size_of_the_whole_budget_still_leaves_room_for_idle_textures() {
-        // A cover wallpaper is one screenful and so is the budget on a 3440x1440 output. If the pin
-        // counted, every icon would go and the cache would still be over, for nothing back.
-        let mb = 1 << 20;
-        let v = FileVersion::default();
-        let budget = 19 * mb;
-        let mut candidates = vec![(key("/w/shown.jpg", 3440, v), budget, 99)];
-        candidates.extend((0..11).map(|n| (key(format!("/i/{n}.png"), 32, v), 4 << 10, n)));
-        let pinned = vec![candidates[0].0.clone()];
+        {
+            // A cover wallpaper is one screenful and so is the budget on a 3440x1440 output. If the pin
+            // counted, every icon would go and the cache would still be over, for nothing back.
+            let mb = 1 << 20;
+            let v = FileVersion::default();
+            let budget = 19 * mb;
+            let mut candidates = vec![(key("/w/shown.jpg", 3440, v), budget, 99)];
+            candidates.extend((0..11).map(|n| (key(format!("/i/{n}.png"), 32, v), 4 << 10, n)));
+            let pinned = vec![candidates[0].0.clone()];
 
-        assert!(
-            victims(candidates.into_iter(), budget, &pinned).is_empty(),
-            "44 KB of idle icons beside a pin that fills the budget is not a reason to evict any of them"
-        );
-    }
+            assert!(
+                victims(candidates.into_iter(), budget, &pinned).is_empty(),
+                "44 KB of idle icons beside a pin that fills the budget is not a reason to evict any of them"
+            );
+        }
 
-    #[test]
-    fn a_pin_is_by_path_and_box_so_a_tile_of_the_shown_file_is_still_idle() {
-        let v = FileVersion::default();
-        let full = key("/w/a.jpg", 1920, v);
-        let tile = key("/w/a.jpg", 232, v);
-        let pinned = vec![full.clone()];
-        let out = victims(vec![(full.clone(), 10, 1), (tile.clone(), 10, 2)].into_iter(), 5, &pinned);
-        assert_eq!(out, vec![tile]);
+        {
+            let v = FileVersion::default();
+            let full = key("/w/a.jpg", 1920, v);
+            let tile = key("/w/a.jpg", 232, v);
+            let pinned = vec![full.clone()];
+            let out = victims(vec![(full.clone(), 10, 1), (tile.clone(), 10, 2)].into_iter(), 5, &pinned);
+            assert_eq!(out, vec![tile]);
+        }
     }
 
     #[test]
     fn trim_under_budget_never_asks_for_the_pins() {
-        let mut cache = ImageCache::new();
-        cache.trim(|| unreachable!("nothing resident, nothing to walk"));
-        assert_eq!(cache.resident_bytes, 0);
+        ImageCache::new().trim(|| unreachable!("nothing resident, nothing to walk"));
     }
 
     #[test]

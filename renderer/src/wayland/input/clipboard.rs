@@ -311,10 +311,7 @@ mod tests {
         assert!(offered(&[0xff], false).is_none());
         assert!(offered(b"line\nnext", false).is_none());
         assert!(offered(&vec![b'a'; MAX_TEXT_BYTES + 1], false).is_none());
-    }
-
-    #[test]
-    fn a_multiline_paste_keeps_its_newlines_as_lf_and_still_refuses_other_controls() {
+        // A multiline field keeps its newlines as LF and still refuses other controls.
         assert_eq!(offered(b"one\r\ntwo\rthree\n", true).unwrap().as_slice(), b"one\ntwo\nthree\n");
         assert!(offered(b"tab\there", true).is_none());
         assert!(offered(b"line\r\nnext", false).is_none());

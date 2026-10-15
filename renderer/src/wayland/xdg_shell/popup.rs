@@ -514,99 +514,79 @@ impl PopupHandler for App {
 mod tests {
     use super::*;
     #[test]
-    fn a_visible_popup_with_no_object_is_created_unless_the_latch_is_set() {
-        assert_eq!(popup_visibility_action(true, false, None, 4), PopupAction::Create);
-        // ADR-0051 decision 2, and the one row the whole latch exists for: a compositor
-        // dismissal leaves the resolved tree still saying `visible = true`, so without this the
-        // next re-resolve creates a second popup for the same click-outside to dismiss, forever.
-        // With no `on_dismiss` and no further pointer input, the latch prevents that livelock.
-        assert_eq!(popup_visibility_action(true, false, Some(4), 4), PopupAction::Nothing);
+    fn popup_visibility_action_creates_destroys_or_leaves_alone_by_visible_object_and_latch() {
+        use PopupAction::{Create, Destroy, Nothing};
+        // (visible, exists, dismissed_at, pointer_input, action)
+        for (visible, exists, dismissed_at, pointer_input, want) in [
+            (true, false, None, 4, Create),
+            // ADR-0051 decision 2, and the one row the whole latch exists for: a compositor
+            // dismissal leaves the resolved tree still saying `visible = true`, so without this the
+            // next re-resolve creates a second popup for the same click-outside to dismiss, forever.
+            // With no `on_dismiss` and no further pointer input, the latch prevents that livelock.
+            (true, false, Some(4), 4, Nothing),
+            // ADR-0051's first amendment. Under a grab niri delivers the closing click to the
+            // parent bar too, so `popup_done` and the opener's `on_click` land in one batch and
+            // `visible` alone cannot separate the two cases -- but `popup_done` dispatches before the
+            // pointer events that follow it, so the counter has already moved.
+            (true, false, Some(9), 10, Create),
+            // Not a degenerate case: `apply_resolved_surface_state` visits every surface after any
+            // changed scene, so an open popup passes through here several times a second.
+            (true, true, None, 4, Nothing),
+            (false, true, None, 4, Destroy),
+            (false, true, Some(4), 4, Destroy),
+            // The row that reopens the path. Nothing is destroyed because the compositor already did
+            // it; the caller clears the latch on this same edge, which is what lets an `on_dismiss`
+            // writing `visible = false` make the popup openable again immediately.
+            (false, false, Some(4), 4, Nothing),
+            (false, false, None, 4, Nothing),
+        ] {
+            assert_eq!(
+                popup_visibility_action(visible, exists, dismissed_at, pointer_input),
+                want,
+                "visible={visible} exists={exists} dismissed_at={dismissed_at:?} pointer_input={pointer_input}"
+            );
+        }
     }
 
     #[test]
-    fn a_click_arriving_after_the_dismissal_clears_the_latch_in_the_same_turn() {
-        // ADR-0051's first amendment. Under a grab niri delivers the closing click to the
-        // parent bar too, so `popup_done` and the opener's `on_click` land in one batch and
-        // `visible` alone cannot separate the two cases -- but `popup_done` dispatches before the
-        // pointer events that follow it, so the counter has already moved.
-        assert_eq!(popup_visibility_action(true, false, Some(9), 10), PopupAction::Create);
-    }
-
-    #[test]
-    fn a_popup_that_is_already_open_is_left_alone_on_every_later_re_resolve() {
-        // Not a degenerate case: `apply_resolved_surface_state` visits every surface after any
-        // changed scene, so an open popup passes through here several times a second.
-        assert_eq!(popup_visibility_action(true, true, None, 4), PopupAction::Nothing);
-    }
-
-    #[test]
-    fn visible_going_false_destroys_an_open_popup_and_asks_for_nothing_from_a_closed_one() {
-        assert_eq!(popup_visibility_action(false, true, None, 4), PopupAction::Destroy);
-        assert_eq!(popup_visibility_action(false, true, Some(4), 4), PopupAction::Destroy);
-        // The row that reopens the path. Nothing is destroyed because the compositor already did
-        // it; the caller clears the latch on this same edge, which is what lets an `on_dismiss`
-        // writing `visible = false` make the popup openable again immediately.
-        assert_eq!(popup_visibility_action(false, false, Some(4), 4), PopupAction::Nothing);
-        assert_eq!(popup_visibility_action(false, false, None, 4), PopupAction::Nothing);
-    }
-
-    #[test]
-    fn a_popup_anchors_to_the_parent_instance_the_arming_click_landed_on() {
-        // ADR-0051 decision 1. Two monitors, one declared `bar`, and the click decides.
-        let instances = ["bar@eDP-1", "bar@DP-1", "menu"];
-        assert_eq!(parent_instance_index(instances.into_iter(), "bar", Some("bar@DP-1")), Some(1));
-        assert_eq!(parent_instance_index(instances.into_iter(), "bar", Some("bar@eDP-1")), Some(0));
-    }
-
-    #[test]
-    fn a_popup_with_nothing_armed_falls_back_to_the_first_instance_of_its_parent() {
-        // The `grab = false` popup opened by a D-Bus notification: config has no way to say
-        // which monitor it means (see `parent_instance_index`'s ponytail).
-        let instances = ["bar@eDP-1", "bar@DP-1"];
-        assert_eq!(parent_instance_index(instances.into_iter(), "bar", None), Some(0));
-    }
-
-    #[test]
-    fn a_click_on_some_other_surface_still_falls_back_to_the_first_parent_instance() {
-        // A popup opened by a click on the *notification area* while naming `bar` as its parent.
-        // The armed surface is not a candidate at all, so the fallback is the only answer left.
-        let instances = ["bar@eDP-1", "bar@DP-1", "notification_area@DP-1"];
-        assert_eq!(parent_instance_index(instances.into_iter(), "bar", Some("notification_area@DP-1")), Some(0));
-    }
-
-    #[test]
-    fn a_popup_whose_parent_is_declared_nowhere_gets_no_index() {
-        let instances = ["bar@eDP-1", "settings"];
-        assert_eq!(parent_instance_index(instances.into_iter(), "launcher", Some("bar@eDP-1")), None);
-    }
-
-    #[test]
-    fn a_popup_parents_to_a_window_by_its_bare_instance_id() {
+    fn a_popup_anchors_to_its_parent_instance_by_the_arming_click_else_the_first() {
+        // (instances, parent, armed, index)
+        let cases = [
+            // ADR-0051 decision 1. Two monitors, one declared `bar`, and the click decides.
+            (vec!["bar@eDP-1", "bar@DP-1", "menu"], "bar", Some("bar@DP-1"), Some(1)),
+            (vec!["bar@eDP-1", "bar@DP-1", "menu"], "bar", Some("bar@eDP-1"), Some(0)),
+            // The `grab = false` popup opened by a D-Bus notification: config has no way to say
+            // which monitor it means (see `parent_instance_index`'s ponytail).
+            (vec!["bar@eDP-1", "bar@DP-1"], "bar", None, Some(0)),
+            // A popup opened by a click on the *notification area* while naming `bar` as its parent.
+            // The armed surface is not a candidate at all, so the fallback is the only answer left.
+            (vec!["bar@eDP-1", "bar@DP-1", "notification_area@DP-1"], "bar", Some("notification_area@DP-1"), Some(0)),
+            // A parent declared nowhere gets no index.
+            (vec!["bar@eDP-1", "settings"], "launcher", Some("bar@eDP-1"), None),
+        ];
+        for (instances, parent, armed, want) in cases {
+            assert_eq!(parent_instance_index(instances.iter().copied(), parent, armed), want, "{parent} {armed:?}");
+        }
         // A popup parents to either a `panel` or a `window`, and a window's instance carries
         // no `@output` because the compositor places it.
-        let instances = ["bar@eDP-1", "settings"];
-        assert_eq!(parent_instance_index(instances.into_iter(), "settings", None), Some(1));
+        assert_eq!(parent_instance_index(["bar@eDP-1", "settings"].into_iter(), "settings", None), Some(1));
     }
 
     #[test]
-    fn a_popup_configure_is_taken_as_given_because_the_compositor_may_have_constrained_it() {
-        // `constraint_adjustment` lets the compositor slide, flip or resize the popup to
-        // keep it on screen, and the size it lands on is the one that has to be painted.
-        assert_eq!(popup_size_for((180, 90), (200.0, 120.0)), (180, 90));
-    }
-
-    #[test]
-    fn a_popup_configure_with_no_size_falls_back_to_what_the_positioner_asked_for() {
-        // `PopupInner` seeds its pending dimensions at `-1` and reports whatever they hold when
-        // `xdg_surface.configure` arrives; a `-1` reaching `WlEglSurface::new` is a crash and the
-        // requested size is right there.
-        assert_eq!(popup_size_for((-1, -1), (200.0, 120.0)), (200, 120));
-        assert_eq!(popup_size_for((180, 0), (200.0, 120.0)), (180, 120), "per axis, not all or nothing");
-    }
-
-    #[test]
-    fn a_popup_never_takes_a_zero_sized_buffer() {
-        assert_eq!(popup_size_for((0, 0), (0.0, 0.0)), (1, 1), "a wl_egl_window of 0 is invalid");
+    fn popup_size_for_takes_the_configure_per_axis_else_the_request_and_never_zero() {
+        for (configured, requested, want, case) in [
+            // `constraint_adjustment` lets the compositor slide, flip or resize the popup to
+            // keep it on screen, and the size it lands on is the one that has to be painted.
+            ((180, 90), (200.0, 120.0), (180, 90), "a configure is taken as given"),
+            // `PopupInner` seeds its pending dimensions at `-1` and reports whatever they hold when
+            // `xdg_surface.configure` arrives; a `-1` reaching `WlEglSurface::new` is a crash and the
+            // requested size is right there.
+            ((-1, -1), (200.0, 120.0), (200, 120), "no size falls back to the request"),
+            ((180, 0), (200.0, 120.0), (180, 120), "per axis, not all or nothing"),
+            ((0, 0), (0.0, 0.0), (1, 1), "a wl_egl_window of 0 is invalid"),
+        ] {
+            assert_eq!(popup_size_for(configured, requested), want, "{case}");
+        }
     }
 
     #[test]

@@ -645,47 +645,80 @@ mod position_tests {
     }
 
     #[test]
-    fn a_zero_mid_track_keeps_the_last_reading_and_its_timestamp() {
-        // Firefox answers `0` for several seconds after a seek while playing on from the target.
-        // Believing it restarts every progress bar at the beginning of the track.
-        let state = previous_at(340_000_000);
-        assert_eq!(resolve_position(Ok(0), Some(&state), true, PlayState::Stopped, "test"), (Some(340_000_000), 42));
-    }
-
-    #[test]
-    fn a_zero_is_published_on_a_new_track_or_with_nothing_to_fall_back_on() {
-        // A track we were not already inside legitimately begins at zero, and a first reading has no previous to keep.
-        let state = previous_at(340_000_000);
-        let (position, updated_at) = resolve_position(Ok(0), Some(&state), false, PlayState::Stopped, "test");
-        assert_eq!(position, Some(0));
-        assert_ne!(updated_at, 42, "a believed reading carries the moment it was taken");
-        let (position, _) = resolve_position(Ok(0), None, true, PlayState::Stopped, "test");
-        assert_eq!(position, Some(0));
-    }
-
-    #[test]
-    fn a_real_reading_always_wins() {
-        let state = previous_at(340_000_000);
-        let (position, updated_at) = resolve_position(Ok(363_000_000), Some(&state), true, PlayState::Stopped, "test");
-        assert_eq!(position, Some(363_000_000));
-        assert_ne!(updated_at, 42);
-    }
-
-    #[test]
-    fn an_unchanged_reading_keeps_its_stamp_until_the_play_state_moves() {
-        let state = PlayerState { play_state: PlayState::Paused, ..previous_at(340_000_000) };
-        assert_eq!(
-            resolve_position(Ok(340_000_000), Some(&state), true, PlayState::Paused, "test"),
-            (Some(340_000_000), 42)
-        );
-        let (_, resumed_at) = resolve_position(Ok(340_000_000), Some(&state), true, PlayState::Playing, "test");
-        assert_ne!(resumed_at, 42, "resuming restarts extrapolation from now");
-    }
-
-    #[test]
-    fn an_unread_position_is_nil_rather_than_a_fabricated_zero() {
-        // ADR-0036: unavailable is not zero. Nothing has ever been read here.
-        assert_eq!(resolve_position(Err(zbus::Error::InvalidReply), None, true, PlayState::Stopped, "test"), (None, 0));
+    fn resolve_position_keeps_the_stamp_of_a_kept_reading_and_restamps_a_believed_one() {
+        let paused = || PlayerState { play_state: PlayState::Paused, ..previous_at(340_000_000) };
+        // (label, read, previous, same_track, play_state, expected position, expected stamp: None = a fresh one)
+        let cases = [
+            // Firefox answers `0` for several seconds after a seek while playing on from the target.
+            // Believing it restarts every progress bar at the beginning of the track.
+            (
+                "a zero mid-track keeps the last reading and its timestamp",
+                Ok(0),
+                Some(previous_at(340_000_000)),
+                true,
+                PlayState::Stopped,
+                Some(340_000_000),
+                Some(42),
+            ),
+            // A track we were not already inside legitimately begins at zero.
+            (
+                "a zero on a new track is published with a fresh stamp",
+                Ok(0),
+                Some(previous_at(340_000_000)),
+                false,
+                PlayState::Stopped,
+                Some(0),
+                None,
+            ),
+            // A first reading has no previous to keep.
+            ("a zero with nothing to fall back on is published", Ok(0), None, true, PlayState::Stopped, Some(0), None),
+            (
+                "a real reading always wins",
+                Ok(363_000_000),
+                Some(previous_at(340_000_000)),
+                true,
+                PlayState::Stopped,
+                Some(363_000_000),
+                None,
+            ),
+            (
+                "an unchanged reading keeps its stamp",
+                Ok(340_000_000),
+                Some(paused()),
+                true,
+                PlayState::Paused,
+                Some(340_000_000),
+                Some(42),
+            ),
+            // Resuming restarts extrapolation from now.
+            (
+                "an unchanged reading is restamped when the play state moves",
+                Ok(340_000_000),
+                Some(paused()),
+                true,
+                PlayState::Playing,
+                Some(340_000_000),
+                None,
+            ),
+            // ADR-0036: unavailable is not zero. Nothing has ever been read here.
+            (
+                "an unread position is nil rather than a fabricated zero",
+                Err(zbus::Error::InvalidReply),
+                None,
+                true,
+                PlayState::Stopped,
+                None,
+                Some(0),
+            ),
+        ];
+        for (label, read, previous, same_track, play_state, want_position, want_stamp) in cases {
+            let (position, updated_at) = resolve_position(read, previous.as_ref(), same_track, play_state, "test");
+            assert_eq!(position, want_position, "{label}");
+            match want_stamp {
+                Some(stamp) => assert_eq!(updated_at, stamp, "{label}"),
+                None => assert_ne!(updated_at, 42, "{label}: a believed reading carries the moment it was taken"),
+            }
+        }
     }
 
     #[test]

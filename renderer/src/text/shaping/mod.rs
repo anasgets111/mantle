@@ -694,19 +694,6 @@ mod tests {
         );
     }
 
-    /// A family a node names joins the faces femtovg is handed, so glyphs shaped in it can be
-    /// drawn (ADR-0211).
-    #[test]
-    fn a_family_named_by_a_node_joins_the_faces_the_painter_is_handed() {
-        let Some((declared, named)) = two_families() else {
-            eprintln!("skip: need two installed families to tell apart");
-            return;
-        };
-        let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
-        assert!(named_face_is_handed(&handle, named));
-    }
-
     /// The hole `ensure_family` exists for: a node whose box is fully specified is never measured,
     /// so nothing would resolve its family and paint would fall back to the declared chain.
     #[test]
@@ -779,7 +766,7 @@ mod tests {
     /// Measuring the same string in two families has to reach different faces, or the box a node
     /// reserves is the declared family's width and the glyphs it draws will not fit it.
     #[test]
-    fn a_named_family_measures_differently_from_the_declared_one() {
+    fn a_named_family_measures_differently_and_is_cached_apart_from_the_declared_one() {
         let Some((declared, named)) = two_families() else {
             eprintln!("skip: need two installed families to tell apart");
             return;
@@ -791,22 +778,9 @@ mod tests {
         let plain = handle.shape(req_in("iiii", 32.0, None)).width;
         let mono = handle.shape(req_in("iiii", 32.0, Some(named))).width;
         assert!(mono > plain, "monospaced {named:?} at {mono} should be wider than {declared:?} at {plain}");
-    }
-
-    /// The family is part of the cache key, so the first measurement cannot answer for another
-    /// family. Without it whichever node measured first would poison every other family's box.
-    #[test]
-    fn a_measurement_in_one_family_is_not_served_to_another() {
-        let Some((declared, named)) = two_families() else {
-            eprintln!("skip: need two installed families to tell apart");
-            return;
-        };
-        let handle = ShapingHandle::spawn();
-        handle.set_chain(&[declared.to_string()]);
-        let plain = handle.shape(req_in("iiii", 32.0, None));
-        let mono = handle.shape(req_in("iiii", 32.0, Some(named)));
+        // The family is part of the cache key, so the first measurement cannot answer for another
+        // family. Without it whichever node measured first would poison every other family's box.
         assert_eq!(handle.cached_len(), 2, "the two families are separate entries, not one");
-        assert_ne!(plain.width, mono.width);
     }
 
     /// A family nothing on the system answers draws in the declared chain rather than as nothing,

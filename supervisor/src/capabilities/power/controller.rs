@@ -342,24 +342,19 @@ mod tests {
     }
 
     #[test]
-    fn profile_names_pulls_the_profile_key_out_of_each_description_and_keeps_the_order() {
+    fn profile_names_keeps_the_order_and_skips_entries_with_no_string_profile() {
         let raw = vec![
             entry(&[("Profile", Value::from("power-saver")), ("Driver", Value::from("intel_pstate"))]),
             entry(&[("Profile", Value::from("balanced")), ("Driver", Value::from("intel_pstate"))]),
             entry(&[("Profile", Value::from("performance")), ("Driver", Value::from("intel_pstate"))]),
         ];
-
         assert_eq!(profile_names(&raw), ["power-saver", "balanced", "performance"]);
-    }
 
-    #[test]
-    fn profile_names_skips_an_entry_with_no_profile_key_or_a_non_string_one() {
         let raw = vec![
             entry(&[("Driver", Value::from("placeholder"))]),
             entry(&[("Profile", Value::from(3i32))]),
             entry(&[("Profile", Value::from("balanced"))]),
         ];
-
         assert_eq!(profile_names(&raw), ["balanced"]);
         assert_eq!(profile_names(&[]), Vec::<String>::new());
     }

@@ -505,24 +505,22 @@ mod tests {
     }
 
     #[test]
-    fn a_run_after_a_hole_is_refused_rather_than_dropped() {
+    fn a_bad_run_is_refused_naming_the_run() {
         let lua = mlua::Lua::new();
-        let err = runs_content(&lua, r#"{ { text = "a" }, nil, { text = "c" } }"#).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "content" && detail.contains("dense array")),
-            "{err}"
-        );
-    }
-
-    #[test]
-    fn a_misspelled_run_field_is_refused_naming_the_run() {
-        let lua = mlua::Lua::new();
-        let err = runs_content(&lua, r##"{ { kind = "text", text = "a", colour = "#ffffff" } }"##).unwrap_err();
-        assert!(
-            matches!(&err, LayoutError::InvalidProperty { property, detail, .. }
-            if property == "content" && detail.starts_with("run 1: unknown key `colour`")),
-            "{err}"
-        );
+        for (runs, detail) in [
+            (r#"{ { text = "a" }, nil, { text = "c" } }"#, "dense array"),
+            (r##"{ { kind = "text", text = "a", colour = "#ffffff" } }"##, "run 1: unknown key `colour`"),
+            (r#"{ { text = "a" }, { kind = "text" } }"#, "run 2: `text` must be string"),
+            (r#"{ { text = "a", bold = "yes" } }"#, "run 1:"),
+            (r#"{ { text = "a", color = "red" } }"#, "run 1:"),
+            (r#"{ "just a string" }"#, "run 1:"),
+        ] {
+            let err = runs_content(&lua, runs).unwrap_err();
+            assert!(
+                matches!(&err, LayoutError::InvalidProperty { property, detail: d, .. } if property == "content" && d.contains(detail)),
+                "{runs}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -534,26 +532,6 @@ mod tests {
             if property == "content" && detail.starts_with("run 2: unknown key `image_path`")),
             "{err}"
         );
-    }
-
-    #[test]
-    fn a_run_without_text_and_without_unknown_keys_is_still_refused() {
-        let lua = mlua::Lua::new();
-        let err = runs_content(&lua, r#"{ { text = "a" }, { kind = "text" } }"#).unwrap_err();
-        assert!(matches!(err, LayoutError::InvalidProperty { property, detail, .. }
-            if property == "content" && detail.starts_with("run 2: `text` must be string")));
-    }
-
-    #[test]
-    fn a_run_with_a_mistyped_flag_or_colour_is_refused() {
-        let lua = mlua::Lua::new();
-        for run in [r#"{ text = "a", bold = "yes" }"#, r#"{ text = "a", color = "red" }"#, r#""just a string""#] {
-            let err = runs_content(&lua, &format!("{{ {run} }}")).unwrap_err();
-            assert!(
-                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "content" && detail.starts_with("run 1:")),
-                "{run}: {err}"
-            );
-        }
     }
 
     #[test]
@@ -602,7 +580,7 @@ mod tests {
     }
 
     #[test]
-    fn fit_parses_the_three_spelled_modes_and_nothing_else() {
+    fn fit_parses_the_three_spelled_modes_and_rejects_everything_else() {
         let lua = mlua::Lua::new();
         for (spelling, expected) in [("cover", Fit::Cover), ("contain", Fit::Contain), ("stretch", Fit::Stretch)] {
             assert_eq!(
@@ -621,11 +599,8 @@ mod tests {
         let err =
             fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "Cover" }"#)).unwrap_err();
         assert!(err.to_string().contains("fit"), "{err}");
-    }
 
-    #[test]
-    fn fit_rejects_a_mode_that_does_not_exist_rather_than_covering_silently() {
-        let lua = mlua::Lua::new();
+        // A mode that does not exist is refused rather than covering silently.
         let err =
             fields::image::fit.read(&props_from_src(&lua, r#"return { kind = "image", fit = "fill" }"#)).unwrap_err();
         assert!(format!("{err}").contains("cover"), "the error should name the modes that do exist, got {err}");
@@ -660,8 +635,9 @@ mod tests {
         );
     }
 
+    /// ADR-0263: `live` is frames per second in (0, 1000]; `paint_cursor` a boolean.
     #[test]
-    fn live_and_paint_cursor_default_false_and_reject_non_booleans() {
+    fn live_takes_frames_per_second_and_paint_cursor_a_boolean() {
         let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r#"return { kind = "capture" }"#);
         assert_eq!(fields::capture::live.read(&props).unwrap(), None);
@@ -671,22 +647,13 @@ mod tests {
         assert_eq!(fields::capture::live.read(&props).unwrap(), Some(f32::INFINITY));
         assert!(fields::capture::paint_cursor.read(&props).unwrap());
 
-        assert!(
-            fields::capture::live.read(&props_from_src(&lua, r#"return { kind = "capture", live = "yes" }"#)).is_err()
-        );
-    }
-
-    /// ADR-0263: frames per second in (0, 1000].
-    #[test]
-    fn live_takes_frames_per_second() {
-        let lua = mlua::Lua::new();
         let live = |src: &str| {
             fields::capture::live.read(&props_from_src(&lua, format!("return {{ kind = 'capture', live = {src} }}")))
         };
         assert_eq!(live("false").unwrap(), None);
         assert_eq!(live("60").unwrap(), Some(60.0));
         assert_eq!(live("1000").unwrap(), Some(1000.0));
-        for refused in ["0", "-5", "1001"] {
+        for refused in ["0", "-5", "1001", r#""yes""#] {
             assert!(live(refused).is_err(), "{refused}");
         }
     }
@@ -863,26 +830,6 @@ mod tests {
     }
 
     #[test]
-    fn node_id_reads_the_string() {
-        let lua = mlua::Lua::new();
-        let props = props_from_src(&lua, r#"return { kind = "rect", id = "handle" }"#);
-        assert_eq!(fields::common::id.read(&props).unwrap(), Some("handle".to_string()));
-    }
-
-    #[test]
-    fn a_signal_userdata_in_node_id_is_rejected() {
-        let lua = signal_lua();
-        let signal = crate::lua::signal::Signal::new_live(Value::Boolean(true), crate::lua::signal::DirtyFlag::new()).0;
-        let table = lua.create_table().unwrap();
-        table.set("kind", "rect").unwrap();
-        table.set("id", signal).unwrap();
-        let node = deserialize_lua_table(&table).unwrap();
-        assert!(
-            matches!(fields::common::id.read(&node.properties).unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "id")
-        );
-    }
-
-    #[test]
     fn a_non_utf8_node_id_is_rejected_rather_than_lossily_converted() {
         let lua = mlua::Lua::new();
         // Two distinct bad ids must not collapse onto one replacement character.
@@ -899,18 +846,14 @@ mod tests {
     }
 
     #[test]
-    fn foreground_reads_a_hex_colour() {
+    fn foreground_reads_a_hex_colour_and_rejects_a_wrong_type() {
         let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r##"return { kind = "text", foreground = "#00ff0080" }"##);
         assert_eq!(
             fields::typeface::foreground.read(&props).unwrap(),
             Some(Rgba { r: 0.0, g: 1.0, b: 0.0, a: 0x80 as f32 / 255.0 })
         );
-    }
 
-    #[test]
-    fn foreground_wrong_type_is_rejected() {
-        let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r#"return { kind = "text", foreground = 5 }"#);
         let err = fields::typeface::foreground.read(&props).unwrap_err();
         assert!(

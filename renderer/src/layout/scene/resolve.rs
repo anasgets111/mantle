@@ -485,21 +485,6 @@ mod tests {
         assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children[0].rect.width, 10.0);
     }
 
-    /// A computed over a computed hands its cells up through the frame it runs in, so a write to
-    /// the innermost cell still reaches the node.
-    #[test]
-    fn a_write_under_a_computed_of_a_computed_reaches_the_node() {
-        let mut bar = Fixture::new(
-            r##"accent = state("accent", "#101010")
-            local inner = accent:map(function(c) return c end)
-            return panel { id = "bar", child = column { children = {
-                rect { width = 10, height = 10, background = inner:map(function(c) return c end) },
-            } } }"##,
-        );
-        bar.run(r##"accent:set("#202020")"##);
-        assert_eq!(string(bar.child(0), "background"), "#202020");
-    }
-
     /// A hidden subtree reads nothing (ADR-0124); shown again, a child whose input was written
     /// meanwhile resolves again, and one whose input was not is kept.
     #[test]

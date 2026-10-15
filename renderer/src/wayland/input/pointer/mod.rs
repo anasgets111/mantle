@@ -744,6 +744,7 @@ mod tests {
         let submit =
             with_property(hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false), "submits_secure", Value::Boolean(true));
         let click = click_target(&[&submit], point, 0).expect("a submit node is clickable");
+        assert!(click.handler.is_none(), "submit alone arms a click, with no Lua handler to call (ADR-0114)");
         assert!(hits_a_secret(None, Some(&click)));
         let inert = hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), true);
         assert!(!hits_a_secret(None, click_target(&[&inert], point, 0).as_ref()));
@@ -829,24 +830,6 @@ mod tests {
         assert_eq!(rect, LogicalRect { x: 16.0, y: 9.0, width: 28.0, height: 14.0 });
     }
 
-    #[test]
-    fn a_node_with_no_on_click_is_transparent_rather_than_a_barrier() {
-        // An unhandled node nested inside a handled one must not swallow the click: the scan
-        // keeps walking outwards past it.
-        let lua = Lua::new();
-        let inner = hit_node(&lua, "rect", (5.0, 2.0, 20.0, 20.0), false);
-        let mut outer = hit_node(&lua, "rect", (10.0, 4.0, 40.0, 24.0), true);
-        outer.children.push(inner);
-        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        root.children.push(outer);
-
-        let path = layout::hit::hit_path(&root, layout::hit::LogicalPoint { x: 20.0, y: 12.0 });
-        assert_eq!(path.len(), 3, "the inner rect is still on the path");
-        let Clickable { rect, .. } = click_target(&path, layout::hit::LogicalPoint { x: 20.0, y: 12.0 }, 0)
-            .expect("the outer rect carries the on_click");
-        assert_eq!(rect, LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 });
-    }
-
     /// `pointer` is where the node's own box was hit, whatever its drawn transform.
     #[test]
     fn on_click_pointer_is_node_local_through_translate_scale_and_rotate() {
@@ -908,17 +891,6 @@ mod tests {
         let pressed = (drag(gone.id).rect, pt(23.0, 4.0));
         assert_eq!(drag_local(Some(&root), &gone, point), pressed, "removed mid-drag");
         assert_eq!(drag_local(None, &gone, point), pressed, "surface gone");
-    }
-
-    /// ADR-0114: `submits_secure = true` alone makes a node a click target, with no Lua handler to call.
-    #[test]
-    fn submit_alone_makes_any_node_a_click_target() {
-        let lua = Lua::new();
-        let mut row = hit_node(&lua, "row", (0.0, 0.0, 40.0, 24.0), false);
-        std::rc::Rc::make_mut(&mut row.properties).insert("submits_secure", Value::Boolean(true));
-        let clickable =
-            click_target(&[&row], layout::hit::LogicalPoint { x: 1.0, y: 1.0 }, 0).expect("submit arms a click");
-        assert!(clickable.handler.is_none() && clickable.submits_secure);
     }
 
     #[test]

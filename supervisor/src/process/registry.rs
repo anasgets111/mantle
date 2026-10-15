@@ -470,16 +470,13 @@ mod tests {
     }
 
     #[test]
-    fn process_run_args_parses_cmd_and_args_from_arguments() {
+    fn process_run_args_parses_cmd_and_args_and_rejects_a_malformed_shape() {
         let arguments = vec![serde_json::json!("echo"), serde_json::json!(["hello", "world"])];
         assert_eq!(
             process_run_args(&arguments),
             Some(("echo".to_string(), vec!["hello".to_string(), "world".to_string()]))
         );
-    }
 
-    #[test]
-    fn process_run_args_rejects_a_malformed_shape() {
         assert_eq!(process_run_args(&[]), None, "missing both elements");
         assert_eq!(process_run_args(&[serde_json::json!(1), serde_json::json!([])]), None, "cmd is not a string");
         assert_eq!(

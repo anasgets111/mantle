@@ -439,19 +439,15 @@ mod tests {
         }
     }
 
-    /// A `text` that says nothing draws in the declared chain, which is most nodes.
     #[test]
-    fn a_text_node_without_a_font_property_draws_in_the_declared_chain() {
+    fn a_text_node_draws_in_the_declared_chain_unless_it_names_a_family_which_reaches_paint_as_written() {
         let lua = Lua::new();
+        // A `text` that says nothing draws in the declared chain, which is most nodes.
         let parsed = style(&lua, r#"return { kind = "text", content = "hi" }"#).unwrap().unwrap();
         assert!(matches!(parsed, PaintStyle::Text { face: Typeface { font: None, .. }, .. }), "got {parsed:?}");
-    }
 
-    /// The family reaches paint as the config wrote it, not normalised: the painter keys its
-    /// chains on the name the node asked for, so any rewriting here would miss the chain.
-    #[test]
-    fn a_text_node_carries_the_family_name_it_was_given() {
-        let lua = Lua::new();
+        // The family reaches paint as the config wrote it, not normalised: the painter keys its
+        // chains on the name the node asked for, so any rewriting here would miss the chain.
         let parsed = style(&lua, r#"return { kind = "text", content = "hi", font = "JetBrainsMono Nerd Font Mono" }"#)
             .unwrap()
             .unwrap();

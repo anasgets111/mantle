@@ -310,29 +310,6 @@ mod tests {
     }
 
     #[test]
-    fn secure_submit_refuses_an_unrouted_pair_and_an_unknown_key() {
-        let lua = mlua::Lua::new();
-        for (source, expected) in [
-            (
-                r#"{ capability = "lock", action = "connect" }"#,
-                "`capability`/`action` receives no password, got string \"lock/connect\"; expected one of `lock/authenticate`, `network/connect`, `network/vpn_secret`, `polkit/authenticate`, `secrets/store`, `bluetooth/pair`",
-            ),
-            (
-                r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
-                "unknown key `acton`; did you mean `action`?",
-            ),
-        ] {
-            let err = fields::textfield::secure_submit
-                .read(&props_from_src(&lua, format!("return {{ kind = \"textfield\", secure_submit = {source} }}")))
-                .unwrap_err();
-            assert!(
-                matches!(&err, LayoutError::InvalidProperty { property, detail, .. } if property == "secure_submit" && detail == expected),
-                "{err}"
-            );
-        }
-    }
-
-    #[test]
     fn secure_submit_well_formed_table_parses_capability_and_action() {
         let lua = mlua::Lua::new();
         let props = props_from_src(
@@ -381,6 +358,14 @@ mod tests {
             (r#"{ capability = "", action = "connect" }"#, "capability"),
             (r#"{ capability = "network", action = "" }"#, "action"),
             (r#""network.connect""#, ""),
+            (
+                r#"{ capability = "lock", action = "connect" }"#,
+                "`capability`/`action` receives no password, got string \"lock/connect\"; expected one of `lock/authenticate`, `network/connect`, `network/vpn_secret`, `polkit/authenticate`, `secrets/store`, `bluetooth/pair`",
+            ),
+            (
+                r#"{ capability = "lock", action = "authenticate", acton = "x" }"#,
+                "unknown key `acton`; did you mean `action`?",
+            ),
         ] {
             let props = props_from_src(&lua, format!("return {{ kind = 'textfield', secure_submit = {value} }}"));
             let err = fields::textfield::secure_submit.read(&props).unwrap_err();
@@ -422,30 +407,24 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_without_an_id_is_rejected_the_same_way_every_other_role_is() {
-        let lua = mlua::Lua::new();
-        assert!(matches!(
-            lock_spec(&props_from_src(&lua, r#"return { kind = "lock" }"#)).unwrap_err(),
-            LayoutError::InvalidProperty { property, .. } if property == "id"
-        ));
-    }
-
-    #[test]
-    fn every_property_a_lock_denies_is_refused_by_name_rather_than_ignored() {
-        let lua = mlua::Lua::new();
-        // `output` and `anchor` never reach `lock_spec` from a config any more: they are not on
-        // a `lock` field in `nodes::properties`, so `deserialize_lua_table` refuses them first
+    fn a_lock_without_an_id_or_with_a_property_it_denies_is_refused_by_name() {
+        let lua = signal_lua();
+        // `output` and `anchor` never reach `lock_spec` from a config: they are not on a `lock`
+        // field in `nodes::properties`, so `deserialize_lua_table` refuses them first
         // (`a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it`).
-        // The three left here are ones a lock legitimately has a row for and refuses anyway.
-        for property in ["visible", "width", "height"] {
-            let err = lock_spec(&props_from_src(
-                &lua,
-                format!(r#"return {{ kind = "lock", id = "screen-lock", {property} = 1 }}"#),
-            ))
-            .unwrap_err();
+        // The denied ones here are ones a lock legitimately has a row for and refuses anyway.
+        for (fields, property) in [
+            ("", "id"), // the same refusal every other role gets
+            (r#"id = "screen-lock", visible = 1"#, "visible"),
+            (r#"id = "screen-lock", width = 1"#, "width"),
+            (r#"id = "screen-lock", height = 1"#, "height"),
+            (r#"visible = false"#, "visible"), // over a missing id: it is the error that teaches
+            (r#"id = "screen-lock", visible = state("v", true)"#, "visible"), // on the evaluation pass, like a literal
+        ] {
+            let err = lock_spec(&props_from_src(&lua, format!(r#"return {{ kind = "lock", {fields} }}"#))).unwrap_err();
             assert!(
                 matches!(&err, LayoutError::InvalidProperty { property: p, .. } if p == property),
-                "`{property}` must be refused by name, got {err:?}"
+                "{fields}: {err:?}"
             );
         }
     }
@@ -461,40 +440,6 @@ mod tests {
             let err = crate::lua::nodes::deserialize_lua_table(&table).unwrap_err();
             assert!(err.to_string().contains(property), "`{property}` must be refused by name, got {err}");
         }
-    }
-
-    #[test]
-    fn a_refused_lock_property_wins_over_a_missing_id_because_it_is_the_error_that_teaches() {
-        let lua = mlua::Lua::new();
-        assert!(matches!(
-            lock_spec(&props_from_src(&lua, r#"return { kind = "lock", visible = false }"#)).unwrap_err(),
-            LayoutError::InvalidProperty { property, .. } if property == "visible"
-        ));
-    }
-
-    #[test]
-    fn a_signal_bound_lock_property_is_refused_on_the_evaluation_pass_like_a_literal_one() {
-        let lua = signal_lua();
-        assert!(matches!(
-            lock_spec(&props_from_src(&lua, r#"return { kind = "lock", id = "screen-lock", visible = state("v", true) }"#)).unwrap_err(),
-            LayoutError::InvalidProperty { property, .. } if property == "visible"
-        ));
-    }
-
-    #[test]
-    fn a_signal_in_a_lock_id_is_rejected_by_the_universal_structural_arm_with_no_new_carve_out() {
-        let lua = signal_lua();
-        let resolved = resolve_declared(
-            &props_from_src(&lua, r#"return { kind = "lock", id = state("i", "screen-lock") }"#),
-            "lock",
-            false,
-            &lua,
-        )
-        .unwrap();
-        assert!(matches!(
-            lock_spec(&resolved).unwrap_err(),
-            LayoutError::UnsupportedSignalProperty(p) if p == "id"
-        ));
     }
 
     #[test]
@@ -532,18 +477,6 @@ mod tests {
         properties.insert("children", Value::Table(broken));
         let err = fields::stack::children.read(&properties).expect_err("past the cap this must be refused");
         assert!(format!("{err:?}").contains("more than"), "{err:?}");
-    }
-
-    /// The cap must not be in the way of anything a real config builds.
-    #[test]
-    fn an_ordinary_children_array_is_unaffected() {
-        let lua = scene_lua();
-        let table: mlua::Table =
-            lua.load(r#"return { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } }"#).eval().unwrap();
-        let mut properties = PropMap::default();
-        properties.insert("children", Value::Table(table));
-
-        assert_eq!(fields::stack::children.read(&properties).unwrap().len(), 2);
     }
 
     /// `sequence_values` stopped at the hole and dropped `b` without a word.

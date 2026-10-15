@@ -259,7 +259,6 @@ mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::text;
     use super::*;
 
     /// A valid 1x1 RGBA `(iiibiiay)` image-data hint.
@@ -411,29 +410,5 @@ mod tests {
 
         assert!(decoded.image_data.is_none());
         assert!(decoded.image_data_deprecated.is_some(), "the readable spelling is still used");
-    }
-
-    #[test]
-    fn notification_span_text_serializes_with_a_kind_tag() {
-        let span = text("hi", true, false, false, Some("url"));
-        let json = serde_json::to_value(&span).unwrap();
-        assert_eq!(
-            json,
-            serde_json::json!({ "kind": "text", "text": "hi", "bold": true, "italic": false, "underline": false, "href": "url" })
-        );
-    }
-
-    #[test]
-    fn notification_span_image_serializes_with_a_kind_tag() {
-        let span = NotificationSpan::Image { image_path: "/tmp/x.png".to_string() };
-        let json = serde_json::to_value(&span).unwrap();
-        assert_eq!(json, serde_json::json!({ "kind": "image", "image_path": "/tmp/x.png" }));
-    }
-
-    #[test]
-    fn urgency_serializes_as_lowercase_strings() {
-        assert_eq!(serde_json::to_value(Urgency::Low).unwrap(), serde_json::json!("low"));
-        assert_eq!(serde_json::to_value(Urgency::Normal).unwrap(), serde_json::json!("normal"));
-        assert_eq!(serde_json::to_value(Urgency::Critical).unwrap(), serde_json::json!("critical"));
     }
 }

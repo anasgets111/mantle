@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn process_run_returns_a_handle_and_queues_a_well_formed_run_command() {
+    fn process_run_queues_a_well_formed_run_command_with_distinct_ids_and_its_handle_kills_under_the_same_id() {
         let (lua, _registry, mut rx) = lua_with_process(4);
 
         lua.load(r#"handle = process.run("echo", {"hi"}, function() end, function() end)"#).exec().unwrap();
@@ -246,6 +246,24 @@ mod tests {
 
         let is_userdata: bool = lua.load("return type(handle) == \"userdata\"").eval().unwrap();
         assert!(is_userdata, "process.run must return a userdata ProcessHandle");
+
+        // Ids are distinct and monotonic per call.
+        lua.load(r#"process.run("b", nil, function() end, function() end)"#).exec().unwrap();
+        let nil_args = queued_command(&mut rx).unwrap();
+        assert_eq!(nil_args.id, 1);
+        assert_eq!(nil_args.params.arguments, vec![serde_json::json!("b"), serde_json::json!([])], "nil args is none");
+
+        lua.load(r#"handle = process.run("sleep", {"5"}, function() end, function() end); handle:kill()"#)
+            .exec()
+            .unwrap();
+
+        let run_envelope = queued_command(&mut rx).unwrap();
+        assert_eq!(run_envelope.id, 2);
+        let kill_envelope = queued_command(&mut rx).expect("a kill command must have been queued");
+        assert_eq!(kill_envelope.params.capability, "process");
+        assert_eq!(kill_envelope.params.action, "kill");
+        assert_eq!(kill_envelope.params.arguments, Vec::<serde_json::Value>::new());
+        assert_eq!(kill_envelope.id, run_envelope.id);
     }
 
     /// ADR-0188. `detach` returns nothing and retains nothing: there is no handle to hold and no
@@ -270,35 +288,6 @@ mod tests {
         lua.load(r#"process.detach("kate")"#).exec().unwrap();
         let bare = queued_command(&mut rx).unwrap();
         assert_eq!(bare.params.arguments, vec![serde_json::json!("kate"), serde_json::json!([])], "args are optional");
-    }
-
-    #[test]
-    fn each_process_run_call_gets_a_distinct_monotonic_id() {
-        let (lua, _registry, mut rx) = lua_with_process(0);
-
-        lua.load(r#"process.run("a", {}, function() end, function() end)"#).exec().unwrap();
-        lua.load(r#"process.run("b", nil, function() end, function() end)"#).exec().unwrap();
-
-        assert_eq!(queued_command(&mut rx).unwrap().id, 0);
-        let nil_args = queued_command(&mut rx).unwrap();
-        assert_eq!(nil_args.id, 1);
-        assert_eq!(nil_args.params.arguments, vec![serde_json::json!("b"), serde_json::json!([])], "nil args is none");
-    }
-
-    #[test]
-    fn process_handle_kill_queues_a_kill_command_with_no_arguments_carrying_the_same_id() {
-        let (lua, _registry, mut rx) = lua_with_process(4);
-
-        lua.load(r#"handle = process.run("sleep", {"5"}, function() end, function() end); handle:kill()"#)
-            .exec()
-            .unwrap();
-
-        let run_envelope = queued_command(&mut rx).unwrap();
-        let kill_envelope = queued_command(&mut rx).expect("a kill command must have been queued");
-        assert_eq!(kill_envelope.params.capability, "process");
-        assert_eq!(kill_envelope.params.action, "kill");
-        assert_eq!(kill_envelope.params.arguments, Vec::<serde_json::Value>::new());
-        assert_eq!(kill_envelope.id, run_envelope.id);
     }
 
     /// Reads the global a callback updated; callbacks have no other observable side channel.

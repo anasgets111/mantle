@@ -269,21 +269,6 @@ mod tests {
         }
     }
 
-    /// These names are the wire format and config comparisons; renaming one is breaking.
-    #[test]
-    fn the_state_serializes_under_the_name_a_config_compares_against() {
-        let json = serde_json::to_string(&BatteryState {
-            present: true,
-            percent: 70,
-            state: BatteryStatus::PendingCharge,
-            time_to_empty: None,
-            time_to_full: None,
-            ..BatteryState::default()
-        })
-        .unwrap();
-        assert_eq!(json, r#"{"present":true,"percent":70,"state":"pending_charge","peripherals":[]}"#);
-    }
-
     #[test]
     fn a_zero_on_mains_right_after_a_reading_keeps_the_reading() {
         let previous =

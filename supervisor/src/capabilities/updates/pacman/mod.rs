@@ -204,22 +204,25 @@ mod tests {
     }
 
     #[test]
-    fn a_real_local_directory_in_the_sync_root_is_an_error_not_a_silent_reuse() {
+    fn link_local_db_errors_on_a_real_local_directory_or_a_db_root_without_one() {
         // A copied `local/` would be stale package metadata.
         let real = tempfile::tempdir().unwrap();
         std::fs::create_dir(real.path().join("local")).unwrap();
         let sync_root = tempfile::tempdir().unwrap();
         std::fs::create_dir(sync_root.path().join("local")).unwrap();
 
-        assert!(link_local_db(real.path(), sync_root.path()).is_err());
-    }
+        assert!(
+            link_local_db(real.path(), sync_root.path()).is_err(),
+            "a real local directory in the sync root is an error, not a silent reuse"
+        );
 
-    #[test]
-    fn a_db_root_with_no_local_directory_is_refused_rather_than_linked_to_nothing() {
         let missing = tempfile::tempdir().unwrap();
         let sync_root = tempfile::tempdir().unwrap();
 
-        assert!(link_local_db(&missing.path().join("no-such-root"), sync_root.path()).is_err());
+        assert!(
+            link_local_db(&missing.path().join("no-such-root"), sync_root.path()).is_err(),
+            "a db root with no local directory is refused rather than linked to nothing"
+        );
         assert!(!sync_root.path().join("local").exists());
     }
 }

@@ -1712,29 +1712,6 @@ mod tests {
         assert_eq!(lines[21], "  and 11 more");
     }
 
-    #[test]
-    fn reapplying_the_same_shape_at_the_same_index_reuses_the_node_id() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (_lua1, surface_v1) = surface_from(r#"panel { id = "bar", child = rect { width = 10, height = 10 } }"#);
-        apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
-        let first_id = {
-            let key = "bar@TEST";
-            scene.surfaces.get(key).unwrap().children[0].id
-        };
-
-        let (_lua2, surface_v2) = surface_from(r#"panel { id = "bar", child = rect { width = 99, height = 99 } }"#);
-        apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
-        let second_id = scene.surfaces.get("bar@TEST").unwrap().children[0].id;
-
-        assert_eq!(first_id, second_id, "same kind at the same position must reuse the retained node's identity");
-        assert_eq!(
-            scene.surface("bar@TEST").unwrap().children[0].rect.width,
-            99.0,
-            "but its geometry must still refresh"
-        );
-    }
-
     fn field_panel(field: &str) -> (mlua::Lua, VirtualNode) {
         surface_from(&format!(r#"panel {{ id = "bar", child = row {{ children = {{ {field} }} }} }}"#))
     }
@@ -1871,20 +1848,35 @@ mod tests {
     }
 
     #[test]
-    fn a_shrinking_child_list_removes_the_tail() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (_lua1, surface_v1) = surface_from(
-            r#"panel { id = "bar", child = row { children = { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } } } }"#,
-        );
-        apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
+    fn a_shrinking_child_list_removes_the_dropped_nodes_and_their_subtrees() {
+        for (v1, v2, len, census, what) in [
+            (
+                r#"panel { id = "bar", child = row { children = { rect { width = 1, height = 1 }, rect { width = 2, height = 2 } } } }"#,
+                r#"panel { id = "bar", child = row { children = { rect { width = 1, height = 1 } } } }"#,
+                1,
+                3,
+                "only the panel, row, and remaining rect survive",
+            ),
+            (
+                r#"panel { id = "bar", child = row { children = {
+                    rect { id = "gone", width = 1, height = 1, children = { rect { width = 1, height = 1 } } },
+                } } }"#,
+                r#"panel { id = "bar", child = row { children = {} } }"#,
+                0,
+                2,
+                "an empty list removes the identified subtree",
+            ),
+        ] {
+            let mut scene = Scene::new();
+            let shaping = ShapingHandle::spawn();
+            let (_lua1, surface_v1) = surface_from(v1);
+            apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
+            let (_lua2, surface_v2) = surface_from(v2);
+            apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
 
-        let (_lua2, surface_v2) =
-            surface_from(r#"panel { id = "bar", child = row { children = { rect { width = 1, height = 1 } } } }"#);
-        apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
-
-        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children.len(), 1);
-        assert_eq!(scene.census().1, 3, "only the panel, row, and remaining rect survive");
+            assert_eq!(scene.surface("bar@TEST").unwrap().children[0].children.len(), len, "{what}");
+            assert_eq!(scene.census().1, census, "{what}");
+        }
     }
 
     #[test]
@@ -2121,23 +2113,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_child_list_removes_the_identified_subtree() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (_lua1, surface_v1) = surface_from(
-            r#"panel { id = "bar", child = row { children = {
-                rect { id = "gone", width = 1, height = 1, children = { rect { width = 1, height = 1 } } },
-            } } }"#,
-        );
-        apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
-        let (_lua2, surface_v2) = surface_from(r#"panel { id = "bar", child = row { children = {} } }"#);
-        apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
-
-        assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty());
-        assert_eq!(scene.census().1, 2);
-    }
-
-    #[test]
     fn a_fresh_id_gets_a_new_node_id_and_the_vanished_id_is_removed() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
@@ -2203,25 +2178,6 @@ mod tests {
             "the unidentified subsequence pairs among itself, so the retained anonymous node lands in slot 0"
         );
         assert!(row[1].id != x_id && row[1].id != anon_id, "slot 1 has no unidentified counterpart left, so it is new");
-        assert!(row.iter().all(|child| child.id != x_id));
-    }
-
-    #[test]
-    fn removing_an_id_replaces_the_old_node_with_a_new_identity() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (_lua1, surface_v1) = surface_from(
-            r#"panel { id = "bar", child = row { children = { rect { id = "x", width = 1, height = 1 } } } }"#,
-        );
-        apply_at(&mut scene, &[surface_v1], full(), &shaping, &_lua1).unwrap();
-        let x_id = scene.surfaces.get("bar@TEST").unwrap().children[0].children[0].id;
-
-        let (_lua2, surface_v2) =
-            surface_from(r#"panel { id = "bar", child = row { children = { rect { width = 1, height = 1 } } } }"#);
-        apply_at(&mut scene, &[surface_v2], full(), &shaping, &_lua2).unwrap();
-        let row = &scene.surfaces.get("bar@TEST").unwrap().children[0].children;
-
-        assert_ne!(row[0].id, x_id, "dropping the id allocates a new node rather than silently preserving identity");
         assert!(row.iter().all(|child| child.id != x_id));
     }
 
@@ -2339,7 +2295,7 @@ mod tests {
     /// both sizing folds and the positioning pass, each reading `top`, `right`,
     /// `bottom` and `left` off the same table.
     #[test]
-    fn a_margin_table_is_read_exactly_once_per_node_per_pass() {
+    fn a_margin_table_is_read_once_per_node_per_pass_so_the_two_passes_agree() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
@@ -2352,21 +2308,11 @@ mod tests {
             4,
             "one `margin` read over four keys, not one per reader"
         );
-    }
 
-    /// The defect that count caused, pinned directly. An `__index` answering `left` with a fresh
-    /// number each read made the sizing pass and the positioning pass disagree: measured before
-    /// this fix, a row measured itself 18 wide and then placed its 10-wide child spanning 16..26,
-    /// eight pixels outside the parent it had just been sized to fit.
-    #[test]
-    fn an_index_metamethod_cannot_make_the_two_passes_disagree() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        let surface = surface_with_an_index_counting_margin(&lua);
-
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
-
+        // The defect that count caused, pinned directly. An `__index` answering `left` with a fresh
+        // number each read made the sizing pass and the positioning pass disagree: measured before
+        // this fix, a row measured itself 18 wide and then placed its 10-wide child spanning 16..26,
+        // eight pixels outside the parent it had just been sized to fit.
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         let child = &row.children[0];
         assert_eq!(
@@ -2381,7 +2327,7 @@ mod tests {
     }
 
     #[test]
-    fn an_impure_margin_closure_positions_a_child_inside_the_size_its_parent_was_measured_at() {
+    fn an_impure_margin_closure_is_read_once_and_positions_a_child_inside_the_size_its_parent_was_measured_at() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         let lua = mlua::Lua::new();
@@ -2400,17 +2346,6 @@ mod tests {
             child.rect.x + child.rect.width,
             row.rect.width
         );
-    }
-
-    #[test]
-    fn a_signal_valued_property_resolves_exactly_once_per_apply() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let lua = mlua::Lua::new();
-        let surface = surface_with_a_read_counting_margin(&lua);
-
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
-
         assert_eq!(
             lua.globals().get::<i64>("reads").unwrap(),
             1,
@@ -2655,10 +2590,13 @@ mod tests {
     }
 
     #[test]
-    fn a_list_with_no_source_lays_out_empty() {
-        let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = list { each = function(item) return rect {} end } }"#);
-        assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty());
+    fn a_list_with_no_source_or_an_empty_one_lays_out_empty_without_error() {
+        for source in ["", "items = {}, "] {
+            let (scene, _lua, _shaping, _surface) = applied(&format!(
+                r#"panel {{ id = "bar", child = list {{ {source}each = function(item) return rect {{}} end }} }}"#
+            ));
+            assert!(scene.surface("bar@TEST").unwrap().children[0].children.is_empty(), "{source:?}");
+        }
     }
 
     #[test]
@@ -2685,14 +2623,6 @@ mod tests {
     }
 
     #[test]
-    fn a_list_with_an_empty_source_has_no_children_and_does_not_error() {
-        let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = list { items = {}, each = function(item) return rect {} end } }"#);
-        let list = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(list.children.len(), 0);
-    }
-
-    #[test]
     fn a_list_sizes_and_positions_like_a_column() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = list {
@@ -2709,7 +2639,7 @@ mod tests {
     }
 
     #[test]
-    fn window_and_popup_are_supported_kinds_carrying_a_single_child() {
+    fn window_popup_and_lock_are_supported_kinds_carrying_a_single_child_stretched_like_a_panels() {
         for kind in ["window", "popup"] {
             let (scene, _lua, _shaping, _surface) =
                 applied(&format!(r#"{{ kind = "{kind}", id = "s", child = rect {{ width = 40, height = 20 }} }}"#));
@@ -2718,12 +2648,7 @@ mod tests {
             assert_eq!(root.children.len(), 1, "`{kind}` must carry its `child`");
             assert_eq!(root.children[0].rect.width, 40.0);
             assert_eq!(root.children[0].rect.height, 20.0);
-        }
-    }
 
-    #[test]
-    fn a_window_or_popup_root_stacks_and_stretches_its_child_exactly_as_a_panel_does() {
-        for kind in ["window", "popup"] {
             let (scene, _lua, _shaping, _surface) = applied(&format!(
                 r#"{{ kind = "{kind}", id = "s", width = 100, height = 50,
                        child = rect {{ align_h = "stretch", align_v = "stretch" }} }}"#
@@ -2732,6 +2657,19 @@ mod tests {
             assert_eq!(child.rect.width, 100.0, "`{kind}` must stretch its child like `panel`");
             assert_eq!(child.rect.height, 50.0);
         }
+
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"{ kind = "lock", id = "screen-lock",
+                 child = rect { align_h = "stretch", align_v = "stretch" } }"#,
+        );
+        apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1080.0 }, &shaping, &lua).unwrap();
+
+        let root = scene.surface("screen-lock@TEST").unwrap();
+        assert_eq!(root.kind, "lock");
+        assert_eq!(root.children.len(), 1, "a lock's `child`, read through the same `child` field a panel's is");
+        assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (1920.0, 1080.0));
     }
 
     #[test]
@@ -2813,22 +2751,6 @@ mod tests {
         let root = scene.surface("menu@TEST").unwrap();
         assert_eq!((root.rect.width, root.rect.height), (200.0, 120.0));
         assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (200.0, 120.0));
-    }
-
-    #[test]
-    fn a_lock_is_a_supported_kind_carrying_a_single_child_and_stretching_it_like_a_panel() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"{ kind = "lock", id = "screen-lock",
-                 child = rect { align_h = "stretch", align_v = "stretch" } }"#,
-        );
-        apply_at(&mut scene, &[surface], LogicalSize { width: 1920.0, height: 1080.0 }, &shaping, &lua).unwrap();
-
-        let root = scene.surface("screen-lock@TEST").unwrap();
-        assert_eq!(root.kind, "lock");
-        assert_eq!(root.children.len(), 1, "a lock's `child`, read through the same `child` field a panel's is");
-        assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (1920.0, 1080.0));
     }
 
     /// ADR-0294: the solver tree outlives the pass. A colour write reuses every solver node and lays

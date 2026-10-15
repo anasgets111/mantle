@@ -136,45 +136,38 @@ mod tests {
     // ---- theme_path_file / IconThemePath (ADR-0074) ----
 
     #[test]
-    fn an_items_own_theme_path_beats_the_session_theme() {
+    fn theme_path_file_resolves_an_items_own_artwork_by_name_and_extension_and_never_leaves_the_directory() {
         // Prefer artwork the session theme does not know.
         let dir = tempfile::tempdir().unwrap();
+        let theme_path = dir.path().to_str().unwrap();
+        assert_eq!(
+            resolve_icon_source("my-app", &[], theme_path),
+            IconSource::Name("my-app".to_string()),
+            "a theme path that does not hold the icon falls back to the name"
+        );
+        assert_eq!(theme_path_file(theme_path, "my-app"), None);
+
         std::fs::write(dir.path().join("my-app.png"), b"not really a png").unwrap();
-        let found = theme_path_file(dir.path().to_str().unwrap(), "my-app").expect("the shipped file");
+        let found = theme_path_file(theme_path, "my-app").expect("the shipped file");
         assert!(found.ends_with("my-app.png"));
         assert_eq!(
-            resolve_icon_source("my-app", &[], dir.path().to_str().unwrap()),
+            resolve_icon_source("my-app", &[], theme_path),
             IconSource::ThemePathFile(found),
-            "and it outranks the name"
+            "an item's own theme path outranks the name"
         );
-    }
 
-    #[test]
-    fn a_theme_path_that_does_not_hold_the_icon_falls_back_to_the_name() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(theme_path_file(dir.path().to_str().unwrap(), "my-app"), None);
-        assert_eq!(
-            resolve_icon_source("my-app", &[], dir.path().to_str().unwrap()),
-            IconSource::Name("my-app".to_string())
-        );
-    }
-
-    #[test]
-    fn an_svg_is_found_and_so_is_a_name_that_carries_its_own_extension() {
-        let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("vector.svg"), b"<svg/>").unwrap();
         std::fs::write(dir.path().join("literal.ico"), b"x").unwrap();
-        assert!(theme_path_file(dir.path().to_str().unwrap(), "vector").unwrap().ends_with("vector.svg"));
-        assert!(theme_path_file(dir.path().to_str().unwrap(), "literal.ico").unwrap().ends_with("literal.ico"));
-    }
+        assert!(theme_path_file(theme_path, "vector").unwrap().ends_with("vector.svg"), "an svg is found");
+        assert!(
+            theme_path_file(theme_path, "literal.ico").unwrap().ends_with("literal.ico"),
+            "so is a name that carries its own extension"
+        );
 
-    #[test]
-    fn an_icon_name_cannot_escape_the_directory_it_was_given() {
         // A themed name has no separator; refuse one rather than clean it up.
-        let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("real.png"), b"x").unwrap();
-        assert_eq!(theme_path_file(dir.path().to_str().unwrap(), "../../etc/passwd"), None);
-        assert_eq!(theme_path_file(dir.path().to_str().unwrap(), "sub/real"), None);
+        assert_eq!(theme_path_file(theme_path, "../../etc/passwd"), None);
+        assert_eq!(theme_path_file(theme_path, "sub/real"), None);
     }
 
     // ---- pixmap_is_valid ----

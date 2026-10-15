@@ -235,6 +235,12 @@ mod tests {
         let handlers = key_handlers(&[&root, &stopper, &leaf], false);
         assert!(deliver(&lua, &handlers, press(Keysym::Down, None, [false; 4], false), "t"));
         assert_eq!(log(&lua), ["leaf:Down", "middle:Down"], "the surface never hears a handled key");
+
+        let handlers = key_handlers(&[&node("surface", "true")], false);
+        assert!(
+            deliver(&lua, &handlers, press(Keysym::F5, None, [false; 4], false), "t"),
+            "a lone root reports handled"
+        );
     }
 
     #[test]
@@ -276,18 +282,6 @@ mod tests {
             "taken by a field or Tab, or pressed before the keyboard entered"
         );
         assert_eq!(take_press(&mut pressed, 30).map(|held| held.event.utf8), Some(Some("\r".to_string())));
-    }
-
-    #[test]
-    fn a_surface_root_alone_hears_a_key_nothing_took() {
-        let lua = lua_with_log();
-        let root = with_property(
-            hit_node(&lua, "panel", (0.0, 0.0, 99.0, 99.0), false),
-            "on_key",
-            handler(&lua, "surface", "true"),
-        );
-        assert!(deliver(&lua, &key_handlers(&[&root], false), press(Keysym::F5, None, [false; 4], false), "t"));
-        assert_eq!(log(&lua), ["surface:F5"]);
     }
 
     #[test]

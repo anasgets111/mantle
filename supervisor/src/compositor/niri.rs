@@ -461,39 +461,28 @@ mod tests {
     }
 
     #[test]
-    fn focused_window_picks_the_window_niri_flags() {
-        let windows = map(vec![
-            (2, window(2, "src/main.rs - Neovim", "kitty", true, true)),
-            (14, window(14, "Sign in | Slack", "slack", false, false)),
-        ]);
-
-        let focused =
-            focused_window(&window_rows(&windows, &HashMap::new())).expect("a flagged window is the focused one");
-
-        assert_eq!(focused.title, "src/main.rs - Neovim");
-        assert_eq!(focused.app_id, "kitty");
-        assert!(focused.floating);
-    }
-
-    #[test]
-    fn focused_window_is_none_when_niri_flags_nothing() {
-        // Real: focusing a layer-shell surface leaves every toplevel unfocused.
-        let windows = map(vec![(14, window(14, "Sign in | Slack", "slack", false, false))]);
-
-        assert_eq!(focused_window(&window_rows(&windows, &HashMap::new())), None);
-    }
-
-    #[test]
-    fn focused_window_defaults_a_null_title_or_app_id_to_empty_rather_than_dropping_the_window() {
-        // The payload declares both non-nullable, while niri's wire uses `Option` for both.
+    fn focused_window_picks_the_flagged_window_and_defaults_missing_text() {
+        // The payload declares title and app_id non-nullable, while niri's wire uses `Option` for both.
         let mut bare = window(2, "", "", true, false);
         bare.title = None;
         bare.app_id = None;
+        let slack = || (14, window(14, "Sign in | Slack", "slack", false, false));
+        let cases = [
+            (
+                vec![(2, window(2, "src/main.rs - Neovim", "kitty", true, true)), slack()],
+                Some(("src/main.rs - Neovim", "kitty", true)),
+            ),
+            // Real: focusing a layer-shell surface leaves every toplevel unfocused.
+            (vec![slack()], None),
+            // A titleless window is still the focused one, not dropped.
+            (vec![(2, bare)], Some(("", "", false))),
+        ];
 
-        let focused = focused_window(&window_rows(&map(vec![(2, bare)]), &HashMap::new()))
-            .expect("a titleless window is still focused");
-
-        assert_eq!((focused.title.as_str(), focused.app_id.as_str()), ("", ""));
+        for (windows, expected) in cases {
+            let focused = focused_window(&window_rows(&map(windows), &HashMap::new()));
+            let got = focused.as_ref().map(|win| (win.title.as_str(), win.app_id.as_str(), win.floating));
+            assert_eq!(got, expected);
+        }
     }
 
     #[test]

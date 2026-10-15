@@ -73,32 +73,41 @@ mod tests {
     }
 
     #[test]
-    fn delta_rate_computes_per_second_throughput() {
-        let prev = NetSample { interfaces: [("eth0".into(), (1_000_000, 500_000))].into() };
-        let curr = NetSample { interfaces: [("eth0".into(), (2_500_000, 700_000))].into() };
-        let (rx, tx) = delta_rate(&prev, &curr, 1.0);
-        assert_eq!(rx, 1_500_000);
-        assert_eq!(tx, 200_000);
-
-        let (rx_half, tx_half) = delta_rate(&prev, &curr, 2.0);
-        assert_eq!(rx_half, 750_000);
-        assert_eq!(tx_half, 100_000);
-    }
-
-    #[test]
-    fn nonpositive_elapsed_time_has_no_rate() {
-        let prev = NetSample { interfaces: [("eth0".into(), (100, 100))].into() };
-        let current = NetSample { interfaces: [("eth0".into(), (200, 300))].into() };
-        assert_eq!(delta_rate(&prev, &current, 0.0), (0, 0));
-        assert_eq!(delta_rate(&prev, &current, -1.0), (0, 0));
-    }
-
-    #[test]
-    fn new_interface_does_not_add_lifetime_bytes_to_rate() {
-        let prev = NetSample { interfaces: [("eth0".into(), (100, 100))].into() };
-        let current =
-            NetSample { interfaces: [("eth0".into(), (150, 120)), ("wlan0".into(), (1_000_000, 2_000_000))].into() };
-        assert_eq!(delta_rate(&prev, &current, 1.0), (50, 20));
+    fn delta_rate_is_per_second_and_zero_for_nonpositive_elapsed_or_a_new_interface() {
+        type Counters<'a> = &'a [(&'a str, (u64, u64))];
+        // (label, prev, current, elapsed seconds, expected)
+        type Row<'a> = (&'a str, Counters<'a>, Counters<'a>, f64, (u64, u64));
+        let cases: [Row; 5] = [
+            (
+                "per-second throughput",
+                &[("eth0", (1_000_000, 500_000))],
+                &[("eth0", (2_500_000, 700_000))],
+                1.0,
+                (1_500_000, 200_000),
+            ),
+            (
+                "throughput over two seconds",
+                &[("eth0", (1_000_000, 500_000))],
+                &[("eth0", (2_500_000, 700_000))],
+                2.0,
+                (750_000, 100_000),
+            ),
+            ("zero elapsed time has no rate", &[("eth0", (100, 100))], &[("eth0", (200, 300))], 0.0, (0, 0)),
+            ("negative elapsed time has no rate", &[("eth0", (100, 100))], &[("eth0", (200, 300))], -1.0, (0, 0)),
+            (
+                "a new interface does not add lifetime bytes to the rate",
+                &[("eth0", (100, 100))],
+                &[("eth0", (150, 120)), ("wlan0", (1_000_000, 2_000_000))],
+                1.0,
+                (50, 20),
+            ),
+        ];
+        let sample = |counters: Counters| NetSample {
+            interfaces: counters.iter().map(|(name, bytes)| (name.to_string(), *bytes)).collect(),
+        };
+        for (label, prev, current, elapsed, expected) in cases {
+            assert_eq!(delta_rate(&sample(prev), &sample(current), elapsed), expected, "{label}");
+        }
     }
 
     #[test]

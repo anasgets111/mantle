@@ -227,26 +227,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_markup_plain_text_is_a_single_unstyled_span() {
-        assert_eq!(parse_markup("hello world"), vec![text("hello world", false, false, false, None)]);
+    fn parse_markup_yields_one_styled_span_for_plain_text_allowed_tags_and_literal_entities() {
+        // (label, input, text, bold, italic, underline)
+        let cases = [
+            ("plain text is a single unstyled span", "hello world", "hello world", false, false, false),
+            ("bold", "<b>bold</b>", "bold", true, false, false),
+            ("italic", "<i>italic</i>", "italic", false, true, false),
+            ("underline", "<u>underline</u>", "underline", false, false, true),
+            ("allowed tags nest", "<b><i>text</i></b>", "text", true, true, false),
+            ("an unclosed tag styles to the end of input", "<b>bold text", "bold text", true, false, false),
+            (
+                "an unknown or malformed entity stays literal",
+                "&nbsp; AT&T &#xZZ; &",
+                "&nbsp; AT&T &#xZZ; &",
+                false,
+                false,
+                false,
+            ),
+        ];
+        for (label, input, expected, bold, italic, underline) in cases {
+            assert_eq!(parse_markup(input), vec![text(expected, bold, italic, underline, None)], "{label}");
+        }
         assert_eq!(parse_markup(""), Vec::new());
-    }
-
-    #[test]
-    fn parse_markup_handles_a_single_allowed_tag() {
-        assert_eq!(parse_markup("<b>bold</b>"), vec![text("bold", true, false, false, None)]);
-        assert_eq!(parse_markup("<i>italic</i>"), vec![text("italic", false, true, false, None)]);
-        assert_eq!(parse_markup("<u>underline</u>"), vec![text("underline", false, false, true, None)]);
-    }
-
-    #[test]
-    fn parse_markup_nests_allowed_tags() {
-        assert_eq!(parse_markup("<b><i>text</i></b>"), vec![text("text", true, true, false, None)]);
-    }
-
-    #[test]
-    fn parse_markup_handles_an_unclosed_tag_by_applying_style_to_end_of_input() {
-        assert_eq!(parse_markup("<b>bold text"), vec![text("bold text", true, false, false, None)]);
     }
 
     #[test]
@@ -292,11 +294,6 @@ mod tests {
                 text("l", false, false, false, Some("https://x/?a=1&b=2"))
             ]
         );
-    }
-
-    #[test]
-    fn parse_markup_leaves_an_unknown_or_malformed_entity_literal() {
-        assert_eq!(parse_markup("&nbsp; AT&T &#xZZ; &"), vec![text("&nbsp; AT&T &#xZZ; &", false, false, false, None)]);
     }
 
     #[test]

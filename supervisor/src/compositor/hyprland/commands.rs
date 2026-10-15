@@ -98,13 +98,6 @@ pub(super) fn lua_escape(name: &str) -> String {
 mod tests {
     use super::*;
 
-    #[test]
-    fn the_toggle_argument_is_the_name_without_its_prefix_and_nothing_for_the_unnamed_special() {
-        assert_eq!(special_argument("special:term"), "term");
-        assert_eq!(special_argument("special"), "");
-        assert_eq!(special_argument("term"), "term", "a config passing the short name is not punished");
-    }
-
     /// 0.56 reads the command as Lua, so both writes are checked as source. Captured from a live
     /// 0.56.2 socket, which answers `ok` to each of these and a parse error to what they replaced.
     #[test]
@@ -116,6 +109,11 @@ mod tests {
             toggle_special_command("special"),
             r#"hl.dsp.workspace.toggle_special("")"#,
             "the unnamed special is the empty argument, not a missing one"
+        );
+        assert_eq!(
+            toggle_special_command("term"),
+            r#"hl.dsp.workspace.toggle_special("term")"#,
+            "a config passing the short name is not punished"
         );
         assert_eq!(
             toggle_special_command(r#"special:a") hl.dsp.exit(--"#),

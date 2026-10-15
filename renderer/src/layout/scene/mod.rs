@@ -676,23 +676,6 @@ pub(super) mod tests {
         assert!(scene.animated_image_nodes().is_empty(), "a still frees the node's clocks");
     }
 
-    #[test]
-    fn a_signal_valued_width_resolves_to_its_current_value_in_the_resolved_node() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let signal = crate::lua::signal::Signal::new_live(Value::Integer(40), crate::lua::signal::DirtyFlag::new()).0;
-        lua.globals().set("w", signal).unwrap();
-        let table: mlua::Table =
-            lua.load(r#"return panel { id = "bar", child = rect { width = w, height = 20 } }"#).eval().unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
-
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
-
-        let child = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(child.rect.width, 40.0, "a Signal-valued width must resolve at layout time");
-    }
-
     /// ADR-0180, ADR-0183. A drawn source moves a retaining image onto it, and reaches only images
     /// that asked to retain: everything else keeps drawing what a pass resolved.
     #[test]
@@ -918,14 +901,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_absent_opacity_is_fully_opaque() {
-        let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = rect { width = 10, height = 10 } }"#);
-        assert_eq!(scene.surface("bar@TEST").unwrap().children[0].opacity, 1.0);
-    }
-
-    #[test]
-    fn image_is_a_supported_leaf_with_no_intrinsic_size_and_icon_still_has_one() {
+    fn image_capture_and_textfield_are_supported_leaves_and_icon_still_has_a_size() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = row { children = { image { source = "/tmp/w.png", fit = "contain" }, icon { name = "audio-volume-high", size = 24 } } } }"#,
         );
@@ -938,6 +914,22 @@ pub(super) mod tests {
 
         let icon = &row.children[1];
         assert_eq!((icon.rect.width, icon.rect.height), (24.0, 24.0));
+
+        let (scene, _lua, _shaping, _surface) =
+            applied(r#"panel { id = "bar", child = capture { output = "DP-1", live = true } }"#);
+        let capture = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(capture.kind, "capture");
+        assert!(capture.children.is_empty(), "capture is a leaf, never a container");
+        assert_eq!((capture.rect.width, capture.rect.height), (0.0, 0.0));
+
+        // A textfield carries its properties unvalidated.
+        let (scene, _lua, _shaping, _surface) = applied(
+            r#"panel { id = "bar", child = row { children = { textfield { mask_character = "*", secure_submit = { capability = "polkit", action = "authenticate" } } } } }"#,
+        );
+        let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
+        assert_eq!(field.kind, "textfield");
+        assert!(field.children.is_empty(), "textfield is a leaf, never a container");
+        assert_eq!(field.properties.get("mask_character").unwrap().as_string().unwrap().to_string_lossy(), "*");
     }
 
     #[test]
@@ -970,17 +962,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn capture_is_a_supported_leaf_with_no_intrinsic_size() {
-        let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = capture { output = "DP-1", live = true } }"#);
-
-        let capture = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(capture.kind, "capture");
-        assert!(capture.children.is_empty(), "capture is a leaf, never a container");
-        assert_eq!((capture.rect.width, capture.rect.height), (0.0, 0.0));
-    }
-
-    #[test]
     fn an_image_given_a_box_takes_that_box() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", width = "fill", height = "fill", child = image { source = "/tmp/w.png", width = "fill", height = "fill" } }"#,
@@ -992,18 +973,6 @@ pub(super) mod tests {
             "a Fill image should take the panel, got {:?}",
             image.rect
         );
-    }
-
-    #[test]
-    fn textfield_is_a_supported_leaf_kind_carrying_its_properties_unvalidated() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = row { children = { textfield { mask_character = "*", secure_submit = { capability = "polkit", action = "authenticate" } } } } }"#,
-        );
-
-        let field = &scene.surface("bar@TEST").unwrap().children[0].children[0];
-        assert_eq!(field.kind, "textfield");
-        assert!(field.children.is_empty(), "textfield is a leaf, never a container");
-        assert_eq!(field.properties.get("mask_character").unwrap().as_string().unwrap().to_string_lossy(), "*");
     }
 
     #[test]

@@ -1456,10 +1456,10 @@ mod tests {
         assert_eq!(block.rect, before, "nothing a paint-only tick writes can move a rect");
     }
 
-    /// `corner_smoothing` only reshapes the outline, so its tween ticks without the solver and the
-    /// tick writes the eased value back into the box's radii.
     #[test]
-    fn a_corner_smoothing_tween_runs_on_the_paint_only_tick() {
+    fn corner_smoothing_shadow_and_blur_tweens_run_on_the_paint_only_tick() {
+        // `corner_smoothing` only reshapes the outline, so its tween ticks without the solver and the
+        // tick writes the eased value back into the box's radii.
         let (mut scene, lua, shaping, surface) = applied(
             r##"local up = state("up", false)
             return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff", radius = 4,
@@ -1477,12 +1477,9 @@ mod tests {
         };
         assert_eq!(radius.0, [4.0; 4]);
         assert!((radius.1 - 0.5).abs() < 0.01, "halfway to 1, got {}", radius.1);
-    }
 
-    /// ADR-0254, ADR-0256: a shadow and both blurs tween on the paint-only tick, and the tick re-derives
-    /// the node's `effect` from the values it wrote.
-    #[test]
-    fn a_shadow_and_both_blurs_tween_on_the_paint_only_tick() {
+        // ADR-0254, ADR-0256: a shadow and both blurs tween on the paint-only tick, and the tick
+        // re-derives the node's `effect` from the values it wrote.
         let (mut scene, lua, shaping, surface) = applied(
             r##"local up = state("up", false)
             return panel { id = "bar", child = rect { width = 10, height = 10, background = "#ffffff",
@@ -1652,25 +1649,6 @@ mod tests {
         assert_eq!(child_tween(&scene).started, started, "resolved again");
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert_eq!(child_tween(&scene).started, started, "kept");
-    }
-
-    #[test]
-    fn a_retarget_mid_flight_starts_from_the_displayed_value_not_the_old_target() {
-        let (mut scene, lua, surface) = animated_width("linear");
-        let shaping = ShapingHandle::spawn();
-        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let first = child_tween(&scene);
-        let instances = [instance_at(&surface, full())];
-        scene.tick(&instances, &shaping, &lua, first.started + std::time::Duration::from_millis(50));
-        assert_eq!(child_width(&scene), 65.0);
-
-        // The pointer left: back to 40, from wherever the box is now.
-        lua.load(r#"state("w", 40):set(40)"#).exec().unwrap();
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let second = child_tween(&scene);
-        assert_eq!(second.to, node::Animatable::Number(40.0));
-        assert_eq!(second.from, node::Animatable::Number(65.0), "from is the value the last tick displayed");
     }
 
     /// An opacity that runs `"current"` keyframes, replayed by a changing `run`.
@@ -2335,5 +2313,24 @@ mod tests {
             shown,
             "and the map is written back to it"
         );
+    }
+
+    #[test]
+    fn a_retarget_mid_flight_starts_from_the_displayed_value_not_the_old_target() {
+        let (mut scene, lua, surface) = animated_width("linear");
+        let shaping = ShapingHandle::spawn();
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let first = child_tween(&scene);
+        let instances = [instance_at(&surface, full())];
+        scene.tick(&instances, &shaping, &lua, first.started + std::time::Duration::from_millis(50));
+        assert_eq!(child_width(&scene), 65.0);
+
+        // The pointer left: back to 40, from wherever the box is now.
+        lua.load(r#"state("w", 40):set(40)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        let second = child_tween(&scene);
+        assert_eq!(second.to, node::Animatable::Number(40.0));
+        assert_eq!(second.from, node::Animatable::Number(65.0), "from is the value the last tick displayed");
     }
 }

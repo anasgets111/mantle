@@ -200,39 +200,21 @@ mod tests {
     }
 
     #[test]
-    fn validate_trusted_path_rejects_a_path_outside_every_trusted_root() {
+    fn validate_trusted_path_rejects_an_outside_path_a_traversal_and_a_symlink_escape() {
         let trusted_dir = tempfile::tempdir().unwrap();
         let outside_dir = tempfile::tempdir().unwrap();
+        let roots = [trusted_dir.path().to_path_buf()];
         let outside_file = outside_dir.path().join("icon.png");
         std::fs::write(&outside_file, b"x").unwrap();
-
-        assert_eq!(validate_trusted_path(outside_file.to_str().unwrap(), &[trusted_dir.path().to_path_buf()]), None);
-    }
-
-    #[test]
-    fn validate_trusted_path_rejects_a_directory_traversal_escape() {
-        let trusted_dir = tempfile::tempdir().unwrap();
-        let outside_dir = tempfile::tempdir().unwrap();
-        let outside_file = outside_dir.path().join("secret.png");
-        std::fs::write(&outside_file, b"x").unwrap();
+        assert_eq!(validate_trusted_path(outside_file.to_str().unwrap(), &roots), None, "outside every root");
 
         // Build traversal through the trusted dir's parent instead of assuming temp-dir layout.
-        let escape_path =
-            trusted_dir.path().join("..").join(outside_dir.path().file_name().unwrap()).join("secret.png");
-        assert_eq!(validate_trusted_path(escape_path.to_str().unwrap(), &[trusted_dir.path().to_path_buf()]), None);
-    }
-
-    #[test]
-    fn validate_trusted_path_rejects_a_symlink_escaping_the_trusted_root() {
-        let trusted_dir = tempfile::tempdir().unwrap();
-        let outside_dir = tempfile::tempdir().unwrap();
-        let outside_file = outside_dir.path().join("real.png");
-        std::fs::write(&outside_file, b"x").unwrap();
+        let escape_path = trusted_dir.path().join("..").join(outside_dir.path().file_name().unwrap()).join("icon.png");
+        assert_eq!(validate_trusted_path(escape_path.to_str().unwrap(), &roots), None, "directory traversal");
 
         let symlink_path = trusted_dir.path().join("escape.png");
         std::os::unix::fs::symlink(&outside_file, &symlink_path).unwrap();
-
-        assert_eq!(validate_trusted_path(symlink_path.to_str().unwrap(), &[trusted_dir.path().to_path_buf()]), None);
+        assert_eq!(validate_trusted_path(symlink_path.to_str().unwrap(), &roots), None, "symlink escape");
     }
 
     #[test]
@@ -291,11 +273,6 @@ mod tests {
     }
 
     #[test]
-    fn image_data_is_valid_accepts_a_well_formed_rgba_image() {
-        assert!(image_data_is_valid(&valid_rgba_image(4, 4)));
-    }
-
-    #[test]
     fn image_data_is_valid_rejects_malformed_images() {
         let mut no_alpha = valid_rgba_image(4, 4);
         no_alpha.has_alpha = false; // channels=4 mismatches
@@ -344,42 +321,32 @@ mod tests {
         valid_rgba_image(1, 1)
     }
 
-    /// The `notify-send -i firefox` case, which is how the overwhelming majority of notifications
-    /// on a desktop name their icon: the positional argument is empty and the theme name rides in
-    /// the hint that otherwise means a picture.
     #[test]
-    fn a_bare_name_in_the_image_path_hint_is_a_theme_name_not_a_picture() {
+    fn split_image_path_hint_sends_names_to_the_icon_and_paths_to_the_picture() {
+        let hint = |text: &str| split_image_path_hint(Some(text.to_string()));
+        // The `notify-send -i firefox` case, which is how the overwhelming majority of notifications
+        // on a desktop name their icon: the positional argument is empty and the theme name rides in
+        // the hint that otherwise means a picture.
         assert_eq!(
-            split_image_path_hint(Some("firefox".to_string())),
+            hint("firefox"),
             (None, Some("firefox".to_string())),
-            "goes to `app_icon`, not into the picture chain that would validate it away"
+            "a bare name goes to `app_icon`, not into the picture chain that would validate it away"
         );
-    }
-
-    #[test]
-    fn a_path_in_the_image_path_hint_is_still_a_picture() {
-        assert_eq!(split_image_path_hint(Some("/tmp/art.png".to_string())), (Some("/tmp/art.png".to_string()), None));
+        assert_eq!(hint("/tmp/art.png"), (Some("/tmp/art.png".to_string()), None), "a path is still a picture");
         assert_eq!(
-            split_image_path_hint(Some("file:///tmp/art.png".to_string())),
+            hint("file:///tmp/art.png"),
             (Some("file:///tmp/art.png".to_string()), None),
             "the URI is stripped when the picture is resolved, not here"
         );
-    }
-
-    /// A relative path is neither, and must not be passed off as a theme name for the renderer's
-    /// icon lookup to open -- `resolve_app_icon` refuses it on the same grounds.
-    #[test]
-    fn a_relative_path_in_the_image_path_hint_stays_in_the_picture_chain_to_be_refused() {
+        // A relative path is neither, and must not be passed off as a theme name for the renderer's
+        // icon lookup to open -- `resolve_app_icon` refuses it on the same grounds.
         assert_eq!(
-            split_image_path_hint(Some("../../etc/passwd".to_string())),
-            (Some("../../etc/passwd".to_string()), None)
+            hint("../../etc/passwd"),
+            (Some("../../etc/passwd".to_string()), None),
+            "a relative path stays in the picture chain to be refused"
         );
-    }
-
-    #[test]
-    fn an_absent_or_empty_image_path_hint_is_neither() {
-        assert_eq!(split_image_path_hint(None), (None, None));
-        assert_eq!(split_image_path_hint(Some(String::new())), (None, None));
+        assert_eq!(split_image_path_hint(None), (None, None), "absent");
+        assert_eq!(hint(""), (None, None), "empty");
     }
 
     #[test]

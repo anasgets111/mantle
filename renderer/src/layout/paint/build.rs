@@ -863,23 +863,19 @@ mod tests {
     }
 
     #[test]
-    fn a_text_run_is_left_aligned_in_its_box_unless_it_says_otherwise() {
-        let lua = Lua::new();
-        let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = text { content = "hi", foreground = "#ffffffff" } }"##;
-        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        assert_eq!(text_align_of(&build(&tree, 1.0, None)), TextAlign::Start);
-    }
-
-    #[test]
-    fn a_declared_text_align_reaches_the_display_list() {
-        for (declared, expected) in
-            [("center", TextAlign::Center), ("end", TextAlign::End), ("start", TextAlign::Start)]
-        {
+    fn a_declared_or_default_text_align_reaches_the_display_list() {
+        // "" is a text that says nothing: left-aligned in its box.
+        for (declared, expected) in [
+            ("", TextAlign::Start),
+            ("center", TextAlign::Center),
+            ("end", TextAlign::End),
+            ("start", TextAlign::Start),
+        ] {
             let lua = Lua::new();
+            let prop = if declared.is_empty() { String::new() } else { format!(r#", text_align = "{declared}""#) };
             let src = format!(
                 r##"return panel {{ id = "bar", width = 200, height = 40,
-                    child = text {{ content = "hi", foreground = "#ffffffff", text_align = "{declared}" }} }}"##
+                    child = text {{ content = "hi", foreground = "#ffffffff"{prop} }} }}"##
             );
             let tree = resolved_surface(&lua, &src, LogicalSize { width: 200.0, height: 40.0 });
             assert_eq!(text_align_of(&build(&tree, 1.0, None)), expected, "text_align = {declared:?}");
@@ -897,20 +893,54 @@ mod tests {
         assert_eq!(text_align_of(&build(&tree, 1.0, None)), TextAlign::Center);
     }
 
-    /// The alignment is in the list, so switching it repaints. Same argument as the opacity case:
-    /// ADR-0063 skips a repaint when the list compares equal.
+    /// Each of these is in the list, so changing it repaints: ADR-0063 skips a repaint when the new
+    /// list equals the last one, and a change the list does not carry would never be drawn.
     #[test]
-    fn changing_only_the_text_alignment_changes_the_display_list() {
-        let size = LogicalSize { width: 200.0, height: 40.0 };
-        let src = |align: &str| {
+    fn changing_only_one_property_changes_the_display_list() {
+        let wide = LogicalSize { width: 200.0, height: 40.0 };
+        let small = LogicalSize { width: 96.0, height: 48.0 };
+        let align = |align: &str| {
             format!(
                 r##"return panel {{ id = "bar", width = 200, height = 40,
                     child = text {{ content = "hi", foreground = "#ffffffff", text_align = "{align}" }} }}"##
             )
         };
-        let a = build(&resolved_surface(&Lua::new(), &src("start"), size), 1.0, None);
-        let b = build(&resolved_surface(&Lua::new(), &src("center"), size), 1.0, None);
-        assert_ne!(a, b);
+        let opacity = |opacity: &str| {
+            format!(
+                r##"return panel {{ id = "bar", width = 200, height = 40, opacity = {opacity},
+                    child = text {{ content = "12:00", foreground = "#ffffffff" }} }}"##
+            )
+        };
+        let content = |content: &str| {
+            format!(
+                r##"return panel {{ id = "bar", width = 200, height = 40,
+                child = text {{ content = "{content}", foreground = "#ffffffff" }} }}"##
+            )
+        };
+        let clip = |clip: &str| {
+            format!(
+                r##"return panel {{ id = "bar", width = 96, height = 48, child = rect {{
+                    width = 80, height = 32, radius = 16, clip = "{clip}",
+                    children = {{ rect {{ width = 30, height = "fill", background = "#0000FFFF" }} }},
+                }} }}"##
+            )
+        };
+        for (what, size, a, b) in [
+            ("text alignment", wide, align("start"), align("center")),
+            (
+                "opacity: the alpha is in the list, not applied on the way to the canvas",
+                wide,
+                opacity("1.0"),
+                opacity("0.4"),
+            ),
+            // A changed string has to change the list, or the surface keeps showing a stale clock forever.
+            ("text content: a new seconds digit must reach the list", wide, content("12:00:00"), content("12:00:01")),
+            ("clip", small, clip("box"), clip("rounded")),
+        ] {
+            let a = build(&resolved_surface(&Lua::new(), &a, size), 1.0, None);
+            let b = build(&resolved_surface(&Lua::new(), &b, size), 1.0, None);
+            assert_ne!(a, b, "{what}");
+        }
     }
 
     fn box_alpha(cmd: &DrawCmd) -> f32 {
@@ -947,24 +977,6 @@ mod tests {
         let list = build(&tree, 1.0, None);
         let expected = (0x80 as f32 / 255.0) * 0.5;
         assert!((box_alpha(&list.commands[0]) - expected).abs() < 1e-6);
-    }
-
-    /// ADR-0063 skips a repaint when the new list equals the last one, so a fade that did not
-    /// change the list would be a change the surface never painted.
-    #[test]
-    fn changing_only_the_opacity_changes_the_display_list() {
-        let solid = Lua::new();
-        let faded = Lua::new();
-        let src = |opacity: &str| {
-            format!(
-                r##"return panel {{ id = "bar", width = 200, height = 40, opacity = {opacity},
-                    child = text {{ content = "12:00", foreground = "#ffffffff" }} }}"##
-            )
-        };
-        let size = LogicalSize { width: 200.0, height: 40.0 };
-        let a = build(&resolved_surface(&solid, &src("1.0"), size), 1.0, None);
-        let b = build(&resolved_surface(&faded, &src("0.4"), size), 1.0, None);
-        assert_ne!(a, b, "the alpha is in the list, not applied on the way to the canvas");
     }
 
     /// Blitted draws carry the alpha separately, because `Paint::image` takes it as an argument
@@ -1038,23 +1050,6 @@ mod tests {
         let list = build(&tree, 1.0, None);
         assert!(!list.commands.is_empty(), "an empty list would make this pass for the wrong reason");
         assert_eq!(list, build(&tree, 1.0, None));
-    }
-
-    /// The other half, and the one that would make a skip dangerous if it failed: a changed
-    /// string has to change the list, or the surface would keep showing a stale clock forever.
-    #[test]
-    fn changing_only_a_texts_content_changes_the_list() {
-        let lua = Lua::new();
-        let panel = |content: &str| {
-            format!(
-                r##"return panel {{ id = "bar", width = 200, height = 40,
-                child = text {{ content = "{content}", foreground = "#ffffffff" }} }}"##
-            )
-        };
-        let size = LogicalSize { width: 200.0, height: 40.0 };
-        let before = build(&resolved_surface(&lua, &panel("12:00:00"), size), 1.0, None);
-        let after = build(&resolved_surface(&Lua::new(), &panel("12:00:01"), size), 1.0, None);
-        assert_ne!(before, after, "a new seconds digit must reach the list, or the paint gets skipped");
     }
 
     /// `visible = false` collapses the node and everything under it, the same rule the tree walk
@@ -1649,66 +1644,29 @@ mod tests {
         );
     }
 
-    /// The other direction, and the reason the id has to be the node's own rather than anything
-    /// positional: a *different* field that comes to sit where the focused one was must not
-    /// inherit its text.
-    #[test]
-    fn a_different_field_that_takes_the_focused_ones_box_draws_nothing_of_its_text() {
-        let lua = Lua::new();
-        let tree = reply_surface(&lua);
-        let vacated = tree.children[0].rect;
-
-        let mut other = tree.clone();
-        other.children[0].id = crate::layout::scene::NodeId::test(4242);
-        other.children[0].rect = vacated;
-
-        let list = build(
-            &other,
-            1.0,
-            Some(&FieldFocus::Plain {
-                id: tree.children[0].id,
-                text: "on my way",
-                caret: Some((9, 9)),
-                caret_on: true,
-            }),
-        );
-        assert_eq!(drawn_text(&list), vec!["Reply".to_string()]);
-    }
-
     /// A masked field draws the placeholder unless the focus is a masked one addressed to it: a
-    /// plain focus's text, no focus, an empty count and another node's count never reach the list.
+    /// plain focus's text, no focus, an empty count and another node's or capability's count never reach the list.
     #[test]
     fn a_password_field_draws_its_placeholder_unless_it_is_the_masked_focus() {
         let lua = Lua::new();
         let tree = password_surface(&lua);
         let id = tree.children[0].id;
         let target = lock_target();
+        // Focus is a `{ capability, action }` pair, so a field addressed somewhere else must not
+        // fill just because some other field is focused on the same surface. This is the same
+        // routing rule `input::keyboard::retarget_secure_submit` enforces for the bytes themselves.
+        let elsewhere =
+            node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None };
         for (what, focus) in [
             ("a plain focus", Some(FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)), caret_on: true })),
             ("no focus", None),
             ("an empty count", Some(FieldFocus::Masked { id, target: &target, filled: 0 })),
             ("another node", Some(FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9 })),
+            // A PSK's length must not leak onto the lock screen's field.
+            ("another capability", Some(FieldFocus::Masked { id, target: &elsewhere, filled: 9 })),
         ] {
             assert_eq!(drawn_text(&build(&tree, 1.0, focus.as_ref())), vec!["password".to_string()], "{what}");
         }
-    }
-
-    /// Focus is a `{ capability, action }` pair, so a field addressed somewhere else must not
-    /// fill just because some other field is focused on the same surface. This is the same
-    /// routing rule `input::keyboard::retarget_secure_submit` enforces for the bytes themselves.
-    #[test]
-    fn a_field_addressed_to_another_capability_does_not_draw_the_focused_fields_characters() {
-        let lua = Lua::new();
-        let elsewhere =
-            node::SecureSubmitTarget { capability: "network".to_string(), action: "connect".to_string(), name: None };
-        let tree = password_surface(&lua);
-        let list =
-            build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &elsewhere, filled: 9 }));
-        assert_eq!(
-            drawn_text(&list),
-            vec!["password".to_string()],
-            "a PSK's length must not leak onto the lock screen's field"
-        );
     }
 
     /// The count is all paint ever gets (see [`FieldFocus`]), so there is no path by which a
@@ -1728,23 +1686,9 @@ mod tests {
         assert_ne!(list, five);
     }
 
-    /// `mask_character` is optional, and a field that omits it should still look
-    /// like a password field rather than draw nothing.
-    #[test]
-    fn a_field_without_a_mask_character_falls_back_to_a_bullet() {
-        let lua = Lua::new();
-        let src = r##"return panel { id = "bar", width = 200, height = 40,
-            child = textfield { width = "fill", height = 28,
-                secure_submit = { capability = "lock", action = "authenticate" } } }"##;
-        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let target = lock_target();
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
-        assert_eq!(drawn_text(&list), vec!["\u{2022}\u{2022}\u{2022}".to_string()]);
-    }
-
     /// The dots are shaped in the field's own typeface, and no caret position is ever derived from them.
     #[test]
-    fn a_masked_fields_dots_carry_its_typeface_and_no_caret() {
+    fn a_masked_fields_dots_carry_its_typeface_and_no_caret_and_default_to_a_bullet() {
         let lua = Lua::new();
         let src = r##"return panel { id = "bar", width = 200, height = 40,
             child = textfield { width = "fill", height = 28, font_size = 20, letter_spacing = 3,
@@ -1761,6 +1705,15 @@ mod tests {
         let point = crate::layout::hit::LogicalPoint { x: 5.0, y: 5.0 };
         let shaping = crate::text::shaping::ShapingHandle::spawn();
         assert_eq!(crate::layout::hit::caret_at(&[&tree, &tree.children[0]], point, "", 0, &shaping), None);
+
+        // `mask_character` is optional, and a field that omits it should still look like a password
+        // field rather than draw nothing.
+        let src = r##"return panel { id = "bar", width = 200, height = 40,
+            child = textfield { width = "fill", height = 28,
+                secure_submit = { capability = "lock", action = "authenticate" } } }"##;
+        let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
+        assert_eq!(drawn_text(&list), vec!["\u{2022}\u{2022}\u{2022}".to_string()]);
     }
 
     /// A leaf that asks for a rounded clip has nothing to clip, so it buys no offscreen pass.
@@ -1776,25 +1729,6 @@ mod tests {
         );
         let list = build(&root, 1.0, None);
         assert!(!list.commands.iter().any(|cmd| matches!(cmd.draw, Draw::Clipped { .. })));
-    }
-
-    /// The property is in the display list, so turning it on repaints: ADR-0063 skips the frame
-    /// when the list compares equal, and a clip that changed shape without changing the list would
-    /// never be drawn.
-    #[test]
-    fn changing_only_the_clip_changes_the_display_list() {
-        let size = LogicalSize { width: 96.0, height: 48.0 };
-        let src = |clip: &str| {
-            format!(
-                r##"return panel {{ id = "bar", width = 96, height = 48, child = rect {{
-                    width = 80, height = 32, radius = 16, clip = "{clip}",
-                    children = {{ rect {{ width = 30, height = "fill", background = "#0000FFFF" }} }},
-                }} }}"##
-            )
-        };
-        let boxed = build(&resolved_surface(&Lua::new(), &src("box"), size), 1.0, None);
-        let rounded = build(&resolved_surface(&Lua::new(), &src("rounded"), size), 1.0, None);
-        assert_ne!(boxed, rounded);
     }
 
     /// ADR-0253. The stage recompiles on a new file version, but only a paint reaches it, and a

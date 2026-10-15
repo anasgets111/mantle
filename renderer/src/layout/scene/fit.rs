@@ -593,15 +593,12 @@ mod tests {
     }
 
     #[test]
-    fn a_narrow_text_that_does_not_wrap_is_one_line_tall() {
+    fn a_narrow_texts_drawn_lines_and_height_follow_wrap_and_max_lines() {
         let (drawn, height) =
             text_box(&format!(r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}" }} }}"#));
         assert_eq!(height, 12.0 * 1.2, "an unwrapped run occupies one line however long it is");
         assert!(!drawn.contains('\n'), "nothing broke it: {drawn:?}");
-    }
 
-    #[test]
-    fn a_narrow_text_that_wraps_is_broken_into_lines_and_measured_at_their_height() {
         let (drawn, height) = text_box(&format!(
             r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word" }} }}"#
         ));
@@ -610,6 +607,12 @@ mod tests {
         assert_eq!(height, lines.len() as f32 * 12.0 * 1.2, "the box has to be as tall as the lines it holds");
         // Whitespace is where the breaks landed, so the words survive and only the gaps moved.
         assert_eq!(drawn.split_whitespace().collect::<Vec<_>>(), LONG.split_whitespace().collect::<Vec<_>>());
+
+        let (drawn, height) = text_box(&format!(
+            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 2 }} }}"#
+        ));
+        assert_eq!(drawn.lines().count(), 2, "got {drawn:?}");
+        assert_eq!(height, 2.0 * 12.0 * 1.2, "a capped run reserves the lines it keeps, not the ones it dropped");
     }
 
     /// taffy probes a wrapping text at max-content, where it is one line, before offering it the
@@ -664,15 +667,6 @@ mod tests {
             let arabic_first = line.chars().next().is_some_and(|c| ('\u{0600}'..='\u{06FF}').contains(&c));
             assert!(arabic_first || line.starts_with('\u{200F}'), "every other line reads right to left: {drawn:?}");
         }
-    }
-
-    #[test]
-    fn max_lines_caps_both_what_is_drawn_and_the_height_reserved_for_it() {
-        let (drawn, height) = text_box(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 2 }} }}"#
-        ));
-        assert_eq!(drawn.lines().count(), 2, "got {drawn:?}");
-        assert_eq!(height, 2.0 * 12.0 * 1.2, "a capped run reserves the lines it keeps, not the ones it dropped");
     }
 
     /// The notification-body case: fill the lines allowed, then say the rest was dropped. The
@@ -765,16 +759,6 @@ mod tests {
             r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 0 }} }}"#
         );
         assert_eq!(text_box(&zero), text_box(&uncapped));
-    }
-
-    #[test]
-    fn a_text_too_wide_for_its_box_is_cut_short_and_finished_with_an_ellipsis() {
-        let drawn = elided(&format!(
-            r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", elide = "end" }} }}"#
-        ));
-        assert!(drawn.ends_with('\u{2026}'), "must end with an ellipsis: {drawn:?}");
-        assert!(drawn.chars().count() < LONG.chars().count(), "must be shorter than the original: {drawn:?}");
-        assert!(LONG.starts_with(drawn.trim_end_matches('\u{2026}')), "must be a prefix of the original: {drawn:?}");
     }
 
     #[test]

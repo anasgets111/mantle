@@ -188,19 +188,35 @@ mod tests {
     }
 
     #[test]
-    fn the_named_directory_wins_over_xdg_config_home() {
-        let resolved = config_dir_from(Some("/tmp/env".into()), Some("/tmp/xdg".into()), None).unwrap();
-        assert_eq!(resolved, PathBuf::from("/tmp/env"));
-    }
-
-    /// The last rung, which old `set_var` tests could not reach without unsetting the developer's
-    /// `$HOME`.
-    #[test]
-    fn home_is_the_last_resort_and_is_joined_with_dot_config() {
-        assert_eq!(
-            config_dir_from(None, None, Some("/home/someone".into())).unwrap(),
-            PathBuf::from("/home/someone/.config/mantle")
-        );
+    fn config_dir_prefers_the_named_directory_then_xdg_then_home_and_errors_without_any() {
+        // (label, explicit, xdg_config_home, home, expected; None = NotFound)
+        let cases = [
+            (
+                "the named directory wins over xdg_config_home",
+                Some("/tmp/env"),
+                Some("/tmp/xdg"),
+                None,
+                Some("/tmp/env"),
+            ),
+            // The last rung, which old `set_var` tests could not reach without unsetting the
+            // developer's `$HOME`.
+            (
+                "home is the last resort, joined with .config",
+                None,
+                None,
+                Some("/home/someone"),
+                Some("/home/someone/.config/mantle"),
+            ),
+            // No variables means an error rather than a guess.
+            ("no variable at all is an error", None, None, None, None),
+        ];
+        for (label, explicit, xdg, home, expected) in cases {
+            let resolved = config_dir_from(explicit.map(Into::into), xdg.map(Into::into), home.map(Into::into));
+            match expected {
+                Some(dir) => assert_eq!(resolved.unwrap(), PathBuf::from(dir), "{label}"),
+                None => assert_eq!(resolved.unwrap_err().kind(), io::ErrorKind::NotFound, "{label}"),
+            }
+        }
     }
 
     #[test]
@@ -211,11 +227,5 @@ mod tests {
         assert_eq!(resolve(""), Some(PathBuf::from("/home/someone/.cache")));
         assert_eq!(resolve("cache"), Some(PathBuf::from("/home/someone/.cache")));
         assert_eq!(xdg_dir_from(None, Some("".into()), ".cache"), None);
-    }
-
-    /// No variables means an error rather than a guess.
-    #[test]
-    fn no_variable_at_all_is_an_error() {
-        assert_eq!(config_dir_from(None, None, None).unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }

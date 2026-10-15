@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_install_with_child_parses_progress_and_detects_a_successful_completion() {
+    async fn run_install_with_child_parses_progress_reports_the_exit_code_and_logs_both_streams() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let child = process::spawn_group_leader_piped(
             "sh",
@@ -586,10 +586,7 @@ mod tests {
             signal_count += 1;
         }
         assert_eq!(signal_count, 4, "one signal per output line plus one completion signal");
-    }
 
-    #[tokio::test]
-    async fn run_install_with_child_reports_pacmans_own_exit_code_rather_than_a_sentence() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let child = process::spawn_group_leader_piped("sh", &process::sh_args("exit 1")).expect("spawn a failing stub");
 
@@ -598,16 +595,13 @@ mod tests {
 
         let snapshot = state.lock().unwrap().clone();
         assert!(!snapshot.installing);
-        assert_eq!(snapshot.install_exit_code, Some(1));
+        assert_eq!(snapshot.install_exit_code, Some(1), "pacman's own exit code rather than a sentence");
         assert!(snapshot.install_finished_at.is_some());
         assert_eq!(
             snapshot.install_error, None,
             "the package manager answering with a failure is not the Supervisor failing to ask"
         );
-    }
 
-    #[tokio::test]
-    async fn the_install_log_keeps_both_streams_and_survives_a_line_that_is_not_progress() {
         let state = Arc::new(Mutex::new(UpdatesState::default()));
         let child = process::spawn_group_leader_piped(
             "sh",

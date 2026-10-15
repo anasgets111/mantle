@@ -93,20 +93,17 @@ mod tests {
     }
 
     #[test]
-    fn compute_percentages_derives_ram_and_swap_usage_from_the_real_capture() {
+    fn compute_percentages_derives_usage_from_the_real_capture_and_reports_zero_swap_without_swap() {
         let info = super::parse_meminfo(real_meminfo()).unwrap();
         let (ram_percent, swap_percent) = super::compute_percentages(&info);
         // used = 21872244; 100*used/32479404 = 67.34...% -> 67
         assert_eq!(ram_percent, 67);
         // used = 15955432; 100*used/16239612 = 98.24...% -> 98
         assert_eq!(swap_percent, 98);
-    }
 
-    #[test]
-    fn compute_percentages_reports_zero_swap_when_no_swap_is_configured() {
         let info = super::MemInfo { mem_total: 1000, mem_available: 500, swap_total: 0, swap_free: 0 };
         let (_, swap_percent) = super::compute_percentages(&info);
-        assert_eq!(swap_percent, 0);
+        assert_eq!(swap_percent, 0, "no swap configured");
     }
 
     #[test]

@@ -310,16 +310,14 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_icon_that_defines_no_colour_gets_one_on_the_root() {
+    fn a_root_colour_is_added_when_missing_and_replaced_rather_than_duplicated_when_present() {
         // hicolor and Adwaita ship this shape. CSS's initial `color` is black, so the root
         // attribute is required for the caller's tint.
         let svg = br##"<svg xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M0 0h1v1h-1z"/></svg>"##;
         let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
         assert!(out.starts_with(r##"<svg color="#cdd6f4""##), "the root carries the colour: {out}");
-    }
 
-    #[test]
-    fn a_root_colour_attribute_is_replaced_rather_than_duplicated() {
+        // An existing root colour is replaced rather than duplicated.
         let svg = br##"<svg stop-color="#00ff00" color='#232629' xmlns="http://www.w3.org/2000/svg"><path fill="currentColor" d="M0 0h1v1h-1z"/></svg>"##;
         let out = String::from_utf8(tinted_svg(svg, tint())).unwrap();
         assert!(out.starts_with(r##"<svg stop-color="#00ff00" color='#cdd6f4' xmlns"##), "{out}");
@@ -394,7 +392,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn an_svgz_that_inflates_past_the_limit_is_refused_rather_than_allocated_for() {
+    fn an_svgz_that_inflates_or_an_svg_that_is_oversized_is_refused_before_it_is_allocated_or_parsed() {
         // Deflate reaches 1032:1, so the read cap alone bounds only the file on disk: this one is
         // a few kilobytes and asks for 8MB+1. `usvg::decompress_svgz` would hand over all of it.
         let dir = tempfile::tempdir().unwrap();
@@ -404,6 +402,13 @@ pub(super) mod tests {
         let err =
             rasterize_svg(&bomb, 24, None, &FontDatabase::default()).expect_err("an inflating svgz must be refused");
         assert!(err.contains("inflates past"), "the refusal should say why: {err}");
+
+        let bloated = dir.path().join("huge.svg");
+        // One byte over, so the refusal is the size check and not a parse failure.
+        std::fs::write(&bloated, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
+        let err =
+            rasterize_svg(&bloated, 24, None, &FontDatabase::default()).expect_err("an oversized svg must be refused");
+        assert!(err.contains("over the"), "the refusal should say why: {err}");
     }
 
     fn gzip(data: &[u8]) -> Vec<u8> {
@@ -411,16 +416,5 @@ pub(super) mod tests {
         let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
         encoder.write_all(data).unwrap();
         encoder.finish().unwrap()
-    }
-
-    #[test]
-    fn an_oversized_svg_is_refused_before_it_is_parsed() {
-        let dir = tempfile::tempdir().unwrap();
-        let bloated = dir.path().join("huge.svg");
-        // One byte over, so the refusal is the size check and not a parse failure.
-        std::fs::write(&bloated, vec![b' '; MAX_SVG_BYTES as usize + 1]).unwrap();
-        let err =
-            rasterize_svg(&bloated, 24, None, &FontDatabase::default()).expect_err("an oversized svg must be refused");
-        assert!(err.contains("over the"), "the refusal should say why: {err}");
     }
 }

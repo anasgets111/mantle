@@ -392,13 +392,6 @@ drm-engine-video-enhance:\t0 ns\n";
     }
 
     #[test]
-    fn a_drm_client_without_memory_keys_folds_to_zero_resident() {
-        let text = "drm-driver:\ti915\ndrm-pdev:\t0000:00:02.0\ndrm-client-id:\t4\n";
-        let gpu = fold_drm_clients(parse_drm_client(text));
-        assert_eq!(gpu, Gpu { resident: 0, shared: 0, clients: 1 });
-    }
-
-    #[test]
     fn parse_drm_client_is_none_without_a_drm_driver_line() {
         let text = "pos:\t0\nflags:\t02\nmnt_id:\t9\nino:\t123\n";
         assert_eq!(
@@ -440,6 +433,7 @@ drm-engine-video-enhance:\t0 ns\n";
                 0,
                 0,
             ),
+            ("no memory keys at all is zero resident", "", 0, 0),
             // Live i915 prints `40 MiB` beside a `KiB` resident total.
             (
                 "MiB and unitless byte values scale",
@@ -525,24 +519,33 @@ drm-engine-video-enhance:\t0 ns\n";
     // ---- fold_drm_clients ----
 
     #[test]
-    fn fold_drm_clients_dedupes_by_pdev_and_client_id_so_one_process_is_not_triple_counted() {
-        // Three live fds from one process each report `drm-client-id: 4` on the same pdev with
-        // identical byte counts.
-        let one_fd = || DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 279968, shared: 192368 };
-        let gpu = fold_drm_clients([one_fd(), one_fd(), one_fd()]);
-        assert_eq!(gpu, Gpu { resident: 279968, shared: 192368, clients: 1 });
-    }
-
-    #[test]
-    fn fold_drm_clients_sums_distinct_clients_separately() {
-        let a = DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 4, resident: 100, shared: 10 };
-        let b = DrmClient { pdev: "0000:00:02.0".to_string(), client_id: 5, resident: 200, shared: 20 };
-        assert_eq!(fold_drm_clients([a, b]), Gpu { resident: 300, shared: 30, clients: 2 });
-    }
-
-    #[test]
-    fn fold_drm_clients_of_no_clients_is_a_zeroed_gpu() {
-        assert_eq!(fold_drm_clients(std::iter::empty()), Gpu { resident: 0, shared: 0, clients: 0 });
+    fn fold_drm_clients_dedupes_by_pdev_and_client_id_and_sums_distinct_clients() {
+        let client =
+            |client_id, resident, shared| DrmClient { pdev: "0000:00:02.0".to_string(), client_id, resident, shared };
+        // (label, clients, expected)
+        let cases = [
+            // Three live fds from one process each report `drm-client-id: 4` on the same pdev with
+            // identical byte counts.
+            (
+                "one process is not triple counted",
+                vec![client(4, 279968, 192368), client(4, 279968, 192368), client(4, 279968, 192368)],
+                Gpu { resident: 279968, shared: 192368, clients: 1 },
+            ),
+            (
+                "distinct clients sum separately",
+                vec![client(4, 100, 10), client(5, 200, 20)],
+                Gpu { resident: 300, shared: 30, clients: 2 },
+            ),
+            (
+                "a client without memory keys still counts",
+                vec![client(4, 0, 0)],
+                Gpu { resident: 0, shared: 0, clients: 1 },
+            ),
+            ("no clients is a zeroed gpu", vec![], Gpu { resident: 0, shared: 0, clients: 0 }),
+        ];
+        for (label, clients, expected) in cases {
+            assert_eq!(fold_drm_clients(clients), expected, "{label}");
+        }
     }
 
     // ---- report_line ----

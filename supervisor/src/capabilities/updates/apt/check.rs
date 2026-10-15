@@ -104,26 +104,30 @@ Conf libaudit1 (1:3.1.2-2.1ubuntu0.1 Ubuntu:24.04/noble-updates [amd64])
     }
 
     #[test]
-    fn a_debian_security_upgrade_names_both_suites() {
-        // Debian 13, with the installed version rewritten older in the dpkg status.
-        let line = "Inst libssl3t64 [3.5.7-1~deb13u2~old] (3.5.7-1~deb13u2 Debian:13.7/stable, Debian-Security:13/stable-security [amd64])";
-        assert_eq!(
-            parse_simulation(line),
-            [candidate("libssl3t64", "3.5.7-1~deb13u2~old", "3.5.7-1~deb13u2", "stable,stable-security")]
-        );
-    }
-
-    #[test]
-    fn an_origin_with_a_space_and_a_trailing_hint_still_parse() {
-        // Composed: a third-party origin, and the `[]` apt appends while ordering breaks a dependency.
-        let line = "Inst google-chrome-stable [139.0-1] (140.0-1 Google LLC:1.0/stable [amd64]) []";
-        assert_eq!(parse_simulation(line), [candidate("google-chrome-stable", "139.0-1", "140.0-1", "stable")]);
-    }
-
-    #[test]
-    fn a_newly_installed_dependency_is_not_an_upgrade() {
-        let line = "Inst linux-image-6.8.0-90-generic (6.8.0-90.91 Ubuntu:24.04/noble-updates [amd64])";
-        assert!(parse_simulation(line).is_empty());
+    fn parse_simulation_reads_single_inst_lines_by_origin_and_skips_new_installs() {
+        // (label, line, expected)
+        let cases = [
+            (
+                "a debian security upgrade names both suites",
+                // Debian 13, with the installed version rewritten older in the dpkg status.
+                "Inst libssl3t64 [3.5.7-1~deb13u2~old] (3.5.7-1~deb13u2 Debian:13.7/stable, Debian-Security:13/stable-security [amd64])",
+                vec![candidate("libssl3t64", "3.5.7-1~deb13u2~old", "3.5.7-1~deb13u2", "stable,stable-security")],
+            ),
+            (
+                "an origin with a space and a trailing hint still parse",
+                // Composed: a third-party origin, and the `[]` apt appends while ordering breaks a dependency.
+                "Inst google-chrome-stable [139.0-1] (140.0-1 Google LLC:1.0/stable [amd64]) []",
+                vec![candidate("google-chrome-stable", "139.0-1", "140.0-1", "stable")],
+            ),
+            (
+                "a newly installed dependency is not an upgrade",
+                "Inst linux-image-6.8.0-90-generic (6.8.0-90.91 Ubuntu:24.04/noble-updates [amd64])",
+                vec![],
+            ),
+        ];
+        for (label, line, expected) in cases {
+            assert_eq!(parse_simulation(line), expected, "{label}");
+        }
     }
 
     #[test]

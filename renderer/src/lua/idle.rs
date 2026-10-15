@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn register_threshold_queues_a_register_command_carrying_only_the_duration() {
+    fn register_inhibit_and_release_queue_their_own_commands_register_carrying_only_the_duration() {
         let (lua, _registry, mut rx) = lua_with_idle(4);
 
         lua.load("idle:register_threshold(300, function() end, function() end)").exec().unwrap();
@@ -458,11 +458,6 @@ mod tests {
         assert_eq!(envelope.params.capability, "idle");
         assert_eq!(envelope.params.action, "register");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!(300)]);
-    }
-
-    #[test]
-    fn inhibit_and_release_queue_their_own_commands() {
-        let (lua, _registry, mut rx) = lua_with_idle(1);
 
         lua.load(r#"idle:inhibit("playing a video"); idle:release_inhibit()"#).exec().unwrap();
 

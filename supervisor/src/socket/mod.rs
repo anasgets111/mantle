@@ -697,7 +697,7 @@ mod tests {
     async fn spawn_listener_registers_two_simultaneous_connections_by_generation_id() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("control.sock");
-        let (registry, _routes, _inbound, _connected) = spawn_listener(&path).unwrap();
+        let (registry, _routes, _inbound, mut connected) = spawn_listener(&path).unwrap();
         expect_this_process(&registry, &[1, 2]);
 
         let mut client_a = UnixStream::connect(&path).await.unwrap();
@@ -716,19 +716,10 @@ mod tests {
 
         assert_eq!(framing::read_frame(&mut client_a).await.unwrap(), b"to-one");
         assert_eq!(framing::read_frame(&mut client_b).await.unwrap(), b"to-two");
-    }
 
-    #[tokio::test]
-    async fn spawn_listener_reports_a_generation_id_on_the_connected_channel_once_registered() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock");
-        let (registry, _routes, _inbound, mut connected) = spawn_listener(&path).unwrap();
-        expect_this_process(&registry, &[7]);
-
-        let mut client = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 7 }).await.unwrap();
-
-        assert_eq!(connected.recv().await, Some(7), "the connected channel must report the handshake's generation_id");
+        let mut reported = [connected.recv().await.unwrap(), connected.recv().await.unwrap()];
+        reported.sort_unstable();
+        assert_eq!(reported, [1, 2], "the connected channel must report each handshake's generation_id");
     }
 
     #[tokio::test]

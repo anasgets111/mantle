@@ -1187,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn every_rostered_capability_is_on_the_mantle_table_and_reads_nil_before_its_first_snapshot() {
+    fn every_rostered_capability_rescue_and_screens_are_on_the_mantle_table_and_read_nil_or_empty_at_boot() {
         // ADR-0037: every rostered capability is `mantle.<name>`, a live signal reading nil at
         // boot, never an index-into-nil rescue error.
         let (client, _outbound_rx) = bare_client();
@@ -1199,6 +1199,18 @@ mod tests {
                 "mantle.{capability} should read nil before its first snapshot"
             );
         }
+
+        // `rescue` and `screens` both live under `mantle.*`, like capabilities.
+        let setup = r#"
+            rescued = mantle.rescue:get().is_rescue
+            screen_count = #mantle.screens:get()
+            bare_rescue_gone = rescue == nil
+            bare_screens_gone = screens == nil
+        "#;
+        assert!(!probe::<bool>(&client.loader, setup, "rescued"));
+        assert_eq!(probe::<i64>(&client.loader, setup, "screen_count"), 0);
+        assert!(probe::<bool>(&client.loader, setup, "bare_rescue_gone"));
+        assert!(probe::<bool>(&client.loader, setup, "bare_screens_gone"));
     }
 
     #[test]
@@ -1232,23 +1244,6 @@ mod tests {
 
         // Real `rescue` still reads its own table, not an empty capability.
         assert!(probe::<bool>(&client.loader, "intact = mantle.rescue:get().is_rescue == false", "intact"));
-    }
-
-    #[test]
-    fn rescue_and_screens_moved_onto_the_same_table_as_the_roster() {
-        // `rescue` and `screens` both live under `mantle.*`, like capabilities.
-        let (client, _outbound_rx) = bare_client();
-
-        let setup = r#"
-            rescued = mantle.rescue:get().is_rescue
-            screen_count = #mantle.screens:get()
-            bare_rescue_gone = rescue == nil
-            bare_screens_gone = screens == nil
-        "#;
-        assert!(!probe::<bool>(&client.loader, setup, "rescued"));
-        assert_eq!(probe::<i64>(&client.loader, setup, "screen_count"), 0);
-        assert!(probe::<bool>(&client.loader, setup, "bare_rescue_gone"));
-        assert!(probe::<bool>(&client.loader, setup, "bare_screens_gone"));
     }
 
     #[test]
@@ -2498,7 +2493,8 @@ mod tests {
     }
 
     #[test]
-    fn applied_surface_specs_returns_the_applied_declarations_without_reading_shell_lua_again() {
+    fn applied_surface_specs_returns_the_applied_declarations_without_reading_shell_lua_again_and_none_before_any_apply()
+     {
         // Hotplug expansion source (ADR-0038 decision 3). Delete the file to prove it is untouched.
         let dir = tempfile::tempdir().unwrap();
         let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", output = "all" }"#);
@@ -2511,10 +2507,7 @@ mod tests {
         assert!(
             matches!(&specs[0], SurfaceSpec::Panel(panel) if panel.topology.id == "bar" && panel.topology.output == "all")
         );
-    }
 
-    #[test]
-    fn applied_surface_specs_is_empty_when_no_evaluation_has_ever_applied() {
         // Failed startup declared nothing, so hotplug adds no instance.
         let (client, _outbound_rx) = bare_client();
         assert!(client.applied_surface_specs().is_empty());

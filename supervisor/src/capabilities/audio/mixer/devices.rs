@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn device_list_marks_the_metadata_named_device_active_and_orders_by_id() {
+    fn device_list_marks_the_metadata_named_device_active_orders_by_id_and_falls_back_to_the_node_name() {
         let mut entries = tracked(&[
             (70, "bluez_output.headset", Some("WH-1000XM4")),
             (59, "alsa_output.analog", Some("Built-in Audio Analog Stereo")),
@@ -238,10 +238,7 @@ mod tests {
                 AudioDevice { id: 70, name: "WH-1000XM4".to_string(), active: true, ..AudioDevice::default() },
             ]
         );
-    }
 
-    #[test]
-    fn device_list_falls_back_to_the_node_name_when_no_description_was_seen() {
         let entries = tracked(&[(59, "alsa_output.analog", None)]);
 
         let devices = device_list(&entries, &HashMap::new(), Some(59));
@@ -253,7 +250,8 @@ mod tests {
                 name: "alsa_output.analog".to_string(),
                 active: true,
                 ..AudioDevice::default()
-            }]
+            }],
+            "no description seen falls back to the node name"
         );
     }
 

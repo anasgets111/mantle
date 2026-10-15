@@ -612,17 +612,49 @@ mod tests {
         }
     }
 
-    /// Decision 5: a container whose content and viewport are the same number by construction.
     #[test]
-    fn a_content_sized_container_has_nothing_to_scroll() {
-        let (_lua, ys, used) = scrolled(
-            r#"panel { id = "bar", child = column { width = 100, scroll = scroll("s"), children = {
-                rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
-            } } }"#,
-            80.0,
-        );
-        assert_eq!(used, 0.0, "no remainder, so the offset is clamped away rather than erroring");
-        assert_eq!(ys, vec![0.0, 100.0]);
+    fn the_scroll_bound_is_the_content_the_viewport_does_not_show() {
+        for (what, src, asked, ys, used) in [
+            // Decision 5: a container whose content and viewport are the same number by construction.
+            (
+                "a content-sized container has nothing to scroll: the offset is clamped away rather than erroring",
+                r#"panel { id = "bar", child = column { width = 100, scroll = scroll("s"), children = {
+                    rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
+                } } }"#,
+                80.0,
+                Some(vec![0.0, 100.0]),
+                0.0,
+            ),
+            // Spacing counts toward the content extent, because a gap advances the cursor by
+            // it. A bound computed without it would let the list scroll one gap short of its end.
+            (
+                "200 of children plus one 10px gap, less the 100 viewport",
+                r#"panel { id = "bar", child = column { width = 100, height = 100, spacing = 10, scroll = scroll("s"), children = {
+                    rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
+                } } }"#,
+                9_999.0,
+                None,
+                110.0,
+            ),
+            // Alignment and scrolling cannot both be in play: `spare` is `(content - total).max(0)` and
+            // the scroll limit is `(total - content).max(0)`, so one is zero whenever the other is not. A
+            // `Center` column with a scroll offset is therefore still centred, not centred-then-shifted.
+            (
+                "100 of content in a 300 box leaves nothing to scroll, so the pair stays centred rather than dragged off the top",
+                r#"panel { id = "bar", child = column { width = 100, height = 300, align_v = "center", scroll = scroll("s"), children = {
+                    rect { width = 10, height = 50 }, rect { width = 10, height = 50 },
+                } } }"#,
+                999.0,
+                Some(vec![100.0, 150.0]),
+                0.0,
+            ),
+        ] {
+            let (_lua, got_ys, got_used) = scrolled(src, asked);
+            assert_eq!(got_used, used, "{what}");
+            if let Some(ys) = ys {
+                assert_eq!(got_ys, ys, "{what}");
+            }
+        }
     }
 
     /// `max_height` is what makes a content-sized container scrollable: below the cap it is exactly
@@ -644,19 +676,6 @@ mod tests {
         );
         let column = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(column.rect.height, 80.0, "under the cap the box is the content, as with no cap at all");
-    }
-
-    /// Spacing counts toward the content extent, because a gap advances the cursor by
-    /// it. A bound computed without it would let the list scroll one gap short of its end.
-    #[test]
-    fn spacing_counts_toward_what_there_is_to_scroll() {
-        let (_lua, _ys, used) = scrolled(
-            r#"panel { id = "bar", child = column { width = 100, height = 100, spacing = 10, scroll = scroll("s"), children = {
-                rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
-            } } }"#,
-            9_999.0,
-        );
-        assert_eq!(used, 110.0, "200 of children plus one 10px gap, less the 100 viewport");
     }
 
     #[test]
@@ -684,24 +703,6 @@ mod tests {
 
     /// A wheel must not be able to write a capability snapshot. `scroll_handle` refuses every kind
     /// but its own, so binding the wrong signal scrolls nothing instead.
-    /// Alignment and scrolling cannot both be in play; this pins why rather than trusting it.
-    ///
-    /// `spare` is `(content - total).max(0)` and the scroll limit is `(total - content).max(0)`, so
-    /// one is zero whenever the other is not. Content that underfills its box aligns and cannot
-    /// scroll; overflowing content has no spare to align with. A `Center` column with a scroll
-    /// offset is therefore still centred, not centred-then-shifted.
-    #[test]
-    fn alignment_and_scrolling_are_mutually_exclusive_by_construction() {
-        let (_lua, ys, used) = scrolled(
-            r#"panel { id = "bar", child = column { width = 100, height = 300, align_v = "center", scroll = scroll("s"), children = {
-                rect { width = 10, height = 50 }, rect { width = 10, height = 50 },
-            } } }"#,
-            999.0,
-        );
-        assert_eq!(used, 0.0, "100 of content in a 300 box leaves nothing to scroll");
-        assert_eq!(ys, vec![100.0, 150.0], "so the pair stays centred rather than being dragged off the top");
-    }
-
     #[test]
     fn a_scroll_property_naming_something_that_is_not_a_scroll_signal_is_inert() {
         let lua = scene_lua();

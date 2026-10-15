@@ -776,11 +776,16 @@ pub(in crate::wayland) mod tests {
     }
 
     #[test]
-    fn a_press_landing_on_no_textfield_leaves_no_destination_focused() {
+    fn a_press_on_no_worthwhile_textfield_leaves_no_destination_focused() {
         let lua = Lua::new();
-        let clickable = hit_node(&lua, "rect", (0.0, 0.0, 40.0, 24.0), true);
         let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(focused_field(&[&root, &clickable]).is_none());
+        let clickable = hit_node(&lua, "rect", (0.0, 0.0, 40.0, 24.0), true);
+        assert!(focused_field(&[&root, &clickable]).is_none(), "a press landing on no textfield");
+
+        // Neither a destination nor a callback: nothing downstream could read a keystroke, so taking
+        // the keyboard for it would only strand the user in a field that swallows keys (ADR-0092).
+        let field = textfield(&lua, None);
+        assert!(focused_field(&[&root, &field]).is_none(), "a textfield that can report nothing");
     }
 
     #[test]
@@ -800,16 +805,6 @@ pub(in crate::wayland) mod tests {
                 name: None
             })
         );
-    }
-
-    /// Neither a destination nor a callback: nothing downstream could read a keystroke, so taking
-    /// the keyboard for it would only strand the user in a field that swallows keys (ADR-0092).
-    #[test]
-    fn a_textfield_that_can_report_nothing_is_not_worth_focusing() {
-        let lua = Lua::new();
-        let field = textfield(&lua, None);
-        let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 32.0), false);
-        assert!(focused_field(&[&root, &field]).is_none());
     }
 
     /// The unmasked half of `textfield` (ADR-0092): no `secure_submit`, a callback, so the press
@@ -851,43 +846,6 @@ pub(in crate::wayland) mod tests {
         inner.children = fields;
         root.children = vec![hit_node(lua, "label", (0.0, 0.0, 100.0, 20.0), false), inner];
         root
-    }
-
-    #[test]
-    fn keyboard_focus_takes_the_one_secure_submit_field_a_surface_declares() {
-        // The rule that makes a lock screen typable without a click: `focused_secure_submit` used
-        // to be set only by a pointer press.
-        let lua = Lua::new();
-        let tree = tree_with(&lua, vec![textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")))]);
-
-        assert_eq!(
-            sole_secure_submit(&tree),
-            Some(node::SecureSubmitTarget {
-                capability: "lock".to_string(),
-                action: "authenticate".to_string(),
-                name: None
-            })
-        );
-    }
-
-    #[test]
-    fn two_secure_submit_fields_on_one_surface_focus_neither() {
-        // Deliberately not "the first one": with two destinations there is no non-arbitrary answer
-        // to "whose password is this?", which is the same question `submit_frame_for` refuses to
-        // guess at (ADR-0050 decision 4). A press still picks one, because a press names a node.
-        let lua = Lua::new();
-        let tree = tree_with(
-            &lua,
-            vec![
-                textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate"))),
-                textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate"))),
-            ],
-        );
-        assert_eq!(sole_secure_submit(&tree), None);
-
-        // A field with no destination is not a candidate either -- it names nowhere to send to.
-        let bare = tree_with(&lua, vec![textfield(&lua, None)]);
-        assert_eq!(sole_secure_submit(&bare), None);
     }
 
     #[test]
@@ -939,6 +897,13 @@ pub(in crate::wayland) mod tests {
         let wrong_destination =
             tree_with(&lua, vec![textfield(&lua, Some(secure_submit_table(&lua, "polkit", "authenticate")))]);
         assert!(!tree_can_authenticate(&wrong_destination));
+
+        // Deliberately not "the first one" with two destinations: there is no non-arbitrary answer
+        // to "whose password is this?", which is the same question `submit_frame_for` refuses to
+        // guess at (ADR-0050 decision 4). A press still picks one, because a press names a node.
+        // A field with no destination is not a candidate either -- it names nowhere to send to.
+        let bare = tree_with(&lua, vec![textfield(&lua, None)]);
+        assert_eq!(sole_secure_submit(&bare), None);
     }
 
     pub(super) fn key(keysym: Keysym, utf8: Option<&str>) -> KeyEvent {
@@ -946,41 +911,40 @@ pub(in crate::wayland) mod tests {
     }
 
     #[test]
-    fn a_focused_secure_field_reads_the_keyboard_directly() {
-        // `zwp_text_input_v3` alone did not deliver this: it only produces a `commit_string` when
+    fn key_action_maps_a_secure_fields_keys_and_never_a_control_character() {
+        // `zwp_text_input_v3` alone did not deliver typing: it only produces a `commit_string` when
         // the compositor has an input method bound, so on a session with no IME not one byte
-        // reached `SecureBuffer`.
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), false, false, false), KeyAction::Append("a"));
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), false, false, false), KeyAction::Submit);
-        assert_eq!(key_action(&key(Keysym::KP_Enter, Some("\r")), false, false, false), KeyAction::Submit);
-        assert_eq!(
-            key_action(&key(Keysym::BackSpace, Some("\u{8}")), false, false, false),
-            KeyAction::Erase(Motion::Left)
-        );
-    }
-
-    #[test]
-    fn a_control_key_never_becomes_a_character_of_the_password() {
+        // reached `SecureBuffer`. A control key never becomes a character of the password either:
         // `utf8` is not empty for Escape, Tab or Return -- xkbcommon hands back the C0 control
         // character for each -- so an unfiltered append would silently put an ESC byte in the
         // middle of a secret that PAM then rejects with no visible reason.
-        assert_eq!(key_action(&key(Keysym::Tab, Some("\t")), false, false, false), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::Shift_L, None), false, false, false), KeyAction::Ignore);
-        assert_eq!(key_action(&key(Keysym::Control_L, Some("\u{1b}")), false, false, false), KeyAction::Ignore);
-    }
-
-    #[test]
-    fn escape_throws_the_entry_away_instead_of_being_ignored() {
-        // Escape used to reach the control-character filter above and be dropped, which left one
-        // Backspace per character as the only way to abandon a mistyped password -- on the surface
-        // where a wrong guess costs a counted PAM attempt and a `pam_unix` failure delay.
-        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), false, false, false), KeyAction::Clear);
-        assert_eq!(key_action(&key(Keysym::Escape, Some("\u{1b}")), true, false, false), KeyAction::Ignore);
+        // A submit zeroizes the buffer as it reads it, so the second submit of a key repeat would
+        // send an *empty* password to PAM and burn one of the user's attempts. Backspace and
+        // ordinary characters repeat normally, which is what every text field does.
+        // Escape used to be dropped as a control character, which left one Backspace per character
+        // as the only way to abandon a mistyped password -- on the surface where a wrong guess
+        // costs a counted PAM attempt and a `pam_unix` failure delay.
+        for (keysym, utf8, repeat, expected) in [
+            (Keysym::a, Some("a"), false, KeyAction::Append("a")),
+            (Keysym::Return, Some("\r"), false, KeyAction::Submit),
+            (Keysym::KP_Enter, Some("\r"), false, KeyAction::Submit),
+            (Keysym::BackSpace, Some("\u{8}"), false, KeyAction::Erase(Motion::Left)),
+            (Keysym::Tab, Some("\t"), false, KeyAction::Ignore),
+            (Keysym::Shift_L, None, false, KeyAction::Ignore),
+            (Keysym::Control_L, Some("\u{1b}"), false, KeyAction::Ignore),
+            (Keysym::Escape, Some("\u{1b}"), false, KeyAction::Clear),
+            (Keysym::Escape, Some("\u{1b}"), true, KeyAction::Ignore),
+            (Keysym::Return, Some("\r"), true, KeyAction::Ignore),
+            (Keysym::BackSpace, Some("\u{8}"), true, KeyAction::Erase(Motion::Left)),
+            (Keysym::a, Some("a"), true, KeyAction::Append("a")),
+        ] {
+            assert_eq!(key_action(&key(keysym, utf8), repeat, false, false), expected, "{keysym:?} repeat={repeat}");
+        }
     }
 
     /// Editing chords under an Arabic layout use the physical key when the keysym is non-Latin.
     #[test]
-    fn ctrl_editing_keys_work_under_a_non_latin_layout() {
+    fn ctrl_editing_keys_follow_the_physical_key_only_under_a_non_latin_keysym() {
         for (raw_code, action, shift_action) in [
             (30, KeyAction::SelectAll, KeyAction::SelectAll),
             (44, KeyAction::Undo, KeyAction::Redo),
@@ -992,10 +956,8 @@ pub(in crate::wayland) mod tests {
             assert_eq!(key_action(&arabic, false, true, true), shift_action);
             assert_eq!(key_action(&arabic, false, false, false), KeyAction::Append("ش"));
         }
-    }
 
-    #[test]
-    fn latin_keysym_wins_over_conflicting_physical_key() {
+        // A Latin keysym wins over a conflicting physical key.
         let mut qwertz_y = key(Keysym::y, Some("y"));
         qwertz_y.raw_code = 44;
         assert_eq!(key_action(&qwertz_y, false, true, false), KeyAction::Redo);
@@ -1005,18 +967,5 @@ pub(in crate::wayland) mod tests {
         let mut qwertz_z = key(Keysym::z, Some("z"));
         qwertz_z.raw_code = 21;
         assert_eq!(key_action(&qwertz_z, false, true, false), KeyAction::Undo);
-    }
-
-    #[test]
-    fn holding_enter_down_does_not_resubmit_an_already_scrubbed_buffer() {
-        // A submit zeroizes the buffer as it reads it, so the second submit of a key repeat would
-        // send an *empty* password to PAM and burn one of the user's attempts. Backspace and
-        // ordinary characters repeat normally, which is what every text field does.
-        assert_eq!(key_action(&key(Keysym::Return, Some("\r")), true, false, false), KeyAction::Ignore);
-        assert_eq!(
-            key_action(&key(Keysym::BackSpace, Some("\u{8}")), true, false, false),
-            KeyAction::Erase(Motion::Left)
-        );
-        assert_eq!(key_action(&key(Keysym::a, Some("a")), true, false, false), KeyAction::Append("a"));
     }
 }

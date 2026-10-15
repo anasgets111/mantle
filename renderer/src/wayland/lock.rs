@@ -336,40 +336,34 @@ mod tests {
     }
 
     #[test]
-    fn a_lock_is_refused_when_the_config_declares_no_lock_surface() {
-        // ADR-0052 decision 3: the refusal must happen before `SessionLockState::lock` is
-        // called, since a lock granted and then painted nothing is a black screen with no way out
-        // but a VT switch.
-        assert_eq!(lock_command(true, false, false, false), LockCommand::Refuse(NO_LOCK_DECLARED));
-        assert_eq!(lock_command(true, true, true, false), LockCommand::Acquire);
-    }
-
-    #[test]
-    fn a_lock_screen_with_no_password_field_is_refused_as_loudly_as_no_lock_screen_at_all() {
-        // `lock { id = "x" }` is a legal declaration that resolves to an empty tree, reaching
-        // ADR-0052 decision 3's black screen through the guard instead of around it, so the
-        // tracked-surface test alone is not enough.
-        assert_eq!(lock_command(true, true, false, false), LockCommand::Refuse(LOCK_CANNOT_AUTHENTICATE));
-        // The two refusals stay distinct: different edits to make to a config.
-        assert_ne!(NO_LOCK_DECLARED, LOCK_CANNOT_AUTHENTICATE);
-    }
-
-    #[test]
-    fn a_repeated_lock_or_unlock_command_touches_no_protocol_object() {
-        // `locked = true` while already holding one would be a second `ext_session_lock_v1`,
-        // denied by the compositor. `locked = false` while holding none would be
-        // `unlock_and_destroy` on nothing, the protocol's `invalid_unlock` error.
-        assert_eq!(lock_command(true, true, true, true), LockCommand::Nothing);
-        assert_eq!(lock_command(false, true, true, false), LockCommand::Nothing);
-        assert_eq!(lock_command(false, false, false, false), LockCommand::Nothing);
-    }
-
-    #[test]
-    fn only_a_locked_false_command_against_a_held_lock_releases() {
-        // The single `Release` in the table: `unlock_and_destroy` has exactly one reachable caller
-        // in this process, reached only on a `PamOutcome::Success` (ADR-0042).
-        assert_eq!(lock_command(false, true, true, true), LockCommand::Release);
-        assert_eq!(lock_command(false, false, false, true), LockCommand::Release);
+    fn lock_command_refuses_before_locking_never_repeats_and_releases_only_a_held_lock() {
+        use LockCommand::{Acquire, Nothing, Refuse, Release};
+        // (locked, declares_lock, can_authenticate, lock_held, command)
+        for (args, want) in [
+            // ADR-0052 decision 3: the refusal must happen before `SessionLockState::lock` is
+            // called, since a lock granted and then painted nothing is a black screen with no way out
+            // but a VT switch.
+            ((true, false, false, false), Refuse(NO_LOCK_DECLARED)),
+            ((true, true, true, false), Acquire),
+            // `lock { id = "x" }` is a legal declaration that resolves to an empty tree, reaching
+            // ADR-0052 decision 3's black screen through the guard instead of around it, so the
+            // tracked-surface test alone is not enough. The two refusals are distinct: different
+            // edits to make to a config.
+            ((true, true, false, false), Refuse(LOCK_CANNOT_AUTHENTICATE)),
+            // `locked = true` while already holding one would be a second `ext_session_lock_v1`,
+            // denied by the compositor. `locked = false` while holding none would be
+            // `unlock_and_destroy` on nothing, the protocol's `invalid_unlock` error.
+            ((true, true, true, true), Nothing),
+            ((false, true, true, false), Nothing),
+            ((false, false, false, false), Nothing),
+            // The single `Release` in the table: `unlock_and_destroy` has exactly one reachable caller
+            // in this process, reached only on a `PamOutcome::Success` (ADR-0042).
+            ((false, true, true, true), Release),
+            ((false, false, false, true), Release),
+        ] {
+            let (locked, declares_lock, can_authenticate, lock_held) = args;
+            assert_eq!(lock_command(locked, declares_lock, can_authenticate, lock_held), want, "{args:?}");
+        }
     }
 
     #[test]

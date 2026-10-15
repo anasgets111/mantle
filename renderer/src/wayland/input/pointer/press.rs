@@ -306,7 +306,7 @@ mod tests {
     /// ADR-0108 decision 2: the draft outlives focus, so coming back to the same reply box has to
     /// find the half-typed sentence still in it.
     #[test]
-    fn re_pressing_the_field_a_draft_belongs_to_resumes_it_rather_than_starting_empty() {
+    fn re_pressing_a_drafts_field_resumes_it_and_a_different_field_starts_empty() {
         let lua = Lua::new();
         let (masked, plain) = press_chooses_focus(
             Some(plain_field(&lua, 7)),
@@ -327,10 +327,7 @@ mod tests {
         plain.on_change.unwrap().call::<()>(()).unwrap();
         assert_eq!(lua.globals().get::<String>("fired").unwrap(), "change", "the handlers kept their slots");
         assert!(masked.is_none());
-    }
 
-    #[test]
-    fn pressing_a_different_plain_field_starts_its_own_empty_draft() {
         // Two reply boxes on one surface: the neighbour's text must not appear in this one.
         let lua = Lua::new();
         let (_, plain) = press_chooses_focus(

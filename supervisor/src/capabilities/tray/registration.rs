@@ -214,19 +214,12 @@ mod tests {
         }
     }
 
-    // ---- sanitize_unique_name ----
-
-    #[test]
-    fn sanitize_unique_name_strips_the_leading_colon() {
-        assert_eq!(sanitize_unique_name(":1.234"), "1.234");
-        assert_eq!(sanitize_unique_name("1.234"), "1.234", "no colon, no change");
-    }
-
     /// A connection may export several items, and the unique name alone names all of them the
     /// same -- which is a duplicate key to a `list`, and a refused tray (ADR-0172).
     #[test]
     fn two_items_on_one_connection_get_two_ids() {
         assert_eq!(item_id(":1.42", "/StatusNotifierItem"), "1.42/StatusNotifierItem");
+        assert_eq!(sanitize_unique_name("1.234"), "1.234", "no colon, no change");
         assert_ne!(item_id(":1.42", "/StatusNotifierItem/1"), item_id(":1.42", "/StatusNotifierItem/2"));
     }
 

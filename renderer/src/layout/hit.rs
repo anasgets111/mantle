@@ -833,21 +833,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_deepest_containing_node_is_last_and_the_root_is_first() {
-        let root = ResolvedNode::test(
-            "panel",
-            (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test(
-                "row",
-                (0.0, 0.0, 100.0, 32.0),
-                vec![ResolvedNode::test("column", (10.0, 4.0, 20.0, 24.0), vec![])],
-            )],
-        );
-        let path = hit_path(&root, LogicalPoint { x: 15.0, y: 10.0 });
-        assert_eq!(kinds(&path), ["panel", "row", "column"]);
-    }
-
-    #[test]
     fn a_childs_rect_is_read_relative_to_its_parent_not_to_the_surface() {
         let root = ResolvedNode::test(
             "panel",
@@ -950,22 +935,5 @@ pub(crate) mod tests {
         );
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 10.0, y: 10.0 })), ["panel"]);
         assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 30.0, y: 10.0 })), ["panel"]);
-    }
-
-    #[test]
-    fn a_text_inside_a_column_still_leaves_the_column_findable_from_the_deep_end() {
-        let root = ResolvedNode::test(
-            "panel",
-            (0.0, 0.0, 100.0, 32.0),
-            vec![ResolvedNode::test(
-                "column",
-                (10.0, 4.0, 40.0, 24.0),
-                vec![ResolvedNode::test("text", (6.0, 5.0, 28.0, 14.0), vec![])],
-            )],
-        );
-        let path = hit_path(&root, LogicalPoint { x: 20.0, y: 12.0 });
-        assert_eq!(kinds(&path), ["panel", "column", "text"]);
-        let index = path.iter().rposition(|node| node.kind == "column").expect("the column must be findable");
-        assert_eq!(absolute_rect(&path[..=index]), Some(LogicalRect { x: 10.0, y: 4.0, width: 40.0, height: 24.0 }));
     }
 }

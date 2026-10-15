@@ -84,24 +84,26 @@ mod tests {
     }
 
     #[test]
-    fn an_array_with_neither_key_sets_neither_flag() {
+    fn parse_actions_edge_arrays_set_no_flags_fall_back_on_labels_and_drop_blank_actions() {
         let parsed = parse_actions(&flat(&[("archive", "Archive")]), false);
-        assert!(!parsed.has_default);
+        assert!(!parsed.has_default, "an array with neither key sets neither flag");
         assert!(!parsed.has_reply);
         assert_eq!(parse_actions(&[], false), ParsedActions::default());
-    }
 
-    /// Senders omit labels; the usually-readable key becomes the button label.
-    #[test]
-    fn an_empty_label_falls_back_to_the_key() {
+        // Senders omit labels; the usually-readable key becomes the button label.
         let parsed = parse_actions(&flat(&[("archive", "")]), false);
-        assert_eq!(parsed.actions[0].label, "archive");
-    }
+        assert_eq!(parsed.actions[0].label, "archive", "an empty label falls back to the key");
 
-    /// Preserve the base spec's odd key-without-label case rather than rejecting the notification.
-    #[test]
-    fn an_odd_length_array_still_yields_its_last_action() {
-        assert_eq!(keys(&["archive".to_string()], false), ["archive"]);
+        // Preserve the base spec's odd key-without-label case rather than rejecting the notification.
+        assert_eq!(
+            keys(&["archive".to_string()], false),
+            ["archive"],
+            "an odd-length array still yields its last action"
+        );
+
+        // Drop actions with neither a label nor an icon instead of making blank buttons.
+        let parsed = parse_actions(&flat(&[("", ""), ("", "Orphan label")]), true);
+        assert!(parsed.actions.is_empty(), "an action with nothing to draw is dropped, got {:?}", parsed.actions);
     }
 
     /// Under `action-icons`, carry a key as a theme name unless it contains `/`; `icon` also takes
@@ -116,13 +118,6 @@ mod tests {
 
         let parsed = parse_actions(&flat(&[("mail-archive", "")]), false);
         assert_eq!(parsed.actions[0].icon_name, None, "without the hint the key is not an icon");
-    }
-
-    /// Drop actions with neither a label nor an icon instead of making blank buttons.
-    #[test]
-    fn an_action_with_nothing_to_draw_is_dropped() {
-        let parsed = parse_actions(&flat(&[("", ""), ("", "Orphan label")]), true);
-        assert!(parsed.actions.is_empty(), "got {:?}", parsed.actions);
     }
 
     #[test]

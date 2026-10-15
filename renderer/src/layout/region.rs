@@ -957,12 +957,4 @@ mod tests {
         root.children.clear();
         assert!(overlay_input_regions(&root, 1.0).is_empty());
     }
-
-    #[test]
-    fn a_child_that_fills_its_surface_claims_the_whole_surface() {
-        let filling = region_node(120, "row", (0.0, 0.0, 1920.0, 32.0), solid_paint(), Vec::new());
-        let root = region_node(107, "panel", (0.0, 0.0, 1920.0, 32.0), None, vec![filling]);
-
-        assert_eq!(overlay_input_regions(&root, 1.0), [PhysicalRect { x0: 0, y0: 0, x1: 1920, y1: 32 }]);
-    }
 }

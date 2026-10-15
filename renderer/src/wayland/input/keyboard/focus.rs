@@ -595,7 +595,7 @@ mod tests {
     }
 
     #[test]
-    fn document_order_skips_hidden_leaving_unnamed_and_zero_sized_controls() {
+    fn document_order_skips_hidden_leaving_unnamed_disabled_and_zero_sized_controls() {
         let lua = Lua::new();
         let button = |name: Option<&str>| {
             let mut node = hit_node(&lua, "rect", (0.0, 0.0, 30.0, 20.0), true);
@@ -611,34 +611,24 @@ mod tests {
         let mut leaving = button(Some("leaving"));
         leaving.leaving = true;
         let unnamed = button(None);
+        let disabled = crate::wayland::input::keyboard::tests::with_property(
+            plain_textfield(&lua),
+            "disabled",
+            mlua::Value::Boolean(true),
+        );
         let mut zero = button(Some("zero"));
         zero.rect.width = 0.0;
         let b = button(Some("B"));
         let ids = [a.id, b.id];
         let mut root = hit_node(&lua, "column", (0.0, 0.0, 200.0, 40.0), false);
-        root.children = vec![a, hidden, leaving, unnamed, zero, b];
+        root.children = vec![a, hidden, leaving, unnamed, disabled, zero, b];
         let mut found = Vec::new();
         controls("panel@TEST", &root, &mut found);
         assert_eq!(found.iter().map(|control| control.focus.id).collect::<Vec<_>>(), ids);
     }
 
     #[test]
-    fn tab_skips_a_disabled_field() {
-        let lua = Lua::new();
-        let off = crate::wayland::input::keyboard::tests::with_property(
-            plain_textfield(&lua),
-            "disabled",
-            mlua::Value::Boolean(true),
-        );
-        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 30.0), false);
-        root.children = vec![off, plain_textfield(&lua)];
-        let mut list = Vec::new();
-        controls("panel@TEST", &root, &mut list);
-        assert_eq!(list.len(), 1);
-    }
-
-    #[test]
-    fn tab_focuses_a_lone_button_and_cycles_across_fields_and_buttons() {
+    fn tab_focuses_a_lone_button_keeps_it_on_the_sole_one_and_cycles_across_fields_and_buttons() {
         let lua = Lua::new();
         let button = named_button(&lua, "Open");
         let mut list = Vec::new();
@@ -646,6 +636,15 @@ mod tests {
         let mut focused = None;
         assert_eq!(dispatch_tab(&list, None, false, |control| focused = Some(control.focus)), Some(true));
         assert_eq!(focused.as_ref().map(|focus| focus.id), Some(button.id));
+
+        let sole = Some(list[0].focus.clone());
+        for backwards in [false, true] {
+            assert_eq!(
+                dispatch_tab(&list, sole.as_ref(), backwards, |_| panic!("nothing moves")),
+                Some(false),
+                "no move, yet Tab still shows the outline"
+            );
+        }
 
         let field = plain_textfield(&lua);
         let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 30.0), false);
@@ -670,22 +669,6 @@ mod tests {
             dispatch_tab(&list, current.as_ref(), false, |_| panic!("the focused lone field keeps Tab")),
             Some(false)
         );
-    }
-
-    #[test]
-    fn tab_on_the_sole_focused_button_moves_nothing_but_shows_the_outline() {
-        let lua = Lua::new();
-        let button = named_button(&lua, "Open");
-        let mut list = Vec::new();
-        controls("panel@TEST", &button, &mut list);
-        let current = Some(list[0].focus.clone());
-        for backwards in [false, true] {
-            assert_eq!(
-                dispatch_tab(&list, current.as_ref(), backwards, |_| panic!("nothing moves")),
-                Some(false),
-                "no move, yet Tab still shows the outline"
-            );
-        }
     }
 
     #[test]

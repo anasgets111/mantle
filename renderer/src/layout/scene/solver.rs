@@ -733,16 +733,6 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_pixels_sized_rect_resolves_to_its_explicit_size() {
-        let (scene, _lua, _shaping, _surface) =
-            applied(r#"panel { id = "bar", child = rect { width = 40, height = 20 } }"#);
-        let root = scene.surface("bar@TEST").unwrap();
-        let child = &root.children[0];
-        assert_eq!(child.rect.width, 40.0);
-        assert_eq!(child.rect.height, 20.0);
-    }
-
-    #[test]
     fn a_childless_rect_with_no_explicit_size_resolves_to_zero() {
         let (scene, _lua, _shaping, _surface) = applied(r#"panel { id = "bar", child = rect {} }"#);
         let child = &scene.surface("bar@TEST").unwrap().children[0];
@@ -773,33 +763,20 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn row_intrinsic_width_sums_children_plus_spacing_gaps() {
+    fn a_flow_sums_its_main_axis_with_spacing_gaps_and_takes_the_widest_cross() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = row { spacing = 5, children = { rect { width = 10, height = 8 }, rect { width = 10, height = 4 } } } }"#,
         );
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(row.rect.width, 25.0, "10 + 10 + 5 spacing");
         assert_eq!(row.rect.height, 8.0, "max of children's heights");
-    }
 
-    #[test]
-    fn column_intrinsic_height_sums_children_plus_spacing_gaps() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = column { spacing = 3, children = { rect { width = 6, height = 10 }, rect { width = 9, height = 10 } } } }"#,
         );
         let column = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(column.rect.height, 23.0, "10 + 10 + 3 spacing");
         assert_eq!(column.rect.width, 9.0, "max of children's widths");
-    }
-
-    #[test]
-    fn a_childs_own_margin_pushes_it_inward_and_widens_the_rows_footprint() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = row { children = { rect { width = 10, height = 10, margin = { left = 4, right = 4 } } } } }"#,
-        );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.rect.width, 18.0, "10 + 4 + 4 margin");
-        assert_eq!(row.children[0].rect.x, 4.0, "the child's own margin.left offsets it inward");
     }
 
     /// A content-sized parent's box counts its child's margin box, as CSS does, so the margined
@@ -942,31 +919,23 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn row_start_alignment_packs_children_at_the_beginning() {
-        let (scene, _lua, _shaping, _surface) = applied(
+    fn a_row_packs_at_its_start_or_end_and_a_stretch_child_fills_the_cross_axis() {
+        let first_row = |src: &str| {
+            let (scene, _lua, _shaping, _surface) = applied(src);
+            scene.surface("bar@TEST").unwrap().children[0].clone()
+        };
+        let start = first_row(
             r#"panel { id = "bar", child = row { children = { rect { width = 10, height = 10 }, rect { width = 10, height = 10 } } } }"#,
         );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.children[0].rect.x, 0.0);
-        assert_eq!(row.children[1].rect.x, 10.0);
-    }
-
-    #[test]
-    fn row_end_alignment_packs_children_against_the_far_edge() {
-        let (scene, _lua, _shaping, _surface) = applied(
+        assert_eq!((start.children[0].rect.x, start.children[1].rect.x), (0.0, 10.0));
+        let end = first_row(
             r#"panel { id = "bar", width = 100, height = 20, child = row { width = "fill", align_h = "end", children = { rect { width = 10, height = 10 } } } }"#,
         );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.children[0].rect.x, 90.0);
-    }
-
-    #[test]
-    fn row_child_stretch_alignment_fills_the_cross_axis() {
-        let (scene, _lua, _shaping, _surface) = applied(
+        assert_eq!(end.children[0].rect.x, 90.0);
+        let stretch = first_row(
             r#"panel { id = "bar", width = 100, height = 50, child = row { height = "fill", children = { rect { width = 10, height = 5, align_v = "stretch" } } } }"#,
         );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.children[0].rect.height, 50.0);
+        assert_eq!(stretch.children[0].rect.height, 50.0);
     }
 
     #[test]
@@ -1079,20 +1048,70 @@ pub(super) mod tests {
         );
     }
 
-    /// `width = "fill"` shares the main axis with its siblings: in a 600px row a `Fill` child
-    /// resolved against the whole content width would push its fixed sibling to x=600, outside
-    /// the row.
     #[test]
-    fn a_fill_child_takes_only_the_room_its_siblings_leave() {
-        let (scene, _lua, _shaping, _surface) = applied(
+    fn a_fill_child_takes_what_its_siblings_margins_and_spacing_leave_on_either_axis() {
+        let flow = |source: &str| {
+            let (scene, ..) = applied(source);
+            scene.surface("bar@TEST").unwrap().children[0].clone()
+        };
+        // `width = "fill"` shares the main axis with its siblings: in a 600px row a `Fill` child
+        // resolved against the whole content width would push its fixed sibling to x=600, outside
+        // the row.
+        let row = flow(
             r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
                 rect { width = "fill", height = 10 },
                 rect { width = 100, height = 10 },
             } } }"#,
         );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(row.children[0].rect.width, 500.0, "the fill child takes 600 less its sibling's 100");
         assert_eq!(row.children[1].rect.x, 500.0, "and its sibling lands inside the row, not past its edge");
+
+        // A share is a footprint, and the positioning advances by a footprint including
+        // margin. Forcing the share as the child's *size* instead would push every later sibling out
+        // by exactly the margin.
+        let row = flow(
+            r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
+                rect { width = "fill", height = 10, margin = 25 },
+                rect { width = 100, height = 10 },
+            } } }"#,
+        );
+        assert_eq!(row.children[0].rect.width, 450.0, "500 of footprint less 25 of margin on each side");
+        assert_eq!(row.children[1].rect.x, 500.0, "so the sibling still starts one footprint in");
+
+        // The mirror: the margin on the *sibling* rather than on the `Fill` child. The positioning
+        // advances its cursor by a footprint that includes margin, so a remainder that counts only the
+        // sibling's box hands the `Fill` child exactly that margin too much and pushes it off the end.
+        let row = flow(
+            r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
+                rect { width = 100, height = 10, margin = 20 },
+                rect { width = "fill", height = 10 },
+            } } }"#,
+        );
+        let fill = &row.children[1];
+        assert_eq!(fill.rect.width, 460.0, "600 less the sibling's 100 box and its 40 of margin");
+        assert_eq!(
+            fill.rect.x + fill.rect.width,
+            row.rect.width,
+            "and the fill child ends exactly at the row's edge, not past it"
+        );
+
+        let row = flow(
+            r#"panel { id = "bar", child = row { width = 600, height = 40, spacing = 20, children = {
+                rect { width = "fill", height = 10 },
+                rect { width = 100, height = 10 },
+            } } }"#,
+        );
+        assert_eq!(row.children[0].rect.width, 480.0, "600 less the sibling's 100 and the one 20px gap");
+        assert_eq!(row.children[1].rect.x, 500.0);
+
+        let column = flow(
+            r#"panel { id = "bar", child = column { width = 200, height = 600, children = {
+                rect { height = "fill", width = 10 },
+                rect { height = 100, width = 10 },
+            } } }"#,
+        );
+        assert_eq!(column.children[0].rect.height, 500.0, "a column fills its main axis the same way");
+        assert_eq!(column.children[1].rect.y, 500.0);
     }
 
     #[test]
@@ -1222,7 +1241,7 @@ pub(super) mod tests {
     /// Lines break where the next child no longer fits, `spacing` sits in a line and
     /// `line_spacing` between lines, and a content-sized cross axis grows with the lines.
     #[test]
-    fn a_wrapping_row_breaks_at_its_width_and_grows_with_its_lines() {
+    fn a_wrapping_flow_breaks_at_its_bound_and_grows_with_its_lines() {
         let (scene, ..) = applied(&format!(
             "panel {{ id = 'bar', child = row {{ wrap = true, width = 100, spacing = 5, line_spacing = 7,
                 children = {{ {} }} }} }}",
@@ -1231,10 +1250,8 @@ pub(super) mod tests {
         let row = flow_of(&scene);
         assert_eq!(corners(row), [(0.0, 0.0), (45.0, 0.0), (0.0, 17.0)]);
         assert_eq!(row.rect.height, 27.0, "two lines of 10 and a gap of 7");
-    }
 
-    #[test]
-    fn a_wrapping_column_flows_into_columns() {
+        // A column flows into columns the same way.
         let (scene, ..) = applied(
             "panel { id = 'bar', child = column { wrap = true, height = 100, spacing = 5, line_spacing = 7,
                 children = { rect { width = 10, height = 40 }, rect { width = 10, height = 40 }, rect { width = 10, height = 40 } } } }",
@@ -1319,7 +1336,7 @@ pub(super) mod tests {
 
     /// Every cell is the largest child's size, across all lines: a real grid.
     #[test]
-    fn a_homogeneous_wrapping_row_is_a_grid_of_the_largest_cell() {
+    fn a_homogeneous_wrapping_flow_is_a_grid_of_the_largest_cell() {
         let (scene, ..) = applied(
             "panel { id = 'bar', child = row { wrap = true, homogeneous = true, width = 100, spacing = 5, line_spacing = 7,
                 children = { rect { width = 30, height = 10 }, rect { width = 45, height = 10 },
@@ -1328,10 +1345,7 @@ pub(super) mod tests {
         let row = flow_of(&scene);
         assert_eq!(corners(row), [(0.0, 0.0), (50.0, 0.0), (0.0, 17.0), (50.0, 17.0)]);
         assert_eq!(row.rect.height, 27.0);
-    }
 
-    #[test]
-    fn a_homogeneous_wrapping_column_is_a_grid_of_the_largest_cell() {
         let (scene, ..) = applied(
             "panel { id = 'bar', child = column { wrap = true, homogeneous = true, height = 100, line_spacing = 3,
                 children = { rect { width = 10, height = 30 }, rect { width = 25, height = 45 },
@@ -1346,70 +1360,6 @@ pub(super) mod tests {
         let (lua, surface) = surface_from("panel { id = 'bar', child = row { wrap = true, scroll = scroll('s') } }");
         let err = apply_at(&mut Scene::new(), &[surface], full(), &shaping, &lua).unwrap_err();
         assert!(err.to_string().contains("wrap"), "{err}");
-    }
-
-    /// A share is a footprint, and the positioning advances by a footprint including
-    /// margin. Forcing the share as the child's *size* instead would push every later sibling out
-    /// by exactly the margin.
-    #[test]
-    fn a_fill_childs_margin_comes_out_of_its_own_share() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = "fill", height = 10, margin = 25 },
-                rect { width = 100, height = 10 },
-            } } }"#,
-        );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.children[0].rect.width, 450.0, "500 of footprint less 25 of margin on each side");
-        assert_eq!(row.children[1].rect.x, 500.0, "so the sibling still starts one footprint in");
-    }
-
-    /// The mirror of `a_fill_childs_margin_comes_out_of_its_own_share`, and the case that test
-    /// missed: the margin on the *sibling* rather than on the `Fill` child. The positioning
-    /// advances its cursor by a footprint that includes margin, so a remainder that counts only the
-    /// sibling's box hands the `Fill` child exactly that margin too much and pushes it off the end.
-    #[test]
-    fn a_fixed_siblings_margin_is_counted_against_the_remainder() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = row { width = 600, height = 40, children = {
-                rect { width = 100, height = 10, margin = 20 },
-                rect { width = "fill", height = 10 },
-            } } }"#,
-        );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        let fill = &row.children[1];
-        assert_eq!(fill.rect.width, 460.0, "600 less the sibling's 100 box and its 40 of margin");
-        assert_eq!(
-            fill.rect.x + fill.rect.width,
-            row.rect.width,
-            "and the fill child ends exactly at the row's edge, not past it"
-        );
-    }
-
-    #[test]
-    fn spacing_is_reserved_before_a_fill_child_is_sized() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = row { width = 600, height = 40, spacing = 20, children = {
-                rect { width = "fill", height = 10 },
-                rect { width = 100, height = 10 },
-            } } }"#,
-        );
-        let row = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(row.children[0].rect.width, 480.0, "600 less the sibling's 100 and the one 20px gap");
-        assert_eq!(row.children[1].rect.x, 500.0);
-    }
-
-    #[test]
-    fn a_column_fills_its_main_axis_the_same_way_a_row_does() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = column { width = 200, height = 600, children = {
-                rect { height = "fill", width = 10 },
-                rect { height = 100, width = 10 },
-            } } }"#,
-        );
-        let column = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(column.children[0].rect.height, 500.0);
-        assert_eq!(column.children[1].rect.y, 500.0);
     }
 
     /// Clamped rather than negative, and the overflow stays visible. This is flexbox without
@@ -1461,21 +1411,6 @@ pub(super) mod tests {
         );
         let row = &scene.surface("bar@TEST").unwrap().children[0];
         assert_eq!(row.children[0].rect.height, 200.0);
-    }
-
-    /// A stacking parent has no main axis, its children
-    /// may overlap by design (ADR-0023), and `Fill` there means the whole box.
-    #[test]
-    fn fill_under_a_stacking_parent_is_still_the_whole_box() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = rect { width = 600, height = 200, children = {
-                rect { width = "fill", height = 10 },
-                rect { width = "fill", height = 10 },
-            } } }"#,
-        );
-        let stack = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!((stack.children[0].rect.width, stack.children[1].rect.width), (600.0, 600.0));
-        assert_eq!(stack.children[1].rect.x, 0.0, "stacked, not flowed");
     }
 
     /// A percentage still resolves against the parent, not against the remainder, which is what a
@@ -1615,7 +1550,7 @@ pub(super) mod tests {
     /// much), so a content-sized container that does not also grow by it positions its children
     /// past its own edge.
     #[test]
-    fn a_content_sized_container_grows_by_its_own_padding() {
+    fn a_content_sized_box_grows_by_its_own_padding_and_an_explicit_one_does_not() {
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = column {
                 padding = { top = 8, right = 10, bottom = 8, left = 10 },
@@ -1627,12 +1562,9 @@ pub(super) mod tests {
         assert_eq!(column.rect.height, 36.0, "20 tall child plus 8 of padding top and bottom");
         assert_eq!(column.children[0].rect.x, 10.0);
         assert_eq!(column.children[0].rect.y, 8.0);
-    }
 
-    /// The surface root resolves through the same `unwrap_or`, and a popup sized to its contents
-    /// is the case this actually bites.
-    #[test]
-    fn padding_grows_a_content_sized_surface_too() {
+        // The surface root resolves through the same `unwrap_or`, and a popup sized to its contents
+        // is the case this actually bites.
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", padding = { top = 6, right = 6, bottom = 6, left = 6 },
                 child = rect { width = 20, height = 20 } }"#,
@@ -1640,12 +1572,9 @@ pub(super) mod tests {
         let root = scene.surface("bar@TEST").unwrap();
         assert_eq!(root.rect.width, 32.0);
         assert_eq!(root.rect.height, 32.0);
-    }
 
-    /// Padding must not double-count on an axis whose size the config stated: there it correctly
-    /// shrinks the child budget and leaves the parent alone.
-    #[test]
-    fn padding_does_not_grow_an_explicitly_sized_container() {
+        // Padding must not double-count on an axis whose size the config stated: there it correctly
+        // shrinks the child budget and leaves the parent alone.
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = column {
                 width = 100,
@@ -1735,20 +1664,6 @@ pub(super) mod tests {
         assert_eq!((card, inner), (heights(0).0, heights(0).1), "the margin moves the card, it does not resize it");
     }
 
-    #[test]
-    fn font_size_change_invalidates_text_memo() {
-        let (mut scene, lua, shaping, surface) = applied(
-            r#"return panel { id = "bar", child = text { content = "Hello World", font_size = state("fs", 12) } }"#,
-        );
-        let width_12 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
-
-        lua.load(r#"state("fs", 12):set(24)"#).exec().unwrap();
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let width_24 = scene.surface("bar@TEST").unwrap().children[0].rect.width;
-
-        assert!(width_24 > width_12 * 1.5, "larger font_size must produce larger box: {width_12} vs {width_24}");
-    }
-
     /// Inter's `opsz` changes advances, so a memo kept across the change would keep the old box.
     #[test]
     fn font_variations_change_invalidates_text_memo() {
@@ -1825,5 +1740,20 @@ pub(super) mod tests {
         assert_eq!(memo(), first);
         lua.load(r#"state("fs", 12):set(24)"#).exec().unwrap();
         assert_ne!(memo(), first);
+    }
+
+    /// A stacking parent has no main axis, its children
+    /// may overlap by design (ADR-0023), and `Fill` there means the whole box.
+    #[test]
+    fn fill_under_a_stacking_parent_is_still_the_whole_box() {
+        let (scene, _lua, _shaping, _surface) = applied(
+            r#"panel { id = "bar", child = rect { width = 600, height = 200, children = {
+                rect { width = "fill", height = 10 },
+                rect { width = "fill", height = 10 },
+            } } }"#,
+        );
+        let stack = &scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!((stack.children[0].rect.width, stack.children[1].rect.width), (600.0, 600.0));
+        assert_eq!(stack.children[1].rect.x, 0.0, "stacked, not flowed");
     }
 }

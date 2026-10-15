@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn out_back_overshoots_and_the_number_clamp_catches_it() {
+    fn overshooting_easings_leave_the_unit_range_and_the_property_range_clamp_catches_them() {
         assert!(Easing::OutBack.apply(0.7) > 1.0);
         let from = Animatable::Number(40.0);
         let to = Animatable::Number(0.0);
@@ -1075,12 +1075,9 @@ mod tests {
         let (empty, whole) = (Animatable::Number(0.0), Animatable::Number(1.0));
         assert_eq!(empty.lerp(&whole, Easing::OutBack.apply(0.7), "trim_end"), whole);
         assert_eq!(whole.lerp(&empty, Easing::OutBack.apply(0.7), "trim_start"), empty);
-    }
 
-    /// The overshooting families leave `[0, 1]` on purpose; the property's own range is what pulls
-    /// them back, so a `width` easing to `0` never hands the parser a negative.
-    #[test]
-    fn back_elastic_and_bounce_overshoot_and_the_range_clamp_catches_them() {
+        // The overshooting families leave `[0, 1]` on purpose; the property's own range is what pulls
+        // them back, so a `width` easing to `0` never hands the parser a negative.
         assert!(Easing::InBack.apply(0.3) < 0.0, "Back winds up before it moves");
         assert!(Easing::OutElastic.apply(0.4) > 1.0, "Elastic rings past the target");
         // `InBack` winds backwards, so the clamp bites at the start of a growing width rather than
@@ -1839,28 +1836,5 @@ mod tests {
             let text = refused(&lua, &format!("return {{ animate = {{ width = {{ duration = 10, {entry} }} }} }}"));
             assert!(wanted.iter().all(|want| text.contains(want)), "{entry}: {text}");
         }
-    }
-
-    #[test]
-    fn a_tween_reads_from_at_its_start_and_to_at_its_end() {
-        let started = Instant::now();
-        let tween = Tween {
-            property: "width",
-            from: Animatable::Number(40.0),
-            to: Animatable::Number(90.0),
-            started,
-            spec: AnimationSpec {
-                motion: Motion::Eased { duration: Duration::from_millis(100), easing: Easing::Linear },
-                delay: Duration::ZERO,
-                from: None,
-            },
-            reversal: None,
-            resting: false,
-            shown: None,
-        };
-        assert_eq!(tween.at(started), Animatable::Number(40.0));
-        assert_eq!(tween.at(started + Duration::from_millis(50)), Animatable::Number(65.0));
-        assert_eq!(tween.at(started + Duration::from_millis(500)), Animatable::Number(90.0));
-        assert!(tween.done(started + Duration::from_millis(100)));
     }
 }

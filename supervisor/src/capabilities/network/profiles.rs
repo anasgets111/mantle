@@ -254,7 +254,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_psk_adds_a_security_section_to_a_profile_saved_as_open() {
+    fn merge_psk_adds_a_security_section_to_an_open_profile_and_replaces_an_existing_key() {
         // An open profile has no security section, so add `key-mgmt` beside `psk`.
         let settings =
             settings_with("802-11-wireless", "ssid", OwnedValue::try_from(Value::from(b"HomeWifi".to_vec())).unwrap());
@@ -263,10 +263,7 @@ mod tests {
         let security = &merged["802-11-wireless-security"];
         assert_eq!(String::try_from(security["key-mgmt"].clone()).unwrap(), "wpa-psk");
         assert_eq!(String::try_from(security["psk"].clone()).unwrap(), "hunter2");
-    }
 
-    #[test]
-    fn merge_psk_replaces_a_key_the_profile_already_carries() {
         let settings =
             settings_with("802-11-wireless-security", "psk", OwnedValue::try_from(Value::from("stale")).unwrap());
 

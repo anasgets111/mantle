@@ -137,9 +137,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn epoch_seconds_is_pinned_against_a_known_instant() {
-        let known = UNIX_EPOCH + Duration::from_secs(1_700_000_000);
-        assert_eq!(epoch_seconds(known), 1_700_000_000, "must be exact -- Lua reads this straight as an integer");
+    fn epoch_seconds_is_exact() {
+        assert_eq!(epoch_seconds(UNIX_EPOCH + Duration::from_secs(1_700_000_000)), 1_700_000_000);
     }
 
     #[test]

@@ -443,15 +443,11 @@ mod tests {
     }
 
     #[test]
-    fn extract_sink_props_reads_mute_and_channel_volumes_from_a_real_props_object() {
+    fn extract_sink_props_reads_mute_and_channel_volumes_from_a_real_props_object_and_rejects_a_non_object_pod() {
         let extracted = extract_sink_props(&sample_props_object(), false).expect("should parse as sink props");
         assert!(!extracted.mute);
         assert_eq!(extracted.channel_volumes, vec![0.027004944, 0.027004944]);
-    }
-
-    #[test]
-    fn extract_sink_props_rejects_a_non_object_pod() {
-        assert_eq!(extract_sink_props(&Value::Float(1.0), false), None);
+        assert_eq!(extract_sink_props(&Value::Float(1.0), false), None, "a non-object pod is rejected");
     }
 
     #[test]

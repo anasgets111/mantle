@@ -53,36 +53,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_real_file_under_the_spool_is_within_it() {
+    fn only_a_real_file_under_the_spool_is_within_it() {
         let spool_root = tempfile::tempdir().unwrap();
         let file = spool_root.path().join("notif-1.png");
         std::fs::write(&file, b"fake png bytes").unwrap();
+        assert!(is_within(file.to_str().unwrap(), spool_root.path()), "a real file under the spool");
 
-        assert!(is_within(file.to_str().unwrap(), spool_root.path()));
-    }
-
-    #[test]
-    fn a_nonexistent_or_dot_dot_path_is_not_within_the_spool() {
-        let spool_root = tempfile::tempdir().unwrap();
+        // A nonexistent path and a `..` path to a real external file are both outside.
         let elsewhere = tempfile::tempdir().unwrap();
         let external_file = elsewhere.path().join("theme-icon.png");
         std::fs::write(&external_file, b"a real, externally-owned icon").unwrap();
         let dot_dot = spool_root.path().join("..").join(elsewhere.path().file_name().unwrap()).join("theme-icon.png");
+        assert!(
+            !is_within(spool_root.path().join("never-written.png").to_str().unwrap(), spool_root.path()),
+            "nonexistent"
+        );
+        assert!(!is_within(dot_dot.to_str().unwrap(), spool_root.path()), "dot-dot");
 
-        assert!(!is_within(spool_root.path().join("never-written.png").to_str().unwrap(), spool_root.path()));
-        assert!(!is_within(dot_dot.to_str().unwrap(), spool_root.path()));
-    }
-
-    #[test]
-    fn a_symlink_escaping_the_spool_is_not_within_it() {
-        let spool_root = tempfile::tempdir().unwrap();
-        let elsewhere = tempfile::tempdir().unwrap();
-        let external_file = elsewhere.path().join("real.png");
-        std::fs::write(&external_file, b"x").unwrap();
-
+        // A symlink escaping the spool.
         let symlink_path = spool_root.path().join("escape.png");
         std::os::unix::fs::symlink(&external_file, &symlink_path).unwrap();
-
-        assert!(!is_within(symlink_path.to_str().unwrap(), spool_root.path()));
+        assert!(!is_within(symlink_path.to_str().unwrap(), spool_root.path()), "escaping symlink");
     }
 }

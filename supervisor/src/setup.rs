@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn init_writes_a_luarc_and_a_shell_lua_and_keeps_an_existing_one() {
+    fn init_writes_a_luarc_and_keeps_an_existing_shell_lua_until_forced() {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("mantle");
         std::fs::create_dir_all(&config).unwrap();
@@ -264,15 +264,13 @@ mod tests {
             "-- mine\n",
             "init must never overwrite a config someone already wrote"
         );
-    }
 
-    #[test]
-    fn force_overwrites_the_starter_config() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = dir.path().to_path_buf();
-        std::fs::write(config.join("shell.lua"), "-- mine\n").unwrap();
-        run_into(&config, true, Some(&config.join("stubs"))).unwrap();
-        assert_ne!(std::fs::read_to_string(config.join("shell.lua")).unwrap(), "-- mine\n");
+        run_into(&config, true, Some(&dir.path().join("stubs"))).unwrap();
+        assert_ne!(
+            std::fs::read_to_string(config.join("shell.lua")).unwrap(),
+            "-- mine\n",
+            "force overwrites the starter config"
+        );
     }
 
     /// The `workspace.library` path has to be absolute, or the editor resolves it against the

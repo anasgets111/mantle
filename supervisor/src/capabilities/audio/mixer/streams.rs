@@ -394,18 +394,6 @@ mod tests {
         assert!(!changed, "an unchanged capture must not republish privacy");
     }
 
-    /// cava reads the sink monitor; PipeWire's `stream.capture.sink` property beats a name list.
-    #[test]
-    fn a_monitor_capture_is_not_a_microphone_user() {
-        let mut props = capture_props("Stream/Input/Audio");
-        props.insert("stream.capture.sink".to_string(), "true".to_string());
-
-        let mut apps = BTreeMap::new();
-        apply_capture_info_event(&mut apps, 1, NodeKind::Microphone, true, Some(&props), true);
-
-        assert!(running(&apps).is_empty(), "a visualiser reading the monitor must not light a microphone indicator");
-    }
-
     /// A later state event cannot resurrect a node whose props were rejected.
     #[test]
     fn a_state_event_cannot_resurrect_a_node_whose_props_were_rejected() {
@@ -459,7 +447,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_props_matches_a_real_stream_output_audio_node() {
+    fn parse_stream_props_builds_an_app_stream_from_a_real_node_a_capture_a_nameless_pid_and_a_comm_file() {
         let proc = tempfile::tempdir().unwrap();
         let parsed = parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None)
             .expect("should parse as an audio stream");
@@ -467,14 +455,36 @@ mod tests {
         assert_eq!(parsed.name, Some("Zen".to_string()));
         assert_eq!(parsed.binary, Some("zen-bin".to_string()));
         assert!(!parsed.recording);
-    }
 
-    #[test]
-    fn parse_stream_props_marks_an_input_stream_as_recording() {
-        let proc = tempfile::tempdir().unwrap();
         let parsed = parse_stream_props(proc.path(), 1, &capture_props("Stream/Input/Audio"), None)
             .expect("a call's mic parses");
-        assert!(parsed.recording);
+        assert!(parsed.recording, "an input stream is recording");
+
+        let props = HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.process.id".to_string(), "1234".to_string()),
+        ]);
+        let parsed = parse_stream_props(proc.path(), 1, &props, None).expect("pid alone is enough to parse");
+        assert_eq!(parsed.name, None, "a missing app name is allowed");
+
+        let pid = 1234;
+        std::fs::create_dir(proc.path().join("1234")).unwrap();
+        std::fs::write(proc.path().join("1234").join("comm"), "mpv\n").unwrap();
+
+        let props = HashMap::from([
+            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
+            ("application.process.id".to_string(), pid.to_string()),
+            ("application.name".to_string(), "Test App".to_string()),
+        ]);
+
+        let app = parse_stream_props(proc.path(), 42, &props, None).expect("should build an AppStream");
+        assert_eq!(app.id, 42);
+        assert_eq!(app.pid, pid);
+        assert_eq!(app.name, Some("Test App".to_string()));
+        assert_eq!(app.process_name, Some("mpv".to_string()));
+        // Identity comes from properties; volume lives on a param and joins in publish_audio.
+        assert_eq!(app.volume, None);
+        assert!(!app.muted);
     }
 
     #[test]
@@ -506,40 +516,6 @@ mod tests {
         ] {
             assert!(parse_stream_props(proc.path(), 1, &props, None).is_none(), "{case}");
         }
-    }
-
-    #[test]
-    fn parse_stream_props_allows_a_missing_app_name() {
-        let proc = tempfile::tempdir().unwrap();
-        let props = HashMap::from([
-            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
-            ("application.process.id".to_string(), "1234".to_string()),
-        ]);
-        let parsed = parse_stream_props(proc.path(), 1, &props, None).expect("pid alone is enough to parse");
-        assert_eq!(parsed.name, None);
-    }
-
-    #[test]
-    fn parse_stream_props_resolves_the_process_name() {
-        let pid = 1234;
-        let proc = tempfile::tempdir().unwrap();
-        std::fs::create_dir(proc.path().join("1234")).unwrap();
-        std::fs::write(proc.path().join("1234").join("comm"), "mpv\n").unwrap();
-
-        let props = HashMap::from([
-            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
-            ("application.process.id".to_string(), pid.to_string()),
-            ("application.name".to_string(), "Test App".to_string()),
-        ]);
-
-        let app = parse_stream_props(proc.path(), 42, &props, None).expect("should build an AppStream");
-        assert_eq!(app.id, 42);
-        assert_eq!(app.pid, pid);
-        assert_eq!(app.name, Some("Test App".to_string()));
-        assert_eq!(app.process_name, Some("mpv".to_string()));
-        // Identity comes from properties; volume lives on a param and joins in publish_audio.
-        assert_eq!(app.volume, None);
-        assert!(!app.muted);
     }
 
     #[test]

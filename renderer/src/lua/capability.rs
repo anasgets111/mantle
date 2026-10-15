@@ -390,7 +390,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn an_action_method_queues_the_generation_guarded_envelope() {
+    fn an_action_queues_the_generation_guarded_envelope_with_an_array_of_arguments_and_its_own_id() {
         let (lua, _handle, mut rx) = lua_with_capability(4);
 
         lua.load(r#"mantle.probe:set_volume(0.75)"#).exec().unwrap();
@@ -401,26 +401,16 @@ pub(crate) mod tests {
         assert_eq!(envelope.params.action, "set_volume");
         assert_eq!(envelope.params.arguments, vec![serde_json::json!(0.75)]);
         assert_eq!(envelope.params.legacy_expected_revision, 0);
-    }
+        assert_eq!(envelope.id, 0);
 
-    #[test]
-    fn an_action_with_no_arguments_sends_an_empty_array_not_a_missing_field() {
         // `null` would not deserialize into `Vec<serde_json::Value>`.
-        let (lua, _handle, mut rx) = lua_with_capability(0);
-
-        lua.load(r#"mantle.probe:toggle_mute()"#).exec().unwrap();
-
-        assert_eq!(queued_command(&mut rx).unwrap().params.arguments, Vec::<serde_json::Value>::new());
-    }
-
-    #[test]
-    fn each_action_gets_a_distinct_json_rpc_id() {
-        let (lua, _handle, mut rx) = lua_with_capability(0);
-
         lua.load(r#"mantle.probe:toggle_mute(); mantle.probe:toggle_mute()"#).exec().unwrap();
 
-        assert_eq!(queued_command(&mut rx).unwrap().id, 0);
-        assert_eq!(queued_command(&mut rx).unwrap().id, 1);
+        let first = queued_command(&mut rx).unwrap();
+        assert_eq!(first.params.arguments, Vec::<serde_json::Value>::new());
+        // Each action gets a distinct JSON-RPC id.
+        assert_eq!(first.id, 1);
+        assert_eq!(queued_command(&mut rx).unwrap().id, 2);
     }
 
     #[test]

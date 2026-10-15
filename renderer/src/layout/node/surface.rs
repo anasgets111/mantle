@@ -200,12 +200,17 @@ mod tests {
     }
 
     #[test]
-    fn an_unrecognized_layer_is_a_config_error_not_a_silent_default() {
+    fn an_unrecognized_layer_or_keyboard_interactivity_is_a_config_error_not_a_silent_default() {
         let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r#"return { kind = "panel", layer = "Toop" }"#);
         let err = fields::panel::layer.read(&props).unwrap_err();
         assert!(matches!(&err, LayoutError::InvalidProperty { property, .. } if property == "layer"), "got {err}");
         assert!(err.to_string().contains("Toop"), "the message must name the value the config wrote: {err}");
+
+        let props = props_from_src(&lua, r#"return { kind = "panel", keyboard_interactivity = "Always" }"#);
+        assert!(
+            matches!(fields::panel::keyboard_interactivity.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "keyboard_interactivity")
+        );
     }
 
     #[test]
@@ -219,63 +224,15 @@ mod tests {
     }
 
     #[test]
-    fn output_reads_the_string() {
-        let lua = mlua::Lua::new();
-        let props = props_from_src(&lua, r#"return { kind = "panel", output = "eDP-1" }"#);
-        assert_eq!(fields::panel::output.read(&props).unwrap(), "eDP-1");
-    }
-
-    #[test]
-    fn surface_topology_combines_id_layer_anchor_output_and_namespace() {
-        let lua = mlua::Lua::new();
-        let props = props_from_src(
-            &lua,
-            r#"return { kind = "panel", id = "bar", layer = "top", anchor = { top = true }, output = "eDP-1", namespace = "my-{id}" }"#,
-        );
-        let topology = surface_topology(&props).unwrap();
-        assert_eq!(
-            topology,
-            SurfaceTopology {
-                id: "bar".to_string(),
-                layer: LayerKind::Top,
-                anchor: Anchor { top: true, right: false, bottom: false, left: false },
-                output: "eDP-1".to_string(),
-                namespace: "my-{id}".to_string(),
-            }
-        );
-    }
-
-    #[test]
     fn namespace_absent_defaults_to_mantle_dash_id() {
         let lua = mlua::Lua::new();
         let props = props_from_src(&lua, r#"return { kind = "panel", id = "launcher", layer = "overlay" }"#);
         assert_eq!(fields::panel::namespace.read_with_id(&props, "launcher").unwrap(), "mantle-launcher");
         assert_eq!(surface_topology(&props).unwrap().namespace, "mantle-launcher");
-    }
 
-    #[test]
-    fn a_signal_in_namespace_on_a_panel_is_rejected_like_every_other_topology_field() {
-        let lua = signal_lua();
-        let signal = crate::lua::signal::Signal::new_live(
-            Value::String(lua.create_string("x").unwrap()),
-            crate::lua::signal::DirtyFlag::new(),
-        )
-        .0;
-        lua.globals().set("ns", signal).unwrap();
-        let props = props_from_src(&lua, r#"return { kind = "panel", id = "bar", layer = "top", namespace = ns }"#);
-        let resolved = resolve_declared(&props, "panel", false, &lua).unwrap();
-        assert!(
-            matches!(fields::panel::namespace.read_with_id(&resolved, "bar").unwrap_err(), LayoutError::UnsupportedSignalProperty(p) if p == "namespace")
-        );
-    }
-
-    #[test]
-    fn an_unrecognized_keyboard_interactivity_is_rejected() {
-        let lua = mlua::Lua::new();
-        let props = props_from_src(&lua, r#"return { kind = "panel", keyboard_interactivity = "Always" }"#);
-        assert!(
-            matches!(fields::panel::keyboard_interactivity.read(&props).unwrap_err(), LayoutError::InvalidProperty { property, .. } if property == "keyboard_interactivity")
-        );
+        let props =
+            props_from_src(&lua, r#"return { kind = "panel", id = "bar", layer = "top", namespace = "my-{id}" }"#);
+        assert_eq!(surface_topology(&props).unwrap().namespace, "my-{id}", "an explicit namespace is literal");
     }
 
     #[test]

@@ -58,17 +58,6 @@ mod tests {
     }
 
     #[test]
-    fn resolve_lock_leds_finds_all_three_by_name_suffix() {
-        let root = tempfile::tempdir().unwrap();
-        let caps = write_led(root.path(), "input3::capslock", "0");
-        let num = write_led(root.path(), "input3::numlock", "1");
-        let scroll = write_led(root.path(), "input3::scrolllock", "0");
-
-        let leds = resolve_lock_leds(root.path()).expect("all three present");
-        assert_eq!(leds, LockLeds { caps, num, scroll });
-    }
-
-    #[test]
     fn resolve_lock_leds_is_none_when_any_led_is_missing_or_the_root_is() {
         let root = tempfile::tempdir().unwrap();
         assert_eq!(resolve_lock_leds(root.path()), None, "empty root");

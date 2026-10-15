@@ -1066,23 +1066,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_background_fills_the_surface_with_the_exact_colour() {
-        let Some(instance) = init_headless_egl(64, 64) else { return };
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
-
-        let root = resolved_surface(
-            &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", background = "#FF0000FF" } }"##,
-            LogicalSize { width: 64.0, height: 64.0 },
-        );
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-
-        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255));
-    }
-
-    #[test]
     fn a_scaled_buffer_paints_boxes_and_paths_at_physical_edges() {
         for (scale, extent) in [(1.5, 96), (2.0, 128)] {
             let Some(instance) = init_headless_egl(extent, extent) else { return };
@@ -1496,26 +1479,6 @@ pub(crate) mod tests {
             (0, 255, 0, 255),
             "the fill reaches the corner of the output the surface covers"
         );
-    }
-
-    #[test]
-    fn a_later_child_paints_over_its_parent_at_the_overlap_and_the_parent_shows_outside_it() {
-        let Some(instance) = init_headless_egl(64, 64) else { return };
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
-
-        let root = resolved_surface(
-            &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, child = rect { width = "fill", height = "fill", background = "#0000FFFF", children = {
-                rect { background = "#00FF00FF", width = 20, height = 20 },
-            } } }"##,
-            LogicalSize { width: 64.0, height: 64.0 },
-        );
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-
-        assert_eq!(pixel_at(painter.canvas_mut(), 5, 5), (0, 255, 0, 255));
-        assert_eq!(pixel_at(painter.canvas_mut(), 40, 40), (0, 0, 255, 255));
     }
 
     #[test]

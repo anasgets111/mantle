@@ -439,22 +439,6 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_reports_no_master_volume_with_no_sink_tracked() {
-        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
-        let mut state = mixer_state(updates, privacy_updates);
-
-        state.publish_audio();
-
-        let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
-        assert_eq!(published.volume, None);
-        assert!(!published.muted);
-        assert!(published.apps.is_empty());
-        assert!(published.sinks.is_empty());
-        assert!(published.sources.is_empty());
-    }
-
-    #[test]
     fn publish_audio_lists_only_the_bluetooth_profiles_that_offer_a_codec_now() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
@@ -533,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_overlays_a_streams_own_props_reading_onto_its_entry() {
+    fn publish_audio_overlays_a_streams_own_props_reading_and_no_other_onto_its_entry() {
         // Identity arrives in `info`, volume in `param`; this is their join point.
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
@@ -546,14 +530,7 @@ mod tests {
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
         assert_eq!(published.apps[0].volume, Some(42.0));
         assert!(published.apps[0].muted);
-    }
 
-    #[test]
-    fn publish_audio_leaves_a_stream_whose_props_have_not_arrived_without_a_volume() {
-        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
-        let mut state = mixer_state(updates, privacy_updates);
-        state.apps.insert(1, sample_stream(1));
         state.app_props = HashMap::from([(99, props_at(0.42, true))]);
 
         state.publish_audio();
@@ -641,12 +618,17 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_deduplicates_identical_state() {
+    fn publish_audio_of_a_fresh_state_reports_no_master_volume_and_deduplicates_identical_state() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.publish_audio();
-        assert!(rx.try_recv().is_ok());
+        let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
+        assert_eq!(published.volume, None, "no master volume with no sink tracked");
+        assert!(!published.muted);
+        assert!(published.apps.is_empty());
+        assert!(published.sinks.is_empty());
+        assert!(published.sources.is_empty());
         state.publish_audio();
         assert!(rx.try_recv().is_err(), "second publish with identical state must be skipped");
     }

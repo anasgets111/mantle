@@ -191,7 +191,7 @@ mod tests {
     /// ADR-0069 decision 6. The rest of `scroll_at` needs a compositor to deliver a notch;
     /// this is the half that does not.
     #[test]
-    fn a_touchpads_pixels_are_used_as_sent_and_a_wheels_steps_are_converted() {
+    fn a_touchpads_pixels_are_used_as_sent_and_a_wheels_steps_are_converted_without_narrowing() {
         assert_eq!(wheel_delta(17.5, 0), 17.5, "a touchpad reports a distance and it is taken");
         assert_eq!(wheel_delta(-17.5, 0), -17.5, "including upward");
         assert_eq!(wheel_delta(0.0, 120), WHEEL_STEP_PIXELS, "one notch is one step");
@@ -200,6 +200,11 @@ mod tests {
         // A compositor sending both is sending the same motion twice: the distance wins.
         assert_eq!(wheel_delta(17.5, 120), 17.5);
         assert_eq!(wheel_delta(0.0, 0), 0.0, "an event carrying no motion scrolls nothing");
+        // Reachable rather than absurd: `AxisScroll::merge` sums `value120` across every axis event
+        // queued before the next `Frame` (smithay-client-toolkit 0.21.1), so one frame of dispatch
+        // lag behind a fast wheel accumulates past `i16::MAX`. Narrowing it to an `i16` turned that
+        // into a delta of zero, so a hard flick scrolled nothing.
+        assert_eq!(wheel_delta(0.0, 120 * 400), 400.0 * WHEEL_STEP_PIXELS, "a large step count still scrolls");
     }
 
     /// Fingers lifting at speed coast; a rest before the lift, a wheel or a hard stop do not.
@@ -242,18 +247,5 @@ mod tests {
         assert_eq!(wheel_steps(-WHEEL_STEP_PIXELS as f64 / 2.0, 0), 0.5, "a touchpad swipe is a fraction of a notch");
         assert_eq!(wheel_steps(0.0, 0), 0.0);
         assert_eq!(wheel_steps(15.0, 120), -1.0, "value120 wins over pixels sent with it");
-    }
-
-    /// The `value120` that would have been silently dropped by narrowing it to an `i16` first.
-    ///
-    /// Reachable rather than absurd: `AxisScroll::merge` sums `value120` across every axis event
-    /// queued before the next `Frame` (`ret.value120 += other.value120`, smithay-client-toolkit
-    /// 0.21.1), so one frame of dispatch lag behind a fast wheel accumulates past `i16::MAX`. The
-    /// old narrowing turned that into a delta of zero, which returns early without writing the
-    /// signal at all -- a hard flick scrolling nothing, at exactly the moment the client was
-    /// already behind.
-    #[test]
-    fn an_implausibly_large_step_count_still_scrolls_rather_than_becoming_zero() {
-        assert_eq!(wheel_delta(0.0, 120 * 400), 400.0 * WHEEL_STEP_PIXELS);
     }
 }

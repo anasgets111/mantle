@@ -217,32 +217,29 @@ mod tests {
     }
 
     #[test]
-    fn resolve_notification_id_allocates_monotonically_when_replaces_id_is_zero() {
-        let mut next_id = 1u32;
-        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 1);
-        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 2);
-        assert_eq!(next_id, 3);
-    }
+    fn resolve_notification_id_allocates_reuses_and_wraps() {
+        let empty = VecDeque::new();
 
-    #[test]
-    fn resolve_notification_id_passes_through_a_queued_replaces_id_without_bumping_the_allocator() {
+        // replaces_id 0 allocates monotonically
+        let mut next_id = 1u32;
+        assert_eq!(resolve_notification_id(0, &empty, &mut next_id), 1);
+        assert_eq!(resolve_notification_id(0, &empty, &mut next_id), 2);
+        assert_eq!(next_id, 3);
+
+        // a queued replaces_id passes through without bumping the allocator
         let mut next_id = 5u32;
         let queue = VecDeque::from([sample_notification(42, None)]);
         assert_eq!(resolve_notification_id(42, &queue, &mut next_id), 42);
         assert_eq!(next_id, 5, "the allocator must not move for a replaces_id reuse");
-    }
 
-    #[test]
-    fn an_unknown_replaces_id_allocates_rather_than_claiming_an_id_the_allocator_will_reach() {
+        // an unknown replaces_id allocates rather than claiming an id the allocator will reach
         let mut next_id = 5u32;
-        assert_eq!(resolve_notification_id(6, &VecDeque::new(), &mut next_id), 5);
-        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), 6);
-    }
+        assert_eq!(resolve_notification_id(6, &empty, &mut next_id), 5);
+        assert_eq!(resolve_notification_id(0, &empty, &mut next_id), 6);
 
-    #[test]
-    fn resolve_notification_id_wraps_safely_past_u32_max_skipping_zero() {
+        // wraps past u32::MAX skipping zero
         let mut next_id = u32::MAX;
-        assert_eq!(resolve_notification_id(0, &VecDeque::new(), &mut next_id), u32::MAX);
+        assert_eq!(resolve_notification_id(0, &empty, &mut next_id), u32::MAX);
         assert_eq!(next_id, 1, "must wrap to 1, never 0 -- 0 is reserved to mean \"new\" on the wire");
     }
 
@@ -358,19 +355,16 @@ mod tests {
     }
 
     #[test]
-    fn replace_or_push_falls_back_to_a_fresh_push_when_the_id_is_not_present() {
+    fn replace_or_push_falls_back_to_a_fresh_push_and_reports_a_real_eviction_when_the_queue_is_full() {
         let mut queue = VecDeque::new();
         push_new(&mut queue, sample_notification(1, None));
 
         let cleanup = replace_or_push(&mut queue, sample_notification(999, None));
 
-        assert_eq!(cleanup, None);
+        assert_eq!(cleanup, None, "the id is not present");
         assert_eq!(queue.len(), 2);
         assert_eq!(queue.back().unwrap().id, 999);
-    }
 
-    #[test]
-    fn replace_or_push_fallback_path_reports_a_real_eviction_when_the_queue_is_full() {
         let mut queue = VecDeque::new();
         for i in 0..NOTIFICATION_QUEUE_CAP as u32 {
             push_new(&mut queue, sample_notification(i, None));
@@ -393,18 +387,7 @@ mod tests {
     }
 
     #[test]
-    fn feed_view_returns_the_newest_entries_first() {
-        let mut queue = VecDeque::new();
-        push_new(&mut queue, sample_notification(1, None));
-        push_new(&mut queue, sample_notification(2, None));
-        push_new(&mut queue, sample_notification(3, None));
-
-        let view = feed_view(&queue);
-        assert_eq!(view.iter().map(|n| n.id).collect::<Vec<_>>(), vec![3, 2, 1]);
-    }
-
-    #[test]
-    fn feed_view_caps_at_the_view_size_even_with_a_larger_backing_queue() {
+    fn feed_view_returns_the_newest_first_capped_at_the_view_size_even_with_a_larger_backing_queue() {
         let mut queue = VecDeque::new();
         for i in 0..NOTIFICATION_QUEUE_CAP as u32 {
             push_new(&mut queue, sample_notification(i, None));
@@ -412,6 +395,12 @@ mod tests {
         let view = feed_view(&queue);
         assert_eq!(view.len(), NOTIFICATION_FEED_VIEW);
         assert_eq!(view.first().unwrap().id, NOTIFICATION_QUEUE_CAP as u32 - 1, "the newest entry must be first");
+        let newest_first: Vec<u32> = (0..NOTIFICATION_QUEUE_CAP as u32).rev().take(NOTIFICATION_FEED_VIEW).collect();
+        assert_eq!(
+            view.iter().map(|n| n.id).collect::<Vec<_>>(),
+            newest_first,
+            "the view returns the newest entries first"
+        );
     }
 
     /// Finding 2's race: after `replaces_id=7` moves incarnation 1 to 2, timer A must not remove

@@ -614,16 +614,13 @@ pub(super) mod tests {
     use gif::DisposalMethod::{Background, Keep, Previous};
 
     #[test]
-    fn only_svg_is_rasterized_by_size() {
+    fn only_svg_is_rasterized_by_size_and_only_gif_is_animated() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));
         assert!(is_vector(Path::new("/tmp/gzipped.svgz")));
         assert!(!is_vector(Path::new("/run/user/1000/mantle/tray/telegram.png")));
         assert!(!is_vector(Path::new("/tmp/no-extension")));
-    }
 
-    #[test]
-    fn only_gif_is_animated() {
         assert!(is_animated(Path::new("/tmp/wallpaper.gif")));
         assert!(is_animated(Path::new("/tmp/WALLPAPER.GIF")));
         assert!(!is_animated(Path::new("/tmp/still.png")));

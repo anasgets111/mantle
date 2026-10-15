@@ -708,72 +708,57 @@ mod tests {
         assert_eq!(u32::from(CloseReason::Evicted), 4);
     }
 
-    /// Paused tokio time makes this exact and instant: an unheld countdown serves its duration.
+    /// Paused tokio time makes this exact and instant.
     #[tokio::test(start_paused = true)]
-    async fn an_unheld_countdown_runs_for_exactly_its_duration() {
-        let holds = watch::Sender::new(None);
-        let started = Instant::now();
-        sleep_past_holds(holds.subscribe(), Duration::from_secs(5)).await;
-        assert_eq!(started.elapsed(), Duration::from_secs(5));
-    }
+    async fn the_countdown_serves_its_duration_around_holds_placed_extended_or_released() {
+        let secs = Duration::from_secs;
+        // (label, hold at start, wait before the clock starts, (change at, hold then) mid-countdown, expected elapsed)
+        let cases = [
+            ("an unheld countdown runs for exactly its duration", None, Duration::ZERO, None, secs(5)),
+            // A hold at 2s of 5 leaves 3s to serve, so the card outlives the pointer resting on it.
+            (
+                "a hold stops the clock and the time already served is banked",
+                None,
+                Duration::ZERO,
+                Some((secs(2), Some(secs(60)))),
+                // 2 served, 60 held, 3 left.
+                secs(65),
+            ),
+            // `hold_expiry(0)` releases early rather than waiting out the original deadline.
+            (
+                "releasing a hold resumes the countdown at once: 4 held, then the full 5, none served first",
+                Some(secs(600)),
+                Duration::ZERO,
+                Some((secs(4), None)),
+                secs(9),
+            ),
+            // Repeated events such as reply `on_change` extend the deadline; the later hold must win.
+            (
+                "a second hold extends the first: 8 + 10 held, then the full 5",
+                Some(secs(10)),
+                Duration::ZERO,
+                Some((secs(8), Some(secs(10)))),
+                secs(23),
+            ),
+            // An already-lapsed deadline is not a hold; without this check stale values would stop time.
+            ("a lapsed hold does not stop the clock", Some(Duration::from_millis(1)), secs(1), None, secs(5)),
+        ];
+        for (label, initial, wait, change, expected) in cases {
+            let holds = Arc::new(watch::Sender::new(initial.map(|hold| Instant::now() + hold)));
+            tokio::time::sleep(wait).await;
+            let started = Instant::now();
 
-    /// A hold at 2s of 5 leaves 3s to serve, so the card outlives the pointer resting on it.
-    #[tokio::test(start_paused = true)]
-    async fn a_hold_stops_the_clock_and_the_time_already_served_is_banked() {
-        let holds = Arc::new(watch::Sender::new(None));
-        let started = Instant::now();
+            if let Some((at, hold)) = change {
+                let changer = Arc::clone(&holds);
+                tokio::spawn(async move {
+                    tokio::time::sleep(at).await;
+                    changer.send_replace(hold.map(|hold| Instant::now() + hold));
+                });
+            }
 
-        let placer = Arc::clone(&holds);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(2)).await;
-            placer.send_replace(Some(Instant::now() + Duration::from_secs(60)));
-        });
-
-        sleep_past_holds(holds.subscribe(), Duration::from_secs(5)).await;
-        // 2 served, 60 held, 3 left.
-        assert_eq!(started.elapsed(), Duration::from_secs(65));
-    }
-
-    /// `hold_expiry(0)` releases early rather than waiting out the original deadline.
-    #[tokio::test(start_paused = true)]
-    async fn releasing_a_hold_resumes_the_countdown_at_once() {
-        let holds = Arc::new(watch::Sender::new(Some(Instant::now() + Duration::from_secs(600))));
-        let started = Instant::now();
-
-        let releaser = Arc::clone(&holds);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(4)).await;
-            releaser.send_replace(None);
-        });
-
-        sleep_past_holds(holds.subscribe(), Duration::from_secs(5)).await;
-        assert_eq!(started.elapsed(), Duration::from_secs(9), "4 held, then the full 5 -- none was served first");
-    }
-
-    /// Repeated events such as reply `on_change` extend the deadline; the later hold must win.
-    #[tokio::test(start_paused = true)]
-    async fn a_second_hold_extends_the_first() {
-        let holds = Arc::new(watch::Sender::new(Some(Instant::now() + Duration::from_secs(10))));
-        let started = Instant::now();
-
-        let extender = Arc::clone(&holds);
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(8)).await;
-            extender.send_replace(Some(Instant::now() + Duration::from_secs(10)));
-        });
-
-        sleep_past_holds(holds.subscribe(), Duration::from_secs(5)).await;
-        assert_eq!(started.elapsed(), Duration::from_secs(23), "8 + 10 held, then the full 5");
-    }
-
-    /// An already-lapsed deadline is not a hold; without this check stale values would stop time.
-    #[tokio::test(start_paused = true)]
-    async fn a_lapsed_hold_does_not_stop_the_clock() {
-        let holds = watch::Sender::new(Some(Instant::now() + Duration::from_millis(1)));
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let started = Instant::now();
-        sleep_past_holds(holds.subscribe(), Duration::from_secs(5)).await;
-        assert_eq!(started.elapsed(), Duration::from_secs(5));
+            sleep_past_holds(holds.subscribe(), secs(5)).await;
+            assert_eq!(started.elapsed(), expected, "{label}");
+        }
     }
 
     /// An absurd hold clamps to five minutes, not the rest of the session.

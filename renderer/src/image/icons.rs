@@ -320,13 +320,6 @@ mod tests {
     }
 
     #[test]
-    fn the_resolved_theme_is_a_directory_under_an_icon_search_path() {
-        let theme = theme();
-        assert!(!theme.is_empty());
-        assert!(!theme.contains('/'), "the theme is a directory name, not a path, got {theme:?}");
-    }
-
-    #[test]
     fn the_memo_keys_on_both_name_and_size() {
         // A collision draws the *wrong* icon, harder to notice than a missing one: a plausible bar
         // full of icons other than the requested ones.

@@ -914,24 +914,18 @@ mod tests {
     }
 
     #[test]
-    fn short_string_property_error_message_is_unchanged() {
+    fn property_error_messages_for_string_and_non_string_values_are_unchanged() {
         let lua = mlua::Lua::new();
-        let props = props_from_src(&lua, r#"return { kind = "rect", radius = "banana" }"#);
-        let err = parse_radius(&props).unwrap_err();
-        let LayoutError::InvalidProperty { detail, .. } = &err else {
-            panic!("expected InvalidProperty, got {err}");
-        };
-        assert_eq!(detail, "expected a number or a table, got string \"banana\"");
-    }
-
-    #[test]
-    fn non_string_variant_error_message_is_unchanged() {
-        let lua = mlua::Lua::new();
-        let props = props_from_src(&lua, r#"return { kind = "rect", radius = true }"#);
-        let err = parse_radius(&props).unwrap_err();
-        let LayoutError::InvalidProperty { detail, .. } = &err else {
-            panic!("expected InvalidProperty, got {err}");
-        };
-        assert_eq!(detail, "expected a number or a table, got boolean true");
+        for (value, expected) in [
+            (r#""banana""#, "expected a number or a table, got string \"banana\""),
+            ("true", "expected a number or a table, got boolean true"),
+        ] {
+            let props = props_from_src(&lua, format!(r#"return {{ kind = "rect", radius = {value} }}"#));
+            let err = parse_radius(&props).unwrap_err();
+            let LayoutError::InvalidProperty { detail, .. } = &err else {
+                panic!("expected InvalidProperty, got {err}");
+            };
+            assert_eq!(detail, expected, "{value}");
+        }
     }
 }

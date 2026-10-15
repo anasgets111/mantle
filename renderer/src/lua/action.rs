@@ -224,6 +224,9 @@ mod tests {
         assert_eq!(dispatch(&lua, "half", &[]), shared::CallOutcome::Returned(serde_json::json!(1)));
         clear(&lua);
         failure(dispatch(&lua, "half", &[]));
+        // And the name is free again, which is what re-evaluation depends on.
+        lua.load(r#"action("half", function() return 2 end)"#).exec().unwrap();
+        assert_eq!(dispatch(&lua, "half", &[]), shared::CallOutcome::Returned(serde_json::json!(2)));
     }
 
     #[test]
@@ -234,16 +237,5 @@ mod tests {
         assert_eq!(names(&lua), serde_json::json!(["audio.mute", "rec.toggle"]));
         clear(&lua);
         assert_eq!(names(&lua), serde_json::json!([]));
-    }
-
-    #[test]
-    fn clearing_leaves_nothing_answering_so_a_reload_cannot_run_the_old_closure() {
-        let lua = lua_registered(register);
-        lua.load(r#"action("gone", function() return 1 end)"#).exec().unwrap();
-        clear(&lua);
-        failure(dispatch(&lua, "gone", &[]));
-        // And the name is free again, which is what re-evaluation depends on.
-        lua.load(r#"action("gone", function() return 2 end)"#).exec().unwrap();
-        assert_eq!(dispatch(&lua, "gone", &[]), shared::CallOutcome::Returned(serde_json::json!(2)));
     }
 }

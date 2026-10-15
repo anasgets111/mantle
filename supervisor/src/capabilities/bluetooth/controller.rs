@@ -584,18 +584,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_pair_retries_the_connect_a_headset_refuses_right_after_pairing() {
+    async fn a_pair_retries_a_connect_the_headset_refuses_but_a_plain_connect_tries_once() {
         let (controller, connects, _caller, _served) = with_headset(1).await;
         controller.pair("AA").await;
         assert_eq!(connects.load(Ordering::SeqCst), 2, "one refusal, then the retry connects");
         assert!(controller.busy.lock().unwrap().is_empty());
-    }
 
-    #[tokio::test]
-    async fn a_plain_connect_tries_once() {
         let (controller, connects, _caller, _served) = with_headset(usize::MAX).await;
         controller.connect("AA").await;
-        assert_eq!(connects.load(Ordering::SeqCst), 1);
+        assert_eq!(connects.load(Ordering::SeqCst), 1, "a plain connect tries once");
     }
 
     struct FakeAdapter;

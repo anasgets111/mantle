@@ -75,27 +75,23 @@ mod tests {
     // ---- enumerate_video_devices ----
 
     #[test]
-    fn enumerate_video_devices_finds_every_videon_directory_as_a_dev_path() {
+    fn enumerate_video_devices_lists_videon_directories_and_ignores_the_rest() {
+        // (label, entries, expected)
+        let cases: [(&str, &[&str], &[&str]); 2] = [
+            ("every videoN directory as a dev path", &["video0", "video1"], &["video0", "video1"]),
+            // vbi0 is a real video4linux sibling class, not a capture device.
+            ("non-video entries", &["video0", "vbi0"], &["video0"]),
+        ];
+        for (label, entries, expected) in cases {
+            let root = tempfile::tempdir().unwrap();
+            for entry in entries {
+                write_video_device_dir(root.path(), entry);
+            }
+            let expected: Vec<PathBuf> = expected.iter().map(|name| root.path().join(name)).collect();
+            assert_eq!(enumerate_video_devices(root.path()), expected, "{label}");
+        }
         let root = tempfile::tempdir().unwrap();
-        write_video_device_dir(root.path(), "video0");
-        write_video_device_dir(root.path(), "video1");
-
-        assert_eq!(enumerate_video_devices(root.path()), vec![root.path().join("video0"), root.path().join("video1")]);
-    }
-
-    #[test]
-    fn enumerate_video_devices_ignores_non_video_entries() {
-        let root = tempfile::tempdir().unwrap();
-        write_video_device_dir(root.path(), "video0");
-        write_video_device_dir(root.path(), "vbi0"); // a real video4linux sibling class, not a capture device.
-
-        assert_eq!(enumerate_video_devices(root.path()), vec![root.path().join("video0")]);
-    }
-
-    #[test]
-    fn enumerate_video_devices_is_empty_against_a_nonexistent_root() {
-        let root = tempfile::tempdir().unwrap();
-        assert!(enumerate_video_devices(&root.path().join("does-not-exist")).is_empty());
+        assert!(enumerate_video_devices(&root.path().join("does-not-exist")).is_empty(), "nonexistent root");
     }
 
     // ---- find_device_openers ----

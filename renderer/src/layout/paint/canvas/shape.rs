@@ -886,35 +886,8 @@ mod tests {
         );
     }
 
-    /// The uniform-border-with-radius branch of [`paint_border`] had no test at all: the per-edge
-    /// case above takes the fallback path, so the whole `stroke_path` arm, including the half-width
-    /// inset its doc comment reasons carefully about, went unexercised. That inset is the part
-    /// worth pinning: femtovg strokes centred on the path, so an uninset stroke straddles the
-    /// node's own edge with half of it painted outside the box.
-    #[test]
-    fn a_uniform_border_with_a_radius_strokes_inside_the_nodes_own_box() {
-        let Some(instance) = init_headless_egl(64, 64) else { return };
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
-
-        let root = resolved_surface(
-            &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, background = "#FF0000FF", padding = { top = 10, left = 10 }, child = rect {
-                width = 40, height = 40, background = "#000000FF",
-                radius = 8, border_width = 4, border_color = "#FFFFFFFF",
-            } }"##,
-            LogicalSize { width: 64.0, height: 64.0 },
-        );
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-
-        assert_eq!(pixel_at(painter.canvas_mut(), 12, 30), (255, 255, 255, 255));
-        assert_eq!(pixel_at(painter.canvas_mut(), 16, 30), (0, 0, 0, 255));
-        assert_eq!(pixel_at(painter.canvas_mut(), 9, 30), (255, 0, 0, 255));
-    }
-
-    /// Regression test: a 1px border at a fractional position must land on exactly one physical
-    /// pixel row, not blur across two. `padding.top = 10.3` puts the bordered rect's absolute y at
+    /// Regression test: a border at a fractional position must land on exactly its width in physical
+    /// pixel rows, not blur across more. `padding.top = 10.3` puts the bordered rect's absolute y at
     /// a fractional offset -- unsnapped, femtovg's own antialiasing fills part of row 10 and part
     /// of row 11 at partial coverage instead of one row at full coverage.
     ///
@@ -922,34 +895,12 @@ mod tests {
     /// `paint_border_edge`'s horizontal branch (using the raw, unsnapped `edge_rect` instead),
     /// row 10 came back `(201, 178, 178, 255)`, a red/white blend rather than white, and the
     /// row-10 assertion failed. Restored before finishing.
-    #[test]
-    fn a_1px_border_at_a_fractional_position_is_exactly_one_pixel_row() {
-        let Some(instance) = init_headless_egl(64, 64) else { return };
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
-
-        let root = resolved_surface(
-            &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, background = "#FF0000FF", padding = { top = 10.3 }, child = rect {
-                width = 30, height = 20, background = "#000000FF",
-                border_width = { top = 1 }, border_color = { top = "#FFFFFFFF" },
-            } }"##,
-            LogicalSize { width: 64.0, height: 64.0 },
-        );
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
-
-        assert_eq!(pixel_at(painter.canvas_mut(), 15, 9), (255, 0, 0, 255));
-        assert_eq!(pixel_at(painter.canvas_mut(), 15, 10), (255, 255, 255, 255));
-        assert_eq!(pixel_at(painter.canvas_mut(), 15, 11), (0, 0, 0, 255));
-    }
-
-    /// The same snap as the 1px test above, at a width wide enough that "one row either way"
-    /// is not the whole story: a 4px band must stay exactly four rows, neither growing to five
-    /// nor losing one, which is what pins `snap_border_band` rounding both edges independently
-    /// rather than rounding the near edge and adding an unrounded thickness. `padding.top =
-    /// 31.3` is the fractional geometry a content-sized surface resolves to, so this is the real
-    /// shape of the bug, not a contrived one.
+    ///
+    /// The 4px row is wide enough that "one row either way" is not the whole story: the band must
+    /// stay exactly four rows, neither growing to five nor losing one, which is what pins
+    /// `snap_border_band` rounding both edges independently rather than rounding the near edge and
+    /// adding an unrounded thickness. `padding.top = 31.3` is the fractional geometry a
+    /// content-sized surface resolves to, so this is the real shape of the bug, not a contrived one.
     ///
     /// Note this is the filled-edge branch, not the stroke: `border_width = { top = 4 }` leaves
     /// the other three edges at zero, so `paint_border`'s `uniform_width` test fails and it
@@ -957,32 +908,41 @@ mod tests {
     /// actually got wrong, is covered by
     /// `a_uniform_stroked_border_at_a_fractional_position_covers_whole_pixel_columns` below.
     ///
-    /// Proved this catches the bug: with the same unsnapped `edge_rect` change as the 1px test
-    /// above, row 31 came back `(201, 178, 178, 255)` instead of full white -- the loop below
-    /// fails on the first row it checks, so this only pins that one value, not all four rows'
-    /// worth of blend. Restored before finishing.
+    /// Proved the 4px row catches the bug: with the same unsnapped `edge_rect` change, row 31 came
+    /// back `(201, 178, 178, 255)` instead of full white -- the loop below fails on the first row
+    /// it checks, so this only pins that one value, not all four rows' worth of blend. Restored
+    /// before finishing.
     #[test]
-    fn a_4px_border_at_a_fractional_position_stays_exactly_four_rows() {
-        let Some(instance) = init_headless_egl(64, 64) else { return };
-        let lua = Lua::new();
-        let shaping = ShapingHandle::spawn();
-        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+    fn a_border_at_a_fractional_position_is_exactly_its_width_in_pixel_rows() {
+        // (border width, padding.top, first white row)
+        for (width, padding, first) in [(1usize, "10.3", 10usize), (4, "31.3", 31)] {
+            let Some(instance) = init_headless_egl(64, 64) else { return };
+            let lua = Lua::new();
+            let shaping = ShapingHandle::spawn();
+            let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
 
-        let root = resolved_surface(
-            &lua,
-            r##"return panel { id = "bar", width = 64, height = 64, background = "#FF0000FF", padding = { top = 31.3 }, child = rect {
-                width = 30, height = 20, background = "#000000FF",
-                border_width = { top = 4 }, border_color = { top = "#FFFFFFFF" },
-            } }"##,
-            LogicalSize { width: 64.0, height: 64.0 },
-        );
-        paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
+            let root = resolved_surface(
+                &lua,
+                &format!(
+                    r##"return panel {{ id = "bar", width = 64, height = 64, background = "#FF0000FF", padding = {{ top = {padding} }}, child = rect {{
+                    width = 30, height = 20, background = "#000000FF",
+                    border_width = {{ top = {width} }}, border_color = {{ top = "#FFFFFFFF" }},
+                }} }}"##
+                ),
+                LogicalSize { width: 64.0, height: 64.0 },
+            );
+            paint_tree(&mut painter, &mut ImageCache::new(), &root, 1.0);
 
-        assert_eq!(pixel_at(painter.canvas_mut(), 15, 30), (255, 0, 0, 255));
-        for y in 31..35usize {
-            assert_eq!(pixel_at(painter.canvas_mut(), 15, y), (255, 255, 255, 255), "row {y} is not fully white");
+            assert_eq!(pixel_at(painter.canvas_mut(), 15, first - 1), (255, 0, 0, 255), "{width}px: row above");
+            for y in first..first + width {
+                assert_eq!(
+                    pixel_at(painter.canvas_mut(), 15, y),
+                    (255, 255, 255, 255),
+                    "{width}px: row {y} is not fully white"
+                );
+            }
+            assert_eq!(pixel_at(painter.canvas_mut(), 15, first + width), (0, 0, 0, 255), "{width}px: row below");
         }
-        assert_eq!(pixel_at(painter.canvas_mut(), 15, 35), (0, 0, 0, 255));
     }
 
     /// The uniform-width-with-radius branch of `paint_border` strokes rather than fills, and a
@@ -993,9 +953,7 @@ mod tests {
     /// split without the caller reasoning about parity at all.
     ///
     /// `padding.left = 10.3` is what makes this a real test: with an integer padding the stroke
-    /// already lands on whole pixels and passes without any snapping, which is why the existing
-    /// `a_uniform_border_with_a_radius_strokes_inside_the_nodes_own_box` test above cannot see
-    /// this. Measured with the `snap_border_band` calls in that branch removed: column 10 came
+    /// already lands on whole pixels and passes without any snapping. Measured with the `snap_border_band` calls in that branch removed: column 10 came
     /// back `(201, 178, 178, 255)`, a red/white blend, instead of full white.
     #[test]
     fn a_uniform_stroked_border_at_a_fractional_position_covers_whole_pixel_columns() {

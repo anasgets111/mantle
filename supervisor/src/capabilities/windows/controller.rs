@@ -210,22 +210,17 @@ mod tests {
     /// attached; without a catch-up signal, `mantle.windows:get()` stays `nil` until the next
     /// compositor event.
     #[tokio::test]
-    async fn new_sends_a_catch_up_signal_when_the_shared_state_is_already_populated() {
+    async fn new_sends_a_catch_up_signal_only_when_the_shared_state_is_already_populated() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let state = Arc::new(Mutex::new(WindowsState { source: "niri".to_string(), windows: vec![entry("1", None)] }));
 
         let _controller = WindowsController::new(state, Some(CompositorKind::Niri), tx).await;
 
         assert!(matches!(rx.try_recv(), Ok(())));
-    }
 
-    #[tokio::test]
-    async fn new_sends_nothing_when_the_shared_state_is_still_default() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-
         let _controller =
             WindowsController::new(Arc::new(Mutex::new(WindowsState::default())), Some(CompositorKind::Niri), tx).await;
-
-        assert!(rx.try_recv().is_err());
+        assert!(rx.try_recv().is_err(), "nothing to catch up on while the state is still default");
     }
 }

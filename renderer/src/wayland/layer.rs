@@ -541,15 +541,12 @@ mod tests {
     }
 
     #[test]
-    fn every_layer_kind_maps_to_its_protocol_level() {
+    fn layer_kind_anchor_and_keyboard_interactivity_map_to_the_protocol() {
         assert_eq!(layer_for(LayerKind::Background), Layer::Background);
         assert_eq!(layer_for(LayerKind::Bottom), Layer::Bottom);
         assert_eq!(layer_for(LayerKind::Top), Layer::Top);
         assert_eq!(layer_for(LayerKind::Overlay), Layer::Overlay);
-    }
 
-    #[test]
-    fn anchor_booleans_map_to_the_matching_bitflags() {
         assert_eq!(anchor_for(node::Anchor::default()), Anchor::empty());
         assert_eq!(
             anchor_for(node::Anchor { top: true, right: true, bottom: false, left: true }),
@@ -560,10 +557,7 @@ mod tests {
             anchor_for(node::Anchor { top: true, right: true, bottom: true, left: true }),
             Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT
         );
-    }
 
-    #[test]
-    fn every_keyboard_interactivity_maps_to_its_protocol_mode() {
         assert_eq!(keyboard_interactivity_for(node::KeyboardInteractivity::None), KeyboardInteractivity::None);
         assert_eq!(keyboard_interactivity_for(node::KeyboardInteractivity::OnDemand), KeyboardInteractivity::OnDemand);
         assert_eq!(
@@ -677,28 +671,22 @@ mod tests {
     }
 
     #[test]
-    fn an_exclusive_bar_reserves_its_configured_height_and_a_dock_its_width() {
+    fn exclusive_zone_for_reserves_the_one_anchored_strip_and_nothing_when_ambiguous() {
+        let anchor = |top, right, bottom, left| node::Anchor { top, right, bottom, left };
         // Derived from the size the compositor granted, which is why this is a configure-time
         // computation: at creation a `"fill"`-sized bar has no height to reserve.
-        let bar = node::Anchor { top: true, right: true, bottom: false, left: true };
-        assert_eq!(exclusive_zone_for(bar, (1920, 32)), 32);
-
-        let bottom_dock = node::Anchor { top: false, right: true, bottom: true, left: true };
-        assert_eq!(exclusive_zone_for(bottom_dock, (1920, 48)), 48);
-
-        let side_dock = node::Anchor { top: true, right: false, bottom: true, left: true };
-        assert_eq!(exclusive_zone_for(side_dock, (64, 1080)), 64);
-    }
-
-    #[test]
-    fn an_ambiguously_anchored_surface_reserves_nothing() {
-        // All four edges, none of them, and a single corner: in each case there is no one edge to
-        // reserve against, and the protocol's exclusive-zone wording only defines the strip cases.
-        let all = node::Anchor { top: true, right: true, bottom: true, left: true };
-        assert_eq!(exclusive_zone_for(all, (1920, 1080)), 0);
-        assert_eq!(exclusive_zone_for(node::Anchor::default(), (400, 300)), 0);
-        let corner = node::Anchor { top: true, right: false, bottom: false, left: true };
-        assert_eq!(exclusive_zone_for(corner, (400, 300)), 0);
+        for (anchor, size, want, case) in [
+            (anchor(true, true, false, true), (1920, 32), 32, "top bar: its height"),
+            (anchor(false, true, true, true), (1920, 48), 48, "bottom dock: its height"),
+            (anchor(true, false, true, true), (64, 1080), 64, "side dock: its width"),
+            // All four edges, none of them, and a single corner: in each case there is no one edge to
+            // reserve against, and the protocol's exclusive-zone wording only defines the strip cases.
+            (anchor(true, true, true, true), (1920, 1080), 0, "all four edges"),
+            (node::Anchor::default(), (400, 300), 0, "no edge"),
+            (anchor(true, false, false, true), (400, 300), 0, "a single corner"),
+        ] {
+            assert_eq!(exclusive_zone_for(anchor, size), want, "{case}");
+        }
     }
 
     #[test]

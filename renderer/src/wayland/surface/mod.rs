@@ -628,7 +628,7 @@ mod tests {
     }
 
     #[test]
-    fn an_omitted_popup_axis_takes_the_measured_box_and_a_declared_one_ignores_it() {
+    fn an_omitted_popup_axis_takes_the_measured_box_a_declared_one_ignores_it_and_nothing_measured_stays_zero() {
         // The whole point of the `Content` axis: the number the positioner is given comes from
         // what the tree measured, not from a guess in the config. A declared axis is untouched by
         // the measurement, so one axis can be fixed and the other fitted.
@@ -645,15 +645,10 @@ mod tests {
 
         spec.height = node::SizeMode::Content;
         assert_eq!(popup_requested_size(&spec, measured), (253.0, 36.0));
-    }
 
-    #[test]
-    fn a_content_axis_measuring_nothing_stays_zero_for_show_popup_to_decline_on() {
-        // A hidden popup's tree is frozen at 0x0 (ADR-0124). Reporting that honestly is what lets
+        // A content axis measuring nothing stays zero for `show_popup` to decline on. A hidden
+        // popup's tree is frozen at 0x0 (ADR-0124). Reporting that honestly is what lets
         // `show_popup` wait a pass instead of opening at a size nothing measured.
-        let mut spec = popup_spec_fixture();
-        spec.width = node::SizeMode::Content;
-        spec.height = node::SizeMode::Content;
         let nothing = LogicalRect::default();
         assert_eq!(popup_requested_size(&spec, nothing), (0.0, 0.0));
     }
@@ -807,28 +802,22 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_startup_apply_leaves_panels_up_and_windows_and_popups_closed() {
-        // The apply rolls its whole surface map back on error, so this is what every instance sees
-        // at once. A panel comes up painting nothing (the "keep the shell up" fallback); a window
-        // or popup created here would be a Wayland object the config never asked for.
-        assert!(starting_visible(None, &SurfaceSpec::Panel(panel("bar"))));
-        assert!(!starting_visible(None, &SurfaceSpec::Window(window("settings"))));
-        assert!(!starting_visible(None, &SurfaceSpec::Popup(popup_spec_fixture())));
-        assert!(!starting_visible(None, &SurfaceSpec::Lock(lock_spec_fixture())));
-    }
-
-    #[test]
-    fn a_resolved_tree_answers_visible_for_every_role_and_the_fallback_never_runs() {
-        for roster in [
-            SurfaceSpec::Panel(panel("bar")),
-            SurfaceSpec::Window(window("settings")),
-            SurfaceSpec::Popup(popup_spec_fixture()),
-            SurfaceSpec::Lock(lock_spec_fixture()),
+    fn starting_visible_follows_the_resolved_tree_and_falls_back_by_role() {
+        // Fallback (no resolved tree): the apply rolls its whole surface map back on error, so this
+        // is what every instance sees at once. A panel comes up painting nothing (the "keep the
+        // shell up" fallback); a window or popup created here would be a Wayland object the config
+        // never asked for.
+        for (roster, role, fallback) in [
+            (SurfaceSpec::Panel(panel("bar")), "panel", true),
+            (SurfaceSpec::Window(window("settings")), "window", false),
+            (SurfaceSpec::Popup(popup_spec_fixture()), "popup", false),
+            (SurfaceSpec::Lock(lock_spec_fixture()), "lock", false),
         ] {
-            assert!(starting_visible(Some(true), &roster));
+            assert_eq!(starting_visible(None, &roster), fallback, "{role}: no resolved tree");
+            assert!(starting_visible(Some(true), &roster), "{role}: the resolved tree answers, never the fallback");
             assert!(
                 !starting_visible(Some(false), &roster),
-                "a declared-closed surface stays closed whatever its role"
+                "{role}: a declared-closed surface stays closed whatever its role"
             );
         }
     }

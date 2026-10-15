@@ -331,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn preferred_fourcc_wins_even_when_offered_first_in_a_different_order() {
+    fn preferred_fourcc_wins_in_any_offer_order_and_only_a_format_both_sides_share_is_picked() {
         let offered = [fm(gbm::Format::Argb8888 as u32, 0), fm(gbm::Format::Xrgb8888 as u32, 0)];
         let importable = offered;
         assert_eq!(pick_dmabuf_format(&offered, &importable, true), Some(fm(gbm::Format::Xrgb8888 as u32, 0)));
@@ -343,10 +343,8 @@ mod tests {
             None,
             "opaque-only dma-buf offers use shm for windows"
         );
-    }
 
-    #[test]
-    fn only_a_format_both_sides_share_is_picked() {
+        // Only a format both sides share is picked.
         let weird = fm(0x1234_5678, 7);
         assert_eq!(pick_dmabuf_format(&[weird], &[weird], true), Some(weird), "an unpreferred shared format");
         let offered = [fm(gbm::Format::Xrgb8888 as u32, 1)];

@@ -441,13 +441,12 @@ mod tests {
     }
 
     #[test]
-    fn a_coroutine_made_before_any_budget_is_still_covered_by_the_cpu_cap() {
-        // The sibling below creates its coroutine inside a budgeted body, so it inherits the hook
-        // that body installed. One made while nothing is budgeted -- at the top level of
-        // `shell.lua`, before any getter runs -- inherited no hook, because installing one does not
-        // retrofit threads that already exist. Resuming it later from inside a budget then spun
-        // with nothing to stop it, and `mantle call` made that reachable from outside the process.
+    fn a_coroutine_is_covered_by_the_cpu_cap_whether_made_before_any_budget_or_inside_one() {
         let lua = lua_with_signal("a", Value::Integer(1));
+        // Before: created while nothing is budgeted -- at the top level of `shell.lua`, before any
+        // getter runs -- so it inherited no hook, because installing one does not retrofit threads
+        // that already exist. Resuming it later from inside a budget then spun with nothing to
+        // stop it, and `mantle call` made that reachable from outside the process.
         lua.load(
             r#"
             spin = coroutine.wrap(function()
@@ -459,23 +458,13 @@ mod tests {
         )
         .exec()
         .unwrap();
-
-        let start = Instant::now();
-        let result: mlua::Result<i64> = lua.load("return computed({a}, function(x) return spin() end):get()").eval();
-        let elapsed = start.elapsed();
-
-        assert!(result.is_err(), "a coroutine made before the budget must still hit the cap: {result:?}");
-        assert!(elapsed < Duration::from_secs(1), "the hook must reach it, took {elapsed:?}");
-    }
-
-    #[test]
-    fn a_coroutine_body_is_covered_by_the_cpu_cap() {
-        // Per-thread `Lua::set_hook` left coroutine work unhooked: measured 5.75s returning `Ok`.
-        // Elapsed assertion catches the escape; Rust-boundary gate would error either way.
-        let lua = lua_with_signal("a", Value::Integer(1));
-        let start = Instant::now();
-        let result: mlua::Result<i64> = lua
-            .load(
+        for (row, body) in [
+            ("made before any budget", "return computed({a}, function(x) return spin() end):get()"),
+            // Inside: it inherits the hook that body installed. Per-thread `Lua::set_hook` left
+            // coroutine work unhooked: measured 5.75s returning `Ok`. Elapsed assertion catches the
+            // escape; Rust-boundary gate would error either way.
+            (
+                "made inside the body",
                 r#"
                 return computed({a}, function(x)
                     local step = coroutine.wrap(function()
@@ -486,12 +475,15 @@ mod tests {
                     return step()
                 end):get()
                 "#,
-            )
-            .eval();
-        let elapsed = start.elapsed();
+            ),
+        ] {
+            let start = Instant::now();
+            let result: mlua::Result<i64> = lua.load(body).eval();
+            let elapsed = start.elapsed();
 
-        assert!(result.is_err(), "work inside a coroutine must still hit the CPU cap: {result:?}");
-        assert!(elapsed < Duration::from_secs(1), "the hook must reach the coroutine, took {elapsed:?}");
+            assert!(result.is_err(), "{row}: work inside a coroutine must still hit the CPU cap: {result:?}");
+            assert!(elapsed < Duration::from_secs(1), "{row}: the hook must reach the coroutine, took {elapsed:?}");
+        }
     }
 
     #[test]

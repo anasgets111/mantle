@@ -331,18 +331,17 @@ mod tests {
     const DROP: &str = r#"{ blur = 48, offset = { y = 18 } }"#;
 
     #[test]
-    fn a_shadow_cut_at_the_surface_edge_warns_once_with_the_side_and_the_room_it_needs() {
+    fn a_shadow_cut_at_the_surface_edge_warns_once_and_one_with_room_does_not() {
         let report = shadow_report("width = 360, height = 140", DROP);
         let line = r#"warning: panel "lens": rect "pill"'s shadow is cut: needs 54 px above, 72 right, 90 below, 72 left (the surface has 0 on each); grow the surface and pad the content"#;
         assert!(report.contains(line), "{report}");
         assert_eq!(report.matches("warning:").count(), 1, "four passes and four sides, one line: {report}");
         assert!(!shadow_report("width = 360, height = 140", "{ spread = 1 }").contains("warning"), "a hairline");
         assert!(!shadow_report("width = 360, height = 140", r#"{ blur = 48, inset = true }"#).contains("warning"));
-    }
-
-    #[test]
-    fn a_surface_with_room_for_the_shadow_does_not_warn() {
-        assert!(!shadow_report("width = 560, height = 340, padding = 90", DROP).contains("warning"));
+        assert!(
+            !shadow_report("width = 560, height = 340, padding = 90", DROP).contains("warning"),
+            "a surface with room for the shadow"
+        );
     }
 
     #[test]

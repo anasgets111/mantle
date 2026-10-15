@@ -990,7 +990,16 @@ mod tests {
         let (capability, _handle) = Capability::new("probe", DirtyFlag::new(), CommandSender::new(0, tx));
         lua.globals().set("probe", capability).unwrap();
         lua.globals().set("plain", Signal::new_state(Value::Integer(1), DirtyFlag::new()).unwrap()).unwrap();
+        let neither = lua.create_any_userdata(0u8).unwrap();
         // Neither type: both checks must say no.
+        for (name, ud, expected) in [
+            ("plain", lua.globals().get::<mlua::AnyUserData>("plain").unwrap(), true),
+            ("probe", lua.globals().get::<mlua::AnyUserData>("probe").unwrap(), true),
+            ("neither", neither, false),
+        ] {
+            assert_eq!(from_userdata(&ud).is_some(), is_signal(&ud), "{name}: the two checks drifted");
+            assert_eq!(is_signal(&ud), expected, "{name}");
+        }
     }
 
     #[test]

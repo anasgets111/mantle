@@ -424,7 +424,7 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_admits_a_lone_capture_but_refuses_a_second_once_full() {
+    fn an_empty_cache_admits_a_lone_capture_even_past_the_budget() {
         let mut cache = CaptureCache::default();
         cache.set_texture_budget(10);
         assert!(cache.admits(crate::layout::scene::NodeId::test(1), 100, 5, 5));

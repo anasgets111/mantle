@@ -521,9 +521,7 @@ mod tests {
     }
 
     #[test]
-    fn instance_expansion_reads_the_same_screen_list_the_signal_does() {
-        // One source, two consumers (ADR-0041 decision 2): an `output` match and a `screens`
-        // entry must never be able to disagree about which monitors exist or how large they are.
+    fn geometries_come_from_the_same_screen_list_the_signal_reads() {
         let screens = [screen_entry(0, &facts(Some("eDP-1"))).unwrap()];
         assert_eq!(
             geometries_from(&screens),

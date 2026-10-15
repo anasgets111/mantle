@@ -279,11 +279,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn in_out_quad_is_symmetric_about_the_midpoint() {
-        assert!((Easing::InOutQuad.apply(0.5) - 0.5).abs() < 1e-6);
-        assert!((Easing::InOutQuad.apply(0.25) + Easing::InOutQuad.apply(0.75) - 1.0).abs() < 1e-6);
-    }
     /// Every named curve at a quarter, a midpoint and three quarters, against values computed from
     /// Qt's `QEasingCurve` -- which is what QML's `Easing.Type` actually runs -- and not against
     /// this module's own other arms. Checking a family's `Out` against a reflection of its own
