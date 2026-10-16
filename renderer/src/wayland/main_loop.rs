@@ -39,6 +39,7 @@ pub fn run(
     };
     let (globals, mut event_queue) = registry_queue_init::<App>(&conn)?;
     let qh = event_queue.handle();
+    let display = conn.backend().display_ptr();
 
     let compositor_state = CompositorState::bind(&globals, &qh)?;
     let scale_globals = scale::ScaleGlobals::bind(&globals, &qh);
@@ -197,6 +198,11 @@ pub fn run(
             }
             Err(err) => return Err(err.into()),
         };
+        // libwayland's default queue belongs to the app, and wayland-rs only dispatches its own
+        // queue, so events libraries leave there would pile up forever: egl-wayland2 parks each
+        // `wl_buffer` there under explicit sync, about 4 releases a second (NVIDIA/egl-wayland2#56).
+        // SAFETY: `display` is the live connection `conn` owns, used on its dispatching thread.
+        unsafe { wl_display_dispatch_pending(display.cast()) };
         app.finish_paste();
         if let Some(started) = dispatch_started
             && let Some(ended) = thread_cpu_time()
@@ -592,6 +598,11 @@ fn census(app: &App) -> (memory_profile::Census, memory_profile::Surfaces) {
         malloc: shared::Malloc::default(),
     };
     (census, memory_profile::Surfaces(app.client.scene().census_by_surface()))
+}
+
+unsafe extern "C" {
+    /// libwayland's dispatch of the default queue; wayland-rs exposes only its own queue's.
+    fn wl_display_dispatch_pending(display: *mut std::ffi::c_void) -> std::ffi::c_int;
 }
 
 #[cfg(test)]
