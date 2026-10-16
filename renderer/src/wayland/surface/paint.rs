@@ -532,11 +532,13 @@ impl App {
     /// frame is owed by no tree, no signal and no frame callback, so nothing else would wake for
     /// it (ADR-0233).
     pub(in crate::wayland) fn next_stale_deadline(&self) -> Option<std::time::Instant> {
-        // Bound too: an unbound surface is skipped by the repaint that would clear this, so a
-        // deadline in the past would spin the poll loop instead of arming one wake.
+        // Bound and not awaiting a frame callback: the repaint that would clear this skips an
+        // unbound surface and defers to a pending callback, so a deadline in the past would spin
+        // the poll loop instead of arming one wake. The callback wakes through the Wayland fd; a
+        // surface hidden behind a session lock gets none until unlock.
         self.surfaces
             .iter()
-            .filter(|s| s.map_state == MapState::Mapped && s.bound.is_some())
+            .filter(|s| s.map_state == MapState::Mapped && s.bound.is_some() && !s.frame_pending)
             .filter_map(|s| s.stale)
             .min()
     }
