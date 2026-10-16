@@ -112,3 +112,46 @@ jobs:
           gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --notes-file notes.md dist/*
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # Publishes mantle-bin: this tag's version and tarball checksum into
+  # packaging/aur/mantle-bin/PKGBUILD, pushed with the AUR_SSH_KEY deploy key.
+  aur:
+    needs: release
+    runs-on: ubuntu-26.04
+    container: archlinux:base-devel
+    steps:
+      - run: pacman -Syu --noconfirm --needed git openssh
+      - uses: actions/checkout@v7
+        with:
+          sparse-checkout: packaging/aur
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Push to the AUR
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          sum="$(awk '/x86_64-linux\.tar\.gz$/ {print $1}' dist/SHA256SUMS)"
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          # The key aur.archlinux.org publishes (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' >~/.ssh/known_hosts
+          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes'
+          git clone ssh://aur@aur.archlinux.org/mantle-bin.git aur
+          sed -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" \
+            -e "s/^sha256sums=.*/sha256sums=('$sum')/" packaging/aur/mantle-bin/PKGBUILD >aur/PKGBUILD
+          # makepkg refuses to run as root.
+          useradd -m builder
+          chown -R builder aur
+          runuser -u builder -- sh -c 'cd aur && makepkg --printsrcinfo >.SRCINFO'
+          cd aur
+          git config --global --add safe.directory "$PWD"
+          git add PKGBUILD .SRCINFO
+          # A rerun of the same tag has nothing to commit.
+          git diff --cached --quiet ||
+            git -c user.name='Anas Khalifa' -c user.email=anasgets111@gmail.com commit -qm "$version"
+          git push origin HEAD:master

@@ -6,11 +6,12 @@ Install both Mantle binaries, create a config, check it, and start the shell. Th
 ## Install
 
 [Releases](https://github.com/anasgets111/mantle/releases) carry the `.deb`, `.rpm` and tarball.
-The AUR package and source builds follow `main`.
+[`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) packages each release; `mantle-git`
+and source builds follow `main`.
 
 | Route | What to do |
 | :--- | :--- |
-| Arch | Install [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) from the AUR. It builds `main` and installs the PAM stack |
+| Arch | Install [`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) from the AUR for the latest release, or [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) to build `main`. Both install the PAM stack |
 | Ubuntu, Fedora | Install a [release](https://github.com/anasgets111/mantle/releases) package with `sudo apt install ./mantle_<version>_amd64.deb` or `sudo dnf install ./mantle-<version>-1.x86_64.rpm`. These packages install under `/usr`, with library dependencies and the PAM stack. They require Ubuntu 26.04 or Fedora 44 or later because the binaries need glibc 2.43 |
 | Release tarball | `sudo tar -xzf mantle-<version>-x86_64-linux.tar.gz -C /` installs under `/usr/local`, with the PAM stack and polkit rule under `/etc`. Install the required libraries yourself. It needs glibc 2.43 |
 | From source | `cargo build --workspace --release`, then put `target/release/mantle` and `target/release/mantle-renderer` together on `PATH`, for example in `~/.local/bin`. See [build requirements](#build-from-source) |
