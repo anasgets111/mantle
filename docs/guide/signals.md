@@ -423,7 +423,7 @@ again after changing it in place is a write.
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `index must be 1 or more` | `:reveal` on another kind, or an index below 1 |
 | `signal nesting exceeded its maximum depth of 32 levels` | A derived chain deeper than 32, or one that reads itself |
-| `exceeded the 2.5ms CPU budget for one evaluation` | A map or computed body ran too long ([runtime](runtime.md)) |
+| `exceeded the 50ms CPU limit for one evaluation` | A map or computed body ran away ([runtime](runtime.md)) |
 | `a Signal resolved to another Signal` | A map returned a signal; return a plain value |
 | `` `x` is a Signal handle, not a plain value `` | A signal in a structural property, or inside a table a signal returned (see [gotchas](#gotchas)) |
 

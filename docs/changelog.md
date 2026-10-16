@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Changed: a getter, `on_change` handler, action or timer no longer fails at 2.5 ms of CPU, which broke configs on slower machines. It now fails only at 50 ms, as a runaway (`exceeded the 50ms CPU limit for one evaluation`). Past 2.5 ms the log gets one warning per slowest signal, naming the signal that spent the time.
+
 ## 0.7.4 - 2026-10-16
 
 - Fixed: while the session was locked, the renderer could hold one CPU core at 100% until unlock (seen after a restarted shell took the lock over; since 0.1.1). A surface hidden behind the lock owed a repaint and woke the loop at once instead of waiting for its frame callback.

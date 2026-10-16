@@ -1,12 +1,19 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use mlua::{FromLuaMulti, Function, IntoLuaMulti, Lua};
+use shared::warn;
 
 use super::tracking::MemoTable;
+use crate::lua::location::Site;
 
-/// CPU runtime is capped at 2.5ms per evaluation.
-const CPU_CAP: Duration = Duration::from_micros(2500);
+/// Runaway cap on the CPU one outermost evaluation may spend; overrunning it is an error. Sized
+/// 20x the frame target so a slow machine running a legitimate chain never reaches it (ADR-0369).
+const RUNAWAY_CAP: Duration = Duration::from_millis(50);
+
+/// Frame-time target for one outermost evaluation. Missing it logs a warning; it never fails.
+const FRAME_TARGET: Duration = Duration::from_micros(2500);
 
 /// Whole-`Scene::apply` cap, not per getter. It must exceed legitimate passes that run every getter
 /// and block on shaping per text measurement. A 2000-sibling row (up to 4000) measured release
@@ -34,13 +41,15 @@ pub(super) struct Deadline {
     /// Outer `None`: not anchored yet. Inner `None`: the CPU clock is unreadable; wall remains
     /// authoritative.
     cpu: Cell<Option<Option<Duration>>>,
+    /// The computed this stack level is evaluating; `None` for a handler, a held read or a pass.
+    site: Option<Site>,
 }
 
 impl Deadline {
     /// `cap` from now on wall; CPU anchors on the first tick. Anchoring CPU at wall expiry instead
     /// would make the deadline `cap` of CPU *after* the wall cap, doubling it.
     fn lazy(cap: Duration) -> Self {
-        Self { wall: Instant::now() + cap, cap, cpu: Cell::new(None) }
+        Self { wall: Instant::now() + cap, cap, cpu: Cell::new(None), site: None }
     }
 
     /// `cap` from now on both clocks.
@@ -58,6 +67,12 @@ impl Deadline {
 
     fn start_cpu(&self) {
         self.cpu.set(Some(thread_cpu_time().map(|used| used + self.cap)));
+    }
+
+    /// CPU spent since the clock anchored; `None` if it never did, which costs no clock read.
+    fn cpu_spent(&self) -> Option<Duration> {
+        let end = self.cpu.get()??;
+        Some(thread_cpu_time()?.saturating_sub(end - self.cap))
     }
 
     /// `anchor` is true from the hook, which starts the CPU clock; the Rust-boundary gate passes
@@ -92,14 +107,14 @@ pub(crate) fn thread_cpu_time() -> Option<Duration> {
 thread_local!(static CLOCK_READS: Cell<usize> = const { Cell::new(0) });
 
 /// VM instructions between checks. `HookTriggers` warns low values have high overhead; 1000 stays
-/// cheap and catches a runaway closure within roughly one batch of 2.5ms, not seconds later.
+/// cheap and catches a runaway closure within roughly one batch of the 50ms cap, not seconds later.
 const CHECK_EVERY_N_INSTRUCTIONS: u32 = 1000;
 
 /// Max live [`Signal::get_value`](super::Signal::get_value) calls before `mlua::Error`, matching `layout::scene`'s
 /// `MAX_TREE_DEPTH`. [`CpuBudget::enter`] wraps dependency resolution, so it bounds body recursion
 /// and chains (`s:map(f):map(g):...`). A 200-link chain reaches depth 200 with Rust depth 1 if the
 /// deadline wraps only the closure; 5000 links abort with `fatal runtime error: stack overflow`,
-/// beyond the 2.5ms hook because the chain does no Lua work. 32 leaves headroom; scene measurements
+/// beyond the CPU hook because the chain does no Lua work. 32 leaves headroom; scene measurements
 /// set both constants.
 const MAX_SIGNAL_NESTING_DEPTH: usize = 32;
 
@@ -109,13 +124,13 @@ const MAX_SIGNAL_NESTING_DEPTH: usize = 32;
 /// `capability::CapabilityHandle::notify_change`'s handlers, and the hook cannot tell which it
 /// interrupted. Each call site already prefixes what it was doing ("Signal getter failed: ...",
 /// "`on_change` handler raised, ignoring it: ...").
-const CPU_CAP_EXCEEDED: &str = "exceeded the 2.5ms CPU budget for one evaluation";
+const CPU_CAP_EXCEEDED: &str = "exceeded the 50ms CPU limit for one evaluation; a runaway loop?";
 
 /// Distinct pass-budget error so config knows which limit it hit. Plain `__index` without a signal
 /// reaches it, the hole this budget closes.
 const LAYOUT_PASS_CAP_EXCEEDED: &str = "the layout pass exceeded its 2s CPU budget";
 
-/// RAII claim on the 2.5ms budget for dependency resolution plus closure call. Deadlines stack in
+/// RAII claim on the runaway cap for dependency resolution plus closure call. Deadlines stack in
 /// `app_data` because computed dependencies, body reads, and self/mutual cycles re-enter; a single
 /// mlua hook removed by an inner call would strip the outer cap. Install on 0->1 holders, remove on
 /// 1->0. `stack[0]`, not `last()`, is the outer evaluation's deadline and the minimum: LIFO pushes
@@ -159,8 +174,64 @@ pub(crate) fn install_hook(lua: &Lua) -> mlua::Result<()> {
 /// or after the first tick; call it at entry of a native function that can run past one hook batch
 /// (`fuzzy`, `json.decode`), where no tick would anchor the budget before the work is spent.
 pub(crate) fn anchor_cpu_budget(lua: &Lua) {
-    if let Some(deadline) = lua.app_data_ref::<Vec<Deadline>>().as_ref().and_then(|stack| stack.first()) {
+    if let Some(deadline) = lua.app_data_ref::<Budgets>().as_ref().and_then(|budgets| budgets.stack.first()) {
         deadline.anchor();
+    }
+}
+
+/// Live evaluations plus the frame-target bookkeeping, in one `app_data` value so the instruction
+/// hook pays one lookup for both. Deadlines stack because computed dependencies, body reads and
+/// cycles re-enter.
+#[derive(Default)]
+struct Budgets {
+    stack: Vec<Deadline>,
+    /// Hook ticks of the running outermost evaluation by the innermost site at the tick. Sampling
+    /// reads no clock; it sees only Lua instructions, so native time is never attributed.
+    samples: RefCell<Vec<(Option<Site>, u32)>>,
+    /// Slowest sites already warned about. [`forget_frame_warnings`] clears it per evaluation.
+    /// ponytail: every overrun with no site (a handler, timer or action) shares the `None` key, so
+    /// only the first such overrun per reload warns. Upgrade: key by the callback's own site.
+    warned: HashSet<Option<Site>>,
+}
+
+impl Budgets {
+    fn sample(&self) {
+        let Some(site) = self.stack.last().map(|top| top.site) else { return };
+        let mut samples = self.samples.borrow_mut();
+        match samples.iter_mut().find(|(seen, _)| *seen == site) {
+            Some((_, ticks)) => *ticks += 1,
+            None => samples.push((site, 1)),
+        }
+    }
+
+    /// Ends the outermost evaluation: one warning per slowest site when its CPU, measured only if
+    /// the clock anchored, missed [`FRAME_TARGET`]. A runaway already raised an error.
+    fn report_frame_overrun(&mut self) {
+        let samples = std::mem::take(self.samples.get_mut());
+        let Some(spent) = self.stack[0].cpu_spent().filter(|spent| (FRAME_TARGET..RUNAWAY_CAP).contains(spent)) else {
+            return;
+        };
+        let slowest = samples.iter().max_by_key(|(_, ticks)| *ticks).map(|(site, _)| *site);
+        if !self.warned.insert(slowest.flatten()) {
+            return;
+        }
+        let culprit = match slowest {
+            Some(Some(site)) => format!("most of it in the signal created at {site}"),
+            Some(None) => "most of it outside any signal (handler body or native call)".to_string(),
+            None => "none of it in Lua instructions (native work)".to_string(),
+        };
+        let message =
+            format!("an evaluation took {spent:.1?} of CPU, over the {FRAME_TARGET:?} frame target; {culprit}");
+        #[cfg(test)]
+        FRAME_WARNINGS.with_borrow_mut(|seen| seen.push(message.clone()));
+        warn!("{message}");
+    }
+}
+
+/// Lets a re-evaluated config's slow signal warn again. Called before each evaluation.
+pub(super) fn forget_frame_warnings(lua: &Lua) {
+    if let Ok(Some(mut budgets)) = lua.try_app_data_mut::<Budgets>() {
+        budgets.warned.clear();
     }
 }
 
@@ -170,9 +241,9 @@ pub(super) struct PassDeadline(pub(super) Option<Deadline>);
 
 /// RAII claim on [`LAYOUT_PASS_CAP`] for the whole pass. It covers metamethod-aware `Table::get`
 /// after [`CpuBudget`] drops its hook (a `while true` `margin.__index` once hung Wayland), and
-/// stops a margined tree buying one 2.5ms budget per `get_value` under ADR-0021. Runs beside
+/// stops a margined tree buying one evaluation budget per `get_value` under ADR-0021. Runs beside
 /// [`CpuBudget`]; the earlier
-/// [`expired_budget`] wins, preserving the 2.5ms cap and adding a pass ceiling.
+/// [`expired_budget`] wins, preserving the runaway cap and adding a pass ceiling.
 pub(crate) struct LayoutPassBudget<'lua> {
     lua: &'lua Lua,
 }
@@ -212,8 +283,9 @@ impl<'lua> CpuBudget<'lua> {
     /// Claims one nesting level, refusing past [`MAX_SIGNAL_NESTING_DEPTH`]. Install hook before
     /// pushing so early return cannot strand a deadline and disable the VM's cap; no Lua runs
     /// between the two, and the hook tolerates an empty stack.
-    pub(crate) fn enter(lua: &'lua Lua) -> mlua::Result<Self> {
-        let mut stack = crate::lua::app_data_or_default::<Vec<Deadline>>(lua);
+    pub(crate) fn enter(lua: &'lua Lua, site: Option<Site>) -> mlua::Result<Self> {
+        let mut budgets = crate::lua::app_data_or_default::<Budgets>(lua);
+        let stack = &mut budgets.stack;
         if stack.len() >= MAX_SIGNAL_NESTING_DEPTH {
             return Err(mlua::Error::runtime(format!(
                 "signal nesting exceeded its maximum depth of {MAX_SIGNAL_NESTING_DEPTH} levels -- a computed/map chain recursing into itself, or a dependency chain that long?"
@@ -228,22 +300,23 @@ impl<'lua> CpuBudget<'lua> {
             lua.gc_stop();
             lua.used_memory()
         });
-        let deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(CPU_CAP));
+        let mut deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(RUNAWAY_CAP));
+        deadline.site = site;
         stack.push(deadline);
         Ok(Self { lua, fresh, gc_paused_at })
     }
 
-    /// Calls `f` under its own budget, erroring when the call raised or ran past the cap: the one
+    /// Calls `f` under its own budget, erroring when the call raised or ran past the runaway cap: the one
     /// way an `on_change` handler, timer or `mantle call` handler reaches config code.
     pub(crate) fn call<A: IntoLuaMulti, R: FromLuaMulti>(lua: &Lua, f: &Function, args: A) -> mlua::Result<R> {
-        let budget = CpuBudget::enter(lua)?;
+        let budget = CpuBudget::enter(lua, None)?;
         let value = f.call(args)?;
         budget.check_not_exceeded()?;
         Ok(value)
     }
 
-    /// Second 2.5ms gate at Rust boundary. A `pcall` can catch the hook and return a partial `Ok`,
-    /// measured at 7.5x the cap; this check turns it into `Err`. ponytail: a body that swallows the
+    /// Second runaway gate at Rust boundary. A `pcall` can catch the hook and return a partial `Ok`,
+    /// measured at 7.5x the old 2.5ms cap; this check turns it into `Err`. ponytail: a body that swallows the
     /// hook and never returns still spins. VM lacks preemption; upgrade path: evaluate in a separate
     /// process (ADR-0039).
     pub(crate) fn check_not_exceeded(&self) -> mlua::Result<()> {
@@ -256,8 +329,11 @@ impl<'lua> CpuBudget<'lua> {
 
 impl Drop for CpuBudget<'_> {
     fn drop(&mut self) {
-        if let Ok(Some(mut stack)) = self.lua.try_app_data_mut::<Vec<Deadline>>() {
-            stack.pop();
+        if let Ok(Some(mut budgets)) = self.lua.try_app_data_mut::<Budgets>() {
+            if budgets.stack.len() == 1 {
+                budgets.report_frame_overrun();
+            }
+            budgets.stack.pop();
         }
         // After the pop: a finalizer reading a signal opens a budget of its own.
         if let Some(before) = self.gc_paused_at {
@@ -273,11 +349,20 @@ impl Drop for CpuBudget<'_> {
     }
 }
 
+#[cfg(test)]
+thread_local!(static FRAME_WARNINGS: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) });
+
 /// Returns the earlier expired signal/pass deadline. Signal uses outermost `first()`; pass stays
 /// separate so that lookup remains O(1). No deadline means no expiry, allowing hook installation.
 fn expired_budget(lua: &Lua, anchor: bool) -> Option<&'static str> {
-    if lua.app_data_ref::<Vec<Deadline>>().and_then(|stack| stack.first().map(|d| d.expired(anchor))) == Some(true) {
-        return Some(CPU_CAP_EXCEEDED);
+    if let Some(budgets) = lua.app_data_ref::<Budgets>() {
+        // `anchor` is true only from the hook: one sample per tick.
+        if anchor {
+            budgets.sample();
+        }
+        if budgets.stack.first().is_some_and(|d| d.expired(anchor)) {
+            return Some(CPU_CAP_EXCEEDED);
+        }
     }
     let pass = lua.app_data_ref::<PassDeadline>()?;
     pass.0.as_ref().filter(|d| d.expired(anchor)).map(|_| LAYOUT_PASS_CAP_EXCEEDED)
@@ -299,7 +384,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "a busy-loop computed must error, not return a value");
-        assert!(elapsed < Duration::from_secs(1), "the 2.5ms cap must abort well under a second, took {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "the 50ms cap must abort well under a second, took {elapsed:?}");
     }
 
     #[test]
@@ -315,7 +400,7 @@ mod tests {
         let elapsed = start.elapsed();
 
         assert!(result.is_err(), "the outer computed must still abort even though its body read a second Signal");
-        assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 2.5ms, took {elapsed:?}");
+        assert!(elapsed < Duration::from_secs(1), "the cap must still fire near 50ms, took {elapsed:?}");
     }
 
     #[test]
@@ -369,7 +454,7 @@ mod tests {
     #[test]
     fn a_map_chain_at_the_nesting_cap_is_accepted_and_one_link_past_it_is_rejected() {
         // At most N levels are admitted, N+1 rejected. This distinguishes gates: CPU measures this
-        // thread, not descheduled wait, so a busy machine may hit 2.5ms at the admitted depth;
+        // thread, not descheduled wait, so a busy machine may hit the cap at the admitted depth;
         // nesting must not reject a depth it promises.
         let lua = lua_with_signal("a", Value::Integer(7));
         match lua.load(map_chain_source(MAX_SIGNAL_NESTING_DEPTH)).eval::<i64>() {
@@ -390,7 +475,7 @@ mod tests {
     #[test]
     fn a_computed_descheduled_past_its_deadline_is_not_charged_for_time_it_did_not_run() {
         // Before the fix: 5 failures in 53 renderer-suite runs, a different test each time, across
-        // 630 tests/12 threads, each falsely raising the 2.5ms error while a quiet-machine config
+        // 630 tests/12 threads, each falsely raising the cap error while a quiet-machine config
         // was descheduled. `park` burns no CPU, so the CPU cap must not fire; the later loop
         // exercises both hook and return gates.
         let lua = lua_with_signal("a", Value::Integer(7));
@@ -425,7 +510,7 @@ mod tests {
                 r#"
                 return computed({a}, function(x)
                     local n = 0
-                    for _ = 1, 400 do
+                    for _ = 1, 4000 do
                         pcall(function() for _ = 1, 20000 do n = n + 1 end end)
                     end
                     return n
@@ -491,7 +576,7 @@ mod tests {
         let lua = lua_with_signal("a", Value::Integer(1));
         let _: mlua::Result<i64> = lua.load("return computed({a}, function(x) while true do end end):get()").eval();
 
-        // A legitimate top-level script slower than 2.5ms must not inherit an aborted hook.
+        // A legitimate top-level script slower than the cap must not inherit an aborted hook.
         let result: i64 = lua
             .load(
                 r#"
@@ -503,6 +588,126 @@ mod tests {
             .eval()
             .unwrap();
         assert_eq!(result, 2_000_001_000_000);
+    }
+
+    /// `lua_with_signal` plus two ways to spend `ms` of thread CPU, which a loaded machine cannot
+    /// shorten or lengthen: `spin(ms)` in Lua instructions, which the hook samples, and `burn(ms)`
+    /// natively, which it cannot see (it anchors the budget first, as any long native call does).
+    fn lua_with_burners() -> Lua {
+        let lua = lua_with_signal("a", Value::Integer(1));
+        let cpu = || thread_cpu_time().unwrap_or_default();
+        let burn = lua
+            .create_function(move |lua, ms: u64| {
+                anchor_cpu_budget(lua);
+                let start = cpu();
+                while cpu() - start < Duration::from_millis(ms) {}
+                Ok(())
+            })
+            .unwrap();
+        let cpu_ms = lua.create_function(move |_, ()| Ok(cpu().as_secs_f64() * 1000.0)).unwrap();
+        lua.globals().set("burn", burn).unwrap();
+        lua.globals().set("cpu_ms", cpu_ms).unwrap();
+        lua.load("function spin(ms) local t = cpu_ms() while cpu_ms() - t < ms do end end").exec().unwrap();
+        lua
+    }
+
+    fn frame_warnings() -> Vec<String> {
+        FRAME_WARNINGS.with_borrow_mut(std::mem::take)
+    }
+
+    /// A getter that spins 8ms (3x the frame target, far under the cap), created `line` lines down.
+    fn slow_getter(line: usize) -> String {
+        format!("{}return computed({{a}}, function(x) spin(8) return x end):get()", "\n".repeat(line - 1))
+    }
+
+    fn eval_slow(lua: &Lua, source: &str) -> i64 {
+        lua.load(source).set_name("slow").eval().unwrap()
+    }
+
+    #[test]
+    fn a_getter_over_the_frame_target_returns_its_value_and_warns_once_per_site() {
+        let lua = lua_with_burners();
+
+        assert_eq!(eval_slow(&lua, &slow_getter(1)), 1);
+        let first = frame_warnings();
+        assert_eq!(first.len(), 1, "one warning for the slow evaluation: {first:?}");
+        assert!(
+            first[0].contains("signal created at [string \"slow\"]:1"),
+            "it names the computed's creation line: {}",
+            first[0]
+        );
+
+        eval_slow(&lua, &slow_getter(1));
+        assert!(frame_warnings().is_empty(), "the same site does not warn twice");
+
+        eval_slow(&lua, &slow_getter(2));
+        let other = frame_warnings();
+        assert!(other.len() == 1 && other[0].contains("\"slow\"]:2"), "a different site warns on its own: {other:?}");
+    }
+
+    #[test]
+    fn a_reload_lets_the_same_slow_site_warn_again() {
+        let lua = lua_with_burners();
+        eval_slow(&lua, &slow_getter(1));
+        assert_eq!(frame_warnings().len(), 1);
+
+        begin_evaluation(&lua);
+        eval_slow(&lua, &slow_getter(1));
+        assert_eq!(frame_warnings().len(), 1, "an edited config's slow getter must not stay silenced");
+    }
+
+    #[test]
+    fn a_cheap_outer_computed_over_an_expensive_inner_one_blames_the_inner() {
+        let lua = lua_with_burners();
+        lua.load(
+            "local inner = computed({a}, function(x) spin(8) return x end)\n\
+             local outer = computed({inner}, function(v) return v end)\n\
+             return outer:get()",
+        )
+        .set_name("nested")
+        .eval::<i64>()
+        .unwrap();
+
+        let warned = frame_warnings();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(warned[0].contains("\"nested\"]:1"), "the inner computed, line 1, spent the time: {}", warned[0]);
+    }
+
+    #[test]
+    fn a_handler_that_spins_in_its_own_body_blames_no_signal() {
+        let lua = lua_with_burners();
+        let handler: Function = lua
+            .load("local cheap = computed({a}, function(x) return x end) return function() spin(8) return cheap:get() end")
+            .eval()
+            .unwrap();
+
+        CpuBudget::call::<_, i64>(&lua, &handler, ()).unwrap();
+
+        let warned = frame_warnings();
+        assert!(warned.len() == 1 && warned[0].contains("outside any signal"), "{warned:?}");
+    }
+
+    #[test]
+    fn native_time_has_no_instructions_to_sample_and_says_so() {
+        let lua = lua_with_burners();
+        lua.load("return computed({a}, function(x) burn(8) return x end):get()").eval::<i64>().unwrap();
+
+        let warned = frame_warnings();
+        assert!(warned.len() == 1 && warned[0].contains("native work"), "{warned:?}");
+    }
+
+    #[test]
+    fn a_getter_under_the_frame_target_does_not_warn() {
+        let lua = lua_with_burners();
+        lua.load("return computed({a}, function(x) spin(1) return x end):get()").eval::<i64>().unwrap();
+        assert!(frame_warnings().is_empty());
+    }
+
+    #[test]
+    fn a_runaway_raises_and_logs_no_frame_warning() {
+        let lua = lua_with_burners();
+        lua.load("return computed({a}, function(x) while true do end end):get()").eval::<i64>().unwrap_err();
+        assert!(frame_warnings().is_empty(), "one fault, one message");
     }
 
     fn clock_reads() -> usize {
@@ -548,14 +753,22 @@ mod tests {
         // No hook tick runs before or during the call, so only the call's own entry can anchor.
         let lua = lua_with_signal("a", Value::Integer(1));
         crate::lua::fuzzy::register(&lua).unwrap();
-        lua.globals().set("haystack", "ab".repeat(400_000)).unwrap();
-        let start = Instant::now();
-        let err = lua
-            .load(r#"return computed({a}, function(x) return fuzzy(haystack, "bbbbbbbbbbbbbbbbbbbbbbbb") end):get()"#)
-            .eval::<Value>()
-            .unwrap_err();
+        let call = r#"return fuzzy(haystack, "bbbbbbbbbbbbbbbbbbbbbbbb")"#;
+        // Sized by measurement so it outlasts the cap at any optimisation level: double until one
+        // call costs 2x the cap in thread CPU.
+        let mut len = 50_000;
+        loop {
+            lua.globals().set("haystack", "ab".repeat(len)).unwrap();
+            let start = thread_cpu_time().unwrap_or_default();
+            lua.load(call).eval::<Value>().unwrap();
+            if thread_cpu_time().unwrap_or_default() - start >= 2 * RUNAWAY_CAP {
+                break;
+            }
+            len *= 2;
+        }
+        let err =
+            lua.load(format!("return computed({{a}}, function(x) {call} end):get()")).eval::<Value>().unwrap_err();
         assert!(err.to_string().contains(CPU_CAP_EXCEEDED), "the long call must be stopped and named: {err}");
-        assert!(start.elapsed() > CPU_CAP, "the haystack must outlast the cap for this to prove anything");
     }
 
     #[test]

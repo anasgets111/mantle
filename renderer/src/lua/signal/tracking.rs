@@ -572,7 +572,7 @@ mod tests {
     use super::super::*;
     use super::*;
 
-    /// A launcher shape that once spent its whole 2.5ms budget in the field:
+    /// A launcher shape that once overran its CPU budget in the field:
     /// `results` filters every application, `web_shown` reads `results`, `effective_selected` reads
     /// both, and each row's `background` reads that. One read of `background` used to run the
     /// filter twice; the memo makes the second reach `results` a lookup.
@@ -623,7 +623,7 @@ mod tests {
     }
 
     /// A computed that failed gives every reader in the pass its error, an overrun or a Lua error
-    /// alike. Re-running it per reader spent the 2.5ms cap again each time: under load, resolve
+    /// alike. Re-running it per reader spent the cap again each time: under load, resolve
     /// went from 135 to 740 ms/s. The answer is the pass's, so the next pass reads the fixed state.
     #[test]
     fn a_computed_that_failed_runs_once_per_pass_and_recovers_on_the_next() {

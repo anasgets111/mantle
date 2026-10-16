@@ -176,7 +176,7 @@ impl CapabilityHandle {
         previous
     }
 
-    /// Runs each `on_change` handler with `(current, previous)` (ADR-0115), under its own 2.5ms CPU
+    /// Runs each `on_change` handler with `(current, previous)` (ADR-0115), under its own CPU
     /// budget, the same budget as `map`. A raising handler is logged and skipped after the push;
     /// handlers run from a copied list, so one can register another without borrowing the
     /// `RefCell` recursively.

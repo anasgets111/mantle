@@ -59,7 +59,7 @@ pub(super) fn read_delayed(
     // Recurses into the source, so it claims a nesting level for the reason `Computed` does.
     // Unguarded, a long enough chain exhausted the Rust stack and aborted `mantle check` before
     // any cap could answer.
-    let _budget = CpuBudget::enter(lua)?;
+    let _budget = CpuBudget::enter(lua, None)?;
     let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
     let pending = due.get().map(|at| mlua::Result::Ok((ud.nth_user_value(PENDING_SLOT)?, at))).transpose()?;
     let mut cell = DelayCell { held: ud.nth_user_value(HELD_SLOT)?, pending };
@@ -81,7 +81,7 @@ pub(super) fn read_pulse(
     own: CellId,
 ) -> mlua::Result<Value> {
     // Recurses into the source too, so it claims a nesting level as `read_delayed` does.
-    let _budget = CpuBudget::enter(lua)?;
+    let _budget = CpuBudget::enter(lua, None)?;
     let fresh = source_at(ud, FIRST_SOURCE_SLOT)?.get_value(lua)?;
     let mut cell = PulseCell { seen: ud.nth_user_value(HELD_SLOT)?, until: until.get() };
     note_read(lua, own);

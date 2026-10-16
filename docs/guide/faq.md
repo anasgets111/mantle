@@ -48,7 +48,7 @@ stays within one page is in that page's Gotchas table.
 | Message | Cause | Fix |
 | :--- | :--- | :--- |
 | `surface 2 is a string, not a node` | `require` returned the module and its path into the surface list | [Modules and require](runtime.md#modules-and-require) |
-| `exceeded the 2.5ms CPU budget for one evaluation` | A map, `computed`, handler or timer did too much work | [Limits and budgets](runtime.md#limits-and-budgets) |
+| `exceeded the 50ms CPU limit for one evaluation` | A map, `computed`, handler or timer ran away or did far too much work | [Limits and budgets](runtime.md#limits-and-budgets) |
 | `signal nesting exceeded its maximum depth of 32 levels` | A derived chain reads itself or nests too deep | [Errors](signals.md#errors) |
 | `a Signal resolved to another Signal` | A map returned a signal | [Errors](signals.md#errors) |
 | `` `margin.left` is a Signal handle `` | A signal inside a table a signal returned, or under a metatable, is not read | [signals gotchas](signals.md#gotchas) |

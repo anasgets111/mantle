@@ -6,6 +6,7 @@ use std::time::Duration;
 use mlua::{AnyUserData, IntoLua, Lua, LuaSerdeExt, Table, Value, Variadic};
 
 use crate::layout::node::preview_for_error;
+use crate::lua::location::Site;
 use crate::lua::luacats::{As, Generic, LuaType, SignalOf, lua_fn};
 use crate::lua::marshal::{Num, a_type, list_entries, out_of_range, rect_table};
 use crate::text::snap::LogicalRect;
@@ -151,6 +152,7 @@ struct StateRegistry(HashMap<String, (Signal, Value)>, HashSet<String>, HashSet<
 pub fn begin_evaluation(lua: &Lua) {
     super::note_everything_written();
     super::image_status::shrink(lua);
+    super::budget::forget_frame_warnings(lua);
     if let Some(mut registry) = lua.app_data_mut::<StateRegistry>() {
         registry.1.clear();
     }
@@ -305,7 +307,7 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
                     ))),
                 })
                 .collect::<mlua::Result<Vec<_>>>()?;
-            let kind = SignalKind::Computed { out: Output::new(), arity: collected.len() };
+            let kind = SignalKind::Computed { out: Output::new(), arity: collected.len(), site: Site::of_caller(lua) };
             let arity = collected.len();
             let ud = new_derived(lua, kind, Some(r#fn.0), collected)?;
             ud.set_nth_user_value(before_slot(arity), before.unwrap_or(Value::Nil))?;

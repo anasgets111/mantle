@@ -8587,3 +8587,47 @@ the row fill. Paint drawn over the glass adds to its 88%, so a config keeps the 
 Limit: a shader that changes a pixel before every capture request never unmixes it, and the desktop
 under it freezes; the upgrade is a copy of the presented pixels per request. Memory is about 20
 bytes per read pixel plus the texture.
+
+## 0369. Signal CPU budget: hard limit only for runaways; the frame target warns (amends ADR-0281)
+
+ADR-0281 decision 2 set one 2.5 ms thread-CPU cap per outermost evaluation and made an overrun an
+error. That is a frame-time target enforced as a failure, and CPU time scales with the machine:
+anasgets111/dotfiles#7 had a launcher chain of 0.20 to 0.28 ms on the dev machine that exceeded
+2.5 ms on a 4-core laptop. Tiles vanished and key and click handlers raised. The error also named
+the wrong signal: nested resolution shares the outermost deadline, so it was raised in whichever
+computed was running at expiry, such as a trivial `util.today`, not the one that spent the time.
+
+Decision:
+
+1. **Runaway cap.** `RUNAWAY_CAP` is 50 ms of thread CPU per outermost evaluation, 20x the old
+   cap, and overrunning it is still an error (`exceeded the 50ms CPU limit for one evaluation; a
+   runaway loop?`). Every mechanism stays: lazy wall and CPU deadline, the hook every 1000
+   instructions, the Rust-boundary gate, the nesting cap, the pass cap and the GC pause. The failed
+   evaluation memo is unchanged: it keeps any error from a computed whose budget started fresh,
+   Lua errors included, not only runaways.
+2. **Frame target.** `FRAME_TARGET` is 2.5 ms and only warns. When an outermost evaluation ends
+   with its CPU clock anchored, it measures the CPU it spent; over the target and under the
+   runaway cap (a runaway already raised its error), it logs one warning. The blame is sampled: each
+   instruction-hook tick charges the innermost level's site (a computed's creation site, or none for
+   a handler, timer, action or held read), and the site with most ticks is named, or "outside any
+   signal" when none has most. No clock is read per computed. A first design timed each computed
+   with `Instant` and cost about 140 ns per evaluation (a 16-link chain went from 715 to 852 ns).
+3. **Dedupe.** Once per slowest site, cleared by `signal::begin_evaluation`, since a reload reuses
+   the VM. Every site-less overrun shares one key, so only the first slow handler per reload warns.
+
+Limits of the sampling: resolution is one tick per 1000 VM instructions, so an evaluation under
+that blames nothing, and time inside a native call (`fuzzy`, `json.decode`, `string.rep`) has no
+instructions and is never attributed; with no ticks the warning says so. Instructions, not time,
+weigh the sites, so a few expensive calls can lose to many cheap instructions. Wall descheduling
+no longer misblames, since the clock is CPU.
+
+Trade-off: a slow getter now costs frames instead of failing. A runaway stalls the thread up to
+50 ms before it stops, 20x longer than before, and the damage compounds:
+
+- A pass with N distinct runaway computeds costs min(N x 50 ms, 2 s) instead of N x 2.5 ms; the
+  2 s pass cap is reached at 40 runaways, not 800.
+- A runaway that reads an animated signal costs about 50 ms per frame.
+- A runaway key or click handler adds 50 ms of latency per event, the lock screen included. That
+  degrades input; it does not lock the user out.
+
+Memoizing across separate `:get()` calls outside a pass and the 2 s pass cap are unchanged.

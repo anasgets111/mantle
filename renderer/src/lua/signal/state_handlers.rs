@@ -10,7 +10,7 @@ use crate::lua::warn_raised;
 
 /// Rounds per [`run`] (ADR-0288). A handler's write queues the next round, so a chain takes one
 /// round per link; eight is deeper than a hand-written chain, and a loop stops after eight rounds
-/// of 2.5 ms handler budgets instead of hanging the turn.
+/// of handler budgets instead of hanging the turn.
 const MAX_ROUNDS: usize = 8;
 
 /// Handlers by state cell, and the writes since the last [`run`]: each written cell once, with

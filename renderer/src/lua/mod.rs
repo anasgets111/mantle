@@ -42,7 +42,7 @@ pub(crate) fn app_data_or_default<T: Default + 'static>(lua: &Lua) -> mlua::AppD
 }
 
 /// Config VM libraries, explicit instead of `StdLib::ALL_SAFE` (ADR-0048). Lua runs on the Wayland
-/// thread (ADR-0039), so `io.read` or `os.execute` would freeze every monitor; the 2.5ms instruction
+/// thread (ADR-0039), so `io.read` or `os.execute` would freeze every monitor; the instruction
 /// cap cannot catch a parked syscall (ADR-0021). `IO` is absent; `OS` remains for [`restrict_os`]'s
 /// four safe calls. The base library's `dofile` and `loadfile` read files too, and no flag drops
 /// them, so [`Loader::new`] removes them.
@@ -610,7 +610,7 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         loader.lua().load(format!("return ({expr}) == nil")).eval().unwrap()
     }
 
-    /// ADR-0048: these block Wayland dispatch, and the 2.5ms CPU cap cannot catch a parked syscall.
+    /// ADR-0048: these block Wayland dispatch, and the CPU cap cannot catch a parked syscall.
     #[test]
     fn the_config_vm_has_no_blocking_stdlib_call_left_to_stall_wayland_dispatch() {
         let loader = test_loader();

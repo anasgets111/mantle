@@ -56,7 +56,11 @@ enum SignalKind {
     /// `computed`/`map`. Function and sources are user values, not fields, so a cycle through a
     /// config table stays collectable (ADR-0221); `Delayed`/`Pulse` keep their source and values the
     /// same way, leaving only their clocks in Rust.
-    Computed { out: Rc<Output>, arity: usize },
+    ///
+    /// `site` is where it was created, named when its function raises, which happens during a
+    /// later layout pass whose traceback shows only the function's own lines, and by the frame
+    /// target warning. A field, not a user value, so a read costs no stack fetch.
+    Computed { out: Rc<Output>, arity: usize, site: Option<Site> },
     /// A `Computed`, `Delayed` or `Pulse` read out of its userdata by [`from_userdata`], carrying
     /// the handle to its user values. Lives only as long as the read that made it.
     Derived(mlua::AnyUserData),
@@ -470,7 +474,12 @@ impl Signal {
         func: Function,
         before: Value,
     ) -> mlua::Result<mlua::AnyUserData> {
-        let ud = new_derived(lua, SignalKind::Computed { out: Output::new(), arity: 1 }, Some(func), vec![source])?;
+        let ud = new_derived(
+            lua,
+            SignalKind::Computed { out: Output::new(), arity: 1, site: Site::of_caller(lua) },
+            Some(func),
+            vec![source],
+        )?;
         ud.set_nth_user_value(before_slot(1), before)?;
         Ok(ud)
     }
@@ -492,13 +501,9 @@ impl Signal {
     }
 }
 
-/// User value holding where the signal was created ([`Site`]), named when its
-/// function raises: that happens during a later layout pass, and the traceback shows only the
-/// function's own lines, not the binding that made it.
-const SITE_SLOT: usize = 1;
 /// User value holding a `Computed`'s function; its sources, or a `Delayed`/`Pulse` source, follow.
-const FUNCTION_SLOT: usize = 2;
-const FIRST_SOURCE_SLOT: usize = 3;
+const FUNCTION_SLOT: usize = 1;
+const FIRST_SOURCE_SLOT: usize = 2;
 /// A `Computed`'s `before`, after its sources: what it holds while a capability dependency has not pushed.
 const fn before_slot(arity: usize) -> usize {
     FIRST_SOURCE_SLOT + arity
@@ -520,7 +525,6 @@ fn new_derived(
     if let Some(out) = out {
         computeds(lua)?.raw_set(out.0, &ud)?;
     }
-    ud.set_nth_user_value(SITE_SLOT, Site::to_lua(Site::of_caller(lua)))?;
     if let Some(func) = func {
         ud.set_nth_user_value(FUNCTION_SLOT, func)?;
     }
@@ -554,7 +558,7 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
     match kind {
         SignalKind::Delayed { hold, due, cell } => held::read_delayed(lua, ud, hold, &due, cell),
         SignalKind::Pulse { hold, until, cell } => held::read_pulse(lua, ud, hold, &until, cell),
-        SignalKind::Computed { out, arity } => {
+        SignalKind::Computed { out, arity, site } => {
             // A repeat within this evaluation costs one hash lookup and no Lua. Checked before
             // `CpuBudget::enter` on purpose: a hit does no work, so it must not spend a nesting
             // level either, or a wide diamond would hit `MAX_SIGNAL_NESTING_DEPTH` on cache
@@ -565,7 +569,7 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
 
             // Enter before dependency resolution, not only `func.call`, so nesting depth also
             // bounds dependency chains.
-            let budget = CpuBudget::enter(lua)?;
+            let budget = CpuBudget::enter(lua, site)?;
             // Opened by whichever `Computed` is outermost and dropped when it returns, so the
             // memo spans exactly one evaluation. It deliberately does not span a
             // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
@@ -597,13 +601,13 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             let value = match value {
                 Ok(value) => value,
                 Err(err) => {
-                    let err = match Site::from_lua(&ud.nth_user_value(SITE_SLOT)?) {
+                    let err = match site {
                         Some(site) => {
                             mlua::Error::runtime(format!("signal created at {site}: {}", super::describe(&err)))
                         }
                         None => err,
                     };
-                    // Every reader this pass would run it into the same failure, 2.5ms each.
+                    // Every reader this pass would run it into the same failure, a full cap each.
                     if budget.fresh {
                         EvaluationMemo::insert(lua, out.cell, Err(err.clone()));
                     }
