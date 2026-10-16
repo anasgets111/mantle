@@ -7,7 +7,7 @@ local MONO, later, demo, feed, wait = panes.MONO, run.later, run.demo, beats.fee
 
 -- What a coding agent would run, over the code pane: typed commands and the demo shell's real
 -- output, `false` while hidden.
-local term = state("demo_term", false)
+local term = state("demo_term", false) --[[@as StateSignal<false|table[]>]]
 
 local agent_pane = panel {
     id = "agent",

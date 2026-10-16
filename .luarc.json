@@ -9,5 +9,6 @@
     "ffi": "disable"
   },
   "workspace.library": ["lua-meta"],
-  "workspace.checkThirdParty": false
+  "workspace.checkThirdParty": false,
+  "workspace.ignoreDir": ["renderer/fixtures/errors"]
 }

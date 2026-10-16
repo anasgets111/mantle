@@ -13,7 +13,7 @@ local HEADER = 64
 
 local frame = mantle.screens:map(function(screens)
     return layout.metrics(screens[1])
-end, layout.metrics())
+end)
 local code_size = frame:map(function(m) return m.font end)
 local line_px = frame:map(function(m) return m.line end)
 local pane_width = frame:map(function(m) return m.pane end)
@@ -46,7 +46,7 @@ local file_shown = state("demo_file", "shell.lua")
 -- demo shell (see `set_stage`).
 local stage_full = state("stage_full", false)
 -- The last paste, for the flash over its lines.
-local flash = state("demo_flash", false)
+local flash = state("demo_flash", false) --[[@as StateSignal<false|{ line: integer, count: integer, serial: integer }>]]
 -- The picked wallpaper, for the cards and the browser mockup; the logo art until the first pick.
 local backdrop = state("demo_backdrop", WALLPAPER)
 
