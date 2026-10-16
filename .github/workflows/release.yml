@@ -135,12 +135,13 @@ jobs:
         run: |
           version="${GITHUB_REF_NAME#v}"
           sum="$(awk '/x86_64-linux\.tar\.gz$/ {print $1}' dist/SHA256SUMS)"
-          install -dm700 ~/.ssh
-          printf '%s\n' "$AUR_SSH_KEY" >~/.ssh/aur
-          chmod 600 ~/.ssh/aur
+          # ssh finds ~ from passwd (/root), not the container's $HOME, so it gets explicit paths.
+          ssh_dir="$(mktemp -d)"
+          printf '%s\n' "$AUR_SSH_KEY" >"$ssh_dir/key"
+          chmod 600 "$ssh_dir/key"
           # The key aur.archlinux.org publishes (SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4).
-          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' >~/.ssh/known_hosts
-          export GIT_SSH_COMMAND='ssh -i ~/.ssh/aur -o IdentitiesOnly=yes'
+          echo 'aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN' >"$ssh_dir/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $ssh_dir/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$ssh_dir/known_hosts"
           git clone ssh://aur@aur.archlinux.org/mantle-bin.git aur
           sed -e "s/^pkgver=.*/pkgver=$version/" -e "s/^pkgrel=.*/pkgrel=1/" \
             -e "s/^sha256sums=.*/sha256sums=('$sum')/" packaging/aur/mantle-bin/PKGBUILD >aur/PKGBUILD
