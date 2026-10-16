@@ -7,8 +7,10 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
-- Fixed: a shell restarted while the session was locked held one CPU core at 100% until unlock; surfaces hidden behind the lock owed a repaint and woke the loop at once instead of waiting for their frame callback.
-- Fixed: with `--profile` on the NVIDIA proprietary driver, the supervisor leaked one file descriptor per sample and after about 2.5 h at `--profile=10` could not spawn processes, so the lock screen could not unlock; the NVML query now runs in a short-lived child process.
+## 0.7.4 - 2026-10-16
+
+- Fixed: while the session was locked, the renderer could hold one CPU core at 100% until unlock (seen after a restarted shell took the lock over; since 0.1.1). A surface hidden behind the lock owed a repaint and woke the loop at once instead of waiting for its frame callback.
+- Fixed: with `--profile` on the NVIDIA proprietary driver, the supervisor leaked one file descriptor per sample. After about 2.5 h at `--profile=10` it could not spawn processes, so the lock screen could not unlock (since 0.7.1). The NVML query now runs in a short-lived child process.
 
 ## 0.7.3 - 2026-10-16
 
