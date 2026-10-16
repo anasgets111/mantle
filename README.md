@@ -34,7 +34,7 @@ niri, Hyprland, sway or mango; lock screens need `ext-session-lock-v1`.
 
 | Platform | Install |
 | :--- | :--- |
-| Arch | [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) from the AUR |
+| Arch | [`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) (latest release) or [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) (builds `main`) from the AUR |
 | Ubuntu 26.04+, Fedora 44+ | `.deb` or `.rpm` from [releases](https://github.com/anasgets111/mantle/releases) |
 | From source | [Build instructions](https://anasgets111.github.io/mantle/guide/installation.html#build-from-source) |
 
