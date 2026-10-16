@@ -314,7 +314,7 @@ impl<T> Drop for ReportOnDrop<T> {
     }
 }
 
-/// Path this process re-execs to reach [`crate::pam_worker`]'s worker branch.
+/// Path this process re-execs to reach a worker branch of `main`: the PAM worker or the NVML query.
 ///
 /// The magic link, not `current_exe()`, and the difference is a session that cannot be unlocked.
 /// `current_exe()` *reads* the link into a pathname, and the kernel appends " (deleted)" once the
@@ -324,7 +324,7 @@ impl<T> Drop for ReportOnDrop<T> {
 ///
 /// Not `renderer_binary_path()`'s problem: that one calls `with_file_name`, which drops the whole
 /// " (deleted)" filename and rebuilds a real sibling path.
-const SELF_EXE: &str = "/proc/self/exe";
+pub(crate) const SELF_EXE: &str = "/proc/self/exe";
 
 /// Re-execs this binary as a PAM worker for `username`, then calls [`exchange_over`].
 async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Result<shared::PamOutcome> {

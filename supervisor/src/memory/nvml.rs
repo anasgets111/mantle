@@ -1,7 +1,7 @@
 //! GPU memory per process from NVIDIA's NVML, for drivers that print no DRM `fdinfo` keys (the
 //! proprietary `nvidia` driver). `libnvidia-ml.so.1` ships with that driver and is opened with
 //! `dlopen`, so other machines pay nothing and no crate wraps it. Only the `--profile` sampler
-//! calls in, after it has read the supervisor's own `smaps`.
+//! calls in, through a child process (see [`resident_kib`]).
 
 use std::ffi::{CStr, c_int, c_uint, c_ulonglong, c_void};
 
@@ -28,11 +28,34 @@ struct ProcessInfo {
     compute_instance_id: c_uint,
 }
 
+/// Set on the child [`resident_kib`] spawns; holds the pid to report on.
+pub(crate) const PID_ENV: &str = "MANTLE_NVML_PID";
+
 /// The renderer's VRAM in KiB across every NVIDIA device, or `None` without NVML or without a
-/// graphics context for `pid`. Loads, queries and unloads each call: kept loaded, NVML and the
-/// `libcuda` it pulls in held 20 MiB of supervisor PSS, against 1 MiB left after `nvmlShutdown`
-/// and `dlclose`, for about 4 ms of init per sample.
+/// graphics context for `pid`. Asked of a child running this binary: each `nvmlInit` after a fresh
+/// `dlopen` opens an eventfd that `nvmlShutdown` and `dlclose` leave open, so querying in-process
+/// leaked one fd per sample until the supervisor hit EMFILE and PAM could not unlock. Kept loaded
+/// instead, NVML and the `libcuda` it pulls in hold 19 MiB of supervisor PSS.
+// ponytail: blocks the Supervisor loop ~22 ms per sample, with no timeout on a hung driver; move the sample
+// to `spawn_blocking` if `--profile` latency matters.
 pub(super) fn resident_kib(pid: u32) -> Option<u64> {
+    let output = std::process::Command::new(crate::pam_worker::SELF_EXE)
+        .env(PID_ENV, pid.to_string())
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()?;
+    std::str::from_utf8(&output.stdout).ok()?.trim().parse().ok()
+}
+
+/// The child side of [`resident_kib`]: prints the KiB for `pid`, or nothing.
+pub(crate) fn run_child(pid: &std::ffi::OsStr) {
+    if let Some(kib) = pid.to_str().and_then(|pid| pid.parse().ok()).and_then(query) {
+        println!("{kib}");
+    }
+}
+
+fn query(pid: u32) -> Option<u64> {
     // SAFETY: a NUL-terminated name; the handle is closed below and not used after.
     let handle = unsafe { libc::dlopen(c"libnvidia-ml.so.1".as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
     if handle.is_null() {

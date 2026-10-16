@@ -150,6 +150,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     if std::env::var_os(pam_worker::WORKER_ENV).is_some() {
         return pam_worker::run_worker();
     }
+    if let Some(pid) = std::env::var_os(memory::nvml::PID_ENV) {
+        memory::nvml::run_child(&pid);
+        return Ok(());
+    }
 
     let args = match cli::parse(std::env::args()) {
         Ok(args) => args,

@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: with `--profile` on the NVIDIA proprietary driver, the supervisor leaked one file descriptor per sample and after about 2.5 h at `--profile=10` could not spawn processes, so the lock screen could not unlock; the NVML query now runs in a short-lived child process.
+
 ## 0.7.3 - 2026-10-16
 
 - Added: a `keyframes` entry takes `"current"` as its first frame, to start the run on the value on screen instead of a fixed first frame, and a `run` number: a different value starts a new run with the same frames, even mid-run, so a counter replays an animation without taking the entry away and putting it back.

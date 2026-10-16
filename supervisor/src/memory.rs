@@ -5,7 +5,7 @@
 //! only USS is that process alone (item 2), and GPU residency, never folded into PSS because
 //! real drivers omit it from `smaps`. A renderer with no DRM client falls back to [`nvml`].
 
-mod nvml;
+pub(crate) mod nvml;
 
 use std::collections::HashMap;
 use std::io;
