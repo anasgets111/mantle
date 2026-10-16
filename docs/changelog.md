@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+## 0.7.5 - 2026-10-16
+
 - Added: [`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) on the AUR, published from each release's binaries.
 - Fixed: the renderer now dispatches libwayland's default queue each loop turn. With egl-wayland2's fix for explicit sync (NVIDIA/egl-wayland2#56), NVIDIA leaves buffer releases there, about 4 a second, and they piled up at about 3 MiB/h. egl-wayland2 1.0.2 parks them on queues only it can reach, so that leak remains until #56 ships.
 - Changed: a getter, `on_change` handler, action or timer no longer fails at 2.5 ms of CPU, which broke configs on slower machines. It now fails only at 50 ms, as a runaway (`exceeded the 50ms CPU limit for one evaluation`). Past 2.5 ms the log gets one warning per slowest signal, naming the signal that spent the time.
