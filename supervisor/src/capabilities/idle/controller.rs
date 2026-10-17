@@ -349,11 +349,11 @@ impl IdleController {
     }
 
     /// `org.freedesktop.ScreenSaver.UnInhibit`; false for a cookie nothing holds, which the
-    /// interface answers as an error.
-    pub async fn screensaver_release(&self, cookie: u32) -> bool {
+    /// interface answers as an error; so is a cookie another `peer` holds.
+    pub async fn screensaver_release(&self, cookie: u32, peer: &str) -> bool {
         let holds = {
             let mut state = self.inhibit.state.lock().await;
-            let Some(close_fd) = apply_screensaver_release(&mut state, cookie) else { return false };
+            let Some(close_fd) = apply_screensaver_release(&mut state, cookie, peer) else { return false };
             if close_fd {
                 state.fd = None;
             }

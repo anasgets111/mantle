@@ -53,20 +53,42 @@ pub(crate) fn encode_png(
     Ok(buffer)
 }
 
-/// Writes encoded `png_bytes` to [`icon_dir`]`/{filename}`, creating missing directories. Overwrites
-/// the same path without cache-busting (ADR-0031, ADR-0033).
+/// Writes encoded `png_bytes` to [`icon_dir`]`/{filename}`, creating missing directories. Replaces
+/// the same path atomically without cache-busting (ADR-0031, ADR-0033).
 pub fn write_png(subdir: &str, filename: &str, png_bytes: &[u8]) -> std::io::Result<String> {
     let dir = icon_dir(subdir)?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(filename);
-    std::fs::write(&path, png_bytes)?;
+    shared::write_atomic(&path, png_bytes)?;
     debug!(2; "{subdir}: wrote {filename}");
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// Test fixture: points the icon spool at a directory that outlives the test process's threads.
+#[cfg(test)]
+pub(crate) fn init_test_spool() {
+    let temp = tempfile::tempdir().unwrap();
+    if INSTANCE_DIR.set(temp.path().to_path_buf()).is_ok() {
+        std::mem::forget(temp);
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rewriting_a_png_replaces_the_file_instead_of_truncating_it() {
+        init_test_spool();
+        let path = write_png("atomic_probe", "a.png", b"old bytes").unwrap();
+        let mut reader = std::fs::File::open(&path).unwrap();
+
+        write_png("atomic_probe", "a.png", b"new").unwrap();
+
+        // A reader that opened the file mid-rewrite must see a whole PNG, never a truncated one.
+        assert_eq!(std::io::read_to_string(&mut reader).unwrap(), "old bytes");
+        assert_eq!(std::fs::read(&path).unwrap(), b"new");
+    }
 
     #[test]
     fn only_a_real_file_under_the_spool_is_within_it() {

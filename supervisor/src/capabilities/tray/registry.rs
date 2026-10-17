@@ -534,7 +534,7 @@ mod tests {
 
     #[tokio::test]
     async fn menu_icon_files_are_deleted_when_a_refetch_drops_the_node() {
-        crate::capabilities::tray::menu::init_test_spool();
+        shm_icons::init_test_spool();
         let spool = |name: &str| shm_icons::write_png(SPOOL_SUBDIR, name, b"\x89PNG").unwrap();
         let (kept, dropped, nested) = (spool("reap_menu_1.png"), spool("reap_menu_2.png"), spool("reap_menu_3.png"));
         let foreign = spool("other_menu_4.png");

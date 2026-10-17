@@ -180,20 +180,12 @@ pub(super) async fn fetch_menu_via(menu: &DBusMenuProxy<'static>, item_stem: &st
     Ok(items)
 }
 
-/// Test fixture: points the icon spool at a directory that outlives the test process's threads.
-#[cfg(test)]
-pub(super) fn init_test_spool() {
-    let temp = tempfile::tempdir().unwrap();
-    if crate::capabilities::shm_icons::INSTANCE_DIR.set(temp.path().to_path_buf()).is_ok() {
-        std::mem::forget(temp);
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use zbus::zvariant::{Array, Dict, Signature, Str, StructureBuilder};
 
     use super::*;
+    use crate::capabilities::shm_icons::init_test_spool;
 
     /// Parses with the full node allowance, which is what every test but the cap's own wants.
     fn parse(value: &Value<'_>, depth: u32) -> Option<MenuItem> {

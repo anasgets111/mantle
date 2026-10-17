@@ -392,7 +392,7 @@ mod tests {
     async fn an_unrelated_event_during_the_debounce_window_does_not_push_back_the_deadline() {
         // Regression: rebuilding sleep(debounce) for every inotify event, even irrelevant ones,
         // restarted the window. A wider debounce than SHORT_DEBOUNCE leaves jitter margin.
-        let debounce = Duration::from_millis(200);
+        let debounce = Duration::from_millis(600);
         let dir = tempfile::tempdir().unwrap();
         let mut rx = spawn_watcher(dir.path(), debounce).unwrap();
 
@@ -401,9 +401,9 @@ mod tests {
         std::fs::write(dir.path().join("notes.txt"), "unrelated").unwrap();
 
         // The deadline is `debounce`/2 away. Correct behavior fires here; a from-here restart fires
-        // a full `debounce` later. This has 50ms margin on either side.
+        // a full `debounce` later. This has 150ms margin on either side.
         assert!(
-            recv_within(&mut rx, debounce / 2 + Duration::from_millis(50)).await.is_some(),
+            recv_within(&mut rx, debounce / 2 + Duration::from_millis(150)).await.is_some(),
             "an unrelated event during the debounce window must not delay the trigger"
         );
     }

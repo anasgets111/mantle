@@ -49,9 +49,13 @@ pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, 
 }
 
 /// `ScreenSaver.UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
-/// a client releasing twice would otherwise drop someone else's hold.
-pub(crate) fn apply_screensaver_release(state: &mut InhibitState, cookie: u32) -> Option<bool> {
-    state.screensaver.remove(&cookie)?;
+/// a client releasing twice would otherwise drop someone else's hold. Only `owner` releases its
+/// own cookie: cookies are small integers any session client could guess.
+pub(crate) fn apply_screensaver_release(state: &mut InhibitState, cookie: u32, owner: &str) -> Option<bool> {
+    if state.screensaver.get(&cookie)?.0 != owner {
+        return None;
+    }
+    state.screensaver.remove(&cookie);
     Some(apply_release_inhibit(&mut state.counts, SCREENSAVER_HOLDER))
 }
 
@@ -62,7 +66,7 @@ pub(crate) fn drop_screensaver_peer(state: &mut InhibitState, departed: &str) ->
         state.screensaver.iter().filter(|(_, (peer, _))| peer == departed).map(|(cookie, _)| *cookie).collect();
     // Fold rather than return each: only the last release can reach zero, and the caller closes
     // the fd once.
-    cookies.into_iter().filter_map(|cookie| apply_screensaver_release(state, cookie)).last()
+    cookies.into_iter().filter_map(|cookie| apply_screensaver_release(state, cookie, departed)).last()
 }
 
 /// Inhibit half of `reset_registrations` (ADR-0006/ADR-0032): zero `generation_id`'s count;
@@ -144,8 +148,15 @@ impl ScreenSaver {
         Ok(self.controller.screensaver_inhibit(peer, application_name, reason).await)
     }
 
-    async fn un_inhibit(&self, cookie: u32) -> zbus::fdo::Result<()> {
-        if !self.controller.screensaver_release(cookie).await {
+    async fn un_inhibit(
+        &self,
+        cookie: u32,
+        #[zbus(header)] header: zbus::message::Header<'_>,
+    ) -> zbus::fdo::Result<()> {
+        let Some(peer) = header.sender().map(|sender| sender.to_string()) else {
+            return Err(zbus::fdo::Error::Failed("UnInhibit arrived without a sender".to_string()));
+        };
+        if !self.controller.screensaver_release(cookie, &peer).await {
             return Err(zbus::fdo::Error::Failed(format!("no inhibitor holds cookie {cookie}")));
         }
         Ok(())
@@ -217,19 +228,20 @@ mod tests {
         let (cookie, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
         assert!(!transition, "generation 1 already opened it");
 
-        let transition = apply_screensaver_release(&mut state, cookie).expect("a live cookie");
+        let transition = apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
         assert!(!transition, "generation 1 still holds it");
         assert!(apply_release_inhibit(&mut state.counts, 1), "and now the last holder is gone");
     }
 
     #[test]
-    fn releasing_an_unknown_cookie_moves_no_refcount() {
+    fn releasing_an_unknown_or_foreign_cookie_moves_no_refcount() {
         let mut state = state();
         let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
-        apply_screensaver_release(&mut state, cookie).expect("a live cookie");
+        assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
+        apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
 
-        assert_eq!(apply_screensaver_release(&mut state, cookie), None, "releasing twice must not close it again");
-        assert_eq!(apply_screensaver_release(&mut state, 9999), None);
+        assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.42"), None, "a second release");
+        assert_eq!(apply_screensaver_release(&mut state, 9999, ":1.42"), None);
         assert_eq!(total(&state.counts), 0);
     }
 
@@ -260,7 +272,7 @@ mod tests {
 
         assert!(!transition, "the browser still holds the session awake");
         assert_eq!(state.screensaver.len(), 1);
-        assert!(apply_screensaver_release(&mut state, cookie).expect("a live cookie"));
+        assert!(apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie"));
     }
 
     // ---- cleanup_generation_inhibit (TDD seam 5, inhibit half) ----
