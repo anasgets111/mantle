@@ -343,8 +343,8 @@ pub fn run(
         app.repaint_caret_if_it_flipped();
         let typed_surfaces = std::mem::take(&mut app.field_input_surfaces);
         let typed = !typed_surfaces.is_empty();
-        // A decode changes neither retained properties nor a list that names the file, so it is
-        // its own repaint/invalidation (ADR-0122).
+        // A decode, or a file rewritten in place, changes neither retained properties nor a list
+        // that names the file, so it is its own repaint/invalidation (ADR-0122).
         let landed = app.image_cache.poll();
         if !landed.is_empty() {
             // The cue to repaint, and nothing more: what each node is now showing is settled by
@@ -490,9 +490,9 @@ pub fn run(
             // No timeout while idle (ADR-0124): Wayland events use the connection fd; Supervisor
             // frames, landed decodes, and socket-thread exit use the waker. The one timeout is a
             // pending `delay(signal, ms)` or an open `pulse(signal, ms)` window (ADR-0146,
-            // ADR-0153), an animated image's next frame (ADR-0233) or a pending trim (ADR-0292),
-            // armed only while one is running, the way a frame callback is requested only while a
-            // tween is.
+            // ADR-0153), an animated image's next frame (ADR-0233), a pending trim (ADR-0292) or an
+            // image file's recheck, armed only while one is running, the way a frame callback is
+            // requested only while a tween is.
             let mut fds = [
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
@@ -502,6 +502,7 @@ pub fn run(
                 .next_wake_deadline()
                 .into_iter()
                 .chain(app.next_stale_deadline())
+                .chain(app.image_cache.next_recheck())
                 .chain(app.next_hold_deadline())
                 .chain(app.next_repeat_deadline())
                 .chain(app.next_caret_deadline())

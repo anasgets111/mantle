@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API.
 ## Unreleased
 
 - Changed: an `effect.shader`'s `u_input` and `u_input_blurred` may be textures larger than the area they hold, so a frosted or shadowed box tweening its size reuses one offscreen instead of allocating one every frame. `mantle_input` and `mantle_input_blurred` read them as before; a shader sampling `u_input` with its own `texture()` call must switch to them.
+- Fixed: a surface showing an image file outside `/usr`, `/nix`, `/opt` and `/var/lib/flatpak` (a wallpaper in `~/Pictures`, say) redrew and swapped its whole buffer every 0.5 s while idle. The twice-a-second check for a file rewritten in place is now a stat; only a changed or newly created file repaints.
 - Fixed: the .deb's PAM stack includes Debian's `common-auth` and `common-account`; it named `system-auth`, which Debian and Ubuntu lack, so the lock screen and polkit agent refused every password.
 - Changed: `ToplevelHandle:resize` types its edge as a union of the eight edge names, so LuaLS flags a misspelled edge.
 

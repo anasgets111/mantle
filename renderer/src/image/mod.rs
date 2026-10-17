@@ -538,7 +538,20 @@ impl ImageCache {
         // Decodes cancelled by an eviction send no result, so they reach the invalidation the same
         // way a landing does: as files whose lists are now wrong (ADR-0185).
         files.append(&mut self.cancelled);
+        files.append(&mut self.rewritten(Instant::now()));
         files
+    }
+
+    /// Files rewritten in place since their last stat, which a list naming them cannot show: the
+    /// path is the same. Only paths with a slot are kept rechecking.
+    fn rewritten(&mut self, now: Instant) -> Vec<PathBuf> {
+        let live: HashSet<&Path> = self.entries.keys().map(|key| key.path.as_path()).collect();
+        self.versions.recheck(now, |path| live.contains(path))
+    }
+
+    /// When [`ImageCache::poll`] next re-stats a file, for the poll loop's timeout.
+    pub fn next_recheck(&self) -> Option<Instant> {
+        self.versions.due()
     }
 
     /// When this paint owes another, clearing the field. The painting surface calls it straight
@@ -746,11 +759,7 @@ impl ImageCache {
 
     fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px, .. }: &ImageRequest) -> CacheKey {
         let vector = is_vector(path);
-        let (version, recheck) = self.versions.read(path, Instant::now());
-        // The repaint that sees a rewrite made inside the window.
-        if let Some(due) = recheck {
-            self.deferred = Some(self.deferred.map_or(due, |owed| owed.min(due)));
-        }
+        let version = self.versions.read(path, Instant::now());
         CacheKey {
             font_generation: if vector { self.font_generation } else { 0 },
             path: path.to_path_buf(),
@@ -1227,7 +1236,7 @@ mod tests {
     }
 
     #[test]
-    fn a_remembered_version_owes_a_repaint_by_the_end_of_its_window() {
+    fn a_remembered_version_owes_a_recheck_and_only_a_rewrite_owes_a_repaint() {
         let dir = tempfile::tempdir().unwrap();
         let png = dir.path().join("tray.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
@@ -1242,12 +1251,21 @@ mod tests {
             clock: None,
         };
         let start = Instant::now();
+        // A draw's two lookups, `image` and `loaded`.
+        let key = cache.key_for(&request);
         cache.key_for(&request);
-        assert!(cache.take_deferred().is_none(), "a fresh stat owes nothing");
-        cache.key_for(&request);
-        let due = cache.take_deferred().expect("a remembered version owes a recheck");
-        assert!(due <= Instant::now() + Duration::from_millis(500), "no later than the window end");
-        assert!(due > start, "and not before the stat it trusts");
+        assert!(cache.take_deferred().is_none(), "a remembered version owes no repaint");
+        let due = cache.next_recheck().expect("but a recheck");
+        assert!(due > start && due <= Instant::now() + Duration::from_millis(500), "at the window end");
+        cache.insert(key, Slot::Pending);
+        assert!(cache.rewritten(due).is_empty(), "an unchanged file is not a cue");
+
+        std::fs::write(&png, [&PIL_2X2_RGBA_PNG[..], b"!"].concat()).unwrap();
+        let due = cache.next_recheck().expect("rechecked while it has a slot");
+        assert_eq!(cache.rewritten(due), [png], "a rewrite is");
+        cache.entries.clear();
+        assert!(cache.rewritten(due + Duration::from_millis(500)).is_empty());
+        assert_eq!(cache.next_recheck(), None, "a path with no slot is no longer polled");
     }
 
     /// ADR-0185. The refusal records no slot, so asking again is the whole retry -- and only a

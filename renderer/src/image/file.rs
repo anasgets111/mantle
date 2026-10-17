@@ -44,31 +44,67 @@ impl FileVersion {
     }
 }
 
-// ponytail: a stat is trusted 500 ms; a file watcher is the upgrade for instant.
+// ponytail: a stat is trusted 500 ms, and a remembered path is re-stat-ed that often while its
+// slot lives, drawn or not: up to `CACHE_CAPACITY` stats and two wakes a second. A file watcher
+// (inotify on the parent directories, which see a rename over the file) is the upgrade to instant
+// and wake-free.
 const STALE_AFTER: Duration = Duration::from_millis(500);
 
 /// Per-path [`FileVersion`] memo, so a draw of a non-system image stats at most twice a second.
 /// ponytail: cleared wholesale past `CACHE_CAPACITY` paths, which only costs a re-stat each.
 #[derive(Default)]
-pub(super) struct VersionCache(HashMap<PathBuf, (Instant, FileVersion)>);
+pub(super) struct VersionCache {
+    stats: HashMap<PathBuf, (Instant, FileVersion)>,
+    /// When the oldest remembered stat stops being trusted.
+    due: Option<Instant>,
+}
 
 impl VersionCache {
-    /// The version and, for a remembered one, when it stops being trusted, so the caller can owe a repaint then.
-    pub(super) fn read(&mut self, path: &Path, now: Instant) -> (FileVersion, Option<Instant>) {
+    pub(super) fn read(&mut self, path: &Path, now: Instant) -> FileVersion {
         if FileVersion::is_static(path) {
-            return (FileVersion::default(), None);
+            return FileVersion::default();
         }
-        if let Some(&(at, version)) = self.0.get(path)
+        if let Some(&(at, version)) = self.stats.get(path)
             && now.saturating_duration_since(at) < STALE_AFTER
         {
-            return (version, Some(at + STALE_AFTER));
+            return version;
         }
-        if self.0.len() >= super::CACHE_CAPACITY {
-            self.0.clear();
+        if self.stats.len() >= super::CACHE_CAPACITY {
+            self.stats.clear();
         }
         let version = FileVersion::read(path);
-        self.0.insert(path.to_path_buf(), (now, version));
-        (version, None)
+        self.stats.insert(path.to_path_buf(), (now, version));
+        self.due = Some(self.due.map_or(now + STALE_AFTER, |due| due.min(now + STALE_AFTER)));
+        version
+    }
+
+    /// When [`VersionCache::recheck`] next has a stat to renew, for the poll loop's timeout.
+    pub(super) fn due(&self) -> Option<Instant> {
+        self.due
+    }
+
+    /// Re-stats the paths `live` keeps whose stat went stale, forgets the rest, and returns those
+    /// whose file changed. That is the repaint cue: an unchanged file costs a stat, not a paint.
+    pub(super) fn recheck(&mut self, now: Instant, live: impl Fn(&Path) -> bool) -> Vec<PathBuf> {
+        if self.due.is_none_or(|due| due > now) {
+            return Vec::new();
+        }
+        let mut changed = Vec::new();
+        self.stats.retain(|path, (at, version)| {
+            if !live(path) {
+                return false;
+            }
+            if now.saturating_duration_since(*at) >= STALE_AFTER {
+                let fresh = FileVersion::read(path);
+                if fresh != *version {
+                    changed.push(path.clone());
+                }
+                (*at, *version) = (now, fresh);
+            }
+            true
+        });
+        self.due = self.stats.values().map(|(at, _)| *at + STALE_AFTER).min();
+        changed
     }
 }
 
@@ -94,22 +130,54 @@ mod tests {
         let path = dir.path().join("avatar.png");
         std::fs::write(&path, "one").unwrap();
         let (mut cache, t0) = (VersionCache::default(), Instant::now());
-        let (first, due) = cache.read(&path, t0);
-        assert_eq!(due, None, "a fresh stat owes nothing");
+        let first = cache.read(&path, t0);
         assert_eq!(first.len, 3);
+        assert_eq!(cache.due(), Some(t0 + STALE_AFTER), "a recheck is owed when the window ends");
 
         std::fs::write(&path, "three").unwrap();
-        let (inside, due) = cache.read(&path, t0 + STALE_AFTER / 2);
-        assert_eq!(inside, first, "inside the window the file is not stat-ed again");
-        assert_eq!(due, Some(t0 + STALE_AFTER), "and a repaint is owed when the window ends");
-        let (after, _) = cache.read(&path, t0 + STALE_AFTER);
-        assert_eq!(after.len, 5, "past the window the edit is seen");
+        assert_eq!(cache.read(&path, t0 + STALE_AFTER / 2), first, "inside the window the file is not stat-ed again");
+        assert!(cache.recheck(t0 + STALE_AFTER / 2, |_| true).is_empty(), "nor rechecked");
+        assert_eq!(
+            cache.recheck(t0 + STALE_AFTER, |_| true),
+            std::slice::from_ref(&path),
+            "past the window the edit is the cue"
+        );
+        assert_eq!(cache.read(&path, t0 + STALE_AFTER).len, 5, "and the next draw reads it");
+    }
+
+    /// The idle repaint loop: a paint reads its file twice (`image`, then `loaded`), and each read
+    /// inside the window owed a repaint at its end, whose paint read twice again: two full-surface
+    /// draws and swaps a second for a wallpaper nobody touched. An unchanged file costs a stat.
+    #[test]
+    fn an_unchanged_file_costs_a_stat_per_window_and_never_a_repaint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("wall.png");
+        let missing = dir.path().join("not-yet.png");
+        std::fs::write(&path, "one").unwrap();
+        let (mut cache, t0) = (VersionCache::default(), Instant::now());
+        for file in [&path, &missing] {
+            cache.read(file, t0);
+            cache.read(file, t0);
+        }
+        let mut repaints = 0;
+        for window in 1..=20 {
+            let at = t0 + STALE_AFTER * window;
+            assert_eq!(cache.due(), Some(at), "the poll keeps one wake per window");
+            repaints += cache.recheck(at, |_| true).len();
+        }
+        assert_eq!(repaints, 0, "20 windows of unchanged files, a missing one included");
+
+        std::fs::write(&missing, "now").unwrap();
+        let at = t0 + STALE_AFTER * 21;
+        assert_eq!(cache.recheck(at, |_| true), [missing], "a file that appears is a change");
+        assert!(cache.recheck(at + STALE_AFTER, |file| file != path).is_empty());
+        assert!(!cache.stats.contains_key(&path), "a path nothing keeps is forgotten");
     }
 
     #[test]
     fn system_paths_are_never_stat_ed_or_remembered() {
         let mut cache = VersionCache::default();
-        assert_eq!(cache.read(Path::new("/usr/share/icons/x.png"), Instant::now()), (FileVersion::default(), None));
-        assert!(cache.0.is_empty());
+        assert_eq!(cache.read(Path::new("/usr/share/icons/x.png"), Instant::now()), FileVersion::default());
+        assert!(cache.stats.is_empty() && cache.due().is_none(), "and owe no recheck");
     }
 }
