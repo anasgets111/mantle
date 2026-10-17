@@ -86,9 +86,14 @@ for Lua. Don't run those before committing; on failure, fix and recommit. The ho
 - **Writing.** Apply `unslop` everywhere; prefer numbers to adjectives. Comments explain
   non-obvious decisions or constraints, never narrate code. Commits state what changed and why.
 - **ADRs.** Append one to `DECISIONS.md` (next number) when a choice is hard to reverse, surprising
-  without context, and a real trade-off. Routine choices need none.
+  without context, and a real trade-off. Routine choices need none. About 10 lines: the decision,
+  the key measurement, the rejected alternative. History, not a tutorial.
 - **Changelog.** Every user-facing Lua API or CLI change adds a line under `## Unreleased` in
-  `docs/changelog.md`, in the same commit.
+  `docs/changelog.md`, in the same commit. One entry per change, typed `Added`, `Changed`, `Fixed`
+  or `Breaking`. Lead with what the user sees or must edit; no engine internals. It is also the
+  GitHub release notes.
+- **Perf.** A performance change needs an A/B on real low-end hardware, not only headless.
+  Headless timing can invert.
 - **Deferred work.** Work the user defers to later becomes a GitHub issue on this repo (`gh issue
   create`) with the findings, measurements and planned fix, so it survives the session.
 
