@@ -140,12 +140,18 @@ pub(crate) struct CpuBudget<'lua> {
     lua: &'lua Lua,
     /// No outer evaluation had started its CPU clock, so an overrun is this evaluation's own.
     pub(super) fresh: bool,
-    /// The outermost evaluation paused the collector, with the heap at this many bytes.
-    gc_paused_at: Option<usize>,
+    /// The outermost evaluation lent the collector [`GC_CREDIT_KIB`] to return on drop.
+    gc_deferred: bool,
 }
 
-/// Lua 5.4's default basic step, `2^LUAI_GCSTEPSIZE` bytes of allocation paid per `gc_step`.
-const GC_STEP_BYTES: usize = 8 * 1024;
+/// Allocation credit lent to the collector for one outermost evaluation, far past the 2.5 ms budget.
+const GC_CREDIT_KIB: i32 = 1 << 20;
+
+/// `collectgarbage("step", kib)`: adds `kib` to the collector's debt, stepping only if it is then positive.
+fn gc_shift_debt(lua: &Lua, kib: i32) {
+    // SAFETY: `lua_gc` with `LUA_GCSTEP` takes one int and touches no stack slot; `exec_raw` runs it protected.
+    let _ = unsafe { lua.exec_raw::<()>((), |state| _ = mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCSTEP, kib)) };
+}
 
 /// Installs the instruction hook for the life of the VM, once, before any config code runs.
 ///
@@ -294,16 +300,16 @@ impl<'lua> CpuBudget<'lua> {
         let fresh = stack.first().is_none_or(|outer| outer.cpu.get().is_none());
         // Garbage collection runs inside whichever allocation pays the heap's debt, so a getter
         // was charged for collecting what a capability push or another getter left: 6 budget
-        // errors in 8 runs of a 56-image palette scan, none with the collector stopped. Paused
-        // here, the evaluation's own allocation is paid for on exit, outside the budget.
-        let gc_paused_at = (stack.is_empty() && lua.gc_is_running()).then(|| {
-            lua.gc_stop();
-            lua.used_memory()
-        });
+        // errors in 8 runs of a 56-image palette scan, none with the collector stopped. Deferred
+        // here, the evaluation's own allocation is paid for on exit, outside the budget (ADR-0372).
+        let gc_deferred = stack.is_empty() && lua.gc_is_running();
+        if gc_deferred {
+            gc_shift_debt(lua, -GC_CREDIT_KIB);
+        }
         let mut deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(RUNAWAY_CAP));
         deadline.site = site;
         stack.push(deadline);
-        Ok(Self { lua, fresh, gc_paused_at })
+        Ok(Self { lua, fresh, gc_deferred })
     }
 
     /// Calls `f` under its own budget, erroring when the call raised or ran past the runaway cap: the one
@@ -336,15 +342,8 @@ impl Drop for CpuBudget<'_> {
             budgets.stack.pop();
         }
         // After the pop: a finalizer reading a signal opens a budget of its own.
-        if let Some(before) = self.gc_paused_at {
-            self.lua.gc_restart();
-            let grown = self.lua.used_memory().saturating_sub(before);
-            for _ in 0..grown.div_ceil(GC_STEP_BYTES) {
-                // A finished cycle has collected everything the evaluation dropped.
-                if self.lua.gc_step().unwrap_or(true) {
-                    break;
-                }
-            }
+        if self.gc_deferred {
+            gc_shift_debt(self.lua, GC_CREDIT_KIB);
         }
     }
 }
@@ -774,13 +773,25 @@ mod tests {
     #[test]
     fn a_getter_runs_with_the_collector_paused_and_pays_for_its_garbage_after() {
         let lua = lua_with_signal("a", Value::Integer(1));
-        let inside: bool =
-            lua.load("return computed({a}, function() return collectgarbage('isrunning') end):get()").eval().unwrap();
+        let finalizer = "setmetatable({}, { __gc = function() collected = true end })";
+        let inside: bool = lua
+            .load(format!("return computed({{a}}, function() {finalizer} for i = 1, 64 do local _ = string.rep(i, 1 << 16) end return collected == true end):get()"))
+            .eval()
+            .unwrap();
         assert!(!inside, "collection inside a getter is charged to its budget");
-        assert!(lua.gc_is_running(), "the collector must run again once the getter returns");
+
+        // From a finished cycle, small getters must not start the next one (ADR-0372).
+        let collected: bool = lua
+            .load(format!(
+                "pad = string.rep('x', 1 << 20) collected = nil collectgarbage() {finalizer}
+                for i = 1, 100 do computed({{a}}, function() return {{ i }} end):get() end return collected == true"
+            ))
+            .eval()
+            .unwrap();
+        assert!(!collected, "a small getter started a collection");
 
         // From a finished cycle, one getter drops ~8 MiB. Paid on exit, a whole cycle runs and
-        // frees it; unpaid, the restart alone leaves it for later allocations to collect.
+        // frees it; unpaid, it waits for later allocations to collect.
         lua.gc_collect().unwrap();
         let before = lua.used_memory();
         lua.load("computed({a}, function() local g = {} for i = 1, 8 do g[i] = string.rep(i, 1 << 20) end return #g end):get()")

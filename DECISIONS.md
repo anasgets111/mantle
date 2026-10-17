@@ -8718,3 +8718,16 @@ Limits: a write through a hard link in an unwatched directory, or on a network o
 remote changes the kernel never sees, is not reported; such files show their change on the next
 repaint for another reason. A writer that creates the file before filling it can cue two repaints,
 the first decoding a partial file, as polling could.
+
+## 0372. A budgeted evaluation defers collection by lending the collector credit (amends ADR-0290)
+
+The outermost `CpuBudget` adds 1 GiB to the collector's credit (`LUA_GCSTEP` with negative KiB) and
+takes it back on drop, which steps only if the debt is then positive. It replaced `gc_stop`, whose
+`gc_restart` zeroes the debt (ADR-0290), plus a forced basic step per 8 KiB grown: every allocating
+getter began a collection cycle from pause. Idle clock push on a real bar config, desktop release:
+1.0 ms (0.45 `on_change` + 0.55 in `ms resolve`) before, 0.08 ms after.
+
+Rejected: generational mode and a smaller step size (ADR-0290).
+
+ponytail: a getter that calls `collectgarbage("collect")` or `("step")` resets the debt, so the
+returned credit can force up to one extra cycle. Upgrade: refuse `collectgarbage` inside a getter.
