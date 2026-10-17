@@ -8642,7 +8642,7 @@ HD 520 (Mesa iris) does: on `tools/heavy-shell` with `hs_fx`, `draw_backdrop` wa
 15.3% of it `read_target` and 12.5% femtovg's `GlTexture::new`; `offscreen`, `blurred` and
 `composite` were 7.7%, 8% and 7.8%.
 
-1. **Each side rounds up to a multiple of 64**, capped at `GL_MAX_TEXTURE_SIZE`. That bounds the
+1. **Each side rounds up to a multiple of 64.** That bounds the
    waste at 63 px a side: 3% of a 1920 px side, where a 1/8 geometric step wastes up to 240 px. A
    box tweening 10 px a frame reuses one target for about 6 frames. The pool keys by allocated
    size; its caps (16 sizes, 64 MiB, never the current paint's) stand.

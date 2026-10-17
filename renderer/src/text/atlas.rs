@@ -12,8 +12,7 @@ use std::ffi::c_void;
 use std::sync::Arc;
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, FontId, ImageFlags, ImageId, ImageInfo, Paint, Path, PixelFormat, PositionedGlyph, TextContext};
-use glow::HasContext;
+use femtovg::{Canvas, FontId, ImageId, Paint, Path, PositionedGlyph, TextContext};
 use shared::debug;
 
 use crate::layout::field_rows;
@@ -25,8 +24,6 @@ use super::snap::{LogicalRect, snap_to_physical};
 
 /// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217).
 const SCRATCH_SIZES: usize = 16;
-/// The step [`TextPainter::size_class`] rounds a target's sides up to (ADR-0370).
-const SCRATCH_STEP: usize = 64;
 /// The bytes those pooled offscreens may hold between paints, as [`LAYER_BYTES`] caps layers.
 const SCRATCH_BYTES: usize = 64 << 20;
 
@@ -66,10 +63,6 @@ type CachedLineEntry = (TextLineKey, Arc<Vec<(usize, ShapeResult)>>);
 /// shaping worker can place a glyph in registered and ready to draw with.
 pub struct TextPainter {
     canvas: Canvas<OpenGl>,
-    /// The canvas's context, for the offscreens [`TextPainter::new_scratch`] allocates itself.
-    gl: glow::Context,
-    /// `GL_MAX_TEXTURE_SIZE`, which [`TextPainter::size_class`] never rounds past.
-    max_texture: usize,
     /// femtovg's id for each face, keyed by the worker's mapped fontdb id (ADR-0211).
     faces: HashMap<fontdb::ID, FontId>,
     /// The shaping worker's face-set generation this was built from, so [`TextPainter::sync`] can
@@ -204,7 +197,7 @@ impl TextPainter {
     /// exists for. `Canvas::add_font_mem` is the only route femtovg exposes on the canvas itself,
     /// so reaching the shared API means building the context first and handing it over.
     pub fn new(
-        mut load_fn: impl FnMut(&str) -> *const c_void,
+        load_fn: impl FnMut(&str) -> *const c_void,
         width: u32,
         height: u32,
         shaping: ShapingHandle,
@@ -213,10 +206,7 @@ impl TextPainter {
         // thread. The caller binds the context with `eglMakeCurrent` before constructing this
         // (`wayland::surface::ensure_bound`, or the headless EGL helper in paint's tests),
         // and the renderer is used only from that same thread.
-        let (gl, renderer) =
-            unsafe { (glow::Context::from_loader_function(&mut load_fn), OpenGl::new_from_function(load_fn)?) };
-        // SAFETY: as above.
-        let max_texture = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(1) as usize;
+        let renderer = unsafe { OpenGl::new_from_function(load_fn)? };
         let text_context = TextContext::default();
         let mut canvas = Canvas::new_with_text_context(renderer, text_context.clone())?;
         canvas.set_size(width, height, 1.0);
@@ -229,8 +219,6 @@ impl TextPainter {
         }
         Ok(Self {
             canvas,
-            gl,
-            max_texture,
             faces,
             generation,
             text_context,
@@ -254,63 +242,6 @@ impl TextPainter {
     /// it: a reused target still holds the last paint's pixels.
     pub fn take_scratch(&mut self, surface: &str, size: (usize, usize)) -> Option<ImageId> {
         self.scratch.get_mut(&(surface.to_owned(), size))?.1.pop()
-    }
-
-    /// What an offscreen whose pixels fill `used` is allocated at: each side rounded up to
-    /// [`SCRATCH_STEP`], so a clip tweening its size reuses one target for up to 64 px of travel
-    /// (ADR-0370). The used part is the target's top-left in canvas coordinates.
-    pub fn size_class(&self, (width, height): (usize, usize)) -> (usize, usize) {
-        let class = |side: usize| side.next_multiple_of(SCRATCH_STEP).min(self.max_texture).max(side);
-        (class(width), class(height))
-    }
-
-    /// A new offscreen of `size` for the pool, its pixels undefined: every taker clears or
-    /// overwrites the part it uses, as it does in a reused one. femtovg's `create_image_empty`
-    /// uploads a zeroed buffer the size of the image, the cost of a pool miss. `None` when GL has
-    /// no texture name to give.
-    pub fn new_scratch(&mut self, (width, height): (usize, usize)) -> Option<ImageId> {
-        // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
-        // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
-        let info = ImageInfo::new(ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y, width, height, PixelFormat::Rgba8);
-        let gl = &self.gl;
-        // SAFETY: the canvas's context is current on this thread, as every paint requires. The
-        // parameters are femtovg's `GlTexture::new` ones for these flags, and it binds no texture
-        // across calls, so leaving unit state unbound matches what it leaves.
-        let texture = unsafe {
-            let texture = gl.create_texture().ok()?;
-            gl.bind_texture(glow::TEXTURE_2D, Some(texture));
-            let (w, h) = (width as i32, height as i32);
-            let unpack = glow::PixelUnpackData::Slice(None);
-            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA as i32, w, h, 0, glow::RGBA, glow::UNSIGNED_BYTE, unpack);
-            for (name, value) in [
-                (glow::TEXTURE_MIN_FILTER, glow::LINEAR),
-                (glow::TEXTURE_MAG_FILTER, glow::LINEAR),
-                (glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE),
-                (glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE),
-            ] {
-                gl.tex_parameter_i32(glow::TEXTURE_2D, name, value as i32);
-            }
-            gl.bind_texture(glow::TEXTURE_2D, None);
-            texture
-        };
-        let image = self.canvas.create_image_from_native_texture(texture, info).ok();
-        if image.is_none() {
-            // SAFETY: as above; femtovg did not take the texture.
-            unsafe { gl.delete_texture(texture) };
-        }
-        image
-    }
-
-    /// Deletes a pooled offscreen. femtovg frees only its book-keeping for a texture
-    /// [`Self::new_scratch`] made, so the texture goes here too.
-    fn delete_scratch(&mut self, id: ImageId) {
-        let texture = self.canvas.get_native_texture(id).ok();
-        self.canvas.delete_image(id);
-        if let Some(texture) = texture {
-            // SAFETY: the canvas's context is current, as for every delete. A texture femtovg made
-            // and freed just now is no longer a name, and deleting one is ignored.
-            unsafe { self.gl.delete_texture(texture) };
-        }
     }
 
     /// What `command` last finished into on `surface`.
@@ -375,7 +306,7 @@ impl TextPainter {
         }
         for key in stalest(&self.scratch, self.paints) {
             for id in self.scratch.remove(&key).into_iter().flat_map(|(_, free)| free) {
-                self.delete_scratch(id);
+                self.canvas.delete_image(id);
             }
         }
     }
@@ -401,8 +332,8 @@ impl TextPainter {
         let layers = gone.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]));
         let owned: Vec<_> = self.scratch.keys().filter(|(on, _)| on == surface).cloned().collect();
         let pooled = owned.into_iter().filter_map(|key| self.scratch.remove(&key)).flat_map(|(_, free)| free);
-        for id in layers.chain(pooled).collect::<Vec<_>>() {
-            self.delete_scratch(id);
+        for id in layers.chain(pooled) {
+            self.canvas.delete_image(id);
         }
     }
 

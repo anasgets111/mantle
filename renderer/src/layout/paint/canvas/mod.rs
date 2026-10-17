@@ -8,7 +8,7 @@ mod vector_path;
 use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, CompositeOperation, ImageId, Paint, Path, RenderTarget};
+use femtovg::{Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget};
 
 use crate::image::capture::CaptureCache;
 use crate::image::{self, Fit, ImageCache, ImageRequest, Load};
@@ -631,14 +631,17 @@ fn raster(
 }
 
 /// A pooled render target whose top-left `used` part the caller draws in, held until [`execute`]
-/// flushes; `None` when out of texture memory. It is allocated at [`TextPainter::size_class`],
-/// or at `used` when `snug`, for an image femtovg will sample off its texel centres: past the used
-/// part it holds whatever was there, where `CLAMP_TO_EDGE` would repeat the edge (ADR-0370).
+/// flushes; `None` when out of texture memory. Each side rounds up to 64 px, or stays `used` when
+/// `snug`, for an image femtovg will sample off its texel centres: past the used part it holds
+/// whatever was there, where `CLAMP_TO_EDGE` would repeat the edge (ADR-0370).
 fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, used: (usize, usize), snug: bool) -> Option<ImageId> {
-    let size = if snug { used } else { painter.size_class(used) };
+    let size = if snug { used } else { (used.0.next_multiple_of(64), used.1.next_multiple_of(64)) };
+    // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
+    // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
+    let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
     let image = match painter.take_scratch(walk.surface, size) {
         Some(image) => image,
-        None => painter.new_scratch(size)?,
+        None => painter.canvas_mut().create_image_empty(size.0, size.1, PixelFormat::Rgba8, flags).ok()?,
     };
     walk.scratch.push((image, size));
     Some(image)
