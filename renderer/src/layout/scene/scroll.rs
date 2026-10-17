@@ -130,6 +130,20 @@ impl Scene {
         if !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut holders)) || holders == 0 {
             return None;
         }
+        // A windowed list the offset moves to another window needs a pass to build it (ADR-0374).
+        let mut rebuilds = false;
+        for tree in self.surfaces.values_mut() {
+            each_holder(tree, cell, false, &mut |node, axis| {
+                let offset = asked.clamp(0.0, room_of(node, axis));
+                rebuilds |= node.list_memo.as_deref().is_some_and(|memo| {
+                    let view = node::View { length: memo.viewport, offset, reveal: None };
+                    memo.replan(&view) != memo.window
+                });
+            });
+        }
+        if rebuilds {
+            return None;
+        }
         handle.set_quiet(Value::Number(f64::from(asked)));
         let mut moved = Vec::new();
         for (key, tree) in &mut self.surfaces {
@@ -144,11 +158,13 @@ impl Scene {
     }
 
     /// The clamped or revealed scroll `cells` that Lua also read: those readers laid out from the
-    /// asked offset, not the one the container used.
+    /// asked offset, not the one the container used. And those of a windowed list the pass came up
+    /// short of, which builds again for the viewport it solved to.
     pub fn read_by_lua(&self, mut cells: Vec<CellId>) -> Vec<CellId> {
         cells.retain(|&cell| {
             let read = crate::lua::signal::with_derived(cell);
             !self.surfaces.values().all(|tree| read_only_as_scroll(tree, cell, &read, &mut 0))
+                || self.surfaces.values().any(|tree| short_window(tree, cell))
         });
         cells
     }
@@ -194,6 +210,25 @@ fn read_only_as_scroll(
     node.children.iter().all(|child| read_only_as_scroll(child, cell, read, holders))
 }
 
+/// Whether a visible windowed list `cell` scrolls shows a spacer where it is.
+fn short_window(node: &ResolvedNode, cell: CellId) -> bool {
+    node.in_flow()
+        && (scrolls_by(node, cell).is_some_and(|axis| outruns_window(node, axis))
+            || node.children.iter().any(|child| short_window(child, cell)))
+}
+
+/// Whether windowed list `node` shows room it holds for items it did not build (ADR-0374). Half a
+/// pixel either way: rounding is not a gap.
+pub(super) fn outruns_window(node: &ResolvedNode, axis: MainAxis) -> bool {
+    let Some(memo) = node.list_memo.as_deref() else { return false };
+    let Some(range) = memo.window.clone() else { return false };
+    let (lead, trail) = memo.room();
+    let size = LogicalSize { width: node.rect.width, height: node.rect.height };
+    let (length, _) = viewport(&node.layout_style, size, axis);
+    let (at, total) = (node.scrolled, extent_along(&node.children, axis, node.layout_style.spacing));
+    (range.start > 0 && at < lead - 0.5) || (range.end < memo.count() && at + length > total - trail + 0.5)
+}
+
 /// Calls `visit` on every container `cell` scrolls, with its axis; hidden ones only if `hidden_too`.
 fn each_holder(
     node: &mut ResolvedNode,
@@ -218,7 +253,9 @@ fn scroll_retained(node: &mut ResolvedNode, cell: CellId) -> bool {
     each_holder(node, cell, false, &mut |node, axis| {
         let size = LogicalSize { width: node.rect.width, height: node.rect.height };
         let from = node.scrolled;
-        node.scrolled = scroll_children(&node.properties, &node.layout_style, size, axis, &mut node.children, from);
+        let memo = node.list_memo.as_deref();
+        node.scrolled =
+            scroll_children(&node.properties, &node.layout_style, size, axis, &mut node.children, from, memo);
         moved |= node.scrolled != from;
     });
     moved
@@ -263,7 +300,7 @@ fn advance_runs(node: &mut ResolvedNode, now: Instant, out: &mut Vec<(Signal, f3
 }
 
 /// The content length along `axis` inside the padding, and where it starts.
-fn viewport(style: &LayoutStyle, size: LogicalSize, axis: MainAxis) -> (f32, f32) {
+pub(super) fn viewport(style: &LayoutStyle, size: LogicalSize, axis: MainAxis) -> (f32, f32) {
     let padding = style.padding;
     match axis {
         MainAxis::Horizontal => ((size.width - padding.horizontal()).max(0.0), padding.left),
@@ -286,9 +323,10 @@ pub(super) fn scroll_children(
     axis: MainAxis,
     children: &mut [ResolvedNode],
     from: f32,
+    memo: Option<&node::ListMemo>,
 ) -> f32 {
     let (content_main, padding_start) = viewport(style, size, axis);
-    place_request(properties, children, axis, padding_start - from, content_main);
+    place_request(properties, children, axis, (padding_start - from, content_main), memo);
     let offset = scroll_offset(properties, room(children, axis, style.spacing, content_main));
     let by = offset - from;
     if by != 0.0 {
@@ -303,16 +341,12 @@ pub(super) fn scroll_children(
     offset
 }
 
-/// How much room this container's visible children take along `axis`, margins and gaps included:
-/// the number a scroll offset is clamped against. The same footprint the sizing pass used, which
-/// keeps a scroll limit and the layout it scrolls in agreement.
+/// How much room this container's visible children take along `axis`, margins, gaps and a windowed
+/// list's room included: the number a scroll offset is clamped against. The same footprint the
+/// sizing pass used, which keeps a scroll limit and the layout it scrolls in agreement.
 pub(super) fn extent_along(children: &[ResolvedNode], axis: MainAxis, spacing: f32) -> f32 {
     let (extents, visible) = children.iter().filter(|c| c.in_flow()).fold((0.0f32, 0usize), |(sum, count), c| {
-        let extent = match axis {
-            MainAxis::Horizontal => c.rect.width,
-            MainAxis::Vertical => c.rect.height,
-        };
-        (sum + extent + c.margin_on(axis), count + 1)
+        (sum + c.extent_on(axis) + c.layout_style.window.0 + c.layout_style.window.1, count + 1)
     });
     extents + spacing * visible.saturating_sub(1) as f32
 }
@@ -325,8 +359,8 @@ fn place_request(
     properties: &PropMap,
     children: &[ResolvedNode],
     axis: MainAxis,
-    padding_start: f32,
-    content_main: f32,
+    content: (f32, f32),
+    memo: Option<&node::ListMemo>,
 ) {
     let Some(signal) = node::fields::flow::scroll.read(properties).ok().flatten() else {
         return;
@@ -335,7 +369,7 @@ fn place_request(
         return;
     };
     let asked = signal.scroll_offset().unwrap_or(0.0);
-    let Some(wanted) = requested(request, children, axis, padding_start, content_main, asked) else {
+    let Some(wanted) = requested(request, children, axis, content, asked, memo) else {
         return;
     };
     if let Some(handle) = signal.scroll_handle() {
@@ -344,43 +378,35 @@ fn place_request(
 }
 
 /// The unclamped offset `request` asks for from `from`, or `None` when it asks for no move.
+/// `content` is where the content starts and the viewport's length; a windowed list's `memo` maps a
+/// `reveal` to a built child or an unbuilt item's estimated place.
 fn requested(
     request: ScrollRequest,
     children: &[ResolvedNode],
     axis: MainAxis,
-    padding_start: f32,
-    content_main: f32,
+    content: (f32, f32),
     from: f32,
+    memo: Option<&node::ListMemo>,
 ) -> Option<f32> {
-    match request {
-        ScrollRequest::Reveal(index) => revealed(children, axis, padding_start, content_main, index, from),
-        ScrollRequest::To(to) => Some(to),
-        ScrollRequest::By(by) => Some(from + by),
-    }
-}
-
-/// The least move from `asked` that shows the `index`-th visible child, or `None` when it is in view
-/// or does not exist.
-fn revealed(
-    children: &[ResolvedNode],
-    axis: MainAxis,
-    padding_start: f32,
-    content_main: f32,
-    index: usize,
-    asked: f32,
-) -> Option<f32> {
-    let child = children.iter().filter(|c| c.in_flow()).nth(index - 1)?;
-    let (start, extent) = match axis {
-        MainAxis::Horizontal => (child.rect.x - padding_start, child.rect.width),
-        MainAxis::Vertical => (child.rect.y - padding_start, child.rect.height),
+    let index = match request {
+        ScrollRequest::Reveal(index) => index,
+        ScrollRequest::To(to) => return Some(to),
+        ScrollRequest::By(by) => return Some(from + by),
     };
-    if start < asked {
-        Some(start)
-    } else if start + extent > asked + content_main {
-        Some(start + extent - content_main)
-    } else {
-        None
-    }
+    let index = match memo.filter(|memo| memo.window.is_some()) {
+        Some(memo) => match memo.reveal(index)? {
+            Ok(index) => index,
+            Err(span) => return node::least_move(span, from, content.1),
+        },
+        None => index,
+    };
+    // The `index`-th shown child; a child that does not exist asks for no move.
+    let child = children.iter().filter(|c| c.in_flow()).nth(index - 1)?;
+    let span = match axis {
+        MainAxis::Horizontal => (child.rect.x - content.0, child.rect.x - content.0 + child.rect.width),
+        MainAxis::Vertical => (child.rect.y - content.0, child.rect.y - content.0 + child.rect.height),
+    };
+    node::least_move(span, from, content.1)
 }
 
 /// A pending request on a container whose `animate` names `scroll`: the run eases from its target,
@@ -396,6 +422,7 @@ pub(super) fn ease_request(
     children: &[ResolvedNode],
     tweens: &mut Vec<node::Tween>,
     now: Instant,
+    memo: Option<&node::ListMemo>,
 ) -> Result<(), node::LayoutError> {
     let Some(signal) = node::signal_at(properties, "scroll") else { return Ok(()) };
     let Some(request) = signal.pending_scroll() else { return Ok(()) };
@@ -409,7 +436,7 @@ pub(super) fn ease_request(
     let room = room(children, axis, style.spacing, content_main);
     let shown = signal.scroll_offset().unwrap_or(0.0);
     let aimed = node::scroll_target(tweens).unwrap_or(shown).clamp(0.0, room);
-    if let Some(wanted) = requested(request, children, axis, padding_start, content_main, aimed) {
+    if let Some(wanted) = requested(request, children, axis, (padding_start, content_main), aimed, memo) {
         node::retarget_scroll(spec, tweens, shown, wanted.clamp(0.0, room), now);
     }
     Ok(())

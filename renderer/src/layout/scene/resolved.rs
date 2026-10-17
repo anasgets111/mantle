@@ -98,6 +98,9 @@ pub(crate) struct LayoutStyle {
     pub(super) compositor_blur: bool,
     /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
     pub(crate) effect: node::Effect,
+    /// The room a windowed `list` holds before and after this, its first or last shown item, for
+    /// the items it did not build: solver margin along the list's axis (ADR-0374).
+    pub(super) window: (f32, f32),
 }
 
 impl LayoutStyle {
@@ -132,6 +135,7 @@ impl LayoutStyle {
             transform: crate::layout::node::parse_transform(properties)?,
             compositor_blur: paint::compositor_blur.read(properties)?,
             effect: crate::layout::node::parse_effect(properties)?,
+            window: (0.0, 0.0),
         })
     }
 }
@@ -398,6 +402,15 @@ impl ResolvedNode {
         !self.leaving
             && self.tweens.iter().all(|tween| tween.resting || node::is_paint_only(tween.property))
             && self.children.iter().all(ResolvedNode::tick_is_paint_only)
+    }
+
+    /// Its length along `axis`, margins included: what it takes in a flow along `axis`.
+    pub(super) fn extent_on(&self, axis: MainAxis) -> f32 {
+        let length = match axis {
+            MainAxis::Horizontal => self.rect.width,
+            MainAxis::Vertical => self.rect.height,
+        };
+        length + self.margin_on(axis)
     }
 
     /// This node's margin along `axis`, both edges.

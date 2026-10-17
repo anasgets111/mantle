@@ -137,6 +137,11 @@ impl Sequence {
         Self { frames: frames.into(), ..self.clone() }
     }
 
+    /// How long a finite run takes; zero for an infinite one.
+    pub(super) fn played(&self) -> Duration {
+        self.cycle * self.loops.unwrap_or(0)
+    }
+
     /// Whether a run that started `elapsed` ago has played out. An infinite one never has.
     pub(super) fn done(&self, elapsed: Duration) -> bool {
         self.loops.is_some_and(|loops| elapsed >= self.cycle * loops)

@@ -253,7 +253,7 @@
 ---@class ListProps: NodeBase, PlacedBase
 ---@field animate? ListAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
 ---@field items? any[]|Bound Default: empty. Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
----@field each fun(item: any): Node Required. Builds a node for every built item, visible or not.
+---@field each fun(item: any): Node Required. Builds a node for every built item: all of them, or near the viewport in a keyed list with `scroll`.
 ---@field key? fun(item: any): string Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
 ---@field limit? integer|Bound Build at most this many items; above 10000 acts as 10000, `0` builds none.
 ---@field direction? "vertical"|"horizontal"|Bound Default `"vertical"`. Lays out as a `column` or a `row`.

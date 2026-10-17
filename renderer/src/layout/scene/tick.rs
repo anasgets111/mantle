@@ -212,7 +212,8 @@ pub(super) fn prepare_retained(
         // The parse reads the map, which a typed sample has to reach first.
         node::commit(&mut node.tweens, &mut node.properties, samples, now, lua)?;
         sync_shown(&mut node, lua)?;
-        std::rc::Rc::new(LayoutStyle::parse(&node.properties)?)
+        // A windowed list's room is its parent's to set, not a property's.
+        std::rc::Rc::new(LayoutStyle { window: node.layout_style.window, ..LayoutStyle::parse(&node.properties)? })
     } else {
         let mut style = std::rc::Rc::clone(&node.layout_style);
         if changed {
@@ -2159,7 +2160,7 @@ mod tests {
         for (property, to, entry, next) in &cases {
             let source = |to: &str| format!("return {{ {property} = {to}, animate = {{ {property} = {entry} }} }}");
             let mut props = node::rect_props(&lua, &source(to));
-            let tweens = node::retarget("rect", None, &mut props, now, &lua).unwrap().0;
+            let tweens = node::retarget("rect", None, &mut props, now, &lua, false).unwrap().0;
             assert_eq!(tweens.len(), 1, "{property} starts a tween");
             let next_props = node::rect_props(&lua, &source(next));
             for at in [0, 37, 100, 5000] {
@@ -2190,8 +2191,9 @@ mod tests {
                     // Compared as text: an effect's carried shader is a table each route holds its own copy of.
                     let retarget = |tweens: &[node::Tween], map: &node::PropMap| {
                         let mut props = next_props.clone();
-                        let tweens =
-                            node::retarget("rect", Some((tweens, map)), &mut props, when + ms(3), &lua).unwrap().0;
+                        let tweens = node::retarget("rect", Some((tweens, map)), &mut props, when + ms(3), &lua, false)
+                            .unwrap()
+                            .0;
                         let mut text = format!("{tweens:?}");
                         while let Some(at) = text.find("Ref(0x") {
                             let end = at + text[at..].find(')').unwrap();

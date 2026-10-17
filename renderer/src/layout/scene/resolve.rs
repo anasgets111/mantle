@@ -53,6 +53,7 @@ pub(super) fn resolve(
     mut retained: Option<&mut ResolvedNode>,
     now: Instant,
     lua: &Lua,
+    reentry: bool,
     build: impl FnOnce(PropMap) -> Result<PropMap, LayoutError>,
 ) -> Result<Resolved, LayoutError> {
     // The surface's read, not the node's: `finish` applies the offset to whatever it keeps, and a
@@ -94,7 +95,8 @@ pub(super) fn resolve(
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_declared(&raw, kind, tables_plain, lua)?)?;
     let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
-    let (tweens, movement) = node::retarget(kind, retained.as_deref().map(tween_state), &mut properties, now, lua)?;
+    let shown = retained.as_deref().map(tween_state);
+    let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain });
     let paint = node::paint_style(kind, &properties)?;

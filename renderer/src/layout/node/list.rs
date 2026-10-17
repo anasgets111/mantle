@@ -1,8 +1,10 @@
 //! `list` children: the `items`/`limit` properties, per-item memos and the build that reuses them.
 
-use std::collections::HashSet;
+use std::ops::Range;
+use std::rc::Rc;
 
 use mlua::{Lua, Value, WeakLua};
+use rustc_hash::FxHashMap;
 
 use crate::lua::location::Site;
 use crate::lua::nodes::VirtualNode;
@@ -30,8 +32,12 @@ impl Prop for Items {
     }
 }
 
-/// A `list`'s `limit`, capped at what one list builds. ponytail: it bounds item construction for
-/// search and launchers; viewport windowing is the upgrade (ADR-0191).
+/// A `list`'s `limit`, capped at what one list builds. A keyed scrolling list builds only its
+/// window once laid out (ADR-0374); `limit` bounds every other list, and every first build.
+///
+/// ponytail: a keyed scrolling list's first build, with no viewport yet, builds every item. Upgrade:
+/// build a bounded prefix and let the same-turn short-window pass correct it, once a startup or
+/// reload apply also runs that pass.
 pub(crate) struct Limit;
 
 spelled!(Limit => i64::lua());
@@ -52,7 +58,13 @@ impl Prop for Limit {
 
 /// A `list`'s items and the build that made them, `items` read here rather than by
 /// `resolve_declared` so a list that [`ListMemo::still_holds`] reads nothing at all.
-pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode>, ListMemo), LayoutError> {
+/// Windowed to `view` when given, carrying `old`'s solved lengths by key.
+pub fn list_children(
+    properties: &PropMap,
+    lua: &Lua,
+    view: Option<&View>,
+    old: Option<&ListMemo>,
+) -> Result<(Vec<VirtualNode>, ListMemo), LayoutError> {
     let mut build = ListMemo {
         inputs: list_inputs(properties),
         limit: list::limit.read(properties).ok().flatten(),
@@ -60,9 +72,17 @@ pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode
         lua: lua.weak(),
         cells: Vec::new(),
         items: Vec::new(),
+        catalog: None,
+        sizes: Vec::new(),
+        typical: old.map_or(f32::NAN, |old| old.typical),
+        window: None,
+        added: Vec::new(),
+        viewport: old.map_or(0.0, |old| old.viewport),
+        cross: old.map_or(f32::NAN, |old| old.cross),
+        spacing: old.map_or(0.0, |old| old.spacing),
     };
     let Some(source) = signal_at(properties, "items") else {
-        return Ok((parse_list_children(properties, lua, &mut build)?, build));
+        return Ok((parse_list_children(properties, lua, &mut build, view, old)?, build));
     };
     let frame = ComputedFrame::enter(lua);
     let value = resolve_signal(&source, "list", "items", lua);
@@ -72,7 +92,7 @@ pub fn list_children(properties: &PropMap, lua: &Lua) -> Result<(Vec<VirtualNode
         Some(value) => resolved.insert("items", value),
         None => resolved.remove("items"),
     };
-    Ok((parse_list_children(&resolved, lua, &mut build)?, build))
+    Ok((parse_list_children(&resolved, lua, &mut build, view, old)?, build))
 }
 
 /// What a `list` last built its items from (ADR-0269, ADR-0273): its `items`, `each` and `key`
@@ -94,8 +114,38 @@ pub struct ListMemo {
     limit: Option<usize>,
     stamp: u64,
     cells: Vec<CellId>,
-    /// One per item, in the order the list holds them.
+    /// One per item built, in the order the list holds them.
     pub items: Vec<ItemMemo>,
+    /// A keyed scrolling list's every element and key; `None` for any other list.
+    catalog: Option<Rc<Catalog>>,
+    /// Per catalog item, its last solved length with margins: NaN if never built, `HIDDEN` if not shown.
+    sizes: Vec<f32>,
+    /// The mean known length, carried across builds: an unbuilt item's estimate.
+    typical: f32,
+    /// The catalog items built, when not all of them.
+    pub window: Option<Range<usize>>,
+    /// Per catalog item, whether this build added its key: built for the first time, it enters.
+    pub added: Vec<bool>,
+    /// The viewport length, cross length and spacing last solved while shown; a cross change voids `sizes`.
+    pub viewport: f32,
+    cross: f32,
+    spacing: f32,
+}
+
+/// The length of an item that takes no room: hidden, so no gap either.
+const HIDDEN: f32 = f32::NEG_INFINITY;
+
+/// Every element and key of a keyed scrolling list; shared, as rollback clones the memo every pass.
+struct Catalog {
+    all: Vec<(Value, mlua::LuaString)>,
+    index: FxHashMap<String, usize>,
+}
+
+/// What a keyed `list` scrolling along its own axis windows against (ADR-0374); `reveal` is 1-based.
+pub struct View {
+    pub length: f32,
+    pub offset: f32,
+    pub reveal: Option<usize>,
 }
 
 /// One `list` item's build: the element it came from, the key `key` gave it, where `each` built
@@ -163,6 +213,146 @@ impl ListMemo {
         extend_unique(&mut self.items[index].resolved, cells);
         self.items[index].dropped = dropped;
     }
+
+    /// How many items the list holds, built or not.
+    pub fn count(&self) -> usize {
+        self.catalog.as_ref().map_or(self.items.len(), |catalog| catalog.all.len())
+    }
+
+    /// The items built: the window, or all of them.
+    pub fn range(&self) -> Range<usize> {
+        self.window.clone().unwrap_or(0..self.count())
+    }
+
+    /// The catalog index of the item keyed `id`, built or not.
+    pub fn at(&self, id: &str) -> Option<usize> {
+        self.catalog.as_ref().and_then(|catalog| catalog.index.get(id).copied())
+    }
+
+    /// The room `size` takes, with the gap after it when `gap`.
+    fn slot(&self, size: f32, gap: bool) -> f32 {
+        let spacing = if gap { self.spacing } else { 0.0 };
+        if size == HIDDEN {
+            0.0
+        } else if size.is_nan() {
+            self.typical + spacing
+        } else {
+            size + spacing
+        }
+    }
+
+    fn room_of(&self, items: Range<usize>) -> f32 {
+        self.sizes[items].iter().map(|&size| self.slot(size, true)).sum()
+    }
+
+    /// The catalog item `reveal(index)` names, counting shown items, and where it lies.
+    fn revealed(&self, index: usize) -> Option<(usize, (f32, f32))> {
+        let item = self.sizes.iter().enumerate().filter(|(_, size)| **size != HIDDEN).nth(index - 1)?.0;
+        let start = self.room_of(0..item);
+        Some((item, (start, start + self.slot(self.sizes[item], false))))
+    }
+
+    /// The items to build to show `view` with `overscan` px past each edge; `None` for all of them,
+    /// and before any item was measured.
+    ///
+    /// ponytail: an unbuilt item is estimated at the mean solved length, so rows of very different
+    /// lengths move the extent as they are first built. Upgrade: an author-given item length.
+    fn plan(&self, view: &View, overscan: f32) -> Option<Range<usize>> {
+        if self.catalog.is_none() || view.length <= 0.0 || !self.typical.is_finite() {
+            return None;
+        }
+        let total = self.room_of(0..self.sizes.len()) - self.spacing;
+        let reveal = view.reveal.and_then(|index| self.revealed(index));
+        let offset = reveal.and_then(|(_, span)| least_move(span, view.offset, view.length)).unwrap_or(view.offset);
+        let offset = offset.clamp(0.0, (total - view.length).max(0.0));
+        let (from, to) = (offset - overscan, offset + view.length + overscan);
+        let (mut at, mut range) = (0.0, 0..0);
+        for (index, &size) in self.sizes.iter().enumerate() {
+            if at >= to {
+                break;
+            }
+            let length = self.slot(size, false);
+            at += length;
+            if at <= from {
+                range.start = index + 1;
+            }
+            range.end = index + 1;
+            at += self.slot(size, true) - length;
+        }
+        (range != (0..self.sizes.len())).then_some(range)
+    }
+
+    /// The window to build for `view`: the one built while it covers `view` with half a viewport to
+    /// spare past each edge, else one a viewport past each, so scrolling builds every half viewport.
+    pub fn replan(&self, view: &View) -> Option<Range<usize>> {
+        match (&self.window, self.plan(view, view.length / 2.0)) {
+            (Some(have), Some(need)) if have.start <= need.start && need.end <= have.end => self.window.clone(),
+            (None, None) => None,
+            _ => self.plan(view, view.length),
+        }
+    }
+
+    /// The room before and after the window for the items it does not build, gaps included.
+    pub fn room(&self) -> (f32, f32) {
+        let Some(range) = self.window.clone() else { return (0.0, 0.0) };
+        (self.room_of(0..range.start), self.room_of(range.end..self.sizes.len()))
+    }
+
+    /// Notes what the built items solved to, `None` for one not shown, and the viewport length,
+    /// cross length and spacing the list solved to while shown. A new cross length voids the others' sizes.
+    pub fn measured(
+        &mut self,
+        lengths: impl Iterator<Item = Option<f32>>,
+        (viewport, cross, spacing): (f32, f32, f32),
+    ) {
+        (self.viewport, self.spacing) = (viewport, spacing);
+        if self.catalog.is_none() {
+            return;
+        }
+        if cross != self.cross {
+            self.sizes.iter_mut().filter(|size| size.is_finite()).for_each(|size| *size = f32::NAN);
+            self.cross = cross;
+        }
+        for (item, length) in self.range().zip(lengths) {
+            self.sizes[item] = length.unwrap_or(HIDDEN);
+        }
+        let known = self.sizes.iter().filter(|size| size.is_finite());
+        let (sum, count) = known.fold((0.0, 0), |(sum, count), size| (sum + size, count + 1));
+        if count > 0 {
+            self.typical = sum / count as f32;
+        }
+    }
+
+    /// Catalog item `item` built through `each` under its key, and its fresh memo.
+    pub fn build_at(
+        &self,
+        item: usize,
+        each: &mlua::Function,
+        lua: &Lua,
+    ) -> Result<(VirtualNode, ItemMemo), LayoutError> {
+        let (element, key) = self.catalog.as_ref().expect("only a windowed list builds by position").all[item].clone();
+        ItemMemo::keyed(lua, each, element, Some(key))
+    }
+
+    /// Where `reveal(index)` points in a windowed list: its place among the built children, or,
+    /// for an item not built, its estimated span. `None` past the last shown item.
+    pub fn reveal(&self, index: usize) -> Option<Result<usize, (f32, f32)>> {
+        let range = self.window.clone()?;
+        let (item, span) = self.revealed(index)?;
+        let before = self.sizes[..range.start].iter().filter(|size| **size != HIDDEN).count();
+        Some(if range.contains(&item) { Ok(index - before) } else { Err(span) })
+    }
+}
+
+/// The least move from `offset` that shows all of `(start, end)` in `length`; `None` when shown.
+pub(crate) fn least_move((start, end): (f32, f32), offset: f32, length: f32) -> Option<f32> {
+    if start < offset {
+        Some(start)
+    } else if end > offset + length {
+        Some(end - length)
+    } else {
+        None
+    }
 }
 
 impl ItemMemo {
@@ -194,15 +384,26 @@ impl ItemMemo {
         Ok((node, memo))
     }
 
+    /// `element` built through `each`, its `key` overwriting the node's `id`, and its fresh memo.
+    fn keyed(
+        lua: &Lua,
+        each: &mlua::Function,
+        element: Value,
+        key: Option<mlua::LuaString>,
+    ) -> Result<(VirtualNode, ItemMemo), LayoutError> {
+        let (mut node, mut memo) = Self::build(lua, each, element)?;
+        if let Some(key) = key {
+            // List identity wins over any `id` the item function supplied.
+            Rc::make_mut(&mut node.properties).insert("id", Value::String(key.clone()));
+            memo.key = Some(key);
+        }
+        Ok((node, memo))
+    }
+
     /// This item built again from the element and key it had, and its fresh memo.
     pub fn rebuild(&self, properties: &PropMap, lua: &Lua) -> Result<(VirtualNode, ItemMemo), LayoutError> {
         let each = list::each.read(properties)?.expect("`each` is required");
-        let (mut node, mut memo) = Self::build(lua, &each, self.element.clone())?;
-        if let Some(key) = &self.key {
-            std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key.clone()));
-            memo.key = Some(key.clone());
-        }
-        Ok((node, memo))
+        Self::keyed(lua, &each, self.element.clone(), self.key.clone())
     }
 }
 
@@ -243,9 +444,14 @@ fn build_item(each: &mlua::Function, element: &Value) -> Result<VirtualNode, Lay
 /// Each `each` call reads in its own frame, into `build`'s item; each `key` call into `build`'s
 /// own cells, since a key is the item's identity rather than its content.
 ///
-/// ponytail: a list whose [`ListMemo`] still holds still lays every item out. A viewport
-/// (ADR-0191) is the upgrade; `layout::scene::tests::list_pass_cost` measures both paths.
-fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) -> Result<Vec<VirtualNode>, LayoutError> {
+/// A keyed list with `scroll` calls `each` only for the window `view` needs (ADR-0374).
+fn parse_list_children(
+    properties: &PropMap,
+    lua: &Lua,
+    build: &mut ListMemo,
+    view: Option<&View>,
+    old: Option<&ListMemo>,
+) -> Result<Vec<VirtualNode>, LayoutError> {
     let source = list::items.read(properties)?;
     let each = list::each.read(properties)?.expect("`each` is required");
     let key_fn = list::key.read(properties)?;
@@ -254,51 +460,55 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
     let Some(source) = source else {
         return Ok(Vec::new());
     };
-    let mut children = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
-    let mut seen_keys: HashSet<String> = HashSet::new();
+    let mut all = Vec::with_capacity(source.raw_len().min(limit.unwrap_or(MAX_ARRAY_ELEMENTS)));
+    let mut index: FxHashMap<String, usize> = FxHashMap::default();
     // A broken item does not stop the rest; every item repeating one `each` mistake is one
     // entry after `LayoutError::many`.
     let mut failed = Vec::new();
-    for (index, element) in source.sequence_values::<Value>().enumerate() {
-        if limit.is_some_and(|lim| index == lim) {
+    for (position, element) in source.sequence_values::<Value>().enumerate() {
+        if limit.is_some_and(|lim| position == lim) {
             break;
         }
-        if index == MAX_ARRAY_ELEMENTS {
+        if position == MAX_ARRAY_ELEMENTS {
             return Err(invalid("items", format!("more than {MAX_ARRAY_ELEMENTS} items in one list")));
         }
         let element = element.map_err(|e| invalid("items", e.to_string()))?;
-
-        let item = (|| {
-            let (mut node, mut memo) = ItemMemo::build(lua, &each, element.clone())?;
-
-            if let Some(key_fn) = &key_fn {
-                let frame = ComputedFrame::enter(lua);
-                let key_value = key_fn.call::<Value>(element);
-                extend_unique(&mut build.cells, &frame.finish());
-                let key_value = key_value.map_err(|e| invalid("key", crate::lua::describe(&e)))?;
-                let Value::String(key_str) = key_value else {
-                    return Err(invalid(
-                        "key",
-                        format!("expected key(item) to return a string, got {}", preview_for_error(&key_value)),
-                    ));
-                };
-                let key_text = key_str.to_str().map(|s| (*s).to_owned()).map_err(|_| {
-                    invalid(
-                        "key",
-                        "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily",
-                    )
-                })?;
-                if !seen_keys.insert(key_text) {
-                    let key = key_str.to_string_lossy();
-                    return Err(invalid("key", format!("duplicate key `{key}` among list items")));
+        let key = match &key_fn {
+            None => None,
+            Some(key_fn) => match item_key(key_fn, &element, position, &mut index, &mut build.cells, lua) {
+                Ok(key) => Some(key),
+                Err(err) => {
+                    failed.push(err);
+                    continue;
                 }
-                // List identity wins over any `id` the item function supplied.
-                std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key_str.clone()));
-                memo.key = Some(key_str);
+            },
+        };
+        all.push((element, key));
+    }
+    let built = if key_fn.is_some() && properties.contains_key("scroll") && failed.is_empty() {
+        build.sizes = vec![f32::NAN; all.len()];
+        // A new `each` or VM builds other rows: their old lengths would mislead (`typical` stays).
+        let carried = old.filter(|old| old.lua == lua.weak() && same_lua_value(&old.inputs[1], &build.inputs[1]));
+        let was = old.and_then(|old| old.catalog.as_ref());
+        build.added = vec![true; all.len()];
+        for (key, &at) in &index {
+            let Some(&before) = was.and_then(|was| was.index.get(key)) else { continue };
+            build.added[at] = false;
+            if let Some(old) = carried {
+                build.sizes[at] = old.sizes[before];
             }
-            Ok((node, memo))
-        })();
-        match item {
+        }
+        let all = all.into_iter().map(|(element, key)| (element, key.expect("a keyed list keys every item")));
+        let catalog = Rc::new(Catalog { all: all.collect(), index });
+        build.catalog = Some(Rc::clone(&catalog));
+        build.window = view.and_then(|view| build.plan(view, view.length));
+        catalog.all[build.range()].iter().map(|(element, key)| (element.clone(), Some(key.clone()))).collect()
+    } else {
+        all
+    };
+    let mut children = Vec::with_capacity(built.len());
+    for (element, key) in built {
+        match ItemMemo::keyed(lua, &each, element, key) {
             Ok((node, memo)) => {
                 children.push(node);
                 build.items.push(memo);
@@ -312,6 +522,35 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
     Ok(children)
 }
 
+/// `key(element)` for the item at `position`, refused unless a UTF-8 string no other item returned.
+fn item_key(
+    key_fn: &mlua::Function,
+    element: &Value,
+    position: usize,
+    index: &mut FxHashMap<String, usize>,
+    cells: &mut Vec<CellId>,
+    lua: &Lua,
+) -> Result<mlua::LuaString, LayoutError> {
+    let frame = ComputedFrame::enter(lua);
+    let key_value = key_fn.call::<Value>(element);
+    extend_unique(cells, &frame.finish());
+    let key_value = key_value.map_err(|e| invalid("key", crate::lua::describe(&e)))?;
+    let Value::String(key_str) = key_value else {
+        return Err(invalid(
+            "key",
+            format!("expected key(item) to return a string, got {}", preview_for_error(&key_value)),
+        ));
+    };
+    let key_text = key_str.to_str().map(|s| (*s).to_owned()).map_err(|_| {
+        invalid("key", "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily")
+    })?;
+    if index.insert(key_text, position).is_some() {
+        let key = key_str.to_string_lossy();
+        return Err(invalid("key", format!("duplicate key `{key}` among list items")));
+    }
+    Ok(key_str)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -320,7 +559,7 @@ mod tests {
     fn list_children_bounds_to_limit_and_refuses_invalid_values() {
         let lua = scene_lua();
         let eval = |s: &str| -> Result<usize, LayoutError> {
-            list_children(&props_from_src(&lua, s), &lua).map(|(children, _)| children.len())
+            list_children(&props_from_src(&lua, s), &lua, None, None).map(|(children, _)| children.len())
         };
         assert_eq!(
             eval("return list { items = { 1, 2, 3, 4 }, limit = 2, each = function(i) return rect { width = i, height = i } end }").unwrap(),

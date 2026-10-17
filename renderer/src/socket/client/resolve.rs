@@ -1027,6 +1027,35 @@ mod tests {
         }
     }
 
+    /// ADR-0374: a windowed list whose viewport outgrew its window builds again in the same turn.
+    #[test]
+    fn a_windowed_list_short_of_a_grown_viewport_builds_again_in_the_same_turn() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            h = state("h", 100)
+            local rows = {}
+            for i = 1, 200 do rows[i] = "r" .. i end
+            return panel { id = "bar", layer = "top", child = column { children = {
+                list { width = 50, height = h, scroll = scroll("s"), items = rows,
+                    key = function(k) return k end, each = function() return rect { height = 20 } end },
+            } } }
+            "#,
+        );
+        let (mut client, _rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        let built = |client: &RendererClient| {
+            let list = &client.scene.surface("bar@TEST").unwrap().children[0].children[0];
+            list.children.last().map_or(0.0, |row| row.rect.y + row.rect.height)
+        };
+        client.loader.lua().load("h:set(101)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        client.loader.lua().load("h:set(400)").exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        assert!((400.0..4000.0).contains(&built(&client)), "windowed, and built to {}", built(&client));
+    }
+
     /// A wheel past either end: the pass clamps the offset after the getter read the wheel's value,
     /// so the getter re-resolves in the same call and lays out from the offset on screen.
     #[test]

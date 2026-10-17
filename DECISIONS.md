@@ -4318,6 +4318,8 @@ scrolling rather than search. The table is the reproducible trigger.
 Amendment (ADR-0218): re-measured on this tree, the table above does not reproduce; the cost is
 about 22 us a row. The shape and the conclusion stand.
 
+Built by ADR-0374, which answers the four problems above.
+
 ## 0192. A pass and a tick owe the screen different things, and one flag cannot say which ran
 
 ADR-0178 narrowed a tween repaint to instances named by `Scene::tick`; ADR-0185 added `stale` for
@@ -8681,3 +8683,16 @@ pen is skipped, which femtovg's own point merge makes pixel-identical. Heavy-she
 
 Rejected: caching `Path`s across frames. 0.4 µs saved per rounded rect, 7 KiB a path, and femtovg keys the
 full transform, so every scrolled box misses.
+
+## 0374. A keyed `list` with `scroll` builds only its window (implements ADR-0191)
+
+A 1000-row launcher resolved every row; a selection write ran 1000 `computed`s. `list_pass_cost`
+p50, 1000 rows: selection 4.50→0.30 ms, `reveal` 1.12→0.08, query 1.77→0.74.
+
+1. **No API.** `key` pairs, own `scroll` gives the axis. `each` runs for items within a viewport of
+   either edge, planned from last pass's size; the window holds until half that margin is used.
+2. **Margin, not spacers.** The first and last shown items carry the rest's estimated extent as
+   solver margin (`LayoutStyle::window`); a spacer hit the 8192 px cap. Extent, clamp, `reveal` hold.
+3. **Scrolled out is hidden, not removed:** no exit (ADR-0150), and a row built before returns
+   without its entrance; named state survives. A wheel near the window's edge falls back to a pass;
+   a short pass owes one more. The first layout builds all.

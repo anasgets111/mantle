@@ -8,7 +8,7 @@ use super::children::children_kept;
 use super::field::FieldDrafts;
 use super::fit::fit_text_to_box;
 use super::resolve::{DroppedValues, Resolved, resolve};
-use super::scroll::{ease_request, scroll_children};
+use super::scroll::{ease_request, outruns_window, scroll_children, viewport};
 use super::solver::{
     MainAxis, Measure, hold_leavers, main_axis_of, measure_for, new_solver_node, release_solver_nodes,
     set_solver_children, solve, taffy_failed, update_solver_node,
@@ -20,7 +20,7 @@ use super::{
 use crate::layout::node::{self, LayoutError, PropMap, SizeMode, fields};
 use crate::lua::location::Site;
 use crate::lua::nodes::VirtualNode;
-use crate::lua::signal::ComputedFrame;
+use crate::lua::signal::{ComputedFrame, ScrollRequest};
 use crate::text::shaping::ShapingHandle;
 use crate::text::snap::LogicalRect;
 
@@ -223,7 +223,7 @@ pub(super) fn prepare(
     kind: &'static str,
     resolved: Resolved,
     parent_flow: (Option<MainAxis>, f32),
-    thawing: bool,
+    (thawing, reentry): (bool, bool),
     lua: &Lua,
     now: Instant,
     depth: u32,
@@ -338,6 +338,10 @@ pub(super) fn prepare(
             shared::warn!("{}", swap_message(pair));
         }
         let mut reusable = reusable_for(&mut matched_candidates[index], child_kind, &mut unclaimed);
+        // A row built before comes back into a windowed list without its entrance (ADR-0374).
+        let id = || fields::common::id.read(&child_raw).ok().flatten();
+        let seen = |memo: &node::ListMemo| id().and_then(|id| memo.at(&id)).is_some_and(|at| !memo.added[at]);
+        let reentry = reentry || reusable.is_none() && node.list_memo.as_deref().is_some_and(seen);
 
         // This child's one resolve and one parse for this pass, both here rather than inside the
         // recursive call, because the style the call is handed is built from them and a second
@@ -346,8 +350,9 @@ pub(super) fn prepare(
         let item = node.list_memo.is_some().then(|| ComputedFrame::enter(lua));
         let dropped_before = DroppedValues::count(lua);
         let child = (|| {
-            let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, Ok)?;
-            prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), thawing, lua, now, depth + 1)
+            let resolved = resolve(child_kind, child_raw, reusable.as_mut(), now, lua, reentry, Ok)?;
+            let flags = (thawing, reentry);
+            prepare(scene, tree, reusable, child_kind, resolved, (own_axis, old_scroll), flags, lua, now, depth + 1)
         })();
         let dropped = DroppedValues::under_child(lua, dropped_before, here);
         if let (Some(memo), Some(item)) = (node.list_memo.as_mut(), item) {
@@ -369,9 +374,23 @@ pub(super) fn prepare(
     if !failed.is_empty() {
         return Err(LayoutError::many(failed));
     }
-
     finish_leavers(tree, &mut node, leaving, unclaimed, old_mask_target, thawing, lua, now)?;
     set_solver_children(tree, taffy_id, &node.children)?;
+    // A windowed list's room for the items it did not build rides on its first and last shown ones,
+    // attached first: `update_solver_node` keeps a parentless node's margin.
+    if let Some(memo) = node.list_memo.as_deref() {
+        let (lead, trail) = memo.room();
+        let first = node.children.iter().position(|child| child.style.visible);
+        let last = node.children.iter().rposition(|child| child.style.visible);
+        for (index, child) in node.children.iter_mut().enumerate() {
+            let room = (if first == Some(index) { lead } else { 0.0 }, if last == Some(index) { trail } else { 0.0 });
+            if child.style.window != room {
+                std::rc::Rc::make_mut(&mut child.style).window = room;
+                let measure = measure_for(child.id, child.kind, child.paint.as_ref(), &child.properties, &child.style)?;
+                update_solver_node(tree, child.taffy, child.kind, &child.properties, &child.style, own_axis, measure)?;
+            }
+        }
+    }
     Ok(node)
 }
 
@@ -491,71 +510,123 @@ fn children_this_pass(
     node: &mut PreparedNode,
     lua: &Lua,
 ) -> Result<(Vec<Option<VirtualNode>>, Vec<Option<ResolvedNode>>, Vec<ResolvedNode>), LayoutError> {
+    let view = list_view(node);
     // ADR-0269: nothing the list's own build read has changed, so it keeps its items, in order.
-    if let Some(memo) = node.list_memo.as_mut()
+    let (fresh, matched, mut unclaimed) = if let Some(memo) = node.list_memo.as_mut()
         && memo.items.len() == node.frozen.len()
         && memo.still_holds(&node.properties, lua)?
-        && let Some(fresh) = written_items(memo, &node.frozen, &node.properties, lua)?
+        && let Some(children) = kept_items(memo, &node.frozen, view.as_ref(), &node.properties, lua)?
     {
-        return Ok((fresh, std::mem::take(&mut node.frozen).into_iter().map(Some).collect(), Vec::new()));
-    }
-    let fresh = if node.kind == "list" {
-        let mut at = open_span();
-        let res = node::list_children(&node.properties, lua);
-        close(&mut at, &mut scene.resolve_split.list);
-        let (fresh, memo) = res?;
-        node.list_memo = Some(Box::new(memo));
-        fresh
+        let mut retained: Vec<_> = std::mem::take(&mut node.frozen).into_iter().map(Some).collect();
+        let (fresh, matched) =
+            children.into_iter().map(|(fresh, at)| (fresh, at.and_then(|at| retained[at].take()))).unzip();
+        (fresh, matched, retained.into_iter().flatten().collect())
     } else {
-        children_kept(node.kind, &node.properties, &mut node.child_table, lua)?
+        let fresh = if node.kind == "list" {
+            let mut at = open_span();
+            let res = node::list_children(&node.properties, lua, view.as_ref(), node.list_memo.as_deref());
+            close(&mut at, &mut scene.resolve_split.list);
+            let (fresh, memo) = res?;
+            node.list_memo = Some(Box::new(memo));
+            fresh
+        } else {
+            children_kept(node.kind, &node.properties, &mut node.child_table, lua)?
+        };
+        let (matched, unclaimed) = pair_children_by_id_then_position(&fresh, std::mem::take(&mut node.frozen))?;
+        (fresh.into_iter().map(Some).collect(), matched, unclaimed)
     };
-    let (matched, unclaimed) = pair_children_by_id_then_position(&fresh, std::mem::take(&mut node.frozen))?;
-    Ok((fresh.into_iter().map(Some).collect(), matched, unclaimed))
+    // Out of the window, not out of the list: hidden, so it goes without an exit (ADR-0150).
+    if let Some(memo) = node.list_memo.as_deref() {
+        for child in &mut unclaimed {
+            let id = node::fields::common::id.read(&child.properties).ok().flatten();
+            child.visible &= memo.window.is_none() || id.and_then(|id| memo.at(&id)).is_none();
+        }
+    }
+    Ok((fresh, matched, unclaimed))
 }
 
-/// A list's items when its own build still holds (ADR-0269): `None` for each whose last build
-/// and resolve still hold, its kept declaration for each whose subtree reads alone were written
-/// (ADR-0293), and for each whose `each` reads were written, its node built again (ADR-0273).
-/// `None` overall when one of those changed kind or `id`, which only a whole build pairs.
+/// A keyed `list`'s [`node::View`] with `scroll`, once it has been laid out shown.
+fn list_view(node: &PreparedNode) -> Option<node::View> {
+    let (Some(memo), Some(scroll), true) =
+        (node.list_memo.as_deref(), node::signal_at(&node.properties, "scroll"), node.properties.contains_key("key"))
+    else {
+        return None;
+    };
+    let asked = scroll.scroll_offset().unwrap_or(0.0);
+    // An eased request runs from the offset shown now, so the window stays there.
+    let eased = node::scroll_spec(node.kind, &node.properties).ok().flatten().is_some();
+    let (offset, reveal) = match scroll.pending_scroll().filter(|_| !eased) {
+        Some(ScrollRequest::To(to)) => (to, None),
+        Some(ScrollRequest::By(by)) => (asked + by, None),
+        Some(ScrollRequest::Reveal(index)) => (asked, Some(index)),
+        None => (asked, None),
+    };
+    Some(node::View { length: memo.viewport, offset, reveal })
+}
+
+/// A list's children when its own build still holds (ADR-0269), over the window `view` needs
+/// (ADR-0374): per child, `None` to keep or the declaration to resolve or build, and its retained
+/// index. `None` when a rebuilt item changed kind or `id`, which only a whole build pairs.
 ///
 /// ponytail: that fallback calls those items' `each` a second time this pass. Upgrade: hand the
 /// nodes built here to the whole build.
-fn written_items(
+#[allow(clippy::type_complexity)]
+fn kept_items(
     memo: &mut node::ListMemo,
     retained: &[ResolvedNode],
+    view: Option<&node::View>,
     properties: &PropMap,
     lua: &Lua,
-) -> Result<Option<Vec<Option<VirtualNode>>>, LayoutError> {
+) -> Result<Option<Vec<(Option<VirtualNode>, Option<usize>)>>, LayoutError> {
     let id = |properties: &PropMap| node::fields::common::id.read(properties).ok().flatten();
-    let mut fresh = Vec::with_capacity(retained.len());
-    let mut failed = Vec::new();
+    let each = fields::list::each.read(properties)?.expect("`each` is required");
+    // Past its build, an added item scrolled in is no longer new: it enters without its entrance.
+    memo.added.fill(false);
+    let from = memo.range();
+    let (count, to) = (memo.count(), view.map_or_else(|| memo.window.clone(), |view| memo.replan(view)));
+    let mut old: Vec<_> = std::mem::take(&mut memo.items).into_iter().map(Some).collect();
+    let range = to.clone().unwrap_or(0..count);
+    memo.window = to;
+    let (mut slots, mut failed) = (Vec::new(), Vec::new());
     // A memo changed here and then dropped by a whole build or a failed pass is replaced by that
     // build's, or by the rollback's.
-    for (item, old) in memo.items.iter_mut().zip(retained) {
-        match (item.pass(lua), &old.resolve_memo) {
-            (node::ItemPass::Keep, _) => {
-                fresh.push(None);
-                continue;
+    for item in range {
+        let was = from.contains(&item).then(|| item - from.start);
+        let Some((was, mut item_memo)) = was.and_then(|was| old[was].take().map(|item_memo| (was, item_memo))) else {
+            match memo.build_at(item, &each, lua) {
+                Ok((node, built)) => slots.push(((Some(node), None), built)),
+                Err(err) => failed.push(err),
             }
+            continue;
+        };
+        let kept = &retained[was];
+        let declaration = match (item_memo.pass(lua), &kept.resolve_memo) {
+            (node::ItemPass::Keep, _) => None,
             (node::ItemPass::Resolve(site), Some(resolved)) => {
-                fresh.push(Some(VirtualNode { kind: old.kind, properties: resolved.raw().clone(), site }));
-                continue;
+                Some(VirtualNode { kind: kept.kind, properties: resolved.raw().clone(), site })
             }
-            _ => {}
-        }
-        match item.rebuild(properties, lua) {
-            Ok((node, _)) if node.kind != old.kind || id(&node.properties) != id(&old.properties) => return Ok(None),
-            Ok((node, rebuilt)) => {
-                fresh.push(Some(node));
-                *item = rebuilt;
-            }
-            Err(err) => failed.push(err),
-        }
+            _ => match item_memo.rebuild(properties, lua) {
+                Ok((node, _)) if node.kind != kept.kind || id(&node.properties) != id(&kept.properties) => {
+                    return Ok(None);
+                }
+                Ok((node, rebuilt)) => {
+                    item_memo = rebuilt;
+                    Some(node)
+                }
+                Err(err) => {
+                    failed.push(err);
+                    continue;
+                }
+            },
+        };
+        slots.push(((declaration, Some(was)), item_memo));
     }
     if !failed.is_empty() {
         return Err(LayoutError::many(failed));
     }
-    Ok(Some(fresh))
+    let (children, items) = slots.into_iter().unzip();
+    memo.items = items;
+    Ok(Some(children))
 }
 
 /// The second walk: solved geometry back out of the tree and into retained nodes.
@@ -589,7 +660,7 @@ fn finish(
         prior_position,
         prior_size: _,
         leaving,
-        list_memo,
+        mut list_memo,
         child_table,
         resolve_memo,
         site,
@@ -607,12 +678,20 @@ fn finish(
     let (children, scrolled) = if style.visible {
         let mut children: Vec<ResolvedNode> =
             children.into_iter().map(|child| finish(tree, child, shaping, now)).collect::<Result<_, _>>()?;
+        if let Some(memo) = list_memo.as_deref_mut()
+            && let Some(axis) = main_axis_of(kind, &properties)?
+        {
+            let cross = if axis == MainAxis::Vertical { size.width } else { size.height };
+            let lengths = children.iter().map(|child| child.in_flow().then(|| child.extent_on(axis)));
+            memo.measured(lengths, (viewport(&style, size, axis).0, cross, style.spacing));
+        }
 
         // ADR-0069 decision 4.
         let scrolled = match main_axis_of(kind, &properties)? {
             Some(axis) if properties.contains_key("scroll") => {
-                ease_request(kind, &properties, &style, size, axis, &children, &mut tweens, now)?;
-                scroll_children(&properties, &style, size, axis, &mut children, 0.0)
+                let memo = list_memo.as_deref();
+                ease_request(kind, &properties, &style, size, axis, &children, &mut tweens, now, memo)?;
+                scroll_children(&properties, &style, size, axis, &mut children, 0.0, memo)
             }
             None if kind == "textfield" => kept_scroll,
             _ => 0.0,
@@ -676,6 +755,16 @@ fn finish(
         site,
     };
     retarget_move(&mut node, prior_position, now);
+    // A window the pass came up short of builds again this turn (`Scene::read_by_lua`): the
+    // viewport outgrew the one it was planned for, or its new items were shorter than estimated.
+    if node.visible
+        && node.list_memo.as_ref().is_some_and(|memo| memo.window.is_some())
+        && let Some(axis) = main_axis_of(kind, &node.properties)?
+        && outruns_window(&node, axis)
+        && let Some(handle) = node::signal_at(&node.properties, "scroll").and_then(|scroll| scroll.scroll_handle())
+    {
+        handle.set_quiet(Value::Number(f64::from(node.scrolled)));
+    }
     Ok(node)
 }
 
@@ -824,6 +913,184 @@ mod tests {
                 other => format!("{other:?}"),
             })
             .collect()
+    }
+
+    /// 200 keyed 20 px rows, 2 px apart, in a 100 px scrolling list beside a `clock` rect, counting
+    /// `each` calls in `calls`; `list` and `row` add properties, `make(id)` builds another surface.
+    /// Each row fades in and out and takes its width from a named state.
+    fn windowed_source(list: &str, row: &str) -> String {
+        format!(
+            r#"s = scroll("s")
+            calls = 0
+            clock = state("clock", 1)
+            shown = state("shown", true)
+            all = {{}}
+            for i = 1, 200 do all[i] = "r" .. i end
+            rows = state("rows", all)
+            function make(id)
+                return panel {{ id = id, child = column {{ children = {{
+                    rect {{ width = clock, height = 1 }},
+                    list {{ width = 50, height = 100, spacing = 2, scroll = s, items = rows, visible = shown, {list}
+                        key = function(k) return k end,
+                        each = function(k)
+                            calls = calls + 1
+                            local i = tonumber(k:sub(2))
+                            return rect {{ height = 20, width = state("w" .. k, 10), opacity = 1, {row}
+                                animate = {{ opacity = {{ duration = 100, from = 0 }},
+                                    exit = {{ duration = 100, opacity = 0 }} }} }}
+                        end }},
+                }} }} }}
+            end
+            return make("bar")"#
+        )
+    }
+
+    /// [`windowed_source`] laid out once, and a pass that runs `code` first.
+    #[allow(clippy::type_complexity)]
+    fn windowed(list: &str, row: &str) -> (Scene, mlua::Lua, Box<dyn Fn(&mut Scene, &mlua::Lua, &str)>) {
+        let (scene, lua, shaping, surface) = applied(&windowed_source(list, row));
+        let pass = move |scene: &mut Scene, lua: &mlua::Lua, code: &str| {
+            lua.load(code).exec().unwrap();
+            apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, lua).unwrap();
+        };
+        (scene, lua, Box::new(pass))
+    }
+
+    /// The list on `surface`, and its shown children's keys.
+    fn window_on<'a>(scene: &'a Scene, surface: &str) -> (&'a ResolvedNode, Vec<String>) {
+        let list = &scene.surface(surface).unwrap().children[0].children[1];
+        let shown = list.children.iter().filter(|child| child.in_flow());
+        (list, shown.map(|child| node::fields::common::id.read(&child.properties).unwrap().unwrap()).collect())
+    }
+
+    fn rows(range: std::ops::RangeInclusive<usize>) -> Vec<String> {
+        range.map(|i| format!("r{i}")).collect()
+    }
+
+    /// ADR-0374: once laid out, a keyed scrolling list builds its viewport and a viewport past each
+    /// edge, and holds room for the rest: a scroll to the end clamps where all 200 rows would, a
+    /// `reveal` builds and shows a row outside the window, nothing scrolled out leaves, a reload
+    /// still windows, and `items` shrinking past the window clamps to the rows left.
+    #[test]
+    fn a_keyed_scrolling_list_builds_its_window_and_keeps_its_extent() {
+        let (mut scene, lua, pass) = windowed("", "");
+        assert_eq!(window_on(&scene, "bar@TEST").1.len(), 200, "the first pass has no viewport to window");
+        pass(&mut scene, &lua, "clock:set(2)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!(ids, rows(1..=10), "rows starting above 100 + 100 px of overscan");
+        assert_eq!(list.children[9].layout_style.window, (0.0, 190.0 * 22.0), "row 10 holds rows 11-200");
+
+        pass(&mut scene, &lua, "s:scroll_to(1e6)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!(list.scrolled, 200.0 * 22.0 - 2.0 - 100.0, "the extent of all 200 rows");
+        assert_eq!((ids.last().unwrap().as_str(), list.children.last().unwrap().rect.y), ("r200", 80.0));
+
+        pass(&mut scene, &lua, "s:reveal(50)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!(list.scrolled, 49.0 * 22.0, "the least move: row 50's top at the viewport's");
+        assert_eq!(list.children[ids.iter().position(|id| id == "r50").unwrap()].rect.y, 0.0);
+        assert!(list.children.iter().all(|child| !child.leaving));
+
+        // A reload's new `each` voids the carried lengths but keeps their mean.
+        let table: mlua::Table = lua.load(windowed_source("", "")).eval().unwrap();
+        let reloaded = deserialize_lua_table(&table).unwrap();
+        let before = lua.globals().get::<i64>("calls").unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&reloaded), full(), &ShapingHandle::spawn(), &lua).unwrap();
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!((ids.len() as i64, list.scrolled), (lua.globals().get::<i64>("calls").unwrap() - before, 1078.0));
+        assert!(ids.len() < 20 && list.children.iter().all(|row| row.tweens.is_empty()), "no fade in");
+
+        lua.load(r#"local t = {} for i = 1, 20 do t[i] = "r" .. i end rows:set(t)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&reloaded), full(), &ShapingHandle::spawn(), &lua).unwrap();
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!((list.scrolled, ids.last().unwrap().as_str()), (20.0 * 22.0 - 2.0 - 100.0, "r20"));
+        assert!(list.children.iter().any(|child| child.leaving), "removed rows play their exit");
+    }
+
+    /// Hidden rows take no room and no gap, a hidden last built row included, and `reveal(k)`
+    /// counts shown rows.
+    #[test]
+    fn hidden_rows_keep_the_extent_and_reveal_counts_shown_rows() {
+        let (mut scene, lua, pass) = windowed("", r#"visible = state("v" .. k, i % 2 == 1),"#);
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        pass(&mut scene, &lua, "clock:set(2)");
+        pass(&mut scene, &lua, r#"state("vr19", true):set(false)"#);
+        assert!(window_on(&scene, "bar@TEST").0.children.last().is_some_and(|row| !row.visible), "row 19");
+        let end = 99.0 * 22.0 - 2.0 - 100.0;
+        let room = scene.wheel(&signal, 1e6, false, std::time::Instant::now());
+        assert_eq!(room, WheelScroll::Write(end), "the extent of 99 shown rows");
+
+        pass(&mut scene, &lua, "s:reveal(30)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        let shown: Vec<_> = list.children.iter().filter(|row| row.in_flow()).collect();
+        assert_eq!(list.scrolled, 30.0 * 22.0 - 2.0 - 100.0, "the 30th shown row, row 61, ends the viewport");
+        assert_eq!(shown[ids.iter().position(|id| id == "r61").unwrap()].rect.y, 80.0);
+    }
+
+    /// A shift builds only the rows entering the window, without their entrance, and keeps the
+    /// rest; a row scrolled out comes back with its named state; a wheel moves the window in place
+    /// until it needs another; a list shown again keeps its window; and rows added while out of
+    /// view enter without their entrance once their own build is past.
+    #[test]
+    fn a_window_shift_builds_only_new_rows_without_their_entrance() {
+        let (mut scene, lua, pass) = windowed("", "");
+        let calls = || lua.globals().get::<i64>("calls").unwrap();
+        let signal = crate::lua::signal::from_userdata(&lua.globals().get("s").unwrap()).unwrap();
+        assert!(window_on(&scene, "bar@TEST").0.children[0].tweens.iter().any(|tween| tween.property == "opacity"));
+        pass(&mut scene, &lua, r#"clock:set(2) state("wr1", 10):set(30)"#);
+        let (before, r5) = (calls(), window_on(&scene, "bar@TEST").0.children[4].id);
+
+        assert_eq!(scene.scroll_in_place(&signal, 50.0, &lua).map(|moved| moved.len()), Some(1), "inside the window");
+        assert_eq!(scene.scroll_in_place(&signal, 100.0, &lua), None, "it needs rows past 11");
+        pass(&mut scene, &lua, "s:scroll_to(150)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!((ids, calls() - before), (rows(3..=16), 6), "rows 11-16 only");
+        assert_eq!(list.children[2].id, r5, "row 5 kept its node");
+        assert!(list.children[13].tweens.is_empty(), "row 16 was built before: no fade in");
+
+        let before = calls();
+        pass(&mut scene, &lua, "shown:set(false)");
+        pass(&mut scene, &lua, "shown:set(true)");
+        assert_eq!(calls() - before, 0, "shown again, it keeps its window");
+
+        pass(&mut scene, &lua, "rows:set({})");
+        pass(&mut scene, &lua, "rows:set(all)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!((ids[0].as_str(), list.children[0].rect.width), ("r1", 30.0), "a named state outlives the node");
+        assert!(!list.children[0].tweens.is_empty(), "added in view, row 1 fades in");
+        pass(&mut scene, &lua, "s:scroll_to(150)");
+        assert!(window_on(&scene, "bar@TEST").0.children[13].tweens.is_empty(), "added out of view, row 16 does not");
+    }
+
+    /// An eased `reveal` past the window runs from where the list is, building nothing there; it
+    /// eases to the row's estimated place instead.
+    #[test]
+    fn an_eased_reveal_past_the_window_aims_at_the_rows_estimate() {
+        let (mut scene, lua, pass) = windowed("animate = { scroll = 200 },", "");
+        pass(&mut scene, &lua, "clock:set(2)");
+        let before = lua.globals().get::<i64>("calls").unwrap();
+        pass(&mut scene, &lua, "s:reveal(150)");
+        let (list, ids) = window_on(&scene, "bar@TEST");
+        assert_eq!((ids, lua.globals().get::<i64>("calls").unwrap() - before), (rows(1..=10), 0));
+        assert_eq!(node::scroll_target(&list.tweens), Some(150.0 * 22.0 - 2.0 - 100.0));
+    }
+
+    /// Each instance of a shared `scroll` maps a `reveal` through its own window.
+    #[test]
+    fn two_windowed_lists_on_one_scroll_both_reveal_the_row() {
+        let (lua, bar) = surface_from(&windowed_source("", ""));
+        let table: mlua::Table = lua.load(r#"return make("other")"#).eval().unwrap();
+        let surfaces = [bar, deserialize_lua_table(&table).unwrap()];
+        let (mut scene, shaping) = (Scene::new(), ShapingHandle::spawn());
+        for code in ["", "clock:set(2)", "s:reveal(50)"] {
+            lua.load(code).exec().unwrap();
+            apply_at(&mut scene, &surfaces, full(), &shaping, &lua).unwrap();
+        }
+        for surface in ["bar@TEST", "other@TEST"] {
+            let (list, ids) = window_on(&scene, surface);
+            assert_eq!(list.scrolled, 50.0 * 22.0 - 2.0 - 100.0, "{surface}");
+            assert_eq!(list.children[ids.iter().position(|id| id == "r50").unwrap()].rect.y, 80.0, "{surface}");
+        }
     }
 
     /// A `clock` text beside a `list` of `items`, counting `each` calls in `built`. `item` is the

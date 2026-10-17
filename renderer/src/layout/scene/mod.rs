@@ -396,14 +396,16 @@ impl Scene {
         ensure_node_admissible(fresh.kind, 0)?;
         // Cloned, not moved: one declaration is resolved once per instance of it, one per output.
         // The root has no parent, so its resolve happens here; children resolve in the parent's loop.
-        let resolved = resolve(fresh.kind, fresh.properties.clone(), existing.as_mut(), now, lua, |properties| {
-            build_child_for_output(properties, fresh.kind, &instance.output)
-        })?;
+        let resolved =
+            resolve(fresh.kind, fresh.properties.clone(), existing.as_mut(), now, lua, false, |properties| {
+                build_child_for_output(properties, fresh.kind, &instance.output)
+            })?;
 
         // A failed walk drops the tree it was writing; the rollback's copy of `existing` names nodes
         // of it, so the next pass starts a new one.
         let mut tree = Self::take_solver_tree(&mut self.solver_trees, &key, existing.iter_mut());
-        let prepared = prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), false, lua, now, 0)?;
+        let prepared =
+            prepare(self, &mut tree, existing, fresh.kind, resolved, (None, 0.0), (false, false), lua, now, 0)?;
         close(&mut at, &mut self.resolve_split.resolve);
         let solved = solve_instance(&mut tree, prepared, available, (shaping, &self.field_drafts), now)?;
         publish_geometry(&solved, 0.0, 0.0, lua, false).map_err(|e| node::invalid("geometry", e.to_string()))?;
@@ -1364,9 +1366,8 @@ pub(super) mod tests {
     /// | 500 | 5.2 ms | 18.2 ms | 4.5 ms | 7.1 ms | 2000 wallpapers |
     /// | 125, no text | 0.86 ms | 3.05 ms | 0.86 ms | 1.27 ms | |
     ///
-    /// Linear in source length either way: about 9us a row kept, 30us a row built. A kept list
-    /// still lays every item out; ADR-0191's viewport is the design that would cut it to the first
-    /// row of this table, and why it is not built yet.
+    /// Linear in source length either way: about 9us a row kept, 30us a row built. The last block,
+    /// 1000 keyed rows in a scroll, builds only its window (ADR-0374).
     #[test]
     #[ignore]
     fn list_pass_cost() {
@@ -1404,30 +1405,37 @@ pub(super) mod tests {
             )
         };
         let shaping = ShapingHandle::spawn();
+        // 40 passes over `source`, each after `write(tick)`: the scene and the sorted pass times.
+        let sample = |source: &str, warm: usize, write: &dyn Fn(&mlua::Lua, i64)| {
+            let (lua, surface) = surface_from(source);
+            let mut scene = Scene::new();
+            for _ in 0..warm {
+                apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+            }
+            scene.take_resolve_split();
+            let mut samples = Vec::new();
+            for tick in 0..40 {
+                lua.globals().set("tick", tick).unwrap();
+                write(&lua, tick);
+                let started = std::time::Instant::now();
+                apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+                samples.push(started.elapsed().as_secs_f64() * 1000.0);
+            }
+            samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+            (scene, samples)
+        };
         for (rows, text) in [(12usize, true), (50, true), (125, true), (500, true), (125, false)] {
             for written in ["clock", "source", "item", "theme"] {
-                let (lua, surface) = surface_from(&src(rows, text));
-                let mut scene = Scene::new();
-                apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-                scene.take_resolve_split();
-                let mut samples = Vec::new();
-                for tick in 0..40 {
-                    lua.globals().set("tick", tick).unwrap();
-                    match written {
-                        "clock" => lua.load("clock:set(tostring(tick))").exec().unwrap(),
-                        "source" => lua.load("source:set(source:get())").exec().unwrap(),
-                        "theme" => lua.load(r##"theme:set(tick % 2 == 0 and "#303030" or "#202020")"##).exec().unwrap(),
-                        _ => {
-                            let over = lua.load(r#"return hover("e1")"#).eval().unwrap();
-                            let over = crate::lua::signal::from_userdata(&over).unwrap();
-                            over.hover_handle().unwrap().set_changed(mlua::Value::Boolean(tick % 2 == 0));
-                        }
+                let (mut scene, samples) = sample(&src(rows, text), 1, &|lua, tick| match written {
+                    "clock" => lua.load("clock:set(tostring(tick))").exec().unwrap(),
+                    "source" => lua.load("source:set(source:get())").exec().unwrap(),
+                    "theme" => lua.load(r##"theme:set(tick % 2 == 0 and "#303030" or "#202020")"##).exec().unwrap(),
+                    _ => {
+                        let over = lua.load(r#"return hover("e1")"#).eval().unwrap();
+                        let over = crate::lua::signal::from_userdata(&over).unwrap();
+                        over.hover_handle().unwrap().set_changed(mlua::Value::Boolean(tick % 2 == 0));
                     }
-                    let started = std::time::Instant::now();
-                    apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-                    samples.push(started.elapsed().as_secs_f64() * 1000.0);
-                }
-                samples.sort_by(|a, b| a.partial_cmp(b).unwrap());
+                });
                 let split = scene.take_resolve_split();
                 let per_pass = |d: std::time::Duration| d.as_secs_f64() * 1000.0 / 40.0;
                 println!(
@@ -1439,6 +1447,35 @@ pub(super) mod tests {
                     per_pass(split.solve),
                 );
             }
+        }
+        // A launcher's 1000 keyed rows in a 420 px scroll, a selection `computed` in each (ADR-0374).
+        let launcher = r##"query = state("query", "")
+            selected = state("selected", 1)
+            s = scroll("s")
+            local all = {}
+            for i = 1, 1000 do all[i] = { id = i, name = "item " .. i } end
+            local results = computed({ query }, function(q)
+                local out = {}
+                for _, e in ipairs(all) do if e.name:find(q, 1, true) then out[#out + 1] = e end end
+                return out
+            end)
+            return panel { id = "picker", child = column { width = 360, height = 420, children = {
+                list { width = "fill", height = "fill", spacing = 1, scroll = s, items = results,
+                    key = function(e) return tostring(e.id) end,
+                    each = function(e)
+                        return row { width = "fill", height = 22, spacing = 8,
+                            background = computed({ results, selected }, function(found, i)
+                                return found[i] == e and "#45475a" or "#202020" end),
+                            children = { text { content = e.name, width = "fill", font_size = 12 } } }
+                    end },
+            } } }"##;
+        for (written, code) in [
+            ("selected", "selected:set(tick * 7 % 60 + 1)"),
+            ("reveal", "s:reveal(tick * 7 % 60 + 1)"),
+            ("query", r#"query:set(({ "", "1", "12", "item 9", "0", "" })[tick % 6 + 1])"#),
+        ] {
+            let (_, samples) = sample(launcher, 2, &|lua, _| lua.load(code).exec().unwrap());
+            println!("1000 rows windowed write={written}: p50 {:.3} ms  p95 {:.3} ms", samples[20], samples[38]);
         }
     }
 

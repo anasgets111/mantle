@@ -38,7 +38,6 @@ Wanted, but each needs a consumer or a decision first.
 | Generic IPC state read, subscription or per-panel commands | An `action` that returns the value, read with `mantle call`; `mantle set` and `toggle` write state | 0197 |
 | Child stdin, cwd or env | `process.run("env", { "-C", dir, "K=V", cmd })`; `sh -c` for one-shot stdin | 0175, 0188 |
 | Per-surface idle inhibition | `idle:inhibit` while the surface shows, `release_inhibit` when it hides | — |
-| List virtualization | `limit`, or page the source in Lua. A full rebuild costs about 25 µs a row; revisit for a real list past ~200 rows | 0191, 0219 |
 | Clipboard capability | `process.detach("wl-copy", { text })`: a selection needs a process that stays alive to serve it | 0188 |
 | Video encoding or global input capture | A recorder or input backend under `session_process`, streamed in | 0175 |
 | Wallpaper capability | A `"background"`-layer panel, an `image` with `async`/`retain`/`transition`, `folders` for the folder, `persistent_table` for the choice | 0055 |

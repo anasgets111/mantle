@@ -174,6 +174,18 @@ pub(super) fn taffy_style(
         ..taffy::Style::DEFAULT
     };
 
+    // A windowed list's first and last built items hold its room for the rest (ADR-0374).
+    if let Some(axis) = parent_axis
+        && style.window != (0.0, 0.0)
+    {
+        let (start, end) = match axis {
+            MainAxis::Horizontal => (&mut out.margin.left, &mut out.margin.right),
+            MainAxis::Vertical => (&mut out.margin.top, &mut out.margin.bottom),
+        };
+        *start = length(start.into_raw().value() + style.window.0);
+        *end = length(end.into_raw().value() + style.window.1);
+    }
+
     // Container half.
     match main_axis_of(kind, properties)? {
         Some(axis) => {

@@ -570,7 +570,7 @@ props! {
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
         items: Items = absent(Prose("empty"));
-        /// Builds a node for every built item, visible or not.
+        /// Builds a node for every built item: all of them, or near the viewport in a keyed list with `scroll`.
         each(item: Value) -> VirtualNode = absent(Required);
         /// Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position.
         key(item: Value) -> String;

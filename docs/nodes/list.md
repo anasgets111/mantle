@@ -49,7 +49,7 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `items` | `any[]\|Bound` | Empty | Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error |
-| `each` | `fun(item: any): Node` | Required | Builds a node for every built item, visible or not |
+| `each` | `fun(item: any): Node` | Required | Builds a node for every built item: all of them, or near the viewport in a keyed list with `scroll` |
 | `key` | `fun(item: any): string` | None | Unique UTF-8 key per item; replaces the node's `id`. Duplicates are refused. Without it items match by position |
 | `limit` | `integer\|Bound` | None | Build at most this many items; above 10000 acts as 10000, `0` builds none |
 | `direction` | `"vertical"\|"horizontal"\|Bound` | `"vertical"` | Lays out as a `column` or a `row` |
@@ -65,7 +65,8 @@ A `list` packs and aligns exactly like the `row` or `column` its `direction` nam
 A list keeps the items it built until something that build read changes. A pass that finds nothing
 changed calls no `each` and reads none of the items' signals; it lays the kept items out again,
 about a third of the cost of building them. A change one item's `each` read builds that item
-alone; a change the list itself read builds every item, scrolled out of view or not. A signal bound
+alone; a change the list itself read builds every item, or every item near the viewport in a
+[long scrolling list](#long-scrolling-lists). A signal bound
 to an item's property is not the build's: a write to it runs that property's getter in each item
 that binds it and calls no `each`.
 
@@ -92,6 +93,15 @@ The engine sees signal reads only. An `each`, `key` or item `map` that reads the
 variable or an `items` table changed in place keeps what it read until a signal it read is written.
 A `delay` or `pulse` builds the items that read it again on every pass while one is pending or open. What to read
 instead: [what a node reads again](../guide/signals.md#what-a-node-reads-again).
+
+## Long scrolling lists
+
+A list with both `key` and its own `scroll` builds only the items within a viewport of what it
+shows. The rest cost a `key` call when `items` changes, and scrolling, clamping and `reveal` behave
+as if every item were built. The first pass after the list appears builds everything once, to
+measure. An item scrolled further away loses its node: no `animate.exit` plays, and its tweens,
+keyboard focus and text field draft are dropped; when it comes back, `each` runs again but
+`animate.from` does not replay. Keep state that must survive in a named `state`.
 
 ## How do I…
 
@@ -130,7 +140,7 @@ local items = list {
 
 | Trap | Fix |
 | :--- | :--- |
-| A 2000-item `list` makes every update slow | Every item is laid out on every pass, and built whenever anything it read changes, visible or not. Cap it with `limit`, filter the `items`, or hide the list while it is closed |
+| A 2000-item `list` makes every update slow | Without `key` and `scroll`, every item is laid out on every pass, and built whenever anything it read changes, visible or not. Give it both so it builds only [near its viewport](#long-scrolling-lists), or cap it with `limit` |
 | A `list` rebuilds though nothing it shows changed | Its `each` or `key` is a new function each time the builder around it runs, as inside a function `child` that reads a signal. Define them once, outside the builder |
 | A relative time ("3 min ago") in an item stops updating | `each` read the clock with `os.time()`. Bind the text to a `map` of `mantle.clock` instead ([what a node reads again](../guide/signals.md#what-a-node-reads-again)) |
 | A `list` of more than 10000 elements is refused | Set `limit`, or page the `items` |

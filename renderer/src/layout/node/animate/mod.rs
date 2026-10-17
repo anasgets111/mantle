@@ -654,13 +654,15 @@ fn displayed(
 /// resting value or the middle of an earlier tween. A target that matches keeps the running
 /// tween, so a pass that re-resolves for some unrelated signal does not restart motion. A property
 /// `animate` stopped naming loses its tween and snaps. A property nothing displayed yet, on a new
-/// node or one that lacked it, starts from the spec's `from` when there is one.
+/// node or one that lacked it, starts from the spec's `from` when there is one. A `reentry`, a
+/// windowed list's row built again, skips `from` and starts a sequence that ends played out (ADR-0374).
 pub fn retarget(
     kind: &str,
     retained: Option<(&[Tween], &PropMap)>,
     properties: &mut PropMap,
     now: Instant,
     lua: &Lua,
+    reentry: bool,
 ) -> Result<(Vec<Tween>, Option<MoveSpec>), LayoutError> {
     let (specs, movement) = parse::parse_animate(kind, properties)?;
     let (running, shown) = retained.map_or((&[][..], None), |(running, shown)| (running, Some(shown)));
@@ -702,7 +704,12 @@ pub fn retarget(
                         property,
                         from: sequence.frames[0].value.clone(),
                         to: sequence.frames.last().expect("a parsed sequence has frames").value.clone(),
-                        started: now,
+                        // A row back in a windowed list rests on its last frame (ADR-0152).
+                        started: if reentry && sequence.loops.is_some() {
+                            now.checked_sub(sequence.played() + spec.delay).unwrap_or(now)
+                        } else {
+                            now
+                        },
                         spec: AnimationSpec { motion: Motion::Sequence(sequence), ..spec },
                         reversal: None,
                         resting: false,
@@ -729,7 +736,8 @@ pub fn retarget(
             }
             continue;
         };
-        let Some(displayed) = displayed(property, running, shown)?.or_else(|| spec.from.clone()) else { continue };
+        let from = spec.from.clone().filter(|_| !reentry);
+        let Some(displayed) = displayed(property, running, shown)?.or(from) else { continue };
         let retained_target = running.map_or(&displayed, |tween| &tween.to);
         let tween = match running {
             _ if *retained_target != target => {
@@ -1745,7 +1753,7 @@ mod tests {
         let mut properties =
             rect_props(&lua, "return { width = 100, animate = { width = { duration = 200, delay = 120 } } }");
         let now = started + Duration::from_millis(100);
-        retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua).unwrap();
+        retarget("rect", Some((&running[..], &shown)), &mut properties, now, &lua, false).unwrap();
         let displayed = Animatable::from_value("width", properties.get("width")).unwrap();
         assert_eq!(displayed, Some(Animatable::Number(50.0)), "halfway stays halfway");
     }
@@ -1758,7 +1766,7 @@ mod tests {
             &lua,
             "return { width = 100, animate = { width = { duration = 300, easing = \"linear\", from = 0 } } }",
         );
-        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap().0;
+        let forward = retarget("rect", None, &mut forward_props, start, &lua, false).unwrap().0;
         let at = |tween: &Tween, now| match tween.at(now) {
             Animatable::Number(value) => value,
             other => panic!("expected a number, got {other:?}"),
@@ -1769,7 +1777,7 @@ mod tests {
         let shown = PropMap::from_iter([("width", forward[0].at(turn).to_value(&lua).unwrap())]);
         let mut back_props =
             rect_props(&lua, "return { width = 0, animate = { width = { duration = 300, easing = \"linear\" } } }");
-        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap().0;
+        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua, false).unwrap().0;
         assert_eq!(at(&back[0], turn + Duration::from_millis(135)), 45.0);
         assert!(back[0].done(turn + Duration::from_millis(270)));
 
@@ -1777,7 +1785,8 @@ mod tests {
         let shown = PropMap::from_iter([("width", back[0].at(turn_again).to_value(&lua).unwrap())]);
         let mut forward_props =
             rect_props(&lua, "return { width = 100, animate = { width = { duration = 300, easing = \"linear\" } } }");
-        let forward_again = retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua).unwrap().0;
+        let forward_again =
+            retarget("rect", Some((&back, &shown)), &mut forward_props, turn_again, &lua, false).unwrap().0;
         assert!(!forward_again[0].done(turn_again + Duration::from_millis(164)));
         assert!(forward_again[0].done(turn_again + Duration::from_millis(166)));
     }
@@ -1790,18 +1799,18 @@ mod tests {
             "return { width = 100, animate = { width = { duration = 100, easing = \"out_cubic\", from = 0 } } }";
         let back_source = "return { width = 0, animate = { width = { duration = 100, easing = \"out_cubic\" } } }";
         let mut forward_props = rect_props(&lua, forward_source);
-        let forward = retarget("rect", None, &mut forward_props, start, &lua).unwrap().0;
+        let forward = retarget("rect", None, &mut forward_props, start, &lua, false).unwrap().0;
         let turn = start + Duration::from_millis(50);
         assert_eq!(forward[0].at(turn), Animatable::Number(87.5));
         let shown = PropMap::from_iter([("width", forward[0].at(turn).to_value(&lua).unwrap())]);
         let mut back_props = rect_props(&lua, back_source);
-        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua).unwrap().0;
+        let back = retarget("rect", Some((&forward, &shown)), &mut back_props, turn, &lua, false).unwrap().0;
         assert_eq!(back[0].at(turn), Animatable::Number(87.5));
         assert!(!back[0].done(turn + Duration::from_millis(87)));
         assert!(back[0].done(turn + Duration::from_millis(88)));
 
         let mut same_props = rect_props(&lua, back_source);
-        let carried = retarget("rect", Some((&back, &shown)), &mut same_props, turn, &lua).unwrap().0;
+        let carried = retarget("rect", Some((&back, &shown)), &mut same_props, turn, &lua, false).unwrap().0;
         assert!(!carried[0].done(turn + Duration::from_millis(87)));
         assert!(carried[0].done(turn + Duration::from_millis(88)));
     }
