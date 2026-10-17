@@ -285,7 +285,7 @@ pub fn run(
         // waking on the 15 ms poll, while ADR-0124 makes the push itself the wakeup. Staging and
         // repainting are one commit: the latter's `swap_buffers` carries layer/input/map changes;
         // per-field commits would show the compositor a half-updated surface.
-        // Profiling adds three `clock_gettime` calls per turn for the resolve/repaint split.
+        // Profiling adds a `clock_gettime` call per phase for the handlers/resolve/repaint split.
         let mut phases = idle_profile::Phases::start(profile.is_some());
         app.client.fire_due_timers();
         app.process_accessibility_actions();
@@ -310,6 +310,7 @@ pub fn run(
             app.mark_surfaces_stale(&scrolled);
             app.apply_resolved_surface_state_for(&[&scrolled]);
         }
+        phases.mark_handlers();
         let passed = app.client.re_resolve_if_dirty();
         if passed && app.image_cache.has_node_clocks() {
             let live = app.client.scene().animated_image_nodes();

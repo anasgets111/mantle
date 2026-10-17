@@ -42,13 +42,16 @@ impl Turn {
     }
 }
 
-/// Measured phase times. Each turn costs four `clock_gettime` calls when enabled; with the profile
+/// Measured phase times. Each turn costs five `clock_gettime` calls when enabled; with the profile
 /// off, `mark` branches on `None` and the loop touches no clock. The split explains `drawn=0`, so
 /// it shares the main switch rather than adding another environment variable.
 #[derive(Clone, Copy, Default)]
 pub struct Phases {
     /// Current phase start, or `None` when profiling is off.
     at: Option<Instant>,
+    /// Due timers, accessibility actions, off-thread results, signal wakes, holds and scrolls: the
+    /// turn's work before the resolve pass, which `resolve` would otherwise be charged with.
+    handlers: Duration,
     resolve: Duration,
     tick: Duration,
     surface_state: Duration,
@@ -71,6 +74,10 @@ impl Phases {
         let now = Instant::now();
         self.at = Some(now);
         now.duration_since(at)
+    }
+
+    pub fn mark_handlers(&mut self) {
+        self.handlers = self.split();
     }
 
     pub fn mark_resolve(&mut self) {
@@ -129,6 +136,7 @@ pub struct Counters {
     decoded: u64,
     painted: u64,
     drawn: u64,
+    handlers: Duration,
     resolve: Duration,
     /// `resolve` split four ways; see `layout::scene::ResolveSplit` for what each covers and why
     /// they sum to less than it.
@@ -234,6 +242,7 @@ impl IdleProfile {
         c.decoded += u64::from(turn.decoded);
         c.painted += u64::from(turn.painted);
         c.drawn += turn.drawn as u64;
+        c.handlers += phases.handlers;
         c.resolve += phases.resolve;
         c.resolve_clone += phases.resolve_split.clone;
         c.resolve_list += phases.resolve_split.list;
@@ -270,7 +279,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
     format!(
         "idle {:.1}s: turns={} idle={} cpu proc={:.2}% main={:.2}% | wake wl={} wake={} both={} none={} \
          | work dispatch={} resolve={} tick={} type={} decode={} paint={} drawn={} \
-         | ms resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} path={:.1} flush={:.1} swap={:.1}) tick={:.1} (clone={:.1} prepare={:.1} solve={:.1}) dispatch={:.1} \
+         | ms handlers={:.1} resolve={:.1} (clone={:.1} list={:.1} props={:.1} solve={:.1}) surfstate={:.1} repaint={:.1} (build={:.1} gl={:.1} text={:.1} icon={:.1} box={:.1} path={:.1} flush={:.1} swap={:.1}) tick={:.1} (clone={:.1} prepare={:.1} solve={:.1}) dispatch={:.1} \
          | focus turns={} searched={} ms={:.1}{}",
         secs,
         c.turns,
@@ -288,6 +297,7 @@ fn render(window: Duration, c: &Counters, cpu: Cpu) -> String {
         c.decoded,
         c.painted,
         c.drawn,
+        c.handlers.as_secs_f64() * 1000.0,
         c.resolve.as_secs_f64() * 1000.0,
         c.resolve_clone.as_secs_f64() * 1000.0,
         c.resolve_list.as_secs_f64() * 1000.0,
@@ -352,6 +362,7 @@ mod tests {
             re_resolved: 18,
             painted: 18,
             drawn: 0,
+            handlers: Duration::from_micros(800),
             resolve: Duration::from_micros(21_600),
             resolve_clone: Duration::from_micros(9_100),
             resolve_list: Duration::from_micros(2_500),
@@ -370,7 +381,9 @@ mod tests {
         let line = render(Duration::from_secs(10), &c, Cpu::default());
         assert!(line.contains("paint=18 drawn=0"), "{line}");
         assert!(
-            line.contains("ms resolve=21.6 (clone=9.1 list=2.5 props=4.8 solve=4.2) surfstate=1.4 repaint=0.5"),
+            line.contains(
+                "ms handlers=0.8 resolve=21.6 (clone=9.1 list=2.5 props=4.8 solve=4.2) surfstate=1.4 repaint=0.5"
+            ),
             "{line}"
         );
         assert!(line.contains("tick=3.0 (clone=0.7 prepare=1.2 solve=0.9)"), "{line}");
@@ -379,21 +392,27 @@ mod tests {
     #[test]
     fn phases_with_the_profile_off_read_no_clock_and_report_nothing() {
         let mut phases = Phases::start(false);
+        phases.mark_handlers();
         phases.mark_resolve();
         phases.mark_tick();
         phases.mark_surface_state();
         phases.mark_repaint();
         assert!(phases.at.is_none());
-        assert_eq!((phases.resolve, phases.tick, phases.surface_state, phases.repaint), Default::default());
+        assert_eq!(
+            (phases.handlers, phases.resolve, phases.tick, phases.surface_state, phases.repaint),
+            Default::default()
+        );
     }
 
     #[test]
     fn each_phase_is_credited_only_with_its_own_span() {
         let mut phases = Phases::start(true);
         std::thread::sleep(Duration::from_millis(5));
+        phases.mark_handlers();
         phases.mark_resolve();
         phases.mark_surface_state();
-        assert!(phases.resolve >= Duration::from_millis(5), "{:?}", phases.resolve);
+        assert!(phases.handlers >= Duration::from_millis(5), "{:?}", phases.handlers);
+        assert!(phases.resolve < Duration::from_millis(5), "{:?}", phases.resolve);
         assert!(phases.surface_state < Duration::from_millis(5), "{:?}", phases.surface_state);
     }
 
