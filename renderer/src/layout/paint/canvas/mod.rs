@@ -483,9 +483,6 @@ fn shader_run<'a>(
 ///
 /// The target comes from `TextPainter`'s pool: creating one per clipping node per repaint was 8.6 ms
 /// of an 8.6 ms repaint (ADR-0217).
-///
-/// ponytail: the pool matches on exact size, so a clip tweening its width reuses none. Upgrade path
-/// is a size class and a sub-rect composite, handling `FLIP_Y` about the target's height.
 // ponytail: keep the nine scalar/context arguments; passing `DrawCmd` would require a second match.
 #[allow(clippy::too_many_arguments)]
 fn draw_clipped(
@@ -509,8 +506,7 @@ fn draw_clipped(
         return;
     };
     let path = box_path(rect, radius);
-    let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
-    let paint = Paint::image(image, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0);
+    let paint = pooled_paint(painter.canvas_mut(), image, clip, 1.0);
     match seed {
         Some(_) => replace(painter.canvas_mut(), &path, &paint, 1.0),
         None => painter.canvas_mut().fill_path(&path, &paint),
@@ -542,6 +538,8 @@ fn draw_node_mask(
     };
     let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
     let canvas = painter.canvas_mut();
+    let cut =
+        pooled_paint(canvas, alpha, PhysicalRect { x0: 0, y0: 0, x1: clip.x1 - clip.x0, y1: clip.y1 - clip.y0 }, 1.0);
     canvas.save();
     canvas.set_render_target(RenderTarget::Image(content));
     canvas.reset_transform();
@@ -553,11 +551,12 @@ fn draw_node_mask(
     });
     let mut whole = Path::new();
     whole.rect(0.0, 0.0, width, height);
-    canvas.fill_path(&whole, &Paint::image(alpha, 0.0, 0.0, width, height, 0.0, 1.0).with_anti_alias(false));
+    canvas.fill_path(&whole, &cut.with_anti_alias(false));
     canvas.restore();
     canvas.set_render_target(target);
     let path = box_path(rect, radius);
-    canvas.fill_path(&path, &Paint::image(content, clip.x0 as f32, clip.y0 as f32, width, height, 0.0, 1.0));
+    let paint = pooled_paint(canvas, content, clip, 1.0);
+    canvas.fill_path(&path, &paint);
 }
 
 /// Draws `draw` at `rect`. Under a transform femtovg cannot bake into its glyph atlas (rotate, skew, flip,
@@ -592,7 +591,8 @@ fn draw_text(
     let image = match kept {
         Some(image) => image,
         None => {
-            let Some(image) = scratch(painter, walk, size) else {
+            // Snug: composited under a transform, it would show a pooled texture's slack.
+            let Some(image) = scratch(painter, walk, size, true) else {
                 painter.draw_text(draw, rect, walk.scale);
                 return;
             };
@@ -630,15 +630,51 @@ fn raster(
     painter.canvas_mut().restore();
 }
 
-/// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
-/// memory.
-fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usize)) -> Option<ImageId> {
+/// A pooled render target whose top-left `used` part the caller draws in, held until [`execute`]
+/// flushes; `None` when out of texture memory. It is allocated at [`TextPainter::size_class`],
+/// or at `used` when `snug`, for an image femtovg will sample off its texel centres: past the used
+/// part it holds whatever was there, where `CLAMP_TO_EDGE` would repeat the edge (ADR-0370).
+fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, used: (usize, usize), snug: bool) -> Option<ImageId> {
+    let size = if snug { used } else { painter.size_class(used) };
     let image = match painter.take_scratch(walk.surface, size) {
         Some(image) => image,
         None => painter.new_scratch(size)?,
     };
     walk.scratch.push((image, size));
     Some(image)
+}
+
+/// Whether femtovg's image paints placed on whole pixels land texel on pixel under the canvas
+/// transform, so they never sample a pooled image's slack (ADR-0370).
+fn aligned(canvas: &Canvas<OpenGl>) -> bool {
+    let [a, b, c, d, e, f] = canvas.transform().0;
+    [a, b, c, d] == [1.0, 0.0, 0.0, 1.0] && e.fract() == 0.0 && f.fract() == 0.0
+}
+
+/// A paint laying the used top-left of the pooled `image` over `at`: its extent is the whole
+/// texture's, so the used part lands on `at` (ADR-0370).
+fn pooled_paint(canvas: &Canvas<OpenGl>, image: ImageId, at: PhysicalRect, alpha: f32) -> Paint {
+    let (x, y) = (at.x0 as f32, at.y0 as f32);
+    let rect = LogicalRect { x, y, width: at.x1 as f32 - x, height: at.y1 as f32 - y };
+    let used = ((at.x1 - at.x0) as usize, (at.y1 - at.y0) as usize);
+    let LogicalRect { x, y, width, height } = pooled_extent(canvas, image, used, rect);
+    Paint::image(image, x, y, width, height, 0.0, alpha)
+}
+
+/// `rect`, where the `used` top-left of the pooled `image` lands, grown to where its whole texture
+/// does.
+fn pooled_extent(canvas: &Canvas<OpenGl>, image: ImageId, used: (usize, usize), rect: LogicalRect) -> LogicalRect {
+    let (width, height) = canvas.image_size(image).unwrap_or(used);
+    // Divided first, so a used part the texture's size stays exact.
+    let width = rect.width / used.0 as f32 * width as f32;
+    LogicalRect { width, height: rect.height / used.1 as f32 * height as f32, ..rect }
+}
+
+/// [`fill_image`] for the `used` top-left of a pooled `image`, filling `rect` alone.
+fn fill_pooled(canvas: &mut Canvas<OpenGl>, image: ImageId, used: (usize, usize), rect: LogicalRect, alpha: f32) {
+    let LogicalRect { x, y, width, height } = pooled_extent(canvas, image, used, rect);
+    let paint = Paint::image(image, x, y, width, height, 0.0, alpha);
+    canvas.fill_path(&box_path(rect, &node::Radii::default()), &paint);
 }
 
 /// Draws `commands` into a scratch target covering `clip` over `under`, masked over the node's box
@@ -666,7 +702,9 @@ fn offscreen(
     if width == 0 || height == 0 {
         return None;
     }
-    let Some(image) = scratch(painter, walk, (width, height)) else {
+    // Composited at whole pixels under the transform in force now.
+    let snug = !aligned(painter.canvas_mut());
+    let Some(image) = scratch(painter, walk, (width, height), snug) else {
         // A mask source must never fall back to drawing independently into its parent.
         // Existing clips and effects preserve the subtree unmasked on allocation failure.
         // Into the parent's target, so it keeps the parent's frame: the clip this could not
@@ -678,6 +716,7 @@ fn offscreen(
     };
 
     let canvas = painter.canvas_mut();
+    let size = canvas.image_size(image).unwrap_or((width, height));
     canvas.save();
     canvas.set_render_target(RenderTarget::Image(image));
     canvas.clear_rect(0, 0, width as u32, height as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
@@ -691,11 +730,12 @@ fn offscreen(
         canvas.reset_scissor();
         canvas.fill_path(&whole, &under.with_anti_alias(false));
     }
-    // The offscreen's own size (a shader quad inside a rounded clip places itself in that target,
-    // ADR-0184), its origin at the clip's corner, and no transform: `draw_clipped`
-    // reset the canvas transform above, and composites the result under the outer one afterwards.
+    // The offscreen's whole texture, which femtovg's viewport covers (a shader quad inside a rounded
+    // clip places itself in that target, ADR-0184, ADR-0370), its origin at the clip's corner, and
+    // no transform: `draw_clipped` reset the canvas transform above, and composites the result under
+    // the outer one afterwards.
     let inner = Frame {
-        size: (width as f32, height as f32),
+        size: (size.0 as f32, size.1 as f32),
         origin: (clip.x0 as f32, clip.y0 as f32),
         transform: None,
         region,
@@ -2569,12 +2609,42 @@ pub(crate) mod tests {
         let root = resolved_surface(&Lua::new(), &src(40), LogicalSize { width: 96.0, height: 64.0 });
         let mut images = ImageCache::new();
         paint_tree(&mut painter, &mut images, &root, 1.0);
-        let first = painter.take_scratch("test", (48, 48)).unwrap();
-        let second = painter.take_scratch("test", (48, 48)).unwrap();
-        assert!(painter.take_scratch("test", (48, 48)).is_none(), "exactly two offscreens even with rounded clipping");
-        painter.recycle_scratch("test", [(first, (48, 48)), (second, (48, 48))]);
+        let first = painter.take_scratch("test", (64, 64)).unwrap();
+        let second = painter.take_scratch("test", (64, 64)).unwrap();
+        assert!(painter.take_scratch("test", (64, 64)).is_none(), "exactly two offscreens even with rounded clipping");
+        painter.recycle_scratch("test", [(first, (64, 64)), (second, (64, 64))]);
         paint_tree(&mut painter, &mut images, &root, 1.0);
-        let reused = [painter.take_scratch("test", (48, 48)).unwrap(), painter.take_scratch("test", (48, 48)).unwrap()];
+        let reused = [painter.take_scratch("test", (64, 64)).unwrap(), painter.take_scratch("test", (64, 64)).unwrap()];
         assert!(reused.contains(&first) && reused.contains(&second));
+    }
+
+    /// ADR-0370. A rounded clip tweening its width within one size class draws every frame into
+    /// the one pooled target, and paints as it did in an exact one; under a `rotate` its target is
+    /// snug, so femtovg sampling between texels never reaches a slack.
+    #[test]
+    fn a_tweening_clip_reuses_one_pooled_target() {
+        let src = |width: u32, angle: f32| {
+            format!(
+                r##"return panel {{ id = "bar", width = 96, height = 64, background = "#FFFFFF",
+                child = rect {{ width = {width}, height = 40, radius = 8, clip = "rounded", rotate = {angle},
+                    children = {{ rect {{ width = 96, height = 40, background = "#00FF00" }} }} }} }}"##
+            )
+        };
+        let Some(instance) = init_headless_egl(96, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
+        let mut images = ImageCache::new();
+        for width in 41..=47 {
+            let root = resolved_surface(&Lua::new(), &src(width, 0.0), LogicalSize { width: 96.0, height: 64.0 });
+            paint_tree(&mut painter, &mut images, &root, 1.0);
+            let canvas = painter.canvas_mut();
+            let (edge, past) = (pixel_at(canvas, width as usize - 1, 20), pixel_at(canvas, width as usize, 20));
+            assert_eq!((edge, past), ((0, 255, 0, 255), (255, 255, 255, 255)), "width {width}");
+            assert_eq!(painter.census().0, 1, "width {width}: one pooled target");
+        }
+        assert!(painter.take_scratch("test", (64, 64)).is_some());
+        let root = resolved_surface(&Lua::new(), &src(41, 5.0), LogicalSize { width: 96.0, height: 64.0 });
+        paint_tree(&mut painter, &mut images, &root, 1.0);
+        assert!(painter.take_scratch("test", (41, 40)).is_some(), "snug under a rotation");
     }
 }

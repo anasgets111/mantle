@@ -5071,6 +5071,7 @@ rounded parents, so the mask is real work.
 
 ponytail: exact-size matching leaves a tweening clip paying the old cost. Upgrade path is a size class
 and a sub-rect composite, handling `FLIP_Y` about the target's height rather than the clip's.
+Superseded by ADR-0370.
 
 ## 0218. The property map hashes with FxHash, and a resolve moves the values it was copying
 
@@ -6159,7 +6160,8 @@ layer whose blur changes every frame measured 0.643 ms a frame against 0.652 ms 
 Iris, best of 7 x 100 frames), so exact-size pool misses cost nothing measurable.
 
 ponytail: the pool matches exact sizes, so a tweening blur, offset or spread reallocates its layer
-every frame. Upgrade path is ADR-0217's size classes, once a driver shows the cost.
+every frame. Upgrade path is ADR-0217's size classes, once a driver shows the cost. Superseded by
+ADR-0370, which measured that cost; a fractional offset or a spread keeps its cast exact.
 
 **Amends the roadmap's Drawing and shader rows.**
 
@@ -6274,7 +6276,7 @@ ponytail: a node's own `mask` does not fade its backdrop, drawn outside that mas
 path: copy the backdrop before opening the offscreen and draw it first inside it.
 
 ponytail: the scratch pool matches exact sizes (ADR-0254), so a frosted box tweening its size or
-sliding off the target's edge reallocates its copy every frame.
+sliding off the target's edge reallocates its copy every frame. Superseded by ADR-0370.
 
 **Amends ADR-0254** (`Effect` carries `backdrop_blur`, and its decision 4 limits apply) **and the
 roadmap's Drawing row.**
@@ -8631,3 +8633,52 @@ Trade-off: a slow getter now costs frames instead of failing. A runaway stalls t
   degrades input; it does not lock the user out.
 
 Memoizing across separate `:get()` calls outside a pass and the 2 s pass cap are unchanged.
+
+## 0370. Scratch targets round up to 64 px size classes, used from their top-left (amends ADR-0217, ADR-0254, ADR-0256)
+
+The pool matched exact sizes, so every frosted, clipped or shadowed box tweening its size missed it
+every frame. ADR-0254 rejected 32 px buckets because headless Iris showed no cost. An i5-6300U with
+HD 520 (Mesa iris) does: on `tools/heavy-shell` with `hs_fx`, `draw_backdrop` was 17.5% inclusive,
+15.3% of it `read_target` and 12.5% femtovg's `GlTexture::new`; `offscreen`, `blurred` and
+`composite` were 7.7%, 8% and 7.8%.
+
+1. **Each side rounds up to a multiple of 64**, capped at `GL_MAX_TEXTURE_SIZE`. That bounds the
+   waste at 63 px a side: 3% of a 1920 px side, where a 1/8 geometric step wastes up to 240 px. A
+   box tweening 10 px a frame reuses one target for about 6 frames. The pool keys by allocated
+   size; its caps (16 sizes, 64 MiB, never the current paint's) stand.
+2. **The used part is the target's top-left in canvas coordinates.** femtovg's viewport covers the
+   whole texture, so canvas row 0 is the last GL row: `FLIP_Y` about the allocated height. Its
+   image paint flips about the paint's own extent, so an extent scaled by allocated over used size
+   lays the used part on the old rect. `read_target` blits into rows `alloc - h .. alloc`, and an
+   offscreen's `Frame` is the whole texture, where a shader quad places itself.
+3. **The engine's passes clamp to the used part.** Blur, blend and `effect.shader` passes set the
+   viewport to it and read through a `vec4` of its span and half a texel, clamping to the span
+   inset by half a texel: `CLAMP_TO_EDGE` at its edge, including the halvings that read past an
+   odd one. `mantle_input` reads through `u_input_box`, so `v_uv`, `u_input_rect` and every size a
+   shader sees are unchanged; `u_input` itself may now be larger than what it holds.
+4. **femtovg cannot clamp, so what it samples off texel centres is allocated exactly ("snug").**
+   That is an offscreen (rounded clip, node mask, layer) composited under anything but a whole-pixel
+   translation, a cast whose shadow is offset by a fraction or spread, a text raster (always under
+   a transform), and a backdrop copy under a non-uniform scale with a rotation. A kept layer with
+   slack is redrawn snug once a transform moves it off whole pixels. Under a `scale` or `rotate`
+   tween those sizes are constant, so they still hit; the backdrop copy, whose size follows the
+   transform, is classed.
+
+Headless 800x600, four rounded glass cards (backdrop blur 6, a content shadow of blur 12), widths
+tweening 1 to 3 px a frame, best of 7 x 100 frames with `glFinish`; "exact" is this code with
+classes off:
+
+| Pool | Textures made, first 100 frames | Then, per 100 | RTX 3080 (proprietary) | llvmpipe |
+| :--- | :--- | :--- | :--- | :--- |
+| Exact sizes | 2775 | 2769 | 5.5 to 6.1 ms | 22.9 ms |
+| Size classes | 99 | 0 | 0.71 ms | 22.8 ms |
+
+Rejected: copying the edge into the slack, which needs a flush and a blit before every off-centre
+composite, one per transformed card per frame; clearing the slack, since transparent is not the
+clamped edge and a scaled opaque card's right and bottom rims would fade; an exact-size femtovg
+image over a larger native texture, since femtovg takes the viewport and the normalised UVs from
+the image's size, and an image per use re-creates its framebuffer and stencil.
+
+ponytail: a snug target still misses per size: a clip or layer tweening its size under a moving
+transform, and text under a `scale` tween. Upgrade path: copy the edge into the slack before femtovg
+samples it, once a profile shows these.

@@ -7,13 +7,14 @@ use femtovg::{Canvas, ImageId};
 use glow::HasContext;
 
 use super::ShaderStage;
-use super::state::{WHOLE, attach, quad_pass};
+use super::state::{WHOLE, attach, quad_pass, used_box};
 
 /// One W3C Compositing formula on premultiplied pixels: `u_source` over `u_backdrop` with the
 /// blend `B(cb, cs)` of `u_mode`, a [`Blend`](crate::layout::node::Blend)'s index, on straight sRGB. `u_map` takes a target
 /// coordinate to the source's, which is clear outside it. Plus-lighter and plus-darker are
 /// Apple's sums, clamped. [`PRESENT`] reads `u_backdrop` as a program's output and `u_source`
-/// as the ground it lands on, unknown where its alpha is 0.
+/// as the ground it lands on, unknown where its alpha is 0. Each `_box` places a texture's pixels
+/// in its pooled texture, and `read` clamps to their edge (ADR-0370).
 const BLEND: &str = r#"#version 300 es
 precision highp float;
 in vec2 v_uv;
@@ -22,6 +23,12 @@ uniform sampler2D u_backdrop;
 uniform sampler2D u_source;
 uniform mat3 u_map;
 uniform int u_mode;
+uniform vec4 u_backdrop_box;
+uniform vec4 u_source_box;
+vec4 read(sampler2D tex, vec4 box, vec2 uv) {
+    vec2 p = clamp(vec2(uv.x, 1.0 - uv.y) * box.xy, box.zw, box.xy - box.zw);
+    return texture(tex, vec2(p.x, 1.0 - p.y));
+}
 // The most a presented pixel may cover. The next capture is unmixed by dividing by 1 - alpha, which
 // multiplies its 8-bit rounding by 1 / (1 - alpha): 8x at this cap, 25x at 0.96, where the glass
 // went black in a reference engine. A pixel that differs from the ground keeps a 12% ghost of it live.
@@ -68,9 +75,9 @@ vec3 mode(vec3 b, vec3 s) {
     return s;
 }
 void main() {
-    vec4 b = texture(u_backdrop, v_uv);
+    vec4 b = read(u_backdrop, u_backdrop_box, v_uv);
     vec2 at = (u_map * vec3(v_uv, 1.0)).xy;
-    vec4 s = at == clamp(at, 0.0, 1.0) ? texture(u_source, at) : vec4(0.0);
+    vec4 s = at == clamp(at, 0.0, 1.0) ? read(u_source, u_source_box, at) : vec4(0.0);
     float a = min(b.a + s.a, 1.0);
     if (u_mode == 16) {
         fragColor = min(b + s, 1.0);
@@ -97,10 +104,13 @@ pub const PRESENT: i32 = 18;
 
 /// One [`ShaderStage::blend`] pass: `source` blended over `backdrop` into `target`, which is
 /// `backdrop`'s size; `map` is the column-major matrix from a target coordinate to `source`'s.
+/// `sizes` are the parts of the pooled textures they use: `backdrop`'s and `target`'s, then
+/// `source`'s.
 pub struct BlendPass {
     pub backdrop: ImageId,
     pub source: ImageId,
     pub target: ImageId,
+    pub sizes: [(usize, usize); 2],
     pub map: [f32; 9],
     /// A [`Blend`](crate::layout::node::Blend)'s index, or [`PRESENT`].
     pub mode: i32,
@@ -113,6 +123,8 @@ pub(super) struct Blending {
     source: Option<glow::UniformLocation>,
     map: Option<glow::UniformLocation>,
     mode: Option<glow::UniformLocation>,
+    backdrop_box: Option<glow::UniformLocation>,
+    source_box: Option<glow::UniformLocation>,
 }
 
 impl ShaderStage {
@@ -132,18 +144,25 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         let Some(framebuffer) = (unsafe { self.ensure_framebuffer(gl) }) else { return false };
         let Some(Some(blending)) = &self.blending else { return false };
-        let (Ok(backdrop), Ok(source), Ok(target), Ok((width, height))) = (
+        let (Ok(backdrop), Ok(source), Ok(target)) = (
             canvas.get_native_texture(pass.backdrop),
             canvas.get_native_texture(pass.source),
             canvas.get_native_texture(pass.target),
-            canvas.image_size(pass.target),
         ) else {
+            return false;
+        };
+        let [used, source_used] = pass.sizes;
+        let (Ok(backdrop_size), Ok(source_size), Ok(size)) =
+            (canvas.image_size(pass.backdrop), canvas.image_size(pass.source), canvas.image_size(pass.target))
+        else {
             return false;
         };
         // SAFETY: caller's contract.
         unsafe {
             quad_pass(gl, canvas, (blending.program, framebuffer), (vao, buffer), &WHOLE, |gl| {
-                attach(gl, target, width as i32, height as i32);
+                attach(gl, target, size, used);
+                gl.uniform_4_f32_slice(blending.backdrop_box.as_ref(), &used_box(backdrop_size, used));
+                gl.uniform_4_f32_slice(blending.source_box.as_ref(), &used_box(source_size, source_used));
                 gl.active_texture(glow::TEXTURE1);
                 gl.bind_texture(glow::TEXTURE_2D, Some(source));
                 gl.active_texture(glow::TEXTURE0);
@@ -172,6 +191,8 @@ impl ShaderStage {
                 source: named("u_source"),
                 map: named("u_map"),
                 mode: named("u_mode"),
+                backdrop_box: named("u_backdrop_box"),
+                source_box: named("u_source_box"),
             })
         }
     }

@@ -23,9 +23,10 @@ use crate::text::shaping::{FontFace, FontRun, Glyph, ShapeResult, ShapingHandle,
 
 use super::snap::{LogicalRect, snap_to_physical};
 
-/// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217): a clip tweening its
-/// width asks for a new one every frame and reuses none.
+/// Distinct offscreen sizes [`TextPainter`] keeps between paints (ADR-0217).
 const SCRATCH_SIZES: usize = 16;
+/// The step [`TextPainter::size_class`] rounds a target's sides up to (ADR-0370).
+const SCRATCH_STEP: usize = 64;
 /// The bytes those pooled offscreens may hold between paints, as [`LAYER_BYTES`] caps layers.
 const SCRATCH_BYTES: usize = 64 << 20;
 
@@ -67,6 +68,8 @@ pub struct TextPainter {
     canvas: Canvas<OpenGl>,
     /// The canvas's context, for the offscreens [`TextPainter::new_scratch`] allocates itself.
     gl: glow::Context,
+    /// `GL_MAX_TEXTURE_SIZE`, which [`TextPainter::size_class`] never rounds past.
+    max_texture: usize,
     /// femtovg's id for each face, keyed by the worker's mapped fontdb id (ADR-0211).
     faces: HashMap<fontdb::ID, FontId>,
     /// The shaping worker's face-set generation this was built from, so [`TextPainter::sync`] can
@@ -85,9 +88,9 @@ pub struct TextPainter {
     registered: HashMap<(usize, u32), FontId>,
     /// The worker and memo that measured each line, asked again for its glyphs and its faces.
     shaping: ShapingHandle,
-    /// `layout::paint::canvas::draw_clipped`'s offscreen targets, kept between paints and keyed by exact
-    /// size, each with the paint that last asked for that size (ADR-0217). Here, not beside
-    /// `ImageCache`, because the ids belong to `canvas` and have to die with it.
+    /// `layout::paint::canvas::draw_clipped`'s offscreen targets, kept between paints and keyed by
+    /// allocated size, each with the paint that last asked for that size (ADR-0217, ADR-0370).
+    /// Here, not beside `ImageCache`, because the ids belong to `canvas` and have to die with it.
     scratch: HashMap<PoolKey, (u64, Vec<ImageId>)>,
     /// What [`TextPainter::recycle_scratch`] ages by. Not a timer: a size goes stale because other
     /// sizes were asked for since, not because seconds passed.
@@ -100,7 +103,7 @@ pub struct TextPainter {
     lines_cache_len: usize,
 }
 
-/// A pooled offscreen's owner and exact size. Owned, so a released surface frees its own and no
+/// A pooled offscreen's owner and allocated size. Owned, so a released surface frees its own and no
 /// other's: sizes alone cannot tell a gone full-screen lock from the live full-screen wallpaper.
 type PoolKey = (String, (usize, usize));
 
@@ -212,6 +215,8 @@ impl TextPainter {
         // and the renderer is used only from that same thread.
         let (gl, renderer) =
             unsafe { (glow::Context::from_loader_function(&mut load_fn), OpenGl::new_from_function(load_fn)?) };
+        // SAFETY: as above.
+        let max_texture = unsafe { gl.get_parameter_i32(glow::MAX_TEXTURE_SIZE) }.max(1) as usize;
         let text_context = TextContext::default();
         let mut canvas = Canvas::new_with_text_context(renderer, text_context.clone())?;
         canvas.set_size(width, height, 1.0);
@@ -225,6 +230,7 @@ impl TextPainter {
         Ok(Self {
             canvas,
             gl,
+            max_texture,
             faces,
             generation,
             text_context,
@@ -244,16 +250,24 @@ impl TextPainter {
         self.generation
     }
 
-    /// An offscreen of exactly `size`, reused from the pool when one is free. The caller clears it:
-    /// a reused target still holds the last paint's pixels.
+    /// An offscreen allocated at `size`, reused from the pool when one is free. The caller clears
+    /// it: a reused target still holds the last paint's pixels.
     pub fn take_scratch(&mut self, surface: &str, size: (usize, usize)) -> Option<ImageId> {
         self.scratch.get_mut(&(surface.to_owned(), size))?.1.pop()
     }
 
+    /// What an offscreen whose pixels fill `used` is allocated at: each side rounded up to
+    /// [`SCRATCH_STEP`], so a clip tweening its size reuses one target for up to 64 px of travel
+    /// (ADR-0370). The used part is the target's top-left in canvas coordinates.
+    pub fn size_class(&self, (width, height): (usize, usize)) -> (usize, usize) {
+        let class = |side: usize| side.next_multiple_of(SCRATCH_STEP).min(self.max_texture).max(side);
+        (class(width), class(height))
+    }
+
     /// A new offscreen of `size` for the pool, its pixels undefined: every taker clears or
-    /// overwrites it whole, as it does a reused one. femtovg's `create_image_empty` uploads a zeroed
-    /// buffer the size of the image, the cost of a pool miss: a clip tweening its size misses every
-    /// frame (ADR-0217). `None` when GL has no texture name to give.
+    /// overwrites the part it uses, as it does in a reused one. femtovg's `create_image_empty`
+    /// uploads a zeroed buffer the size of the image, the cost of a pool miss. `None` when GL has
+    /// no texture name to give.
     pub fn new_scratch(&mut self, (width, height): (usize, usize)) -> Option<ImageId> {
         // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
         // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
@@ -307,7 +321,8 @@ impl TextPainter {
             .map(|(_, _, images, ..)| images.clone())
     }
 
-    /// Keeps `images` for `command`, answering the images of one it replaces for the pool.
+    /// Keeps `images`, allocated at `size`, for `command`, answering the images of one it replaces
+    /// for the pool.
     pub fn keep_layer(
         &mut self,
         surface: &str,
@@ -318,9 +333,7 @@ impl TextPainter {
         let old = self.layers.iter().position(|(on, kept, ..)| on == surface && kept == command);
         let old = old.map(|at| self.layers.swap_remove(at));
         self.layers.push((surface.to_owned(), command.clone(), images, size, self.paints));
-        old.into_iter()
-            .flat_map(|(.., (casts, content), size, _)| casts.into_iter().chain([content]).map(move |id| (id, size)))
-            .collect()
+        self.pooled(old.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content])))
     }
 
     /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or
@@ -344,10 +357,12 @@ impl TextPainter {
                 }
             });
         self.layers = kept;
-        retired
-            .into_iter()
-            .flat_map(|(.., (casts, content), size, _)| casts.into_iter().chain([content]).map(move |id| (id, size)))
-            .collect()
+        self.pooled(retired.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content])))
+    }
+
+    /// `images` with the sizes they are allocated at, which the pool keys by (ADR-0370).
+    fn pooled(&self, images: impl Iterator<Item = ImageId>) -> Vec<(ImageId, (usize, usize))> {
+        images.map(|id| (id, self.canvas.image_size(id).unwrap_or_default())).collect()
     }
 
     /// Returns one paint's offscreens to the pool and deletes whatever that pushes over capacity.

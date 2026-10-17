@@ -26,17 +26,26 @@ impl ShaderStage {
     }
 }
 
-/// Draws into `target` from its top-left, `width` by `height`; [`quad_pass`] detaches it after.
+/// Draws into the `used` top-left of `target`, allocated at `size`: its last GL rows, as femtovg
+/// draws a `FLIP_Y` image's (ADR-0370). [`quad_pass`] detaches it after.
 ///
 /// # Safety
 ///
 /// Inside a [`quad_pass`] `draw`, with `target` a live texture of the context.
-pub(super) unsafe fn attach(gl: &glow::Context, target: glow::Texture, width: i32, height: i32) {
+pub(super) unsafe fn attach(gl: &glow::Context, target: glow::Texture, size: (usize, usize), used: (usize, usize)) {
     // SAFETY: caller's contract.
     unsafe {
         gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(target), 0);
-        gl.viewport(0, 0, width, height);
+        gl.viewport(0, (size.1 - used.1) as i32, used.0 as i32, used.1 as i32);
     }
+}
+
+/// The `vec4` a pass reads a texture allocated at `size` through when only its `used` top-left
+/// holds pixels: that part's span, then half a texel, both as fractions of the texture. A read
+/// clamped to the span inset by half a texel is `CLAMP_TO_EDGE` at the used part's edge (ADR-0370).
+pub(super) fn used_box(size: (usize, usize), used: (usize, usize)) -> [f32; 4] {
+    let (width, height) = (size.0 as f32, size.1 as f32);
+    [used.0 as f32 / width, used.1 as f32 / height, 0.5 / width, 0.5 / height]
 }
 
 /// Uses `program` with the quad bound and `corners` uploaded to it.

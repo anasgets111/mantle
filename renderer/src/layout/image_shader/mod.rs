@@ -49,7 +49,7 @@ use crate::layout::node;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 use blur::Blur;
 use contract::{FADE, VERTEX, Variant, assemble};
-use state::{State, attach, bind_quad, quad_pass};
+use state::{State, attach, bind_quad, quad_pass, used_box};
 
 /// A compiled config shader and the uniform locations it turned out to have.
 struct Program {
@@ -59,6 +59,7 @@ struct Program {
     input: Option<glow::UniformLocation>,
     input_blurred: Option<glow::UniformLocation>,
     input_rect: Option<glow::UniformLocation>,
+    input_box: Option<glow::UniformLocation>,
     progress: Option<glow::UniformLocation>,
     size: Option<glow::UniformLocation>,
     from_rect: Option<glow::UniformLocation>,
@@ -134,6 +135,8 @@ pub struct ContentRun<'a> {
     /// `u_input_blurred`, the same size as `input`; `input` itself when nothing filtered it.
     pub blurred: ImageId,
     pub target: ImageId,
+    /// The part of the three pooled textures, all allocated alike, that they use.
+    pub size: (usize, usize),
     /// The textures' `(x, y, w, h)` in box fractions, as `u_input_rect` and the span of `v_uv`.
     pub rect: [f32; 4],
     /// The node's box in logical px, rounded by `radii` for `mantle_sdf`.
@@ -422,7 +425,7 @@ impl ShaderStage {
         ) else {
             return false;
         };
-        let Ok((width, height)) = canvas.image_size(run.target) else { return false };
+        let Ok(size) = canvas.image_size(run.target) else { return false };
         // SAFETY: caller's contract.
         let Some((vao, buffer)) = (unsafe { self.ensure_quad(gl) }) else { return false };
         // SAFETY: caller's contract.
@@ -438,7 +441,8 @@ impl ShaderStage {
         // SAFETY: caller's contract.
         unsafe {
             quad_pass(gl, canvas, (program.program, framebuffer), (vao, buffer), &corners, |gl| {
-                attach(gl, target, width as i32, height as i32);
+                attach(gl, target, size, run.size);
+                gl.uniform_4_f32_slice(program.input_box.as_ref(), &used_box(size, run.size));
                 gl.active_texture(glow::TEXTURE1);
                 gl.bind_texture(glow::TEXTURE_2D, Some(blurred));
                 gl.active_texture(glow::TEXTURE0);

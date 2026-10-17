@@ -92,18 +92,21 @@ vec4 mantle_to(vec2 uv) { return mantle_sample(u_to, u_to_rect, uv); }
 /// `mantle_input` takes box coordinates as `mantle_from` does, `u_input_rect` placing the texture
 /// in box fractions. `u_input_blurred` is the same pixels through `effect.backdrop`'s filters, or
 /// `u_input` again without them. An offscreen image keeps its top row last, which the sample undoes.
+/// Both fill the top-left of pooled textures, which `u_input_box` places and clamps to (ADR-0370).
 pub(super) const INPUT: &str = r#"
 precision highp sampler2D;
 uniform sampler2D u_input;
 uniform sampler2D u_input_blurred;
 uniform vec4 u_input_rect;
+uniform vec4 u_input_box;
 
 vec4 mantle_read(sampler2D tex, vec2 uv) {
     vec2 local = (uv - u_input_rect.xy) / u_input_rect.zw;
     if (local.x < 0.0 || local.x > 1.0 || local.y < 0.0 || local.y > 1.0) {
         return vec4(0.0);
     }
-    return texture(tex, vec2(local.x, 1.0 - local.y));
+    vec2 p = clamp(local * u_input_box.xy, u_input_box.zw, u_input_box.xy - u_input_box.zw);
+    return texture(tex, vec2(p.x, 1.0 - p.y));
 }
 
 vec4 mantle_input(vec2 uv) { return mantle_read(u_input, uv); }

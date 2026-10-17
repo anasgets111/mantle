@@ -123,6 +123,7 @@ impl ShaderStage {
                 input: named("u_input"),
                 input_blurred: named("u_input_blurred"),
                 input_rect: named("u_input_rect"),
+                input_box: named("u_input_box"),
                 progress: named("u_progress"),
                 size: named("u_size"),
                 from_rect: named("u_from_rect"),
