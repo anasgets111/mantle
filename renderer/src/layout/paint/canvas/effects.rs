@@ -642,6 +642,7 @@ mod tests {
     use super::super::*;
     use super::*;
 
+    use femtovg::{ImageFlags, PixelFormat};
     use mlua::Lua;
 
     use crate::layout::node::Fill;
@@ -1565,9 +1566,11 @@ mod tests {
         let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else { return };
         let src = r##"return panel { id = "bar", width = 96, height = 64, background = "#FF0000FF" }"##;
         let command = surface_96x64(src).commands[0].clone();
+        let big = painter.new_scratch((8, 8)).unwrap();
+        let texture = painter.canvas_mut().get_native_texture(big).unwrap();
         let mut image =
             || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
-        let (gone, other, big, small) = (image(), image(), image(), image());
+        let (gone, other, small) = (image(), image(), image());
         painter.keep_layer("lock", &command, (Vec::new(), gone), (8, 8));
         painter.keep_layer("bar", &command, (Vec::new(), other), (8, 8));
         painter.recycle_scratch("lock", [(big, (8, 8))]);
@@ -1576,6 +1579,9 @@ mod tests {
         assert!(painter.layer("lock", &command).is_none());
         assert!(painter.layer("bar", &command).is_some());
         assert!(painter.take_scratch("lock", (8, 8)).is_none());
+        // SAFETY: `init_headless_egl` left its context current on this thread.
+        let alive = unsafe { test_gl(&instance).is_texture(texture) };
+        assert!(!alive, "the pool must free the texture femtovg does not own");
         assert!(painter.take_scratch("bar", (8, 8)).is_some(), "another surface's pooled size stays");
     }
 

@@ -8,7 +8,7 @@ mod vector_path;
 use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
-use femtovg::{Canvas, Color, CompositeOperation, ImageFlags, ImageId, Paint, Path, PixelFormat, RenderTarget};
+use femtovg::{Canvas, Color, CompositeOperation, ImageId, Paint, Path, RenderTarget};
 
 use crate::image::capture::CaptureCache;
 use crate::image::{self, Fit, ImageCache, ImageRequest, Load};
@@ -633,12 +633,9 @@ fn raster(
 /// A pooled render target of `size`, held until [`execute`] flushes; `None` when out of texture
 /// memory.
 fn scratch(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, size: (usize, usize)) -> Option<ImageId> {
-    // `PREMULTIPLIED` prevents a second alpha multiplication; `FLIP_Y` maps canvas y=0 to the last
-    // GL texture row. Both match femtovg 0.27's drop-shadow flags (`src/lib.rs`).
-    let flags = ImageFlags::PREMULTIPLIED | ImageFlags::FLIP_Y;
     let image = match painter.take_scratch(walk.surface, size) {
         Some(image) => image,
-        None => painter.canvas_mut().create_image_empty(size.0, size.1, PixelFormat::Rgba8, flags).ok()?,
+        None => painter.new_scratch(size)?,
     };
     walk.scratch.push((image, size));
     Some(image)
