@@ -8636,110 +8636,48 @@ Memoizing across separate `:get()` calls outside a pass and the 2 s pass cap are
 
 ## 0370. Scratch targets round up to 64 px size classes, used from their top-left (amends ADR-0217, ADR-0254, ADR-0256)
 
-The pool matched exact sizes, so every frosted, clipped or shadowed box tweening its size missed it
-every frame. ADR-0254 rejected 32 px buckets because headless Iris showed no cost. An i5-6300U with
-HD 520 (Mesa iris) does: on `tools/heavy-shell` with `hs_fx`, `draw_backdrop` was 17.5% inclusive,
-15.3% of it `read_target` and 12.5% femtovg's `GlTexture::new`; `offscreen`, `blurred` and
-`composite` were 7.7%, 8% and 7.8%.
-
-1. **Each side rounds up to a multiple of 64.** That bounds the
-   waste at 63 px a side: 3% of a 1920 px side, where a 1/8 geometric step wastes up to 240 px. A
-   box tweening 10 px a frame reuses one target for about 6 frames. The pool keys by allocated
-   size; its caps (16 sizes, 64 MiB, never the current paint's) stand.
-2. **The used part is the target's top-left in canvas coordinates.** femtovg's viewport covers the
-   whole texture, so canvas row 0 is the last GL row: `FLIP_Y` about the allocated height. Its
-   image paint flips about the paint's own extent, so an extent scaled by allocated over used size
-   lays the used part on the old rect. `read_target` blits into rows `alloc - h .. alloc`, and an
-   offscreen's `Frame` is the whole texture, where a shader quad places itself.
-3. **The engine's passes clamp to the used part.** Blur, blend and `effect.shader` passes set the
-   viewport to it and read through a `vec4` of its span and half a texel, clamping to the span
-   inset by half a texel: `CLAMP_TO_EDGE` at its edge, including the halvings that read past an
-   odd one. `mantle_input` reads through `u_input_box`, so `v_uv`, `u_input_rect` and every size a
-   shader sees are unchanged; `u_input` itself may now be larger than what it holds.
-4. **femtovg cannot clamp, so what it samples off texel centres is allocated exactly ("snug").**
-   That is an offscreen (rounded clip, node mask, layer) composited under anything but a whole-pixel
-   translation, a cast whose shadow is offset by a fraction or spread, a text raster (always under
-   a transform), and a backdrop copy under a non-uniform scale with a rotation. A kept layer with
-   slack is redrawn snug once a transform moves it off whole pixels. Under a `scale` or `rotate`
-   tween those sizes are constant, so they still hit; the backdrop copy, whose size follows the
-   transform, is classed.
-
-Headless 800x600, four rounded glass cards (backdrop blur 6, a content shadow of blur 12), widths
-tweening 1 to 3 px a frame, best of 7 x 100 frames with `glFinish`; "exact" is this code with
-classes off:
-
-| Pool | Textures made, first 100 frames | Then, per 100 | RTX 3080 (proprietary) | llvmpipe |
-| :--- | :--- | :--- | :--- | :--- |
-| Exact sizes | 2775 | 2769 | 5.5 to 6.1 ms | 22.9 ms |
-| Size classes | 99 | 0 | 0.71 ms | 22.8 ms |
-
-Rejected: copying the edge into the slack, which needs a flush and a blit before every off-centre
-composite, one per transformed card per frame; clearing the slack, since transparent is not the
-clamped edge and a scaled opaque card's right and bottom rims would fade; an exact-size femtovg
-image over a larger native texture, since femtovg takes the viewport and the normalised UVs from
-the image's size, and an image per use re-creates its framebuffer and stencil.
-
-ponytail: a snug target still misses per size: a clip or layer tweening its size under a moving
-transform, and text under a `scale` tween. Upgrade path: copy the edge into the slack before femtovg
-samples it, once a profile shows these.
+Exact-size pooling missed every frame for a box tweening its size; on an i5-6300U/HD 520 `draw_backdrop`
+was 17.5%, 12.5% of it femtovg's `GlTexture::new`. Each side now rounds up to a multiple of 64 (at most
+63 px waste a side) and the pool keys by allocated size; its caps stand. The used part is the top-left in
+canvas coordinates (`FLIP_Y` about the allocated height): femtovg paints scale their extent by allocated
+over used, and the blur, blend and `effect.shader` passes clamp reads to the used span inset by half a
+texel, which is `CLAMP_TO_EDGE`. femtovg cannot clamp, so anything it samples off texel centres (a
+transformed offscreen, a fractional cast, a text raster, a skewed backdrop copy) is allocated exactly.
+Headless 800x600, four tweening glass cards: textures made per 100 frames 2769 -> 0, RTX 3080 5.5-6.1 -> 0.71 ms.
+Rejected: clearing or edge-copying the slack (transparent is not the clamped edge; a copy costs a flush and blit per composite).
+ponytail: a snug target still misses per size under a moving transform; upgrade by copying the edge into the slack.
 
 ## 0371. Image files are watched with inotify on their directories, and polled only where that fails
 
-An image path outside the system prefixes (`FileVersion::is_static`) changes under an unchanged
-display list: a tray icon rewritten at the same path (ADR-0031), a wallpaper replaced by an atomic
-save. A per-draw stat cost 1200 statx/s; a 500 ms memo with a repaint owed at the window's end
-turned into a loop, because a draw looks its file up twice and the second lookup owed the next
-repaint: an idle `~/Pictures` wallpaper drew and swapped the whole surface twice a second
-(20 per 10 s on an Intel HD 520). Polling with a stat at the window's end removed the draws but
-kept two wakes a second for as long as such a file had a slot.
+A non-system image path (`FileVersion::is_static`) can change under an unchanged list (tray icons,
+ADR-0031; an atomically saved wallpaper). A 500 ms stat memo owing a repaint at its window's end
+looped, since a draw looks its file up twice: an idle `~/Pictures` wallpaper redrew twice a second
+(20 paints per 10 s on an HD 520, 0 after).
 
-Decision:
-
-1. **Directory watches.** One inotify instance (`image/watch.rs`, nix's `inotify` feature) watches
-   each remembered path's parent with `IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE |
-   IN_DELETE | IN_ATTRIB | IN_MOVE_SELF`. A file watch would follow the inode an atomic save
-   replaces and could not see a missing file appear. Its fd joins the main loop's poll set; each
-   turn's `ImageCache::poll` drains it, re-stats the paths an event names, and returns only those
-   whose `FileVersion` changed, which mark stale the surfaces whose lists draw them, shader
-   samplers included. A watched stat is trusted until an event names it, so idle arms no timeout.
-2. **Lifetime.** A path is remembered while an image cache slot holds it: `evict` forgets it with
-   its last slot, and the bound past `2 * CACHE_CAPACITY` drops only paths without a slot, never
-   wholesale (a forgotten path on screen would miss its next rewrite). Watches are counted per
-   descriptor, not per directory string, since the kernel gives two spellings of one directory one
-   descriptor; the last path releases it. `IN_Q_OVERFLOW` re-stats every remembered path once.
-   `IN_IGNORED` or `IN_MOVE_SELF` on a held watch hands its paths to polling.
-3. **Fallback.** A path is polled, stat-ed every 500 ms with a repaint only on change, when it is a
-   symlink (an edit to its target happens in another directory), when its directory does not exist
-   (silent), or when `inotify_add_watch` fails otherwise (one warning: ENOSPC is
-   `fs.inotify.max_user_watches`). A polled path retries the watch at each recheck, so a directory
-   created later stops the wakes. Without inotify at all (one warning) every path is polled.
-
-Limits: a write through a hard link in an unwatched directory, or on a network or FUSE mount whose
-remote changes the kernel never sees, is not reported; such files show their change on the next
-repaint for another reason. A writer that creates the file before filling it can cue two repaints,
-the first decoding a partial file, as polling could.
+Decision: one inotify fd in the main loop's poll set watches each remembered path's parent
+(close-write, move, create, delete, attrib, move-self); `ImageCache::poll` re-stats only named paths
+and cues only changed versions, shader samplers included. Watches are refcounted per descriptor and
+released with a path's last cache slot; overflow re-watches everything. A symlink, a missing directory
+or a refused watch (ENOSPC: `max_user_watches`) falls back to a 500 ms stat that retries the watch.
+Rejected: a watch on the file itself, which follows the inode an atomic save replaces and cannot see
+a missing file appear.
 
 ## 0372. A budgeted evaluation defers collection by lending the collector credit (amends ADR-0290)
 
-The outermost `CpuBudget` adds 1 GiB to the collector's credit (`LUA_GCSTEP` with negative KiB) and
-takes it back on drop, which steps only if the debt is then positive. It replaced `gc_stop`, whose
-`gc_restart` zeroes the debt (ADR-0290), plus a forced basic step per 8 KiB grown: every allocating
-getter began a collection cycle from pause. Idle clock push on a real bar config, desktop release:
-1.0 ms (0.45 `on_change` + 0.55 in `ms resolve`) before, 0.08 ms after.
+The outermost `CpuBudget` lends the collector 1 GiB (`LUA_GCSTEP`, negative KiB) and returns it on
+drop, stepping only if the debt is then positive, so a getter's allocation is paid after its budget
+and the heap's pause credit survives. It replaces `gc_stop`, whose restart zeroes the debt (ADR-0290)
+and made every allocating getter start a cycle. Idle clock push, real bar config: 1.0 to 0.08 ms.
 
-Rejected: generational mode and a smaller step size (ADR-0290).
-
-ponytail: a getter that calls `collectgarbage("collect")` or `("step")` resets the debt, so the
-returned credit can force up to one extra cycle. Upgrade: refuse `collectgarbage` inside a getter.
+ponytail: anything that ends a cycle inside a getter (`collectgarbage`, a mode switch, an emergency GC)
+resets the debt, so the returned credit forces one extra cycle. Upgrade: refuse `collectgarbage` in getters.
 
 ## 0373. `femtovg_path` drops zero-length curves; no cross-frame path cache
 
-femtovg halves a cubic until it is flat or 10 levels deep, and one whose points all coincide never
-tests flat: 2047 calls for nothing drawn. A `corner` whose squircle pieces differ only below f32
-placement emits such curves; the heavy-shell `outline` card's fill and border took 57,399 calls
-each per repaint, 97% of all tessellation. `femtovg_path` skips a curve whose f32 points equal the
-pen. Headless heavy-shell fx, best of 7 x 60 frames: 17,951 to 461 calls a frame, 0.21 to 0.17 ms.
+femtovg halves a cubic until flat or 10 levels deep; one whose points coincide never tests flat: 2047
+calls, nothing drawn. A `corner` whose pieces differ only below f32 emits them: the heavy-shell outline
+card took 57,399 calls per fill and border, 97% of tessellation. A curve whose f32 points all equal the
+pen is skipped, which femtovg's own point merge makes pixel-identical. Heavy-shell fx: 17,951 to 461 calls a frame.
 
-Rejected: keeping `Path`s across frames so femtovg's transform-keyed tessellation hits. It cut
-tessellations 3x on static boxes but saved 0.4 µs a rounded rect, cost 7 KiB a path, and missed every
-scrolled or transformed box, since femtovg keys the full transform.
+Rejected: caching `Path`s across frames. 0.4 µs saved per rounded rect, 7 KiB a path, and femtovg keys the
+full transform, so every scrolled box misses.

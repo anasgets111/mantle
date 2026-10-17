@@ -135,7 +135,7 @@ pub struct ContentRun<'a> {
     /// `u_input_blurred`, the same size as `input`; `input` itself when nothing filtered it.
     pub blurred: ImageId,
     pub target: ImageId,
-    /// The part of the three pooled textures, all allocated alike, that they use.
+    /// The used part of `input`, `blurred` and `target`; `u_input_box` assumes all three allocate alike.
     pub size: (usize, usize),
     /// The textures' `(x, y, w, h)` in box fractions, as `u_input_rect` and the span of `v_uv`.
     pub rect: [f32; 4],

@@ -48,6 +48,18 @@ pub(super) fn used_box(size: (usize, usize), used: (usize, usize)) -> [f32; 4] {
     [used.0 as f32 / width, used.1 as f32 / height, 0.5 / width, 0.5 / height]
 }
 
+/// The engine passes' GLSL head: `read` samples `uv` of a texture's used part, GL's row order, through
+/// its [`used_box`].
+pub(super) const PASS_HEAD: &str = r#"#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 fragColor;
+vec4 read(sampler2D tex, vec4 box, vec2 uv) {
+    vec2 p = clamp(vec2(uv.x, 1.0 - uv.y) * box.xy, box.zw, box.xy - box.zw);
+    return texture(tex, vec2(p.x, 1.0 - p.y));
+}
+"#;
+
 /// Uses `program` with the quad bound and `corners` uploaded to it.
 ///
 /// # Safety

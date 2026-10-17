@@ -42,15 +42,14 @@ impl Turn {
     }
 }
 
-/// Measured phase times. Each turn costs five `clock_gettime` calls when enabled; with the profile
+/// Measured phase times. Each turn costs one `clock_gettime` per phase when enabled; with the profile
 /// off, `mark` branches on `None` and the loop touches no clock. The split explains `drawn=0`, so
 /// it shares the main switch rather than adding another environment variable.
 #[derive(Clone, Copy, Default)]
 pub struct Phases {
     /// Current phase start, or `None` when profiling is off.
     at: Option<Instant>,
-    /// Due timers, accessibility actions, off-thread results, signal wakes, holds and scrolls: the
-    /// turn's work before the resolve pass, which `resolve` would otherwise be charged with.
+    /// Work before the resolve pass: timers, a11y, off-thread results, wakes, holds, scrolls.
     handlers: Duration,
     resolve: Duration,
     tick: Duration,

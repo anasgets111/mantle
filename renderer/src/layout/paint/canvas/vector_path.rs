@@ -51,12 +51,11 @@ pub(super) fn paint(
 pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>) -> Path {
     let p = |p: Point| (p.x as f32, p.y as f32);
     let mut path = Path::new();
-    let (mut start, mut pen) = ((0.0, 0.0), (0.0, 0.0));
+    let mut pen = (0.0, 0.0);
     for element in bez.elements() {
         match *element {
             PathEl::MoveTo(to) => {
                 let (x, y) = p(to);
-                start = (x, y);
                 path.move_to(x, y);
                 path.solidity(if holes.next() == Some(true) { Solidity::Hole } else { Solidity::Solid });
             }
@@ -77,7 +76,10 @@ pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>)
             }
             PathEl::ClosePath => path.close(),
         }
-        pen = element.end_point().map_or(start, p);
+        // femtovg's pen: `close` does not move it back to the subpath's start.
+        if let Some(end) = element.end_point() {
+            pen = p(end);
+        }
     }
     path
 }

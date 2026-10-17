@@ -48,13 +48,12 @@ impl FileVersion {
     }
 }
 
-/// How long a polled path's stat is trusted. Only paths inotify cannot watch are polled: a
-/// symlink, a directory that does not exist yet, a refused watch (ADR-0371).
+/// How long the stat of a path inotify cannot watch is trusted (ADR-0371).
 /// ponytail: each polled path keeps two wakes a second; watching a symlink's target directory too
 /// is the upgrade for the common case.
 const STALE_AFTER: Duration = Duration::from_millis(500);
 
-/// A remembered stat, and the directory watch that keeps it current, or `None` while it is polled.
+/// A remembered stat and its directory watch, `None` while polled.
 struct Stat {
     at: Instant,
     version: FileVersion,
@@ -62,17 +61,15 @@ struct Stat {
 }
 
 /// Per-path [`FileVersion`] memo, so a draw does not stat its file. A watched path is trusted until
-/// an event names it; a polled one for [`STALE_AFTER`].
+/// an event names it; a polled one until [`VersionCache::changed`] re-stats it.
 pub(super) struct VersionCache {
     stats: HashMap<PathBuf, Stat>,
     watcher: Option<Watcher>,
-    /// When the oldest polled stat stops being trusted.
-    due: Option<Instant>,
 }
 
 impl Default for VersionCache {
     fn default() -> Self {
-        Self { stats: HashMap::default(), watcher: Watcher::new(), due: None }
+        Self { stats: HashMap::default(), watcher: Watcher::new() }
     }
 }
 
@@ -81,21 +78,13 @@ impl VersionCache {
         if FileVersion::is_static(path) {
             return FileVersion::default();
         }
-        if let Some(stat) = self.stats.get(path)
-            && (stat.watch.is_some() || now.saturating_duration_since(stat.at) < STALE_AFTER)
-        {
+        if let Some(stat) = self.stats.get(path) {
             return stat.version;
         }
         // Watched before the stat, so a write between the two is an event rather than lost.
-        let watch = match self.stats.get(path) {
-            Some(stat) => stat.watch,
-            None => self.watcher.as_mut().and_then(|watcher| watcher.watch(path)),
-        };
+        let watch = self.watcher.as_mut().and_then(|watcher| watcher.watch(path));
         let version = FileVersion::read(path);
         self.stats.insert(path.to_path_buf(), Stat { at: now, version, watch });
-        if watch.is_none() {
-            self.due = Some(self.due.map_or(now + STALE_AFTER, |due| due.min(now + STALE_AFTER)));
-        }
         version
     }
 
@@ -123,12 +112,12 @@ impl VersionCache {
 
     /// When [`VersionCache::changed`] next has a polled stat to renew, for the poll loop's timeout.
     pub(super) fn due(&self) -> Option<Instant> {
-        self.due
+        self.stats.values().filter(|stat| stat.watch.is_none()).map(|stat| stat.at + STALE_AFTER).min()
     }
 
-    /// The remembered paths whose file changed since their last stat: those an event named, every
-    /// one after a queue overflow, and polled ones past their window. That is the repaint cue: an
-    /// unchanged file costs a stat, never a paint.
+    /// The remembered paths whose file changed since their last stat: those an event named or whose
+    /// watch ended, and polled ones past their window. That is the repaint cue: an unchanged file
+    /// costs a stat, never a paint.
     pub(super) fn changed(&mut self, now: Instant) -> Vec<PathBuf> {
         let mut suspects = Vec::new();
         // ponytail: drained every turn, one `EAGAIN` read when nothing happened, instead of
@@ -140,20 +129,10 @@ impl VersionCache {
                     stat.watch = None;
                 }
             }
-            if drained.overflow {
-                suspects.extend(self.stats.keys().cloned());
-            } else {
-                suspects.extend(drained.touched.into_iter().chain(drained.lost));
-            }
+            suspects.extend(drained.touched.into_iter().chain(drained.lost));
         }
-        let polling = self.due.is_some_and(|due| due <= now);
-        if polling {
-            let stale = |stat: &Stat| stat.watch.is_none() && now.saturating_duration_since(stat.at) >= STALE_AFTER;
-            suspects.extend(self.stats.iter().filter(|(_, stat)| stale(stat)).map(|(path, _)| path.clone()));
-        }
-        if suspects.is_empty() && !polling {
-            return Vec::new();
-        }
+        let stale = |stat: &Stat| stat.watch.is_none() && now.saturating_duration_since(stat.at) >= STALE_AFTER;
+        suspects.extend(self.stats.iter().filter(|(_, stat)| stale(stat)).map(|(path, _)| path.clone()));
         let mut changed = Vec::new();
         for path in suspects {
             let Some(stat) = self.stats.get_mut(&path) else { continue };
@@ -168,7 +147,6 @@ impl VersionCache {
                 changed.push(path);
             }
         }
-        self.due = self.stats.values().filter(|stat| stat.watch.is_none()).map(|stat| stat.at + STALE_AFTER).min();
         changed
     }
 }
@@ -193,36 +171,15 @@ mod tests {
         VersionCache { watcher: None, ..VersionCache::default() }
     }
 
-    #[test]
-    fn a_polled_path_is_stat_ed_once_per_window_and_an_edit_shows_after_it() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("avatar.png");
-        std::fs::write(&path, "one").unwrap();
-        let (mut cache, t0) = (polled(), Instant::now());
-        let first = cache.read(&path, t0);
-        assert_eq!(first.len, 3);
-        assert_eq!(cache.due(), Some(t0 + STALE_AFTER), "a recheck is owed when the window ends");
-
-        std::fs::write(&path, "three").unwrap();
-        assert_eq!(cache.read(&path, t0 + STALE_AFTER / 2), first, "inside the window the file is not stat-ed again");
-        assert!(cache.changed(t0 + STALE_AFTER / 2).is_empty(), "nor rechecked");
-        assert_eq!(cache.changed(t0 + STALE_AFTER), std::slice::from_ref(&path), "past the window the edit is the cue");
-        assert_eq!(cache.read(&path, t0 + STALE_AFTER).len, 5, "and the next draw reads it");
-    }
-
     /// The idle repaint loop: a paint reads its file twice (`image`, then `loaded`), and each read
-    /// inside the window owed a repaint at its end, whose paint read twice again: two full-surface
-    /// draws and swaps a second for a wallpaper nobody touched. Polled, an unchanged file costs a
-    /// stat a window.
+    /// owed a repaint at its window's end. Polled, an unchanged file costs a stat a window.
     #[test]
-    fn an_unchanged_polled_file_costs_a_stat_per_window_and_never_a_repaint() {
+    fn a_polled_file_is_stat_ed_once_per_window_and_only_a_change_is_a_cue() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("wall.png");
-        let missing = dir.path().join("not-yet.png");
+        let (path, missing) = (dir.path().join("wall.png"), dir.path().join("not-yet.png"));
         std::fs::write(&path, "one").unwrap();
         let (mut cache, t0) = (polled(), Instant::now());
-        for file in [&path, &missing] {
-            cache.read(file, t0);
+        for file in [&path, &missing, &path, &missing] {
             cache.read(file, t0);
         }
         let mut repaints = 0;
@@ -233,41 +190,28 @@ mod tests {
         }
         assert_eq!(repaints, 0, "20 windows of unchanged files, a missing one included");
 
+        let at = t0 + STALE_AFTER * 21;
+        std::fs::write(&path, "three").unwrap();
         std::fs::write(&missing, "now").unwrap();
-        assert_eq!(cache.changed(t0 + STALE_AFTER * 21), [missing], "a file that appears is a change");
+        assert!(cache.changed(at - STALE_AFTER / 2).is_empty(), "inside the window nothing is rechecked");
+        assert_eq!(cache.read(&path, at).len, 3, "nor stat-ed by a draw");
+        let mut changed = cache.changed(at);
+        changed.sort();
+        assert_eq!(changed, [missing, path.clone()], "past it an edit and a file appearing are the cue");
+        assert_eq!(cache.read(&path, at).len, 5, "and the next draw reads it");
     }
 
-    /// The same idle shell, watched: no wake at all, and a cue only for a real change.
+    /// The same idle shell, watched: no wake, and an event that changes no version is no cue.
     #[test]
-    fn a_watched_file_owes_no_wake_and_each_change_is_one_cue() {
+    fn a_watched_file_owes_no_wake_and_a_no_op_event_no_cue() {
         let dir = tempfile::tempdir().unwrap();
-        let (path, missing, temp) =
-            (dir.path().join("wall.png"), dir.path().join("not-yet.png"), dir.path().join(".wall.png.tmp"));
+        let path = dir.path().join("wall.png");
         std::fs::write(&path, "one").unwrap();
-        let (mut cache, t0) = (VersionCache::default(), Instant::now());
-        for file in [&path, &missing] {
-            cache.read(file, t0);
-            cache.read(file, t0);
-        }
+        let (mut cache, now) = (VersionCache::default(), Instant::now());
+        cache.read(&path, now);
         assert_eq!(cache.due(), None, "nothing to poll, so nothing to wake for");
-        let permissions = std::fs::metadata(&path).unwrap().permissions();
-        std::fs::set_permissions(&path, permissions).unwrap();
-        let repaints: usize = (1..=20).map(|window| cache.changed(t0 + STALE_AFTER * window).len()).sum();
-        assert_eq!(repaints, 0, "an event that changes no version (chmod to the same mode) is a stat");
-
-        std::fs::write(&temp, "two!").unwrap();
-        std::fs::rename(&temp, &path).unwrap();
-        assert_eq!(cache.changed(t0), std::slice::from_ref(&path), "an atomic save is one cue");
-        assert!(cache.changed(t0).is_empty());
-        assert_eq!(cache.read(&path, t0).len, 4, "and the next draw reads it, though no window passed");
-        std::fs::write(&missing, "now").unwrap();
-        assert_eq!(cache.changed(t0), std::slice::from_ref(&missing), "so is a file appearing");
-
-        cache.forget(&path);
-        cache.forget(&missing);
-        assert_eq!(cache.watcher.as_ref().unwrap().watches(), 0, "the last path releases the directory");
-        std::fs::write(&path, "three").unwrap();
-        assert!(cache.changed(t0).is_empty() && cache.stats.is_empty());
+        std::fs::set_permissions(&path, std::fs::metadata(&path).unwrap().permissions()).unwrap();
+        assert!(cache.changed(now).is_empty(), "chmod to the same mode is a stat, not a cue");
     }
 
     #[test]

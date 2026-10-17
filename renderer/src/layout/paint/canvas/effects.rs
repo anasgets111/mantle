@@ -14,7 +14,7 @@ use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, 
 use super::shape::box_path;
 use super::vector_path::femtovg_path;
 use super::{
-    Draw, DrawCmd, Frame, Shaders, Walk, aligned, apply_mask, fill_image, fill_pooled, flush, offscreen, pooled_extent,
+    Draw, DrawCmd, Frame, Shaders, Walk, aligned, apply_mask, fill_image, fill_pooled, flush, offscreen, pooled_paint,
     scratch,
 };
 use crate::layout::node::shape::inset;
@@ -136,8 +136,8 @@ pub(super) fn paint_shape_inset(
     let Some(cast) = cast_shadow(painter, walk, content, size, *shadow, target, snug) else { return };
     let pad = femtovg_path(&inset(&loops, f64::from(widths.top)), voids.into_iter());
     let at = LogicalRect { x: x0 as f32, y: y0 as f32, width: size.0 as f32, height: size.1 as f32 };
-    let LogicalRect { x, y, width, height } = pooled_extent(painter.canvas_mut(), cast, size, at);
-    painter.canvas_mut().fill_path(&pad, &Paint::image(cast, x, y, width, height, 0.0, 1.0));
+    let paint = pooled_paint(painter.canvas_mut(), cast, size, at, 1.0);
+    painter.canvas_mut().fill_path(&pad, &paint);
 }
 
 /// CSS's corner radius of a shadow spread from a box's: a square corner stays square.
@@ -221,8 +221,7 @@ pub(super) fn draw_layer(
             // A glass reads what is under the layer's box, which this command does not name.
             if filtered && !any_draw_matches(commands, |draw| volatile(draw) || reads_under(draw)) {
                 walk.scratch.retain(|(id, _)| !casts.contains(id) && *id != content);
-                let pooled = painter.canvas_mut().image_size(content).unwrap_or(size);
-                painter.keep_layer(walk.surface, command, (casts.clone(), content), pooled);
+                painter.keep_layer(walk.surface, command, (casts.clone(), content));
             }
             (casts, content)
         }
@@ -248,10 +247,9 @@ pub(super) fn draw_layer(
     }
 }
 
-/// The pooled `image`'s `used` part laid over `at` and cut to `path`, onto the target by `blend`.
-/// A normal one is drawn over; any other copies what the target holds under `area`, blends `image`
-/// with it in one pass and puts the result in place of the copy. Drawn over without a GL context
-/// or a target.
+/// `image`'s used part laid over `at` and cut to `path`, onto the target by `blend`. A normal one is
+/// drawn over; any other copies what the target holds under `area`, blends `image` with it in one
+/// pass and puts the result in place of the copy. Drawn over without a GL context or a target.
 fn composite(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -283,16 +281,12 @@ fn composite(
     let canvas = painter.canvas_mut();
     match blended {
         Some(paint) => replace(canvas, path, &paint, 1.0),
-        None => {
-            let LogicalRect { x, y, width, height } = pooled_extent(canvas, image, used, at);
-            canvas.fill_path(path, &Paint::image(image, x, y, width, height, 0.0, 1.0));
-        }
+        None => canvas.fill_path(path, &pooled_paint(canvas, image, used, at, 1.0)),
     }
 }
 
-/// `content` and its `blurred` copy, allocated alike, through `effect.shader` into a scratch the
-/// size of `area` allocated as they are, the box `rect` seen through it; `None` when the program or
-/// a target is missing.
+/// `content` and its `blurred` copy through `effect.shader` into a scratch the size of `area`, the
+/// box `rect` seen through it; `None` when the program or a target is missing.
 fn shaded(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -335,8 +329,8 @@ fn shaded(
 /// `image_shader`'s blur divides by `u_sigma`.
 const MIN_SIGMA: f32 = 0.01;
 
-/// `source` blurred by `sigma`, then recoloured by `tone` in the same last pass, into a scratch
-/// `snug` as [`scratch`] takes it; `None` when both are off, or the filter could not run.
+/// `source` blurred by `sigma`, then recoloured by `tone` in the same last pass; `None` when both
+/// are off, or the filter could not run.
 fn blurred(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -432,8 +426,7 @@ fn gaussian(
     unsafe { stage.blur(gl, painter.canvas_mut(), &passes) }
 }
 
-/// `content` blurred, then recoloured by `SourceIn` keeping each pixel's alpha (ADR-0254), into a
-/// scratch `snug` as [`scratch`] takes it.
+/// `content` blurred, then recoloured by `SourceIn` keeping each pixel's alpha (ADR-0254).
 fn cast_shadow(
     painter: &mut TextPainter,
     walk: &mut Walk<'_, '_>,
@@ -456,7 +449,7 @@ fn cast_shadow(
     canvas.set_render_target(RenderTarget::Image(cast));
     if blurred.is_none() {
         canvas.clear_rect(0, 0, size.0 as u32, size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-        fill_pooled(canvas, content, size, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
+        fill_pooled(canvas, content, size);
     }
     canvas.global_composite_operation(CompositeOperation::SourceIn);
     canvas.fill_path(&whole, &Paint::color(shadow.color.into()));
@@ -544,15 +537,15 @@ fn present(
     desktop: ImageId,
     out: ImageId,
 ) -> Option<ImageId> {
-    let result = scratch(painter, walk, read.size, read.snug)?;
+    let target = scratch(painter, walk, read.size, read.snug)?;
     // The capture is top-down and a scratch is bottom-up, as `composite` maps its image.
     let map = [1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 0.0, 1.0, 1.0];
     let sizes = [read.size, painter.canvas_mut().image_size(desktop).ok()?];
-    let (mode, target) = (image_shader::PRESENT, result);
-    let pass = image_shader::BlendPass { backdrop: out, source: desktop, target, sizes, map, mode };
+    let pass =
+        image_shader::BlendPass { backdrop: out, source: desktop, target, sizes, map, mode: image_shader::PRESENT };
     let Shaders { gl, stage } = walk.shaders.as_mut()?;
     // SAFETY: `Shaders` is built only with `gl` current on this thread and shared with the canvas.
-    unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then_some(result)
+    unsafe { stage.blend(gl, painter.canvas_mut(), &pass) }.then_some(target)
 }
 
 /// `image`, one of a read's pixels, with its alpha scaled by `mask` over `rect`.
@@ -573,7 +566,7 @@ fn faded(
     canvas.reset_transform();
     canvas.reset_scissor();
     canvas.clear_rect(0, 0, read.size.0 as u32, read.size.1 as u32, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-    fill_pooled(canvas, image, read.size, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
+    fill_pooled(canvas, image, read.size);
     // The mask is placed in the box's coordinates, so draw it under the read's own transform.
     canvas.set_transform(&read.view);
     let back = read.view.inverse();
@@ -591,8 +584,8 @@ fn faded(
 }
 
 /// A copy of the target's pixels under an area, and where it lies in the coordinates in force
-/// when it was read: `at` turned by `angle` about its corner. Every scratch of its `size` a draw
-/// lays back through [`Read::paint`] is taken `snug` as the copy was, so allocated at `alloc`.
+/// when it was read: `at` turned by `angle` about its corner. A scratch laid back through
+/// [`Read::paint`] is taken `snug` as the copy was, so allocated at `alloc`.
 pub(super) struct Read {
     pub(super) copy: ImageId,
     pub(super) size: (usize, usize),
@@ -605,7 +598,7 @@ pub(super) struct Read {
 }
 
 impl Read {
-    /// The paint that lays the used part of an image of `size` back where the pixels were read.
+    /// The paint that lays an image of `size` back where the pixels were read.
     pub(super) fn paint(&self, image: ImageId, alpha: f32) -> Paint {
         let width = self.at.width / self.size.0 as f32 * self.alloc.0 as f32;
         let height = self.at.height / self.size.1 as f32 * self.alloc.1 as f32;
@@ -1514,7 +1507,7 @@ mod tests {
         let read = |painter: &mut TextPainter, image: ImageId| {
             let canvas = painter.canvas_mut();
             canvas.clear_rect(0, 0, 250, 250, Color::rgbaf(0.0, 0.0, 0.0, 0.0));
-            fill_pooled(canvas, image, size, LogicalRect { x: 0.0, y: 0.0, width: 250.0, height: 250.0 }, 1.0);
+            fill_pooled(canvas, image, size);
             flush(canvas);
             canvas.screenshot().expect("screenshot reads back the pbuffer")
         };
@@ -1606,13 +1599,13 @@ mod tests {
         };
         let (small, big) = (command("#FF0000FF"), command("#0000FFFF"));
         let mut image =
-            || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
-        let (small_id, big_id) = (image(), image());
-        painter.keep_layer("other", &small, (Vec::new(), small_id), (8, 8));
+            |(w, h)| painter.canvas_mut().create_image_empty(w, h, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
+        // 16 KiB over the 64 MiB budget.
+        let (small_id, big_id) = (image((8, 8)), image((4096, 4097)));
+        painter.keep_layer("other", &small, (Vec::new(), small_id));
         painter.recycle_scratch("test", []);
-        painter.keep_layer("test", &big, (Vec::new(), big_id), (5000, 5000));
-        let retired = painter.sweep_layers("test", |_| true);
-        assert_eq!(retired, [(big_id, (1, 1))], "pooled at the size it is allocated at");
+        painter.keep_layer("test", &big, (Vec::new(), big_id));
+        assert_eq!(painter.sweep_layers("test", |_| true), [(big_id, (4096, 4097))]);
         assert!(painter.layer("other", &small).is_some());
     }
 
@@ -1627,8 +1620,8 @@ mod tests {
         let mut image =
             || painter.canvas_mut().create_image_empty(1, 1, PixelFormat::Rgba8, ImageFlags::empty()).unwrap();
         let (gone, other, big, small) = (image(), image(), image(), image());
-        painter.keep_layer("lock", &command, (Vec::new(), gone), (8, 8));
-        painter.keep_layer("bar", &command, (Vec::new(), other), (8, 8));
+        painter.keep_layer("lock", &command, (Vec::new(), gone));
+        painter.keep_layer("bar", &command, (Vec::new(), other));
         painter.recycle_scratch("lock", [(big, (8, 8))]);
         painter.recycle_scratch("bar", [(small, (8, 8))]);
         painter.release_surface("lock");

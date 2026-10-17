@@ -34,9 +34,9 @@ const SCRATCH_BYTES: usize = 64 << 20;
 pub(crate) const LAYER_PAINTS: u64 = 1000;
 const LAYER_BYTES: usize = 64 << 20;
 
-/// A layer's shadows, one image per layer it casts, and content, finished at `size` on one surface for the
+/// A layer's shadows, one image per layer it casts, and content, finished on one surface for the
 /// command that drew them, with the paint that last held it.
-type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), (usize, usize), u64);
+type KeptLayer = (String, DrawCmd, (Vec<ImageId>, ImageId), u64);
 
 /// Cache key for shaped lines in [`TextPainter`].
 struct TextLineKey {
@@ -252,19 +252,17 @@ impl TextPainter {
             .map(|(_, _, images, ..)| images.clone())
     }
 
-    /// Keeps `images`, allocated at `size`, for `command`, answering the images of one it replaces
-    /// for the pool.
+    /// Keeps `images` for `command`, answering the images of one it replaces for the pool.
     pub fn keep_layer(
         &mut self,
         surface: &str,
         command: &DrawCmd,
         images: (Vec<ImageId>, ImageId),
-        size: (usize, usize),
     ) -> Vec<(ImageId, (usize, usize))> {
         let old = self.layers.iter().position(|(on, kept, ..)| on == surface && kept == command);
         let old = old.map(|at| self.layers.swap_remove(at));
-        self.layers.push((surface.to_owned(), command.clone(), images, size, self.paints));
-        self.pooled(old.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content])))
+        self.layers.push((surface.to_owned(), command.clone(), images, self.paints));
+        self.pooled(old.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content])))
     }
 
     /// Frees `surface`'s layers its list no longer `holds`, then any past [`LAYER_PAINTS`] or
@@ -279,16 +277,21 @@ impl TextPainter {
         self.layers.sort_unstable_by_key(|(.., held)| std::cmp::Reverse(*held));
         let (paints, mut bytes) = (self.paints, 0);
         let (kept, retired): (Vec<_>, Vec<_>) =
-            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, (casts, _), (width, height), held)| {
+            std::mem::take(&mut self.layers).into_iter().partition(|(on, _, images, held)| {
                 let live = if on == surface { *held == paints } else { paints - held <= LAYER_PAINTS };
-                let size = (1 + casts.len()) * width * height * 4;
+                let size = self.layer_bytes(images);
                 live && bytes + size <= LAYER_BYTES && {
                     bytes += size;
                     true
                 }
             });
         self.layers = kept;
-        self.pooled(retired.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content])))
+        self.pooled(retired.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content])))
+    }
+
+    /// What a layer's images hold, at the sizes they are allocated at.
+    fn layer_bytes(&self, (casts, content): &(Vec<ImageId>, ImageId)) -> usize {
+        casts.iter().chain([content]).map(|&id| self.canvas.image_size(id).map_or(0, |(w, h)| w * h * 4)).sum()
     }
 
     /// `images` with the sizes they are allocated at, which the pool keys by (ADR-0370).
@@ -315,10 +318,9 @@ impl TextPainter {
     /// layer bytes)`, for `wayland::memory_profile`. Both are GPU images the driver may mirror in
     /// host memory, which `malloc` counts and `image` does not.
     pub fn census(&self) -> (usize, usize, usize, usize) {
-        let area = |(width, height): (usize, usize), images: usize| images * width * height * 4;
-        let pooled = self.scratch.iter().map(|((_, size), (_, free))| (free.len(), area(*size, free.len())));
+        let pooled = self.scratch.iter().map(|((_, (w, h)), (_, free))| (free.len(), free.len() * w * h * 4));
         let (images, pool_bytes) = pooled.fold((0, 0), |(n, bytes), (more, extra)| (n + more, bytes + extra));
-        let layer_bytes = self.layers.iter().map(|(_, _, (casts, _), size, _)| area(*size, 1 + casts.len())).sum();
+        let layer_bytes = self.layers.iter().map(|(_, _, images, _)| self.layer_bytes(images)).sum();
         (images, pool_bytes, self.layers.len(), layer_bytes)
     }
 
@@ -329,7 +331,7 @@ impl TextPainter {
         let (gone, kept): (Vec<_>, Vec<_>) =
             std::mem::take(&mut self.layers).into_iter().partition(|(on, ..)| on == surface);
         self.layers = kept;
-        let layers = gone.into_iter().flat_map(|(.., (casts, content), _, _)| casts.into_iter().chain([content]));
+        let layers = gone.into_iter().flat_map(|(.., (casts, content), _)| casts.into_iter().chain([content]));
         let owned: Vec<_> = self.scratch.keys().filter(|(on, _)| on == surface).cloned().collect();
         let pooled = owned.into_iter().filter_map(|key| self.scratch.remove(&key)).flat_map(|(_, free)| free);
         for id in layers.chain(pooled) {

@@ -148,9 +148,9 @@ pub(crate) struct CpuBudget<'lua> {
 const GC_CREDIT_KIB: i32 = 1 << 20;
 
 /// `collectgarbage("step", kib)`: adds `kib` to the collector's debt, stepping only if it is then positive.
-fn gc_shift_debt(lua: &Lua, kib: i32) {
+fn gc_shift_debt(lua: &Lua, kib: i32) -> bool {
     // SAFETY: `lua_gc` with `LUA_GCSTEP` takes one int and touches no stack slot; `exec_raw` runs it protected.
-    let _ = unsafe { lua.exec_raw::<()>((), |state| _ = mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCSTEP, kib)) };
+    unsafe { lua.exec_raw::<()>((), |state| _ = mlua::ffi::lua_gc(state, mlua::ffi::LUA_GCSTEP, kib)) }.is_ok()
 }
 
 /// Installs the instruction hook for the life of the VM, once, before any config code runs.
@@ -302,10 +302,7 @@ impl<'lua> CpuBudget<'lua> {
         // was charged for collecting what a capability push or another getter left: 6 budget
         // errors in 8 runs of a 56-image palette scan, none with the collector stopped. Deferred
         // here, the evaluation's own allocation is paid for on exit, outside the budget (ADR-0372).
-        let gc_deferred = stack.is_empty() && lua.gc_is_running();
-        if gc_deferred {
-            gc_shift_debt(lua, -GC_CREDIT_KIB);
-        }
+        let gc_deferred = stack.is_empty() && lua.gc_is_running() && gc_shift_debt(lua, -GC_CREDIT_KIB);
         let mut deadline = stack.first().cloned().unwrap_or_else(|| Deadline::lazy(RUNAWAY_CAP));
         deadline.site = site;
         stack.push(deadline);
@@ -771,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn a_getter_runs_with_the_collector_paused_and_pays_for_its_garbage_after() {
+    fn a_getter_runs_with_the_collection_deferred_and_pays_for_its_garbage_after() {
         let lua = lua_with_signal("a", Value::Integer(1));
         let finalizer = "setmetatable({}, { __gc = function() collected = true end })";
         let inside: bool = lua

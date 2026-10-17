@@ -285,16 +285,11 @@ pub fn run(
         // waking on the 15 ms poll, while ADR-0124 makes the push itself the wakeup. Staging and
         // repainting are one commit: the latter's `swap_buffers` carries layer/input/map changes;
         // per-field commits would show the compositor a half-updated surface.
-        // Profiling adds a `clock_gettime` call per phase for the handlers/resolve/repaint split.
         let mut phases = idle_profile::Phases::start(profile.is_some());
         app.client.fire_due_timers();
         app.process_accessibility_actions();
         app.client.poll_off_thread();
         app.client.wake_due_signals();
-        // `apply_instances` and `handle_apply_pending` also resolve, from dispatch, where `ms
-        // resolve` is not running. Dropped rather than reported, so the split stays a breakdown of
-        // the phase and never sums past it.
-        let _ = app.client.take_resolve_split();
         // Kept as its own name, not folded into `re_resolved` below: "a pass ran" and "something
         // changed" answer different questions. Only a pass can change any tree, so only a pass
         // rules out the narrowed repaint, and only a pass makes every surface's protocol state
@@ -310,6 +305,10 @@ pub fn run(
             app.mark_surfaces_stale(&scrolled);
             app.apply_resolved_surface_state_for(&[&scrolled]);
         }
+        // `apply_instances` and `handle_apply_pending` also resolve, from dispatch, where `ms
+        // resolve` is not running. Dropped rather than reported, so the split stays a breakdown of
+        // the phase and never sums past it.
+        let _ = app.client.take_resolve_split();
         phases.mark_handlers();
         let passed = app.client.re_resolve_if_dirty();
         if passed && app.image_cache.has_node_clocks() {
@@ -488,20 +487,15 @@ pub fn run(
                     libc::malloc_trim(0);
                 }
             }
-            // No timeout while idle (ADR-0124): Wayland events use the connection fd; Supervisor
-            // frames, landed decodes, and socket-thread exit use the waker; image file changes
-            // use inotify's (ADR-0371). The one timeout is a pending `delay(signal, ms)` or an
-            // open `pulse(signal, ms)` window (ADR-0146, ADR-0153), an animated image's next frame
-            // (ADR-0233), a pending trim (ADR-0292) or an unwatchable image file's recheck, armed
-            // only while one is running, the way a frame callback is requested only while a tween
-            // is.
-            let files = app.image_cache.watch_fd();
+            // No timeout while idle (ADR-0124): the connection fd, the waker (Supervisor frames,
+            // landed decodes, socket-thread exit) and inotify (ADR-0371) wake it. A timeout is armed
+            // only while something is pending: a `delay` or `pulse` window (ADR-0146, ADR-0153), an
+            // animated image's next frame (ADR-0233), a trim (ADR-0292), a polled image's recheck.
             let mut fds = [
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
-                nix::poll::PollFd::new(files.unwrap_or(waker.fd()), nix::poll::PollFlags::POLLIN),
+                nix::poll::PollFd::new(app.image_cache.watch_fd().unwrap_or(waker.fd()), nix::poll::PollFlags::POLLIN),
             ];
-            let polled = 2 + usize::from(files.is_some());
             let deadline = app
                 .client
                 .next_wake_deadline()
@@ -517,13 +511,12 @@ pub fn run(
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 crate::wake::poll_timeout(due.saturating_duration_since(std::time::Instant::now()))
             });
-            let woke = matches!(nix::poll::poll(&mut fds[..polled], timeout), Ok(n) if n > 0);
+            let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
             let waker_ready = woke && fds[1].any().unwrap_or(false);
             if let Some(profile) = profile.as_mut() {
-                // A file event counts with the waker, like the landed decode it also reaches
-                // through `ImageCache::poll`.
-                let file_ready = woke && polled > 2 && fds[2].any().unwrap_or(false);
+                // A file event counts with the waker; without inotify `fds[2]` is the waker again.
+                let file_ready = woke && fds[2].any().unwrap_or(false);
                 profile.wake(idle_profile::Wake { wayland: wayland_ready, waker: waker_ready || file_ready });
             }
             if woke {

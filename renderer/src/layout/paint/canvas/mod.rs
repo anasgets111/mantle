@@ -506,7 +506,9 @@ fn draw_clipped(
         return;
     };
     let path = box_path(rect, radius);
-    let paint = pooled_paint(painter.canvas_mut(), image, clip, 1.0);
+    let used = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    let at = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width: used.0 as f32, height: used.1 as f32 };
+    let paint = pooled_paint(painter.canvas_mut(), image, used, at, 1.0);
     match seed {
         Some(_) => replace(painter.canvas_mut(), &path, &paint, 1.0),
         None => painter.canvas_mut().fill_path(&path, &paint),
@@ -536,10 +538,10 @@ fn draw_node_mask(
     else {
         return;
     };
-    let (width, height) = ((clip.x1 - clip.x0) as f32, (clip.y1 - clip.y0) as f32);
+    let used = ((clip.x1 - clip.x0) as usize, (clip.y1 - clip.y0) as usize);
+    let (width, height) = (used.0 as f32, used.1 as f32);
     let canvas = painter.canvas_mut();
-    let cut =
-        pooled_paint(canvas, alpha, PhysicalRect { x0: 0, y0: 0, x1: clip.x1 - clip.x0, y1: clip.y1 - clip.y0 }, 1.0);
+    let cut = pooled_paint(canvas, alpha, used, LogicalRect { x: 0.0, y: 0.0, width, height }, 1.0);
     canvas.save();
     canvas.set_render_target(RenderTarget::Image(content));
     canvas.reset_transform();
@@ -554,9 +556,8 @@ fn draw_node_mask(
     canvas.fill_path(&whole, &cut.with_anti_alias(false));
     canvas.restore();
     canvas.set_render_target(target);
-    let path = box_path(rect, radius);
-    let paint = pooled_paint(canvas, content, clip, 1.0);
-    canvas.fill_path(&path, &paint);
+    let at = LogicalRect { x: clip.x0 as f32, y: clip.y0 as f32, width, height };
+    canvas.fill_path(&box_path(rect, radius), &pooled_paint(canvas, content, used, at, 1.0));
 }
 
 /// Draws `draw` at `rect`. Under a transform femtovg cannot bake into its glyph atlas (rotate, skew, flip,
@@ -600,7 +601,7 @@ fn draw_text(
             // A blinking caret changes the pixels under an unchanged command.
             if steady {
                 walk.scratch.retain(|(id, _)| *id != image);
-                let old = painter.keep_layer(walk.surface, command, (Vec::new(), image), size);
+                let old = painter.keep_layer(walk.surface, command, (Vec::new(), image));
                 walk.scratch.extend(old);
             }
             image
@@ -654,30 +655,19 @@ fn aligned(canvas: &Canvas<OpenGl>) -> bool {
     [a, b, c, d] == [1.0, 0.0, 0.0, 1.0] && e.fract() == 0.0 && f.fract() == 0.0
 }
 
-/// A paint laying the used top-left of the pooled `image` over `at`: its extent is the whole
-/// texture's, so the used part lands on `at` (ADR-0370).
-fn pooled_paint(canvas: &Canvas<OpenGl>, image: ImageId, at: PhysicalRect, alpha: f32) -> Paint {
-    let (x, y) = (at.x0 as f32, at.y0 as f32);
-    let rect = LogicalRect { x, y, width: at.x1 as f32 - x, height: at.y1 as f32 - y };
-    let used = ((at.x1 - at.x0) as usize, (at.y1 - at.y0) as usize);
-    let LogicalRect { x, y, width, height } = pooled_extent(canvas, image, used, rect);
-    Paint::image(image, x, y, width, height, 0.0, alpha)
-}
-
-/// `rect`, where the `used` top-left of the pooled `image` lands, grown to where its whole texture
-/// does.
-fn pooled_extent(canvas: &Canvas<OpenGl>, image: ImageId, used: (usize, usize), rect: LogicalRect) -> LogicalRect {
+/// A paint laying the `used` top-left of the pooled `image` on `at`: its extent is the whole
+/// texture's (ADR-0370).
+fn pooled_paint(canvas: &Canvas<OpenGl>, image: ImageId, used: (usize, usize), at: LogicalRect, alpha: f32) -> Paint {
     let (width, height) = canvas.image_size(image).unwrap_or(used);
     // Divided first, so a used part the texture's size stays exact.
-    let width = rect.width / used.0 as f32 * width as f32;
-    LogicalRect { width, height: rect.height / used.1 as f32 * height as f32, ..rect }
+    let (width, height) = (at.width / used.0 as f32 * width as f32, at.height / used.1 as f32 * height as f32);
+    Paint::image(image, at.x, at.y, width, height, 0.0, alpha)
 }
 
-/// [`fill_image`] for the `used` top-left of a pooled `image`, filling `rect` alone.
-fn fill_pooled(canvas: &mut Canvas<OpenGl>, image: ImageId, used: (usize, usize), rect: LogicalRect, alpha: f32) {
-    let LogicalRect { x, y, width, height } = pooled_extent(canvas, image, used, rect);
-    let paint = Paint::image(image, x, y, width, height, 0.0, alpha);
-    canvas.fill_path(&box_path(rect, &node::Radii::default()), &paint);
+/// [`fill_image`] for the `used` top-left of a pooled `image`, at the origin and its used size.
+fn fill_pooled(canvas: &mut Canvas<OpenGl>, image: ImageId, used: (usize, usize)) {
+    let at = LogicalRect { x: 0.0, y: 0.0, width: used.0 as f32, height: used.1 as f32 };
+    canvas.fill_path(&box_path(at, &node::Radii::default()), &pooled_paint(canvas, image, used, at, 1.0));
 }
 
 /// Draws `commands` into a scratch target covering `clip` over `under`, masked over the node's box
@@ -733,10 +723,9 @@ fn offscreen(
         canvas.reset_scissor();
         canvas.fill_path(&whole, &under.with_anti_alias(false));
     }
-    // The offscreen's whole texture, which femtovg's viewport covers (a shader quad inside a rounded
-    // clip places itself in that target, ADR-0184, ADR-0370), its origin at the clip's corner, and
-    // no transform: `draw_clipped` reset the canvas transform above, and composites the result under
-    // the outer one afterwards.
+    // The offscreen's whole texture (a shader quad inside a rounded clip places itself in that target,
+    // ADR-0184), its origin at the clip's corner, and no transform: `draw_clipped` reset the canvas
+    // transform above, and composites the result under the outer one afterwards.
     let inner = Frame {
         size: (size.0 as f32, size.1 as f32),
         origin: (clip.x0 as f32, clip.y0 as f32),
@@ -2636,9 +2625,9 @@ pub(crate) mod tests {
         let Some(instance) = init_headless_egl(96, 64) else { return };
         let shaping = ShapingHandle::spawn();
         let Some(mut painter) = text_painter(&instance, &shaping, 96, 64) else { return };
-        let mut images = ImageCache::new();
-        for width in 41..=47 {
-            let root = resolved_surface(&Lua::new(), &src(width, 0.0), LogicalSize { width: 96.0, height: 64.0 });
+        let (mut images, lua, size) = (ImageCache::new(), Lua::new(), LogicalSize { width: 96.0, height: 64.0 });
+        for width in [41, 47] {
+            let root = resolved_surface(&lua, &src(width, 0.0), size);
             paint_tree(&mut painter, &mut images, &root, 1.0);
             let canvas = painter.canvas_mut();
             let (edge, past) = (pixel_at(canvas, width as usize - 1, 20), pixel_at(canvas, width as usize, 20));
@@ -2646,8 +2635,7 @@ pub(crate) mod tests {
             assert_eq!(painter.census().0, 1, "width {width}: one pooled target");
         }
         assert!(painter.take_scratch("test", (64, 64)).is_some());
-        let root = resolved_surface(&Lua::new(), &src(41, 5.0), LogicalSize { width: 96.0, height: 64.0 });
-        paint_tree(&mut painter, &mut images, &root, 1.0);
+        paint_tree(&mut painter, &mut images, &resolved_surface(&lua, &src(41, 5.0), size), 1.0);
         assert!(painter.take_scratch("test", (41, 40)).is_some(), "snug under a rotation");
     }
 }

@@ -9,9 +9,9 @@ version is 0.x, a minor release can break the Lua API.
 
 - Fixed: a `shape` outline with `corner` commands cost about 1,000 times a rounded box to tessellate on each repaint.
 - Fixed: an idle shell no longer runs the Lua garbage collector after every getter that allocates, which cost about 1 ms per clock tick.
-- Changed: an `effect.shader`'s `u_input` and `u_input_blurred` may be textures larger than the area they hold, so a frosted or shadowed box tweening its size reuses one offscreen instead of allocating one every frame. `mantle_input` and `mantle_input_blurred` read them as before; a shader sampling `u_input` with its own `texture()` call must switch to them.
+- Changed: `effect.shader`'s `u_input` and `u_input_blurred` may be larger than what they hold; read them with `mantle_input` and `mantle_input_blurred`, not `texture()`.
 - Changed: the `--profile` idle report's `ms` columns start with `handlers=`, the turn's due timers, signal wakes, off-thread results and scroll steps. `resolve=` included them, so it could read 130 ms in a window with no resolve pass.
-- Fixed: a surface showing an image file outside `/usr`, `/nix`, `/opt` and `/var/lib/flatpak` (a wallpaper in `~/Pictures`, say) redrew and swapped its whole buffer every 0.5 s while idle. A file rewritten in place, replaced by a rename, deleted or newly created is now seen through inotify on its directory, at once and with no idle wakeups; only a changed file repaints, a shader's `images` included. A symlink, a directory that does not exist yet, or a watch the kernel refuses (`fs.inotify.max_user_watches`) is checked by stat twice a second instead.
+- Fixed: an idle surface showing an image file outside the system prefixes (a `~/Pictures` wallpaper) redrew its whole buffer every 0.5 s. Image files are now watched with inotify on their directory, so a rewrite, rename, delete or creation repaints at once and only on change, shader `images` included; a symlink or unwatchable directory is re-checked by stat twice a second.
 - Fixed: the .deb's PAM stack includes Debian's `common-auth` and `common-account`; it named `system-auth`, which Debian and Ubuntu lack, so the lock screen and polkit agent refused every password.
 - Changed: `ToplevelHandle:resize` types its edge as a union of the eight edge names, so LuaLS flags a misspelled edge.
 

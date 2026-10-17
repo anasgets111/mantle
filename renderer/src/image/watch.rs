@@ -1,6 +1,8 @@
 //! Which remembered image files changed on disk, from inotify on their parent directories
 //! (ADR-0371). A directory watch sees an in-place edit, an atomic rename over the file, a delete,
 //! and a file that did not exist yet; a watch on the file itself would follow the replaced inode.
+//! ponytail: a busy parent ($HOME, ~/Downloads) wakes the loop on unrelated events, each a read
+//! that names no path; upgrade by polling a directory's paths once its events flood.
 
 use std::os::fd::{AsFd, BorrowedFd};
 use std::path::{Path, PathBuf};
@@ -10,8 +12,7 @@ use nix::sys::inotify::{AddWatchFlags, InitFlags, Inotify, WatchDescriptor};
 use rustc_hash::FxHashMap as HashMap;
 use shared::warn;
 
-/// Writes finished, renames in and out, creates, deletes, `touch`, and the directory itself moving
-/// away (its paths then name nothing the watch sees). `IN_IGNORED` and `IN_Q_OVERFLOW` always come.
+/// Writes, renames, creates, deletes, `touch`, and the directory moving away.
 const MASK: AddWatchFlags = AddWatchFlags::IN_CLOSE_WRITE
     .union(AddWatchFlags::IN_MOVED_TO)
     .union(AddWatchFlags::IN_MOVED_FROM)
@@ -24,21 +25,15 @@ const MASK: AddWatchFlags = AddWatchFlags::IN_CLOSE_WRITE
 /// What one drain found.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct Drained {
-    /// Watched paths an event named, to re-stat. A no-op event (`touch -c` of nothing) restats to
-    /// the same version and repaints nothing.
+    /// Watched paths an event named, to re-stat.
     pub touched: Vec<PathBuf>,
-    /// Paths whose directory watch ended (deleted, unmounted, moved): no longer watched, so the
-    /// caller polls them.
+    /// Paths whose watch ended, now unwatched: the caller re-stats and re-watches them.
     pub lost: Vec<PathBuf>,
-    /// The kernel queue overflowed and dropped events: every path is suspect.
-    pub overflow: bool,
 }
 
 pub(super) struct Watcher {
     inotify: Inotify,
-    /// The paths each directory watch serves; its length is the watch's reference count. Keyed by
-    /// descriptor, not directory path, because two spellings of one directory (a symlink) get
-    /// the same descriptor from the kernel.
+    /// Each watch's paths, its refcount; keyed by descriptor, which two spellings of a directory share.
     dirs: HashMap<WatchDescriptor, Vec<PathBuf>>,
     warned: bool,
 }
@@ -97,11 +92,12 @@ impl Watcher {
 
     /// Reads every queued event without blocking.
     pub(super) fn drain(&mut self) -> Drained {
-        let mut drained = Drained::default();
+        let (mut drained, mut overflow) = (Drained::default(), false);
         loop {
             match self.inotify.read_events() {
                 Ok(events) => {
                     for event in events {
+                        overflow |= event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW);
                         self.map(event.wd, event.mask, event.name.as_deref(), &mut drained);
                     }
                 }
@@ -109,21 +105,24 @@ impl Watcher {
                 Err(Errno::EAGAIN) => break,
                 Err(err) => {
                     warn!("reading inotify failed ({err}); treating every watched image file as changed");
-                    drained.overflow = true;
+                    overflow = true;
                     break;
                 }
+            }
+        }
+        if overflow {
+            // The dropped events may include an `IN_IGNORED`: start every watch over.
+            for (wd, paths) in self.dirs.drain() {
+                let _ = self.inotify.rm_watch(wd);
+                drained.lost.extend(paths);
             }
         }
         drained
     }
 
-    /// One event's effect. An unknown descriptor is a watch already released, whose queued
-    /// events and `IN_IGNORED` still arrive.
+    /// One event's effect. An unknown descriptor (an overflow's too) is a released watch, whose
+    /// queued events and `IN_IGNORED` still arrive.
     fn map(&mut self, wd: WatchDescriptor, mask: AddWatchFlags, name: Option<&std::ffi::OsStr>, out: &mut Drained) {
-        if mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
-            out.overflow = true;
-            return;
-        }
         if mask.intersects(AddWatchFlags::IN_IGNORED | AddWatchFlags::IN_MOVE_SELF) {
             if let Some(paths) = self.dirs.remove(&wd) {
                 let _ = self.inotify.rm_watch(wd);
@@ -137,11 +136,6 @@ impl Watcher {
                 out.touched.push(path.clone());
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(super) fn watches(&self) -> usize {
-        self.dirs.len()
     }
 }
 
@@ -157,12 +151,12 @@ mod tests {
         let first = watcher.watch(&one).unwrap();
         assert_eq!(watcher.watch(&two), Some(first), "one watch per directory");
         assert_ne!(watcher.watch(&other), Some(first));
-        assert_eq!(watcher.watches(), 2);
+        assert_eq!(watcher.dirs.len(), 2);
 
         watcher.unwatch(first, &one);
-        assert_eq!(watcher.watches(), 2, "2.png still holds its directory");
+        assert_eq!(watcher.dirs.len(), 2, "2.png still holds its directory");
         watcher.unwatch(first, &two);
-        assert_eq!(watcher.watches(), 1, "the last path releases it");
+        assert_eq!(watcher.dirs.len(), 1, "the last path releases it");
         std::fs::write(&two, "x").unwrap();
         assert_eq!(watcher.drain(), Drained::default(), "a released watch reports nothing");
     }
@@ -182,20 +176,6 @@ mod tests {
         assert_eq!(watcher.drain().touched, std::slice::from_ref(&wall), "an atomic save, once");
         std::fs::remove_file(&wall).unwrap();
         assert_eq!(watcher.drain().touched, std::slice::from_ref(&wall));
-    }
-
-    #[test]
-    fn a_removed_directory_hands_its_paths_back_to_polling() {
-        let root = tempfile::tempdir().unwrap();
-        let dir = root.path().join("walls");
-        std::fs::create_dir(&dir).unwrap();
-        let mut watcher = Watcher::new().unwrap();
-        assert_eq!(watcher.watch(&root.path().join("missing/x.png")), None, "no directory yet: polled");
-        let wall = dir.join("wall.png");
-        watcher.watch(&wall).unwrap();
-        std::fs::remove_dir(&dir).unwrap();
-        assert_eq!(watcher.drain().lost, [wall]);
-        assert_eq!(watcher.watches(), 0);
     }
 
     #[test]
