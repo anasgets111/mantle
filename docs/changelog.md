@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Changed: `ToplevelHandle:resize` types its edge as a union of the eight edge names, so LuaLS flags a misspelled edge.
+
 ## 0.7.5 - 2026-10-16
 
 - Added: [`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) on the AUR, published from each release's binaries.

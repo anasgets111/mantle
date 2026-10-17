@@ -304,31 +304,37 @@
 ---@field trim_axis? "length"|"x"|Bound Default `"length"`. What `trim_start` and `trim_end` measure. `"length"`: fractions of the path's length. `"x"`: fractions of the node's width; the stroke keeps what lies inside that band of the box, cut at its edges with `stroke_cap` on every cut end, and the band stays put while `shift` moves the geometry through it (ADR-0332).
 ---@field shift? Axes|Bound `[-8192, 8192]`, default `{ x = 0, y = 0 }`. Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only.
 
+---A plain box that stacks its children, each given the whole content box: a filled shape, a background, or layers.
 ---[docs](https://anasgets111.github.io/mantle/nodes/rect.html)
 ---@param props RectProps
 ---@return Node
 function rect(props) end
 
+---A box that flows its children left to right.
 ---[docs](https://anasgets111.github.io/mantle/nodes/row-column.html)
 ---@param props RowProps
 ---@return Node
 function row(props) end
 
+---A box that flows its children top to bottom.
 ---[docs](https://anasgets111.github.io/mantle/nodes/row-column.html)
 ---@param props ColumnProps
 ---@return Node
 function column(props) end
 
+---One paragraph in the font chain or a named family, sized to its content; wraps and elides inside a bounded width.
 ---[docs](https://anasgets111.github.io/mantle/nodes/text.html)
 ---@param props TextProps
 ---@return Node
 function text(props) end
 
+---A square icon from the icon theme or a file path; symbolic SVGs take a tint.
 ---[docs](https://anasgets111.github.io/mantle/nodes/icon.html)
 ---@param props IconProps
 ---@return Node
 function icon(props) end
 
+---A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, SVG or SVGZ.
 ---[docs](https://anasgets111.github.io/mantle/nodes/image.html)
 ---@param props ImageProps
 ---@return Node
@@ -346,6 +352,7 @@ function capture(props) end
 ---@return Node
 function shader(props) end
 
+---A `row` or `column` whose children come from data: one `each(item)` call per element of `items`.
 ---[docs](https://anasgets111.github.io/mantle/nodes/list.html)
 ---@param props ListProps
 ---@return Node

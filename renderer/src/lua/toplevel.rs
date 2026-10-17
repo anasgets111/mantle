@@ -188,6 +188,17 @@ impl ToplevelHandle {
     }
 }
 
+/// `resize`'s edge; raises on any other name.
+impl FromLua for Edge {
+    fn from_lua(value: Value, lua: &Lua) -> mlua::Result<Self> {
+        let name = String::from_lua(value, lua)?;
+        Self::find(name.as_bytes()).ok_or_else(|| {
+            let hint = expected_one_of(Self::NAMES, &name, &format!("string {name:?}"));
+            mlua::Error::runtime(format!("resize: edge is not an edge, {hint}"))
+        })
+    }
+}
+
 /// A boolean argument that raises on anything else; mlua's own `bool` takes any value as truthy.
 struct Flag(bool);
 
@@ -221,13 +232,8 @@ lua_class! {
         fn resize(
             lua,
             this,
-            /// `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`.
-            edge: String,
+            edge: Edge,
         ) {
-            let Some(edge) = Edge::find(edge.as_bytes()) else {
-                let hint = expected_one_of(Edge::NAMES, &edge, &format!("string {edge:?}"));
-                return Err(mlua::Error::runtime(format!("resize: edge is not an edge, {hint}")));
-            };
             this.queue(lua, |_| Action::Resize(edge));
             Ok(())
         }

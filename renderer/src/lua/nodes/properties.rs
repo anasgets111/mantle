@@ -387,12 +387,17 @@ props! {
         /// Book: `"box"` cuts children to the rectangle, `"rounded"` also to `radius`, `"none"` leaves them on the parent's clip; a `mask` cuts to the box regardless. See [Clip](#clip)
         clip: Bound<OneOf<ClipShape>> = absent(Prose(r#"`"box"` on a surface or a `scroll` viewport, else `"none"`"#));
     }
+    /// A plain box that stacks its children, each given the whole content box: a filled shape, a background, or layers.
     mod stack(RECT) {
         /// Stacked in order: later children paint over earlier ones. At most 10000; a `nil` or `false` entry is an error.
         ///
         /// Book: Array of node tables, up to 10000; a `nil` or `false` entry is an error. Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids)
         children: Bound<Children>;
     }
+    /// A box that flows its children left to right.
+    mod row(ROW) {}
+    /// A box that flows its children top to bottom.
+    mod column(COLUMN) {}
     mod flow(ROW | COLUMN) {
         /// Laid out in order along the main axis, at most 10000; a `nil` or `false` entry is an error.
         ///
@@ -417,6 +422,7 @@ props! {
         /// Px between lines under `wrap`, `0` by default; negative values overlap them. Ignored without `wrap`.
         line_spacing: Bound<Num> = absent(Number(0.0));
     }
+    /// One paragraph in the font chain or a named family, sized to its content; wraps and elides inside a bounded width.
     mod text(TEXT) {
         /// A string, or up to 10000 runs, drawn as one paragraph.
         ///
@@ -459,6 +465,7 @@ props! {
         /// Click on a run with an `href` (ADR-0106); the engine never opens it. Takes the click from any `on_click`, the text's own included; plain words pass it on.
         on_link(href: String);
     }
+    /// A square icon from the icon theme or a file path; symbolic SVGs take a tint.
     mod icon(ICON) {
         /// Icon theme name, or an image path, absolute or `~/` under `$HOME` (ADR-0054); `""` draws nothing.
         ///
@@ -469,6 +476,7 @@ props! {
         /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072); a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it.
         foreground: Bound<Color> = absent(Prose("the file's own colours"));
     }
+    /// A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, SVG or SVGZ.
     mod image(IMAGE) {
         /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233).
         ///
@@ -558,6 +566,7 @@ props! {
         /// Pixel offset of the geometry inside the node, applied before trimming and stroking. The box, the `trim_axis = "x"` band and the fill gradient do not move. Paint only.
         shift: Bound<Axes> = range(-8192.0, 8192.0).absent(Lua("{ x = 0, y = 0 }"));
     }
+    /// A `row` or `column` whose children come from data: one `each(item)` call per element of `items`.
     mod list(LIST) {
         /// Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error.
         items: Items = absent(Prose("empty"));

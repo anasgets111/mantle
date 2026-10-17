@@ -162,7 +162,7 @@ local ToplevelHandle = {}
 function ToplevelHandle:move() end
 
 ---Start an interactive resize from an edge or corner of the window.
----@param edge string `"top"`, `"bottom"`, `"left"`, `"right"`, `"top_left"`, `"top_right"`, `"bottom_left"` or `"bottom_right"`.
+---@param edge "top"|"bottom"|"left"|"right"|"top_left"|"top_right"|"bottom_left"|"bottom_right"
 function ToplevelHandle:resize(edge) end
 
 ---Open the compositor's window menu at the pointer's press position.
