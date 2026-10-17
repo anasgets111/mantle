@@ -8731,3 +8731,15 @@ Rejected: generational mode and a smaller step size (ADR-0290).
 
 ponytail: a getter that calls `collectgarbage("collect")` or `("step")` resets the debt, so the
 returned credit can force up to one extra cycle. Upgrade: refuse `collectgarbage` inside a getter.
+
+## 0373. `femtovg_path` drops zero-length curves; no cross-frame path cache
+
+femtovg halves a cubic until it is flat or 10 levels deep, and one whose points all coincide never
+tests flat: 2047 calls for nothing drawn. A `corner` whose squircle pieces differ only below f32
+placement emits such curves; the heavy-shell `outline` card's fill and border took 57,399 calls
+each per repaint, 97% of all tessellation. `femtovg_path` skips a curve whose f32 points equal the
+pen. Headless heavy-shell fx, best of 7 x 60 frames: 17,951 to 461 calls a frame, 0.21 to 0.17 ms.
+
+Rejected: keeping `Path`s across frames so femtovg's transform-keyed tessellation hits. It cut
+tessellations 3x on static boxes but saved 0.4 µs a rounded rect, cost 7 KiB a path, and missed every
+scrolled or transformed box, since femtovg keys the full transform.

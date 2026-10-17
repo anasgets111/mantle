@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: a `shape` outline with `corner` commands cost about 1,000 times a rounded box to tessellate on each repaint.
 - Fixed: an idle shell no longer runs the Lua garbage collector after every getter that allocates, which cost about 1 ms per clock tick.
 - Changed: an `effect.shader`'s `u_input` and `u_input_blurred` may be textures larger than the area they hold, so a frosted or shadowed box tweening its size reuses one offscreen instead of allocating one every frame. `mantle_input` and `mantle_input_blurred` read them as before; a shader sampling `u_input` with its own `texture()` call must switch to them.
 - Changed: the `--profile` idle report's `ms` columns start with `handlers=`, the turn's due timers, signal wakes, off-thread results and scroll steps. `resolve=` included them, so it could read 130 ms in a window with no resolve pass.

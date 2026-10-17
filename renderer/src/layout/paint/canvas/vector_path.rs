@@ -51,10 +51,12 @@ pub(super) fn paint(
 pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>) -> Path {
     let p = |p: Point| (p.x as f32, p.y as f32);
     let mut path = Path::new();
+    let (mut start, mut pen) = ((0.0, 0.0), (0.0, 0.0));
     for element in bez.elements() {
         match *element {
             PathEl::MoveTo(to) => {
                 let (x, y) = p(to);
+                start = (x, y);
                 path.move_to(x, y);
                 path.solidity(if holes.next() == Some(true) { Solidity::Hole } else { Solidity::Solid });
             }
@@ -62,6 +64,9 @@ pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>)
                 let (x, y) = p(to);
                 path.line_to(x, y);
             }
+            // femtovg halves a zero-length curve to its depth limit, 2047 calls, and draws nothing.
+            PathEl::QuadTo(c, to) if [p(c), p(to)] == [pen; 2] => {}
+            PathEl::CurveTo(c1, c2, to) if [p(c1), p(c2), p(to)] == [pen; 3] => {}
             PathEl::QuadTo(c, to) => {
                 let ((cx, cy), (x, y)) = (p(c), p(to));
                 path.quad_to(cx, cy, x, y);
@@ -72,6 +77,7 @@ pub(super) fn femtovg_path(bez: &BezPath, mut holes: impl Iterator<Item = bool>)
             }
             PathEl::ClosePath => path.close(),
         }
+        pen = element.end_point().map_or(start, p);
     }
     path
 }
@@ -404,5 +410,19 @@ mod tests {
             let px = paint_points(&src, &[(32, 32), (16, 16), (2, 2)]).expect("headless EGL required");
             assert_eq!((px[0].3, px[1].3, px[2].3), (centre, 255, 0), "{inner}: {px:?}");
         }
+    }
+
+    /// A corner placed off its own frame can round to a curve with every point on the pen.
+    #[test]
+    fn a_zero_length_curve_is_left_out() {
+        let mut bez = BezPath::new();
+        bez.move_to((0.0, 0.0));
+        bez.line_to((10.0, 0.0));
+        bez.curve_to((10.0 + 1e-9, 0.0), (10.0, 0.0), (10.0, 0.0));
+        bez.quad_to((10.0, 0.0), (10.0, 0.0));
+        bez.curve_to((15.0, 0.0), (20.0, 5.0), (20.0, 10.0));
+        bez.close_path();
+        let path = femtovg_path(&bez, std::iter::empty());
+        assert_eq!(path.verbs().filter(|verb| matches!(verb, Verb::BezierTo(..))).count(), 1);
     }
 }
