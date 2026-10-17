@@ -268,7 +268,7 @@ fn run(painter: &mut TextPainter, walk: &mut Walk<'_, '_>, commands: &[DrawCmd],
                     };
                     let draw =
                         FileDraw { request, rect, alpha: *alpha, load: Load::Inline, radius: &node::Radii::default() };
-                    let _ = draw_file(painter.canvas_mut(), walk.images, draw);
+                    draw_file(painter.canvas_mut(), walk.images, draw);
                 }
                 if let Some(t0) = t0 {
                     walk.split.icons += t0.elapsed();

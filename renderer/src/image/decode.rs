@@ -152,8 +152,10 @@ pub(super) fn decode(
     let (pixels, width, height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
     // Here rather than inside `decode_raster`, which returns from three places (thumbnail hit,
     // rescaled thumbnail, full decode) and would need the crop at each.
-    let (pixels, width, height) =
-        if *cropped { crop_to_box(pixels, width, height, *box_px) } else { (pixels, width, height) };
+    let (mut pixels, mut width, mut height) = (pixels, width, height);
+    if *cropped && let Some(kept) = crop_to_box(&pixels, width, height, *box_px) {
+        (pixels, width, height) = kept; // drops the uncropped source before the blur
+    }
     let premultiplied = *blur_px > 0;
     let pixels = blur_rgba(pixels, width, height, *blur_px, false)?;
     Ok(Decoded {
@@ -221,14 +223,18 @@ fn decode_gif(
         if native {
             return Ok::<_, String>((read_rect(canvas, source_width, rect), rect));
         }
-        let scaled = if (stored_width, stored_height) == (source_width, source_height) {
-            canvas.to_vec()
+        // Crop from the borrowed canvas when the size is unchanged: a copy first would hold two.
+        let frame = if (stored_width, stored_height) == (source_width, source_height) {
+            let kept = if cropped { crop_to_box(canvas, stored_width, stored_height, box_px) } else { None };
+            kept.map_or_else(|| canvas.to_vec(), |kept| kept.0)
         } else {
             let image = ::image::RgbaImage::from_raw(source_width, source_height, canvas.to_vec())
                 .ok_or("canvas is not source_width * source_height * 4 bytes")?;
-            downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?.into_raw()
+            let scaled =
+                downscale(&::image::DynamicImage::ImageRgba8(image), (stored_width, stored_height))?.into_raw();
+            let kept = if cropped { crop_to_box(&scaled, stored_width, stored_height, box_px) } else { None };
+            kept.map_or(scaled, |kept| kept.0)
         };
-        let frame = if cropped { crop_to_box(scaled, stored_width, stored_height, box_px).0 } else { scaled };
         let mapped = map_rect(rect);
         Ok(if mapped == (0, 0, width, height) { (frame, mapped) } else { (read_rect(&frame, width, mapped), mapped) })
     };
@@ -352,16 +358,16 @@ fn blend_rect(pixels: &mut [u8], width: u32, rect: (u32, u32, u32, u32), src: &[
 /// scales to *cover* it. The overflow is texture memory `layout::paint`'s scissor discards every
 /// frame and nothing samples: 3.2 MiB a piece across 56 wallpapers on a 3440x1440 output.
 ///
-/// Never larger than what it is given, so a source smaller than its box comes back untouched and
-/// [`fitted_rect`](super::fitted_rect) still letterboxes it. The centering is integer where `fitted_rect`'s is float,
+/// Never larger than what it is given: `None` when nothing is cropped, so the caller keeps its buffer and
+/// [`fitted_rect`](super::fitted_rect) still letterboxes a small source. The centering is integer where `fitted_rect`'s is float,
 /// leaving an odd overflow half a physical pixel off.
-fn crop_to_box(pixels: Vec<u8>, width: u32, height: u32, box_px: (u32, u32)) -> (Vec<u8>, u32, u32) {
+fn crop_to_box(pixels: &[u8], width: u32, height: u32, box_px: (u32, u32)) -> Option<(Vec<u8>, u32, u32)> {
     let (kept_width, kept_height) = (box_px.0.min(width), box_px.1.min(height));
     if (kept_width, kept_height) == (width, height) {
-        return (pixels, width, height);
+        return None;
     }
     let (left, top) = ((width - kept_width) / 2, (height - kept_height) / 2);
-    (read_rect(&pixels, width, (left, top, kept_width, kept_height)), kept_width, kept_height)
+    Some((read_rect(pixels, width, (left, top, kept_width, kept_height)), kept_width, kept_height))
 }
 
 /// Scales each RGBA8 pixel's colour by its own alpha, rounding the way a straight-to-premultiplied
@@ -700,7 +706,8 @@ pub(super) mod tests {
     }
 
     fn crop(width: u32, height: u32, box_px: (u32, u32)) -> ((u32, u32), Vec<u8>) {
-        let (pixels, width, height) = crop_to_box(gray(width, height), width, height, box_px);
+        let pixels = gray(width, height);
+        let (pixels, width, height) = crop_to_box(&pixels, width, height, box_px).unwrap_or((pixels, width, height));
         ((width, height), pixels.iter().step_by(4).copied().collect())
     }
 
@@ -1023,7 +1030,7 @@ pub(super) mod tests {
         assert_eq!(decoded.deltas[0].rect, (2, 2, 5, 4), "the 3x3 change at (9, 5), scaled, grown and cropped");
         assert_replays_like_a_full_recomposite(&path, &decoded, |frame| {
             let scaled = downscale(&::image::DynamicImage::ImageRgba8(frame.clone()), (15, 10)).unwrap();
-            crop_to_box(scaled.into_raw(), 15, 10, (10, 10)).0
+            crop_to_box(&scaled.into_raw(), 15, 10, (10, 10)).expect("15x10 overflows a 10x10 box").0
         });
     }
 

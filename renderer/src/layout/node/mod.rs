@@ -37,7 +37,7 @@ pub(crate) use animate::MoveTween;
 #[cfg(test)]
 pub(crate) use animate::TransitionInput;
 pub(crate) use animate::{AnimationSpec, Easing, Motion};
-pub(crate) use animate::{Animations, Images, Params};
+pub(crate) use animate::{Animations, Images, Params, byte};
 pub use animate::{
     Dissolve, MAX_SHADER_IMAGES, MoveSpec, ShaderImage, ShaderParam, TYPED, TransitionSpec, Tween, advance, commit,
     depart, is_paint_only, retarget, retarget_measured, retarget_scroll, scroll_spec, scroll_target, step, sync,

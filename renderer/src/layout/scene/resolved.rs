@@ -244,7 +244,7 @@ impl ResolvedNode {
     pub(crate) fn current_initial_text(&self, lua: &Lua) -> String {
         let text = match self.resolve_memo.as_ref().and_then(|memo| node::signal_at(memo.raw(), "initial_text")) {
             Some(signal) => match crate::lua::signal::untracked(lua, || signal.get_value(lua)) {
-                Ok(Value::String(text)) => text.to_str().map(|text| text.to_string()).unwrap_or_default(),
+                Ok(Value::String(text)) => text.to_string_lossy(),
                 _ => String::new(),
             },
             None => node::fields::textfield::initial_text.read(&self.properties).unwrap_or_default(),

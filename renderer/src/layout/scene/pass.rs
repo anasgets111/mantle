@@ -1551,6 +1551,8 @@ mod tests {
             lua.load(format!("seed:set({unset_or_unsettable})")).exec().unwrap();
             assert_eq!(field.current_initial_text(&lua), "", "{unset_or_unsettable} arms an empty draft");
         }
+        lua.load(r#"seed:set("a\255")"#).exec().unwrap();
+        assert_eq!(field.current_initial_text(&lua), "a\u{FFFD}", "bytes that are not UTF-8 are replaced, not dropped");
         lua.load(r#"seed:set("b")"#).exec().unwrap();
         scene.take_seeds();
         let table: mlua::Table = lua

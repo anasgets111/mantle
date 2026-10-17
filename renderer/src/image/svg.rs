@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::decode::{read_capped, take_capped};
-use crate::layout::node::Rgba;
+use crate::layout::node::{Rgba, byte};
 use crate::text::shaping::FontDatabase;
 
 /// Bytes an SVG source may occupy before it is refused unparsed. `usvg` parses the whole document
@@ -93,7 +93,7 @@ fn is_symbolic(path: &Path) -> bool {
 /// `0x00RRGGBB` for [`CacheKey`](super::CacheKey). Drop alpha: CSS `color` is `#RRGGBB`; draw-call `alpha` owns
 /// icon transparency, not the SVG.
 pub(super) fn packed_rgb(color: Rgba) -> u32 {
-    let channel = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u32;
+    let channel = |v: f32| u32::from(byte(v));
     (channel(color.r) << 16) | (channel(color.g) << 8) | channel(color.b)
 }
 

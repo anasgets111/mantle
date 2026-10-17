@@ -63,7 +63,7 @@ fn hex_of(color: Rgba) -> String {
 }
 
 /// A channel as the byte a hex colour holds.
-fn byte(channel: f32) -> u8 {
+pub(crate) fn byte(channel: f32) -> u8 {
     (channel.clamp(0.0, 1.0) * 255.0).round() as u8
 }
 

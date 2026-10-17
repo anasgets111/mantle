@@ -288,10 +288,10 @@ fn parse_list_children(properties: &PropMap, lua: &Lua, build: &mut ListMemo) ->
                         "must be valid UTF-8 -- a key is compared for equality, so it cannot be converted lossily",
                     )
                 })?;
-                if seen_keys.contains(&key_text) {
-                    return Err(invalid("key", format!("duplicate key `{key_text}` among list items")));
+                if !seen_keys.insert(key_text) {
+                    let key = key_str.to_string_lossy();
+                    return Err(invalid("key", format!("duplicate key `{key}` among list items")));
                 }
-                seen_keys.insert(key_text);
                 // List identity wins over any `id` the item function supplied.
                 std::rc::Rc::make_mut(&mut node.properties).insert("id", Value::String(key_str.clone()));
                 memo.key = Some(key_str);
