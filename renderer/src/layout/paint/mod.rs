@@ -258,6 +258,15 @@ fn volatile(draw: &Draw) -> bool {
     ) || mask_file(draw).is_some()
 }
 
+/// The files a shader on `draw` samples, which load through the image cache like an `image`'s.
+fn sampler_images(draw: &Draw) -> &[SamplerFile] {
+    match draw {
+        Draw::Shader { images, .. } | Draw::Image { shader: Some((_, _, images)), .. } => images,
+        Draw::Layer { shader: Some(shader), .. } | Draw::Backdrop { shader: Some(shader), .. } => &shader.images,
+        _ => &[],
+    }
+}
+
 /// The file an image `mask` reads, which changes under an unchanged list as an `image`'s does.
 fn mask_file(draw: &Draw) -> Option<&str> {
     match draw {
@@ -270,7 +279,7 @@ fn mask_file(draw: &Draw) -> Option<&str> {
 }
 
 impl DisplayList {
-    /// Whether any image, icon or file mask in this list draws one of `files` (ADR-0122). A background decode
+    /// Whether any image, icon, file mask or shader sampler in this list draws one of `files` (ADR-0122). A background decode
     /// landing changes no list, since a list names the file and not the texture, so this is how
     /// `wayland::App` tells which surfaces' skipped repaint is now stale.
     pub fn draws_any_of(&self, files: &[std::path::PathBuf]) -> bool {
@@ -284,6 +293,9 @@ impl DisplayList {
             })) || matches!(draw, Draw::Icon { name, px, .. } if image::icons::resolve(name, *px)
                 .is_some_and(|path| files.contains(&path)))
                 || mask_file(draw).is_some_and(|mask| files.iter().any(|file| file.as_os_str() == mask))
+                || sampler_images(draw)
+                    .iter()
+                    .any(|(_, path, _)| files.iter().any(|file| file.as_os_str() == path.as_str()))
         })
     }
 
@@ -360,14 +372,7 @@ impl DisplayList {
     pub(crate) fn image_requests<'a>(&'a self, out: &mut Vec<image::ImageRequest<'a>>) {
         fn walk<'a>(commands: &'a [DrawCmd], out: &mut Vec<image::ImageRequest<'a>>) {
             for command in commands {
-                let files = match &command.draw {
-                    Draw::Shader { images, .. } | Draw::Image { shader: Some((_, _, images)), .. } => images.as_slice(),
-                    Draw::Layer { shader: Some(shader), .. } | Draw::Backdrop { shader: Some(shader), .. } => {
-                        shader.images.as_slice()
-                    }
-                    _ => &[],
-                };
-                out.extend(files.iter().map(|(_, path, _)| {
+                out.extend(sampler_images(&command.draw).iter().map(|(_, path, _)| {
                     image::ImageRequest::mask(
                         std::path::Path::new(path),
                         (image::MAX_SAMPLER_EDGE, image::MAX_SAMPLER_EDGE),
@@ -645,6 +650,12 @@ mod tests {
         // was keyed on, the 100x40 rect it fills.
         let pinned = pins(&list);
         assert_eq!(pinned, vec![(std::path::PathBuf::from("/tmp/a.png"), (100, 40))]);
+
+        // A shader's sampler is drawn from a file too, so its rewrite has to repaint (ADR-0371).
+        let src = r##"return panel { id = "bar", width = 64, height = 16, child = shader { width = 64, height = 16,
+            source = "/tmp/fx.frag", images = { tex = "/tmp/tex.png" } } }"##;
+        let list = build(&resolved_surface(&lua, src, LogicalSize { width: 64.0, height: 16.0 }), 1.0, None);
+        assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/tex.png")]));
     }
 
     #[test]

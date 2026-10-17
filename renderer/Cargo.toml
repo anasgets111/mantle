@@ -58,7 +58,7 @@ libc.workspace = true
 mlua = { version = "0.12.2", features = ["lua54", "vendored", "serde"] }
 # "resource" is `getrusage`, read only by the env-gated `wayland::idle_profile` (ADR-0132) to
 # split the poll loop's CPU between this thread and the rest of the process.
-nix = { workspace = true, features = ["event", "fs", "poll", "resource", "time"] }
+nix = { workspace = true, features = ["event", "fs", "inotify", "poll", "resource", "time"] }
 # Arc length for `path` stroke trims. Already compiled for resvg's `svgtypes`, so it adds no crate.
 kurbo = "0.13.1"
 # SVG text uses a snapshot of Mantle's configured fonts. `svgz` reuses flate2 from `png`.

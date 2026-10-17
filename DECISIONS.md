@@ -8682,3 +8682,39 @@ the image's size, and an image per use re-creates its framebuffer and stencil.
 ponytail: a snug target still misses per size: a clip or layer tweening its size under a moving
 transform, and text under a `scale` tween. Upgrade path: copy the edge into the slack before femtovg
 samples it, once a profile shows these.
+
+## 0371. Image files are watched with inotify on their directories, and polled only where that fails
+
+An image path outside the system prefixes (`FileVersion::is_static`) changes under an unchanged
+display list: a tray icon rewritten at the same path (ADR-0031), a wallpaper replaced by an atomic
+save. A per-draw stat cost 1200 statx/s; a 500 ms memo with a repaint owed at the window's end
+turned into a loop, because a draw looks its file up twice and the second lookup owed the next
+repaint: an idle `~/Pictures` wallpaper drew and swapped the whole surface twice a second
+(20 per 10 s on an Intel HD 520). Polling with a stat at the window's end removed the draws but
+kept two wakes a second for as long as such a file had a slot.
+
+Decision:
+
+1. **Directory watches.** One inotify instance (`image/watch.rs`, nix's `inotify` feature) watches
+   each remembered path's parent with `IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE |
+   IN_DELETE | IN_ATTRIB | IN_MOVE_SELF`. A file watch would follow the inode an atomic save
+   replaces and could not see a missing file appear. Its fd joins the main loop's poll set; each
+   turn's `ImageCache::poll` drains it, re-stats the paths an event names, and returns only those
+   whose `FileVersion` changed, which mark stale the surfaces whose lists draw them, shader
+   samplers included. A watched stat is trusted until an event names it, so idle arms no timeout.
+2. **Lifetime.** A path is remembered while an image cache slot holds it: `evict` forgets it with
+   its last slot, and the bound past `2 * CACHE_CAPACITY` drops only paths without a slot, never
+   wholesale (a forgotten path on screen would miss its next rewrite). Watches are counted per
+   descriptor, not per directory string, since the kernel gives two spellings of one directory one
+   descriptor; the last path releases it. `IN_Q_OVERFLOW` re-stats every remembered path once.
+   `IN_IGNORED` or `IN_MOVE_SELF` on a held watch hands its paths to polling.
+3. **Fallback.** A path is polled, stat-ed every 500 ms with a repaint only on change, when it is a
+   symlink (an edit to its target happens in another directory), when its directory does not exist
+   (silent), or when `inotify_add_watch` fails otherwise (one warning: ENOSPC is
+   `fs.inotify.max_user_watches`). A polled path retries the watch at each recheck, so a directory
+   created later stops the wakes. Without inotify at all (one warning) every path is polled.
+
+Limits: a write through a hard link in an unwatched directory, or on a network or FUSE mount whose
+remote changes the kernel never sees, is not reported; such files show their change on the next
+repaint for another reason. A writer that creates the file before filling it can cue two repaints,
+the first decoding a partial file, as polling could.

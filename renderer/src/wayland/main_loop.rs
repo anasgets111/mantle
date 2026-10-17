@@ -489,15 +489,19 @@ pub fn run(
                 }
             }
             // No timeout while idle (ADR-0124): Wayland events use the connection fd; Supervisor
-            // frames, landed decodes, and socket-thread exit use the waker. The one timeout is a
-            // pending `delay(signal, ms)` or an open `pulse(signal, ms)` window (ADR-0146,
-            // ADR-0153), an animated image's next frame (ADR-0233), a pending trim (ADR-0292) or an
-            // image file's recheck, armed only while one is running, the way a frame callback is
-            // requested only while a tween is.
+            // frames, landed decodes, and socket-thread exit use the waker; image file changes
+            // use inotify's (ADR-0371). The one timeout is a pending `delay(signal, ms)` or an
+            // open `pulse(signal, ms)` window (ADR-0146, ADR-0153), an animated image's next frame
+            // (ADR-0233), a pending trim (ADR-0292) or an unwatchable image file's recheck, armed
+            // only while one is running, the way a frame callback is requested only while a tween
+            // is.
+            let files = app.image_cache.watch_fd();
             let mut fds = [
                 nix::poll::PollFd::new(fd, nix::poll::PollFlags::POLLIN),
                 nix::poll::PollFd::new(waker.fd(), nix::poll::PollFlags::POLLIN),
+                nix::poll::PollFd::new(files.unwrap_or(waker.fd()), nix::poll::PollFlags::POLLIN),
             ];
+            let polled = 2 + usize::from(files.is_some());
             let deadline = app
                 .client
                 .next_wake_deadline()
@@ -513,11 +517,14 @@ pub fn run(
             let timeout = deadline.map_or(nix::poll::PollTimeout::NONE, |due| {
                 crate::wake::poll_timeout(due.saturating_duration_since(std::time::Instant::now()))
             });
-            let woke = matches!(nix::poll::poll(&mut fds, timeout), Ok(n) if n > 0);
+            let woke = matches!(nix::poll::poll(&mut fds[..polled], timeout), Ok(n) if n > 0);
             let wayland_ready = woke && fds[0].any().unwrap_or(false);
             let waker_ready = woke && fds[1].any().unwrap_or(false);
             if let Some(profile) = profile.as_mut() {
-                profile.wake(idle_profile::Wake { wayland: wayland_ready, waker: waker_ready });
+                // A file event counts with the waker, like the landed decode it also reaches
+                // through `ImageCache::poll`.
+                let file_ready = woke && polled > 2 && fds[2].any().unwrap_or(false);
+                profile.wake(idle_profile::Wake { wayland: wayland_ready, waker: waker_ready || file_ready });
             }
             if woke {
                 if wayland_ready {
