@@ -37,6 +37,11 @@ contents:
   - src: packaging/pam.d/mantle
     dst: /etc/pam.d/mantle
     type: config|noreplace
+    packager: rpm
+  - src: packaging/pam.d/mantle-debian
+    dst: /etc/pam.d/mantle
+    type: config|noreplace
+    packager: deb
 
 # The libraries `readelf -d` lists, plus `fc-match`. Built on glibc 2.43, so older refuses to load.
 overrides:

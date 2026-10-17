@@ -1,0 +1,4 @@
+# The .deb's /etc/pam.d/mantle: `packaging/pam.d/mantle`, with Debian's `common-*` stacks in place
+# of `system-auth`, which Debian and Ubuntu do not ship.
+auth      include   common-auth
+account   include   common-account

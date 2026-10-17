@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API.
 
 ## Unreleased
 
+- Fixed: the .deb's PAM stack includes Debian's `common-auth` and `common-account`; it named `system-auth`, which Debian and Ubuntu lack, so the lock screen and polkit agent refused every password.
 - Changed: `ToplevelHandle:resize` types its edge as a union of the eight edge names, so LuaLS flags a misspelled edge.
 
 ## 0.7.5 - 2026-10-16
