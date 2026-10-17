@@ -455,7 +455,7 @@ fn finish_leavers(
 
 /// Which axes the compositor allocates a root, so an omitted extent fills it (ADR-0311). Split from
 /// [`prepare`] to keep its frame, one per tree level, small.
-fn allocated_axes(kind: &str, properties: &PropMap) -> Result<(bool, bool), LayoutError> {
+pub(super) fn allocated_axes(kind: &str, properties: &PropMap) -> Result<(bool, bool), LayoutError> {
     Ok(match kind {
         "window" | "lock" => (true, true),
         "panel" => {
@@ -2453,7 +2453,8 @@ mod tests {
             ("panel", "anchor = { top = true, bottom = true, left = true, right = true },"),
         ] {
             let (lua, surface) = surface_from(&format!(
-                r#"{{ kind = "{kind}", id = "root", {anchor} child = rect {{ width = "fill", height = "fill" }} }}"#
+                r#"{{ kind = "{kind}", id = "root", {anchor}
+                    child = column {{ width = "fill", height = "fill", children = {{ rect {{ width = 3000, height = 5000 }} }} }} }}"#
             ));
             let mut scene = Scene::new();
             for available in

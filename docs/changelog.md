@@ -13,6 +13,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Fixed: a `shape` with `corner` commands could cost about 1,000 times a rounded box to draw on every repaint. Mantle skips zero-length curves.
 - Fixed: an idle shell spent about 1 ms per clock tick in the Lua garbage collector, run after every getter that allocates.
 - Fixed: an idle shell showing an image from your home directory (a `~/Pictures` wallpaper) redrew the whole surface twice a second. Mantle watches image files with inotify, so an edited, replaced or deleted file repaints at once, shader `images` included. A symlink is still checked twice a second.
+- Fixed: a `"fill"` scroll container under a `window`, `lock` or spanning `panel` with no size of its own grew to its content instead of the surface, so it never scrolled (since 0.4.0).
 - Fixed: the .deb's lock screen and polkit agent refused every password. Its PAM stack named `system-auth`, which Debian and Ubuntu lack. It includes `common-auth` and `common-account` instead.
 
 ## 0.7.5 - 2026-10-16

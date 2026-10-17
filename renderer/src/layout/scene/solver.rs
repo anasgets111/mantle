@@ -222,13 +222,17 @@ pub(super) fn taffy_style(
         None => {
             out.display = taffy::Display::Grid;
             // An auto-size, uncapped axis floors the track at the children's min-content (CSS
-            // fit-content); a fixed or capped one keeps `0` so the cell stays the box.
+            // fit-content); a fixed, capped or compositor-allocated (ADR-0311) one keeps `0` so the
+            // cell stays the box.
             let cell = |floor: bool| {
                 let min = if floor { taffy::MinTrackSizingFunction::min_content() } else { zero() };
                 vec![taffy::style_helpers::minmax(min, taffy::MaxTrackSizingFunction::auto())]
             };
-            out.grid_template_columns = cell(style.width_mode == SizeMode::Content && style.max_width.is_none());
-            out.grid_template_rows = cell(style.height_mode == SizeMode::Content && style.max_height.is_none());
+            let allocated = super::pass::allocated_axes(kind, properties)?;
+            out.grid_template_columns =
+                cell(style.width_mode == SizeMode::Content && style.max_width.is_none() && !allocated.0);
+            out.grid_template_rows =
+                cell(style.height_mode == SizeMode::Content && style.max_height.is_none() && !allocated.1);
         }
     }
 
