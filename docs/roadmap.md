@@ -11,8 +11,8 @@ Defects or missing pieces a config cannot work around.
 
 | Item | Why / what's left | ADR |
 | :--- | :--- | :--- |
-| Multi-prompt PAM | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused. Left: relay each prompt, info and error line to Lua for both lock and polkit (`polkit-agent-helper-1` already emits them); answer secret prompts through `secure_submit`, visible ones as typed text. Fingerprint on the lock screen: run a fingerprint-only PAM service beside the password one and kill the loser's worker, since one stack runs `pam_fprintd` before `pam_unix` and blocks typing until the scan times out; polkit cannot do this and shows the scan prompt first | 0028, 0241 |
-| Polkit identity choice | `first_unix_user_uid` answers for the first identity; with several admin accounts the user should pick one, restarting the helper for it | 0028 |
+| Multi-prompt PAM ([#6](https://github.com/anasgets111/mantle/issues/6), [#14](https://github.com/anasgets111/mantle/issues/14)) | The worker relays every masked prompt, but `LockState` and `secure_submit` carry one password, answered to every prompt. Fingerprint, 2FA and expired passwords fail. Echo-on prompts stay refused. Left: relay each prompt, info and error line to Lua for both lock and polkit (`polkit-agent-helper-1` already emits them); answer secret prompts through `secure_submit`, visible ones as typed text. Fingerprint on the lock screen: run a fingerprint-only PAM service beside the password one and kill the loser's worker, since one stack runs `pam_fprintd` before `pam_unix` and blocks typing until the scan times out; polkit cannot do this and shows the scan prompt first | 0028, 0241 |
+| Polkit identity choice ([#7](https://github.com/anasgets111/mantle/issues/7)) | `first_unix_user_uid` answers for the first identity; with several admin accounts the user should pick one, restarting the helper for it | 0028 |
 
 ## Later
 
@@ -20,12 +20,12 @@ Wanted, but each needs a consumer or a decision first.
 
 | Item | Why / what's left | ADR |
 | :--- | :--- | :--- |
-| Greeter | Mantle as a greetd login screen, inside whatever compositor greetd starts for it. Needs multi-prompt PAM and a session-launch command | — |
-| Output actions | `windows` has six actions; screens have none. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
-| Text field editing | The caret has no stop inside a ligature, and IME needs the field's surface focused, so a parent-focused popup gets none. The secure field keeps end-only editing and no IME, so an input method never sees the draft | 0236, 0312 |
-| Animated WebP and APNG | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
-| Wayland and input extras | No shortcut inhibition, touch gestures, cross-app drag and drop, or pointer buttons past left, right and middle | — |
-| Window capture backends | `capture.window` accepts Hyprland `windows` IDs. Niri needs a toplevel capture source; wlr needs an exact bridge from its connection-local IDs | 0247, 0248 |
+| Greeter ([#8](https://github.com/anasgets111/mantle/issues/8)) | Mantle as a greetd login screen, inside whatever compositor greetd starts for it. Needs multi-prompt PAM and a session-launch command | — |
+| Output actions ([#9](https://github.com/anasgets111/mantle/issues/9)) | `windows` has six actions; screens have none. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
+| Text field editing ([#10](https://github.com/anasgets111/mantle/issues/10), [#15](https://github.com/anasgets111/mantle/issues/15)) | The caret has no stop inside a ligature, and IME needs the field's surface focused, so a parent-focused popup gets none. The secure field keeps end-only editing and no IME, so an input method never sees the draft | 0236, 0312 |
+| Animated WebP and APNG ([#11](https://github.com/anasgets111/mantle/issues/11)) | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
+| Wayland and input extras ([#12](https://github.com/anasgets111/mantle/issues/12), [#17](https://github.com/anasgets111/mantle/issues/17), [#18](https://github.com/anasgets111/mantle/issues/18), [#19](https://github.com/anasgets111/mantle/issues/19)) | No shortcut inhibition, touch gestures, cross-app drag and drop, or pointer buttons past left, right and middle | — |
+| Window capture backends ([#13](https://github.com/anasgets111/mantle/issues/13), [#16](https://github.com/anasgets111/mantle/issues/16)) | `capture.window` accepts Hyprland `windows` IDs. Niri needs a toplevel capture source; wlr needs an exact bridge from its connection-local IDs | 0247, 0248 |
 
 ## Won't do
 
