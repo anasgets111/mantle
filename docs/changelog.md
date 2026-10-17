@@ -7,8 +7,10 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-- Changed: a `list` with both `key` and `scroll` builds only the rows near its viewport, so a 1000-row list costs about as much as 50. A row scrolled more than a viewport away plays no exit and loses its tweens, keyboard focus and text draft. Keep row state that must survive in a named `state`.
+## 0.8.0 - 2026-10-17
+
 - Breaking: `effect.shader`'s `u_input` and `u_input_blurred` may be larger than their content, so `texture()` on them reads past its edge. Read them with `mantle_input` and `mantle_input_blurred`.
+- Changed: a `list` with both `key` and `scroll` builds only the rows near its viewport, so a 1000-row list costs about as much as 50. A row scrolled more than a viewport away plays no exit and loses its tweens, keyboard focus and text draft. Keep row state that must survive in a named `state`.
 - Changed: the `--profile` idle report's `ms` columns start with `handlers=`: due timers, signal wakes, off-thread results and scroll steps. They used to count toward `resolve=`, which could show 130 ms with no resolve pass.
 - Changed: `ToplevelHandle:resize` types its edge as a union of the eight edge names, so LuaLS flags a misspelled edge.
 - Fixed: a `shape` with `corner` commands could cost about 1,000 times a rounded box to draw on every repaint. Mantle skips zero-length curves.
