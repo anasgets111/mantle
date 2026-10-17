@@ -49,9 +49,9 @@ sets its own [`cursor`](../nodes/index.md#cursor-names).
 
 | Handler | Arguments | Contract |
 | :--- | :--- | :--- |
-| `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"` or `"middle"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored. On a `textfield` only right and middle fire, and only the field's own `on_click`, never an ancestor's; a left press edits the field and a `secure_submit` field fires none. The press focuses the field and keeps a selection it lands in, so `:cut()` and `:copy()` act on it |
+| `on_click(rect, button, pointer, modifiers)` | `button` is `"left"`, `"right"`, `"middle"`, `"back"` or `"forward"`; `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped | Fires on release over the same node that was pressed, with the same mouse button. Other mouse buttons are ignored. On a `textfield` only non-left buttons fire, and only the field's own `on_click`, never an ancestor's; a left press edits the field and a `secure_submit` field fires none. The press focuses the field and keeps a selection it lands in, so `:cut()` and `:copy()` act on it |
 | `on_double_click(rect, button, pointer, modifiers)` | As `on_click` | Fires after `on_click` on the release completing a second click on the same node with the same button, within 400 ms and 4 px of the first click's release. See below |
-| `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of the three buttons, before the release and so before `on_click`. A `textfield` calls only its own, for right and middle. See below |
+| `on_press(rect, button, pointer, modifiers)` | As `on_click` | Fires at press, for any of those buttons, before the release and so before `on_click`. A `textfield` calls only its own, for non-left buttons. See below |
 | `on_drag(rect, pointer, phase, modifiers, velocity)` | `pointer` is `{ x, y }` in the node's own untransformed box (mapped back through its transforms and its ancestors'), unclamped; `phase` is `"start"`, `"move"` or `"end"`; `velocity` is `{ x, y }` in surface px per second | Left button only. See below |
 | `on_wheel(rect, steps, modifiers)` | `steps` is a number of wheel notches | Vertical wheel only. See below |
 | `submits_secure = true` | — | Sends the armed [secure field](#secure-fields) on click, like Enter; works without `on_click` and runs before it |
@@ -67,7 +67,7 @@ click starts a new pair, so a triple click is one double and one single. The inn
 `on_double_click` takes it, apart from `on_click`'s target: an icon with only `on_double_click`
 inside a row with `on_click` still lets each single click reach the row. The pair is the same node
 even if the first click moved or resized it. A left click on a `textfield` goes to the field and
-never doubles; its right and middle clicks double on its own handler. Enter, Space and
+never doubles; its non-left clicks double on its own handler. Enter, Space and
 screen-reader activation never double-click, and a node with only `on_double_click` takes no
 keyboard focus. Wayland has no portable double-click setting, so the 400 ms and 4 px are fixed.
 

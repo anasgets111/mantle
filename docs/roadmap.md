@@ -24,7 +24,7 @@ Wanted, but each needs a consumer or a decision first.
 | Output actions ([#9](https://github.com/anasgets111/mantle/issues/9)) | `windows` has six actions; screens have none. Pick the actions, then settle niri/Hyprland differences and revert | 0119, 0247 |
 | Text field editing ([#10](https://github.com/anasgets111/mantle/issues/10), [#15](https://github.com/anasgets111/mantle/issues/15)) | The caret has no stop inside a ligature, and IME needs the field's surface focused, so a parent-focused popup gets none. The secure field keeps end-only editing and no IME, so an input method never sees the draft | 0236, 0312 |
 | Animated WebP and APNG ([#11](https://github.com/anasgets111/mantle/issues/11)) | Only GIF animates; the others draw their first frame. `AnimationDecoder` covers both | 0233 |
-| Wayland and input extras ([#12](https://github.com/anasgets111/mantle/issues/12), [#17](https://github.com/anasgets111/mantle/issues/17), [#18](https://github.com/anasgets111/mantle/issues/18), [#19](https://github.com/anasgets111/mantle/issues/19)) | No shortcut inhibition, touch gestures, cross-app drag and drop, or pointer buttons past left, right and middle | — |
+| Wayland and input extras ([#12](https://github.com/anasgets111/mantle/issues/12), [#17](https://github.com/anasgets111/mantle/issues/17), [#18](https://github.com/anasgets111/mantle/issues/18)) | No shortcut inhibition, touch gestures, or cross-app drag and drop | — |
 | Window capture backends ([#13](https://github.com/anasgets111/mantle/issues/13), [#16](https://github.com/anasgets111/mantle/issues/16)) | `capture.window` accepts Hyprland `windows` IDs. Niri needs a toplevel capture source; wlr needs an exact bridge from its connection-local IDs | 0247, 0248 |
 
 ## Won't do

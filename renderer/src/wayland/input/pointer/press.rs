@@ -93,7 +93,7 @@ pub(super) fn double_click(last: Option<&LastClick>, now: LastClick) -> (bool, O
 /// reply and password fields must displace each other. `caret` is the byte offset under the press
 /// point ([`layout::hit::caret_at`]), absent when nothing measured it; `extend` is Shift, which
 /// selects from where the caret already was instead of collapsing to the press (ADR-0236). A
-/// non-`primary` (right or middle) press focuses but leaves a selection it lands in, so a menu can
+/// non-`primary` (non-left) press focuses but leaves a selection it lands in, so a menu can
 /// act on it, and starts no drag. `click` is a left (`primary`) press and `None` the others; a held field it continues
 /// selects the next unit (click, word, line, click), and Shift keeps the held unit instead.
 pub(super) fn press_chooses_focus(

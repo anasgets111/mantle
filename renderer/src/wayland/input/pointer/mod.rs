@@ -2,6 +2,7 @@
 //! cursor.
 
 use shared::warn;
+use smithay_client_toolkit::seat::pointer::{BTN_BACK, BTN_EXTRA, BTN_FORWARD, BTN_SIDE};
 
 use super::keyboard::{FieldTarget, Span, Unit, extend_by_unit, unit_range};
 use super::*;
@@ -35,15 +36,17 @@ pub(in crate::wayland) struct ActiveDrag {
 }
 
 /// Lua name for an evdev button, or `None` when this engine ignores it. Use strings, not raw 273 or
-/// normalized 1/2/3, matching other categorical values. `None` means no arm or release: exposing
-/// `BTN_TASK` as `"other"` would make it indistinguishable from `BTN_EXTRA` and could run a left
-/// handler. ponytail: only left/right/middle of SCTK's eight names are handled. Upgrade:
-/// `BTN_SIDE`/`BTN_EXTRA` (0x113/0x114), `BTN_BACK`/`BTN_FORWARD` (0x116/0x115).
+/// normalized 1/2/3, matching other categorical values. Mice send their thumb buttons as
+/// `BTN_SIDE`/`BTN_EXTRA` and some send `BTN_BACK`/`BTN_FORWARD`, so each pair is one name. `None`
+/// means no arm or release: exposing `BTN_TASK` as `"other"` would make it indistinguishable from
+/// the rest and could run a left handler.
 fn pointer_button_name(code: u32) -> Option<&'static str> {
     match code {
         BTN_LEFT => Some(MouseButton::Left),
         BTN_RIGHT => Some(MouseButton::Right),
         BTN_MIDDLE => Some(MouseButton::Middle),
+        BTN_SIDE | BTN_BACK => Some(MouseButton::Back),
+        BTN_EXTRA | BTN_FORWARD => Some(MouseButton::Forward),
         _ => None,
     }
     .map(Keyword::name)
@@ -56,6 +59,8 @@ keywords! {
         Left,
         Right,
         Middle,
+        Back,
+        Forward,
     }
 }
 
@@ -114,8 +119,8 @@ impl App {
         injected: bool,
     ) {
         match *kind {
-            // Left/right/middle only (ADR-0050 second amendment); other codes cannot arm or
-            // fire a config handler.
+            // Named buttons only (ADR-0050 second amendment); other codes cannot arm or fire a
+            // config handler.
             PointerEventKind::Press { button, serial, time } => {
                 if pointer_button_name(button).is_none() {
                     return;
@@ -163,7 +168,7 @@ impl App {
                 // A press on the control Tab already focused still hides the outline.
                 self.set_focus_visible(false);
                 // `hit` holds a field's own handlers only, so a reply box never activates its card;
-                // a field's left press is caret and selection, so only right and middle run them (ADR-0092).
+                // a field's left press is caret and selection, so only the other buttons run them (ADR-0092).
                 let runs = !pressed_a_field || button != BTN_LEFT;
                 self.armed = hit.click.filter(|_| runs).map(|clickable| ArmedClick {
                     instance_id: instance_id.clone(),
@@ -223,7 +228,7 @@ impl App {
                     self.fire_on_drag(&instance_id, position, DragPhase::End, Some(time));
                 }
                 let hit = self.hit_under(index, position);
-                // A field's own `submits_secure` never sends: a right or middle click is no Enter.
+                // A field's own `submits_secure` never sends: a non-left click is no Enter.
                 let submits = hit.field.is_none();
                 // `on_double_click` has its own target, armed by its own press: a node and button, not a rect.
                 let hit_double = hit.double;
@@ -503,14 +508,17 @@ mod tests {
     }
 
     #[test]
-    fn only_the_three_buttons_a_config_can_name_are_handled_at_all() {
+    fn only_the_buttons_a_config_can_name_are_handled_at_all() {
         assert_eq!(pointer_button_name(BTN_LEFT), Some("left"));
         assert_eq!(pointer_button_name(BTN_RIGHT), Some("right"));
         assert_eq!(pointer_button_name(BTN_MIDDLE), Some("middle"));
-        // A side button, a browser-back button, and a code off the end of the mouse range: each
-        // answers `None`, since a config cannot tell them apart.
-        assert_eq!(pointer_button_name(0x113), None);
-        assert_eq!(pointer_button_name(0x116), None);
+        assert_eq!(pointer_button_name(BTN_SIDE), Some("back"));
+        assert_eq!(pointer_button_name(BTN_BACK), Some("back"));
+        assert_eq!(pointer_button_name(BTN_EXTRA), Some("forward"));
+        assert_eq!(pointer_button_name(BTN_FORWARD), Some("forward"));
+        // `BTN_TASK` and a code off the end of the mouse range answer `None`: a config could not
+        // tell them apart.
+        assert_eq!(pointer_button_name(0x117), None);
         assert_eq!(pointer_button_name(0), None);
     }
 }

@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `on_click`, `on_double_click` and `on_press` report a mouse's back and forward thumb buttons as `"back"` and `"forward"`. They used to be ignored. A handler that treats every button but `"left"` alike now also runs for them.
+
 ## 0.8.0 - 2026-10-17
 
 - Breaking: `effect.shader`'s `u_input` and `u_input_blurred` may be larger than their content, so `texture()` on them reads past its edge. Read them with `mantle_input` and `mantle_input_blurred`.

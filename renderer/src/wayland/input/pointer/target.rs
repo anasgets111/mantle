@@ -126,7 +126,7 @@ pub(super) struct Clickable {
 
 /// Links precede `on_click` (ADR-0106): a text `on_link` with an `href` under `point` wins over any
 /// `on_click`, the text's own included, while plain words pass through. A `textfield` similarly
-/// arms a click only for right and middle (ADR-0092 decision 7).
+/// arms a click only for non-left buttons (ADR-0092 decision 7).
 pub(super) fn clickable(
     path: &[&layout::ResolvedNode],
     point: layout::hit::LogicalPoint,

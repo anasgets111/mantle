@@ -106,7 +106,7 @@ it closes, and logs a warning.
 
 ## Grab
 
-A grab needs a left, right or middle press or release on one of the shell's surfaces in the same
+A grab needs a mouse button press or release on one of the shell's surfaces in the same
 turn, so open a grabbing popup from `on_click`. Without one the popup stays closed and a warning
 is logged. A compositor that denies the grab dismisses the popup, and `on_dismiss` runs.
 
