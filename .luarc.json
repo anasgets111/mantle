@@ -1,6 +1,8 @@
 {
   "$schema": "https://raw.githubusercontent.com/LuaLS/vscode-lua/master/setting/schema.json",
   "runtime.version": "Lua 5.4",
+  "runtime.path": ["?.lua", "?/init.lua"],
+  "runtime.pathStrict": true,
   "runtime.builtin": {
     "io": "disable",
     "debug": "disable",
@@ -10,5 +12,19 @@
   },
   "workspace.library": ["lua-meta"],
   "workspace.checkThirdParty": false,
-  "workspace.ignoreDir": ["renderer/fixtures/errors"]
+  "workspace.ignoreDir": ["renderer/fixtures/errors"],
+  "diagnostics.severity": { "unused-local": "Warning" },
+  "diagnostics.neededFileStatus": { "unused-local": "Any" },
+  "diagnostics.groupSeverity": {
+    "type-check": "Warning",
+    "unbalanced": "Warning",
+    "strict": "Warning",
+    "global": "Warning"
+  },
+  "diagnostics.groupFileStatus": {
+    "type-check": "Any",
+    "unbalanced": "Any",
+    "strict": "Any",
+    "global": "Any"
+  }
 }

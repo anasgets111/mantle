@@ -161,10 +161,11 @@ types:
         exit 1
     }
     check share/starter --configpath "$log/starter.luarc.json"
+    check demo/director --configpath "$log/starter.luarc.json"
     # No library, which is the point: these files declare everything they reference.
     printf '{"runtime.version":"Lua 5.4","workspace.checkThirdParty":false}\n' >"$log/meta.luarc.json"
     check lua-meta --configpath "$log/meta.luarc.json"
-    echo "lua-meta type-checks, and the starter type-checks against it"
+    echo "lua-meta type-checks, and the starter and the demo director type-check against it"
 
 lua_dirs := "lua-meta share demo tools/heavy-shell"
 
@@ -208,19 +209,31 @@ cargo_bin := env("CARGO_HOME", home_directory() / ".cargo") / "bin"
 # By the `exe` symlink, never by name: any `pkill -f` pattern holding "mantle" also matches the
 # calling shell and takes the terminal down with it, and `pkill -x` cannot tell the `cargo_bin`
 # copy from a `target/` one. A replaced binary reads "<path> (deleted)", stripped before matching.
+# Returns once every process it signalled has exited; any left after 5 s are named and fail the
+# recipe, not SIGKILLed, since a killed Supervisor leaves its sockets and locks behind.
 [private]
 stop *patterns:
     #!/usr/bin/env bash
     procs=(/proc/[0-9]*)
     # Globbing off only after `/proc` expanded: `patterns` must reach `case` unexpanded.
     set -f
+    signalled=()
     for d in "${procs[@]}"; do
         exe="$(readlink "$d/exe" 2>/dev/null)" || continue
         exe="${exe% (deleted)}"
         for p in "{{cargo_bin}}/mantle" "{{cargo_bin}}/mantle-renderer" {{patterns}}; do
-            case "$exe" in $p) kill "${d#/proc/}" || true; break;; esac
+            case "$exe" in $p) kill "${d#/proc/}" && signalled+=("${d#/proc/}"); break;; esac
         done
     done
+    # A zombie has no readable `exe`, so it counts as gone.
+    for _ in $(seq 50); do
+        alive=()
+        for pid in "${signalled[@]}"; do readlink "/proc/$pid/exe" >/dev/null 2>&1 && alive+=("$pid"); done
+        [ ${#alive[@]} -eq 0 ] && exit 0
+        sleep 0.1
+    done
+    echo "still running after SIGTERM: ${alive[*]}" >&2
+    exit 1
 
 # What `just swap` builds; `just profile=release swap` builds the shipped binary instead.
 profile := "swap"
@@ -233,9 +246,9 @@ swap args="":
     #!/usr/bin/env bash
     set -euo pipefail
     {{locked}} cargo build --workspace --profile {{profile}}
+    # `install` unlinks the destination before writing, so a running binary is no obstacle; the wait
+    # is for the old instances to release their sockets and locks.
     just stop
-    # Copying over a running binary is ETXTBSY, so let both of those actually go first.
-    sleep 2
     install -Dm755 target/{{profile}}/mantle          "{{cargo_bin}}/mantle"
     install -Dm755 target/{{profile}}/mantle-renderer "{{cargo_bin}}/mantle-renderer"
     "{{cargo_bin}}/mantle" -d {{args}}
@@ -278,7 +291,6 @@ heaptrack which="renderer" secs="900": build
     rm -f "$work/{{which}}.zst"
     stop() { just stop "$work/prefix/mantle" '*/mantle-renderer'; }
     stop
-    sleep 2
     if [ "{{which}}" = renderer ]; then
         "$work/prefix/mantle" -d --profile=120
     else

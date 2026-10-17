@@ -55,7 +55,7 @@ Run the rows that match the change; combine rows across categories. Always run `
 | Book prose, links, navigation, theme | `just book` |
 | Lua examples, screenshot fixtures, images in `docs/` | `just book` and `cargo test -p renderer every_lua_block_in_the_docs` |
 | `demo/director` edits | `just lua demo-check` |
-| Lua configs | `just lua types` (needs `lua-language-server`). Types covers only the starter and stubs; check other runnable configs with `mantle -c DIR check` |
+| Lua configs | `just lua types` (needs `lua-language-server`). Types covers only the starter, `demo/director` and stubs; check other runnable configs with `mantle -c DIR check` |
 | Rust, Cargo files, compiled fixtures, embedded files | The commit hook; `just check` only when not committing |
 | Generated files or their sources | `just stubs`, then the checks for the changed sources and outputs |
 | Build tools, hooks, packaging, CI | Validate the changed script, recipe or workflow; run the affected checks |
