@@ -25,6 +25,22 @@ pub enum PairingKind {
     PasskeyEntry,
 }
 
+/// A device's kind, read from its BlueZ class of device.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum DeviceCategory {
+    Keyboard,
+    Mouse,
+    Headphones,
+    Headset,
+    Phone,
+    Computer,
+    /// Any class not listed.
+    #[default]
+    Generic,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ConnectedDevice {
@@ -35,9 +51,7 @@ pub struct ConnectedDevice {
     /// Battery percentage, or `nil` when the device reports none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub battery: Option<u8>,
-    /// From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`,
-    /// `"computer"` or `"generic"`.
-    pub category: String,
+    pub category: DeviceCategory,
     /// Same as `DiscoveredDevice.busy`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub busy: Option<DeviceAction>,
@@ -50,8 +64,7 @@ pub struct PairedDevice {
     pub mac: String,
     /// The device's advertised name, or empty.
     pub name: String,
-    /// Same set as `ConnectedDevice.category`.
-    pub category: String,
+    pub category: DeviceCategory,
     /// BlueZ refuses every connection to or from the device until it is unblocked.
     pub blocked: bool,
     /// Same as `DiscoveredDevice.busy`.

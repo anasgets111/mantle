@@ -117,7 +117,7 @@
 ---@class ConnectedDevice
 ---@field battery? integer Battery percentage, or `nil` when the device reports none.
 ---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
----@field category string From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`.
+---@field category DeviceCategory
 ---@field mac string MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it.
 ---@field name string The device's advertised name, or empty.
 
@@ -128,6 +128,16 @@
 
 ---@alias DeviceAction "pairing"|"connecting"|"disconnecting"
 ---What the shell is doing to a device, as its `busy`.
+
+---@alias DeviceCategory
+---| "keyboard"
+---| "mouse"
+---| "headphones"
+---| "headset"
+---| "phone"
+---| "computer"
+---| "generic" # Any class not listed.
+---A device's kind, read from its BlueZ class of device.
 
 ---@class DiscoveredDevice
 ---@field blocked boolean BlueZ refuses to pair with or connect to the device until it is unblocked.
@@ -192,9 +202,14 @@
 ---@field icon_name? string Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`.
 ---@field id integer DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`.
 ---@field label? string Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw.
----@field menu_type string `"standard"` (the default) or `"separator"`, as the application sent it.
+---@field menu_type MenuType
 ---@field toggle_state? integer `0` off, `1` on, `-1` indeterminate or unreported; `nil` exactly when `toggle_type` is.
----@field toggle_type? string `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle.
+---@field toggle_type? ToggleType `nil` for an entry that is not a toggle.
+
+---@alias MenuType
+---| "standard" # An ordinary entry; also any type outside the spec.
+---| "separator" # A divider line; it has no label and does nothing.
+---`tray.items[].menu[].menu_type`.
 
 ---@class Notification
 ---One `notifications.feed` entry (ADR-0033).
@@ -240,7 +255,7 @@
 ---@class PairedDevice
 ---@field blocked boolean BlueZ refuses every connection to or from the device until it is unblocked.
 ---@field busy? DeviceAction Same as `DiscoveredDevice.busy`.
----@field category string Same set as `ConnectedDevice.category`.
+---@field category DeviceCategory
 ---@field mac string MAC address, the argument of `connect` and `forget`.
 ---@field name string The device's advertised name, or empty.
 
@@ -366,6 +381,11 @@
 ---@field ram_interval? integer Seconds between memory and swap reads; `0` (the default) stops them.
 ---@field temp_interval? integer Seconds between temperature reads; `0` (the default) stops them.
 
+---@alias ToggleType
+---| "checkmark" # A check box.
+---| "radio" # One of a group of mutually exclusive entries.
+---`tray.items[].menu[].toggle_type`.
+
 ---@class TrackListState
 ---@field can_edit boolean Whether the player permits add and remove calls.
 ---@field current_track string Current TrackList object path, or empty if unknown.
@@ -426,8 +446,13 @@
 ---@field activating boolean The profile is being activated, including while it waits for a secret.
 ---@field active boolean The profile is activated.
 ---@field id string Profile name.
----@field kind string `"vpn"` for a plugin VPN, `"wireguard"` for a native WireGuard profile.
+---@field kind VpnKind
 ---@field uuid string Profile UUID; pass it to `connect_vpn` and `disconnect_vpn`.
+
+---@alias VpnKind
+---| "vpn" # A plugin VPN.
+---| "wireguard" # A native WireGuard profile.
+---`vpns[].kind`.
 
 ---@class VpnSecretRequest
 ---NetworkManager asking for VPN secrets, as `vpn_secret`.

@@ -30,14 +30,24 @@ pub struct JoinError {
     pub message: String,
 }
 
+/// `vpns[].kind`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum VpnKind {
+    /// A plugin VPN.
+    Vpn,
+    /// A native WireGuard profile.
+    Wireguard,
+}
+
 /// One saved NetworkManager VPN profile in `vpns`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct VpnInfo {
     /// Profile name.
     pub id: String,
-    /// `"vpn"` for a plugin VPN, `"wireguard"` for a native WireGuard profile.
-    pub kind: String,
+    pub kind: VpnKind,
     /// Profile UUID; pass it to `connect_vpn` and `disconnect_vpn`.
     pub uuid: String,
     /// The profile is activated.

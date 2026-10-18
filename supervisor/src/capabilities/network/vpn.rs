@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use futures_util::StreamExt;
-use shared::state::network::{VpnError, VpnInfo};
+use shared::state::network::{VpnError, VpnInfo, VpnKind};
 use tokio::sync::mpsc::UnboundedSender;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
@@ -35,7 +35,11 @@ impl VpnState {
 /// A saved profile with `connection.type` `vpn` or `wireguard`.
 fn profile_of(settings: &HashMap<String, HashMap<String, OwnedValue>>) -> Option<VpnInfo> {
     let text = |key: &str| String::try_from(settings.get("connection")?.get(key)?.clone()).ok();
-    let kind = text("type").filter(|kind| matches!(kind.as_str(), "vpn" | "wireguard"))?;
+    let kind = match text("type")?.as_str() {
+        "vpn" => VpnKind::Vpn,
+        "wireguard" => VpnKind::Wireguard,
+        _ => return None,
+    };
     Some(VpnInfo { id: text("id")?, kind, uuid: text("uuid")?, active: false, activating: false })
 }
 
@@ -216,8 +220,8 @@ mod tests {
 
     #[test]
     fn only_vpn_and_wireguard_profiles_are_listed() {
-        assert_eq!(profile_of(&settings("vpn")).unwrap().kind, "vpn");
-        assert_eq!(profile_of(&settings("wireguard")).unwrap().kind, "wireguard");
+        assert_eq!(profile_of(&settings("vpn")).unwrap().kind, VpnKind::Vpn);
+        assert_eq!(profile_of(&settings("wireguard")).unwrap().kind, VpnKind::Wireguard);
         assert_eq!(profile_of(&settings("802-11-wireless")), None);
     }
 
@@ -303,7 +307,7 @@ mod tests {
         let (controller, _, _peer) = controller(FakeActive { state: 1, then: Some((2, 0)) }).await;
         assert_eq!(
             controller.build_vpns().await,
-            [VpnInfo { id: "work".into(), kind: "vpn".into(), uuid: "u-1".into(), active: false, activating: true }]
+            [VpnInfo { id: "work".into(), kind: VpnKind::Vpn, uuid: "u-1".into(), active: false, activating: true }]
         );
         tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1")).await.unwrap();
         assert_eq!(vpn_error(&controller), None);

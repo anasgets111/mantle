@@ -18,7 +18,8 @@
 //! deferred mechanics; a strict session-scoped list is the upgrade if hardware shows it wrong.
 
 pub use shared::state::bluetooth::{
-    BluetoothState, ConnectedDevice, DeviceAction, DiscoveredDevice, PairedDevice, PairingKind, PairingRequest,
+    BluetoothState, ConnectedDevice, DeviceAction, DeviceCategory, DiscoveredDevice, PairedDevice, PairingKind,
+    PairingRequest,
 };
 
 use shared::action::BluetoothAction;
@@ -55,23 +56,23 @@ pub enum BluetoothSignal {
 
 /// Maps BlueZ `Class` bits 8-12 (Major) and 2-7 (Minor) (ADR-0030). Parses them instead of
 /// trusting `Icon`, which is empty when `Class == 0`, common for BLE peripherals before GAP data.
-fn class_to_category(class: u32) -> &'static str {
+fn class_to_category(class: u32) -> DeviceCategory {
     let major = (class >> 8) & 0x1F;
     let minor = (class >> 2) & 0x3F;
     match major {
-        0x01 => "computer",
-        0x02 => "phone",
+        0x01 => DeviceCategory::Computer,
+        0x02 => DeviceCategory::Phone,
         0x04 => match minor {
-            0x01 | 0x02 => "headset",
-            0x06 => "headphones",
-            _ => "generic",
+            0x01 | 0x02 => DeviceCategory::Headset,
+            0x06 => DeviceCategory::Headphones,
+            _ => DeviceCategory::Generic,
         },
         0x05 => match (minor >> 4) & 0x3 {
-            0b01 | 0b11 => "keyboard",
-            0b10 => "mouse",
-            _ => "generic",
+            0b01 | 0b11 => DeviceCategory::Keyboard,
+            0b10 => DeviceCategory::Mouse,
+            _ => DeviceCategory::Generic,
         },
-        _ => "generic",
+        _ => DeviceCategory::Generic,
     }
 }
 
@@ -121,18 +122,18 @@ mod tests {
     #[test]
     fn class_to_category_reads_only_the_major_and_minor_bits() {
         for (class, category, case) in [
-            (0x00_2540, "keyboard", "a real keyboard"),
-            (0x00_2580, "mouse", "a real mouse"),
-            ((0x05 << 8) | (0b11_0000 << 2), "keyboard", "a combo keyboard and pointing device"),
-            (0x05 << 8, "generic", "a peripheral the spec leaves uncategorized"),
-            (0x01 << 8, "computer", "major 0x01"),
-            (0x02 << 8, "phone", "major 0x02"),
-            ((0x04 << 8) | (0x01 << 2), "headset", "audio/video minor 0x01"),
-            ((0x04 << 8) | (0x02 << 2), "headset", "audio/video minor 0x02"),
-            ((0x04 << 8) | (0x06 << 2), "headphones", "audio/video minor 0x06"),
-            ((0x04 << 8) | (0x03 << 2), "generic", "another audio/video minor"),
-            (0x03 << 8, "generic", "LAN/Network Access Point, not a drawn category"),
-            (0x24_0404, "headset", "a real headset, whose Service Class bits sit above bit 12"),
+            (0x00_2540, DeviceCategory::Keyboard, "a real keyboard"),
+            (0x00_2580, DeviceCategory::Mouse, "a real mouse"),
+            ((0x05 << 8) | (0b11_0000 << 2), DeviceCategory::Keyboard, "a combo keyboard and pointing device"),
+            (0x05 << 8, DeviceCategory::Generic, "a peripheral the spec leaves uncategorized"),
+            (0x01 << 8, DeviceCategory::Computer, "major 0x01"),
+            (0x02 << 8, DeviceCategory::Phone, "major 0x02"),
+            ((0x04 << 8) | (0x01 << 2), DeviceCategory::Headset, "audio/video minor 0x01"),
+            ((0x04 << 8) | (0x02 << 2), DeviceCategory::Headset, "audio/video minor 0x02"),
+            ((0x04 << 8) | (0x06 << 2), DeviceCategory::Headphones, "audio/video minor 0x06"),
+            ((0x04 << 8) | (0x03 << 2), DeviceCategory::Generic, "another audio/video minor"),
+            (0x03 << 8, DeviceCategory::Generic, "LAN/Network Access Point, not a drawn category"),
+            (0x24_0404, DeviceCategory::Headset, "a real headset, whose Service Class bits sit above bit 12"),
         ] {
             assert_eq!(class_to_category(class), category, "{case}");
         }

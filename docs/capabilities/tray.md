@@ -44,9 +44,27 @@ One `tray.items[].menu` entry.
 | `icon_name?` | `string` | Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`. |
 | `id` | `integer` | DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`. |
 | `label?` | `string` | Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw. |
-| `menu_type` | `string` | `"standard"` (the default) or `"separator"`, as the application sent it. |
+| `menu_type` | `MenuType` |  |
 | `toggle_state?` | `integer` | `0` off, `1` on, `-1` indeterminate or unreported; `nil` exactly when `toggle_type` is. |
-| `toggle_type?` | `string` | `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle. |
+| `toggle_type?` | `ToggleType` | `nil` for an entry that is not a toggle. |
+
+### `MenuType`
+
+`tray.items[].menu[].menu_type`.
+
+| Value | Description |
+| --- | --- |
+| `"standard"` | An ordinary entry; also any type outside the spec. |
+| `"separator"` | A divider line; it has no label and does nothing. |
+
+### `ToggleType`
+
+`tray.items[].menu[].toggle_type`.
+
+| Value | Description |
+| --- | --- |
+| `"checkmark"` | A check box. |
+| `"radio"` | One of a group of mutually exclusive entries. |
 
 ### `TrayItem`
 

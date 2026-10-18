@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Changed: the LuaLS stubs type `mantle.tray` `menu_type` and `toggle_type`, `mantle.network` `vpns[].kind` and `mantle.bluetooth` device `category` as their literal values, so the editor flags a misspelled comparison. A tray menu entry with an unknown `menu_type` now reads as `"standard"`, and one with an unknown `toggle_type` has `nil` for both `toggle_type` and `toggle_state` (the state was `-1`).
 - Added: `on_click`, `on_double_click` and `on_press` report a mouse's back and forward thumb buttons as `"back"` and `"forward"`. They used to be ignored. A handler that treats every button but `"left"` alike now also runs for them.
 
 ## 0.8.0 - 2026-10-17

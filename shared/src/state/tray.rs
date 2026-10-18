@@ -2,22 +2,44 @@
 
 use serde::Serialize;
 
+/// `tray.items[].menu[].menu_type`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum MenuType {
+    /// An ordinary entry; also any type outside the spec.
+    #[default]
+    Standard,
+    /// A divider line; it has no label and does nothing.
+    Separator,
+}
+
+/// `tray.items[].menu[].toggle_type`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum ToggleType {
+    /// A check box.
+    Checkmark,
+    /// One of a group of mutually exclusive entries.
+    Radio,
+}
+
 /// One `tray.items[].menu` entry.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MenuItem {
     /// DBusMenu id, the second argument of `activate_menu_item` and `menu_will_show`.
     pub id: i32,
-    /// `"standard"` (the default) or `"separator"`, as the application sent it.
-    pub menu_type: String,
+    pub menu_type: MenuType,
     /// Entry text as sent, or `nil`. `_` mnemonic markers remain (`"_Quit"`); strip them to draw.
     pub label: Option<String>,
     /// `false` for a greyed-out entry; draw it, but clicking does nothing.
     pub enabled: bool,
     /// Theme icon name, a spooled PNG path from raw `icon-data`, or `nil`.
     pub icon_name: Option<String>,
-    /// `"checkmark"`, `"radio"`, or `nil` for an entry that is not a toggle.
-    pub toggle_type: Option<String>,
+    /// `nil` for an entry that is not a toggle.
+    pub toggle_type: Option<ToggleType>,
     /// `0` off, `1` on, `-1` indeterminate or unreported; `nil` exactly when `toggle_type` is.
     pub toggle_state: Option<i32>,
     /// Submenu entries, empty for a leaf. An app that fills submenus lazily sends them only after

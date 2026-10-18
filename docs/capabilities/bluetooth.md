@@ -41,7 +41,7 @@ list {
 | --- | --- | --- |
 | `battery?` | `integer` | Battery percentage, or `nil` when the device reports none. |
 | `busy?` | `DeviceAction` | Same as `DiscoveredDevice.busy`. |
-| `category` | `string` | From the class of device: `"keyboard"`, `"mouse"`, `"headphones"`, `"headset"`, `"phone"`, `"computer"` or `"generic"`. |
+| `category` | `DeviceCategory` |  |
 | `mac` | `string` | MAC address, e.g. `"00:1A:7D:DA:71:11"`; every `bluetooth` action takes it. |
 | `name` | `string` | The device's advertised name, or empty. |
 
@@ -50,6 +50,20 @@ list {
 What the shell is doing to a device, as its `busy`.
 
 One of `"pairing"`, `"connecting"`, `"disconnecting"`.
+
+### `DeviceCategory`
+
+A device's kind, read from its BlueZ class of device.
+
+| Value | Description |
+| --- | --- |
+| `"keyboard"` |  |
+| `"mouse"` |  |
+| `"headphones"` |  |
+| `"headset"` |  |
+| `"phone"` |  |
+| `"computer"` |  |
+| `"generic"` | Any class not listed. |
 
 ### `DiscoveredDevice`
 
@@ -66,7 +80,7 @@ One of `"pairing"`, `"connecting"`, `"disconnecting"`.
 | --- | --- | --- |
 | `blocked` | `boolean` | BlueZ refuses every connection to or from the device until it is unblocked. |
 | `busy?` | `DeviceAction` | Same as `DiscoveredDevice.busy`. |
-| `category` | `string` | Same set as `ConnectedDevice.category`. |
+| `category` | `DeviceCategory` |  |
 | `mac` | `string` | MAC address, the argument of `connect` and `forget`. |
 | `name` | `string` | The device's advertised name, or empty. |
 

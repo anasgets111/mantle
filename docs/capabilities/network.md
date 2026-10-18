@@ -86,8 +86,17 @@ One saved NetworkManager VPN profile in `vpns`.
 | `activating` | `boolean` | The profile is being activated, including while it waits for a secret. |
 | `active` | `boolean` | The profile is activated. |
 | `id` | `string` | Profile name. |
-| `kind` | `string` | `"vpn"` for a plugin VPN, `"wireguard"` for a native WireGuard profile. |
+| `kind` | `VpnKind` |  |
 | `uuid` | `string` | Profile UUID; pass it to `connect_vpn` and `disconnect_vpn`. |
+
+### `VpnKind`
+
+`vpns[].kind`.
+
+| Value | Description |
+| --- | --- |
+| `"vpn"` | A plugin VPN. |
+| `"wireguard"` | A native WireGuard profile. |
 
 ### `VpnSecretRequest`
 

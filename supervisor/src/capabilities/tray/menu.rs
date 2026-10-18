@@ -1,8 +1,7 @@
 //! DBusMenu `GetLayout` parsing: recursive `zvariant::Value` walking into [`MenuItem`] (ADR-0031).
 
-pub use shared::state::tray::MenuItem;
-
 use shared::debug;
+pub use shared::state::tray::{MenuItem, MenuType, ToggleType};
 use zbus::zvariant::Value;
 
 use super::proxies::DBusMenuProxy;
@@ -101,7 +100,7 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
     };
     let id = value_as_i32(id_field)?;
 
-    let mut menu_type = "standard".to_string();
+    let mut menu_type = MenuType::Standard;
     let mut label = None;
     let mut enabled = true;
     let mut visible = true;
@@ -113,8 +112,8 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
         for (key, val) in dict.iter() {
             match dict_str_key(key) {
                 Some("type") => {
-                    if let Some(s) = capped_str(val) {
-                        menu_type = s;
+                    if capped_str(val).as_deref() == Some("separator") {
+                        menu_type = MenuType::Separator;
                     }
                 }
                 Some("label") => label = capped_str(val),
@@ -130,7 +129,13 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
                 }
                 Some("icon-name") => icon_name = capped_str(val).filter(|s| !s.is_empty()),
                 Some("icon-data") => icon_data = Some(val),
-                Some("toggle-type") => toggle_type = capped_str(val).filter(|s| !s.is_empty()),
+                Some("toggle-type") => {
+                    toggle_type = match capped_str(val).as_deref() {
+                        Some("checkmark") => Some(ToggleType::Checkmark),
+                        Some("radio") => Some(ToggleType::Radio),
+                        _ => None,
+                    };
+                }
                 Some("toggle-state") => toggle_state_raw = value_as_i32(val),
                 _ => {}
             }
@@ -149,7 +154,7 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
             Err(err) => debug!("failed to spool DBusMenu icon for node {id}: {err}"),
         }
     }
-    let toggle_state = toggle_type.as_ref().map(|_| toggle_state_raw.unwrap_or(-1));
+    let toggle_state = toggle_type.map(|_| toggle_state_raw.unwrap_or(-1));
 
     let children = if depth >= MAX_MENU_DEPTH {
         debug!(2; "GetLayout reply exceeded the maximum menu depth ({MAX_MENU_DEPTH}) at node id {id}; truncating its children"
@@ -221,35 +226,41 @@ mod tests {
             (
                 "standard leaf",
                 vec![("type", text("standard")), ("label", text("Quit")), ("enabled", Value::Bool(true))],
-                ("standard", Some("Quit"), true, None, None, None),
+                (MenuType::Standard, Some("Quit"), true, None, None, None),
             ),
-            ("defaults", vec![], ("standard", None, true, None, None, None)),
-            ("separator", vec![("type", text("separator"))], ("separator", None, true, None, None, None)),
-            ("disabled", vec![("enabled", Value::Bool(false))], ("standard", None, false, None, None, None)),
+            ("defaults", vec![], (MenuType::Standard, None, true, None, None, None)),
+            ("separator", vec![("type", text("separator"))], (MenuType::Separator, None, true, None, None, None)),
+            ("disabled", vec![("enabled", Value::Bool(false))], (MenuType::Standard, None, false, None, None, None)),
             (
                 "toggle type and state",
                 vec![("toggle-type", text("checkmark")), ("toggle-state", Value::I32(1))],
-                ("standard", None, true, None, Some("checkmark"), Some(1)),
+                (MenuType::Standard, None, true, None, Some(ToggleType::Checkmark), Some(1)),
             ),
             (
                 "toggle state defaults to -1",
                 vec![("toggle-type", text("radio"))],
-                ("standard", None, true, None, Some("radio"), Some(-1)),
+                (MenuType::Standard, None, true, None, Some(ToggleType::Radio), Some(-1)),
+            ),
+            ("unknown type", vec![("type", text("menu"))], (MenuType::Standard, None, true, None, None, None)),
+            (
+                "unknown toggle type drops the state",
+                vec![("toggle-type", text("switch")), ("toggle-state", Value::I32(1))],
+                (MenuType::Standard, None, true, None, None, None),
             ),
             (
                 "icon name",
                 vec![("icon-name", text("edit-cut"))],
-                ("standard", None, true, Some("edit-cut"), None, None),
+                (MenuType::Standard, None, true, Some("edit-cut"), None, None),
             ),
         ];
         for (case, properties, expected) in cases {
             let item = parse(&menu_node_value(7, properties, vec![]), 0).expect(case);
             let got = (
-                item.menu_type.as_str(),
+                item.menu_type,
                 item.label.as_deref(),
                 item.enabled,
                 item.icon_name.as_deref(),
-                item.toggle_type.as_deref(),
+                item.toggle_type,
                 item.toggle_state,
             );
             assert_eq!((item.id, got, item.children.is_empty()), (7, expected, true), "{case}");
@@ -344,20 +355,13 @@ mod tests {
         let long = "x".repeat(MAX_TRAY_TEXT_BYTES * 4);
         let value = menu_node_value(
             1,
-            vec![
-                ("label", Value::Str(Str::from(long.as_str()))),
-                ("type", Value::Str(Str::from(long.as_str()))),
-                ("icon-name", Value::Str(Str::from(long.as_str()))),
-                ("toggle-type", Value::Str(Str::from(long.as_str()))),
-            ],
+            vec![("label", Value::Str(Str::from(long.as_str()))), ("icon-name", Value::Str(Str::from(long.as_str())))],
             Vec::new(),
         );
 
         let item = parse(&value, 0).expect("a well-formed node with long text still parses");
         assert_eq!(item.label.as_deref().map(str::len), Some(MAX_TRAY_TEXT_BYTES));
-        assert_eq!(item.menu_type.len(), MAX_TRAY_TEXT_BYTES);
         assert_eq!(item.icon_name.as_deref().map(str::len), Some(MAX_TRAY_TEXT_BYTES));
-        assert_eq!(item.toggle_type.as_deref().map(str::len), Some(MAX_TRAY_TEXT_BYTES));
     }
 
     #[test]
