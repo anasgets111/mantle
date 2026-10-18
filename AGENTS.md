@@ -171,9 +171,11 @@ Any agent may coordinate others. The coordinator owns the result: it reviews, la
   outside the sandbox before believing them.
 - **Checks.** A delegate iterates on the tests it touched (`cargo test -p <crate> <filter>`) and
   runs the rows the hook skips; its commit runs the hook, and it fixes what fails. Never the full
-  `just check`. A commit is a full build: commits and builds take one machine-wide lock, so only
-  one runs at a time. The hook and the justfile's build recipes take it when `git config
-  mantle.buildWrapper` names the lock command (shared by every worktree).
+  `just check`. After committing, it runs `cargo mutants --in-place --in-diff <(git diff main...)
+  -p <crate>` under the lock, and kills each missed mutant with a test or names why it can't. A
+  commit is a full build: commits and builds take one machine-wide lock, so only one runs at a
+  time. The hook and the justfile's build recipes take it when `git config mantle.buildWrapper`
+  names the lock command (shared by every worktree).
 - **Land.** Send gaps back to the same delegate, which keeps its context and amends. Land one
   branch at a time: if `main` has not moved since its base, `git merge --ff-only wt/<name>`, with
   no second check. If it has, the delegate rebases onto `main`, then runs `git reset --soft main
