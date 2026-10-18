@@ -152,7 +152,7 @@ impl App {
         }
         let target = if let Some(field) = self.focused_secure_submit.as_ref().filter(|_| self.secure_field_takes_keys())
         {
-            PasteTarget::Masked(field.clone())
+            PasteTarget::Masked((**field).clone())
         } else if let Some(field) = self.focused_text_field.as_ref().filter(|field| self.text_field_takes_keys(field)) {
             PasteTarget::Plain { surface_id: field.surface_id.clone(), id: field.id }
         } else {
@@ -220,7 +220,7 @@ impl App {
         }
         match paste.target {
             PasteTarget::Masked(field)
-                if self.focused_secure_submit.as_ref() == Some(&field) && self.secure_field_takes_keys() =>
+                if self.focused_secure_submit.as_deref() == Some(&field) && self.secure_field_takes_keys() =>
             {
                 self.push_secure_text(text);
                 self.mark_focused_secure_submit_changed();

@@ -78,7 +78,7 @@ mod turn;
 mod xdg_shell;
 
 use input::keyboard::FocusedControl;
-use input::{ArmedClick, ArmedSerial, ClickedNode, FocusedField, FocusedTextField, LastClick};
+use input::{ArmedClick, ArmedSerial, ClickedNode, FocusedTextField, LastClick};
 use surface::{TrackedSurface, log_bind_failure};
 
 pub use main_loop::run;
@@ -213,7 +213,7 @@ pub struct App {
     /// Focused `secure_submit` field and declaring surface, set by a textfield press or sole-field
     /// keyboard focus (ADR-0050 decision 4). `None` means no frame; writes go through
     /// [`App::focus_secure_submit`].
-    focused_secure_submit: Option<FocusedField>,
+    focused_secure_submit: Option<input::keyboard::SecureFocus>,
     /// Focused plain `textfield` and its draft, the unmasked half (ADR-0092). Only a
     /// press selects it; sole-field `enter` fallback cannot serve multiple reply boxes.
     ///
@@ -240,9 +240,6 @@ pub struct App {
     repeating: Option<(KeyEvent, std::time::Instant)>,
     /// Keys pressed while Lua could hear them, held for `on_key_release`.
     pressed_keys: Vec<input::keyboard::HeldPress>,
-    /// Native, Lua-invisible keystroke buffer until Enter (ADR-0005/ADR-0009/ADR-0027). Its
-    /// lifetime follows `focused_secure_submit`; destination changes zeroize it.
-    secure_buffer: shared::SecureBuffer,
     /// A keystroke/focus change changed field rendering without dirtying the retained tree: masked
     /// bytes and plain text live outside it (ADR-0005, ADR-0092), so re-resolve misses the update.
     /// Surfaces whose text fields had caret movement or input edits this turn.

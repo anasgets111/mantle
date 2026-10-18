@@ -17,6 +17,7 @@ mod secure;
 pub(in crate::wayland::input) use edit::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
 pub(crate) use on_key::{HeldPress, KeyPress, KeyRelease};
+pub(in crate::wayland) use secure::SecureFocus;
 
 keywords! {
     /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
@@ -283,7 +284,7 @@ impl KeyboardHandler for App {
         // (see [`App::keyboard_focus_scope`]).
         let scope = self.keyboard_focus_scope();
         // A scope with exactly one `secure_submit` becomes typable without a click.
-        let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.as_ref());
+        let next = self.field_the_scope_declares(&scope, self.focused_secure_submit.as_deref());
         match (&self.keyboard_focus, &next) {
             (None, _) => debug!(2; "keyboard focus entered an untracked surface; not tracking it"),
             (Some(id), Some(field)) => debug!(
@@ -475,7 +476,7 @@ impl App {
             return Some(layout::paint::FieldFocus::Masked {
                 id: focused.id,
                 target: &focused.target,
-                filled: self.secure_buffer.grapheme_count(),
+                filled: focused.buffer.grapheme_count(),
             });
         }
         let focused = self.focused_text_field.as_ref().filter(|f| f.surface_id == surface_id)?;
@@ -624,7 +625,7 @@ impl App {
                 .scene()
                 .surface(&field.surface_id)
                 .is_some_and(|tree| secure::secure_on_cancel(tree, field).is_some());
-            (!self.secure_buffer.is_empty(), cancels)
+            (!field.buffer.is_empty(), cancels)
         });
         if !focus::surface_gets_escape(repeat, self.held.ctrl, plain, secure) {
             return None;

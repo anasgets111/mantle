@@ -127,7 +127,6 @@ pub fn run(
         armed_control: None,
         focus_visible: false,
         accessibility: accessibility::Accessibility::new(waker.clone()),
-        secure_buffer: shared::SecureBuffer::new(),
         held: Held::default(),
         repeat_info: None,
         repeating: None,

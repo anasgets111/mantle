@@ -152,7 +152,7 @@ impl App {
                     hit.caret,
                     self.held.shift,
                     (button == BTN_LEFT).then(|| (std::time::Instant::now(), position)),
-                    self.focused_secure_submit.as_ref(),
+                    self.focused_secure_submit.as_deref(),
                     self.focused_text_field.as_ref(),
                 );
                 // Reassign through the zeroizing transition seam.

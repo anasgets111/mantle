@@ -260,7 +260,7 @@ impl App {
     }
 
     pub(in crate::wayland::input) fn secure_field_takes_keys(&self) -> bool {
-        secure_focus_accepts_keys(self.focused_control.as_ref(), self.focused_secure_submit.as_ref())
+        secure_focus_accepts_keys(self.focused_control.as_ref(), self.focused_secure_submit.as_deref())
     }
     fn scoped_controls(&self) -> Vec<Control> {
         let mut result = Vec::new();
@@ -279,7 +279,11 @@ impl App {
         surface_id: &str,
         inject: impl FnOnce(&mut Self) -> T,
     ) -> T {
-        let saved = (self.focused_control.clone(), self.focused_text_field.clone(), self.focused_secure_submit.clone());
+        let saved = (
+            self.focused_control.clone(),
+            self.focused_text_field.clone(),
+            self.focused_secure_submit.as_deref().cloned(),
+        );
         let visible = self.focus_visible;
         let result = inject(self);
         let taken = |saved: Option<&str>, now: Option<&str>| focus_taken(saved, now, surface_id);
@@ -296,7 +300,7 @@ impl App {
             self.focus_text_field(saved.1);
         }
         if taken(saved.2.as_ref().map(|f| &*f.surface_id), self.focused_secure_submit.as_ref().map(|f| &*f.surface_id))
-            && saved.2 != self.focused_secure_submit
+            && saved.2.as_ref() != self.focused_secure_submit.as_deref()
         {
             self.focus_secure_submit(saved.2);
         }
@@ -802,12 +806,15 @@ mod tests {
         assert!(secure_key_reaches_field(Some(&button_control), Some(&field), true), "Escape still cancels");
         assert!(!secure_key_reaches_field(Some(&button_control), None, true));
         assert!(secure_focus_accepts_keys(None, Some(&field)), "sole secure field auto-arms");
-        let mut held = Some(field.clone());
         let mut buffer = shared::SecureBuffer::new();
         buffer.push_str("secret");
-        super::secure::retarget_secure_submit(&mut held, &mut buffer, Some(field));
-        assert_eq!(buffer.expose_secret(), b"secret", "button focus keeps the pending submit");
-        super::secure::retarget_secure_submit(&mut held, &mut buffer, Some(second_field));
-        assert!(buffer.is_empty(), "a second node with the same target cannot inherit the first password");
+        let mut held = Some(SecureFocus { field: field.clone(), buffer });
+        super::secure::retarget_secure_submit(&mut held, Some(field));
+        assert_eq!(held.as_ref().unwrap().buffer.expose_secret(), b"secret", "button focus keeps the pending submit");
+        super::secure::retarget_secure_submit(&mut held, Some(second_field));
+        assert!(
+            held.unwrap().buffer.is_empty(),
+            "a second node with the same target cannot inherit the first password"
+        );
     }
 }

@@ -29,8 +29,8 @@ pub(super) fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField
     None
 }
 
-/// A secure submit frame, or `None` without a destination (ADR-0050 decision 4). Do not send to
-/// `"unknown"/"unknown"`; the buffer is zeroized on every branch.
+/// A secure submit frame, or `None` when the field is empty or its capability unknown (ADR-0050
+/// decision 4); the buffer is zeroized on every branch.
 ///
 /// Every refusal says so. Dropping a submit here is indistinguishable from a lock screen that has
 /// stopped accepting the password: nothing reaches the Supervisor, so nothing downstream can
@@ -38,25 +38,16 @@ pub(super) fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField
 /// secret or its length.
 fn submit_frame_for(
     generation_id: u32,
-    target: Option<&node::SecureSubmitTarget>,
+    target: &node::SecureSubmitTarget,
     buffer: &mut shared::SecureBuffer,
 ) -> Option<RendererFrame> {
     // Empty joins an open network (ADR-0029); anywhere else it is no password, and to lock or
     // polkit it would spend a PAM attempt and the `pam_unix` failure delay.
-    let empty = buffer.is_empty()
-        && target.is_none_or(|target| (&*target.capability, &*target.action) != ("network", "connect"));
-    let Some(target) = target.filter(|_| !empty) else {
-        match target {
-            None => debug!(
-                2; "secure submit dropped: no field is focused to send it to, so a password typed here reaches nothing"
-            ),
-            Some(target) => {
-                debug!(2; "secure submit to {}/{} dropped: the field is empty", target.capability, target.action)
-            }
-        }
+    if buffer.is_empty() && (&*target.capability, &*target.action) != ("network", "connect") {
+        debug!(2; "secure submit to {}/{} dropped: the field is empty", target.capability, target.action);
         buffer.zeroize();
         return None;
-    };
+    }
     let Some(capability) = shared::Capability::from_name(&target.capability) else {
         warn!("secure submit to {}/{} dropped: no such capability", target.capability, target.action);
         buffer.zeroize();
@@ -65,20 +56,28 @@ fn submit_frame_for(
     Some(secure_submit_frame(generation_id, capability, &target.action, target.name.as_deref(), buffer))
 }
 
-/// Sole writer of `focused_secure_submit`: `SecureBuffer` belongs to the field typed into, not its
-/// transport. The three transitions (`KeyboardHandler::leave`, keyboard capability removal, and
-/// pointer retarget) all scrub; any new caller inherits that guarantee. A field change
-/// scrubs, even between nodes sharing a destination; re-arming the same node does not (ADR-0050 decision 4). Free for unit-testing the
-/// read/zeroize contract without Wayland, as with [`secure_submit_frame`].
-pub(super) fn retarget_secure_submit(
-    focused: &mut Option<FocusedField>,
-    buffer: &mut shared::SecureBuffer,
-    next: Option<FocusedField>,
-) {
-    if *focused != next {
-        buffer.zeroize();
+/// The focused `secure_submit` field and the keystrokes typed into it (ADR-0005/0009/0027). The
+/// buffer lives inside the focus, so no plaintext can outlive it: dropping zeroizes.
+pub(in crate::wayland) struct SecureFocus {
+    pub(super) field: FocusedField,
+    pub(super) buffer: shared::SecureBuffer,
+}
+
+impl std::ops::Deref for SecureFocus {
+    type Target = FocusedField;
+    fn deref(&self) -> &FocusedField {
+        &self.field
     }
-    *focused = next;
+}
+
+/// Sole writer of `focused_secure_submit`, for `leave`, capability removal and pointer retarget. A
+/// field change replaces the focus and so scrubs, even between nodes sharing a destination;
+/// re-arming the same node keeps it (ADR-0050 decision 4).
+/// Free for unit-testing without Wayland, as with [`secure_submit_frame`].
+pub(super) fn retarget_secure_submit(focused: &mut Option<SecureFocus>, next: Option<FocusedField>) {
+    if focused.as_deref() != next.as_ref() {
+        *focused = next.map(|field| SecureFocus { field, buffer: shared::SecureBuffer::new() });
+    }
 }
 
 /// Reconcile secure focus on keyboard enter from the scoped trees. Empty/untracked scopes and
@@ -153,7 +152,7 @@ impl App {
         if let Some(ref next_field) = next {
             self.mark_field_input_changed(&next_field.surface_id);
         }
-        retarget_secure_submit(&mut self.focused_secure_submit, &mut self.secure_buffer, next);
+        retarget_secure_submit(&mut self.focused_secure_submit, next);
         self.invalidate_text_input_focus();
     }
 
@@ -237,7 +236,9 @@ impl App {
     /// Appends typed or pasted text, cut to the focused field's `max_length`.
     pub(in crate::wayland::input) fn push_secure_text(&mut self, text: &str) {
         let max = self.focused_secure_submit.as_ref().and_then(|f| self.field_max_length(&f.surface_id, f.id));
-        push_limited(&mut self.secure_buffer, text, max);
+        if let Some(focus) = self.focused_secure_submit.as_mut() {
+            push_limited(&mut focus.buffer, text, max);
+        }
     }
 
     /// Apply one secure key (ADR-0005). Focus is the destination gate; masked fields without one
@@ -246,7 +247,7 @@ impl App {
         let action = key_action(event, repeat, self.held.ctrl, self.held.shift);
         if !super::focus::secure_key_reaches_field(
             self.focused_control.as_ref(),
-            self.focused_secure_submit.as_ref(),
+            self.focused_secure_submit.as_deref(),
             matches!(action, KeyAction::Clear),
         ) {
             // Enter with nothing focused is the shape a stuck lock screen takes: the keys went
@@ -272,13 +273,15 @@ impl App {
             // `pop_grapheme` zeroizes dropped bytes, not just the length. Only the backwards one:
             // every other reach needs a caret, and a secret holds none (ADR-0064).
             KeyAction::Erase(Motion::Left) => {
-                self.secure_buffer.pop_grapheme();
+                if let Some(focus) = self.focused_secure_submit.as_mut() {
+                    focus.buffer.pop_grapheme();
+                }
             }
             KeyAction::Erase(_) => {}
             // Scrub through the transition seam, then re-arm: `on_cancel` may keep the prompt open.
             KeyAction::Clear => {
-                let cleared = !self.secure_buffer.is_empty();
-                let field = self.focused_secure_submit.clone();
+                let cleared = self.focused_secure_submit.as_ref().is_some_and(|f| !f.buffer.is_empty());
+                let field = self.focused_secure_submit.as_deref().cloned();
                 self.focus_secure_submit(None);
                 self.focus_secure_submit(field.clone());
                 if let Some(field) = field
@@ -301,21 +304,22 @@ impl App {
         // Which of the two, not "one of these". A lock screen that will not open needs the log to
         // separate "the password went nowhere" from "you submitted an empty field", and the old
         // line named both and settled neither.
-        let addressed = self.focused_secure_submit.as_ref().map(|field| field.target.clone());
-        let nothing_typed = self.secure_buffer.is_empty();
-        let target = self.focused_secure_submit.as_ref().map(|field| &field.target);
-        let Some(frame) = submit_frame_for(self.generation_id, target, &mut self.secure_buffer) else {
-            match addressed {
-                None => debug!(
-                    2; "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
-                ),
-                Some(target) if nothing_typed => {
-                    debug!(2; "secure_submit to {}/{} dropped: nothing had been typed", target.capability, target.action)
-                }
-                Some(target) => error!(
+        let Some(focus) = self.focused_secure_submit.as_mut() else {
+            debug!(
+                2; "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
+            );
+            return;
+        };
+        let nothing_typed = focus.buffer.is_empty();
+        let target = focus.field.target.clone();
+        let Some(frame) = submit_frame_for(self.generation_id, &target, &mut focus.buffer) else {
+            if nothing_typed {
+                debug!(2; "secure_submit to {}/{} dropped: nothing had been typed", target.capability, target.action)
+            } else {
+                error!(
                     "secure_submit to {}/{} dropped for no recorded reason; this is a bug",
                     target.capability, target.action
-                ),
+                )
             }
             return;
         };
@@ -405,19 +409,24 @@ mod tests {
         assert!(secure_on_cancel(&root, &focused).is_none(), "a hidden prompt was not the one dismissed");
     }
 
+    fn typed_into(field: FocusedField, text: &str) -> Option<SecureFocus> {
+        let mut buffer = shared::SecureBuffer::new();
+        buffer.push_str(text);
+        Some(SecureFocus { field, buffer })
+    }
+
     #[test]
     fn moving_focus_between_two_secure_submit_fields_zeroizes_what_the_first_accumulated() {
         // The credential leak this seam closes: the lock screen's `("lock", "authenticate")` field
         // accumulates a login password, focus moves to the bar's `("network", "connect")` field
         // without an Enter in between, and the next submit used to carry `<login password><psk>`
         // to the network capability.
-        let mut focused = Some(field("screen@DP-1", "lock", "authenticate"));
-        let mut buffer = shared::SecureBuffer::new();
-        buffer.push_str("hunter2");
+        let mut focused = typed_into(field("screen@DP-1", "lock", "authenticate"), "hunter2");
 
-        retarget_secure_submit(&mut focused, &mut buffer, Some(field("bar@DP-1", "network", "connect")));
+        retarget_secure_submit(&mut focused, Some(field("bar@DP-1", "network", "connect")));
 
-        assert_eq!(focused, Some(field("bar@DP-1", "network", "connect")));
+        assert_eq!(focused.as_deref(), Some(&field("bar@DP-1", "network", "connect")));
+        let buffer = &focused.unwrap().buffer;
         assert!(buffer.is_empty(), "a password typed for one destination must not reach the next one's capability");
     }
 
@@ -427,13 +436,11 @@ mod tests {
         // `("lock", "authenticate")` -- a lock screen on each of two monitors does. With the
         // destination alone as the identity, focus moving between them compared equal and the
         // scrub was skipped.
-        let mut focused = Some(field("screen@eDP-1", "lock", "authenticate"));
-        let mut buffer = shared::SecureBuffer::new();
-        buffer.push_str("hunter2");
+        let mut focused = typed_into(field("screen@eDP-1", "lock", "authenticate"), "hunter2");
 
-        retarget_secure_submit(&mut focused, &mut buffer, Some(field("screen@DP-1", "lock", "authenticate")));
+        retarget_secure_submit(&mut focused, Some(field("screen@DP-1", "lock", "authenticate")));
 
-        assert!(buffer.is_empty(), "a field is its surface as well as its destination");
+        assert!(focused.unwrap().buffer.is_empty(), "a field is its surface as well as its destination");
     }
 
     #[test]
@@ -442,17 +449,15 @@ mod tests {
         // ever coming for the bytes. Re-arming the same destination is a press landing in the field
         // already being typed into (ADR-0050 decision 4), and wiping there would delete half
         // a password mid-entry.
-        let mut focused = Some(field("screen@TEST", "lock", "authenticate"));
-        let mut buffer = shared::SecureBuffer::new();
-        buffer.push_str("hunter2");
+        let mut focused = typed_into(field("screen@TEST", "lock", "authenticate"), "hunter2");
 
-        retarget_secure_submit(&mut focused, &mut buffer, None);
-        assert_eq!(focused, None);
-        assert!(buffer.is_empty(), "focus leaving with no submit must scrub what it accumulated");
+        // `shared/tests/secure_buffer_drop_zeroizes.rs` guarantees the dropped buffer is scrubbed.
+        retarget_secure_submit(&mut focused, None);
+        assert!(focused.is_none(), "focus leaving with no submit must drop what it accumulated");
 
-        focused = Some(field("screen@TEST", "lock", "authenticate"));
-        buffer.push_str("hunter2");
-        retarget_secure_submit(&mut focused, &mut buffer, Some(field("screen@TEST", "lock", "authenticate")));
+        focused = typed_into(field("screen@TEST", "lock", "authenticate"), "hunter2");
+        retarget_secure_submit(&mut focused, Some(field("screen@TEST", "lock", "authenticate")));
+        let buffer = &focused.unwrap().buffer;
         assert_eq!(buffer.expose_secret(), b"hunter2", "re-focusing the same field must not eat the entry in progress");
     }
 
@@ -466,7 +471,7 @@ mod tests {
             name: None,
         };
 
-        let frame = submit_frame_for(4, Some(&target), &mut buffer);
+        let frame = submit_frame_for(4, &target, &mut buffer);
 
         assert_eq!(
             frame,
@@ -482,22 +487,11 @@ mod tests {
     }
 
     #[test]
-    fn a_submit_with_no_focused_target_sends_nothing_and_still_zeroizes_the_buffer() {
-        // ADR-0050 decision 4: addressing this to `"unknown"/"unknown"` would put a password
-        // on the wire for no one. The scrub is the half that is not optional.
-        let mut buffer = shared::SecureBuffer::new();
-        buffer.push_str("hunter2");
-
-        assert_eq!(submit_frame_for(4, None, &mut buffer), None);
-        assert!(buffer.is_empty(), "a dropped submit must still leave the accumulated secret scrubbed");
-    }
-
-    #[test]
     fn an_enter_on_an_empty_field_sends_nothing() {
         // Not free: the Supervisor routes a `("lock", "authenticate")` submit straight into PAM, so
         // an Enter that said nothing spends one of the user's counted attempts.
         let mut buffer = shared::SecureBuffer::new();
-        assert_eq!(submit_frame_for(4, Some(&target("lock", "authenticate")), &mut buffer), None);
+        assert_eq!(submit_frame_for(4, &target("lock", "authenticate"), &mut buffer), None);
     }
 
     #[test]
@@ -506,7 +500,7 @@ mod tests {
         // is how an open one is joined.
         let mut buffer = shared::SecureBuffer::new();
         assert_eq!(
-            submit_frame_for(4, Some(&target("network", "connect")), &mut buffer),
+            submit_frame_for(4, &target("network", "connect"), &mut buffer),
             Some(RendererFrame::SecureSubmit(SecureSubmit {
                 generation_id: 4,
                 capability: shared::Capability::Network,
@@ -588,7 +582,7 @@ mod tests {
         // One per-keystroke question replaces clearing calls at five or six teardown sites. The
         // liveness half is the traced leak: type a login password on the lock screen, the
         // compositor sends `finished`, `teardown_lock_surfaces` destroys the `wl_surface` with no
-        // `leave` required to follow, so the plaintext used to stay live in `App::secure_buffer`.
+        // `leave` required to follow, so the plaintext would stay live in `SecureFocus::buffer`.
         let armed = field("screen@TEST", "lock", "authenticate");
         let scope = |ids: &[&str]| ids.iter().map(|id| (*id).to_string()).collect::<Vec<_>>();
         assert!(focus_is_still_armed(&armed, &scope(&["screen@TEST"]), true));
