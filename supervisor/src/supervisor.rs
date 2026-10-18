@@ -25,6 +25,37 @@ use crate::snapshot::{Published, push_snapshot, send_owned};
 use crate::socket;
 use crate::{process, send_frame_logged};
 
+/// One state, so a respawn's `Owed` replaces an `InFlight` whose Renderer died before reporting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Relock {
+    Idle,
+    /// Asked of the next generation to connect.
+    Owed(RelockReason),
+    /// Asked of the connected generation; its `LockReport` is the answer.
+    InFlight(RelockReason),
+}
+
+impl Relock {
+    fn start(&mut self) -> Option<RelockReason> {
+        let Self::Owed(reason) = *self else { return None };
+        *self = Self::InFlight(reason);
+        Some(reason)
+    }
+
+    /// The dead generation's in-flight ask gets no report; an `Owed` one still stands.
+    fn abandon(&mut self) {
+        if matches!(self, Self::InFlight(_)) {
+            *self = Self::Idle;
+        }
+    }
+
+    fn finish(&mut self) -> Option<RelockReason> {
+        let Self::InFlight(reason) = *self else { return None };
+        *self = Self::Idle;
+        Some(reason)
+    }
+}
+
 /// Why a generation must take an unrequested lock. Causes differ in logs but both mean the
 /// compositor holds a lock with nothing of ours on it; a named enum beats an ambiguous `bool`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,10 +118,8 @@ pub(crate) struct Supervisor {
     /// Set only by [`Supervisor::replace_departed_renderer`]; distinguishes shutdown reaping from
     /// an already-gone Renderer.
     renderer_departed: bool,
-    /// ADR-0058 decision 4, ADR-0060: intent after lock-holder death or locked startup;
-    /// `relock_in_flight` distinguishes its report.
-    relock_when_connected: Option<RelockReason>,
-    relock_in_flight: Option<RelockReason>,
+    /// ADR-0058 decision 4, ADR-0060: intent after lock-holder death or locked startup.
+    relock: Relock,
     /// Tracked `process.run` children (ADR-0026).
     processes: LiveProcesses,
     process_done_tx: tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
@@ -116,8 +145,9 @@ impl Supervisor {
         process_done_tx: tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
     ) -> Self {
         // Read before boot registration; reading later would race it.
-        let relock_when_connected = locked_flag.is_set().then_some(RelockReason::SupervisorRestarted);
-        if relock_when_connected.is_some() {
+        let relock =
+            locked_flag.is_set().then_some(RelockReason::SupervisorRestarted).map_or(Relock::Idle, Relock::Owed);
+        if relock != Relock::Idle {
             info!(
                 "the session was locked when the last Supervisor stopped and the compositor has not unlocked it, so the boot Renderer will be asked \
                  to take that lock over (ADR-0060)"
@@ -139,8 +169,7 @@ impl Supervisor {
             restart_brake: RestartBrake::default(),
             respawn_at: None,
             renderer_departed: false,
-            relock_when_connected,
-            relock_in_flight: None,
+            relock,
             processes: HashMap::new(),
             process_done_tx,
             reaps: tokio::task::JoinSet::new(),
@@ -325,8 +354,7 @@ impl Supervisor {
         // ADR-0058 decision 4: replay before relock, or one default frame looks like a broken
         // shell. No Supervisor-side auth-capability check here; Renderer reports Refused if its
         // tree cannot reach PAM (ADR-0052 decision 3).
-        if let Some(reason) = self.relock_when_connected.take() {
-            self.relock_in_flight = Some(reason);
+        if let Some(reason) = self.relock.start() {
             info!(
                 "asking generation {generation_id} to take the session lock over, because {} (ADR-0058 decision 4, ADR-0060)",
                 reason.because()
@@ -401,11 +429,12 @@ impl Supervisor {
                     let _ = reaped_tx.send(());
                 });
                 // Registration replays every `last_snapshots` entry via `hydrate`.
+                self.relock.abandon();
                 if was_locked {
                     // ADR-0058 decision 4: the lock object died; `active` is stale. `RendererLost`
                     // lets `lock()` proceed, then waits for a connection to send it.
                     self.lock.record(lock::LockEvent::RendererLost);
-                    self.relock_when_connected = Some(RelockReason::RendererReplaced);
+                    self.relock = Relock::Owed(RelockReason::RendererReplaced);
                     info!(
                         "the session is still locked, so generation {replacement_generation_id} will be asked to retake the lock once it connects"
                     );
@@ -456,7 +485,7 @@ impl Supervisor {
 
     /// Records the authoritative lock answer (ADR-0052 decision 4).
     pub(crate) fn record_lock_report(&mut self, report: shared::LockReport) {
-        if let Some(who) = self.relock_in_flight.take() {
+        if let Some(who) = self.relock.finish() {
             let who = who.subject();
             match &report.outcome {
                 shared::LockOutcome::Locked => {
@@ -544,5 +573,26 @@ impl Supervisor {
         let id = self.next_generation_id;
         self.next_generation_id += 1;
         id
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_respawn_discards_the_relock_in_flight() {
+        let mut relock = Relock::Owed(RelockReason::SupervisorRestarted);
+        assert_eq!(relock.start(), Some(RelockReason::SupervisorRestarted));
+        relock.abandon();
+        assert_eq!(relock, Relock::Idle);
+        relock = Relock::Owed(RelockReason::SupervisorRestarted);
+        relock.abandon();
+        assert_eq!(relock, Relock::Owed(RelockReason::SupervisorRestarted), "an unsent ask survives a respawn");
+        relock = Relock::Owed(RelockReason::RendererReplaced);
+        assert_eq!(relock.finish(), None, "the dead generation's ask must not claim the next report");
+        assert_eq!(relock.start(), Some(RelockReason::RendererReplaced));
+        assert_eq!(relock.finish(), Some(RelockReason::RendererReplaced));
+        assert_eq!(relock, Relock::Idle);
     }
 }
