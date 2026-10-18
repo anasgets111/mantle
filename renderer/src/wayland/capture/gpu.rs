@@ -24,12 +24,11 @@ pub(super) enum DmabufProbe {
 impl CaptureSource {
     /// Marks this source's dma-buf attempt permanently failed (amendment decision 4): warned
     /// once, shm from here on until the source is recreated for a new target.
-    fn fail_dmabuf(&mut self, why: &str) {
-        if !self.dmabuf_failed {
+    pub(super) fn fail_dmabuf(&mut self, why: &str) {
+        if !matches!(self.dmabuf_state, DmabufState::Failed) {
             warn!("capture on `{}` {why}; using shm", self.target.name());
         }
-        self.dmabuf_failed = true;
-        self.dmabuf_shape = None;
+        self.dmabuf_state = DmabufState::Failed;
     }
 }
 
@@ -72,8 +71,10 @@ impl CaptureRegistry {
         let support_available = matches!(self.dmabuf_probe, DmabufProbe::Supported(_));
         let opaque = self.sources.get(&id).is_some_and(|source| source.target.is_output());
         // A desktop source is unmixed on the CPU, so it stays on shm.
-        let previously_failed =
-            self.sources.get(&id).is_some_and(|source| source.dmabuf_failed || source.desktop.is_some());
+        let previously_failed = self
+            .sources
+            .get(&id)
+            .is_some_and(|source| matches!(source.dmabuf_state, DmabufState::Failed) || source.desktop.is_some());
         if !(support_available && !previously_failed) || self.dmabuf_manager.is_none() {
             return false;
         }
@@ -94,7 +95,7 @@ impl CaptureRegistry {
             source.fail_dmabuf("cannot use dma-buf (no shared format)");
             return false;
         };
-        source.dmabuf_shape = Some(DmabufShape { width, height, format });
+        source.dmabuf_state = DmabufState::Shaped(DmabufShape { width, height, format });
         self.ensure_dmabuf_back(qh, id)
     }
 
@@ -103,7 +104,7 @@ impl CaptureRegistry {
     pub(super) fn ensure_dmabuf_back(&mut self, qh: &QueueHandle<App>, id: NodeId) -> bool {
         let CaptureRegistry { sources, dmabuf_manager, pending_free, dmabuf_probe, .. } = self;
         let Some(source) = sources.get_mut(&id) else { return false };
-        let Some(shape) = source.dmabuf_shape else { return false };
+        let Some(shape) = source.dmabuf_state.shape() else { return false };
         let (DmabufProbe::Supported(support), Some(manager)) = (&*dmabuf_probe, dmabuf_manager.as_ref()) else {
             return false;
         };

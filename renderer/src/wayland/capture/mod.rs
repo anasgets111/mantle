@@ -129,7 +129,7 @@ struct WlrProto {
     /// wlr-screencopy names one fourcc per frame, no modifier list (`(width, height, fourcc)`);
     /// consumed at `BufferDone`.
     dmabuf_format: Option<(u32, u32, u32)>,
-    /// Whether this frame copies into the dma-buf slot. `dmabuf_shape` is not enough: a frame
+    /// Whether this frame copies into the dma-buf slot. `dmabuf_state` is not enough: a frame
     /// with no `linux_dmabuf` offer copies through shm while the shape stays set.
     dmabuf_active: bool,
     /// The frame's `flags` event said its rows run bottom-up; `Ready` flips them upright.
@@ -139,6 +139,23 @@ struct WlrProto {
 enum Proto {
     Ext(ExtProto),
     Wlr(WlrProto),
+}
+
+/// One source's dma-buf negotiation outcome; `Failed` is terminal.
+#[derive(Clone, Copy)]
+enum DmabufState {
+    Untried,
+    Shaped(DmabufShape),
+    Failed,
+}
+
+impl DmabufState {
+    fn shape(self) -> Option<DmabufShape> {
+        match self {
+            Self::Shaped(shape) => Some(shape),
+            _ => None,
+        }
+    }
 }
 
 struct CaptureSource {
@@ -163,15 +180,13 @@ struct CaptureSource {
     failed: bool,
     warned_missing_output: bool,
     warned_rotated: bool,
-    /// This source's dma-buf double buffer (ADR-0248 amendment decision 3). Unused while
-    /// `dmabuf_shape` is `None`.
+    /// This source's dma-buf double buffer (ADR-0248 amendment decision 3). Unused unless
+    /// `dmabuf_state` is `Shaped`.
     dmabuf: DmabufSwapchain,
-    /// The negotiated dma-buf shape, once one has been picked; `None` means this source draws
-    /// through shm.
-    dmabuf_shape: Option<DmabufShape>,
-    /// Set on any dma-buf failure, permanent for this source (amendment decision 4): no env
-    /// escape hatch, no retry short of the source being recreated for a new target.
-    dmabuf_failed: bool,
+    /// Where this source's dma-buf negotiation stands; `Untried` and `Failed` both draw through shm.
+    /// `Failed` is permanent (amendment decision 4): no env escape hatch, no retry short of the
+    /// source being recreated for a new target.
+    dmabuf_state: DmabufState,
     /// An `input = "desktop"` source's desktop unmixed so far (premultiplied BGRA): its frames
     /// are unmixed, not drawn.
     desktop: Option<Vec<u8>>,
@@ -194,8 +209,7 @@ impl CaptureSource {
             warned_missing_output: false,
             warned_rotated: false,
             dmabuf: DmabufSwapchain::default(),
-            dmabuf_shape: None,
-            dmabuf_failed: false,
+            dmabuf_state: DmabufState::Untried,
             desktop: None,
         }
     }
@@ -297,7 +311,9 @@ impl CaptureRegistry {
         }
         self.pending_free.extend(source.dmabuf.take_textures());
         source.dmabuf = DmabufSwapchain::default();
-        source.dmabuf_shape = None;
+        if matches!(source.dmabuf_state, DmabufState::Shaped(_)) {
+            source.dmabuf_state = DmabufState::Untried;
+        }
         source.captured = false;
         source.failed = true;
         source.deferred = false;
@@ -584,7 +600,7 @@ fn land_ready_frame(captures: &mut CaptureRegistry, cache: &mut CaptureCache, id
     let dmabuf = match source.proto.as_mut() {
         Some(Proto::Ext(ext)) => {
             ext.frame = None;
-            source.dmabuf_shape.is_some()
+            source.dmabuf_state.shape().is_some()
         }
         Some(Proto::Wlr(wlr)) => {
             wlr.frame = None;
@@ -644,6 +660,34 @@ mod tests {
             pending_free: Vec::new(),
             desktops: HashMap::new(),
         }
+    }
+
+    #[test]
+    fn a_dmabuf_failure_drops_the_shape_and_stays_failed() {
+        let node = CaptureNode {
+            node: NodeId::test(7),
+            target: CaptureTarget::Window("0xa11ce".into()),
+            live: None,
+            paint_cursor: false,
+            region: None,
+        };
+        let mut source = CaptureSource::new(&node, Protocol::Ext);
+        let format = FormatModifier { fourcc: 0, modifier: 0 };
+        let shape = DmabufShape { width: 1, height: 1, format };
+        source.dmabuf_state = DmabufState::Shaped(shape);
+        assert_eq!(source.dmabuf_state.shape(), Some(shape));
+        source.fail_dmabuf("test");
+        assert!(source.dmabuf_state.shape().is_none());
+        assert!(matches!(source.dmabuf_state, DmabufState::Failed));
+        let mut registry = registry();
+        let mut shaped = CaptureSource::new(&node, Protocol::Ext);
+        shaped.dmabuf_state = DmabufState::Shaped(shape);
+        registry.sources.insert(NodeId::test(8), shaped);
+        registry.stop(NodeId::test(8), &mut CaptureCache::default());
+        assert!(matches!(registry.sources[&NodeId::test(8)].dmabuf_state, DmabufState::Untried));
+        registry.sources.insert(node.node, source);
+        registry.stop(node.node, &mut CaptureCache::default());
+        assert!(matches!(registry.sources[&node.node].dmabuf_state, DmabufState::Failed));
     }
 
     #[test]

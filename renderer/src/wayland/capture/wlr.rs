@@ -47,7 +47,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
                 let dmabuf_offer = wlr.dmabuf_format.take();
                 let qh = state.queue_handle.clone();
                 let used_dmabuf = dmabuf_offer.is_some_and(|(width, height, fourcc)| {
-                    let cached = state.captures.sources.get(id).and_then(|s| s.dmabuf_shape);
+                    let cached = state.captures.sources.get(id).and_then(|s| s.dmabuf_state.shape());
                     let unchanged = cached.is_some_and(|shape| {
                         shape.width == width && shape.height == height && shape.format.fourcc == fourcc
                     });

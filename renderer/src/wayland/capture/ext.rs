@@ -151,7 +151,8 @@ impl App {
         }
         let qh = self.queue_handle.clone();
         let frame = session.create_frame(&qh, id);
-        let has_dmabuf_shape = self.captures.sources.get(&id).is_some_and(|source| source.dmabuf_shape.is_some());
+        let has_dmabuf_shape =
+            self.captures.sources.get(&id).is_some_and(|source| source.dmabuf_state.shape().is_some());
         let use_dmabuf = has_dmabuf_shape && self.captures.ensure_dmabuf_back(&qh, id);
         let Some(source) = self.captures.sources.get_mut(&id) else {
             frame.destroy();
