@@ -68,7 +68,8 @@ impl LockController {
         Duration::from_millis(self.unlock_animation_ms.load(Ordering::Relaxed))
     }
 
-    /// Releases the lock the password answered, after the configured window if there is one.
+    /// Releases the lock the password answered, after the configured window if there is one. With or
+    /// without a window it refuses unless a recorded password answered the current acquisition.
     ///
     /// **The release names its acquisition.** `record_authentication` checks that a PAM answer
     /// belongs to the lock on the glass (`accepts_outcome`), but a *delayed* release outlives that
@@ -89,15 +90,21 @@ impl LockController {
     /// can flush it on the way down; that is where the generation id already lives.
     pub fn unlock_after_animation(&self) {
         let window = self.unlock_animation();
+        let acquisition = match self.state.lock() {
+            Err(_) => {
+                error!("the lock state is poisoned; refusing to release a lock it cannot identify");
+                return;
+            }
+            Ok(state) if !releases(&state, state.acquisition) => {
+                warn!("refusing to release a lock no recorded password answered");
+                return;
+            }
+            Ok(state) => state.acquisition,
+        };
         if window.is_zero() {
             self.unlock();
             return;
         }
-        let Ok(acquisition) = self.state.lock().map(|state| state.acquisition) else {
-            // Nothing to name the release with, so take the immediate one rather than a blind one.
-            self.unlock();
-            return;
-        };
         let state = Arc::clone(&self.state);
         let commands_tx = self.commands_tx.clone();
         tokio::spawn(async move {
@@ -260,6 +267,74 @@ mod tests {
         let state = controller.snapshot();
         assert_eq!(state.attempts, 0, "the new lock has seen no attempts");
         assert_eq!(state.error, "", "and nothing to say about one");
+    }
+
+    /// A held lock with one attempt answered `outcome`.
+    fn answered(
+        outcome: shared::PamOutcome,
+    ) -> (LockController, tokio::sync::mpsc::UnboundedReceiver<shared::SetSessionLock>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = LockController::new(tx);
+        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        let acquisition = controller.try_begin_authentication().expect("a held lock admits the attempt");
+        assert!(controller.record_authentication(acquisition, outcome));
+        (controller, rx)
+    }
+
+    #[test]
+    fn with_no_window_only_a_correct_password_releases_the_lock() {
+        let (controller, mut rx) = answered(shared::PamOutcome::AuthFailed);
+        controller.unlock_after_animation();
+        assert!(rx.try_recv().is_err(), "a wrong password must not unlock, whoever asks");
+
+        let (controller, mut rx) = answered(shared::PamOutcome::Success);
+        controller.unlock_after_animation();
+        assert_eq!(rx.try_recv().ok(), Some(shared::SetSessionLock { locked: false }));
+        assert!(rx.try_recv().is_err(), "one release per answer");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_windowed_release_fires_after_the_window_only_for_the_lock_it_answered() {
+        let window = Duration::from_millis(300);
+        let (controller, mut rx) = answered(shared::PamOutcome::Success);
+        controller.set_unlock_animation(window);
+        controller.unlock_after_animation();
+        tokio::time::sleep(window / 2).await;
+        assert!(rx.try_recv().is_err(), "the lock stays up through its out-animation");
+        tokio::time::sleep(window).await;
+        assert_eq!(rx.try_recv().ok(), Some(shared::SetSessionLock { locked: false }));
+
+        let (controller, mut rx) = answered(shared::PamOutcome::Success);
+        controller.set_unlock_animation(window);
+        controller.unlock_after_animation();
+        controller.record(LockEvent::Reported(shared::LockOutcome::Finished));
+        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        tokio::time::sleep(window * 2).await;
+        assert!(rx.try_recv().is_err(), "a stale timer must not release a lock nobody authenticated (ADR-0042)");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_windowed_wrong_password_never_releases() {
+        let window = Duration::from_millis(300);
+        let (controller, mut rx) = answered(shared::PamOutcome::AuthFailed);
+        controller.set_unlock_animation(window);
+        controller.unlock_after_animation();
+        tokio::time::sleep(window * 2).await;
+        assert!(rx.try_recv().is_err(), "a wrong password must not unlock after the window either");
+    }
+
+    #[test]
+    fn a_poisoned_state_refuses_to_release() {
+        let (controller, mut rx) = answered(shared::PamOutcome::Success);
+        std::thread::scope(|scope| {
+            let poisoner = scope.spawn(|| {
+                let _held = controller.state.lock().expect("not yet poisoned");
+                panic!("poison the lock state");
+            });
+            assert!(poisoner.join().is_err());
+        });
+        controller.unlock_after_animation();
+        assert!(rx.try_recv().is_err(), "a lock that cannot be identified is not released");
     }
 
     #[test]

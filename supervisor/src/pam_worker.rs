@@ -424,6 +424,7 @@ async fn exchange_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::within;
 
     // ---- SELF_EXE (ADR-0161) ----
 
@@ -692,6 +693,37 @@ mod tests {
 
         assert_eq!(outcome, shared::PamOutcome::Success);
         assert_eq!(helper.await.unwrap(), ["alice", "cookie-1", "", "hunter2"]);
+    }
+
+    #[tokio::test]
+    async fn drive_helper_takes_only_the_verdict_line_as_the_verdict() {
+        let (ours, mut theirs) = tokio::io::duplex(256);
+        tokio::io::AsyncWriteExt::write_all(&mut theirs, b"PAM_TEXT_INFO hi\nFAILURE\n").await.unwrap();
+        let (reader, writer) = tokio::io::split(ours);
+        let outcome = within(drive_helper(reader, writer, "alice", "cookie-1", b"hunter2")).await.unwrap();
+        assert_eq!(outcome, shared::PamOutcome::AuthFailed);
+    }
+
+    #[test]
+    fn username_for_names_the_passwd_entry_or_refuses() {
+        assert_eq!(username_for(0).as_deref(), Ok("root"));
+        assert!(username_for(UNMAPPED_UID).unwrap_err().contains("no passwd entry"));
+    }
+
+    /// Far above any login or `systemd-homed` range, so no passwd entry exists.
+    const UNMAPPED_UID: u32 = 3_999_999_999;
+
+    #[tokio::test]
+    async fn run_authentication_reports_its_own_outcome_not_the_drop_fallback() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        run_authentication(UNMAPPED_UID, shared::Zeroizing::new(b"hunter2".to_vec()), 7u64, tx).await;
+        let (tag, outcome) = rx.try_recv().expect("every authentication reports");
+        assert_eq!(tag, 7);
+        assert!(
+            matches!(&outcome, shared::PamOutcome::StartFailed(reason) if reason.contains("no passwd entry")),
+            "{outcome:?}"
+        );
+        assert!(rx.try_recv().is_err(), "exactly one report");
     }
 
     #[test]
