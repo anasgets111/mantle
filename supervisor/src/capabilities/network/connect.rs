@@ -119,7 +119,9 @@ impl NetworkController {
         drop(secret);
         match result {
             // NM accepted the request, not completed it; the activation reports the verdict.
-            Ok(in_flight) if self.accept(attempt, &in_flight) => self.watch_activation(attempt, in_flight, pending),
+            Ok(in_flight) if self.accept(attempt, &in_flight) => {
+                self.watch_activation(attempt, in_flight, pending);
+            }
             Ok(in_flight) => self.stop(&in_flight).await,
             Err(err) => {
                 warn!("connect(ssid={:?}) failed: {err}", pending.ssid);
@@ -129,7 +131,12 @@ impl NetworkController {
     }
 
     /// Reopens the prompt on a rejected key, except for 802.1X, which takes no typed PSK.
-    fn watch_activation(&self, attempt: u64, in_flight: InFlight, pending: PendingNetworkConnect) {
+    fn watch_activation(
+        &self,
+        attempt: u64,
+        in_flight: InFlight,
+        pending: PendingNetworkConnect,
+    ) -> tokio::task::JoinHandle<()> {
         let controller = self.clone();
         tokio::spawn(async move {
             let outcome =
@@ -151,7 +158,7 @@ impl NetworkController {
             if controller.finish_connect(attempt, &pending, error, ask_password) && activated {
                 controller.save_typed_key(&in_flight).await;
             }
-        });
+        })
     }
 
     /// Returns the device's failure reason; the active connection reports only disconnection.
@@ -259,14 +266,16 @@ impl NetworkController {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     use tokio::sync::mpsc::UnboundedReceiver;
 
     use super::*;
     use crate::capabilities::network::NetworkState;
+    use crate::capabilities::network::join::JoinState;
     use crate::capabilities::network::proxies::{DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy};
-    use crate::capabilities::test_support::{p2p_pair_serving, within};
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, within};
 
     /// A controller bound to a peer serving what `serve` installs.
     pub(crate) async fn attempting<F>(
@@ -298,13 +307,17 @@ pub(super) mod tests {
         InFlight { active, created: None, unsaved: None }
     }
 
-    /// One saved profile, counting each `Save`.
-    struct FakeProfile(Arc<std::sync::atomic::AtomicUsize>);
+    /// One saved profile for an SSID, counting each `Save` and `Delete`.
+    struct FakeProfile(&'static str, Arc<AtomicUsize>);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
     impl FakeProfile {
         async fn save(&self) {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+
+        async fn delete(&self) {
+            self.1.fetch_add(1, Ordering::SeqCst);
         }
 
         fn get_settings(&self) -> HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>> {
@@ -312,7 +325,8 @@ pub(super) mod tests {
                 "802-11-wireless".into(),
                 HashMap::from([(
                     "ssid".into(),
-                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(b"home".to_vec())).unwrap(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.0.as_bytes().to_vec()))
+                        .unwrap(),
                 )]),
             )])
         }
@@ -364,14 +378,157 @@ pub(super) mod tests {
     async fn an_accepted_join_saves_only_the_key_it_typed() {
         const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/9";
         let saves = Arc::default();
-        let profile = FakeProfile(Arc::clone(&saves));
+        let profile = FakeProfile("home", Arc::clone(&saves));
         let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(PROFILE, profile)).await;
         let typed = InFlight { unsaved: Some(OwnedObjectPath::try_from(PROFILE).unwrap()), ..joined(1) };
 
         controller.save_typed_key(&joined(1)).await;
         controller.save_typed_key(&typed).await;
 
-        assert_eq!(saves.load(std::sync::atomic::Ordering::SeqCst), 1, "a join that typed no key saves nothing");
+        assert_eq!(saves.load(Ordering::SeqCst), 1, "a join that typed no key saves nothing");
+    }
+
+    #[tokio::test]
+    async fn forget_deletes_only_the_profiles_for_its_ssid() {
+        const HOME: &str = "/org/freedesktop/NetworkManager/Settings/1";
+        const CAFE: &str = "/org/freedesktop/NetworkManager/Settings/2";
+        let (home, cafe) = (Arc::default(), Arc::default());
+        let (controller, _receiver, _peer) = attempting(|peer| {
+            peer.serve_at(HOME, FakeProfile("home", Arc::clone(&home)))?
+                .serve_at(CAFE, FakeProfile("cafe", Arc::clone(&cafe)))?
+                .serve_at(
+                    "/org/freedesktop/NetworkManager/Settings",
+                    ListedProfiles(vec![
+                        OwnedObjectPath::try_from(HOME).unwrap(),
+                        OwnedObjectPath::try_from(CAFE).unwrap(),
+                    ]),
+                )
+        })
+        .await;
+
+        controller.forget("home").await;
+
+        let count = |calls: &Arc<AtomicUsize>| calls.load(Ordering::SeqCst);
+        assert_eq!((count(&home), count(&cafe)), (1, 0));
+    }
+
+    /// NetworkManager, aborting the join it holds while it activates, counting each deactivation.
+    struct FakeNm(Option<Arc<Mutex<JoinState>>>, Arc<AtomicUsize>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl FakeNm {
+        fn activate_connection(
+            &self,
+            _profile: OwnedObjectPath,
+            _device: OwnedObjectPath,
+            _ap: OwnedObjectPath,
+        ) -> OwnedObjectPath {
+            if let Some(join) = &self.0 {
+                join.lock().unwrap().abort();
+            }
+            OwnedObjectPath::try_from(ACTIVE).unwrap()
+        }
+
+        fn deactivate_connection(&self, _active: OwnedObjectPath) {
+            self.1.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    /// Stashes `pending` and begins it, as a password submission does.
+    fn begun(controller: &NetworkController, pending: PendingNetworkConnect) -> (PendingNetworkConnect, u64) {
+        let mut join = controller.join.lock().unwrap();
+        join.stash(pending);
+        let current = join.pending().unwrap();
+        let pending = join.take_current(&current).unwrap();
+        let attempt = join.begin(&pending).unwrap();
+        (pending, attempt)
+    }
+
+    fn home_on(device: &str) -> PendingNetworkConnect {
+        PendingNetworkConnect {
+            attempt: 0,
+            ssid: "home".into(),
+            hidden: false,
+            device_id: "wlan0".into(),
+            device_path: Some(OwnedObjectPath::try_from(device).unwrap()),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_accepted_join_is_watched_and_one_aborted_before_nm_replied_is_stopped() {
+        const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/9";
+        for aborted in [false, true] {
+            let (join, deactivations) = (Arc::<Mutex<JoinState>>::default(), Arc::default());
+            let nm = FakeNm(aborted.then(|| Arc::clone(&join)), Arc::clone(&deactivations));
+            let (mut controller, _receiver, _peer) = attempting(|peer| {
+                peer.serve_at("/org/freedesktop/NetworkManager", nm)?
+                    .serve_at(ACTIVE, Activated)?
+                    .serve_at(PROFILE, FakeProfile("home", Arc::default()))?
+                    .serve_at(DEVICE, AvailableProfile(OwnedObjectPath::try_from(PROFILE).unwrap()))
+            })
+            .await;
+            controller.join = join;
+            let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
+            controller.devices.lock().unwrap().wifi.push(device);
+            let (pending, _) = begun(&controller, home_on(DEVICE));
+
+            within(controller.connect(pending, shared::Zeroizing::new(Vec::new()))).await;
+
+            if !aborted {
+                // The watch's verdict is what ends the join.
+                poll_until(|| {
+                    let mut state = NetworkState::default();
+                    controller.join.lock().unwrap().overlay(&mut state);
+                    state.connecting_ssid.is_none().then_some(())
+                })
+                .await;
+            }
+            let stopped = deactivations.load(Ordering::SeqCst);
+            assert_eq!(
+                stopped,
+                usize::from(aborted),
+                "only an aborted join is stopped; NM must not keep connecting it"
+            );
+        }
+    }
+
+    struct Activated;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager.Connection.Active")]
+    impl Activated {
+        #[zbus(property)]
+        fn state(&self) -> u32 {
+            ACTIVE_STATE_ACTIVATED
+        }
+    }
+
+    #[tokio::test]
+    async fn only_an_activated_join_saves_its_typed_key() {
+        const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/9";
+        const ACCEPTED: &str = "/org/freedesktop/NetworkManager/ActiveConnection/2";
+        let saves = Arc::default();
+        let (controller, _receiver, _peer) = attempting(|peer| {
+            peer.serve_at(ACTIVE, RejectedKey)?
+                .serve_at(ACCEPTED, Activated)?
+                .serve_at(PROFILE, FakeProfile("home", Arc::clone(&saves)))
+        })
+        .await;
+        let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
+        controller.devices.lock().unwrap().wifi.push(device);
+
+        for (active, expected, prompt) in [(ACTIVE, 0, Some("home")), (ACCEPTED, 1, None)] {
+            let (pending, attempt) = begun(&controller, home_on(DEVICE));
+            let in_flight = InFlight {
+                active: OwnedObjectPath::try_from(active).unwrap(),
+                created: None,
+                unsaved: Some(OwnedObjectPath::try_from(PROFILE).unwrap()),
+            };
+            within(controller.watch_activation(attempt, in_flight, pending)).await.unwrap();
+            assert_eq!(saves.load(Ordering::SeqCst), expected, "a rejected key is never saved");
+            let mut state = NetworkState::default();
+            controller.join.lock().unwrap().overlay(&mut state);
+            assert_eq!(state.password_ssid.as_deref(), prompt, "only a rejected key asks again");
+        }
     }
 
     #[tokio::test]
@@ -379,8 +536,8 @@ pub(super) mod tests {
         const FIRST: &str = "/org/freedesktop/NetworkManager/Settings/1";
         const CHOSEN: &str = "/org/freedesktop/NetworkManager/Settings/2";
         let (controller, _receiver, _peer) = attempting(|peer| {
-            peer.serve_at(FIRST, FakeProfile(Arc::default()))?
-                .serve_at(CHOSEN, FakeProfile(Arc::default()))?
+            peer.serve_at(FIRST, FakeProfile("home", Arc::default()))?
+                .serve_at(CHOSEN, FakeProfile("home", Arc::default()))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
                     ListedProfiles(vec![
@@ -407,22 +564,9 @@ pub(super) mod tests {
             release: tokio::sync::Mutex::new(release_rx),
         };
         let (controller, mut events, _peer) = attempting(|peer| peer.serve_at(OLD, old)).await;
-        let first = PendingNetworkConnect {
-            attempt: 0,
-            ssid: "home".into(),
-            hidden: false,
-            device_id: String::new(),
-            device_path: None,
-        };
-        {
-            let mut join = controller.join.lock().unwrap();
-            join.stash(first);
-            let first = join.pending().unwrap();
-            join.take_current(&first);
-            let attempt = join.begin(&first).unwrap();
-            let accepted = InFlight { created: Some(OwnedObjectPath::try_from(OLD).unwrap()), ..joined(1) };
-            assert!(join.accept(attempt, &accepted));
-        }
+        let (_, attempt) = begun(&controller, home_on(DEVICE));
+        let accepted = InFlight { created: Some(OwnedObjectPath::try_from(OLD).unwrap()), ..joined(1) };
+        assert!(controller.join.lock().unwrap().accept(attempt, &accepted));
 
         controller.stash_connect_intent("bad".into(), false, Some("wlan9"));
         let mut state = NetworkState::default();
@@ -472,13 +616,7 @@ pub(super) mod tests {
             controller.devices.lock().unwrap().wifi.push(device);
         }
 
-        let mut pending = PendingNetworkConnect {
-            attempt: 0,
-            ssid: "home".into(),
-            hidden: false,
-            device_id: "wlan0".into(),
-            device_path: Some(OwnedObjectPath::try_from(DEVICE).unwrap()),
-        };
+        let mut pending = home_on(DEVICE);
         let outcome = tokio::time::timeout(
             std::time::Duration::from_secs(1),
             controller.activation_outcome(&OwnedObjectPath::try_from(ACTIVE).unwrap(), &pending),

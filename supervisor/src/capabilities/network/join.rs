@@ -316,6 +316,7 @@ mod tests {
         join.take_current(&first);
         let first_attempt = join.begin(&first).unwrap();
         assert_eq!(join.abort(), Some(None));
+        assert!(!join.finish(first_attempt, &first, None, false), "an aborted attempt's verdict is stale");
         join.stash(home());
         let second = join.pending().unwrap();
         join.take_current(&second);
