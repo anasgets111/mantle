@@ -21,8 +21,11 @@ use std::sync::{Mutex, OnceLock};
 use shared::SecureBuffer;
 
 /// Deliberately distinctive so a match in freed memory can only be this test's own data,
-/// not an incidental collision with unrelated allocations elsewhere in the process.
-const SECRET: &str = "Tr0ub4dor&3-zK9qLpXwRt-hunter2exposed-3F7dM1sQ";
+/// not an incidental collision with unrelated allocations elsewhere in the process. Longer than
+/// `SecureBuffer::new()`'s 64 bytes, so building it has to grow the buffer.
+const SECRET: &str = "Tr0ub4dor&3-zK9qLpXwRt-hunter2exposed-3F7dM1sQ-v8Nc2YbLe5Hj-Wq4Zx7Pm1Ks9-Ga6Rd3Tf0Uy";
+// `SecureBuffer::new()` starts at 64 bytes; a shorter secret would never grow the buffer.
+const _: () = assert!(SECRET.len() > 64);
 
 /// Shortest prefix length worth flagging. Below this, a chance collision in unrelated
 /// heap data becomes plausible; at and above it, only this test's own secret should match.
@@ -66,8 +69,8 @@ unsafe impl GlobalAlloc for LeakCheckingAllocator {
 }
 
 /// True if `haystack` contains any prefix of `secret` at least `MIN_LEAK_LEN` bytes long.
-/// `push_str` is called one character at a time below, so any leaked intermediate block
-/// would hold exactly a prefix of the secret, not an arbitrary substring.
+/// `push_str` is called in order below, so any leaked intermediate block would hold exactly a
+/// prefix of the secret, not an arbitrary substring.
 fn contains_prefix(haystack: &[u8], secret: &[u8]) -> bool {
     (MIN_LEAK_LEN..=secret.len())
         .map(|len| &secret[..len])
@@ -84,10 +87,9 @@ fn push_str_growth_never_leaks_plaintext_to_freed_memory() {
     let mut buf = SecureBuffer::new();
 
     WATCHING.store(true, Ordering::SeqCst);
-    for ch in SECRET.chars() {
-        // One character at a time: the realistic pattern per the module's own doc
-        // comment, and the pattern that forces repeated internal growth.
-        buf.push_str(&ch.to_string());
+    // Seven-byte edit diffs: a push that jumps past capacity, not one that lands on it exactly.
+    for diff in SECRET.as_bytes().chunks(7) {
+        buf.push_str(std::str::from_utf8(diff).unwrap());
     }
     WATCHING.store(false, Ordering::SeqCst);
 
