@@ -162,6 +162,15 @@ mod tests {
     }
 
     #[test]
+    fn a_nonzero_exit_fails_with_its_stderr_and_a_zero_one_returns_stdout() {
+        let script = |code| format!("echo out; echo err >&2; exit {code}");
+        let failed = run_for(Command::new("sh").args(["-c", &script(3)]), nonzero, Duration::from_secs(5));
+        assert!(failed.unwrap_err().contains("failed: err"));
+        let ran = run_for(Command::new("sh").args(["-c", &script(0)]), nonzero, Duration::from_secs(5));
+        assert_eq!(ran.unwrap(), "out\n");
+    }
+
+    #[test]
     fn program_is_in_wants_a_file_on_some_path_entry() {
         let empty = tempfile::tempdir().unwrap();
         let real = tempfile::tempdir().unwrap();

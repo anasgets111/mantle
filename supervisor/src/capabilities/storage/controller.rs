@@ -298,6 +298,15 @@ mod tests {
         (StorageController::new(tx), rx)
     }
 
+    #[test]
+    fn only_a_missing_file_loads_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(load(&dir.path().join("missing.json")), Ok(None));
+        let unreadable = dir.path().join("binary.json");
+        std::fs::write(&unreadable, [0xff, 0xfe]).unwrap();
+        assert!(load(&unreadable).is_err(), "a file a save would destroy is an error, not a first run");
+    }
+
     #[tokio::test]
     async fn defaults_fill_a_new_file_and_a_stored_key_wins_over_a_default() {
         let dir = tempfile::tempdir().unwrap();

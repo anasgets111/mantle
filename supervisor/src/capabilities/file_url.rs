@@ -48,6 +48,10 @@ mod tests {
             ("file://localhost/tmp/a.png", Some("/tmp/a.png")),
             ("file:///home/someone/.cache/player/art_4.png", Some("/home/someone/.cache/player/art_4.png")),
             ("file:///tmp/100%.png", Some("/tmp/100%.png")),
+            ("file:///tmp/a%2Fb%41%0a", Some("/tmp/a/bA\n")),
+            // A URL from any D-Bus peer may end mid-escape; it is kept literally, never read past.
+            ("file:///tmp/a%", Some("/tmp/a%")),
+            ("file:///tmp/a%4", Some("/tmp/a%4")),
             ("https://example.com/a.png", None),
         ] {
             assert_eq!(file_url_to_path(url), expected.map(PathBuf::from), "{url}");
