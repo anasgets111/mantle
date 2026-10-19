@@ -342,13 +342,14 @@ mod tests {
 
     #[test]
     fn a_side_on_the_output_edge_is_left_to_the_screen() {
-        let up = r#"{ blur = 48, offset = { y = -18 } }"#;
-        let loose = shadow_report("width = 360, height = 140", up);
-        let anchored = shadow_report("width = 360, height = 140, anchor = { top = true }", up);
-        assert!(loose.contains("needs 90 px above"), "{loose}");
-        assert!(!anchored.contains("above") && anchored.contains("below"), "{anchored}");
-        let lifted = shadow_report("width = 360, height = 140, anchor = { top = true }, margin = { top = 8 }", up);
-        assert!(lifted.contains("above"), "a margin leaves room past the screen edge: {lifted}");
+        let words = ["above", "right", "below", "left"];
+        for (side, word) in ["top", "right", "bottom", "left"].into_iter().zip(words) {
+            let anchored = format!("width = 360, height = 140, anchor = {{ {side} = true }}");
+            let report = shadow_report(&anchored, DROP);
+            assert!(words.iter().all(|w| report.contains(w) != (*w == word)), "{side}: {report}");
+            let lifted = shadow_report(&format!("{anchored}, margin = {{ {side} = 8 }}"), DROP);
+            assert!(lifted.contains(word), "a margin leaves room past the {side} edge: {lifted}");
+        }
     }
 
     #[test]

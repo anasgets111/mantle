@@ -396,12 +396,16 @@ mod tests {
     use crate::layout::node::PropMap;
     use crate::layout::scene::NodeId;
 
-    /// A `rect` with a background, the way the region scan sees one.
-    fn solid_paint() -> Option<PaintStyle> {
+    /// A `rect` carrying one paint property, the way the region scan sees one.
+    fn rect_paint(key: &'static str, value: impl FnOnce(&mlua::Lua) -> Value) -> Option<PaintStyle> {
         let lua = mlua::Lua::new();
         let mut properties = PropMap::default();
-        properties.insert("background", Value::String(lua.create_string("#112233").unwrap()));
+        properties.insert(key, value(&lua));
         node::paint_style("rect", &properties).unwrap()
+    }
+
+    fn solid_paint() -> Option<PaintStyle> {
+        rect_paint("background", |lua| Value::String(lua.create_string("#112233").unwrap()))
     }
 
     fn region_node(
@@ -455,6 +459,16 @@ mod tests {
             images: Vec::new(),
         });
         assert!(!takes_input_as_a_box(&region_node(1, "shader", (0.0, 0.0, 10.0, 10.0), paint, Vec::new()), true));
+    }
+
+    /// A border alone draws, so its box takes input as a background's does; a zero-width one draws nothing.
+    #[test]
+    fn a_border_only_box_takes_input_and_a_zero_width_one_does_not() {
+        for (width, claims) in [(2, true), (0, false)] {
+            let paint = rect_paint("border_width", |_| Value::Integer(width));
+            let node = region_node(1, "rect", (0.0, 0.0, 10.0, 10.0), paint, Vec::new());
+            assert_eq!(takes_input_as_a_box(&node, true), claims, "border_width = {width}");
+        }
     }
 
     /// A box no bigger than its own rounding still has pixels, and every rectangle handed to
