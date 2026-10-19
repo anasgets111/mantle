@@ -800,6 +800,22 @@ mod tests {
         assert_eq!(answer, "mine", "a recycled address must not carry a memo entry with it");
     }
 
+    /// Rebuilt `list` rows create computeds; each one collected must leave the write log, or it
+    /// grows without bound and every write's `reach` walks the dead.
+    #[test]
+    fn a_collected_computed_leaves_nothing_in_the_write_log() {
+        let (lua, _dirty) = lua_with_state();
+        let sizes = || WRITES.with_borrow(|log| (log.computeds.len(), log.readers.len(), log.last.len()));
+        lua.load(r#"leaf = state("leaf", 1) collectgarbage("collect")"#).exec().unwrap();
+        let before = sizes();
+        lua.load(r#"rows = {} for i = 1, 100 do rows[i] = computed({ leaf }, function(v) return v + i end) rows[i]:get() end"#)
+            .exec()
+            .unwrap();
+        assert_eq!(sizes().0, before.0 + 100);
+        lua.load(r#"rows = nil collectgarbage("collect") collectgarbage("collect")"#).exec().unwrap();
+        assert_eq!(sizes(), before);
+    }
+
     /// A wide diamond must not spend nesting levels on cache hits: the memo is checked before
     /// `CpuBudget::enter`, so 40 readers of one dependency stay under `MAX_SIGNAL_NESTING_DEPTH`
     /// even though 40 > 32.

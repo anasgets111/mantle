@@ -126,6 +126,25 @@ mod tests {
         assert_eq!(field(&scene).rect.height, 20.0, "and so does a field shown again");
     }
 
+    /// Node ids are never reused, so a draft left behind by a removed field would never be read again.
+    #[test]
+    fn a_removed_field_drops_its_draft() {
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = column { children = state("kids", {
+                textfield { width = 80, multiline = true, on_change = function() end } }) } }"#,
+        );
+        let mut scene = Scene::new();
+        let surfaces = std::slice::from_ref(&surface);
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        let id = scene.surface("bar@TEST").unwrap().children[0].children[0].id;
+        scene.set_field_draft("bar@TEST", id, "a\nb", &shaping);
+        assert!(scene.field_wrap_width(id).is_some());
+        lua.load(r#"state("kids", {}):set({})"#).exec().unwrap();
+        apply_at(&mut scene, surfaces, full(), &shaping, &lua).unwrap();
+        assert!(scene.field_drafts.is_empty(), "a field no surface holds keeps no draft");
+    }
+
     #[test]
     fn only_a_multiline_field_is_seeded_with_a_newline() {
         let shaping = ShapingHandle::spawn();
