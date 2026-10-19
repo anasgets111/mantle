@@ -548,6 +548,29 @@ mod tests {
         }
     }
 
+    /// 70 full-turn arcs are 280 cubics, past the vertex cap at any step: the passes still end and
+    /// the result is thinned to the cap. Run on a thread so a pass that never ends fails the test.
+    #[test]
+    fn a_contour_past_the_vertex_cap_at_every_step_is_thinned_to_it() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let arcs: String =
+                (0..70).map(|i| format!(r#"{{ op = "A", points = {{ {}, 10, 4, 0, 360 }} }},"#, 10 * i + 5)).collect();
+            let src = format!(
+                r#"{{ commands = {{ {{ op = "M", points = {{ 0, 0 }} }}, {arcs} {{ op = "Z", points = {{}} }} }} }}"#
+            );
+            tx.send(parse(&src).unwrap().unwrap().sdf_polygon(at(700.0, 20.0)).len()).unwrap();
+        });
+        let len = match rx.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(len) => len,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("the thread panicked, e.g. the shape failed to parse")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!("contour_sdf never returned"),
+        };
+        assert!((SDF_POINTS / 2..=SDF_POINTS).contains(&len), "{len} vertices");
+    }
+
     /// `shape` tweens point by point: px against `"NN%"` lerps as the resolved px would, a corner's
     /// radius and smoothing clamp under overshoot, and other commands snap.
     #[test]

@@ -1025,10 +1025,16 @@ mod tests {
             r#"panel { id = "bar", child = column { visible = state("open", true), children = {
                     rect { width = state("w", 40), height = 10, animate = { width = 100 } } } } }"#,
         );
-        lua.load(r#"state("w", 40):set(90) state("open", true):set(false)"#).exec().unwrap();
+        let idle = |scene: &Scene| !scene.surface("bar@TEST").unwrap().needs_frames(Instant::now(), &mut None);
+        assert!(idle(&scene), "a settled tree asks for no frames");
+        lua.load(r#"state("w", 40):set(90)"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        assert!(!idle(&scene), "a running tween does");
+        lua.load(r#"state("open", true):set(false)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
         assert!(!scene.surface("bar@TEST").unwrap().animating());
         assert!(scene.tick(&[instance_at(&surface, full())], &shaping, &lua, Instant::now()).is_empty());
+        assert!(idle(&scene), "nor does a tween frozen under a hidden ancestor");
 
         lua.load(r#"state("open", true):set(true)"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
