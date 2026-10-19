@@ -780,6 +780,7 @@ mod tests {
                 &format!(r#"width = 1, content = "{LONG}", elide = "end""#),
                 "\u{2026}",
             ),
+            ("one grapheme too wide for the box", r#"width = 1, content = "W", elide = "end""#, "\u{2026}"),
         ] {
             assert_eq!(elided(&format!(r#"panel {{ id = "bar", child = text {{ {props} }} }}"#)), expected, "{what}");
         }

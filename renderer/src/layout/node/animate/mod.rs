@@ -1846,4 +1846,13 @@ mod tests {
             assert!(wanted.iter().all(|want| text.contains(want)), "{entry}: {text}");
         }
     }
+
+    #[test]
+    fn an_effect_displacement_keeps_the_larger_of_each_slots_two_levels() {
+        let effect = |values| Animatable::Effect(values, Kept::default());
+        let moved = effect([2.0, -1.0, 0.0, 0.0, -3.0, 0.0, 0.0, 0.0, 0.5]);
+        let from = effect([1.0, 1.0, 0.0, 0.0, -2.0, 0.0, 0.0, 0.0, 0.0]);
+        // Slot 0's two levels tie at 1 and -1: the first one kept.
+        assert_eq!(moved.delta(&from), [1.0, -2.0, 0.0, 0.0]);
+    }
 }

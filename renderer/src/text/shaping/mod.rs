@@ -957,6 +957,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn a_line_break_at_the_end_of_the_text_opens_an_empty_last_paragraph() {
+        for (text, want) in [
+            ("", vec![(0, 0)]),
+            ("a\n", vec![(0, 1), (2, 2)]),
+            ("a\r\n", vec![(0, 1), (3, 3)]),
+            ("a\n\r", vec![(0, 1), (3, 3)]),
+            ("a\n\nb", vec![(0, 1), (2, 2), (3, 4)]),
+        ] {
+            let got: Vec<_> = paragraph_ranges(text).into_iter().map(|range| (range.start, range.end)).collect();
+            assert_eq!(got, want, "{text:?}");
+        }
+    }
+
     /// ADR-0211: femtovg dropped `خامس`'s last letter and overlapped glyphs at a direction change.
     #[test]
     fn a_mixed_direction_line_has_a_glyph_per_letter_and_none_overlap() {
