@@ -146,3 +146,61 @@ async fn publish_locked_hints(session: Login1SessionProxy<'static>, mut hints: U
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use zbus::zvariant::OwnedObjectPath;
+
+    use super::*;
+    use crate::capabilities::test_support::{p2p_pair_serving, within};
+
+    const SESSION: &str = "/org/freedesktop/login1/session/c7";
+
+    /// logind's Manager, naming one session for any id.
+    struct Manager;
+
+    #[zbus::interface(name = "org.freedesktop.login1.Manager")]
+    impl Manager {
+        fn get_session(&self, _id: &str) -> OwnedObjectPath {
+            OwnedObjectPath::try_from(SESSION).unwrap()
+        }
+    }
+
+    /// The session object, forwarding each `SetLockedHint`.
+    struct Session(UnboundedSender<bool>);
+
+    #[zbus::interface(name = "org.freedesktop.login1.Session")]
+    impl Session {
+        fn set_locked_hint(&self, locked: bool) {
+            self.0.send(locked).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn the_bridge_forwards_lock_session_and_publishes_hints_in_order() {
+        let (hints_tx, mut hints) = tokio::sync::mpsc::unbounded_channel();
+        let (connection, peer) = p2p_pair_serving(|peer| {
+            peer.serve_at("/org/freedesktop/login1", Manager)?.serve_at(SESSION, Session(hints_tx))
+        })
+        .await;
+        let (lock_tx, mut lock_requests) = tokio::sync::mpsc::unbounded_channel();
+        let bridge = SessionBridge::new(connection, lock_tx).await;
+
+        bridge.publish_locked_hint(true);
+        bridge.publish_locked_hint(false);
+        assert_eq!(within(hints.recv()).await, Some(true));
+        assert_eq!(within(hints.recv()).await, Some(false));
+
+        // The listener subscribes in its own task, so knock until it answers.
+        within(async {
+            loop {
+                peer.emit_signal(None::<&str>, SESSION, "org.freedesktop.login1.Session", "Lock", &()).await.unwrap();
+                let knock = tokio::time::timeout(std::time::Duration::from_millis(20), lock_requests.recv()).await;
+                if matches!(knock, Ok(Some(()))) {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+}
