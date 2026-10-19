@@ -314,6 +314,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_helper_cleaning_up_on_sigterm_gets_the_grace_before_sigkill() {
+        let dir = tempfile::tempdir().unwrap();
+        let (ready, cleaned) = (dir.path().join("ready"), dir.path().join("cleaned"));
+        let helper = format!(
+            "trap 'sleep 0.03; touch {}; exit' TERM; touch {}; while :; do sleep 0.01; done",
+            cleaned.display(),
+            ready.display()
+        );
+        let mut child = spawn_group_leader_piped("sh", &sh_args(&format!("sh -c \"{helper}\" & exec sleep 30")))
+            .expect("failed to spawn");
+        crate::capabilities::test_support::poll_until(|| ready.exists().then_some(())).await;
+
+        reap_process_group(&mut child, Duration::from_secs(2)).await.expect("reap failed");
+
+        assert!(cleaned.exists(), "the leader's exit must not cut the helper's grace short");
+    }
+
+    #[tokio::test]
     async fn spawn_group_leader_piped_pipes_stdout_and_stderr_separately_with_the_real_exit_code() {
         let mut child =
             spawn_group_leader_piped("sh", &sh_args("echo line1; echo line2 >&2; exit 3")).expect("failed to spawn");

@@ -171,10 +171,13 @@ mod tests {
 
     #[tokio::test]
     async fn write_frame_then_read_frame_round_trips_raw_bytes() {
-        let (mut a, mut b) = tokio::io::duplex(64);
+        let (mut a, mut b) = tokio::io::duplex(SMALL_FRAME_LEN + 128);
         write_frame(&mut a, b"hello").await.unwrap();
         let payload = read_frame(&mut b).await.unwrap();
         assert_eq!(payload, b"hello");
+        let big = vec![1u8; SMALL_FRAME_LEN + 64];
+        write_frame(&mut a, &big).await.unwrap();
+        assert_eq!(read_frame(&mut b).await.unwrap(), big, "a frame past the up-front size reads whole");
     }
 
     #[test]
@@ -191,6 +194,10 @@ mod tests {
             write_frame_blocking(Vec::new(), &vec![0; MAX_FRAME_LEN + 1]),
             Err(FramingError::FrameTooLarge { .. })
         ));
+        assert!(write_frame_blocking(std::io::sink(), &vec![0; MAX_FRAME_LEN]).is_ok(), "the limit itself fits");
+        let mut short = (SMALL_FRAME_LEN as u32 + 100).to_be_bytes().to_vec();
+        short.extend(vec![1u8; SMALL_FRAME_LEN]);
+        assert!(read_frame_blocking(short.as_slice()).is_err(), "a large frame cut short is not complete");
         let over = (MAX_FRAME_LEN as u32 + 1).to_be_bytes();
         assert!(matches!(read_frame_blocking(over.as_slice()), Err(FramingError::FrameTooLarge { .. })));
     }

@@ -441,6 +441,22 @@ mod tests {
         assert_eq!(line, Some("partial rest".to_string()), "the cancelled read must not have eaten `partial`");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_line_resumed_after_a_cancelled_read_is_still_capped() {
+        let (mut client, server) = tokio::io::duplex(64);
+        let mut reader = BoundedLines::new(server, "test".to_string());
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"partial").await.unwrap();
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(50), reader.next_line()).await.is_err());
+        tokio::spawn(async move {
+            let flood = vec![b'x'; 3 * MAX_LINE_BYTES as usize];
+            tokio::io::AsyncWriteExt::write_all(&mut client, &flood).await.unwrap();
+        });
+
+        let line = reader.next_line().await.unwrap().unwrap();
+        assert_eq!(line.len() as u64, MAX_LINE_BYTES);
+        assert_eq!(reader.next_line().await.unwrap(), None);
+    }
+
     #[tokio::test]
     async fn a_cancelled_discard_resumes_and_does_not_eat_the_next_line() {
         // The bug this pins: resuming a cancelled discard and then discarding a *second* time,
@@ -500,6 +516,18 @@ mod tests {
         (registry, rx)
     }
 
+    /// Every queued frame, which must all be process output.
+    fn drained(rx: &mut tokio::sync::mpsc::Receiver<Vec<u8>>) -> Vec<ProcessOutputLine> {
+        let mut lines = Vec::new();
+        while let Ok(payload) = rx.try_recv() {
+            match serde_json::from_slice::<SupervisorFrame>(&payload).unwrap() {
+                SupervisorFrame::ProcessOutput(line) => lines.push(line),
+                other => panic!("unexpected frame: {other:?}"),
+            }
+        }
+        lines
+    }
+
     #[tokio::test]
     async fn spawn_and_register_process_registers_a_successful_spawn_and_returns_piped_handles() {
         let mut processes: LiveProcesses = HashMap::new();
@@ -526,13 +554,7 @@ mod tests {
 
         stream_process_output(&registry, 1, 9, stdout, stderr).await;
 
-        let mut lines = Vec::new();
-        while let Ok(payload) = rx.try_recv() {
-            match serde_json::from_slice::<SupervisorFrame>(&payload).unwrap() {
-                SupervisorFrame::ProcessOutput(line) => lines.push(line),
-                other => panic!("unexpected frame: {other:?}"),
-            }
-        }
+        let lines = drained(&mut rx);
         assert_eq!(lines.len(), 2);
         assert!(lines.iter().any(|l| l.id == 9 && l.stream == ProcessStream::Stdout && l.line == "out1"));
         assert!(lines.iter().any(|l| l.id == 9 && l.stream == ProcessStream::Stderr && l.line == "err1"));
@@ -543,19 +565,63 @@ mod tests {
         assert_eq!(child.wait().await.unwrap().code(), Some(3));
     }
 
+    #[tokio::test]
+    async fn stream_process_output_keeps_reading_stderr_after_stdout_closes() {
+        let mut processes: LiveProcesses = HashMap::new();
+        let script = "exec 1>&-; sleep 0.1; echo late >&2";
+        let (stdout, stderr) = spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args(script)).unwrap();
+        let (registry, mut rx) = registry_with_connection(1);
+
+        stream_process_output(&registry, 1, 9, stdout, stderr).await;
+
+        let frame = serde_json::from_slice::<SupervisorFrame>(&rx.try_recv().expect("the stderr line")).unwrap();
+        assert!(matches!(frame, SupervisorFrame::ProcessOutput(line) if line.line == "late"));
+    }
+
+    fn envelope(id: u64, action: &str, arguments: Vec<serde_json::Value>) -> shared::CommandEnvelope {
+        shared::CommandEnvelope {
+            id,
+            params: shared::CommandParams {
+                generation_id: 1,
+                capability: "process".to_string(),
+                action: action.to_string(),
+                arguments,
+                legacy_expected_revision: 0,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn run_streams_lines_capture_sends_one_frame_and_detach_runs_the_program() {
+        let (registry, mut rx) = registry_with_connection(1);
+        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut processes, mut reaps): (LiveProcesses, _) = (HashMap::new(), tokio::task::JoinSet::new());
+        let sh = |script: &str| vec![serde_json::json!("sh"), serde_json::json!(sh_args(script))];
+        for (id, action, expected) in [(1, "run", vec!["a", "b"]), (2, "capture", vec!["a\nb\n"])] {
+            dispatch(&mut processes, &registry, &done_tx, &mut reaps, &envelope(id, action, sh("printf 'a\nb\n'")));
+            assert_eq!(crate::capabilities::test_support::within(done_rx.recv()).await, Some((1, id)));
+            let lines: Vec<_> = drained(&mut rx).into_iter().map(|line| line.line).collect();
+            assert_eq!(lines, expected, "{action}");
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("detached");
+        dispatch(
+            &mut processes,
+            &registry,
+            &done_tx,
+            &mut reaps,
+            &envelope(3, "detach", sh(&format!("touch '{}'", marker.display()))),
+        );
+        crate::capabilities::test_support::poll_until(|| marker.exists().then_some(())).await;
+    }
+
     async fn captured(script: &str) -> Vec<ProcessOutputLine> {
         let mut processes: LiveProcesses = HashMap::new();
         let (stdout, stderr) = spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args(script)).unwrap();
         let (registry, mut rx) = registry_with_connection(1);
         capture_process_output(&registry, 1, 9, stdout, stderr).await;
-        let mut frames = Vec::new();
-        while let Ok(payload) = rx.try_recv() {
-            match serde_json::from_slice::<SupervisorFrame>(&payload).unwrap() {
-                SupervisorFrame::ProcessOutput(line) => frames.push(line),
-                other => panic!("unexpected frame: {other:?}"),
-            }
-        }
-        frames
+        drained(&mut rx)
     }
 
     #[tokio::test]
@@ -646,16 +712,7 @@ mod tests {
         let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
 
         let started = std::time::Instant::now();
-        let kill = shared::CommandEnvelope {
-            id: 5,
-            params: shared::CommandParams {
-                generation_id: 1,
-                capability: "process".to_string(),
-                action: "kill".to_string(),
-                arguments: vec![],
-                legacy_expected_revision: 0,
-            },
-        };
+        let kill = envelope(5, "kill", vec![]);
         let mut reaps = tokio::task::JoinSet::new();
         dispatch(&mut processes, &registry, &done_tx, &mut reaps, &kill);
         assert!(started.elapsed() < std::time::Duration::from_millis(50));
