@@ -419,7 +419,7 @@ mod tests {
     }
 
     #[test]
-    fn joined_flags_after_a_state_name_are_options_and_a_dash_number_is_a_value() {
+    fn after_the_command_a_command_word_is_an_argument_and_only_a_joined_flag_is_an_option() {
         use shared::{SetState, StateWrite};
         let parsed = parse_args(&["toggle", "open", "--pid=5"]).unwrap();
         assert_eq!(parsed.pid, Some(5));
@@ -428,6 +428,18 @@ mod tests {
         assert_eq!(
             parsed.command,
             Command::SetState(SetState { name: "x".into(), write: StateWrite::Set(serde_json::json!(-1)) })
+        );
+        assert_eq!(
+            parse_args(&["call", "stop"]).unwrap().command,
+            Command::Call { name: "stop".into(), arguments: vec![] }
+        );
+        assert_eq!(
+            parse_args(&["set", "log", "true"]).unwrap().command,
+            Command::SetState(SetState { name: "log".into(), write: StateWrite::Set(serde_json::json!(true)) })
+        );
+        assert_eq!(
+            parse_args(&["toggle", "list"]).unwrap().command,
+            Command::SetState(SetState { name: "list".into(), write: StateWrite::Toggle })
         );
     }
 

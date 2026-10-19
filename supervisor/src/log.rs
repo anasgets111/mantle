@@ -200,6 +200,39 @@ mod tests {
         assert_eq!(pending, b"c");
     }
 
+    /// Counts flushes, one per pass of the follow loop.
+    struct Passes(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Write for Passes {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_follow_waits_a_poll_between_passes_over_a_live_log() {
+        let root = tempfile::tempdir().unwrap();
+        let (dir, held) = instance::claim(root.path(), 42, Path::new("/cfg")).unwrap();
+        File::create(dir.join(instance::LOG)).unwrap();
+        let passes = std::sync::Arc::default();
+        let counter = std::sync::Arc::clone(&passes);
+        let start = std::time::Instant::now();
+        let follower = std::thread::spawn(move || print(&dir, true, false, &mut Passes(counter)).unwrap());
+
+        while passes.load(std::sync::atomic::Ordering::SeqCst) < 3 {
+            assert!(start.elapsed() < Duration::from_secs(5), "the follow stopped passing over the log");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(start.elapsed() >= 2 * POLL, "three passes in {:?}: the follow is spinning", start.elapsed());
+        drop(held);
+        follower.join().unwrap();
+    }
+
     #[test]
     fn a_follow_ends_when_its_supervisor_drops_the_lock() {
         use std::io::Read;

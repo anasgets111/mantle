@@ -215,7 +215,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             }
             Ok(())
         }
-        cli::Command::Stop => instance::stop(&instance(false)?),
+        cli::Command::Stop => instance::stop(&instance(false)?, instance::STOP_WAIT),
         cli::Command::Check => match setup::check(&config_dir()?) {
             Ok(report) => {
                 print!("{report}");

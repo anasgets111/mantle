@@ -111,3 +111,68 @@ pub fn list(declared: Declared, instance_dir: &Path) -> Result<(), Box<dyn Error
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use shared::framing::{read_frame_blocking, write_frame_blocking};
+
+    use super::*;
+
+    /// Answers one control connection in `dir` with `outcome`; joins to the frame it was sent.
+    fn serve_once(dir: &Path, outcome: CallOutcome) -> std::thread::JoinHandle<RendererFrame> {
+        let listener = std::os::unix::net::UnixListener::bind(shared::control_socket_path(dir)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        std::thread::spawn(move || {
+            // A client that never connects fails here rather than hanging `join`.
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && std::time::Instant::now() < deadline => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(e) => panic!("no control client connected: {e}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            let handshake: ConnectionHandshake =
+                serde_json::from_slice(&read_frame_blocking(&mut stream).unwrap()).unwrap();
+            assert_eq!(handshake.generation_id, CONTROL_CLIENT_GENERATION);
+            let frame = serde_json::from_slice(&read_frame_blocking(&mut stream).unwrap()).unwrap();
+            let answer = SupervisorFrame::CallResult(shared::CallResult { id: 0, outcome });
+            write_frame_blocking(&mut stream, &serde_json::to_vec(&answer).unwrap()).unwrap();
+            frame
+        })
+    }
+
+    #[test]
+    fn each_command_sends_its_frame_and_a_refusal_fails_it() {
+        let set = SetState { name: "open".into(), write: shared::StateWrite::Toggle };
+        let inject = shared::Inject { surface: "bar".into(), steps: Vec::new() };
+        type Client = Box<dyn Fn(&Path) -> Result<(), Box<dyn Error>>>;
+        let cases: [(RendererFrame, Client); 4] = [
+            (RendererFrame::SetState { id: 0, set: set.clone() }, Box::new(move |dir| send(set.clone(), dir))),
+            (
+                RendererFrame::Call(Call { id: 0, name: "go".into(), arguments: vec![serde_json::json!(1)] }),
+                Box::new(|dir| call("go".into(), vec![serde_json::json!(1)], dir)),
+            ),
+            (
+                RendererFrame::Inject { id: 0, inject: inject.clone() },
+                Box::new(move |dir| super::inject(inject.clone(), dir)),
+            ),
+            (
+                RendererFrame::ListDeclared { id: 0, declared: Declared::Actions },
+                Box::new(|dir| list(Declared::Actions, dir)),
+            ),
+        ];
+        for (expected, client) in cases {
+            for outcome in [CallOutcome::Failed("no".into()), CallOutcome::Returned(serde_json::json!([]))] {
+                let dir = tempfile::tempdir().unwrap();
+                let refused = matches!(outcome, CallOutcome::Failed(_));
+                let server = serve_once(dir.path(), outcome);
+                assert_eq!(client(dir.path()).is_err(), refused, "{expected:?}");
+                assert_eq!(server.join().unwrap(), expected);
+            }
+        }
+    }
+}

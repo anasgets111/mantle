@@ -99,19 +99,20 @@ pub fn list(root: &Path) -> Vec<Instance> {
 }
 
 /// Outlasts the Supervisor's slowest shutdown step, a `session_process`'s 5 s stop grace.
-const STOP_WAIT: Duration = Duration::from_secs(10);
+pub const STOP_WAIT: Duration = Duration::from_secs(10);
 
 /// `SIGTERM`, the shutdown Ctrl-C also takes, then waits for the lock: it is released only when the
-/// Supervisor exits, so a caller may start the next shell as soon as this returns.
-pub fn stop(instance: &Instance) -> Result<(), Box<dyn std::error::Error>> {
+/// Supervisor exits, so a caller may start the next shell as soon as this returns. `wait` bounds that
+/// wait (main passes [`STOP_WAIT`]).
+pub fn stop(instance: &Instance, wait: Duration) -> Result<(), Box<dyn std::error::Error>> {
     let pid = nix::unistd::Pid::from_raw(instance.pid as i32);
     if let Err(err) = crate::process::gone_is_ok(nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM)) {
         return Err(format!("cannot signal pid {}: {err}", instance.pid).into());
     }
-    let deadline = std::time::Instant::now() + STOP_WAIT;
+    let deadline = std::time::Instant::now() + wait;
     while is_live(&instance.dir) {
         if std::time::Instant::now() > deadline {
-            return Err(format!("pid {} is still running after {}s", instance.pid, STOP_WAIT.as_secs()).into());
+            return Err(format!("pid {} is still running after {wait:?}", instance.pid).into());
         }
         std::thread::sleep(Duration::from_millis(20));
     }
@@ -188,6 +189,40 @@ pub(crate) mod tests {
     use std::fs::OpenOptions;
 
     use super::*;
+
+    /// A `sleep` stands in for the Supervisor; the lock this process holds for it is released when
+    /// it exits, as the kernel does for a real one.
+    #[test]
+    fn stop_signals_the_supervisor_and_returns_once_its_lock_is_released() {
+        use std::os::unix::process::ExitStatusExt;
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let (dir, held) = claim(root.path(), child.id(), Path::new("/cfg")).unwrap();
+        let instance = list(root.path()).pop().unwrap();
+        let exited = std::thread::spawn(move || {
+            let status = child.wait().unwrap();
+            drop(held);
+            status
+        });
+
+        stop(&instance, STOP_WAIT).unwrap();
+
+        assert!(!is_live(&dir), "stop returned before the lock was released");
+        assert_eq!(exited.join().unwrap().signal(), Some(libc::SIGTERM));
+    }
+
+    #[test]
+    fn stop_gives_up_on_a_supervisor_that_keeps_its_lock() {
+        let root = tempfile::tempdir().unwrap();
+        let mut child = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        let (_dir, _held) = claim(root.path(), child.id(), Path::new("/cfg")).unwrap();
+        let instance = list(root.path()).pop().unwrap();
+
+        let err = stop(&instance, Duration::from_millis(100)).unwrap_err();
+
+        assert!(err.to_string().contains("still running"), "{err}");
+        child.wait().unwrap();
+    }
 
     /// Why it is `F_OFD_GETLK` and not `flock`. OFD locks conflict between two descriptions in one
     /// process as they do between processes, so a second open stands in for a second process.
