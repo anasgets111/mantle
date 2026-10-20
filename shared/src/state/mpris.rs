@@ -76,6 +76,10 @@ pub struct PlayerState {
     pub url: String,
     /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
     pub desktop_entry: String,
+    /// Process id of the bus name's owner, which `mantle.audio.apps[].pid` matches exactly; `nil`
+    /// when the bus refuses. A sandboxed app's streams may report a pid from inside its sandbox.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,
     /// Nearby tracks from the optional MPRIS TrackList interface.
     pub track_list: TrackListState,
     /// One bounded page from the optional MPRIS Playlists interface.

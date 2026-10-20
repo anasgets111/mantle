@@ -351,6 +351,7 @@ pub(super) async fn register_player(
     }
 
     let Resynced { mut state, identity, trackid } = resync(&bus_name, &player, &root, None).await;
+    state.pid = owner_pid(connection, &bus_name).await;
     if let Some(proxy) = &track_list
         && let Ok(tracks) = read_track_list(proxy, trackid.as_deref()).await
     {
@@ -417,6 +418,13 @@ pub(super) async fn register_player(
         None => collections_forwarder.abort(),
     }
     let _ = events.send(());
+}
+
+/// Read once per registration, since a new owner registers the name again; later resyncs keep it.
+async fn owner_pid(connection: &zbus::Connection, bus_name: &str) -> Option<u32> {
+    let name = zbus::names::BusName::try_from(bus_name).ok()?;
+    let read = async { zbus::fdo::DBusProxy::new(connection).await?.get_connection_unix_process_id(name).await };
+    read.await.inspect_err(|err| debug!("no owner pid for {bus_name}: {err}")).ok()
 }
 
 /// Re-runs [`resync`] on each burst of property changes or `Seeked`, updating the entry in place
@@ -789,7 +797,7 @@ mod identity_tests {
 #[cfg(test)]
 mod resync_tests {
     use super::*;
-    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, properties, within};
+    use crate::capabilities::test_support::{p2p_pair_serving, poll_until, private_bus, properties, within};
     use std::sync::atomic::AtomicUsize;
     use std::time::Duration;
     use zbus::zvariant::{ObjectPath, OwnedValue, Value};
@@ -905,6 +913,23 @@ mod resync_tests {
 
         let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
         assert_eq!(ids, ["fixture", "other"]);
+    }
+
+    #[tokio::test]
+    async fn a_player_keeps_its_owner_pid_through_a_resync() {
+        let bus = private_bus().await;
+        let peer = bus.connection().await;
+        peer.object_server().at(PATH, Player::default()).await.unwrap();
+        peer.object_server().at(PATH, Root).await.unwrap();
+        peer.request_name(NAME).await.unwrap();
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        register_player(&bus.connection().await, &registry, &events, NAME.to_string()).await;
+        assert_eq!(last_known(&registry).pid, Some(std::process::id()));
+
+        properties_changed(&peer, HashMap::from([("Volume", 0.25.into())])).await;
+        until(&registry, |state| state.volume == 25.0).await;
+        assert_eq!(last_known(&registry).pid, Some(std::process::id()));
     }
 
     #[tokio::test]

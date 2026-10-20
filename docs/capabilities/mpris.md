@@ -76,6 +76,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `loop_status?` | `LoopStatus` | MPRIS loop mode; `nil` when the player does not report one. |
 | `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
 | `minimum_rate` | `number` | MPRIS minimum playback rate, or `0` when unavailable. |
+| `pid?` | `integer` | Process id of the bus name's owner, which `mantle.audio.apps[].pid` matches exactly; `nil` when the bus refuses. A sandboxed app's streams may report a pid from inside its sandbox. |
 | `play_state` | `PlayState` | MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none. |
 | `playlists` | `PlaylistsState` | One bounded page from the optional MPRIS Playlists interface. |
 | `position?` | `integer` | Playback offset in microseconds as of `position_updated_at`, not polled while playing: add elapsed time. `nil` when unknown. |
