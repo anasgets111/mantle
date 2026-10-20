@@ -451,7 +451,20 @@ fn screensaver_holds(state: &InhibitState) -> Vec<super::state::IdleInhibitor> {
 /// Exports before claiming the name, like the tray watcher: a call routed to the new owner has to
 /// find the object. `DoNotQueue` because a session already running a screensaver daemon keeps it;
 /// queueing would take the name later, mid-session, and answer for holds this shell never saw.
+///
+/// Subscribes to departures first: a client reaches the object only after this, so none can take a
+/// hold and leave unseen while `add_match` is still in flight.
 async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleController) {
+    // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on the
+    // session bus changes some name, and none of those need to wake this shell.
+    let lost = "a crashed screensaver client's hold would outlive it";
+    let departures = match zbus::fdo::DBusProxy::new(session_bus).await {
+        Ok(proxy) => crate::capabilities::name_departures(&proxy, lost).await,
+        Err(err) => {
+            warn!("cannot watch for departing screensaver clients: {err}; {lost}");
+            None
+        }
+    };
     for path in SCREENSAVER_OBJECT_PATHS {
         let export = session_bus.object_server().at(path, ScreenSaver { controller: controller.clone() });
         if let Err(err) = export.await {
@@ -465,7 +478,9 @@ async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleCont
         // A fresh connection with `DoNotQueue` gets only `PrimaryOwner`; zbus turns `Exists` into `NameTaken`.
         Ok(_) => {
             debug!("holding {SCREENSAVER_BUS_NAME}; idle inhibits from browsers and players reach the gate");
-            tokio::spawn(watch_screensaver_peers(session_bus.clone(), controller));
+            if let Some(names) = departures {
+                tokio::spawn(watch_screensaver_peers(names, controller));
+            }
         }
         Err(zbus::Error::NameTaken) => warn!("{SCREENSAVER_BUS_NAME} is taken; another daemon answers its clients"),
         Err(err) => warn!("RequestName({SCREENSAVER_BUS_NAME}) failed: {err}; no client's inhibit reaches this shell"),
@@ -474,18 +489,7 @@ async fn export_screensaver(session_bus: &zbus::Connection, controller: IdleCont
 
 /// Releases a departed client's holds (ADR-0231). A player that crashes mid-video sends no
 /// `UnInhibit`, and nothing else would ever drop what it held.
-async fn watch_screensaver_peers(session_bus: zbus::Connection, controller: IdleController) {
-    let Ok(proxy) = zbus::fdo::DBusProxy::new(&session_bus).await else {
-        warn!("cannot watch for departing screensaver clients; a crashed client's hold would outlive it");
-        return;
-    };
-    // Filtered by the bus on `new_owner == ""`, not here: every application start and exit on the
-    // session bus changes some name, and none of those need to wake this shell.
-    let Some(mut names) =
-        crate::capabilities::name_departures(&proxy, "a crashed screensaver client's hold would outlive it").await
-    else {
-        return;
-    };
+async fn watch_screensaver_peers(mut names: zbus::fdo::NameOwnerChangedStream, controller: IdleController) {
     while let Some(signal) = futures_util::StreamExt::next(&mut names).await {
         let Ok(args) = signal.args() else { continue };
         controller.screensaver_peer_left(&args.name.to_string()).await;
@@ -608,13 +612,10 @@ mod tests {
         within(locks.recv()).await.expect("logind was asked for a lock").1
     }
 
-    /// The lock's read end, which reads EOF once logind sees the lock released.
-    fn read_end(lock: std::io::PipeReader) -> tokio::net::unix::pipe::Receiver {
-        tokio::net::unix::pipe::Receiver::from_owned_fd(lock.into()).expect("a pipe's read end")
-    }
-
+    /// The lock's read end reads EOF once logind sees the lock released.
     async fn released(lock: std::io::PipeReader) {
-        assert_eq!(within(read_end(lock).read(&mut [0])).await.expect("read the lock"), 0, "the lock is still held");
+        let mut lock = tokio::net::unix::pipe::Receiver::from_owned_fd(lock.into()).expect("a pipe's read end");
+        assert_eq!(within(lock.read(&mut [0])).await.expect("read the lock"), 0, "the lock is still held");
     }
 
     async fn screensaver(client: &zbus::Connection) -> zbus::Proxy<'static> {
@@ -654,23 +655,10 @@ mod tests {
         released(lock).await;
         client.call::<_, _, ()>("UnInhibit", &cookie).await.expect_err("nothing holds that cookie any more");
 
-        // The watcher subscribes from a task of its own, so an early departure can pass unseen:
-        // until one is seen, release the missed hold by hand and leave again.
-        within(async {
-            loop {
-                let client = bus.connection().await;
-                let peer = client.unique_name().expect("a bus connection has a name").to_string();
-                let _: u32 = screensaver(&client).await.call("Inhibit", &("", "Playing video")).await.unwrap();
-                let mut lock = read_end(taken(&mut locks).await);
-                client.close().await.expect("leave the bus");
-                if let Ok(read) = tokio::time::timeout(Duration::from_millis(100), lock.read(&mut [0])).await {
-                    assert_eq!(read.expect("read the lock"), 0);
-                    return;
-                }
-                controller.screensaver_peer_left(&peer).await;
-                assert_eq!(lock.read(&mut [0]).await.expect("read the lock"), 0);
-            }
-        })
-        .await;
+        let leaver = bus.connection().await;
+        let _: u32 = screensaver(&leaver).await.call("Inhibit", &("", "Playing video")).await.expect("Inhibit");
+        let lock = taken(&mut locks).await;
+        leaver.close().await.expect("leave the bus");
+        released(lock).await;
     }
 }
