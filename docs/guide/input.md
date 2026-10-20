@@ -102,7 +102,8 @@ armed click; `on_drag` gets no `"end"` and `on_click` does not fire.
 **Drag.** A left press on an `on_drag` node calls `"start"` at once, so clicking a slider track
 also seeks. Every pointer motion on that surface then calls `"move"`, wherever the pointer is.
 `"end"` comes on the left release, when the pointer leaves the surface, or when the surface closes.
-`rect` stays the box from the press for the whole drag. On release, `"end"` fires first and the
+`rect` stays the box from the press for the whole drag, but `pointer` is measured against the
+node's current box, so a node that moves mid-drag shifts it. On release, `"end"` fires first and the
 click (if the node also has `on_click`) after it; a leave ends the drag and cancels the click.
 
 `velocity` is how fast the pointer moved over the last 100 ms, in surface logical px per second,
@@ -809,16 +810,16 @@ return {
 }
 ```
 
-**Drag to reorder.** Each row is an `on_drag` node in a keyed [`list`](../nodes/list.md). The drag
-keeps the row's box from the press, so `pointer.y` divided by the row pitch counts the rows moved.
-The dragged row jumps slot by slot rather than following the pointer; to make it follow, also bind
+**Drag to reorder.** Each row is an `on_drag` node in a keyed [`list`](../nodes/list.md). `pointer` is
+measured against the row's current slot, so `pointer.y` divided by the row pitch counts the rows to
+move from where it is now; offsetting from the slot at the press would undo each move on the next
+motion. The dragged row jumps slot by slot rather than following the pointer; to make it follow, also bind
 its `translate` to the drag offset. There is no drag-and-drop between surfaces or applications, and
 no drag image.
 
 ```lua
 local items = state("order", { "Music", "Mail", "Files", "Terminal" })
 local STEP = 32 -- row height 28 + spacing 4
-local started_at = 1
 
 local function index_of(name)
     for index, other in ipairs(items:get()) do
@@ -834,14 +835,11 @@ local function row_for(name)
         background = "#313244",
         cursor = "grab",
         on_drag = function(_, pointer, phase)
-            if phase == "start" then
-                started_at = index_of(name)
-                return
-            end
-            -- `pointer` is relative to the row's box at the press, so the offset counts rows moved.
+            if phase ~= "move" then return end
+            -- `pointer` is relative to the row's current slot, so the offset counts rows from there.
             local order = { table.unpack(items:get()) }
-            local target = math.max(1, math.min(#order, started_at + math.floor(pointer.y / STEP)))
             local now = index_of(name)
+            local target = math.max(1, math.min(#order, now + math.floor(pointer.y / STEP)))
             if target ~= now then
                 table.insert(order, target, table.remove(order, now))
                 items:set(order)
