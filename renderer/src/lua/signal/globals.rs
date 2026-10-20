@@ -379,15 +379,17 @@ pub fn register(lua: &Lua, dirty: DirtyFlag) -> mlua::Result<()> {
             if let Some((signal, seeded)) = existing {
                 // Existing name wins across reload; an edited `initial` is later than `set` and
                 // reseeds it (ADR-0044 decision 5 amendment). Within one evaluation, two modules
-                // disagreeing would reseed on every reload, so that is refused.
-                if literal_was_edited(&initial, &seeded) == Some(true) {
-                    if repeated {
-                        return Err(mlua::Error::runtime(format!(
-                            "state(\"{name}\", ...) is declared twice in this evaluation with different initial values, {} then {}; expected one seed per name",
-                            preview_for_error(&seeded),
-                            preview_for_error(&initial)
-                        )));
-                    }
+                // disagreeing would reseed on every reload, so that is refused. A table never compares
+                // equal, but a table against a scalar is two shapes for one name.
+                let edited = literal_was_edited(&initial, &seeded) == Some(true);
+                if repeated && (edited || matches!(initial, Value::Table(_)) != matches!(seeded, Value::Table(_))) {
+                    return Err(mlua::Error::runtime(format!(
+                        "state(\"{name}\", ...) is declared twice in this evaluation with different initial values, {} then {}; expected one seed per name",
+                        preview_for_error(&seeded),
+                        preview_for_error(&initial)
+                    )));
+                }
+                if edited {
                     signal.reseed(initial.clone()).map_err(|err| {
                         mlua::Error::runtime(format!(
                             "state(\"{name}\", ...) refused its new initial value at the marshalling boundary: {err}"
@@ -737,6 +739,9 @@ mod tests {
         assert!(err.contains(r#"state("mode", ...) is declared twice in this evaluation"#), "{err}");
         begin_evaluation(&lua);
         lua.load(r#"state("mode", "s") state("mode", "s")"#).exec().expect("the same seed twice agrees");
+        let err = lua.load(r#"state("drag", -1) state("drag", {})"#).exec().unwrap_err().to_string();
+        assert!(err.contains(r#"state("drag", ...) is declared twice in this evaluation"#), "{err}");
+        lua.load(r#"state("rows", {}) state("rows", {})"#).exec().expect("two tables cannot be compared");
     }
 
     #[test]

@@ -88,7 +88,7 @@ snapshot.
 | :--- | :--- |
 | Identity | One name, one signal. `hover`, `pointer`, `scroll`, `geometry`, `elided`, `settled` and `image_status` names are separate namespaces |
 | Reload | Keeps its value across in-place reloads. Lost when the [Renderer](../glossary.md#processes) process is replaced (a crash respawn or a shell restart) |
-| Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise |
+| Changed seed | A scalar `initial` (nil, boolean, number, string) that differs from the last evaluation's re-seeds the value. `0` and `0.0` are equal. Two different scalar seeds for one name in one evaluation raise, as do a table seed and a scalar one |
 | Table seed | Never re-seeds: tables compare by identity, so a fresh table cannot count as a change |
 | Types | Not checked at runtime; `initial` is the type LuaLS infers |
 | CLI | `mantle set <name> <value>` and `mantle toggle <name> [value]` write it ([cli](cli.md)). A bare toggle needs a boolean. Toggling to the value it already holds restores `initial` |
@@ -493,7 +493,7 @@ compositor syntax: [cli](cli.md#cli). For a keybind that runs Lua code, use
 | A map that returns a signal fails with `a Signal resolved to another Signal` | Resolution happens once; return a plain value, or combine the sources with `computed` |
 | `layer`, `anchor`, `output`, `namespace`, `parent` or an `id` bound to a signal is refused | These are structural and take plain values only ([surfaces](../surfaces/index.md)) |
 | A named state resets on every reload | Its scalar seed changed between evaluations. Keep it stable |
-| `state("x", ...) is declared twice in this evaluation` | Two `state` calls give one name different seeds. Declare it in one module and require that |
+| `state("x", ...) is declared twice in this evaluation` | Two `state` calls give one name different seeds, or a table and a scalar. Often a component's `name` (a `slider`'s held drag) shares it. Declare it in one module and require that, or rename one |
 | `delay` on a capability never updates, or `pulse` fires on every push | Payloads are tables, which never compare `==`. Delay or pulse a scalar derived with `:map` |
 | Hiding a view with `visible = false` keeps its whole subtree | Switch views through `children = sig:map(...)` |
 | A `:set` inside a map or computed | Maps must be side-effect free; write state from `on_click`, `on_change` or a `timer` |

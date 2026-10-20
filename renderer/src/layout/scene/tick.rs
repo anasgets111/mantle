@@ -1247,7 +1247,7 @@ mod tests {
             )
             .unwrap();
             lua.load(
-                r#"state("kid", false):set(nil)
+                r#"state("kid", {}):set(nil)
                 state("max_w", 200):set(35)
                 state("max_h", 200):set(15)"#,
             )

@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Breaking: `state(name, initial)` raises when one evaluation seeds a name with a table and a scalar, such as `{}` then `-1`; rename one. Both calls used to return one signal, so the table's reader failed only once its node was built, often in a closed panel, and `mantle check` passed.
+
 ## 0.8.1 - 2026-10-19
 
 - Changed: the LuaLS stubs type `mantle.tray` `menu_type` and `toggle_type`, `mantle.network` `vpns[].kind` and `mantle.bluetooth` device `category` as their literal values, so the editor flags a misspelled comparison. A tray menu entry with an unknown `menu_type` now reads as `"standard"`, and one with an unknown `toggle_type` has `nil` for both `toggle_type` and `toggle_state` (the state was `-1`).
