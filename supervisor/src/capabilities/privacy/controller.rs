@@ -397,6 +397,14 @@ mod tests {
         assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Opened));
         drop(file);
         assert!(matches!(next_device_event(&mut stream).await, DeviceEvent::Closed));
+
+        let written = std::fs::OpenOptions::new().write(true).open(&node).unwrap();
+        assert!(matches!(within(next_device_event(&mut stream)).await, DeviceEvent::Opened));
+        drop(written);
+        assert!(
+            matches!(within(next_device_event(&mut stream)).await, DeviceEvent::Closed),
+            "a write close counts too"
+        );
     }
 
     /// Pids 1111 and 3333 opened the camera; pid 2222 got 1111's fd by fork, so no open event named it.
@@ -454,6 +462,22 @@ mod tests {
             settle(true).await;
             std::fs::remove_file(&node).unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn a_second_camera_joins_the_watch_list_and_a_removed_one_leaves_it() {
+        let dev = tempfile::tempdir().unwrap();
+        let (first, second) = (dev.path().join("video0"), dev.path().join("video1"));
+        std::fs::write(&first, "").unwrap();
+        let mut watch = watch_video_devices(dev.path(), std::slice::from_ref(&first));
+
+        std::fs::write(&second, "").unwrap();
+        assert!(matches!(within(next_device_event(&mut watch)).await, DeviceEvent::Opened));
+        assert_eq!(watched_devices(&watch), vec![first.clone(), second.clone()]);
+
+        std::fs::remove_file(&first).unwrap();
+        assert!(matches!(within(next_device_event(&mut watch)).await, DeviceEvent::Opened));
+        assert_eq!(watched_devices(&watch), vec![second]);
     }
 
     /// Nodes that are not cameras churn in `/dev`; none may pay for a `/proc` scan.

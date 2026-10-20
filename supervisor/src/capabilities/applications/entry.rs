@@ -205,6 +205,8 @@ Exec=firefox --new-window
             ("gimp %U %f %F", argv("gimp", &[])),
             ("prog 100%%", argv("prog", &["100%"])),
             ("prog %z", argv("prog", &["%z"])),
+            (r#"prog "" %f"#, argv("prog", &[""])),
+            ("prog --file=%f", argv("prog", &["--file="])),
             ("%f", None),
             ("   ", None),
         ] {

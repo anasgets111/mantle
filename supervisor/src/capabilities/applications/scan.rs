@@ -373,4 +373,33 @@ mod tests {
         assert_eq!(result.entries.len(), 1);
         assert_eq!(result.entries[0].id, "kde4-konsole");
     }
+
+    #[test]
+    fn walk_stops_at_the_depth_cap_and_survives_a_symlink_fan_out() {
+        let root = tempfile::tempdir().unwrap();
+        // The root is depth 0, so a chain of MAX_DEPTH directories ends at the cap and one more passes it.
+        let deep = (0..MAX_DEPTH).fold(root.path().to_path_buf(), |path, level| path.join(format!("d{level}")));
+        std::fs::create_dir_all(deep.join("past")).unwrap();
+        std::fs::write(deep.join("at-cap.desktop"), "").unwrap();
+        std::fs::write(deep.join("past/past-cap.desktop"), "").unwrap();
+        let (mut dirs, mut files) = (Vec::new(), Vec::new());
+        walk(root.path(), 0, &mut dirs, &mut files);
+        assert_eq!(files, vec![deep.join("at-cap.desktop")]);
+        assert_eq!(dirs.len(), MAX_DEPTH + 1);
+
+        // Two links back to the root: a cycle that fans out, so depth must bound the visits.
+        // A detached thread, so a lost bound fails the timeout instead of hanging the suite.
+        let cyclic = tempfile::tempdir().unwrap();
+        for name in ["x", "y"] {
+            std::os::unix::fs::symlink(cyclic.path(), cyclic.path().join(name)).unwrap();
+        }
+        let (start, (sender, receiver)) = (cyclic.path().to_path_buf(), std::sync::mpsc::channel());
+        std::thread::spawn(move || {
+            let (mut dirs, mut files) = (Vec::new(), Vec::new());
+            walk(&start, 0, &mut dirs, &mut files);
+            let _ = sender.send(dirs.len());
+        });
+        let visited = receiver.recv_timeout(std::time::Duration::from_secs(5)).expect("the walk must end");
+        assert_eq!(visited, (1 << (MAX_DEPTH + 1)) - 1, "2^0 + ... + 2^MAX_DEPTH directories");
+    }
 }

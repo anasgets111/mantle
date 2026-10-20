@@ -88,12 +88,31 @@ mod tests {
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
         let watcher = tokio::spawn(run_reboot_marker_task(marker.clone(), Arc::clone(&state), events_tx));
 
+        // One yield lets the watcher arm before the write, so the create event, not the first stat, carries it.
+        tokio::task::yield_now().await;
         std::fs::write(&marker, "").unwrap();
         wait_for_reboot_required(&state, true).await;
         assert_eq!(events_rx.recv().await, Some(()), "the badge is Lua-visible, so it pushes");
 
         std::fs::remove_file(&marker).unwrap();
         wait_for_reboot_required(&state, false).await;
+
+        watcher.abort();
+    }
+
+    #[tokio::test]
+    async fn a_marker_renamed_into_place_raises_reboot_required() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("reboot-required");
+        let staged = directory.path().join("staged");
+        let state = Arc::new(Mutex::new(UpdatesState::default()));
+        let (events_tx, _events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let watcher = tokio::spawn(run_reboot_marker_task(marker.clone(), Arc::clone(&state), events_tx));
+
+        tokio::task::yield_now().await;
+        std::fs::write(&staged, "").unwrap();
+        std::fs::rename(&staged, &marker).unwrap();
+        wait_for_reboot_required(&state, true).await;
 
         watcher.abort();
     }
