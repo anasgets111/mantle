@@ -5,7 +5,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::capabilities::{RETRY_FIRST, RETRY_MAX, STABLE};
+use crate::capabilities::{RETRY_FIRST, STABLE, next_delay};
 
 use pipewire as pw;
 use pw::keys;
@@ -76,7 +76,7 @@ fn reconnect(
             Err(err) => debug!("cannot reach PipeWire ({err}); retrying in {delay:?}"),
         }
         std::thread::sleep(delay);
-        delay = (delay * 2).min(RETRY_MAX);
+        delay = next_delay(delay);
     }
 }
 

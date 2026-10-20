@@ -12,7 +12,7 @@ use super::proxies::{
     WirelessProxy,
 };
 use super::{NetworkController, NetworkSignal};
-use crate::capabilities::bind;
+use crate::capabilities::{bind, forward_until_closed};
 use shared::{debug, error, warn};
 
 /// One resolved Wi-Fi device: its path for `AddAndActivateConnection2`, plus the `Device` and
@@ -235,8 +235,7 @@ fn spawn_device_state_forwarder(
     events: UnboundedSender<NetworkSignal>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        let mut state_changed = device.receive_state_changed().await;
-        while state_changed.next().await.is_some() && events.send(NetworkSignal::Changed).is_ok() {}
+        forward_until_closed(device.receive_state_changed().await, events, NetworkSignal::Changed).await;
     })
 }
 
@@ -246,13 +245,13 @@ fn spawn_device_state_forwarder(
 pub(super) fn spawn_manager_forwarder(nm: NetworkManagerProxy<'static>, events: UnboundedSender<NetworkSignal>) {
     tokio::spawn(async move {
         // `stream_select!` can re-poll a stream that already ended, so each input is fused.
-        let mut changes = stream_select!(
+        let changes = stream_select!(
             nm.receive_wireless_enabled_changed().await.map(drop).fuse(),
             nm.receive_networking_enabled_changed().await.map(drop).fuse(),
             nm.receive_primary_connection_changed().await.map(drop).fuse(),
             nm.receive_active_connections_changed().await.map(drop).fuse()
         );
-        while changes.next().await.is_some() && events.send(NetworkSignal::Changed).is_ok() {}
+        forward_until_closed(changes, events, NetworkSignal::Changed).await;
     });
 }
 
@@ -273,8 +272,7 @@ pub(super) fn forward<A, B>(
             return error!("failed to subscribe for {signal:?}; those changes need a restart: {err}");
         }
     };
-    let mut changes = stream::select(added.map(drop), removed.map(drop));
-    tokio::spawn(async move { while changes.next().await.is_some() && events.send(signal.clone()).is_ok() {} });
+    tokio::spawn(forward_until_closed(stream::select(added.map(drop), removed.map(drop)), events, signal));
 }
 
 impl NetworkController {
@@ -312,6 +310,37 @@ impl NetworkController {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::{p2p_pair_serving, within};
+
+    struct FakeNm;
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl FakeNm {
+        #[zbus(property)]
+        fn wireless_enabled(&self) -> bool {
+            true
+        }
+    }
+
+    /// zbus primes a property stream with the cached value, so an answering manager reports once.
+    #[tokio::test]
+    async fn the_manager_forwarder_reports_networkmanagers_properties() {
+        let (connection, _nm) = p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/NetworkManager", FakeNm)).await;
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        spawn_manager_forwarder(NetworkManagerProxy::new(&connection).await.unwrap(), events);
+        assert!(matches!(within(signals.recv()).await, Some(NetworkSignal::Changed)));
+    }
+
+    #[tokio::test]
+    async fn each_added_or_removed_item_sends_the_signal() {
+        let (events, mut signals) = tokio::sync::mpsc::unbounded_channel();
+        // Pending, not ended: a forwarder that spins on an ended stream would hang the test.
+        let one = || stream::iter([()]).chain(stream::pending());
+        forward(Ok((one(), one())), NetworkSignal::DevicesChanged, events);
+        for _ in 0..2 {
+            assert!(matches!(within(signals.recv()).await, Some(NetworkSignal::DevicesChanged)));
+        }
+    }
 
     #[tokio::test(start_paused = true)]
     async fn a_burst_of_strength_changes_rebuilds_twice_and_the_last_one_lands() {

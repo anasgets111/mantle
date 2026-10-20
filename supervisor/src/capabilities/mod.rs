@@ -28,6 +28,11 @@ pub const RETRY_MAX: Duration = Duration::from_secs(30);
 /// A connection that lasted this long resets the backoff; a daemon crashing sooner keeps backing off.
 pub const STABLE: Duration = Duration::from_secs(10);
 
+/// The reconnect delay after waiting `delay`: doubled, capped at [`RETRY_MAX`].
+pub fn next_delay(delay: Duration) -> Duration {
+    (delay * 2).min(RETRY_MAX)
+}
+
 /// Every Supervisor bus gets the 25s call timeout Qt, GDBus and libdbus default to; zbus has none
 /// (ADR-0070 amendment).
 pub async fn with_call_timeout(builder: zbus::Result<zbus::connection::Builder<'_>>) -> zbus::Result<zbus::Connection> {
@@ -106,6 +111,15 @@ pub(super) fn publish<S: PartialEq>(state: &Mutex<S>, events: &UnboundedSender<(
     *current = next;
     drop(current);
     events.send(()).is_ok()
+}
+
+/// Sends `signal` once per item of `changes` until the stream ends or the receiver is gone.
+pub(crate) async fn forward_until_closed<T: Clone>(
+    mut changes: impl futures_util::Stream + Unpin,
+    events: UnboundedSender<T>,
+    signal: T,
+) {
+    while futures_util::StreamExt::next(&mut changes).await.is_some() && events.send(signal.clone()).is_ok() {}
 }
 
 /// Truncates to `max_bytes`, backing off to a UTF-8 boundary (bytes, not chars).
@@ -205,5 +219,40 @@ mod tests {
         {
             assert_eq!(truncate_utf8_bytes(input, cap), expected, "{input:?} cap {cap}");
         }
+    }
+
+    #[test]
+    fn the_reconnect_delay_doubles_up_to_its_cap() {
+        assert_eq!(next_delay(RETRY_FIRST), Duration::from_secs(2));
+        assert_eq!(next_delay(Duration::from_secs(16)), RETRY_MAX);
+        assert_eq!(next_delay(RETRY_MAX), RETRY_MAX);
+    }
+
+    /// Yields `items` units, then ends; polling past the end panics, so a forwarder that spins on
+    /// an ended stream fails instead of hanging the test.
+    fn ending(items: usize) -> impl futures_util::Stream<Item = ()> + Unpin {
+        let mut polls = 0;
+        futures_util::stream::poll_fn(move |_| {
+            polls += 1;
+            assert!(polls <= items + 1, "polled past the end");
+            std::task::Poll::Ready((polls <= items).then_some(()))
+        })
+    }
+
+    #[tokio::test]
+    async fn a_forwarder_sends_once_per_item_and_stops_when_its_stream_ends() {
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        test_support::within(forward_until_closed(ending(2), events, 'x')).await;
+        assert_eq!(received.recv().await, Some('x'));
+        assert_eq!(received.recv().await, Some('x'));
+        assert_eq!(received.recv().await, None, "exactly one send per item");
+    }
+
+    #[tokio::test]
+    async fn a_forwarder_stops_once_nobody_listens() {
+        let (events, received) = tokio::sync::mpsc::unbounded_channel();
+        drop(received);
+        let changes = futures_util::StreamExt::chain(futures_util::stream::iter([()]), futures_util::stream::pending());
+        test_support::within(forward_until_closed(changes, events, ())).await;
     }
 }

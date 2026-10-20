@@ -16,7 +16,7 @@ use shared::{debug, warn};
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::{StatePublisher as WindowsPublisher, WindowEntry};
 use crate::capabilities::workspaces::controller::{FocusedWindow, StatePublisher};
-use crate::capabilities::{RETRY_MAX, STABLE};
+use crate::capabilities::{STABLE, next_delay};
 
 mod hyprland;
 mod mango;
@@ -200,9 +200,9 @@ fn lost(workspaces: &mut StatePublisher, windows: &mut WindowsPublisher, overvie
     if workspaces_alive || windows_alive { End::Lost } else { End::Unwanted }
 }
 
-/// Connects, runs `follow`, and reconnects after each loss with `RETRY_FIRST` doubling to
-/// [`RETRY_MAX`] like the audio mixer, until it reports [`End::Unwanted`]. The first connect retries
-/// too. `first_delay` is a parameter for tests.
+/// Connects, runs `follow`, and reconnects after each loss, backing off by [`next_delay`] like the
+/// audio mixer, until it reports [`End::Unwanted`]. The first connect retries too. `first_delay`
+/// is a parameter for tests.
 /// ponytail: a compositor that never comes up keeps one thread retrying every 30 s until exit; stop once the publishers are gone.
 fn keep_following<S>(
     compositor: &str,
@@ -221,7 +221,7 @@ fn keep_following<S>(
             }
             failures += 1;
             std::thread::sleep(delay);
-            delay = (delay * 2).min(RETRY_MAX);
+            delay = next_delay(delay);
         };
         let started = std::time::Instant::now();
         if follow(stream) == End::Unwanted {
@@ -231,7 +231,7 @@ fn keep_following<S>(
             delay = first_delay;
         }
         std::thread::sleep(delay);
-        delay = (delay * 2).min(RETRY_MAX);
+        delay = next_delay(delay);
     }
 }
 

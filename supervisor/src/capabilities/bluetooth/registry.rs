@@ -15,7 +15,7 @@ use shared::{debug, error, info, warn};
 use super::BluetoothSignal;
 use super::agent::{PromptSlot, answer, register_with_bluez};
 use super::proxies::{Adapter1Proxy, Battery1Proxy, Device1Proxy, ObjectManagerStreams};
-use crate::capabilities::bind;
+use crate::capabilities::{bind, forward_until_closed};
 
 /// One tracked `Device1`. Cache `mac` at registration so write actions resolve it with a
 /// synchronous `HashMap` scan, without `.await` in the hot path. Abort `forwarder` on
@@ -167,7 +167,7 @@ fn spawn_device_signal_forwarder(
             None => None,
         };
         // `stream_select!` can re-poll a stream that already ended, so each input is fused.
-        let mut changes = stream_select!(
+        let changes = stream_select!(
             device.receive_connected_changed().await.map(drop).fuse(),
             device.receive_paired_changed().await.map(drop).fuse(),
             device.receive_alias_changed().await.map(drop).fuse(),
@@ -175,7 +175,7 @@ fn spawn_device_signal_forwarder(
             device.receive_blocked_changed().await.map(drop).fuse(),
             stream::iter(percentage).flatten().fuse()
         );
-        while changes.next().await.is_some() && events.send(BluetoothSignal::DeviceRegistryChanged).is_ok() {}
+        forward_until_closed(changes, events, BluetoothSignal::DeviceRegistryChanged).await;
     })
 }
 
@@ -306,12 +306,12 @@ fn spawn_adapter_signal_forwarder(
     events: UnboundedSender<BluetoothSignal>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut changes = stream_select!(
+        let changes = stream_select!(
             adapter.receive_powered_changed().await.map(drop).fuse(),
             adapter.receive_discovering_changed().await.map(drop).fuse(),
             adapter.receive_discoverable_changed().await.map(drop).fuse()
         );
-        while changes.next().await.is_some() && events.send(BluetoothSignal::AdapterChanged).is_ok() {}
+        forward_until_closed(changes, events, BluetoothSignal::AdapterChanged).await;
     })
 }
 

@@ -125,6 +125,12 @@ pub(crate) struct InhibitState {
     pub(crate) fd: Option<zbus::zvariant::OwnedFd>,
 }
 
+impl Default for InhibitState {
+    fn default() -> Self {
+        Self { counts: HashMap::new(), screensaver: BTreeMap::new(), next_cookie: 1, fd: None }
+    }
+}
+
 /// The exported `org.freedesktop.ScreenSaver` object (ADR-0231), registered on both object paths
 /// KDE established and every client since expects.
 #[derive(Clone)]
@@ -173,7 +179,7 @@ pub(crate) struct LiveInhibit {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     // ---- apply_inhibit / apply_release_inhibit (inhibit refcount arithmetic, TDD seam 2) ----
@@ -195,10 +201,6 @@ mod tests {
 
     // ---- ScreenSaver holds (ADR-0231): the inbound half, sharing one fd with the config's ----
 
-    fn state() -> InhibitState {
-        InhibitState { counts: HashMap::new(), screensaver: BTreeMap::new(), next_cookie: 1, fd: None }
-    }
-
     /// What the portal sends: no application name, a reason worth drawing.
     fn hold(why: &str) -> IdleInhibitor {
         IdleInhibitor { who: String::new(), why: why.to_string() }
@@ -206,7 +208,7 @@ mod tests {
 
     #[test]
     fn the_first_screensaver_hold_opens_the_fd_and_cookies_start_at_one() {
-        let mut state = state();
+        let mut state = InhibitState::default();
 
         let (first, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
 
@@ -222,7 +224,7 @@ mod tests {
     /// same fd, so neither can drop it while the other wants it.
     #[test]
     fn a_screensaver_hold_neither_reopens_nor_closes_the_fd_a_config_generation_holds() {
-        let mut state = state();
+        let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
 
         let (cookie, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
@@ -235,7 +237,7 @@ mod tests {
 
     #[test]
     fn releasing_an_unknown_or_foreign_cookie_moves_no_refcount() {
-        let mut state = state();
+        let mut state = InhibitState::default();
         let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
         assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
         apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
@@ -247,7 +249,7 @@ mod tests {
 
     #[test]
     fn a_departed_peer_loses_its_own_holds_and_no_one_elses() {
-        let mut state = state();
+        let mut state = InhibitState::default();
         apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
         apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio"));
         let (survivor, _) = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting"));
@@ -264,7 +266,7 @@ mod tests {
     /// own generation, and a film playing through it must not lose its hold.
     #[test]
     fn a_config_reload_reaps_its_generation_without_touching_a_screensaver_hold() {
-        let mut state = state();
+        let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
         let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
 
@@ -295,20 +297,20 @@ mod tests {
 
     use crate::capabilities::test_support::p2p_pair_serving;
 
-    /// Stand-in for logind's `org.freedesktop.login1.Manager`; returns `/dev/null` so the proxy
-    /// receives a real `OwnedFd`.
-    struct StubLogin1Manager {
-        calls: tokio::sync::mpsc::UnboundedSender<(String, String, String, String)>,
+    /// Stand-in for logind's `org.freedesktop.login1.Manager`. Its lock is a fresh pipe's write end;
+    /// the read end goes to the test with the call, and reads EOF once every copy of the lock closes.
+    pub(in crate::capabilities::idle) struct StubLogin1Manager {
+        pub(in crate::capabilities::idle) calls:
+            tokio::sync::mpsc::UnboundedSender<((String, String, String, String), std::io::PipeReader)>,
     }
 
     #[zbus::interface(name = "org.freedesktop.login1.Manager")]
     impl StubLogin1Manager {
         #[zbus(name = "Inhibit")]
         fn inhibit(&self, what: String, who: String, why: String, mode: String) -> zbus::zvariant::OwnedFd {
-            let _ = self.calls.send((what, who, why, mode));
-            let file = std::fs::File::open("/dev/null").expect("open /dev/null for a test fd");
-            let owned: std::os::fd::OwnedFd = file.into();
-            zbus::zvariant::OwnedFd::from(owned)
+            let (lock, held) = std::io::pipe().expect("a pipe to stand in for the lock");
+            let _ = self.calls.send(((what, who, why, mode), lock));
+            std::os::fd::OwnedFd::from(held).into()
         }
     }
 
@@ -335,7 +337,7 @@ mod tests {
         // OwnedFd::drop must close it cleanly without panicking.
         drop(fd);
 
-        let (what, who, why, mode) = calls_rx.recv().await.expect("stub Login1Manager never received Inhibit");
+        let ((what, who, why, mode), _) = calls_rx.recv().await.expect("stub Login1Manager never received Inhibit");
         assert_eq!(what, "idle");
         assert_eq!(who, "mantle");
         assert_eq!(why, "playing a video");

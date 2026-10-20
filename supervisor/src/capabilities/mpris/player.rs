@@ -487,7 +487,8 @@ fn spawn_player_forwarder(
                         debug!(
                             "Seeked subscription failed for {bus_name}; retrying while forwarding properties: {err}"
                         );
-                        retry_seeked_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+                        // For its retry scheduling only: `seeked` is already `None` here.
+                        seeked_wake(None, &mut seeked, &mut retry_seeked_at);
                     }
                 }
                 continue;
@@ -1034,5 +1035,14 @@ mod ordering_tests {
         }
         let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
         assert_eq!(ids, ["first", "second", "third"], "an alphabetical sort would answer the other way");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn an_ended_seeked_stream_resubscribes_a_second_later() {
+        let mut seeked = None;
+        let mut retry_seeked_at = None;
+        seeked_wake(None, &mut seeked, &mut retry_seeked_at);
+        let retry = retry_seeked_at.expect("an ended stream schedules a resubscribe");
+        assert_eq!(retry - tokio::time::Instant::now(), std::time::Duration::from_secs(1));
     }
 }

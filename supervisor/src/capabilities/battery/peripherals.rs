@@ -11,7 +11,7 @@ use tokio::task::JoinHandle;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::controller::{DISPLAY_DEVICE, device_properties, from_upower, get};
-use crate::capabilities::properties_proxy;
+use crate::capabilities::{forward_until_closed, properties_proxy};
 
 #[zbus::proxy(
     interface = "org.freedesktop.UPower",
@@ -121,8 +121,8 @@ async fn watch(
     changed: UnboundedSender<()>,
 ) -> zbus::Result<Watch> {
     let properties = properties_proxy(connection, "org.freedesktop.UPower", path.clone()).await?;
-    let mut stream = properties.receive_properties_changed().await?;
-    let forwarder = tokio::spawn(async move { while stream.next().await.is_some() && changed.send(()).is_ok() {} });
+    let stream = properties.receive_properties_changed().await?;
+    let forwarder = tokio::spawn(forward_until_closed(stream, changed, ()));
     Ok(Watch { properties, forwarder })
 }
 

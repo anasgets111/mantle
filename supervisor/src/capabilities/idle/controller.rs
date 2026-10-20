@@ -1,6 +1,5 @@
 //! [`IdleController`]: `mantle.idle`'s write dispatcher and state owner for notify and inhibit.
 
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -151,15 +150,7 @@ impl IdleController {
             gate: gate.clone(),
             state_tx: state_tx.clone(),
             pending: Arc::new(std::sync::Mutex::new(Vec::new())),
-            inhibit: Arc::new(LiveInhibit {
-                system_bus,
-                state: tokio::sync::Mutex::new(InhibitState {
-                    counts: HashMap::new(),
-                    screensaver: std::collections::BTreeMap::new(),
-                    next_cookie: 1,
-                    fd: None,
-                }),
-            }),
+            inhibit: Arc::new(LiveInhibit { system_bus, state: tokio::sync::Mutex::default() }),
         };
 
         if let Some(session_bus) = session_bus {
@@ -568,7 +559,14 @@ async fn watch_idle_inhibitors(
 
 #[cfg(test)]
 mod tests {
+    use tokio::io::AsyncReadExt;
+    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
+
+    use super::super::inhibit::tests::StubLogin1Manager;
     use super::*;
+    use crate::capabilities::test_support::{p2p_pair_serving, private_bus, within};
+
+    type Inhibited = ((String, String, String, String), std::io::PipeReader);
 
     /// An active seat gives no compositor answer. Keep the last gate value but stop presenting its
     /// unnamed holder as current; the next idle period can confirm or clear it.
@@ -587,5 +585,92 @@ mod tests {
         published.set_wayland_inhibited(Some(false));
         assert!(!published.merged().inhibited, "a reap with no listeners left must be able to clear it");
         assert!(!published.merged().compositor_hold_stale);
+    }
+
+    /// The inhibit half on a stub logind, with notify left inert: `new` would dial the session's
+    /// compositor. The connection keeps logind answering.
+    async fn controller() -> (IdleController, UnboundedReceiver<Inhibited>, zbus::Connection) {
+        let (locks, taken) = unbounded_channel();
+        let (system_bus, logind) =
+            p2p_pair_serving(|peer| peer.serve_at("/org/freedesktop/login1", StubLogin1Manager { calls: locks })).await;
+        let controller = IdleController {
+            pending: Arc::default(),
+            notify: Arc::new(RwLock::new(NotifyState::Inert)),
+            inhibit: Arc::new(LiveInhibit { system_bus, state: tokio::sync::Mutex::default() }),
+            published: Arc::default(),
+            gate: Arc::default(),
+            state_tx: unbounded_channel().0,
+        };
+        (controller, taken, logind)
+    }
+
+    async fn taken(locks: &mut UnboundedReceiver<Inhibited>) -> std::io::PipeReader {
+        within(locks.recv()).await.expect("logind was asked for a lock").1
+    }
+
+    /// The lock's read end, which reads EOF once logind sees the lock released.
+    fn read_end(lock: std::io::PipeReader) -> tokio::net::unix::pipe::Receiver {
+        tokio::net::unix::pipe::Receiver::from_owned_fd(lock.into()).expect("a pipe's read end")
+    }
+
+    async fn released(lock: std::io::PipeReader) {
+        assert_eq!(within(read_end(lock).read(&mut [0])).await.expect("read the lock"), 0, "the lock is still held");
+    }
+
+    async fn screensaver(client: &zbus::Connection) -> zbus::Proxy<'static> {
+        zbus::Proxy::new(client, SCREENSAVER_BUS_NAME, SCREENSAVER_OBJECT_PATHS[0], SCREENSAVER_BUS_NAME)
+            .await
+            .expect("bind the exported ScreenSaver")
+    }
+
+    #[tokio::test]
+    async fn a_config_releasing_or_leaving_with_the_last_hold_closes_the_logind_lock() {
+        let (controller, mut locks, _logind) = controller().await;
+
+        controller.inhibit(1, "presenting").await;
+        let lock = taken(&mut locks).await;
+        assert!(controller.inhibit.state.lock().await.fd.is_some());
+        controller.release_inhibit(1).await;
+        released(lock).await;
+
+        controller.inhibit(2, "presenting").await;
+        let lock = taken(&mut locks).await;
+        controller.reset_registrations(2).await;
+        released(lock).await;
+    }
+
+    /// The whole inbound path on a bus: a client's `UnInhibit`, and a client that leaves holding one.
+    #[tokio::test]
+    async fn a_screensaver_client_releasing_or_leaving_closes_the_logind_lock() {
+        let (controller, mut locks, _logind) = controller().await;
+        let bus = private_bus().await;
+        let session = bus.connection().await;
+        export_screensaver(&session, controller.clone()).await;
+        let client = screensaver(&bus.connection().await).await;
+
+        let cookie: u32 = client.call("Inhibit", &("", "Playing video")).await.expect("Inhibit");
+        let lock = taken(&mut locks).await;
+        client.call::<_, _, ()>("UnInhibit", &cookie).await.expect("UnInhibit of a live cookie");
+        released(lock).await;
+        client.call::<_, _, ()>("UnInhibit", &cookie).await.expect_err("nothing holds that cookie any more");
+
+        // The watcher subscribes from a task of its own, so an early departure can pass unseen:
+        // until one is seen, release the missed hold by hand and leave again.
+        within(async {
+            loop {
+                let client = bus.connection().await;
+                let peer = client.unique_name().expect("a bus connection has a name").to_string();
+                let _: u32 = screensaver(&client).await.call("Inhibit", &("", "Playing video")).await.unwrap();
+                let mut lock = read_end(taken(&mut locks).await);
+                client.close().await.expect("leave the bus");
+                if let Ok(read) = tokio::time::timeout(Duration::from_millis(100), lock.read(&mut [0])).await {
+                    assert_eq!(read.expect("read the lock"), 0);
+                    return;
+                }
+                controller.screensaver_peer_left(&peer).await;
+                assert_eq!(lock.read(&mut [0]).await.expect("read the lock"), 0);
+            }
+        })
+        .await;
     }
 }
