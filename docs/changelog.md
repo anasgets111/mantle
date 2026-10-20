@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.9.0 - 2026-10-20
+
 - Added: `mantle.mpris` players carry `pid`, the process that owns the player, so a config can match a player to its `mantle.audio.apps[]` stream by `pid` instead of by name. It is `nil` when the bus does not report one.
 - Added: `mantle.audio.apps[].media_name`, PipeWire's `media.name` for the stream, such as a browser tab's `"YouTube Music"`, so a config can tell one app's streams apart. It updates as the tab navigates.
 - Breaking: `state(name, initial)` raises when one evaluation seeds a name with a table and a scalar, such as `{}` then `-1`; rename one. Both calls used to return one signal, so the table's reader failed only once its node was built, often in a closed panel, and `mantle check` passed.
