@@ -48,6 +48,7 @@ One app's playback or recording stream. Streams without a pid are left out.
 | `binary?` | `string` | `application.process.binary`, e.g. `"firefox"`. |
 | `icon?` | `string` | XDG icon name from `application.icon-name`, else `media.icon-name`, e.g. `"firefox"`. |
 | `id` | `integer` | PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`. |
+| `media_name?` | `string` | `media.name`, which tells one app's streams apart, e.g. a browser tab's `"YouTube Music"`. Follows the stream as the client renames it. |
 | `muted` | `boolean` | Stream mute; `false` until `volume` is known. |
 | `name?` | `string` | `application.name`, if the client set one. |
 | `pid` | `integer` | Owning process id, from `application.process.id`. |

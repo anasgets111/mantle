@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.audio.apps[].media_name`, PipeWire's `media.name` for the stream, such as a browser tab's `"YouTube Music"`, so a config can tell one app's streams apart. It updates as the tab navigates.
 - Breaking: `state(name, initial)` raises when one evaluation seeds a name with a table and a scalar, such as `{}` then `-1`; rename one. Both calls used to return one signal, so the table's reader failed only once its node was built, often in a closed panel, and `mantle check` passed.
 
 ## 0.8.1 - 2026-10-19

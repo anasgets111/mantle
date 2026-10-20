@@ -47,6 +47,7 @@
 ---@field binary? string `application.process.binary`, e.g. `"firefox"`.
 ---@field icon? string XDG icon name from `application.icon-name`, else `media.icon-name`, e.g. `"firefox"`.
 ---@field id integer PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`.
+---@field media_name? string `media.name`, which tells one app's streams apart, e.g. a browser tab's `"YouTube Music"`. Follows the stream as the client renames it.
 ---@field muted boolean Stream mute; `false` until `volume` is known.
 ---@field name? string `application.name`, if the client set one.
 ---@field pid integer Owning process id, from `application.process.id`.

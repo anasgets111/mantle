@@ -111,6 +111,10 @@ pub struct AppStream {
     pub pid: i32,
     /// `application.name`, if the client set one.
     pub name: Option<String>,
+    /// `media.name`, which tells one app's streams apart, e.g. a browser tab's `"YouTube Music"`.
+    /// Follows the stream as the client renames it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub media_name: Option<String>,
     /// `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read.
     pub process_name: Option<String>,
     /// `application.process.binary`, e.g. `"firefox"`.

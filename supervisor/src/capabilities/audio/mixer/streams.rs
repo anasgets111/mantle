@@ -111,6 +111,7 @@ fn parse_stream_props(
         id: node_id,
         pid,
         name: prop(*keys::APP_NAME),
+        media_name: prop(*keys::MEDIA_NAME),
         // The node's earlier name stands until it is removed; its `comm` is not reread on every PROPS event.
         process_name: known
             .filter(|app| app.pid == pid)
@@ -543,6 +544,11 @@ mod tests {
             vec![parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None).unwrap()]
         );
         assert!(!apply_info_event(proc.path(), &mut apps, 1, true, Some(&zen_browser_stream_props())));
+
+        let mut renamed = zen_browser_stream_props();
+        renamed.insert("media.name".to_string(), "YouTube Music".to_string());
+        assert!(apply_info_event(proc.path(), &mut apps, 1, true, Some(&renamed)), "a tab rename republishes");
+        assert_eq!(apps[&1].media_name.as_deref(), Some("YouTube Music"));
     }
 
     #[test]

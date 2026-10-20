@@ -300,6 +300,7 @@ mod tests {
             id: node_id,
             pid: 100 + node_id as i32,
             name: Some(format!("app-{node_id}")),
+            media_name: None,
             process_name: None,
             binary: None,
             icon: None,
