@@ -17,7 +17,7 @@ struct DecodedSound {
 }
 
 const MAX_SOUND_FILE_BYTES: u64 = 4 << 20;
-const MAX_SOUND_SECONDS: usize = 30;
+const MAX_SOUND_LENGTH: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Roots for `set_sound`, `sound-file` and `sound-name`, apart from the icon roots so `image-path`
 /// never reaches `/opt`. Apps ship sounds under `/usr/share/<app>/`; the decode caps bound the rest.
@@ -40,7 +40,7 @@ pub(super) fn resolve_sound_name(name: &str, roots: &[PathBuf]) -> Option<PathBu
 /// ponytail: Ogg Vorbis, what the theme ships, and 16-bit PCM WAV, what Telegram's sound-file is;
 /// FLAC or Opus need another decoder. Any client can name the file, so size, length, channels, rate
 /// and chaining are capped.
-fn decode_sound(path: &Path) -> Result<DecodedSound, Box<dyn std::error::Error>> {
+fn decode_sound(path: &Path, max_length: std::time::Duration) -> Result<DecodedSound, Box<dyn std::error::Error>> {
     let file = std::fs::File::open(path)?;
     if file.metadata()?.len() > MAX_SOUND_FILE_BYTES {
         return Err("larger than 4 MiB".into());
@@ -48,12 +48,12 @@ fn decode_sound(path: &Path) -> Result<DecodedSound, Box<dyn std::error::Error>>
     let mut file = std::io::BufReader::new(file);
     // The header, not the client's extension, picks the decoder.
     if std::io::BufRead::fill_buf(&mut file)?.starts_with(b"RIFF") {
-        return decode_wav(file);
+        return decode_wav(file, max_length);
     }
     let mut reader = lewton::inside_ogg::OggStreamReader::new(file)?;
     let channels = u32::from(reader.ident_hdr.audio_channels);
     let sample_rate = reader.ident_hdr.audio_sample_rate;
-    let max_samples = max_samples(channels, sample_rate)?;
+    let max_samples = max_samples(channels, sample_rate, max_length)?;
     // lewton silently rereads headers for a chained stream, which can change channels mid-file.
     let serial = reader.stream_serial();
     let mut samples = Vec::new();
@@ -70,25 +70,32 @@ fn decode_sound(path: &Path) -> Result<DecodedSound, Box<dyn std::error::Error>>
 }
 
 /// 16-bit only: hound hands other widths back unscaled as `i16`, so 8-bit plays at 1/256 volume.
-fn decode_wav(file: impl std::io::Read) -> Result<DecodedSound, Box<dyn std::error::Error>> {
+fn decode_wav(
+    file: impl std::io::Read,
+    max_length: std::time::Duration,
+) -> Result<DecodedSound, Box<dyn std::error::Error>> {
     let wav = hound::WavReader::new(file)?;
     let spec = wav.spec();
     if spec.sample_format != hound::SampleFormat::Int || spec.bits_per_sample != 16 {
         return Err("WAV is not 16-bit PCM".into());
     }
     let (channels, sample_rate) = (u32::from(spec.channels), spec.sample_rate);
-    if wav.len() as usize > max_samples(channels, sample_rate)? {
+    if wav.len() as usize > max_samples(channels, sample_rate, max_length)? {
         return Err("longer than 30 seconds".into());
     }
     Ok(DecodedSound { channels, sample_rate, samples: wav.into_samples().collect::<Result<_, _>>()? })
 }
 
-/// Interleaved samples in 30 seconds, once channels and rate are known to be playable.
-fn max_samples(channels: u32, sample_rate: u32) -> Result<usize, Box<dyn std::error::Error>> {
+/// Interleaved samples in `length`, once channels and rate are known to be playable.
+fn max_samples(
+    channels: u32,
+    sample_rate: u32,
+    length: std::time::Duration,
+) -> Result<usize, Box<dyn std::error::Error>> {
     if !(1..=2).contains(&channels) || !(8_000..=192_000).contains(&sample_rate) {
         return Err(format!("unsupported {channels} channels at {sample_rate} Hz").into());
     }
-    Ok(MAX_SOUND_SECONDS * sample_rate as usize * channels as usize)
+    Ok((length.as_micros() * u128::from(sample_rate) * u128::from(channels) / 1_000_000) as usize)
 }
 
 /// Decodes and plays each request through a fresh one-shot PipeWire stream (ADR-0033: no
@@ -118,7 +125,7 @@ struct PlaybackState {
 const CHAN_SIZE: usize = std::mem::size_of::<i16>();
 
 fn play_one(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    let decoded = decode_sound(path)?;
+    let decoded = decode_sound(path, MAX_SOUND_LENGTH)?;
     if decoded.samples.is_empty() {
         return Ok(());
     }
@@ -248,40 +255,54 @@ fn play_one(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
 
+    fn wav(channels: u16, sample_rate: u32, bits_per_sample: u16, samples: &[i16]) -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::with_suffix(".oga").unwrap();
+        let spec = hound::WavSpec { channels, sample_rate, bits_per_sample, sample_format: hound::SampleFormat::Int };
+        let mut writer = hound::WavWriter::create(file.path(), spec).unwrap();
+        samples.iter().for_each(|&sample| writer.write_sample(sample).unwrap());
+        writer.finalize().unwrap();
+        file
+    }
+
+    fn decode_error(file: &tempfile::NamedTempFile, length: std::time::Duration) -> Option<String> {
+        decode_sound(file.path(), length).err().map(|err| err.to_string())
+    }
+
     /// The Ogg branch, on a committed fixture rather than the installed theme a machine need not
     /// have: nothing in this tree encodes Vorbis, and 2.7KB is a stream's floor -- the codebooks
     /// in its setup header. 20ms of 8kHz mono from `ffmpeg -c:a libvorbis`, kept out of `src`,
-    /// whose every file `capabilities::test_support` reads as UTF-8 source.
+    /// whose every file `capabilities::test_support` reads as UTF-8 source. Also pins the cap:
+    /// exactly the decoded length passes, one sample less errors.
     #[test]
-    fn decode_sound_reads_ogg_vorbis() {
+    fn decode_sound_reads_ogg_vorbis_and_stops_it_at_the_cap() {
         let file = tempfile::NamedTempFile::with_suffix(".oga").unwrap();
         std::fs::write(file.path(), include_bytes!("../../../fixtures/test-tone.oga")).unwrap();
-        let decoded = decode_sound(file.path()).expect("must decode Ogg Vorbis");
+        let decoded = decode_sound(file.path(), MAX_SOUND_LENGTH).expect("must decode Ogg Vorbis");
         assert_eq!((decoded.channels, decoded.sample_rate), (1, 8_000));
         assert!(!decoded.samples.is_empty());
+        let at = |samples: usize| std::time::Duration::from_micros(samples as u64 * 125);
+        assert!(decode_sound(file.path(), at(decoded.samples.len())).is_ok(), "exactly at the cap");
+        assert_eq!(decode_error(&file, at(decoded.samples.len() - 1)), Some("longer than 30 seconds".into()));
     }
 
     #[test]
     fn decode_sound_reads_16_bit_wav_whatever_the_extension() {
-        let file = tempfile::NamedTempFile::with_suffix(".oga").unwrap();
-        let spec = hound::WavSpec {
-            channels: 2,
-            sample_rate: 44_100,
-            bits_per_sample: 16,
-            sample_format: hound::SampleFormat::Int,
-        };
-        let mut writer = hound::WavWriter::create(file.path(), spec).unwrap();
-        [1i16, -1, 2, -2].into_iter().for_each(|sample| writer.write_sample(sample).unwrap());
-        writer.finalize().unwrap();
-        let decoded = decode_sound(file.path()).expect("must decode a 16-bit WAV");
+        let file = wav(2, 44_100, 16, &[1, -1, 2, -2]);
+        let decoded = decode_sound(file.path(), MAX_SOUND_LENGTH).expect("must decode a 16-bit WAV");
         assert_eq!((decoded.channels, decoded.sample_rate, decoded.samples), (2, 44_100, vec![1, -1, 2, -2]));
     }
 
     #[test]
     fn decode_sound_refuses_a_file_over_the_size_cap_before_decoding() {
         let file = tempfile::NamedTempFile::new().unwrap();
+        file.as_file().set_len(MAX_SOUND_FILE_BYTES).unwrap();
+        assert_ne!(
+            decode_error(&file, MAX_SOUND_LENGTH),
+            Some("larger than 4 MiB".into()),
+            "the cap itself is allowed"
+        );
         file.as_file().set_len(MAX_SOUND_FILE_BYTES + 1).unwrap();
-        assert_eq!(decode_sound(file.path()).err().map(|err| err.to_string()), Some("larger than 4 MiB".into()));
+        assert_eq!(decode_error(&file, MAX_SOUND_LENGTH), Some("larger than 4 MiB".into()));
     }
 
     #[test]
@@ -294,5 +315,24 @@ mod tests {
         let roots = [root.path().to_path_buf()];
         assert_eq!(resolve_sound_name("bell", &roots), Some(stereo.join("bell.oga").canonicalize().unwrap()));
         assert_eq!(resolve_sound_name("../../../other", &roots), None, "a trusted root is not the theme");
+    }
+
+    #[test]
+    fn decode_sound_caps_a_wav_at_30_seconds_per_channel_and_refuses_other_formats() {
+        for (channels, cap) in [(1u16, 240_000), (2, 480_000)] {
+            let at_cap = wav(channels, 8_000, 16, &vec![0; cap]);
+            assert_eq!(decode_sound(at_cap.path(), MAX_SOUND_LENGTH).unwrap().samples.len(), cap);
+            let over = wav(channels, 8_000, 16, &vec![0; cap + usize::from(channels)]);
+            assert_eq!(decode_error(&over, MAX_SOUND_LENGTH), Some("longer than 30 seconds".into()));
+        }
+        let eight_bit = wav(1, 8_000, 8, &[0; 4]);
+        assert_eq!(decode_error(&eight_bit, MAX_SOUND_LENGTH), Some("WAV is not 16-bit PCM".into()));
+        for (channels, rate) in [(3, 8_000), (1, 7_999)] {
+            let file = wav(channels, rate, 16, &[0; 6]);
+            assert_eq!(
+                decode_error(&file, MAX_SOUND_LENGTH),
+                Some(format!("unsupported {channels} channels at {rate} Hz"))
+            );
+        }
     }
 }

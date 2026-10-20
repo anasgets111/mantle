@@ -169,6 +169,21 @@ pub(super) fn resolve_app_icon(app_icon: Option<String>, trusted_roots: &[PathBu
 }
 
 #[cfg(test)]
+pub(super) fn valid_rgba_image(width: i32, height: i32) -> RawImageData {
+    let channels = 4;
+    let rowstride = width * channels;
+    RawImageData {
+        width,
+        height,
+        rowstride,
+        has_alpha: true,
+        bits_per_sample: 8,
+        channels,
+        data: vec![0u8; (rowstride * height) as usize],
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -248,20 +263,6 @@ mod tests {
         std::os::unix::fs::symlink(outside.path().join("outside.png"), dir.path().join("link.png")).unwrap();
         for uri in [traversal, format!("file://{root}/ok.png%00"), non_utf8, format!("file://{root}/link.png")] {
             assert_eq!(validate_trusted_path(hint_path(&uri), &roots), None, "{uri}");
-        }
-    }
-
-    fn valid_rgba_image(width: i32, height: i32) -> RawImageData {
-        let channels = 4;
-        let rowstride = width * channels;
-        RawImageData {
-            width,
-            height,
-            rowstride,
-            has_alpha: true,
-            bits_per_sample: 8,
-            channels,
-            data: vec![0u8; (rowstride * height) as usize],
         }
     }
 

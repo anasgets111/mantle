@@ -613,6 +613,7 @@ impl NotificationsController {
 
 #[cfg(test)]
 mod tests {
+    use super::super::icon::valid_rgba_image;
     use super::*;
     use crate::capabilities::test_support::{p2p_pair_serving, within};
     use futures_util::StreamExt;
@@ -679,6 +680,7 @@ mod tests {
             .unwrap();
         let mut invoked = proxy.receive_signal("ActionInvoked").await.unwrap();
         let mut closed = proxy.receive_signal("NotificationClosed").await.unwrap();
+        let mut replied = proxy.receive_signal("NotificationReplied").await.unwrap();
         let hints = HashMap::<String, zbus::zvariant::Value<'_>>::new();
         let id: u32 = proxy
             .call("Notify", &("app", 0u32, "", "summary", "body", vec!["open", "Open"], &hints, 0i32))
@@ -698,6 +700,14 @@ mod tests {
         let signal = within(closed.next()).await.unwrap();
         assert_eq!(signal.body().deserialize::<(u32, u32)>().unwrap(), (next, 3));
         assert!(controller.snapshot().feed.is_empty());
+
+        let replyable: u32 = proxy
+            .call("Notify", &("app", 0u32, "", "chat", "body", vec!["inline-reply", "Reply"], &hints, 0i32))
+            .await
+            .unwrap();
+        controller.reply(replyable, "hi".into()).await;
+        let signal = within(replied.next()).await.unwrap();
+        assert_eq!(signal.body().deserialize::<(u32, String)>().unwrap(), (replyable, "hi".into()));
     }
 
     #[test]
@@ -792,8 +802,48 @@ mod tests {
         assert_ne!(icon_stamp(path.to_str().unwrap()), before, "and a deleted file is not untouched either");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_spooled_icon_is_deleted_after_the_grace_unless_rewritten_inside_it() {
+        crate::capabilities::shm_icons::init_test_spool();
+        let grace = ICON_DELETE_GRACE;
+        let idle = write_icon_png(9_001, b"idle").unwrap();
+        let rewritten = write_icon_png(9_002, b"old").unwrap();
+        schedule_icon_deletion(idle.clone());
+        schedule_icon_deletion(rewritten.clone());
+        tokio::time::advance(grace / 2).await;
+        write_icon_png(9_002, b"rewritten in the window").unwrap();
+        tokio::time::advance(grace + Duration::from_millis(1)).await;
+        tokio::task::yield_now().await;
+        assert!(!std::path::Path::new(&idle).exists(), "an untouched icon is deleted after the grace");
+        assert!(std::path::Path::new(&rewritten).exists(), "an icon rewritten in the window is in use");
+    }
+
+    #[test]
+    fn spool_raw_image_writes_a_valid_image_and_drops_an_out_of_bounds_one() {
+        crate::capabilities::shm_icons::init_test_spool();
+        let path = spool_raw_image(9_003, &valid_rgba_image(4, 4)).expect("a valid image spools");
+        assert!(std::path::Path::new(&path).exists());
+        assert_eq!(spool_raw_image(9_004, &valid_rgba_image(129, 1)), None);
+    }
+
     #[tokio::test]
-    async fn a_muted_app_is_silent_by_desktop_entry_or_app_name() {
+    async fn the_positional_app_icon_beats_the_image_path_name_which_fills_in_when_it_is_empty() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let controller = NotificationsController::inert(events, sound_tx);
+        for (positional, expected) in [("firefox", "firefox"), ("", "other")] {
+            let hints = Hints { image_path: Some("other".into()), ..Hints::default() };
+            controller
+                .notify("app".into(), 0, positional.into(), expected.into(), String::new(), vec![], hints, 0)
+                .await;
+            let icon =
+                controller.snapshot().feed.iter().find(|n| n.summary == expected).and_then(|n| n.app_icon.clone());
+            assert_eq!(icon.as_deref(), Some(expected), "positional {positional:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn sound_is_silenced_by_a_muted_app_dnd_and_quiet() {
         let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
         let (sound_tx, sound_rx) = std::sync::mpsc::sync_channel(1);
         // Its own root rather than `/usr/share`: the tier sound only has to be a trusted file the
@@ -817,5 +867,12 @@ mod tests {
         controller.set_app_muted("vesktop".into(), false);
         notify("vesktop", None).await;
         assert!(sound_rx.try_recv().is_ok(), "unmuting plays the tier sound again");
+        controller.set_dnd(true);
+        notify("vesktop", None).await;
+        assert!(sound_rx.try_recv().is_err(), "DND is silent");
+        controller.set_dnd(false);
+        controller.set_quiet(true);
+        notify("vesktop", None).await;
+        assert!(sound_rx.try_recv().is_err(), "quiet is silent");
     }
 }
