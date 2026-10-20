@@ -36,8 +36,17 @@ impl TrayController {
     /// `Err` is failure, and it does not stop construction.
     ///
     /// Exports [`WATCHER_OBJECT_PATH`] before claiming the name, so a call routed to the new owner
-    /// finds the object. Awaits no app (ADR-0031 amendment).
+    /// finds the object. Awaits no app (ADR-0031 amendment). Subscribes to departures before the
+    /// export, so an item that registers and exits at once is not listed forever.
     pub async fn new(connection: zbus::Connection, events: UnboundedSender<()>) -> Self {
+        let dbus_proxy = zbus::fdo::DBusProxy::new(&connection)
+            .await
+            .inspect_err(|err| error!("failed to bind org.freedesktop.DBus for NameOwnerChanged tracking: {err}"))
+            .ok();
+        let departures = match &dbus_proxy {
+            Some(dbus_proxy) => name_departures(dbus_proxy, "vanished tray items stay listed").await,
+            None => None,
+        };
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
         let host_registered = Arc::new(Mutex::new(false));
         let watcher = StatusNotifierWatcher {
@@ -71,16 +80,11 @@ impl TrayController {
                     )
                 }
             }
-            match zbus::fdo::DBusProxy::new(&connection).await {
-                Ok(dbus_proxy) => {
-                    // Subscribe, scan, then forward: a departure during the scan is applied after the insert.
-                    let departures = name_departures(&dbus_proxy, "vanished tray items stay listed").await;
-                    adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
-                    if let Some(departures) = departures {
-                        spawn_name_owner_changed_forwarder(connection.clone(), departures, registry, events);
-                    }
-                }
-                Err(err) => error!("failed to bind org.freedesktop.DBus for NameOwnerChanged tracking: {err}"),
+            let Some(dbus_proxy) = dbus_proxy else { return };
+            // Subscribed, then scan, then forward: a departure during the scan is applied after the insert.
+            adopt_existing_items(&connection, &dbus_proxy, &registry, &events).await;
+            if let Some(departures) = departures {
+                spawn_name_owner_changed_forwarder(connection.clone(), departures, registry, events);
             }
         });
 
