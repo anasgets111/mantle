@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.9.1 - 2026-10-21
+
 - Fixed: a `mantle.mpris` Firefox or zen player's `position` could fall up to a second behind after a play, pause or seek, and step back mid-track. Those browsers report `position` in whole seconds; Mantle now keeps the precise offset they send with each seek.
 - Fixed: a `computed` reading another `computed` that had just changed ran its function a second time on the next unrelated layout pass.
 
