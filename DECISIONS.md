@@ -8696,3 +8696,14 @@ p50, 1000 rows: selection 4.50→0.30 ms, `reveal` 1.12→0.08, query 1.77→0.7
 3. **Scrolled out is hidden, not removed:** no exit (ADR-0150), and a row built before returns
    without its entrance; named state survives. A wheel near the window's edge falls back to a pass;
    a short pass owes one more. The first layout builds all.
+
+## 0375. A pass's computed answers carry into its follow-up pass
+
+The evaluation memo stays per pass, but `pass_if_dirty` hands its answers to the next pass while a
+layout or scroll follow-up is owed. An entry is reused only if its computed has not run since the
+pass closed and no input, nested computeds included, was written since its run. A turn owing no
+follow-up drops the carry, so no Lua value is held while idle. A node reading both a moved
+`geometry` and a computed ran the body twice per write (pass plus follow-up); now once.
+Rejected: keeping each computed's last value for good, checked on every read. It roots output
+tables across turns (why `Output` keeps only a `Plain` copy) and freezes impure bodies indefinitely.
+Cost: an impure body's answer holds through its pass's follow-up.
