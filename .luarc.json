@@ -13,6 +13,7 @@
   "workspace.library": ["lua-meta"],
   "workspace.checkThirdParty": false,
   "workspace.ignoreDir": ["renderer/fixtures/errors"],
+  "diagnostics.globals": ["fakes", "__pointer", "__after"],
   "diagnostics.severity": { "unused-local": "Warning" },
   "diagnostics.neededFileStatus": { "unused-local": "Any" },
   "diagnostics.groupSeverity": {
