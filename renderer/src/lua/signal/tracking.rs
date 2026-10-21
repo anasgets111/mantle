@@ -950,6 +950,32 @@ mod tests {
         }
     }
 
+    /// `take_scope`'s dry run reruns a computed whose source computed changes inside that run: the
+    /// source's write lands before the outer one has its answer, so a node reading the outer one
+    /// still holds and the next pass does not run it again.
+    #[test]
+    fn a_computed_rerun_outside_a_pass_is_not_stale_from_its_own_source_rerunning() {
+        let (lua, _dirty) = lua_with_state();
+        lua.load(
+            r#"sys = state("sys", 1) outer = sys:map(function(t) return t + 1 end):map(function(t) return t * 2 end)"#,
+        )
+        .exec()
+        .unwrap();
+        lua.load("outer:get() sys:set(2)").exec().unwrap();
+        let (stamp, cells) = {
+            let _memo = EvaluationMemo::enter(&lua);
+            lua.load("outer:get()").exec().unwrap();
+            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            begin_instance_resolve(&lua, "bar");
+            let stamp = write_clock(&lua);
+            let frame = ComputedFrame::enter(&lua);
+            lua.load("outer:get()").exec().unwrap();
+            end_instance_resolve(&lua);
+            (stamp, frame.finish())
+        };
+        assert!(!written_since(stamp, &cells), "the node's memo holds into the next pass");
+    }
+
     #[test]
     fn computed_memo_hit_records_dependencies_for_subsequent_surface_readers() {
         let (lua, dirty) = lua_with_state();

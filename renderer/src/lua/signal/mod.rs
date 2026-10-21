@@ -576,7 +576,6 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
             // `capability::CapabilityHandle::notify_change` handler: that handler may `:set()`
             // between its own `:get()` calls and has to observe its own writes.
             let _memo = EvaluationMemo::enter(lua);
-            let at = write_clock(lua);
             let evaluation = Evaluation::enter(lua);
 
             let mut args = Vec::with_capacity(arity);
@@ -590,6 +589,9 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
                 }
                 args.push(value);
             }
+            // After the sources: one that is a computed and changed stamped its write as it
+            // returned, and an earlier `at` would mark this run stale against its own input.
+            let at = write_clock(lua);
             let value = if waiting {
                 ud.nth_user_value(before_slot(arity))
             } else {
