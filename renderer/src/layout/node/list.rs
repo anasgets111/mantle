@@ -373,17 +373,6 @@ impl ItemMemo {
         ItemPass::Resolve(self.site)
     }
 
-    /// `element` built through `each` with no key yet, and its fresh memo.
-    fn build(lua: &Lua, each: &mlua::Function, element: Value) -> Result<(VirtualNode, ItemMemo), LayoutError> {
-        let stamp = signal::write_clock(lua);
-        let frame = ComputedFrame::enter(lua);
-        let node = build_item(each, &element);
-        let built = frame.finish();
-        let node = node?;
-        let memo = ItemMemo { element, key: None, site: node.site, stamp, built, resolved: Vec::new(), dropped: false };
-        Ok((node, memo))
-    }
-
     /// `element` built through `each`, its `key` overwriting the node's `id`, and its fresh memo.
     fn keyed(
         lua: &Lua,
@@ -391,12 +380,16 @@ impl ItemMemo {
         element: Value,
         key: Option<mlua::LuaString>,
     ) -> Result<(VirtualNode, ItemMemo), LayoutError> {
-        let (mut node, mut memo) = Self::build(lua, each, element)?;
-        if let Some(key) = key {
+        let stamp = signal::write_clock(lua);
+        let frame = ComputedFrame::enter(lua);
+        let node = build_item(each, &element);
+        let built = frame.finish();
+        let mut node = node?;
+        if let Some(key) = &key {
             // List identity wins over any `id` the item function supplied.
             Rc::make_mut(&mut node.properties).insert("id", Value::String(key.clone()));
-            memo.key = Some(key);
         }
+        let memo = ItemMemo { element, key, site: node.site, stamp, built, resolved: Vec::new(), dropped: false };
         Ok((node, memo))
     }
 

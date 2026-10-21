@@ -278,15 +278,14 @@ pub(crate) fn end_instance_resolve(lua: &Lua) {
 
 /// Drops an instance and its cell associations when a surface is destroyed.
 pub(crate) fn forget_instance(lua: &Lua, instance_id: &str) {
-    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>() {
-        let instance_rc: Rc<str> = Rc::from(instance_id);
-        if let Some(old_cells) = tracker.instance_cells.remove(&instance_rc) {
-            for cell_id in old_cells {
-                if let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id) {
-                    e.get_mut().remove(&instance_rc);
-                    if e.get().is_empty() {
-                        e.remove();
-                    }
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
+        && let Some(old_cells) = tracker.instance_cells.remove(instance_id)
+    {
+        for cell_id in old_cells {
+            if let std::collections::hash_map::Entry::Occupied(mut e) = tracker.cell_readers.entry(cell_id) {
+                e.get_mut().remove(instance_id);
+                if e.get().is_empty() {
+                    e.remove();
                 }
             }
         }
@@ -302,8 +301,7 @@ pub(crate) fn reset_read_tracker(lua: &Lua) {
 
 /// Records that the active instance (and any enclosing computed evaluation) read `cell_id`.
 pub(crate) fn note_read(lua: &Lua, cell_id: CellId) {
-    note_instance_reads(lua, &[cell_id]);
-    EvaluationMemo::record_dependency(lua, cell_id);
+    note_reads(lua, &[cell_id]);
 }
 
 /// Runs `read` with no instance or enclosing frame noting its reads, so a write to what it read
@@ -318,7 +316,15 @@ pub(crate) fn untracked<R>(lua: &Lua, read: impl FnOnce() -> R) -> R {
 /// [`note_read`] for every cell a skipped build read last time, so the instance and any enclosing
 /// frame still depend on them.
 pub(crate) fn note_reads(lua: &Lua, cells: &[CellId]) {
-    note_instance_reads(lua, cells);
+    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
+        && let Some(instance_id) = tracker.active_instance.as_ref().map(Rc::clone)
+    {
+        for &cell_id in cells {
+            if tracker.current.insert(cell_id) && !tracker.previous.contains(&cell_id) {
+                tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
+            }
+        }
+    }
     if let Some(mut table) = lua.app_data_mut::<MemoTable>()
         && let Some(frame) = table.eval_stack.last_mut()
     {
@@ -442,19 +448,6 @@ pub(crate) fn written_since(stamp: u64, cells: &[CellId]) -> bool {
     WRITES.with_borrow(|log| log.written(stamp, cells))
 }
 
-/// [`note_read`]'s instance half.
-fn note_instance_reads(lua: &Lua, cells: &[CellId]) {
-    if let Some(mut tracker) = lua.app_data_mut::<ReadTracker>()
-        && let Some(instance_id) = tracker.active_instance.as_ref().map(Rc::clone)
-    {
-        for &cell_id in cells {
-            if tracker.current.insert(cell_id) && !tracker.previous.contains(&cell_id) {
-                tracker.cell_readers.entry(cell_id).or_default().insert(Rc::clone(&instance_id));
-            }
-        }
-    }
-}
-
 /// Appends each of `cells` that `frame` does not hold yet.
 fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
     for &cell in cells {
@@ -576,15 +569,6 @@ impl<'lua> EvaluationMemo<'lua> {
         }
         cells
     }
-
-    fn record_dependency(lua: &Lua, cell_id: CellId) {
-        if let Some(mut table) = lua.app_data_mut::<MemoTable>()
-            && let Some(frame) = table.eval_stack.last_mut()
-            && !frame.contains(&cell_id)
-        {
-            frame.push(cell_id);
-        }
-    }
 }
 
 impl Drop for EvaluationMemo<'_> {
@@ -688,7 +672,7 @@ mod tests {
         .unwrap();
         let runs = |name: &str| -> i64 { lua.load(format!("runs.{name}")).eval().unwrap() };
         {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            let _pass = LayoutPassBudget::enter(&lua);
             for _ in 0..4 {
                 assert!(lua.load("slow:get()").exec().is_err(), "every reader sees the overrun");
                 assert!(lua.load("bad:get()").exec().unwrap_err().to_string().contains("boom"));
@@ -696,7 +680,7 @@ mod tests {
             assert_eq!((runs("slow"), runs("bad")), (1, 1), "four readers of a failed computed are one evaluation");
         }
         lua.load("n:set(2)").exec().unwrap();
-        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        let _pass = LayoutPassBudget::enter(&lua);
         for _ in 0..2 {
             let both: (i64, i64) = lua.load("return slow:get(), bad:get()").eval().unwrap();
             assert_eq!(both, (2, 2), "the failure was the last pass's, not this one's");
@@ -720,7 +704,7 @@ mod tests {
         .unwrap();
         let _memo = EvaluationMemo::enter(&lua);
         assert!(lua.load("slow:get()").exec().is_err());
-        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        let _pass = LayoutPassBudget::enter(&lua);
         for _ in 0..2 {
             assert!(lua.load("slow:get()").exec().is_err());
         }
@@ -733,7 +717,7 @@ mod tests {
     #[test]
     fn a_computed_failed_by_its_readers_spent_budget_is_evaluated_again() {
         let (lua, _dirty) = lua_with_state();
-        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        let _pass = LayoutPassBudget::enter(&lua);
         let late: i64 = lua
             .load(
                 r#"
@@ -768,7 +752,7 @@ mod tests {
         .unwrap();
 
         let first: i64 = {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            let _pass = LayoutPassBudget::enter(&lua);
             // Each property read is its own outermost `get_value`; they must share one memo (four reads, one run).
             for _ in 0..4 {
                 lua.load("shared:get()").exec().unwrap();
@@ -777,7 +761,7 @@ mod tests {
         };
         lua.load("n:set(21)").exec().unwrap();
         let second: i64 = {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            let _pass = LayoutPassBudget::enter(&lua);
             lua.load("return shared:get()").eval().unwrap()
         };
 
@@ -799,14 +783,14 @@ mod tests {
         lua.load(r#"readout = computed({ offset }, function(v) return v end)"#).exec().unwrap();
 
         let during: f64 = {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            let _pass = LayoutPassBudget::enter(&lua);
             lua.load("return readout:get()").eval::<f64>().unwrap();
             // The clamp: derived from geometry this pass measured, so it does not dirty the scene.
             scroll.scroll_handle().unwrap().set_quiet(Value::Number(120.0));
             lua.load("return readout:get()").eval().unwrap()
         };
         let next: f64 = {
-            let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+            let _pass = LayoutPassBudget::enter(&lua);
             lua.load("return readout:get()").eval().unwrap()
         };
 
@@ -821,7 +805,7 @@ mod tests {
     #[test]
     fn a_computed_built_where_a_dead_one_stood_gets_its_own_value() {
         let (lua, _dirty) = lua_with_state();
-        let _pass = LayoutPassBudget::enter(&lua).expect("a pass budget");
+        let _pass = LayoutPassBudget::enter(&lua);
         let answer: String = lua
             .load(
                 r#"
@@ -890,11 +874,8 @@ mod tests {
         // instead: the second edge into each level is a lookup, so the graph is 20 calls, finishes,
         // and still answers 2^20 -- the same number the slow version reached the long way.
         //
-        // Counts calls rather than timing the evaluation. A wall-clock bound flakes under the
-        // parallel suite for the reason the next test's own comment records: a descheduled thread
-        // blows the deadline without doing any more work. The call count is what the memo actually
-        // changes -- 20 against 2^20-1, five orders of magnitude apart -- so it fails the blow-up
-        // this exists to catch on any machine, at any load.
+        // Counts calls, not time: a descheduled thread blows a wall-clock bound without more work,
+        // while 20 against 2^20-1 calls catches the blow-up on any machine at any load.
         let lua = lua_with_signal("a", Value::Integer(1));
         let calls = Rc::new(Cell::new(0u32));
         let counter = Rc::clone(&calls);
@@ -927,7 +908,7 @@ mod tests {
                 .exec()
                 .unwrap();
             let (stamp, cells) = {
-                let _pass = LayoutPassBudget::enter(&lua).unwrap();
+                let _pass = LayoutPassBudget::enter(&lua);
                 begin_instance_resolve(&lua, "bar");
                 let stamp = write_clock(&lua);
                 let frame = ComputedFrame::enter(&lua);
@@ -965,7 +946,7 @@ mod tests {
         let (stamp, cells) = {
             let _memo = EvaluationMemo::enter(&lua);
             lua.load("outer:get()").exec().unwrap();
-            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            let _pass = LayoutPassBudget::enter(&lua);
             begin_instance_resolve(&lua, "bar");
             let stamp = write_clock(&lua);
             let frame = ComputedFrame::enter(&lua);
@@ -989,7 +970,7 @@ mod tests {
         .unwrap();
 
         {
-            let _pass = LayoutPassBudget::enter(&lua).unwrap();
+            let _pass = LayoutPassBudget::enter(&lua);
             begin_instance_resolve(&lua, "surface_1");
             let v1: String = lua.load("return c:get()").eval().unwrap();
             assert_eq!(v1, "hello world");

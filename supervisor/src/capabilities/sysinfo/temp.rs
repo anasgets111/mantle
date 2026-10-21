@@ -17,9 +17,7 @@ pub fn resolve_chip(hwmon_root: &Path, preference: &[&str]) -> Option<PathBuf> {
     let entries: Vec<PathBuf> =
         std::fs::read_dir(hwmon_root).ok()?.filter_map(|entry| entry.ok().map(|entry| entry.path())).collect();
     preference.iter().find_map(|wanted| {
-        entries.iter().find_map(|dir| {
-            (crate::capabilities::read_attr(dir, "name").as_deref() == Some(*wanted)).then(|| dir.clone())
-        })
+        entries.iter().find_map(|dir| (read_attr(dir, "name").as_deref() == Some(*wanted)).then(|| dir.clone()))
     })
 }
 
@@ -134,11 +132,6 @@ mod tests {
     /// Test-only resolve-and-read convenience; production resolves once and reads per tick.
     fn resolve_and_read_temp_cores(hwmon_root: &Path) -> Vec<i64> {
         read_temp_cores(&resolve_temp_cores_inputs(hwmon_root))
-    }
-
-    /// Test-only resolve-and-read convenience for `temp_gpu`.
-    fn resolve_and_read_temp_gpu(hwmon_root: &Path) -> Option<i64> {
-        read_temp_gpu(resolve_gpu_input(hwmon_root).as_deref())
     }
 
     /// Builds fake `hwmon_root` chips under `dir`, each with only a `name` file, for
@@ -270,7 +263,7 @@ mod tests {
             let dir = tempfile::tempdir().unwrap();
             write_chip(dir.path(), "hwmon2", chip);
             write_sensor(&dir.path().join("hwmon2"), 1, label, milli_c);
-            assert_eq!(resolve_and_read_temp_gpu(dir.path()), expected, "{chip}");
+            assert_eq!(read_temp_gpu(resolve_gpu_input(dir.path()).as_deref()), expected, "{chip}");
         }
     }
 

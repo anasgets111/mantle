@@ -28,8 +28,6 @@ impl std::fmt::Display for ConnectError {
     }
 }
 
-impl std::error::Error for ConnectError {}
-
 impl From<zbus::Error> for ConnectError {
     fn from(err: zbus::Error) -> Self {
         Self::Dbus(err)
@@ -68,7 +66,6 @@ pub(super) fn activation_verdict(outcome: Option<Result<(), Option<u32>>>) -> (O
 /// wrapping, keeping this unit-testable without D-Bus. Empty means open (ADR-0029); non-empty
 /// bytes must be UTF-8 for NM's string-valued `802-11-wireless-security.psk`, or fail as
 /// [`ConnectError::InvalidSecret`] instead of being mangled.
-#[derive(Clone, PartialEq)]
 pub(super) struct ConnectionIntent {
     pub(super) ssid: String,
     pub(super) hidden: bool,
@@ -115,28 +112,22 @@ pub(super) fn connection_intent(ssid: &str, hidden: bool, secret: &[u8]) -> Resu
 /// Builds the minimal `AddAndActivateConnection2` dict: security only for a secured intent,
 /// and `hidden` only when `intent.hidden` is set.
 pub(super) fn build_connection_dict(intent: &ConnectionIntent) -> HashMap<&str, HashMap<&str, Value<'_>>> {
-    let mut dict: HashMap<&str, HashMap<&str, Value>> = HashMap::new();
-
-    let mut connection: HashMap<&str, Value> = HashMap::new();
-    connection.insert("id", Value::new(intent.ssid.as_str()));
-    connection.insert("type", Value::new("802-11-wireless"));
-    dict.insert("connection", connection);
-
-    let mut wireless: HashMap<&str, Value> = HashMap::new();
-    wireless.insert("ssid", Value::new(intent.ssid.as_bytes()));
-    wireless.insert("mode", Value::new("infrastructure"));
+    let mut wireless: HashMap<&str, Value> =
+        HashMap::from([("ssid", Value::new(intent.ssid.as_bytes())), ("mode", Value::new("infrastructure"))]);
     if intent.hidden {
         wireless.insert("hidden", Value::new(true));
     }
-    dict.insert("802-11-wireless", wireless);
-
+    let mut dict = HashMap::from([
+        (
+            "connection",
+            HashMap::from([("id", Value::new(intent.ssid.as_str())), ("type", Value::new("802-11-wireless"))]),
+        ),
+        ("802-11-wireless", wireless),
+    ]);
     if let Some(psk) = &intent.psk {
-        let mut security: HashMap<&str, Value> = HashMap::new();
-        security.insert("key-mgmt", Value::new("wpa-psk"));
-        security.insert("psk", Value::new(psk.as_str()));
+        let security = HashMap::from([("key-mgmt", Value::new("wpa-psk")), ("psk", Value::new(psk.as_str()))]);
         dict.insert("802-11-wireless-security", security);
     }
-
     dict
 }
 

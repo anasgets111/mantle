@@ -361,13 +361,7 @@ mod tests {
         assert_eq!(instances[0].instance_id, "menu");
         assert_eq!(instances[0].declared_id, "menu");
         assert!(instances[0].output.is_empty(), "the parent instance is chosen at creation, not here");
-    }
-
-    #[test]
-    fn a_popups_available_is_its_own_declared_size_not_an_outputs() {
-        let instances = expand_instances(&[popup("menu", "bar")], &[output("eDP-1", 1920.0, 1080.0)]);
-
-        assert_eq!(instances[0].available, LogicalSize { width: 200.0, height: 120.0 });
+        assert_eq!(instances[0].available, LogicalSize { width: 200.0, height: 120.0 }, "its own");
     }
 
     #[test]

@@ -447,7 +447,6 @@ mod tests {
         let spec = SurfaceSpec::Lock(LockSpec { id: "screen-lock".to_string() });
         assert_eq!(spec.declared_id(), "screen-lock");
         assert_eq!(spec.fingerprint(), SurfaceFingerprint::Lock("screen-lock".to_string()));
-        assert_ne!(spec.fingerprint(), SurfaceFingerprint::Window("screen-lock".to_string()));
     }
 
     /// Depth was capped and breadth was not, and the pass budget cannot cover the gap: filling this

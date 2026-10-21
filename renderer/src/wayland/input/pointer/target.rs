@@ -147,6 +147,7 @@ pub(super) fn clickable(
 
 /// Both targets from decision 1's single [`layout::hit::hit_path`] traversal. Two walks could
 /// re-resolve between them and give one event two answers.
+#[derive(Default)]
 pub(super) struct PointerHit {
     pub(super) click: Option<Clickable>,
     pub(super) field: Option<FieldTarget>,
@@ -179,15 +180,7 @@ impl App {
     /// cloned out of the lent tree; the tree itself is not.
     pub(super) fn hit_under(&self, index: usize, position: (f64, f64)) -> PointerHit {
         let Some(tree) = self.client.scene().surface(&self.surfaces[index].surface_id) else {
-            return PointerHit {
-                click: None,
-                field: None,
-                control: None,
-                caret: None,
-                drag: None,
-                press: None,
-                double: None,
-            };
+            return PointerHit::default();
         };
         let point = layout::hit::LogicalPoint::from_position(position);
         let path = layout::hit::hit_path(tree, point);

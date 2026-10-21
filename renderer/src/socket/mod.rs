@@ -4,9 +4,8 @@
 //! I/O, while the Wayland thread owns Lua and the GL-context paint pass because `mlua::Lua` is
 //! `!Send`. `StateSnapshot` hydrates a capability signal and dirties the scene (ADR-0044 decision
 //! 2), then runs its `on_change` handlers (ADR-0115); only `Reevaluate` runs Lua, and the Wayland
-//! loop applies it (ADR-0216). No reconnect after
-//! disconnect (ADR-0059 decision 1): the Supervisor owns capabilities, `process.run` children, and
-//! PAM.
+//! loop applies it (ADR-0216). No reconnect after disconnect (ADR-0059 decision 1): the Supervisor
+//! owns capabilities, `process.run` children, and PAM.
 //!
 //! This file is the socket thread's transport; the Wayland thread's [`RendererClient`] is `client`'s.
 
@@ -24,12 +23,9 @@ use tokio::sync::mpsc;
 
 /// `SupervisorFrame`s held for the Wayland thread before the socket reader is parked.
 ///
-/// The queue was unbounded, so Supervisor's own bounded outbound simply moved the growth here: a
-/// Renderer slow to drain (a long paint, a blocking decode) accumulated frames in its own heap
-/// instead. Backpressure rather than a drop policy, for the same reason it is backpressure on the
-/// Supervisor side: these carry lock and reload traffic, and a dropped one is a protocol failure
-/// rather than a lost log line. Sized to absorb a full snapshot replay at reconnection without
-/// parking, which is the largest legitimate burst.
+/// Backpressure, not a drop policy: these carry lock and reload traffic, and a dropped frame is a
+/// protocol failure. Unbounded, a slow drain (a long paint, a blocking decode) just moved the
+/// Supervisor's growth into this heap. Sized to absorb a full snapshot replay without parking.
 pub const INBOUND_CAPACITY: usize = 1024;
 
 /// This Renderer's generation id (`MANTLE_GENERATION_ID`, default `0`), stamped into the handshake
@@ -112,9 +108,9 @@ fn supervisor_state(proc_root: &Path, pid: i32) -> String {
 
 /// After handshake, forward decoded `SupervisorFrame`s to Wayland and queued `RendererFrame`s to
 /// the wire (ADR-0039). Decode failure is transport failure: one sender and fixed shapes mean
-/// desync. Read and write are separate
-/// long-lived futures. `read_json_frame` has two sequential `read_exact`s; racing one frame read
-/// against `outbound_rx.recv()` would drop partial bytes when outbound wins and desync the stream.
+/// desync. Read and write are separate long-lived futures. `read_json_frame` has two sequential
+/// `read_exact`s; racing one frame read against `outbound_rx.recv()` would drop partial bytes when
+/// outbound wins and desync the stream.
 async fn pump<R, W>(
     read_half: &mut R,
     write_half: &mut W,

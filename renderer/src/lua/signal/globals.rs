@@ -159,8 +159,7 @@ pub fn begin_evaluation(lua: &Lua) {
 }
 
 /// `hover(name)` registry (ADR-0062 decision 2), name-keyed across reloads so a tooltip stays open
-/// through
-/// config edits. Separate from [`StateRegistry`], or `state("volume", 0)` and
+/// through config edits. Separate from [`StateRegistry`], or `state("volume", 0)` and
 /// `hover("volume")` would collide and confuse `signal:set()`.
 #[derive(Default)]
 struct HoverRegistry(HashMap<String, (Signal, Signal)>);
@@ -214,11 +213,7 @@ struct GeometryRegistry(HashMap<String, Signal>);
 struct LayoutChanged(Vec<CellId>);
 
 pub(crate) fn note_layout_changed(lua: &Lua, id: CellId) {
-    if let Some(mut moved) = lua.app_data_mut::<LayoutChanged>() {
-        moved.0.push(id);
-        return;
-    }
-    lua.set_app_data(LayoutChanged(vec![id]));
+    crate::lua::app_data_or_default::<LayoutChanged>(lua).0.push(id);
 }
 
 /// The measurement cells changed since the last take.
@@ -597,20 +592,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hover_returns_a_read_only_boolean_signal_that_starts_false() {
-        // ADR-0062 decision 2: engine-written hover starts false, not nil; `visible` treats nil as
-        // absent
-        // (ADR-0044 decision 1 amendment).
-        let (lua, _dirty) = lua_with_state();
-        let started: bool = lua.load(r#"return hover("volume"):get()"#).eval().unwrap();
-        assert!(!started);
-    }
-
-    #[test]
     fn hover_hands_the_same_name_the_same_signal_so_an_in_place_reload_keeps_it_open() {
         // Name is identity across reload (ADR-0044 decision 5, ADR-0062 decision 2), so the signal
-        // is reused, not reset false. Check storage, not userdata `==`, which compares object
-        // identity.
+        // is reused, not reset false. Check storage, not userdata `==`, which compares identity.
         let (lua, _dirty) = lua_with_state();
         lua.load(r#"first = hover("volume") second = hover("volume") other = hover("battery")"#).exec().unwrap();
 

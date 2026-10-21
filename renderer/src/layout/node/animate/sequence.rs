@@ -83,9 +83,7 @@ impl Sequence {
     /// the start of whatever follows.
     pub(super) fn at(&self, elapsed: Duration, property: &str) -> Animatable {
         let last = self.frames.last().expect("a parsed sequence has frames").value.clone();
-        if let Some(loops) = self.loops
-            && elapsed >= self.cycle * loops
-        {
+        if self.done(elapsed) {
             return last;
         }
         // The phase and the walk across segments stay in whole nanoseconds, and only the chosen
@@ -266,9 +264,6 @@ mod tests {
         }
     }
 
-    /// ADR-0150: the exit block is checked by the same live pass that checks the rest of
-    /// `animate`, so a typo is refused while the node is still in the tree to be named, not on the
-    /// pass that removed it.
     /// ADR-0152: a bare value takes the entry's timing, a table names its own, and the first
     /// frame is only a starting point -- nothing eases into it, so its timing is never read.
     #[test]

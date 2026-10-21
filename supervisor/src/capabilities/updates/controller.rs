@@ -305,11 +305,10 @@ async fn run_install_with_child(
                 guard.install_current_package = step.package;
             }
             drop(guard);
-            // Every line, not only the ones that parse as progress: gating on progress left the
-            // log frozen until the first `(n/m)`. The download phase stays silent regardless,
-            // because pacman prints nothing per package without a tty (measured: its `wchar` does
-            // not move for the whole download). A pty is the only cure and costs ANSI and `\r`
-            // handling; `#updates.packages` and `download_size` cover the gap in config instead.
+            // Every line, not only progress: gating left the log frozen until the first `(n/m)`.
+            // Pacman prints nothing per package during a download without a tty (a pty would cost
+            // ANSI and `\r` handling), so that phase stays silent
+            // (its `wchar` does not move); `#updates.packages` and `download_size` cover the gap in config.
             let _ = events.send(());
         }
     }

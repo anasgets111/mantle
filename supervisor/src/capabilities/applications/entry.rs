@@ -72,7 +72,7 @@ pub fn tokenize_exec(exec: &str) -> Option<(String, Vec<String>)> {
     // Tracks an existing empty token, so `Exec=foo ""` keeps its empty argument; bare spaces do
     // not create a token to flush.
     let mut started = false;
-    let mut chars = exec.chars().peekable();
+    let mut chars = exec.chars();
 
     while let Some(ch) = chars.next() {
         match ch {
@@ -118,7 +118,7 @@ pub fn tokenize_exec(exec: &str) -> Option<(String, Vec<String>)> {
 /// and this launcher passes no files, so both spellings are currently unreachable.
 fn expand_field_codes(token: &str) -> Option<String> {
     let mut out = String::new();
-    let mut chars = token.chars().peekable();
+    let mut chars = token.chars();
     let mut had_code = false;
     while let Some(ch) = chars.next() {
         if ch != '%' {

@@ -61,13 +61,11 @@ pub(super) enum FieldTarget {
     },
 }
 
-/// Innermost pressed `textfield` (ADR-0050 decision 4, ADR-0092). A `secure_submit`
-/// table is masked and targets the whole capability/action identity, since that is where its bytes
-/// go; otherwise callbacks make it plain. `paint_style`
-/// parses the destination during `Scene::apply`, so malformed secure targets fail the pass.
-/// Masked fields without a destination and plain fields without callbacks return `None` rather
-/// than taking a keyboard they cannot use. Plain fields use `ResolvedNode`'s stable `NodeId`
-/// (ADR-0099); [`ArmedClick`] still uses a rect because press/release trees rarely move.
+/// The `textfield` a press focuses (ADR-0050 decision 4, ADR-0092): a `secure_submit` table makes it
+/// masked, callbacks make it plain. `None` for a masked field without a destination or a plain one
+/// without callbacks, which could not use the keyboard. `paint_style` parses the destination during
+/// `Scene::apply`, so a malformed one fails the pass. Plain fields use the stable `NodeId` (ADR-0099);
+/// [`ArmedClick`] still uses a rect because press/release trees rarely move.
 pub(super) fn focused_field(path: &[&layout::ResolvedNode]) -> Option<FieldTarget> {
     field_target(path, false)
 }
@@ -913,18 +911,10 @@ pub(in crate::wayland) mod tests {
 
     #[test]
     fn key_action_maps_a_secure_fields_keys_and_never_a_control_character() {
-        // `zwp_text_input_v3` alone did not deliver typing: it only produces a `commit_string` when
-        // the compositor has an input method bound, so on a session with no IME not one byte
-        // reached `SecureBuffer`. A control key never becomes a character of the password either:
-        // `utf8` is not empty for Escape, Tab or Return -- xkbcommon hands back the C0 control
-        // character for each -- so an unfiltered append would silently put an ESC byte in the
-        // middle of a secret that PAM then rejects with no visible reason.
-        // A submit zeroizes the buffer as it reads it, so the second submit of a key repeat would
-        // send an *empty* password to PAM and burn one of the user's attempts. Backspace and
-        // ordinary characters repeat normally, which is what every text field does.
-        // Escape used to be dropped as a control character, which left one Backspace per character
-        // as the only way to abandon a mistyped password -- on the surface where a wrong guess
-        // costs a counted PAM attempt and a `pam_unix` failure delay.
+        // `zwp_text_input_v3` only commits with an IME bound, so alone it delivered no byte to `SecureBuffer`.
+        // xkbcommon gives Escape, Tab and Return C0 `utf8`, which must never reach a password. A
+        // repeated submit would send an empty password to PAM and burn an attempt; Backspace and
+        // characters repeat. Escape clears, so a mistyped password needs no Backspace per character.
         for (keysym, utf8, repeat, expected) in [
             (Keysym::a, Some("a"), false, KeyAction::Append("a")),
             (Keysym::Return, Some("\r"), false, KeyAction::Submit),

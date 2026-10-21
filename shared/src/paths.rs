@@ -168,7 +168,6 @@ pub fn shell_lua_path() -> io::Result<PathBuf> {
 mod tests {
     use super::*;
 
-    /// The named directory is the config itself, not a parent to join with `mantle`.
     #[test]
     fn expand_home_takes_absolute_and_tilde_slash_only() {
         let home = Some(OsString::from("/home/u"));

@@ -91,8 +91,7 @@ impl TransitionInput {
         if shader.is_none() && !images.is_empty() {
             return Err(invalid("transition.images", "there is no `shader` for these to reach"));
         }
-        let easing = easing.unwrap_or_default();
-        Ok(TransitionSpec { duration, easing, shader, params, images })
+        Ok(TransitionSpec { duration, easing: easing.unwrap_or_default(), shader, params, images })
     }
 }
 

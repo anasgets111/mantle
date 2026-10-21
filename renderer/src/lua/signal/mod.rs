@@ -666,9 +666,7 @@ impl UserData for Signal {
         methods.located_method("scroll_by", |_, this, delta: f64| {
             this.scroll_request("scroll_by", ScrollRequest::By(finite("scroll_by", delta)?))
         });
-        // ADR-0044 decision 5's only Lua write path. Other kinds refuse by name, so
-        // `network:set(...)`
-        // says why.
+        // ADR-0044 decision 5's only Lua write path. Other kinds refuse by name, so `network:set(...)` says why.
         methods.located_method("set", |lua, this, value: Value| {
             let SignalKind::State { id, cell, dirty } = &this.0 else {
                 return Err(mlua::Error::runtime(format!(
@@ -687,7 +685,7 @@ impl UserData for Signal {
                 state_handlers::note_write(lua, this, previous);
             }
             Ok(())
-            });
+        });
     }
 }
 
@@ -998,7 +996,6 @@ mod tests {
         lua.globals().set("probe", capability).unwrap();
         lua.globals().set("plain", Signal::new_state(Value::Integer(1), DirtyFlag::new()).unwrap()).unwrap();
         let neither = lua.create_any_userdata(0u8).unwrap();
-        // Neither type: both checks must say no.
         for (name, ud, expected) in [
             ("plain", lua.globals().get::<mlua::AnyUserData>("plain").unwrap(), true),
             ("probe", lua.globals().get::<mlua::AnyUserData>("probe").unwrap(), true),

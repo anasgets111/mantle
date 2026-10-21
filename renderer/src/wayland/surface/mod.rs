@@ -6,6 +6,7 @@ use shared::{debug, error, warn};
 use super::*;
 use crate::layout::node::PropMap;
 use crate::text::snap::PhysicalRect;
+use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
 
 mod paint;
 mod resolved;
@@ -15,8 +16,6 @@ pub use paint::RepaintSplit;
 /// A surface bound to shared EGL after its first configure. Field order is load-bearing:
 /// wayland-egl requires `WlEglSurface` to outlive the EGL surface, and Rust drops top to bottom;
 /// `khronos_egl::Surface` has no `Drop`, so [`App::destroy_surface_by_id`] destroys it explicitly.
-use wayland_protocols::ext::background_effect::v1::client::ext_background_effect_surface_v1::ExtBackgroundEffectSurfaceV1;
-
 pub(super) struct BoundSurface {
     pub(super) egl_surface: EglSurface,
     native_window: WlEglSurface,
@@ -327,10 +326,6 @@ impl TrackedSurface {
             last_blur_region: Vec::new(),
             last_input_region: None,
         }
-    }
-
-    fn is_clean(&self) -> bool {
-        !self.dirty && self.last_painted.is_some()
     }
 
     /// Whether the repaint this surface owes has come due; see [`TrackedSurface::stale`].

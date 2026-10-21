@@ -78,7 +78,7 @@ fn clusters(glyphs: &[Glyph]) -> impl Iterator<Item = &[Glyph]> {
 }
 
 /// The left and right edges of one cluster's glyphs together.
-fn cluster_span(cluster: &[Glyph]) -> (f32, f32) {
+pub fn cluster_span(cluster: &[Glyph]) -> (f32, f32) {
     cluster
         .iter()
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), glyph| (lo.min(glyph.x), hi.max(glyph.x + glyph.advance)))

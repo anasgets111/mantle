@@ -4,38 +4,27 @@
 use super::*;
 
 /// One node's raw property map with every `Signal` replaced by its current value (ADR-0044 decision
-/// 1). Called at most once per node per pass, as that node enters reconciliation, and not at all
-/// for a node whose last resolve still holds (ADR-0270); everything downstream
-/// (this module's parsers, `layout::scene`'s sizing/positioning passes, `ResolvedNode::properties`)
-/// reads the result, not the raw map. Once, and once is load-bearing: `Signal::get_value` runs a
-/// `computed` signal's Lua closure, and a closure that is not a pure function of unchanged state
-/// (`os.clock()`, `math.random`, an accumulator upvalue) answers differently on every call, so one
-/// read per property makes the resolved tree a snapshot of one pass and stops ADR-0021's
-/// per-`get_value` evaluation budget being paid four times over for one property. The snapshot covers the
-/// *signals* only: a plain table with an `__index` metamethod is copied through as-is, and each
-/// `table.get` a parser makes still runs it again; see `NumberOrEdges`'s read. Per entry: a key [`is_structural_property`] names for this node's
-/// `kind` is copied through raw, signal and all. A table value is walked by [`resolve_nested`],
-/// which copies the tables that hold a signal. A `Value::UserData` holding a `Signal` is read
-/// through `Signal::get_value` and the *result* stored in its place; a result that is itself a
-/// `Signal` is an error naming the property, not a second read, avoiding an unbounded loop on a
-/// cyclic construction. A result of `Value::Nil` **omits the key entirely**: ADR-0044 decision 1's
-/// amendment ("a signal resolving to nil means the property is absent") falls out of the map rather
-/// than being re-checked in every parser. Matters at boot: `RendererClient::run_startup_evaluation`
-/// runs before the poll loop drains any inbound frame, so every `shared::Capability::ALL` signal
-/// still reads `nil` at the first `Scene::apply`, and a bare capability binding must not fail
-/// layout there; also consistent with a Lua table's own inability to store `nil`, so `visible =
-/// nil` reads the same. Everything else, including a `UserData` that is not a `Signal`, is copied
-/// through unchanged, for whichever parser reads it. Every property resolves, including ones no
-/// parser reads today: the resolved map is what the paint stage reads a colour or radius straight
-/// off (`ResolvedNode::properties`), and no property is out of a `Signal`'s reach, so there
-/// is no subset safe to skip. A getter that raises fails the whole apply, even for a property
-/// nothing downstream looked at: deferring would mean keeping the getter around to re-run later,
-/// the second read this function prevents.
+/// 1). Called at most once per node per pass, and not at all for a node whose last resolve still holds
+/// (ADR-0270); everything downstream reads the result, not the raw map. Once is load-bearing:
+/// `Signal::get_value` runs a `computed` closure, which may answer differently on every call
+/// (`os.clock()`, `math.random`, an accumulator upvalue), so one read per property makes the tree a
+/// snapshot of one pass and stops ADR-0021's per-`get_value` evaluation budget being paid four times
+/// over for one property. The snapshot covers *signals* only: a plain table with an `__index`
+/// metamethod is copied as-is, and each `table.get` a parser makes re-runs it (see `NumberOrEdges`'s read).
 ///
-/// Evaluates every property holding a [`crate::lua::signal::Signal`]. Non-signal
-/// properties remain untouched in the map. When no signal is present, at the top level or in a
-/// table, resolution completes in place with no allocations or sorting. `tables_plain` (see
-/// [`tables_plain`]) vouches that the walked tables hold no signal, so they are not scanned again.
+/// Per entry: a key [`is_structural_property`] names for this `kind` is copied through raw, signal and
+/// all. A table value is walked by [`resolve_nested`], which copies the tables that hold a signal. A
+/// signal is read through `Signal::get_value` and the *result* stored in its place; a result that is
+/// itself a `Signal` is an error naming the property, avoiding an unbounded loop on a cyclic
+/// construction. A `Value::Nil` result **omits the key** (ADR-0044 decision 1's amendment), which
+/// matters at boot: `run_startup_evaluation` runs before the poll loop drains any frame, so every
+/// `shared::Capability::ALL` signal reads `nil` at the first `Scene::apply`, and a bare capability
+/// binding must not fail layout there. Every property resolves, including ones no
+/// parser reads: the paint stage reads colours and radii straight off the resolved map. A getter that
+/// raises fails the whole apply, since deferring it would mean the second read this function prevents.
+///
+/// When no signal is present, at the top level or in a table, resolution completes in place with no
+/// allocations or sorting. `tables_plain` vouches that the walked tables hold no signal.
 pub(crate) fn resolve_declared(
     properties: &PropMap,
     kind: &str,
@@ -315,20 +304,15 @@ pub(super) fn resolve_signal(
 /// The carve-outs from decision 1's "parsers resolve a `Signal`" rule, the rows typed
 /// [`prop::Structural`]: [`SurfaceTopology`]'s five fields, a popup's `parent`, and every node's
 /// optional `id` (ADR-0045 decision 1) keep rejecting one outright.
-/// The unifying reason: each is read exactly once per evaluation and a *structural* decision
-/// (where a surface is placed, or which retained node a fresh one is) is then made and acted on. A
-/// `Signal` is free to change between passes, so admitting one here would leave that decision
-/// resting on a value that no longer holds. Every other property is read for the geometry or
-/// appearance of the pass it was read in, so a later change simply produces different output next
-/// pass. Concretely: `surface_topology` runs on every `Scene::apply` so `renderer/src/socket/client/resolve.rs`'s
-/// `pending_surfaces` can diff it against `applied_topology` and choose what to rebuild
-/// (ADR-0216); a surface could otherwise move layer or output with no rebuild. `id` is
-/// `pair_children_by_id_then_position`'s reconcile identity, matched once per `Scene::apply` to
-/// pair a fresh child against its retained counterpart; a later-changing value would make "the
-/// same node as last time" ambiguous. ADR-0044 decision 1 leaves both out: a gap, not a rejected
-/// case. This only works because [`resolve_declared`] passes the keys
-/// [`is_structural_property`] names through raw: these fields alone read the un-resolved value,
-/// since a resolved signal is indistinguishable from a literal by the time it reaches a map.
+/// Each is read once per evaluation and a *structural* decision is made on it (where a surface is
+/// placed, which retained node a fresh one is), which a `Signal` changing between passes would leave
+/// stale. `surface_topology` runs on every `Scene::apply` so `pending_surfaces` can diff it against
+/// `applied_topology` (ADR-0216); a surface could otherwise move layer or output with no rebuild. `id`
+/// pairs a fresh child against its retained counterpart. ADR-0044 decision 1 leaves both out: a gap,
+/// not a rejected case. Every
+/// other property only shapes the pass it was read in. This works because [`resolve_declared`] passes
+/// the keys [`is_structural_property`] names through raw: a resolved signal is indistinguishable from
+/// a literal by the time it reaches a map.
 pub(super) fn reject_signal_in_structural_field(property: &str, value: &Value) -> Result<(), LayoutError> {
     if matches!(value, Value::UserData(_)) {
         return Err(LayoutError::UnsupportedSignalProperty(property.to_string()));

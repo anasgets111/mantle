@@ -68,28 +68,23 @@ impl CaptureRegistry {
     ) -> bool {
         let DmabufOffer { id, width, height, offered } = offer;
         self.ensure_probed(egl);
-        let support_available = matches!(self.dmabuf_probe, DmabufProbe::Supported(_));
         let opaque = self.sources.get(&id).is_some_and(|source| source.target.is_output());
         // A desktop source is unmixed on the CPU, so it stays on shm.
         let previously_failed = self
             .sources
             .get(&id)
             .is_some_and(|source| matches!(source.dmabuf_state, DmabufState::Failed) || source.desktop.is_some());
-        if !(support_available && !previously_failed) || self.dmabuf_manager.is_none() {
+        if previously_failed || self.dmabuf_manager.is_none() {
             return false;
         }
         let (DmabufProbe::Supported(support), Some(egl)) = (&self.dmabuf_probe, egl) else { return false };
-        let picked = (!offered.is_empty())
-            .then(|| {
-                let mut seen = std::collections::HashSet::new();
-                let importable: Vec<FormatModifier> = offered
-                    .iter()
-                    .filter(|candidate| seen.insert(candidate.fourcc))
-                    .flat_map(|candidate| support.importable_modifiers(egl, candidate.fourcc))
-                    .collect();
-                dmabuf::pick_dmabuf_format(offered, &importable, opaque)
-            })
-            .flatten();
+        let mut seen = std::collections::HashSet::new();
+        let importable: Vec<FormatModifier> = offered
+            .iter()
+            .filter(|candidate| seen.insert(candidate.fourcc))
+            .flat_map(|candidate| support.importable_modifiers(egl, candidate.fourcc))
+            .collect();
+        let picked = dmabuf::pick_dmabuf_format(offered, &importable, opaque);
         let Some(source) = self.sources.get_mut(&id) else { return false };
         let Some(format) = picked else {
             source.fail_dmabuf("cannot use dma-buf (no shared format)");

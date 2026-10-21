@@ -328,18 +328,6 @@ pub fn valid_secret_name(name: &str) -> bool {
     !name.trim().is_empty() && name.len() <= 128 && !name.chars().any(char::is_control)
 }
 
-#[cfg(test)]
-mod secret_name_tests {
-    #[test]
-    fn rejects_empty_control_and_oversized_names() {
-        assert!(super::valid_secret_name("mail"));
-        for name in ["", "  ", "mail\nother"] {
-            assert!(!super::valid_secret_name(name));
-        }
-        assert!(!super::valid_secret_name(&"x".repeat(129)));
-    }
-}
-
 /// Hand-written `Debug` prints only `secret`'s length. `RendererFrame` derives `Debug`, so deriving
 /// here would put a password in the log from any `{:?}` of a frame. `ZeroizeOnDrop` keeps plaintext
 /// from outliving its read, but a formatter can defeat it.
@@ -539,6 +527,15 @@ pub fn check_generated(files: &[(String, String)]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_empty_control_and_oversized_names() {
+        assert!(valid_secret_name("mail"));
+        for name in ["", "  ", "mail\nother"] {
+            assert!(!valid_secret_name(name));
+        }
+        assert!(!valid_secret_name(&"x".repeat(129)));
+    }
 
     #[test]
     fn a_secure_submit_never_formats_its_secret() {

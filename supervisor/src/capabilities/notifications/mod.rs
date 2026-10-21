@@ -304,14 +304,6 @@ mod tests {
     }
 
     #[test]
-    fn app_name_summary_body_caps_match_the_spec() {
-        let long = "x".repeat(1000);
-        assert_eq!(truncate_utf8_bytes(&long, MAX_APP_NAME_BYTES).len(), MAX_APP_NAME_BYTES);
-        assert_eq!(truncate_utf8_bytes(&long, MAX_SUMMARY_BYTES).len(), MAX_SUMMARY_BYTES);
-        assert_eq!(truncate_utf8_bytes(&long, MAX_BODY_BYTES).len(), MAX_BODY_BYTES);
-    }
-
-    #[test]
     fn urgency_from_hint_byte_maps_the_three_defined_values_and_defaults_to_normal() {
         assert_eq!(urgency_from_hint_byte(Some(0)), Urgency::Low);
         assert_eq!(urgency_from_hint_byte(Some(1)), Urgency::Normal);

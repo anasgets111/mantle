@@ -48,11 +48,10 @@ impl TrayController {
             None => None,
         };
         let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
-        let host_registered = Arc::new(Mutex::new(false));
         let watcher = StatusNotifierWatcher {
             connection: connection.clone(),
             registry: registry.clone(),
-            host_registered,
+            host_registered: Arc::new(Mutex::new(false)),
             events: events.clone(),
         };
         // Continue after export failure; tray setup must not abort the Supervisor.
@@ -300,10 +299,8 @@ mod tests {
     /// there, which is no path at all for a Chromium application, and cost Slack its icon on
     /// every restart of the shell (ADR-0171).
     ///
-    /// Stubs through `p2p_pair_serving` for the same reason as
-    /// `watcher::tests::register_status_notifier_item_accepts_a_unique_name_matching_the_real_sender`:
-    /// adoption calls the peer and waits for the verdict. This was one thread plus a throwaway
-    /// `ListNames` to spend the first call, which hid the dropped-call race rather than closing it.
+    /// Stubs go through `p2p_pair_serving` (see `watcher::tests::register_status_notifier_item_accepts_a_unique_name_matching_the_real_sender`):
+    /// adoption calls the peer and waits for the verdict. A throwaway `ListNames` to spend the first call hid the dropped-call race.
     #[tokio::test]
     async fn adoption_finds_an_item_that_exports_only_the_chromium_path() {
         let (connection, _peer) = p2p_pair_serving(|peer| {

@@ -326,10 +326,7 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
         }
         return;
     }
-    let node: pw::node::Node = match registry.bind(obj) {
-        Ok(node) => node,
-        Err(_) => return,
-    };
+    let Ok(node): Result<pw::node::Node, _> = registry.bind(obj) else { return };
     let node_id = obj.id;
     let state_for_info = Rc::clone(state);
     let state_for_param = Rc::clone(state);
@@ -485,10 +482,7 @@ fn bind_default_metadata(
         return;
     }
 
-    let metadata: pw::metadata::Metadata = match registry.bind(obj) {
-        Ok(metadata) => metadata,
-        Err(_) => return,
-    };
+    let Ok(metadata): Result<pw::metadata::Metadata, _> = registry.bind(obj) else { return };
 
     let state_for_property = Rc::clone(state);
     let listener = metadata

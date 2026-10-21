@@ -517,9 +517,7 @@ mod tests {
     /// (The scene does not write the offset back here, so the start stays 0.)
     #[test]
     fn a_fling_eases_to_where_the_offset_would_coast_and_stops_at_the_end() {
-        let lua = scene_lua();
-        let table: mlua::Table = lua.load(SCROLLED_COLUMN).eval().unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        let (lua, surface) = surface_from(SCROLLED_COLUMN);
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         let mut scene = Scene::new();
@@ -550,9 +548,7 @@ mod tests {
 
     /// ADR-0069. Scrolling moves children within a viewport the clip already cuts them to.
     fn scrolled(lua_src: &str, offset: f32) -> (mlua::Lua, Vec<f32>, f32) {
-        let lua = scene_lua();
-        let table: mlua::Table = lua.load(lua_src).eval().unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        let (lua, surface) = surface_from(lua_src);
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(f64::from(offset)));
@@ -570,9 +566,7 @@ mod tests {
     } } }"#;
 
     fn revealed(index: usize, offset: f32) -> (Vec<f32>, f32) {
-        let lua = scene_lua();
-        let table: mlua::Table = lua.load(SCROLLED_COLUMN).eval().unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        let (lua, surface) = surface_from(SCROLLED_COLUMN);
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(f64::from(offset)));
@@ -689,10 +683,9 @@ mod tests {
         let capped = r#"panel { id = "bar", child = column { width = 100, max_height = 150, scroll = scroll("s"), children = {
             rect { width = 10, height = 100 }, rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
         } } }"#;
-        let (lua, ys, used) = scrolled(capped, 5_000.0);
+        let (_, ys, used) = scrolled(capped, 5_000.0);
         assert_eq!(used, 150.0, "300 of children in a box capped at 150 leaves 150 to scroll");
         assert_eq!(ys, vec![-150.0, -50.0, 50.0]);
-        drop(lua);
 
         let (scene, _lua, _shaping, _surface) = applied(
             r#"panel { id = "bar", child = column { width = 100, max_height = 150, children = {
@@ -705,16 +698,11 @@ mod tests {
 
     #[test]
     fn a_row_scrolls_horizontally() {
-        let lua = scene_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"return panel { id = "bar", child = row { width = 100, height = 50, scroll = scroll("s"), children = {
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = row { width = 100, height = 50, scroll = scroll("s"), children = {
                     rect { width = 100, height = 10 }, rect { width = 100, height = 10 },
                 } } }"#,
-            )
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        );
         let signal: mlua::AnyUserData = lua.load(r#"return scroll("s")"#).eval().unwrap();
         let signal = crate::lua::signal::from_userdata(&signal).unwrap();
         signal.scroll_handle().unwrap().set_changed(mlua::Value::Number(60.0));
@@ -730,16 +718,11 @@ mod tests {
     /// but its own, so binding the wrong signal scrolls nothing instead.
     #[test]
     fn a_scroll_property_naming_something_that_is_not_a_scroll_signal_is_inert() {
-        let lua = scene_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"return panel { id = "bar", child = column { width = 100, height = 100, scroll = state("s", 120), children = {
+        let (lua, surface) = surface_from(
+            r#"return panel { id = "bar", child = column { width = 100, height = 100, scroll = state("s", 120), children = {
                     rect { width = 10, height = 100 }, rect { width = 10, height = 100 },
                 } } }"#,
-            )
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        );
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();

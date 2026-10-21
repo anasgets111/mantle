@@ -65,7 +65,6 @@ async fn adopt_adapter(
 
 /// Empties the slot when BlueZ removes the adapter in use, stops its forwarder, and pushes
 /// [`BluetoothSignal::AdapterChanged`]. Returns whether the tracked adapter was removed.
-///
 fn release_adapter(slot: &AdapterSlot, path: &OwnedObjectPath, events: &UnboundedSender<BluetoothSignal>) -> bool {
     let released = {
         let mut bound = slot.lock().expect("mutex poisoned");

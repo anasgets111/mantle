@@ -80,10 +80,8 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             state.active = false;
             state.requested = false;
             state.authenticating = false;
-            // The screen that was animating out is gone with its Renderer. Left true this survives
-            // into the replacement's first push, and a config that reads it draws a lock screen
-            // permanently mid-exit; `LockRequested` does not clear it either, so
-            // nothing short of a *successful* reacquisition would.
+            // The animating screen died with its Renderer; left true, the replacement's lock screen
+            // would draw permanently mid-exit. `LockRequested` does not clear it either.
             state.unlocking = false;
         }
     }

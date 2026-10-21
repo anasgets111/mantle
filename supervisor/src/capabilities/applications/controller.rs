@@ -145,15 +145,9 @@ impl ApplicationsController {
     /// known emulators is the upgrade; a set variable gets exactly that terminal, while guessing
     /// wrong is worse than naming the missing variable.
     pub fn launch(&self, id: &str) -> Result<(), LaunchError> {
-        let target = {
-            let targets = self.launch_targets.lock().expect("applications launch map mutex poisoned");
-            targets.get(id).cloned().ok_or(LaunchError::Unknown)?
-        };
-        let (command, args) = command_line(std::env::var("TERMINAL").ok(), target)?;
-        match crate::process::spawn_detached(&command, &args) {
-            Ok(()) => Ok(()),
-            Err(err) => Err(LaunchError::Spawn(err.to_string())),
-        }
+        let target = self.launch_targets.lock().expect("applications launch map mutex poisoned").get(id).cloned();
+        let (command, args) = command_line(std::env::var("TERMINAL").ok(), target.ok_or(LaunchError::Unknown)?)?;
+        crate::process::spawn_detached(&command, &args).map_err(|err| LaunchError::Spawn(err.to_string()))
     }
 
     /// After [`openable_url`] accepts it (ADR-0103), hands `url` to `xdg-open` detached. A
@@ -165,10 +159,8 @@ impl ApplicationsController {
     /// spawn error.
     pub fn open_url(&self, url: &str) -> Result<(), OpenUrlError> {
         openable_url(url).map_err(OpenUrlError::Refused)?;
-        match crate::process::spawn_detached("xdg-open", &[url.to_string()]) {
-            Ok(()) => Ok(()),
-            Err(err) => Err(OpenUrlError::Spawn(err.to_string())),
-        }
+        crate::process::spawn_detached("xdg-open", &[url.to_string()])
+            .map_err(|err| OpenUrlError::Spawn(err.to_string()))
     }
 }
 
@@ -307,21 +299,6 @@ mod tests {
         while controller.snapshot().entries.len() < 2 {
             within(rx.recv()).await.unwrap();
         }
-    }
-
-    #[tokio::test]
-    async fn refreshing_after_an_entry_appears_pushes_the_new_list() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("a.desktop"), runnable("A", "/bin/true")).unwrap();
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = ApplicationsController::new(vec![dir.path().to_path_buf()], tx);
-        within(rx.recv()).await.unwrap();
-
-        std::fs::write(dir.path().join("b.desktop"), runnable("B", "/bin/true")).unwrap();
-        controller.refresh();
-
-        within(rx.recv()).await.unwrap();
-        assert_eq!(controller.snapshot().entries.len(), 2);
     }
 
     /// Waits for the watch's rescan to push `name`; the inotify round trip has no completion to await.

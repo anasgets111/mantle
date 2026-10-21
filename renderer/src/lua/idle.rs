@@ -114,15 +114,13 @@ impl IdleRegistry {
     /// twice is safe. The Supervisor hears about it only when this was the last callback at that
     /// duration, which is the point at which its listener has no user left.
     fn cancel_threshold(&self, id: u64) {
-        let emptied = {
-            let mut inner = self.inner.borrow_mut();
-            let held = inner.thresholds.iter_mut().find(|(_, entries)| entries.iter().any(|entry| entry.id == id));
-            let Some((&sec, entries)) = held else { return };
-            entries.retain(|entry| entry.id != id);
-            entries.is_empty().then_some(sec)
-        };
-        let Some(sec) = emptied else { return };
         let mut inner = self.inner.borrow_mut();
+        let held = inner.thresholds.iter_mut().find(|(_, entries)| entries.iter().any(|entry| entry.id == id));
+        let Some((&sec, entries)) = held else { return };
+        entries.retain(|entry| entry.id != id);
+        if !entries.is_empty() {
+            return;
+        }
         inner.thresholds.remove(&sec);
         // The Supervisor destroys this listener, so a later registration's fresh one says `idled`.
         inner.idled.remove(&sec);
@@ -213,9 +211,7 @@ impl IdleMember {
     pub fn signal(&self) -> crate::lua::signal::Signal {
         self.0.state().signal()
     }
-}
 
-impl IdleMember {
     /// Announces the read that `mantle`'s `__index` would have announced. Because this member is
     /// set directly, a config that only `:map`s `mantle.idle` would otherwise read `nil` forever
     /// from a capability the Supervisor never started.
@@ -292,7 +288,6 @@ mod tests {
         (lua, registry, rx)
     }
 
-    /// Next command, skipping the `idle` start every method queues first (ADR-0070).
     /// ADR-0070 decision 1: `idle` is off the roster, so methods must start it themselves or the
     /// Supervisor never builds `IdleController` and `register` lands on nothing.
     #[test]

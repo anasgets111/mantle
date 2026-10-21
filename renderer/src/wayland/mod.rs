@@ -274,14 +274,8 @@ impl ProvidesRegistryState for App {
     registry_handlers![OutputState, SeatState];
 }
 
-// This SCTK (`smithay-client-toolkit-0.21.1`, checked against `src/`) ships exactly two
-// `delegate_*` macros: `delegate_dispatch2!` and `delegate_registry!`. `PointerData`,
-// `KeyboardData`, `WindowData`, `PopupData`, `GlobalData` and `SessionLockData`/
-// `SessionLockSurfaceData` each carry a blanket `Dispatch2` impl, which the line below turns into
-// the `Dispatch` half every bind/create call needs. So `PointerHandler`, `KeyboardHandler`,
-// `WindowHandler`, `PopupHandler` and `SessionLockHandler` are implemented above with no
-// `delegate_pointer!`/`delegate_keyboard!`/`delegate_xdg_shell!`/`delegate_xdg_popup!`/
-// `delegate_session_lock!` call to match: none of those macros exist in this SCTK.
+// SCTK 0.21 has only `delegate_registry!` and `delegate_dispatch2!`; the latter covers every
+// pointer, keyboard, xdg and session-lock `*Data` through blanket `Dispatch2` impls.
 /// `ext_background_effect_manager_v1` (ADR-0195). The manager's one event is `capabilities`, a
 /// bitfield the compositor sends on bind and again whenever it changes; the `blur` bit going away
 /// means the compositor has stopped applying blur even for regions already set, so this tracks the

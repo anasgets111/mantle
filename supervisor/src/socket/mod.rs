@@ -6,14 +6,11 @@
 //! Command-dispatch routing remains deferred (ADR-0020), including the ~30 write commands.
 //! Decode inbound frames as `shared::RendererFrame` (ADR-0024) and forward them unchanged.
 //!
-//! A connection does not get to say which generation it is. The handshake's `generation_id` is a
-//! claim, checked against the pid Supervisor recorded when it spawned that generation
-//! ([`GenerationRegistry::expect_generation`]). `$XDG_RUNTIME_DIR` is `0700`, so only this user can
-//! reach the socket at all and no privilege boundary is being crossed here -- but any process of
-//! this user could previously claim generation 0 and *displace* the live Renderer from the
-//! registry, taking its capability pushes and its lock-related frames with it. The pid check is
-//! what makes the claim mean something; an in-process token would not, since the same user can
-//! read `/proc/<pid>/environ`.
+//! The handshake's `generation_id` is a claim, checked against the pid Supervisor recorded when it
+//! spawned that generation ([`GenerationRegistry::expect_generation`]). `$XDG_RUNTIME_DIR` is
+//! `0700`, but any process of this user could otherwise claim generation 0, *displace* the live
+//! Renderer and take its capability pushes and lock frames. An in-process token would not help: the
+//! same user can read `/proc/<pid>/environ`.
 
 use std::collections::HashMap;
 use std::io;
@@ -34,10 +31,8 @@ use calls::MAX_PENDING_CALLS;
 
 /// How long a peer has to send its handshake before the connection is dropped.
 ///
-/// Without a deadline a peer could connect and send nothing, holding a task and its buffers for as
-/// long as it liked; a few hundred of those is a memory-exhaustion primitive that costs the peer
-/// nothing. A Renderer writes its handshake as its first act after `connect`, so seconds are
-/// generous even on a loaded machine.
+/// Without a deadline a peer could connect and send nothing, holding a task and its buffers; a few
+/// hundred of those exhaust memory. A Renderer writes its handshake first, so seconds are generous.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How often a claim rechecks for its generation's expectation while it waits; see
@@ -47,28 +42,22 @@ const CLAIM_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Connections handled at once, across Renderers and control clients.
 ///
-/// One Renderer is live and `mantle set` is one short-lived client at a time, so
-/// the working set is single digits. This is sized to leave that room untouched while refusing the
-/// unbounded accept loop that preceded it: past this, `accept` still runs -- the listener must not
-/// wedge -- but the new connection is closed immediately.
+/// The working set is single digits (one Renderer, one short-lived `mantle set`). Past this,
+/// `accept` still runs -- the listener must not wedge -- but the new connection is closed at once.
 const MAX_CONNECTIONS: usize = 64;
 
 /// Decoded frames queued from all peers toward `main`'s loop.
 ///
-/// Bounded with backpressure rather than a drop policy: `main` reads these in protocol order, and
-/// lock reports and commands are load-bearing, so a dropped frame is a stalled lock or a lost
-/// action rather than a lost log line. A full queue
-/// instead parks the one connection task that is producing faster than `main` consumes, which is
-/// the peer that should be waiting.
+/// Bounded with backpressure rather than a drop policy: lock reports and commands are
+/// load-bearing, so a dropped frame is a stalled lock or a lost action. A full queue parks the one
+/// connection task producing faster than `main` consumes.
 const MAX_INBOUND_FRAMES: usize = 1024;
 
 /// Frames queued for one peer before it is treated as wedged.
 ///
-/// The outbound channel was unbounded, so a Renderer that stopped reading -- blocked on the GPU,
-/// stopped in a debugger, or simply slower than a capability storm -- grew Supervisor's heap
-/// without limit. Snapshot pushes coalesce at the Renderer, so a peer this far behind is not going
-/// to catch up by being given more room. `send_to` reports the drop to its caller, which already
-/// handles "this generation did not take the frame".
+/// A Renderer that stopped reading (blocked on the GPU, in a debugger) would otherwise grow
+/// Supervisor's heap without limit. Snapshot pushes coalesce at the Renderer, so more room would not
+/// let it catch up. `send_to` reports the drop to its caller.
 pub(crate) const MAX_OUTBOUND_FRAMES: usize = 1024;
 
 /// Queue slots `process.run` output leaves free for control frames (lock, reload, snapshots).
@@ -114,17 +103,14 @@ impl GenerationRegistry {
     pub fn send_to(&self, generation_id: u32, payload: Vec<u8>) -> bool {
         let mut connections = self.connections.lock().expect("mutex poisoned");
         let Some(entry) = connections.get(&generation_id) else { return false };
-        // `try_send` rather than `send`: this is called from synchronous code all over Supervisor,
-        // and a full queue means the peer is wedged, not that the caller should wait for it. A
-        // refusal reads the same as no connection, which every caller already handles.
+        // `try_send`: called from synchronous code, and a full queue means a wedged peer. A refusal
+        // reads the same as no connection, which every caller handles.
         match entry.tx.try_send(payload) {
             Ok(()) => true,
             Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
-                // Dropping this one frame and carrying on would be the wrong recovery: the frames
-                // that matter here are lock and reload traffic, and a Renderer that silently misses
-                // one is a locked session with no lock screen. Ending the connection instead puts it
-                // through the departure path Supervisor already has, which respawns the generation
-                // and replays every snapshot.
+                // Dropping one frame would be wrong: a Renderer silently missing a lock frame is a
+                // locked session with no lock screen. Ending the connection takes the departure path,
+                // which respawns the generation and replays every snapshot.
                 warn!(
                     "generation {generation_id} has not read {MAX_OUTBOUND_FRAMES} queued frames; treating it as \
                      wedged and closing its connection so it is respawned rather than left missing frames"
@@ -133,11 +119,9 @@ impl GenerationRegistry {
                 // and this would remove the new connection.
                 let entry = connections.remove(&generation_id).expect("held under the lock");
                 drop(connections);
-                // Removing the entry only stops new frames queueing; the connection task has to be
-                // told to stop, or its writer sits blocked writing to a peer that is not reading.
-                // Closing the socket makes the Renderer's own loop see its Supervisor go away, and
-                // it exits (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), which is
-                // the departure this Supervisor already knows how to respawn from.
+                // The connection task must be told to stop, or its writer blocks on a peer that is
+                // not reading. The closed socket makes the Renderer exit
+                // (`renderer/src/wayland/main_loop.rs`, `EXIT_SUPERVISOR_GONE`), a known departure.
                 entry.hangup.notify_one();
                 // A wedged Renderer never sees the EOF, so `child.wait()` would never fire. The
                 // expectation is dropped once the departure is observed, which keeps this off a reused pid.
@@ -205,11 +189,10 @@ impl GenerationRegistry {
 
     /// [`Self::may_claim`], waiting for the expectation to appear if it has not yet.
     ///
-    /// Supervisor records a pid immediately after the spawn returns, but "immediately" is still
-    /// after: the child is runnable from the moment `spawn` returns, so a Renderer that started
-    /// unusually fast could connect first and be refused, and a refused boot Renderer is a shell
-    /// that never starts. Waiting closes that window without weakening the check, because an
-    /// impostor waits too and is then refused on the pid it does not have.
+    /// The child is runnable from the moment `spawn` returns, before its pid is recorded, so a fast
+    /// Renderer could connect first and be refused, and a refused boot Renderer is a shell that never
+    /// starts. Waiting closes that window without weakening the check: an impostor waits too, then
+    /// is refused on the pid it does not have.
     async fn await_claim(&self, generation_id: u32, pid: u32) -> bool {
         let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
         loop {
@@ -454,17 +437,13 @@ async fn handle_connection(
 
 /// Why a decoded frame must not be forwarded, or `None` to forward it.
 ///
-/// Two rules, both about a peer describing itself rather than being described:
-///
 /// 1. A control client (`mantle set`/`mantle toggle`, ADR-0112) is any process of this user and is
-///    never a Renderer. It sends exactly one frame kind, so it may send exactly that one. Without
-///    this it could submit a `SecureSubmit` to PAM or drive `Command`s as though it were the shell.
-/// 2. A frame that names a generation must name its own. The pid check at handshake stops a peer
-///    claiming another generation's *connection*; this stops it claiming another generation inside
-///    a frame body, which is the same lie one layer down.
+///    never a Renderer, so it may send only the frame kinds the CLI sends. Otherwise it could submit
+///    a `SecureSubmit` to PAM or drive `Command`s as though it were the shell.
+/// 2. A frame that names a generation must name its own: the handshake pid check stops a peer
+///    claiming another generation's *connection*, this stops the same lie inside a frame body.
 ///
-/// Dropping matches the existing treatment of a frame that fails to decode: the connection
-/// survives, the frame does not.
+/// A refused frame is dropped and the connection survives, as for a frame that fails to decode.
 fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame) -> Option<String> {
     if control_client {
         return match frame {
@@ -528,8 +507,6 @@ mod tests {
 
     #[test]
     fn a_control_client_may_send_only_the_frame_the_cli_actually_sends() {
-        // Otherwise `mantle set`'s socket is also a way to submit to PAM or drive capability
-        // commands as though it were the shell.
         let set_state = RendererFrame::SetState {
             id: 0,
             set: shared::SetState { name: "launcher_open".to_string(), write: shared::StateWrite::Toggle },
@@ -554,8 +531,6 @@ mod tests {
 
     #[test]
     fn a_renderer_may_not_name_a_generation_other_than_its_own_inside_a_frame() {
-        // The handshake check stops a peer claiming another generation's connection; this stops the
-        // same lie one layer down, in a frame body.
         assert!(refuse_frame(false, 2, &command_frame(2)).is_none(), "its own generation is fine");
         let refusal = refuse_frame(false, 2, &command_frame(7)).expect("a mismatched generation must be refused");
         assert!(refusal.contains("generation 7"), "{refusal}");
@@ -582,9 +557,6 @@ mod tests {
 
     #[tokio::test]
     async fn a_wedged_peer_is_hung_up_on_rather_than_quietly_missing_frames() {
-        // Dropping one frame and carrying on would be the wrong recovery: these are lock and
-        // reload frames, and a Renderer that silently misses one is a locked session with no lock
-        // screen. It is hung up on instead, which makes it exit and be respawned.
         let registry = GenerationRegistry::default();
         let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
         let hangup = std::sync::Arc::new(tokio::sync::Notify::new());

@@ -143,15 +143,9 @@ pub(super) fn requested_focus(
 }
 
 /// Whether a plain field takes the keys arriving now. A masked field armed anywhere in scope takes
-/// them all: the two focuses are held independently, and `apply_key` offers a key to both, so a
-/// prompt revealed while a plain field was already typing would otherwise put every character of a
-/// password through that field's `on_change` -- into Lua, which is the one place a `secure_submit`
-/// secret must never reach (ADR-0005). "Masked focus wins" is the rule
-/// `arm_autofocus_if_unfocused`
-/// already states for arming; this is the same rule for the keys themselves.
-///
-/// The draft survives, exactly as it does when the surface loses the keyboard (ADR-0108): the field
-/// stops taking keys and stops drawing a caret, and is typable again when the prompt is answered.
+/// them all: `apply_key` offers a key to both focuses, so a password prompt revealed over a typing
+/// field would otherwise send every character through its `on_change` into Lua (ADR-0005). The
+/// draft survives, as when the surface loses the keyboard (ADR-0108).
 fn plain_field_takes_keys(typing: bool, its_surface_is_in_scope: bool, a_masked_field_is_armed: bool) -> bool {
     typing && its_surface_is_in_scope && !a_masked_field_is_armed
 }
@@ -167,14 +161,9 @@ struct PlainCallbacks {
 /// Delivers one plain-field edit's callbacks in the order a config can rely on (ADR-0189), with
 /// `on_cancel` told whether the Escape it reports cleared any text.
 ///
-/// `on_submit` before `on_change`. A submit clears the buffer, and the `on_change` that reports the
-/// clearing carries the empty string; delivering it first hands a config the empty field before the
-/// text that filled it. A list that derives its selection from the query then resolves against an
-/// empty needle and submits the first unfiltered row rather than the one on screen. Submit carries the user's intent and goes first;
-/// the clear is bookkeeping and follows.
-///
-/// Free rather than a method so the ordering can be tested with recording closures; the dispatch it
-/// came out of needs a whole `App`, which is why this was never covered.
+/// `on_submit` goes before `on_change`: a submit clears the buffer, and the `on_change("")` that
+/// reports it would otherwise reach a config first, so a list deriving its selection from the query
+/// would submit the first unfiltered row. Free so tests can use recording closures without an `App`.
 fn deliver_plain_edit(lua: &Lua, surface_id: &str, edit: PlainEdit, text: String, callbacks: PlainCallbacks) {
     let PlainCallbacks { on_change, on_submit, on_cancel } = callbacks;
     crate::lua::focus::begin_callback(lua, surface_id, true);

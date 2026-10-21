@@ -365,8 +365,7 @@ mod tests {
     use super::super::*;
 
     /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
-    /// `secure_submit`
-    /// naming it can request the authentication agent.
+    /// `secure_submit` naming it can request the authentication agent.
     #[test]
     fn a_secure_submit_target_starts_the_capability_it_names() {
         let dir = tempfile::tempdir().unwrap();
@@ -545,9 +544,8 @@ mod tests {
         assert_eq!(rescue_state(&client.loader), (false, String::new()), "shell.lua was never re-read");
         assert!(!client.dirty.take(), "re_resolve_if_dirty must clear the flag it consumed");
 
-        // Replace `applied_output` directly, bypassing the dirtying push path, with
-        // `visible = true`.
-        // A true no-op leaves the scene as the first resolve left it.
+        // Replace `applied_output` directly, bypassing the dirtying push path, with `visible = true`:
+        // a true no-op leaves the scene as the first resolve left it.
         let poisoned_path =
             write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top", visible = true }"#);
         let (poisoned_output, _) = evaluate_and_specs(&client.loader, &poisoned_path).unwrap();
@@ -1194,34 +1192,28 @@ mod tests {
         let ms = |n| t0 + std::time::Duration::from_millis(n);
         assert_eq!(client.wheel(&signal, 40.0, true, t0), ["bar@TEST"]);
         assert!(!client.re_resolve_if_dirty(), "the notch writes nothing until a frame");
-        let step = |client: &mut RendererClient, at| {
-            let before = runs(client);
-            client.advance_scrolls(&["bar@TEST".to_string()], at);
-            client.re_resolve_if_dirty();
-            (runs(client) - before, shown(client))
-        };
-        assert_eq!(step(&mut client, ms(50)), (1, (20.0, 20.0)), "halfway, read and drawn in one frame");
+        assert_eq!(frame(&mut client, ms(50)), (1, (20.0, 20.0)), "halfway, read and drawn in one frame");
         // A second notch at 20 heads for 80 from 20: no jump.
         client.wheel(&signal, 40.0, true, ms(50));
         // A pass that resolves the row again keeps its run.
         client.loader.lua().load("n:set(7)").exec().unwrap();
-        assert_eq!(step(&mut client, ms(100)), (1, (50.0, 50.0)));
-        assert_eq!(step(&mut client, ms(150)), (1, (80.0, 80.0)), "settled on the target");
-        assert_eq!(step(&mut client, ms(200)), (0, (80.0, 80.0)), "a settled run asks nothing more");
+        assert_eq!(frame(&mut client, ms(100)), (1, (50.0, 50.0)));
+        assert_eq!(frame(&mut client, ms(150)), (1, (80.0, 80.0)), "settled on the target");
+        assert_eq!(frame(&mut client, ms(200)), (0, (80.0, 80.0)), "a settled run asks nothing more");
         assert!(!client.scene.surface("bar@TEST").unwrap().animating());
 
         client.wheel(&signal, 900.0, true, ms(200));
-        assert_eq!(step(&mut client, ms(250)), (1, (165.0, 165.0)), "halfway to the end, not to 980");
-        assert_eq!(step(&mut client, ms(300)), (1, (250.0, 250.0)), "the target stops at the end of seven tiles");
+        assert_eq!(frame(&mut client, ms(250)), (1, (165.0, 165.0)), "halfway to the end, not to 980");
+        assert_eq!(frame(&mut client, ms(300)), (1, (250.0, 250.0)), "the target stops at the end of seven tiles");
         assert_eq!(signal.scroll_offset(), Some(250.0));
 
         // A touchpad follows the finger: it stops the run and moves from what is on screen.
         client.wheel(&signal, -100.0, true, ms(300));
-        assert_eq!(step(&mut client, ms(350)), (1, (200.0, 200.0)));
+        assert_eq!(frame(&mut client, ms(350)), (1, (200.0, 200.0)));
         client.wheel(&signal, 5.0, false, ms(350));
         assert!(client.re_resolve_if_dirty());
         assert_eq!(shown(&client), (205.0, 205.0));
-        assert_eq!(step(&mut client, ms(400)), (0, (205.0, 205.0)), "the run is gone");
+        assert_eq!(frame(&mut client, ms(400)), (0, (205.0, 205.0)), "the run is gone");
     }
 
     /// A smooth scroll run is motion: `settled` clears when a notch starts it, sets when a frame

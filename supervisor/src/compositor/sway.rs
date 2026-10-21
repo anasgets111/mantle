@@ -180,7 +180,7 @@ fn frame_buffered(buffered: &[u8]) -> bool {
 }
 
 /// Blocks for one event, then takes every whole frame already buffered.
-fn read_burst<R: std::io::Read>(reader: &mut BufReader<R>) -> std::io::Result<Burst> {
+fn read_burst<R: Read>(reader: &mut BufReader<R>) -> std::io::Result<Burst> {
     let mut burst = Burst { rows: false, layout: false };
     loop {
         match sway_read(reader)?.0 {
@@ -527,7 +527,6 @@ mod tests {
         assert_eq!(read_burst(&mut reader).unwrap(), Burst { rows: true, layout: true });
         assert_eq!(read_burst(&mut reader).unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
 
-        // An input-only burst leaves the rows alone.
         let mut queued = Vec::new();
         sway_write(&mut queued, EVENT_INPUT, b"{}").unwrap();
 

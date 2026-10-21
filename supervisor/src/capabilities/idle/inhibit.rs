@@ -182,8 +182,6 @@ pub(crate) struct LiveInhibit {
 pub(super) mod tests {
     use super::*;
 
-    // ---- apply_inhibit / apply_release_inhibit (inhibit refcount arithmetic, TDD seam 2) ----
-
     #[test]
     fn the_fd_opens_on_the_first_hold_and_closes_on_the_last_release() {
         let mut counts = HashMap::new();
@@ -198,8 +196,6 @@ pub(super) mod tests {
         assert!(!counts.contains_key(&42));
         assert!(apply_release_inhibit(&mut counts, 2));
     }
-
-    // ---- ScreenSaver holds (ADR-0231): the inbound half, sharing one fd with the config's ----
 
     /// What the portal sends: no application name, a reason worth drawing.
     fn hold(why: &str) -> IdleInhibitor {
@@ -277,8 +273,6 @@ pub(super) mod tests {
         assert!(apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie"));
     }
 
-    // ---- cleanup_generation_inhibit (TDD seam 5, inhibit half) ----
-
     #[test]
     fn cleanup_generation_inhibit_drops_only_the_named_generation_and_closes_on_the_last() {
         let mut counts = HashMap::new();
@@ -292,8 +286,6 @@ pub(super) mod tests {
         assert!(cleanup_generation_inhibit(&mut counts, 2));
         assert!(counts.is_empty());
     }
-
-    // ---- Login1ManagerProxy::inhibit (TDD seam 3: real D-Bus call, p2p pattern) ----
 
     use crate::capabilities::test_support::p2p_pair_serving;
 

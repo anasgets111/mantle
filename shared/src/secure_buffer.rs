@@ -133,7 +133,6 @@ pub fn deserialize_secret<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
 
     #[test]

@@ -61,12 +61,8 @@ impl FoldersController {
                     return;
                 }
                 existing.task.abort();
-                watches.remove(&key);
             }
-            {
-                let mut state = self.state.lock().expect("folders state mutex poisoned");
-                state.watched.insert(key.clone(), Folder::default());
-            }
+            self.state.lock().expect("folders state mutex poisoned").watched.insert(key.clone(), Folder::default());
             let task = tokio::spawn(follow_folder(
                 PathBuf::from(&key),
                 key.clone(),

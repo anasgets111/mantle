@@ -207,8 +207,6 @@ fn resolve_variant(
 mod tests {
     use super::*;
 
-    // ---- resolve_display_name ----
-
     #[test]
     fn resolve_display_name_prefers_the_title_and_falls_back_to_the_id() {
         assert_eq!(resolve_display_name("Discord", "discord"), "Discord");
@@ -241,8 +239,6 @@ mod tests {
             ((None, Some("/spool/stem.png".to_string())), Some(digest))
         );
     }
-
-    // ---- flatten_tooltip ----
 
     #[test]
     fn flatten_tooltip_joins_the_non_empty_parts() {

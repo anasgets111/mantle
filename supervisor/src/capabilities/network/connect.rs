@@ -62,8 +62,7 @@ impl NetworkController {
         }
         debug!("connect {:?}: saved={saved} secure={secure}, connecting directly", pending.ssid);
         // A later click may have replaced the intent during the profile read.
-        let taken = self.take_current_intent(&pending);
-        if let Some(pending) = taken {
+        if let Some(pending) = self.take_current_intent(&pending) {
             self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
         }
     }
@@ -273,7 +272,7 @@ pub(super) mod tests {
 
     use super::*;
     use crate::capabilities::network::NetworkState;
-    use crate::capabilities::network::join::JoinState;
+    use crate::capabilities::network::join::{JoinState, tests::joined};
     use crate::capabilities::network::proxies::{DeviceProxy, NetworkManagerProxy, SettingsProxy, WirelessProxy};
     use crate::capabilities::test_support::{p2p_pair_serving, poll_until, within};
 
@@ -299,12 +298,6 @@ pub(super) mod tests {
             events,
         };
         (controller, receiver, peer)
-    }
-
-    fn joined(n: u32) -> InFlight {
-        let active = OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/ActiveConnection/{n}"))
-            .expect("valid object path");
-        InFlight { active, created: None, unsaved: None }
     }
 
     /// One saved profile for an SSID, counting each `Save` and `Delete`.

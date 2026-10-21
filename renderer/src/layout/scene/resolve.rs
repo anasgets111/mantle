@@ -95,7 +95,7 @@ pub(super) fn resolve(
     let frame = ComputedFrame::enter(lua);
     let mut properties = build(node::resolve_declared(&raw, kind, tables_plain, lua)?)?;
     let dropped = drop_refused_values(kind, &mut properties, retained.as_deref().map(|r| &*r.properties), lua)?;
-    let shown = retained.as_deref().map(tween_state);
+    let shown = retained.as_deref().map(|r| (r.tweens.as_slice(), &*r.properties));
     let (tweens, movement) = node::retarget(kind, shown, &mut properties, now, lua, reentry && shown.is_none())?;
     let properties = Rc::new(properties);
     let memo = Rc::new(ResolveMemo { raw, lua: lua.weak(), stamp, cells: frame.finish(), dropped, tables_plain });
@@ -186,11 +186,6 @@ pub(super) fn drop_injected_sizes(properties: &mut Rc<PropMap>, raw: &PropMap) -
         }
     }
     dropped
-}
-
-/// What `node::retarget` reads off a retained node.
-pub(super) fn tween_state(node: &ResolvedNode) -> (&[Tween], &PropMap) {
-    (&node.tweens, &node.properties)
 }
 
 /// The same Lua values under the same keys: by address for what has one, by value otherwise.

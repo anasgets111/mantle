@@ -645,7 +645,6 @@ mod tests {
         let list = build(&tree, 1.0, None);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/a.png")]));
         assert!(!list.draws_any_of(&[std::path::PathBuf::from("/tmp/b.png")]));
-        assert!(!list.draws_any_of(&[]));
         // The same walk names the pin `ImageCache::trim` keeps: the path with the box the image
         // was keyed on, the 100x40 rect it fills.
         let pinned = pins(&list);

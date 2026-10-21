@@ -74,9 +74,7 @@ impl Capability {
     pub fn from_name(name: &str) -> Option<Self> {
         Self::ALL.iter().copied().find(|capability| capability.as_str() == name)
     }
-}
 
-impl Capability {
     /// The action names, each a method on `mantle.<name>`; empty for a read-only capability. The
     /// Renderer refuses any other name at call time; the Supervisor still validates arguments.
     /// `supervisor/src/stubs.rs` pins each list to its serde action enum.

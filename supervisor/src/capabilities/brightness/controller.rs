@@ -26,12 +26,6 @@ fn device_type_rank(entry_dir: &Path) -> u8 {
     }
 }
 
-/// Parsed `max_brightness`; missing or malformed values become `0`, and the `> 0` filter in
-/// [`select_backlight_device`] rejects every non-positive value.
-fn read_max_brightness(entry_dir: &Path) -> i32 {
-    read_parsed(entry_dir, "max_brightness").unwrap_or(0)
-}
-
 /// Picks one `max_brightness > 0` device (ADR-0053), ranked by [`device_type_rank`] and then
 /// sorted directory name for deterministic boot-to-boot selection. `None` if none qualifies.
 fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
@@ -40,7 +34,7 @@ fn select_backlight_device(backlight_root: &Path) -> Option<(PathBuf, i32)> {
         .flatten()
         .map(|entry| entry.path())
         .filter_map(|dir| {
-            let max = read_max_brightness(&dir);
+            let max: i32 = read_parsed(&dir, "max_brightness").unwrap_or(0);
             (max > 0).then_some((dir, max))
         })
         .min_by(|(dir_a, _), (dir_b, _)| {
@@ -88,7 +82,6 @@ impl super::super::Writer for BrightnessController {
         if let Err(err) = set_brightness(&self.system_bus, "backlight", &name, raw).await {
             warn!("SetBrightness(backlight, {name}, {raw}) failed: {err}");
         }
-        // State changes arrive through the udev watch/poll loop, not an optimistic local update.
     }
 }
 

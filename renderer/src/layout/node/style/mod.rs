@@ -19,9 +19,7 @@ pub use transform::{
     transformed_bounds,
 };
 
-/// `"NN%"` (`^\d+(\.\d+)?%$`) as `SizeMode::Percent`. Not a confirmed spec syntax: the base
-/// property table only documents integer/`"fill"` for width/height, though `Percent(f32)` is
-/// named as a size class with no literal Lua form given. See ADR-0023.
+/// `"NN%"` (`^\d+(\.\d+)?%$`) as `SizeMode::Percent` (ADR-0023).
 pub(super) fn parse_percent(s: &str) -> Option<f32> {
     let digits = s.strip_suffix('%')?;
     let mut parts = digits.splitn(2, '.');
@@ -744,11 +742,10 @@ impl Prop for Ring {
             }
         };
         let RingInput { width, color, offset } = RingInput::read(row.name, table)?;
-        let offset = offset.unwrap_or(0.0);
         Ok(Some(Ring {
             width: within_range(row.name, SHADOW_BLUR, width)?,
             color,
-            offset: within_range(row.name, SHADOW_REACH, offset)?,
+            offset: within_range(row.name, SHADOW_REACH, offset.unwrap_or(0.0))?,
         }))
     }
 }

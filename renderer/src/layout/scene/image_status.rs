@@ -76,7 +76,9 @@ impl Scene {
         }
         for (signal, state) in chosen.into_values() {
             let (state, size) = state.unwrap_or(("loading", None));
-            logged(image_status::write(lua, &signal, state, size));
+            if let Err(err) = image_status::write(lua, &signal, state, size) {
+                debug!("writing an image_status signal failed: {err}");
+            }
         }
         self.image_loads.retain(|node, _| bound.contains(node));
         image_status::note_bound(lua, cells);
@@ -104,12 +106,6 @@ impl Scene {
 
 /// One image's state for its name: the word and the size.
 type State = (&'static str, Option<Natural>);
-
-fn logged(written: mlua::Result<()>) {
-    if let Err(err) = written {
-        debug!("writing an image_status signal failed: {err}");
-    }
-}
 
 /// Calls `visit` for every `image` under `node` with its `source` and whether it and its
 /// ancestors are in flow; only shown ones when `hidden` is false. A hidden or leaving image keeps

@@ -46,10 +46,6 @@ impl ProcessRegistry {
         self.commands.send_as(id, "process", action, arguments);
     }
 
-    fn run(&self, cmd: String, args: Vec<String>, on_line: Function, on_exit: Function) -> ProcessHandle {
-        self.start("run", cmd, args, on_line, on_exit)
-    }
-
     /// `process.capture`: the Supervisor answers a `"capture"` with at most one stdout frame carrying
     /// the whole text, so the callbacks are plain `run` ones: the line is stashed, `on_exit` delivers it.
     fn capture(&self, lua: &Lua, cmd: String, args: Vec<String>, on_done: Function) -> mlua::Result<ProcessHandle> {
@@ -176,7 +172,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             /// `nil` when a signal ended it or it failed to spawn.
             on_exit: fn(code: Option<i32>),
         ) -> ProcessHandle {
-            Ok(registry.run(cmd, args.unwrap_or_default(), on_line.0, on_exit.0))
+            Ok(registry.start("run", cmd, args.unwrap_or_default(), on_line.0, on_exit.0))
         }
     )?;
     lua_fn!(

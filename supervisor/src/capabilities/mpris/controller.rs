@@ -15,9 +15,7 @@ use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
 use shared::action::{LoopStatus, PlayerCommand};
 
-/// Every command here fails the same one way, and only into a `debug!`. An enum with `Display`
-/// and `Error` impls bought nothing a constant does not: nothing matches on it and nothing returns
-/// it.
+/// Every command fails this one way, only into a `debug!`; nothing matches on it.
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";
 const NO_TRACK: &str = "/org/mpris/MediaPlayer2/TrackList/NoTrack";
 static NEXT_PLAYLIST_REQUEST: AtomicU64 = AtomicU64::new(1);
@@ -353,9 +351,7 @@ impl MprisController {
 
     fn find_root(&self, id: &str) -> Option<super::proxies::MprisRootProxy<'static>> {
         let bus_name = service_name_for_id(id);
-        let guard = self.registry.lock().expect("mutex poisoned");
-        let entry = guard.get(&bus_name)?;
-        Some(entry.root.clone())
+        self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.root.clone())
     }
 
     fn cached_position(&self, id: &str) -> Option<i64> {
@@ -375,7 +371,7 @@ impl MprisController {
         let guard = self.registry.lock().expect("mutex poisoned");
         let entry = guard.get(&bus_name)?;
         Some(SeekContext {
-            bus_name: bus_name.clone(),
+            bus_name,
             player: entry.player.clone(),
             trackid: entry.cached_trackid.clone(),
             length: entry.last_known.length,
@@ -395,10 +391,7 @@ fn valid_uri(uri: &str) -> bool {
         && !uri.bytes().any(|byte| byte.is_ascii_whitespace() || byte.is_ascii_control())
         && uri.bytes().enumerate().all(|(i, byte)| {
             byte != b'%'
-                || uri
-                    .as_bytes()
-                    .get(i + 1..i + 3)
-                    .is_some_and(|escape| escape.len() == 2 && escape.iter().all(u8::is_ascii_hexdigit))
+                || uri.as_bytes().get(i + 1..i + 3).is_some_and(|escape| escape.iter().all(u8::is_ascii_hexdigit))
         })
 }
 

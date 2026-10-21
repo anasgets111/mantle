@@ -19,7 +19,11 @@ pub(crate) trait Input: LuaType + Sized {
 
 /// `value`, the entry at `key` inside `property`, as a `T`; an unread nested signal is refused.
 pub(crate) fn read<T: Input>(property: &str, key: &str, value: Value) -> Result<T, LayoutError> {
-    let value = plain(property, key, value)?;
+    // A signal `resolve_declared` skipped: in a raw row, under a metatable, past its walk depth or
+    // inside another signal's result.
+    if let Value::UserData(_) = value {
+        return Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}")));
+    }
     T::from_value(property, key, &value)?
         .ok_or_else(|| invalid(property, format!("`{key}` must be {}, got {}", T::lua(), preview_for_error(&value))))
 }
@@ -27,15 +31,6 @@ pub(crate) fn read<T: Input>(property: &str, key: &str, value: Value) -> Result<
 /// `table[key]` as a `T`.
 pub(crate) fn field<T: Input>(property: &str, table: &mlua::Table, key: &str) -> Result<T, LayoutError> {
     read(property, key, table.get(key).map_err(|e| invalid(property, e.to_string()))?)
-}
-
-/// `value` unless it is a signal `resolve_declared` skipped: in a raw row, under a metatable,
-/// past its walk depth or inside another signal's result.
-fn plain(property: &str, key: impl std::fmt::Display, value: Value) -> Result<Value, LayoutError> {
-    match value {
-        Value::UserData(_) => Err(LayoutError::UnsupportedSignalProperty(format!("{property}.{key}"))),
-        other => Ok(other),
-    }
 }
 
 impl Input for f32 {

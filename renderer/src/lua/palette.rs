@@ -221,7 +221,7 @@ mod tests {
     fn a_decode_failure_calls_back_with_nil() {
         let (lua, registry) = lua_with_palette();
 
-        lua.load(r#"handle = palette.quantize("/nonexistent/wall.png", nil, function(colors) probe = { called = true, is_nil = colors == nil } end)"#)
+        lua.load(r#"handle = palette.quantize("/nonexistent/wall.png", nil, function(colors) probe = { is_nil = colors == nil } end)"#)
             .exec()
             .unwrap();
 

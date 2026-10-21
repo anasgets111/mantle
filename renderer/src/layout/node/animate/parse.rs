@@ -136,7 +136,7 @@ impl LuaType for Animations {
     }
     #[cfg(test)]
     fn classes(out: &mut Vec<String>) {
-        out.push(BTreeMap::<&str, AnimationSpec>::lua());
+        out.push(format!("table<string, {}>", AnimationSpec::lua()));
     }
 }
 
@@ -308,9 +308,8 @@ pub(super) fn parse_easing(field: &str, value: &Value) -> Result<Easing, LayoutE
             let mut points = BezierPoints::default();
             for (index, slot) in points.iter_mut().enumerate() {
                 let point: Value = table.get(index + 1).map_err(|e| invalid(field, e.to_string()))?;
-                *slot = value_as_f32(field, &point)?.ok_or_else(|| {
-                    invalid(field, "a table easing is `{ x1, y1, x2, y2 }` or `{ steps = n }`".to_string())
-                })?;
+                *slot = value_as_f32(field, &point)?
+                    .ok_or_else(|| invalid(field, "a table easing is `{ x1, y1, x2, y2 }` or `{ steps = n }`"))?;
             }
             // Only the control `x` are bounded, and CSS bounds them for the same reason: outside
             // `[0, 1]` the curve doubles back and one progress has several answers. The `y` are

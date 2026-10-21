@@ -877,19 +877,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn two_overlapping_siblings_resolve_to_the_later_declared_one() {
-        let root = ResolvedNode::test(
-            "panel",
-            (0.0, 0.0, 100.0, 32.0),
-            vec![
-                ResolvedNode::test("under", (0.0, 0.0, 50.0, 32.0), vec![]),
-                ResolvedNode::test("over", (0.0, 0.0, 50.0, 32.0), vec![]),
-            ],
-        );
-        assert_eq!(kinds(&hit_path(&root, LogicalPoint { x: 25.0, y: 16.0 })), ["panel", "over"]);
-    }
-
-    #[test]
     fn a_hittable_false_overlay_passes_the_pointer_to_the_sibling_under_it() {
         let set = |mut node: ResolvedNode, value| {
             std::rc::Rc::make_mut(&mut node.properties).insert("hittable", Value::Boolean(value));

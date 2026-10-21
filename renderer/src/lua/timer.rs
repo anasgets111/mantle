@@ -63,8 +63,7 @@ struct TimerRegistry {
     /// (ADR-0203). Deadlines are absolute, so the wait costs a promoted timer no accuracy.
     staged: Vec<Entry>,
     /// The batch [`dispatch_due`] is part-way through. Held here rather than in a local so that
-    /// `cancel` can still reach a timer whose turn has not come, which is the whole point of
-    /// looking each one up again instead of calling a list of closures.
+    /// `cancel` can still reach a timer whose turn has not come.
     firing: Vec<Option<Entry>>,
     /// Whether `arm` is being reached from an evaluation rather than from a callback.
     evaluating: bool,
@@ -132,11 +131,9 @@ fn start(lua: &Lua, name: &str, ms: Num, callback: Function, repeat: bool) -> ml
         let got = preview_for_error(&ms.1);
         return Err(mlua::Error::runtime(format!("{name}: ms {}", out_of_range(MIN_MS, MAX_MS, got))));
     }
-    let ms = ms.0;
-    let period = Duration::from_secs_f64(ms / 1000.0);
-    let every = repeat.then_some(period);
-    let id = super::app_data_or_default::<TimerRegistry>(lua).arm(now(lua) + period, callback, every)?;
-    Ok(TimerHandle(id))
+    let period = Duration::from_secs_f64(ms.0 / 1000.0);
+    let due = now(lua) + period;
+    super::app_data_or_default::<TimerRegistry>(lua).arm(due, callback, repeat.then_some(period)).map(TimerHandle)
 }
 
 pub fn register(lua: &Lua) -> mlua::Result<()> {

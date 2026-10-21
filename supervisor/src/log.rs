@@ -235,7 +235,6 @@ mod tests {
 
     #[test]
     fn a_follow_ends_when_its_supervisor_drops_the_lock() {
-        use std::io::Read;
         let root = tempfile::tempdir().unwrap();
         let (dir, held) = instance::claim(root.path(), 42, Path::new("/cfg")).unwrap();
         let mut log = File::create(dir.join(instance::LOG)).unwrap();

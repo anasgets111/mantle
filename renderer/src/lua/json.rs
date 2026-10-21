@@ -7,28 +7,21 @@
 
 use mlua::{Lua, LuaSerdeExt, Table, Value};
 
-/// The sole JSON-to-Lua mapping, used by pushed capability payloads (`StateSnapshot`s) and
-/// `json.decode`, so `null` maps one way everywhere.
+/// The sole JSON-to-Lua mapping, used by pushed capability payloads and `json.decode`, so `null` maps
+/// one way everywhere.
 ///
-/// mlua's serde bridge defaults `serialize_none_to_null`/`serialize_unit_to_null` to true, mapping
-/// `Value::Null` to truthy lightuserdata. Then `if payload.field` treats null as real data. Disable
-/// both options so `null` becomes Lua `nil` and erases the table key.
-///
-/// Cost: a JSON-array `null` leaves a hole and stops `ipairs`. Measured on `[1, null, 3]`, `ipairs`
-/// yields one element, while `#` returns 3 and `xs[3]` still reads 3. The trade favors null fields,
-/// which payloads use (`icon_path`, `toggle_state`, `icon_name` in a tray menu), over null
-/// elements, which no capability produces; the alternative makes every optional field truthy.
+/// mlua's serde bridge defaults map `null` to truthy lightuserdata, so `if payload.field` would treat
+/// null as data. Both `*_to_null` options are off: `null` becomes `nil` and erases the table key.
+/// Cost: a JSON-array `null` leaves a hole and stops `ipairs` (`[1, null, 3]` yields one element, `#` is
+/// 3). Null fields (tray `icon_path`, `toggle_state`) matter; no capability produces null elements.
 pub fn to_lua(lua: &Lua, json: &serde_json::Value) -> mlua::Result<Value> {
     let options = mlua::serde::ser::Options::new().serialize_none_to_null(false).serialize_unit_to_null(false);
     lua.to_value_with(json, options)
 }
 
-/// Parse and conversion failures become one message for `json.decode`. A convention that requires
-/// `pcall` is a raise with extra steps; wording distinguishes config input errors from engine
-/// conversion errors.
-///
-/// `from_slice` enforces its recursion limit first, so no test reaches conversion failure and it
-/// may be unreachable today. Keep it because [`register`]'s contract promises the error path.
+/// Parse and conversion failures become one message for `json.decode`; a convention that requires
+/// `pcall` is a raise with extra steps. The conversion error may be unreachable (`from_slice`'s
+/// recursion limit trips first) but [`register`]'s contract promises the path.
 fn decode(lua: &Lua, bytes: &[u8]) -> Result<Value, String> {
     let json: serde_json::Value = serde_json::from_slice(bytes).map_err(|err| err.to_string())?;
     to_lua(lua, &json).map_err(|err| format!("decoded, but could not be converted to a Lua value: {err}"))
@@ -111,22 +104,14 @@ impl Walk {
 
 /// Registers `json.decode(text)` and `json.encode(value)`.
 ///
-/// Returns one value on success, or `nil` plus a message on failure, matching Lua's `io.open`, not
-/// cjson. mlua's `IntoLuaMulti for Result` is already that shape, so [`decode`]'s `Result` goes
-/// back whole. Decode failure is routine because `on_line` supplies lines, including partial buffers
-/// and non-JSON stdout; raising would force `pcall` at every call site. No trailing `nil`: with three
-/// arguments, `table.insert(t, decoded, nil)` treats the second as a position and raises "bad
-/// argument #2 to 'insert' (number expected, got table)". Measured, not assumed.
+/// Decode returns one value, or `nil` plus a message, matching `io.open`. Failure is routine (`on_line`
+/// supplies partial buffers and non-JSON stdout), so raising would force `pcall` everywhere. No trailing
+/// `nil`: `table.insert(t, decoded, nil)` would take the table as a position and raise.
 ///
-/// A bare top-level `null` succeeds as `nil`, indistinguishable from decode failure to `if t then`
-/// (pinned by `decode_of_a_bare_top_level_null_is_indistinguishable_from_a_decode_failure`). A
-/// success sentinel would reintroduce the truthy-lightuserdata bug that [`to_lua`] avoids.
-///
-/// Take `mlua::LuaString`, not Rust `String`, so non-UTF-8 bytes reach serde as a readable decode
-/// error instead of an mlua argument-conversion error raised past `if err then`.
-///
-/// `json.decode` does not raise on input, well-formed or not, unless Lua cannot allocate the
-/// message string.
+/// A bare top-level `null` succeeds as `nil`, indistinguishable from failure to `if t then` (pinned by
+/// `decode_of_a_bare_top_level_null_is_indistinguishable_from_a_decode_failure`); a success sentinel
+/// would bring back the truthy-lightuserdata bug [`to_lua`] avoids. Takes `mlua::LuaString` so
+/// non-UTF-8 bytes reach serde as a decode error, not an argument-conversion raise.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     super::luacats::lua_table!(lua, json)?;
     super::luacats::lua_fn!(

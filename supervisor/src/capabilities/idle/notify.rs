@@ -7,7 +7,6 @@ use std::time::Duration;
 
 use shared::{debug, info};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
-use tokio::task::JoinHandle;
 use wayland_client::globals::{GlobalListContents, registry_queue_init};
 use wayland_client::protocol::wl_registry;
 use wayland_client::protocol::wl_seat::{self, WlSeat};
@@ -192,14 +191,12 @@ impl Dispatch<ExtIdleNotificationV1, ListenerId> for WaylandThreadState {
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
     ) {
-        let mapped = match event {
-            ext_idle_notification_v1::Event::Idled => Some(RawIdleEvent::Idled),
-            ext_idle_notification_v1::Event::Resumed => Some(RawIdleEvent::Resumed),
-            _ => None,
+        let raw = match event {
+            ext_idle_notification_v1::Event::Idled => RawIdleEvent::Idled,
+            ext_idle_notification_v1::Event::Resumed => RawIdleEvent::Resumed,
+            _ => return,
         };
-        if let Some(state_value) = mapped {
-            let _ = state.raw_events_tx.send((*data, state_value));
-        }
+        let _ = state.raw_events_tx.send((*data, raw));
     }
 }
 
@@ -285,7 +282,7 @@ pub(crate) fn spawn_idle_event_forwarder(
     mut raw_events_rx: RawIdleEventReceiver,
     events_tx: UnboundedSender<shared::IdleEvent>,
     state_tx: UnboundedSender<super::IdleState>,
-) -> JoinHandle<()> {
+) {
     tokio::spawn(async move {
         let mut input_idle: HashSet<Duration> = HashSet::new();
         let mut gated_idle: HashSet<Duration> = HashSet::new();
@@ -324,8 +321,7 @@ pub(crate) fn spawn_idle_event_forwarder(
                     let has_input_twin = reg
                         .listeners
                         .contains_key(&ListenerId { duration: listener.duration, respects_inhibitors: false });
-                    let state = threshold_event_state(raw_event, listener, has_input_twin);
-                    let Some(state) = state else { continue };
+                    let Some(state) = threshold_event_state(raw_event, listener, has_input_twin) else { continue };
                     let ids = reg.fanout.get(&listener.duration).cloned().unwrap_or_default();
                     (ids, state)
                 };
@@ -394,7 +390,7 @@ pub(crate) fn spawn_idle_event_forwarder(
                 }
             }
         }
-    })
+    });
 }
 
 #[cfg(test)]
@@ -421,8 +417,6 @@ mod tests {
         );
     }
 
-    // ---- register_threshold_entry (threshold fan-out decision, TDD seam 1) ----
-
     #[test]
     fn registrations_share_a_listener_per_duration_and_split_across_durations() {
         let mut fanout = HashMap::new();
@@ -447,8 +441,6 @@ mod tests {
         assert!(!second_created);
         assert_eq!(fanout.get(&Duration::from_secs(30)), Some(&vec![1]));
     }
-
-    // ---- wayland_inhibited (ADR-0160 detection seam) ----
 
     fn secs(n: u64) -> Duration {
         Duration::from_secs(n)
@@ -546,8 +538,6 @@ mod tests {
             assert!(state_rx.try_recv().is_err(), "waking must never read as a hold, gated first: {gated_first}");
         }
     }
-
-    // ---- cleanup_generation_thresholds (TDD seam 5, notify half) ----
 
     #[test]
     fn cleanup_generation_thresholds_drops_only_the_named_generations_entries() {

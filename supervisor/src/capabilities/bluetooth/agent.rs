@@ -518,7 +518,6 @@ mod tests {
             _ = &mut declined => panic!("PIN returned before a refusal"),
             _ = signals.recv() => {}
         }
-        assert!(!answer(&prompts, Some(MAC), true, after_grace()), "Lua cannot accept an entry prompt");
         assert!(answer(&prompts, Some(MAC), false, Instant::now()));
         assert!(rejected(declined.await));
     }

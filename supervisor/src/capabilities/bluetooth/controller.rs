@@ -106,9 +106,8 @@ impl BluetoothController {
         // the first snapshot a config ever sees. Each signal re-derives only its own half, so
         // whichever won that race published the other half's `Default`. A `DeviceRegistryChanged`
         // arriving first announced a powered adapter as `enabled = false`, and the `AdapterChanged`
-        // behind it then read as the user switching Bluetooth on, and an OSD
-        // bound to it showed "bluetooth on" at every shell start. `network` is safe by accident: every signal
-        // its forwarders can emit is a full re-derive.
+        // behind it then read as the user switching Bluetooth on: an OSD showed "bluetooth on" at
+        // every shell start. `network` is safe by accident: every signal it emits is a full re-derive.
         controller.handle_signal(BluetoothSignal::AdapterChanged).await;
         controller.handle_signal(BluetoothSignal::DeviceRegistryChanged).await;
         controller

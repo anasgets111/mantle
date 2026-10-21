@@ -85,15 +85,7 @@ pub(super) fn resolve_icon_source(icon_name: &str, pixmaps: &[IconPixmap], theme
 
 /// Encodes bounds-checked ARGB32 bytes (network order A, R, G, B) to PNG.
 fn encode_argb32_to_png(width: u32, height: u32, argb: &[u8]) -> Result<Vec<u8>, png::EncodingError> {
-    let mut rgba = Vec::with_capacity(argb.len());
-    let (chunks, _remainder) = argb.as_chunks::<4>();
-    for &[a, r, g, b] in chunks {
-        rgba.push(r);
-        rgba.push(g);
-        rgba.push(b);
-        rgba.push(a);
-    }
-
+    let rgba: Vec<u8> = argb.as_chunks::<4>().0.iter().flat_map(|&[a, r, g, b]| [r, g, b, a]).collect();
     shm_icons::encode_png(width, height, png::ColorType::Rgba, &rgba)
 }
 
@@ -123,8 +115,6 @@ mod tests {
         assert_eq!(icon_filename_stem("1.42/StatusNotifierItem"), "1.42_StatusNotifierItem");
         assert_ne!(icon_filename_stem("1.42/a/b"), icon_filename_stem("1.42/a_b"));
     }
-
-    // ---- theme_path_file / IconThemePath (ADR-0074) ----
 
     #[test]
     fn theme_path_file_resolves_an_items_own_artwork_by_name_and_extension_and_never_leaves_the_directory() {
@@ -161,8 +151,6 @@ mod tests {
         assert_eq!(theme_path_file(theme_path, "sub/real"), None);
     }
 
-    // ---- pixmap_is_valid ----
-
     #[test]
     fn pixmap_is_valid_wants_a_positive_square_within_the_cap_and_a_matching_byte_length() {
         // (width, height, bytes, valid)
@@ -178,8 +166,6 @@ mod tests {
             assert_eq!(pixmap_is_valid(width, height, len), valid, "{width}x{height} with {len} bytes");
         }
     }
-
-    // ---- largest_valid_pixmap ----
 
     fn pixmap(size: i32) -> IconPixmap {
         IconPixmap { width: size, height: size, bytes: vec![0u8; (size * size * 4) as usize] }
@@ -199,8 +185,6 @@ mod tests {
         assert_eq!(largest_valid_pixmap(&[]), None);
     }
 
-    // ---- resolve_icon_source ----
-
     #[test]
     fn resolve_icon_source_prefers_the_name_then_the_pixmap_and_else_none() {
         let pixmaps = vec![pixmap(32)];
@@ -211,8 +195,6 @@ mod tests {
         let invalid = vec![IconPixmap { width: 4, height: 2, bytes: vec![0u8; 32] }];
         assert_eq!(resolve_icon_source("", &invalid, ""), IconSource::None);
     }
-
-    // ---- encode_argb32_to_png round trip through the real png crate ----
 
     #[test]
     fn encode_argb32_to_png_round_trips_a_known_pixel() {

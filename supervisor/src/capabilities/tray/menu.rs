@@ -91,10 +91,7 @@ pub(super) fn parse_menu_node(value: &Value<'_>, depth: u32, budget: &mut usize,
         return None;
     }
     *budget -= 1;
-    let structure = match unwrap_variant(value) {
-        Value::Structure(structure) => structure,
-        _ => return None,
-    };
+    let Value::Structure(structure) = unwrap_variant(value) else { return None };
     let [id_field, properties_field, children_field] = structure.fields() else {
         return None;
     };
@@ -196,8 +193,6 @@ mod tests {
     fn parse(value: &Value<'_>, depth: u32) -> Option<MenuItem> {
         parse_menu_node(value, depth, &mut { MAX_MENU_NODES }, "stem")
     }
-
-    // ---- parse_menu_node ----
 
     fn menu_node_value<'a>(id: i32, properties: Vec<(&'a str, Value<'a>)>, children: Vec<Value<'a>>) -> Value<'a> {
         let mut dict = Dict::new(&Signature::Str, &Signature::Variant);
@@ -304,7 +299,6 @@ mod tests {
 
         let root = deep_chain(MAX_MENU_DEPTH + 20, 0);
 
-        // Must complete without panic or stack overflow and return the truncated tree.
         let item = parse(&root, 0).expect("the root node itself must still parse");
 
         let mut current = &item;
@@ -372,8 +366,6 @@ mod tests {
         let visible = menu_node_value(1, vec![("visible", Value::Bool(true))], Vec::new());
         assert!(parse(&visible, 0).is_some());
     }
-
-    // ---- icon-data ----
 
     fn byte_array_value(bytes: &[u8]) -> Value<'_> {
         let mut array = Array::new(&Signature::U8);

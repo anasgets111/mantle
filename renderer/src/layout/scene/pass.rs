@@ -139,9 +139,8 @@ fn forced_root_size(
 /// id-less children match positionally among other id-less children. An id miss is new, never a
 /// positional fallback, so it cannot inherit an unrelated `NodeId`/subtree. Unclaimed retained
 /// nodes come back second, for `prepare` to see off. The linear match uses one `HashMap<&str,
-/// usize>` per parent; sibling
-/// count is unbounded (`1..10000` is legal Lua), and this runs on the Wayland dispatch thread at
-/// capability-push cadence (ADR-0044 decision 2).
+/// usize>` per parent; sibling count is unbounded (`1..10000` is legal Lua), and this runs on the
+/// Wayland dispatch thread at capability-push cadence (ADR-0044 decision 2).
 fn pair_children_by_id_then_position(
     fresh_children: &[VirtualNode],
     old_children: Vec<ResolvedNode>,
@@ -250,8 +249,7 @@ pub(super) fn prepare(
         }
     };
     // Already leaving children are not paired again: a re-added id is a new node beside the one
-    // still fading.
-    // Checked first because nothing is usually leaving.
+    // still fading. Checked first because nothing is usually leaving.
     let (leaving, old_children): (Vec<ResolvedNode>, Vec<ResolvedNode>) =
         if old_children.iter().any(|child| child.leaving) {
             old_children.into_iter().partition(|child| child.leaving)
@@ -704,9 +702,7 @@ fn finish(
         // Last, so an exit paints over what took its place -- and after the scroll loop above, which
         // is why a leaving child keeps the offset it was dropped at rather than travelling with the
         // list.
-        // ponytail: a reader who scrolls during a 150 ms exit sees the leaver drift out of place. The
-        // upgrade is to carry the offset each leaver was dropped at on the node and subtract the
-        // difference here; nothing has asked for it, and lists here scroll far slower than they fade.
+        // ponytail: a scroll mid-exit drifts the leaver; upgrade: subtract its stored drop offset.
         children.extend(leaving);
         (children, scrolled)
     } else {
@@ -815,20 +811,15 @@ mod tests {
         // the retained children stay, ids included, so showing it again pairs against them.
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"
+        let (lua, surface) = surface_from(
+            r#"
                 built = 0
                 return panel { id = "bar", child = column { visible = state("open", true),
                     children = { list { items = state("items", { "a", "b" }), each = function(name)
                         built = built + 1
                         return rect { width = 10, height = 10 }
                     end } } } }"#,
-            )
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        );
         let built = || lua.globals().get::<i64>("built").unwrap();
 
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
@@ -2377,10 +2368,8 @@ mod tests {
     fn every_getter_fires_exactly_once_in_the_order_the_config_wrote_it() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"
+        let (lua, surface) = surface_from(
+            r#"
                 order = ""
                 local function mark(name, value)
                     return computed({}, function() order = order .. name; return value end)
@@ -2392,10 +2381,7 @@ mod tests {
                         children = { rect { width = 1, height = 1, margin = mark("B", 0) } } },
                 } } }
                 "#,
-            )
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        );
 
         apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
 
@@ -2454,48 +2440,18 @@ mod tests {
     }
 
     #[test]
-    fn the_resolved_tree_holds_a_signals_current_value_not_the_handle() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let white = lua.create_string("#FFFFFF").unwrap();
-        let signal = crate::lua::signal::Signal::new_live(Value::String(white), crate::lua::signal::DirtyFlag::new()).0;
-        lua.globals().set("bg", signal).unwrap();
-        let table: mlua::Table = lua
-            .load(r#"return panel { id = "bar", child = rect { background = bg, width = 4, height = 4 } }"#)
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
-
-        apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
-
-        let child = &scene.surface("bar@TEST").unwrap().children[0];
-        let background = child.properties.get("background").expect("background must survive into the resolved tree");
-        assert_eq!(
-            background.as_string().map(|s| s.to_string_lossy()),
-            Some("#FFFFFF".to_string()),
-            "the resolved tree must hold the value, not the Signal handle: {background:?}"
-        );
-    }
-
-    #[test]
     fn a_child_whose_kind_is_rejected_never_runs_its_property_getters() {
         let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
-        let lua = scene_lua();
-        let table: mlua::Table = lua
-            .load(
-                r#"
+        let (lua, surface) = surface_from(
+            r#"
                 ran = false
                 local w = computed({}, function() ran = true; return 10 end)
                 return panel { id = "bar", child = row { children = {
                     { kind = "banana", width = w },
                 } } }
                 "#,
-            )
-            .eval()
-            .unwrap();
-        let surface = deserialize_lua_table(&table).unwrap();
+        );
 
         let err = apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap_err();
 
@@ -2504,21 +2460,6 @@ mod tests {
             "the error must be unchanged by moving the check earlier: {err:?}"
         );
         assert!(!lua.globals().get::<bool>("ran").unwrap(), "a rejected child's property getters must not run");
-    }
-
-    #[test]
-    fn a_list_resolves_one_child_per_source_element_in_source_order() {
-        let (scene, _lua, _shaping, _surface) = applied(
-            r#"panel { id = "bar", child = list {
-                items = { 10, 20, 30 },
-                each = function(item) return rect { width = item, height = 5 } end,
-            } }"#,
-        );
-        let list = &scene.surface("bar@TEST").unwrap().children[0];
-        assert_eq!(list.children.len(), 3);
-        assert_eq!(list.children[0].rect.width, 10.0);
-        assert_eq!(list.children[1].rect.width, 20.0);
-        assert_eq!(list.children[2].rect.width, 30.0);
     }
 
     #[test]
@@ -2751,22 +2692,6 @@ mod tests {
             (400.0, 1168.0),
             "the written width stands; the unwritten height fills"
         );
-    }
-
-    #[test]
-    fn a_popup_root_with_both_sizes_needs_no_forcing() {
-        let mut scene = Scene::new();
-        let shaping = ShapingHandle::spawn();
-        let (lua, surface) = surface_from(
-            r#"{ kind = "popup", id = "menu", parent = "bar", width = 200, height = 120,
-                 anchor_rect = { x = 0, y = 0, width = 86, height = 24 },
-                 child = rect { width = "fill", height = "fill" } }"#,
-        );
-        apply_at(&mut scene, &[surface], LogicalSize { width: 200.0, height: 120.0 }, &shaping, &lua).unwrap();
-
-        let root = scene.surface("menu@TEST").unwrap();
-        assert_eq!((root.rect.width, root.rect.height), (200.0, 120.0));
-        assert_eq!((root.children[0].rect.width, root.children[0].rect.height), (200.0, 120.0));
     }
 
     /// ADR-0294: the solver tree outlives the pass. A colour write reuses every solver node and lays

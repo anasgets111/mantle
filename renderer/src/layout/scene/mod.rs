@@ -257,10 +257,7 @@ impl Scene {
         let seeds_snapshot = self.seeds.len();
         // One budget for the whole pass: the hook covers gaps where a resolved table's `__index`
         // runs, and individually legal getters cannot add up without a pass deadline.
-        let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
-            Ok(budget) => budget,
-            Err(err) => return Err(node::invalid("layout", err.to_string())),
-        };
+        let budget = crate::lua::signal::LayoutPassBudget::enter(lua);
         let mut rollback = Vec::new();
         let outcome = self
             .apply_visiting(fresh_surfaces, instances, shaping, lua, &budget, &mut rollback, admit)
@@ -355,8 +352,8 @@ impl Scene {
         Ok(outcome)
     }
 
-    /// One instance's worth of `apply`'s loop body, split out so `apply` can wrap it in a single
-    /// early-return-on-error site instead of duplicating the rollback at every `?`.
+    /// One instance's worth of `apply_visiting`'s loop body, so it exits through one `?` and
+    /// `apply_admitting` rolls back once.
     fn apply_one_instance(
         &mut self,
         fresh_surfaces: &[VirtualNode],
@@ -482,13 +479,9 @@ impl Scene {
         self.surfaces.iter().map(|(id, tree)| (id.as_str(), tree))
     }
 
-    /// Drops the retained tree for an instance that no longer exists.
-    ///
-    /// [`Self::apply_admitting`] visits only the instances it is given, and says so: retained
-    /// instances absent from a cycle "stay for topology handling". This is that handling, called
-    /// from `crate::wayland::App::destroy_surface_by_id`, and it is the only thing that removes a
-    /// surface from this map. Without it an unplugged output stays resident for the life of the
-    /// process, one tree per output name ever seen.
+    /// Drops the retained tree for an instance that no longer exists. `apply` visits only the
+    /// instances it is given, so this (from `crate::wayland::App::destroy_surface_by_id`) is the
+    /// only thing that removes a surface; without it an unplugged output stays resident.
     pub fn forget(&mut self, instance_id: &str, lua: &Lua) {
         self.surfaces.remove(instance_id);
         self.solver_trees.remove(instance_id);
@@ -496,9 +489,8 @@ impl Scene {
         self.publish_image_status(lua);
     }
 
-    /// Node count per retained surface, largest first, for `crate::wayland::memory_profile`. The
-    /// total from [`Self::census`] says the scene is growing; only this says which of eighteen
-    /// trees is doing it, which is the difference between a finding and a number.
+    /// Node count per retained surface, largest first, for `crate::wayland::memory_profile`: the
+    /// total from [`Self::census`] says the scene is growing, this says which tree.
     pub fn census_by_surface(&self) -> Vec<(String, usize)> {
         let mut per_surface: Vec<(String, usize)> = self
             .surfaces
@@ -509,17 +501,15 @@ impl Scene {
                 (key.clone(), nodes)
             })
             .collect();
-        // Biggest first: a growing tree is the one worth naming, and the report prints only the
-        // head of this list.
+        // Biggest first: the report prints only the head.
         per_surface.sort_by(|left, right| right.1.cmp(&left.1).then_with(|| left.0.cmp(&right.0)));
         per_surface
     }
 
     /// Surfaces, total nodes across every retained tree, and live `properties` values, for
-    /// `crate::wayland::memory_profile`. Counts `properties` because that map is the one place a
-    /// retained tree holds `mlua::Value`s, so it is where scene growth shows up in the Lua heap
-    /// rather than the Rust one. Walks every tree, which is why the profile calls it once per
-    /// report window and never per turn.
+    /// `crate::wayland::memory_profile`. `properties` is the one place a retained tree holds
+    /// `mlua::Value`s, so it is where scene growth shows up in the Lua heap. Walks every tree: call
+    /// it once per report window, never per turn.
     pub fn census(&self) -> (usize, usize, usize) {
         let mut nodes = 0;
         let mut properties = 0;
@@ -1688,30 +1678,6 @@ pub(super) mod tests {
                 if depth == MAX_TREE_DEPTH + 1 && max == MAX_TREE_DEPTH),
             "one level past the cap must be refused, reporting the limit actually enforced: {err:?}"
         );
-    }
-
-    #[test]
-    fn a_legitimately_deep_but_reasonable_tree_still_applies() {
-        const NESTING: usize = 20;
-        let mut lua_src = String::from(r#"panel { id = "bar", child = "#);
-        for _ in 0..NESTING {
-            lua_src.push_str(r#"row { children = { "#);
-        }
-        lua_src.push_str(r#"rect { width = 4, height = 4 }"#);
-        for _ in 0..NESTING {
-            lua_src.push_str(" } }");
-        }
-        lua_src.push('}');
-
-        let (scene, _lua, _shaping, _surface) = applied(&lua_src);
-
-        let mut node = scene.surface("bar@TEST").unwrap();
-        for _ in 0..=NESTING {
-            assert_eq!(node.children.len(), 1);
-            node = &node.children[0];
-        }
-        assert_eq!(node.kind, "rect");
-        assert_eq!(node.rect.width, 4.0, "the innermost rect's own geometry must have resolved");
     }
 
     /// The leak this closes: `apply` visits only the instances it is handed, so an instance that

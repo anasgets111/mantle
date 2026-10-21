@@ -10,9 +10,6 @@ use shared::action::UpdateCandidate;
 
 use super::super::backend::run;
 
-/// Each foreign package's installed name and version: in no synced repo.
-pub type Foreign = Vec<(String, String)>;
-
 /// Downloads every repo `conf` names into `db_path/sync/`, like `checkupdates`' `pacman -Sy`: a db
 /// the mirror reports unchanged is not downloaded again.
 ///
@@ -95,8 +92,8 @@ pub fn outdated(conf: &Path, db_path: &Path) -> Result<Vec<UpdateCandidate>, Str
         .collect())
 }
 
-/// The installed packages no repo under `db_path` carries.
-pub fn foreign(conf: &Path, db_path: &Path) -> Result<Foreign, String> {
+/// The installed packages no repo under `db_path` carries, as `(name, installed version)`.
+pub fn foreign(conf: &Path, db_path: &Path) -> Result<Vec<(String, String)>, String> {
     Ok(pacman(conf, db_path, &["-Qm"])?
         .lines()
         .filter_map(|line| line.split_once(' '))

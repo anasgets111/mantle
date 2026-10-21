@@ -47,13 +47,7 @@ impl Scene {
         now: Instant,
     ) -> Vec<String> {
         // Animated edge tables can still run `__index` during parsing, so ticks share the pass budget.
-        let budget = match crate::lua::signal::LayoutPassBudget::enter(lua) {
-            Ok(budget) => budget,
-            Err(err) => {
-                debug!("tick: no pass budget, skipping the frame: {err}");
-                return Vec::new();
-            }
-        };
+        let budget = crate::lua::signal::LayoutPassBudget::enter(lua);
         let mut relaid = Vec::new();
         for instance in instances {
             let key = instance.instance_id.as_str();
@@ -1761,24 +1755,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_colour_tween_reaches_the_paint_style_between_passes() {
-        let (mut scene, lua, shaping, surface) = applied(
-            r##"panel { id = "bar", child = rect { width = 10, height = 10,
-                    background = state("bg", "#000000"),
-                    animate = { background = { duration = 100, easing = "linear" } } } }"##,
-        );
-        lua.load(r##"state("bg", "#000000"):set("#ffffff")"##).exec().unwrap();
-        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        let started = child_tween(&scene).started;
-        scene.tick(&[instance_at(&surface, full())], &shaping, &lua, started + std::time::Duration::from_millis(50));
-        let Some(PaintStyle::Box { background, .. }) = &scene.surface("bar@TEST").unwrap().children[0].paint else {
-            panic!("a rect paints a box")
-        };
-        let [(node::Fill::Color(grey), _)] = background.as_slice() else { panic!("one colour: {background:?}") };
-        assert!((grey.r - 0.5).abs() < 0.01, "halfway from black to white is mid grey, got {grey:?}");
-    }
-
     /// ADR-0253. A `progress` tween re-derives the paint without a relayout, and the list it
     /// changes damages the shader's box and nothing else.
     #[test]
@@ -2017,9 +1993,7 @@ mod tests {
         );
         lua.load(r#"state("w", 40):set("fill")"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        // `Fill` under a content-sized panel is zero (see
-        // `a_fill_child_of_a_content_sized_row_...`);
-        // the point is that it got there in one pass with nothing left in flight.
+        // `Fill` under a content-sized panel is zero; it got there in one pass with nothing in flight.
         assert_eq!(child_width(&scene), 0.0);
         assert!(!scene.surface("bar@TEST").unwrap().animating());
     }

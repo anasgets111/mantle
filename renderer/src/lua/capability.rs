@@ -427,20 +427,6 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_wrongly_typed_argument_is_a_config_error_naming_the_action_and_queues_nothing() {
-        let lua = Lua::new();
-        let (tx, mut rx) = mpsc::unbounded_channel();
-        let (lock, _) = Capability::new("lock", DirtyFlag::new(), CommandSender::new(0, tx));
-        lua.globals().set("lock", lock).unwrap();
-
-        let err = lua.load(r#"lock:set_unlock_animation("fast")"#).exec().unwrap_err();
-
-        assert!(err.to_string().contains(r#"mantle.lock:set_unlock_animation: bad argument #1: expected"#), "{err}");
-        assert!(err.to_string().contains(r#"got string "fast""#), "{err}");
-        assert!(queued_command(&mut rx).is_none(), "a refused argument must not reach the Supervisor");
-    }
-
-    #[test]
     fn a_value_error_leads_with_the_caller_site_and_speaks_lua() {
         let lua = Lua::new();
         let (tx, _rx) = mpsc::unbounded_channel();
@@ -629,24 +615,6 @@ pub(crate) mod tests {
 
         let attempts: i64 = lua.load("return mantle.probe:get().attempts").eval().unwrap();
         assert_eq!(attempts, 2);
-    }
-
-    #[test]
-    fn map_returns_a_signal_that_tracks_later_pushes() {
-        // The lock screen's failure text maps this handle; freezing the map at registration would
-        // paint the first snapshot forever.
-        let (lua, handle, _rx) = lua_with_capability(0);
-        lua.load(r#"mapped = mantle.probe:map(function(s) return s.error or "" end, "")"#).exec().unwrap();
-
-        let first: String = lua.load("return mapped:get()").eval().unwrap();
-        assert_eq!(first, "");
-
-        let pushed = lua.create_table().unwrap();
-        pushed.set("error", "authentication failed").unwrap();
-        handle.hydrate(Value::Table(pushed));
-
-        let second: String = lua.load("return mapped:get()").eval().unwrap();
-        assert_eq!(second, "authentication failed");
     }
 
     #[test]

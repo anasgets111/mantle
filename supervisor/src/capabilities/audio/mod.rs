@@ -1,8 +1,7 @@
 //! PipeWire-backed audio state. `mixer` tracks the registry lists; `master` holds the pure
 //! parsing/resolution logic (ADR-0053 decision 3).
 //!
-//! Write actions dispatch here, including source-side volume/mute actions that filled the
-//! gap beside `set_muted`; see [`dispatch`] for the two still unbuilt actions.
+//! Write actions dispatch here; see [`dispatch`] for the two unbuilt actions.
 //!
 //! BlueZ codec control lives here as well, because PipeWire, not BlueZ, picks the codec: each
 //! BlueZ device's profiles are its codecs (ADR-0030).

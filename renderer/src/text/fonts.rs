@@ -51,8 +51,7 @@ thread_local! {
 /// not silently substituted -- see `fc_match`'s doc comment for how a "hit" is told apart from
 /// fontconfig's own substitution, which never fails on its own.
 ///
-/// Runs once at process startup, so logging per chain entry costs nothing and is how a
-/// user diagnoses "why is my bar drawing in the wrong font" without reaching for a debugger.
+/// Logs per chain entry, to diagnose "why is my bar drawing in the wrong font".
 pub fn resolve_chain(chain: &[&str]) -> ResolvedFonts {
     let mut db = Database::new();
     let mut loaded_paths: HashSet<PathBuf> = HashSet::new();
@@ -228,14 +227,12 @@ fn fc_match(name: &str) -> Option<(PathBuf, String)> {
     // the colon; a bare family name has no colon and is itself.
     let family_asked = name.split(':').next().unwrap_or(name);
     let is_generic = GENERIC_ALIASES.iter().any(|generic| generic.eq_ignore_ascii_case(family_asked));
-    let resolved_family = if is_generic {
-        families.split(',').next().unwrap_or(&families).trim().to_string()
+    let resolved = if is_generic {
+        families.split(',').next().unwrap_or(&families)
     } else {
-        let hit = families.split(',').find(|family| family.trim().eq_ignore_ascii_case(family_asked))?;
-        hit.trim().to_string()
+        families.split(',').find(|family| family.trim().eq_ignore_ascii_case(family_asked))?
     };
-
-    Some((path, resolved_family))
+    Some((path, resolved.trim().to_string()))
 }
 
 /// The file `fc-match` answers `pattern` with, and the families that file holds, before any check
@@ -252,10 +249,7 @@ fn fc_match_raw(pattern: &str) -> Option<(PathBuf, String)> {
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     let (file, families) = stdout.lines().next()?.split_once('\t')?;
-    match file.is_empty() {
-        true => None,
-        false => Some((PathBuf::from(file), families.to_string())),
-    }
+    (!file.is_empty()).then(|| (PathBuf::from(file), families.to_string()))
 }
 
 /// True if `fc-match` is reachable at all -- gates this module's tests and `text::shaping`'s:

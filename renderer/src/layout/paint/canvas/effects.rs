@@ -107,9 +107,8 @@ pub(super) fn paint_shape_inset(
     let Draw::InsetShadow { shadow, widths, .. } = &command.draw else { return };
     let (rect, clip) = (command.rect, command.clip);
     let (loops, voids) = (shape.polygon(rect, 0.25), shape.voids(rect));
-    let (dx, dy) = (f64::from(shadow.offset.0), f64::from(shadow.offset.1));
     let mut hole = inset(&loops, f64::from(widths.top + shadow.spread));
-    hole.apply_affine(kurbo::Affine::translate((dx, dy)));
+    hole.apply_affine(kurbo::Affine::translate((f64::from(shadow.offset.0), f64::from(shadow.offset.1))));
     // Room for the blur to read solid shadow from past the clip's edges.
     let room = (1.5 * shadow.blur + shadow.offset.0.abs().max(shadow.offset.1.abs())).ceil() as i32 + 2;
     let (x0, y0) = (clip.x0 - room, clip.y0 - room);
@@ -697,8 +696,7 @@ mod tests {
     /// A 32px box at (16, 16) on a white 64x96 panel, painted with `effect` properties and read
     /// down its middle column.
     fn paint_effect(effect: &str) -> Option<[(u8, u8, u8, u8); 8]> {
-        let px = paint_effect_at(effect, &[8, 20, 32, 40, 50, 56, 64, 76].map(|y| (32, y)))?;
-        Some(std::array::from_fn(|i| px[i]))
+        paint_effect_at(effect, &[8, 20, 32, 40, 50, 56, 64, 76].map(|y| (32, y)))?.try_into().ok()
     }
 
     fn paint_effect_at(effect: &str, points: &[(usize, usize)]) -> Option<Vec<(u8, u8, u8, u8)>> {

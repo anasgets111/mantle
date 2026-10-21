@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 
 use femtovg::renderer::OpenGl;
 use femtovg::rgb::FromSlice;
-use femtovg::{Canvas, ErrorKind, ImageFlags, ImageId, ImageSource};
+use femtovg::{Canvas, ImageFlags, ImageId, ImageSource};
 use shared::warn;
 
 use super::decode::premultiply;
@@ -130,12 +130,8 @@ fn upload(canvas: &mut Canvas<OpenGl>, decoded: Decoded) -> Result<(Option<Image
         return Ok((None, Some(Animation { base, width, height, delays, deltas, current: 0 })));
     }
     let source = ImageSource::from(femtovg::imgref::Img::new(base.as_rgba(), width as usize, height as usize));
-    Ok((Some(canvas.create_image(source, ImageFlags::PREMULTIPLIED).map_err(femtovg_error)?), None))
-}
-
-/// ponytail: femtovg 0.27's `ErrorKind` all prints "canvas error"; use `Display` once it doesn't.
-fn femtovg_error(err: ErrorKind) -> String {
-    format!("{err:?}")
+    // ponytail: femtovg 0.27's `ErrorKind` all prints "canvas error"; use `Display` once it doesn't.
+    Ok((Some(canvas.create_image(source, ImageFlags::PREMULTIPLIED).map_err(|err| format!("{err:?}"))?), None))
 }
 
 /// One `image` node's playback of one file: its clock, kept while the node is in a tree, and its
@@ -174,9 +170,6 @@ fn first_frame(canvas: &mut Canvas<OpenGl>, anim: &Animation) -> Option<ImageId>
 
 /// Puts frame `target` on `id`, which shows frame `current`.
 fn replay(canvas: &mut Canvas<OpenGl>, id: ImageId, anim: &Animation, current: &mut usize, target: usize) {
-    if target == *current {
-        return;
-    }
     let (reset, catch_up) = replay_steps(*current, target);
     if reset {
         let source = ImageSource::from(femtovg::imgref::Img::new(

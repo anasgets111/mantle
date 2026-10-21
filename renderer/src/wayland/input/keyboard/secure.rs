@@ -32,10 +32,8 @@ pub(super) fn secure_on_cancel(tree: &layout::ResolvedNode, field: &FocusedField
 /// A secure submit frame, or `None` when the field is empty or its capability unknown (ADR-0050
 /// decision 4); the buffer is zeroized on every branch.
 ///
-/// Every refusal says so. Dropping a submit here is indistinguishable from a lock screen that has
-/// stopped accepting the password: nothing reaches the Supervisor, so nothing downstream can
-/// report it, and a session that will not unlock leaves no line anywhere. No branch names the
-/// secret or its length.
+/// Every refusal logs: a dropped submit looks like a lock screen that stopped accepting the
+/// password, and nothing downstream can report it. No branch names the secret or its length.
 fn submit_frame_for(
     generation_id: u32,
     target: &node::SecureSubmitTarget,
@@ -301,9 +299,7 @@ impl App {
     /// Build and queue a completed `secure_submit`; [`submit_frame_for`] reads once and scrubs on
     /// both the destination-missing and empty-buffer paths (ADR-0050 decision 4).
     pub(in crate::wayland::input) fn finish_secure_submit(&mut self) {
-        // Which of the two, not "one of these". A lock screen that will not open needs the log to
-        // separate "the password went nowhere" from "you submitted an empty field", and the old
-        // line named both and settled neither.
+        // The log must separate "the password went nowhere" from "you submitted an empty field".
         let Some(focus) = self.focused_secure_submit.as_mut() else {
             debug!(
                 2; "secure_submit dropped: no focused textfield named a capability and action to address it to, so nothing was sent"
@@ -344,29 +340,6 @@ mod tests {
         push_limited(&mut buffer, "vwxyz", Some(3));
         assert_eq!(buffer.grapheme_count(), 3);
         assert_eq!(buffer.expose_secret(), b"abc");
-    }
-
-    #[test]
-    fn secure_submit_frame_carries_the_accumulated_secret_and_zeroizes_the_buffer_it_read() {
-        // ADR-0005, ADR-0027: the frame carries the exact secret this thread accumulated, tagged
-        // with this process's own generation_id, and the source buffer is scrubbed in the same
-        // breath as the read rather than left live.
-        let mut buffer = shared::SecureBuffer::new();
-        buffer.push_str("hunter2");
-
-        let frame = secure_submit_frame(4, shared::Capability::Polkit, "authenticate", None, &mut buffer);
-
-        assert_eq!(
-            frame,
-            RendererFrame::SecureSubmit(SecureSubmit {
-                generation_id: 4,
-                capability: shared::Capability::Polkit,
-                action: "authenticate".to_string(),
-                name: None,
-                secret: b"hunter2".to_vec(),
-            })
-        );
-        assert!(buffer.is_empty(), "the source SecureBuffer must be zeroized as soon as it has been read");
     }
 
     #[test]

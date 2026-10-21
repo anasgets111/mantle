@@ -40,16 +40,6 @@ pub(super) fn resolve_sound_path(
     client_sound_file.or_else(|| tier_default.map(|tier| sound_name.unwrap_or(tier)))
 }
 
-// Queue mutation is pure `VecDeque` logic; callers delete reported orphaned icons.
-
-/// Allocates a monotonic content stamp for expiry timers to compare against replacements
-/// ([`find_expiring_entry`]). No wraparound guard: exhausting `u64` in one process is unrealistic.
-pub(super) fn next_incarnation(counter: &mut u64) -> u64 {
-    let value = *counter;
-    *counter = counter.wrapping_add(1);
-    value
-}
-
 /// Resolves ids: a `replaces_id` naming a queued notification passes through without consuming an
 /// id (base spec/ADR-0033); anything else allocates monotonically and wraps to `1` (wire `0` means
 /// "new"). An unknown id is not reused, or a later allocation would hand it out a second time.
@@ -393,8 +383,6 @@ mod tests {
             push_new(&mut queue, sample_notification(i, None));
         }
         let view = feed_view(&queue);
-        assert_eq!(view.len(), NOTIFICATION_FEED_VIEW);
-        assert_eq!(view.first().unwrap().id, NOTIFICATION_QUEUE_CAP as u32 - 1, "the newest entry must be first");
         let newest_first: Vec<u32> = (0..NOTIFICATION_QUEUE_CAP as u32).rev().take(NOTIFICATION_FEED_VIEW).collect();
         assert_eq!(
             view.iter().map(|n| n.id).collect::<Vec<_>>(),

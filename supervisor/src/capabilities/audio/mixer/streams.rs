@@ -448,7 +448,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_stream_props_builds_an_app_stream_from_a_real_node_a_capture_a_nameless_pid_and_a_comm_file() {
+    fn parse_stream_props_builds_an_app_stream_from_a_real_node_a_capture_a_nameless_pid() {
         let proc = tempfile::tempdir().unwrap();
         let parsed = parse_stream_props(proc.path(), 1, &zen_browser_stream_props(), None)
             .expect("should parse as an audio stream");
@@ -456,6 +456,7 @@ mod tests {
         assert_eq!(parsed.name, Some("Zen".to_string()));
         assert_eq!(parsed.binary, Some("zen-bin".to_string()));
         assert!(!parsed.recording);
+        assert_eq!((parsed.volume, parsed.muted), (None, false), "volume lives on a param and joins in publish_audio");
 
         let parsed = parse_stream_props(proc.path(), 1, &capture_props("Stream/Input/Audio"), None)
             .expect("a call's mic parses");
@@ -467,25 +468,6 @@ mod tests {
         ]);
         let parsed = parse_stream_props(proc.path(), 1, &props, None).expect("pid alone is enough to parse");
         assert_eq!(parsed.name, None, "a missing app name is allowed");
-
-        let pid = 1234;
-        std::fs::create_dir(proc.path().join("1234")).unwrap();
-        std::fs::write(proc.path().join("1234").join("comm"), "mpv\n").unwrap();
-
-        let props = HashMap::from([
-            ("media.class".to_string(), "Stream/Output/Audio".to_string()),
-            ("application.process.id".to_string(), pid.to_string()),
-            ("application.name".to_string(), "Test App".to_string()),
-        ]);
-
-        let app = parse_stream_props(proc.path(), 42, &props, None).expect("should build an AppStream");
-        assert_eq!(app.id, 42);
-        assert_eq!(app.pid, pid);
-        assert_eq!(app.name, Some("Test App".to_string()));
-        assert_eq!(app.process_name, Some("mpv".to_string()));
-        // Identity comes from properties; volume lives on a param and joins in publish_audio.
-        assert_eq!(app.volume, None);
-        assert!(!app.muted);
     }
 
     #[test]

@@ -1,19 +1,11 @@
 //! `fonts { ... }` declares the font families used for measurement and paint (ADR-0043 decision 2).
 //!
-//! It records in `Lua::app_data` rather than returning a value: `shell.lua` returns surfaces, so
-//! there is no slot for a font chain. Like `state`, `hover`, and `scroll`, it is written during
-//! config evaluation and read afterwards.
+//! It records in `Lua::app_data` (`shell.lua` returns surfaces, so there is no slot for a chain) and is
+//! read after config evaluation. Not a `lua::signal`: this is a plain, non-reactive list read once.
 //!
-//! This stays out of `lua::signal`: those registries share `SignalKind`, write gating, and the
-//! dirty flag; this is a plain, non-reactive list read once.
-//!
-//! **The declared chain, not the only font.** This is the fallback chain every node uses unless it
-//! names a family itself: Parley picks each glyph's face, falling back through every loaded
-//! family, and femtovg draws that face (ADR-0211), so CJK and emoji coverage sits behind a sans
-//! body face and the codepoint picks the face. A `text` node that
-//! sets `font = "<family>"` leads with that family instead and keeps this chain behind it as
-//! coverage (ADR-0144); the family is resolved on first sight, through this module's own
-//! `fc-match` path, into the same database -- so there is still one font discovery, not two.
+//! The chain is the fallback every node uses unless it names a family itself: Parley picks each
+//! glyph's face across every loaded family (ADR-0211), so CJK and emoji sit behind a sans body face.
+//! A `text` node's `font` leads with its family and keeps this chain behind it (ADR-0144).
 
 use mlua::Lua;
 
@@ -21,10 +13,7 @@ use mlua::Lua;
 #[derive(Default)]
 struct FontRegistry(Vec<String>);
 
-/// Registers `fonts(chain)`, taking an array of family names.
-///
-/// Last call wins. Multiple declarations are a mistake; appending would silently create a chain
-/// neither declaration asked for, while replacement matches the second declaration's reading.
+/// Registers `fonts(chain)`. Last call wins: appending would build a chain neither call asked for.
 pub fn register(lua: &Lua) -> mlua::Result<()> {
     super::luacats::lua_fn!(
         lua,
@@ -59,16 +48,9 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
     )
 }
 
-/// What the config declared, or empty if it declared nothing.
-///
-/// Empty keeps `text::fonts::DEFAULT_CHAIN`; omitting `fonts` is normal, not "no text".
-/// ponytail: a config writes this once and normally never touches it; `wayland::run` reads it once
-/// at startup. A live edit re-evaluates and records a new chain, but nothing uses it until restart.
-///
-/// Deliberate: applying a change requires reaching the Wayland thread that owns the `TextPainter`,
-/// dropping and rebuilding it, and threading a new `FrameOutcome` through the reload path.
-/// A chain change invalidates every measurement, unlike reload's in-place restyle. Upgrade with
-/// that outcome variant when live font changes are needed.
+/// What the config declared; empty keeps `text::fonts::DEFAULT_CHAIN`.
+// A chain change invalidates every measurement, unlike reload's in-place restyle.
+// ponytail: read once at startup, a live edit is ignored until restart; upgrade: rebuild the `TextPainter` via a new `FrameOutcome` variant.
 pub fn declared_chain(lua: &Lua) -> Vec<String> {
     lua.app_data_ref::<FontRegistry>().map(|registry| registry.0.clone()).unwrap_or_default()
 }

@@ -9,9 +9,7 @@ use zbus::zvariant::{ObjectPath, OwnedObjectPath, OwnedValue};
 
 #[zbus::proxy(interface = "org.mpris.MediaPlayer2", default_path = "/org/mpris/MediaPlayer2")]
 pub(super) trait MprisRoot {
-    #[zbus(name = "Raise")]
     fn raise(&self) -> zbus::Result<()>;
-    #[zbus(name = "Quit")]
     fn quit(&self) -> zbus::Result<()>;
     #[zbus(property, name = "Identity")]
     fn identity(&self) -> zbus::Result<String>;
@@ -27,27 +25,18 @@ pub(super) trait MprisRoot {
 
 #[zbus::proxy(interface = "org.mpris.MediaPlayer2.Player", default_path = "/org/mpris/MediaPlayer2")]
 pub(super) trait MprisPlayer {
-    #[zbus(name = "Play")]
     fn play(&self) -> zbus::Result<()>;
-    #[zbus(name = "Pause")]
     fn pause(&self) -> zbus::Result<()>;
-    #[zbus(name = "PlayPause")]
     fn play_pause(&self) -> zbus::Result<()>;
-    #[zbus(name = "Next")]
     fn next(&self) -> zbus::Result<()>;
-    #[zbus(name = "Previous")]
     fn previous(&self) -> zbus::Result<()>;
-    #[zbus(name = "Stop")]
     fn stop(&self) -> zbus::Result<()>;
-    #[zbus(name = "OpenUri")]
     fn open_uri(&self, uri: &str) -> zbus::Result<()>;
     /// Relative seek in microseconds; also the `mpris:trackid` fallback when uncached (ADR-0036).
-    #[zbus(name = "Seek")]
     fn seek(&self, offset_us: i64) -> zbus::Result<()>;
     /// Absolute seek. Per freedesktop, `track_id` must be the currently playing track's
     /// `mpris:trackid` or the call is a no-op. Real players do not enforce this reliably, so the
     /// cache stays fresh (ADR-0036).
-    #[zbus(name = "SetPosition")]
     fn set_position(&self, track_id: ObjectPath<'_>, position_us: i64) -> zbus::Result<()>;
 
     #[zbus(property, name = "PlaybackStatus")]
@@ -105,13 +94,9 @@ pub(super) trait MprisPlayer {
     default_path = "/org/mpris/MediaPlayer2"
 )]
 pub(super) trait MprisTrackList {
-    #[zbus(name = "GetTracksMetadata")]
     fn get_tracks_metadata(&self, track_ids: Vec<OwnedObjectPath>) -> zbus::Result<Vec<HashMap<String, OwnedValue>>>;
-    #[zbus(name = "AddTrack")]
     fn add_track(&self, uri: &str, after_track: ObjectPath<'_>, set_as_current: bool) -> zbus::Result<()>;
-    #[zbus(name = "RemoveTrack")]
     fn remove_track(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
-    #[zbus(name = "GoTo")]
     fn go_to(&self, track_id: ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(property, name = "Tracks")]
     fn tracks(&self) -> zbus::Result<Vec<OwnedObjectPath>>;
@@ -137,9 +122,7 @@ pub(super) trait MprisTrackList {
     default_path = "/org/mpris/MediaPlayer2"
 )]
 pub(super) trait MprisPlaylists {
-    #[zbus(name = "ActivatePlaylist")]
     fn activate_playlist(&self, playlist_id: ObjectPath<'_>) -> zbus::Result<()>;
-    #[zbus(name = "GetPlaylists")]
     fn get_playlists(
         &self,
         index: u32,

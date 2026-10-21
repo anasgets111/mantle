@@ -15,7 +15,7 @@ use super::fonts;
 mod caret;
 mod worker;
 
-pub use caret::{caret_at, caret_thickness, caret_visible_left, caret_x};
+pub use caret::{caret_at, caret_thickness, caret_visible_left, caret_x, cluster_span};
 use worker::{WorkerFonts, shape};
 
 /// A byte range of a request's text shaped in a bold and/or italic face rather than the chain's
@@ -183,23 +183,12 @@ enum Request {
     ResolvedPrimaryFamily(mpsc::Sender<String>),
 }
 
-/// How many measured strings [`ShapingHandle`] remembers before it drops the lot. Sized against
-/// the working set (a bar resolves about twenty text nodes, a long list a few hundred) with room
-/// for churn: a clock shapes a string nobody asks for again, so an unbounded map would grow for the life of the session. Full, the map holds on
-/// the order of 400KB (4096 short `String` entries plus four integers and two floats, plus
-/// `HashMap` overhead), under one percent of ADR-0043's 50MB-per-monitor budget.
-///
-/// Measured 2026-09-06 against a live shell, idle: **3.2 to 4.3 new entries a minute**,
-/// so the cap is reached in roughly **sixteen hours**, not the hour an earlier draft of this
-/// comment claimed. That estimate assumed a clock ticking seconds; that shell's shows minutes, and
-/// the churn that does exist comes from elsewhere. Nothing about the sizing changes -- a cache that
-/// turns over daily rather than hourly holds fewer dead entries, not more -- but the number is
-/// worth stating correctly, because it is the one that says whether 4096 is generous or tight.
-///
-/// Entries from [`ShapingHandle::shape_glyphs`] also hold a 32-byte `Glyph` per glyph (ADR-0211).
-///
-/// Note that `HashMap::clear` keeps the table it has grown, so after the first fill the bucket
-/// array is a floor for the rest of the session rather than something the clear gives back.
+/// How many measured strings [`ShapingHandle`] remembers before it drops the lot. A bar resolves
+/// about twenty text nodes and a long list a few hundred; a clock shapes strings nobody asks for
+/// again, so an unbounded map would grow for the session. Full, it holds about 400KB (under 1% of
+/// ADR-0043's 50MB-per-monitor budget; plus a 32-byte `Glyph` per glyph for [`ShapingHandle::shape_glyphs`]
+/// entries). Idle churn measured 2026-09-06: 3-4 new entries a minute, so about 16 h to reach the cap. `HashMap::clear` keeps its table, so the buckets are a floor after the
+/// first fill.
 const SHAPE_CACHE_CAPACITY: usize = 4096;
 
 /// What a measurement is keyed by: every field of a [`ShapeRequest`]. Keying on a subset would be

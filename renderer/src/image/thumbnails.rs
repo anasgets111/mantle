@@ -48,16 +48,9 @@ pub fn thumbnail_path(cache_root: &Path, dir: &str, uri: &str) -> PathBuf {
 }
 
 /// A temp name no other writer can pick: unique within this process by the counter, and across
-/// processes by the pid.
-///
-/// The pid alone was not enough. Four decode workers share it, so a name of pid and source mtime
-/// collided whenever two sources carried the same mtime second -- ordinary for a folder copied or
-/// unpacked in one go. `create_new` then failed for the loser, whose cleanup unlinked the temp the
-/// winner was still writing, and the winner's rename failed too: two thumbnails asked for, neither
-/// written, both re-decoded from full size on the next look at that folder.
-///
-/// The final name cannot serve here: it is an md5 of the source URI, so two writers racing on the
-/// same source would share it. Uniqueness has to come from the writer, not the target.
+/// processes by the pid. A pid-and-mtime name collided across the decode workers for sources
+/// unpacked in the same second, and the loser's cleanup unlinked the winner's temp. The final name
+/// (an md5 of the URI) is shared by writers racing on one source, so uniqueness comes from the writer.
 fn temp_name() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT: AtomicU64 = AtomicU64::new(0);

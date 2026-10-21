@@ -175,10 +175,7 @@ pub fn init(connection: &wayland_client::Connection) -> Result<EglState, String>
 
     let config = candidates
         .into_iter()
-        .find(|candidate| {
-            let attrs = query_config_attribs(display, *candidate);
-            attrs.is_ok_and(satisfies_requirements)
-        })
+        .find(|candidate| query_config_attribs(display, *candidate).is_ok_and(satisfies_requirements))
         .ok_or("no EGL config matches window+GLES3+8-bit-ARGB requirements")?;
 
     let context_attribs = [egl::CONTEXT_CLIENT_VERSION, 3, egl::NONE];

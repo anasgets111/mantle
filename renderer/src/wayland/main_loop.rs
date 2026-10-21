@@ -289,10 +289,6 @@ pub fn run(
         app.process_accessibility_actions();
         app.client.poll_off_thread();
         app.client.wake_due_signals();
-        // Kept as its own name, not folded into `re_resolved` below: "a pass ran" and "something
-        // changed" answer different questions. Only a pass can change any tree, so only a pass
-        // rules out the narrowed repaint, and only a pass makes every surface's protocol state
-        // worth re-deriving.
         // A frame callback is the tween clock (ADR-0145). Taken every turn so a callback that
         // arrives with a push is answered by this repaint, not repeated next turn.
         let now = std::time::Instant::now();
@@ -309,6 +305,8 @@ pub fn run(
         // the phase and never sums past it.
         let _ = app.client.take_resolve_split();
         phases.mark_handlers();
+        // Not folded into `re_resolved`: only a pass can change a tree, so only a pass rules out the
+        // narrowed repaint and makes every surface's protocol state worth re-deriving.
         let passed = app.client.re_resolve_if_dirty();
         if passed && app.image_cache.has_node_clocks() {
             let live = app.client.scene().animated_image_nodes();

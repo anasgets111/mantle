@@ -41,9 +41,7 @@ pub(super) fn fit_text_to_box(
         }
         return;
     }
-    // The output is taken off the builder before the borrow of `content` ends, which is what lets
-    // the same two fields be overwritten below.
-    let fitted: Option<(String, Vec<StyleRun>)> = match wrap {
+    let fitted = match wrap {
         // The measured-width check is the fast path, not politeness: most strings fit, and
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
@@ -51,7 +49,7 @@ pub(super) fn fit_text_to_box(
             if *elide != node::Elide::None && width > content_width {
                 let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
-                Some((fitted.text, fitted.runs))
+                Some(fitted)
             } else {
                 None
             }
@@ -59,10 +57,10 @@ pub(super) fn fit_text_to_box(
         node::Wrap::Word => {
             let fitted = wrapped_to_fit(content, runs, face, *elide, *max_lines, content_width, shaping);
             *elided = fitted.elided;
-            Some((fitted.text, fitted.runs))
+            Some(fitted)
         }
     };
-    if let Some((text, styled)) = fitted {
+    if let Some(Fitted { text, runs: styled, .. }) = fitted {
         *content = text.into();
         *runs = styled;
     }

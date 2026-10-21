@@ -145,12 +145,6 @@ impl<T: LuaType, const N: usize> LuaType for [T; N] {
     }
 }
 
-impl<K: LuaType, V: LuaType> LuaType for std::collections::BTreeMap<K, V> {
-    fn lua() -> String {
-        format!("table<{}, {}>", spelling::<K>(), spelling::<V>())
-    }
-}
-
 impl<T: LuaType> LuaType for Variadic<T> {
     fn lua() -> String {
         T::lua()
@@ -269,11 +263,7 @@ pub(crate) type Spelling = fn() -> String;
 
 /// `name` without a raw identifier's `r#`, or `...` for a [`Variadic`] parameter.
 pub(crate) const fn param_name<T: LuaType>(name: &'static str) -> &'static str {
-    match name.as_bytes() {
-        _ if T::VARIADIC => "...",
-        [b'r', b'#', ..] => name.split_at(2).1,
-        _ => name,
-    }
+    if T::VARIADIC { "..." } else { unraw(name) }
 }
 
 /// A parameter or a return of a global or a method, as its declaring macro saw it.

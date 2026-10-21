@@ -46,11 +46,9 @@ impl Budget {
     /// inline load runs on the Wayland dispatch thread, and stalling that to wait on a background
     /// worker is a frozen shell. It still counts, so the workers see it.
     fn charge(&self, bytes: u64) -> Permit<'_> {
-        if let Ok(mut in_flight) = self.in_flight.lock() {
-            *in_flight += bytes;
-            return Permit { budget: self, bytes };
-        }
-        Permit { budget: self, bytes: 0 }
+        let Ok(mut in_flight) = self.in_flight.lock() else { return Permit { budget: self, bytes: 0 } };
+        *in_flight += bytes;
+        Permit { budget: self, bytes }
     }
 }
 
@@ -107,9 +105,7 @@ impl Drop for Permit<'_> {
         if let Ok(mut in_flight) = self.budget.in_flight.lock() {
             *in_flight = in_flight.saturating_sub(self.bytes);
         }
-        // Outside the lock's scope above only by `notify_all`'s own rules; waking every waiter
-        // rather than one because they want different amounts, and the one this would wake might
-        // be the one that still does not fit.
+        // Every waiter, not one: they want different amounts, and the one woken might still not fit.
         self.budget.room.notify_all();
     }
 }

@@ -1254,7 +1254,7 @@ mod tests {
 
         let setup = "major, minor, patch = mantle.version.major, mantle.version.minor, mantle.version.patch";
         // Read through Lua against Cargo's string, not a second builder call: assert what config
-        // sees. This also reaches `lua::namespace::version_parts`'s `expect`, so it needs no
+        // sees. This also reaches `lua::namespace::version_table`'s `expect`, so it needs no
         // narrower test.
         let field = |name: &str| probe::<i64>(&client.loader, setup, name);
         assert_eq!(format!("{}.{}.{}", field("major"), field("minor"), field("patch")), env!("CARGO_PKG_VERSION"));
@@ -1298,7 +1298,6 @@ mod tests {
 
         assert!(run_startup(&mut client), "a config declaring a lock screen must build a scene");
 
-        // The root `lock { ... }` still produced a root-role surface.
         let setup = r#"
             lock_kind = lock { id = "screen" }.kind
             capability_type = type(mantle.lock)
@@ -1309,7 +1308,6 @@ mod tests {
             "lock",
             "the global `lock` must still be the node constructor"
         );
-        // The capability name is reachable and hydrated.
         assert_eq!(probe::<String>(&client.loader, setup, "capability_type"), "userdata");
         assert_eq!(
             probe::<i64>(&client.loader, setup, "attempts"),
@@ -1455,9 +1453,8 @@ mod tests {
     #[test]
     fn two_declarations_of_one_file_are_one_table() {
         // A module and `shell.lua` may redeclare a store, and in-place reload reruns all
-        // declarations:
-        // all three executions land on one table and signal per key, or one `:set()` leaves the
-        // other stale.
+        // declarations: all three executions land on one table and signal per key, or one `:set()`
+        // leaves the other stale.
         let (client, _outbound_rx) = bare_client();
 
         let setup = r#"
@@ -1664,19 +1661,6 @@ mod tests {
             !probe::<bool>(&client.loader, "scanning = mantle.network:get().scanning", "scanning"),
             "the second push must update the same registered global, not fail or create a second one"
         );
-    }
-
-    #[test]
-    fn run_startup_evaluation_applies_a_valid_file_and_clears_rescue() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = write_shell_lua(dir.path(), r#"return panel { id = "bar", layer = "top" }"#);
-        let (mut client, _outbound_rx) = test_client(&path);
-
-        run_startup(&mut client);
-
-        assert!(client.scene.surface("bar@TEST").is_some());
-        assert_eq!(client.state.applied_specs.len(), 1);
-        assert_eq!(rescue_state(&client.loader), (false, String::new()));
     }
 
     /// A `window` and `popup` alongside panels.

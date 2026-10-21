@@ -1,5 +1,4 @@
-use mlua::Lua;
-use mlua::Value;
+use mlua::{Lua, Value};
 
 use super::ResolvedNode;
 use crate::layout::node;

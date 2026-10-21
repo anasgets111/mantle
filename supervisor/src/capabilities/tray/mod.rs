@@ -27,13 +27,9 @@ const MAX_PIXMAP_DIMENSION: i32 = 128;
 /// `IconName`s, and each DBusMenu node's `label`, `type`, `icon-name` and `toggle-type`.
 ///
 /// SNI and DBusMenu bound none of these, and a tray item is any application on the session bus, so
-/// without a cap one `GetLayout` reply or one `Title` change sizes an allocation in a Supervisor
-/// that never restarts. `notifications` already caps all seven of its own client-supplied fields
-/// (`MAX_SUMMARY_BYTES` and neighbours); this is the same rule for the same reason, one number
-/// because tray strings are all short display text rather than seven distinct kinds.
-///
-/// Truncating rather than dropping is safe even for the identifiers: an `IconName` cut short names
-/// no icon and draws nothing, which is what dropping it would do anyway.
+/// without a cap one `GetLayout` reply or `Title` change sizes an allocation in a Supervisor that
+/// never restarts. Truncating is safe even for identifiers: a cut `IconName` names no icon, as
+/// dropping it would.
 const MAX_TRAY_TEXT_BYTES: usize = 256;
 
 /// Total [`menu::MenuItem`]s one `GetLayout` reply may produce.

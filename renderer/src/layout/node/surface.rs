@@ -175,8 +175,7 @@ pub fn panel_spec(properties: &PropMap) -> Result<PanelSpec, LayoutError> {
             return Err(invalid(
                 key,
                 "a percentage needs a known output, and `output = \"active\"` leaves it to the compositor; \
-                 use `\"fill\"` with anchors and margins, or pixels"
-                    .to_string(),
+                 use `\"fill\"` with anchors and margins, or pixels",
             ));
         }
     }

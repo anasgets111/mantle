@@ -73,11 +73,8 @@ pub(super) fn move_window_to_workspace_command(id: &str, selector: &str) -> Stri
 /// the unnamed one. The dispatcher adds the prefix, so a full name would become
 /// `special:special:term`.
 pub(super) fn toggle_special_command(name: &str) -> String {
-    format!("hl.dsp.workspace.toggle_special(\"{}\")", lua_escape(special_argument(name)))
-}
-
-pub(super) fn special_argument(name: &str) -> &str {
-    name.strip_prefix("special:").unwrap_or(if name == "special" { "" } else { name })
+    let argument = name.strip_prefix("special:").unwrap_or(if name == "special" { "" } else { name });
+    format!("hl.dsp.workspace.toggle_special(\"{}\")", lua_escape(argument))
 }
 
 /// The command is Lua source now, and a quote in a name -- from a config or the compositor's own

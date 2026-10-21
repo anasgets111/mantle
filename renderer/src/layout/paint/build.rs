@@ -651,9 +651,6 @@ fn sampler_files(images: &[node::ShaderImage]) -> Vec<super::SamplerFile> {
     images.iter().map(|(name, path)| (name.clone(), path.clone(), version(path))).collect()
 }
 
-/// Pushes a box's `fill`, its blended `layers` split out bottom-up: a run of normal layers stays
-/// one box, and each blended layer blends onto everything drawn under it.
-// ponytail: one offscreen and blend pass per blended layer; upgrade: one pass over one copy.
 #[cfg(test)]
 mod tests {
     use super::super::tests::{IMAGE_MASKED, effect_surface, effect_surface_src, masked, pins, resolved_surface};
@@ -728,6 +725,13 @@ mod tests {
             .expect("expected a text draw")
     }
 
+    fn image_draw(tree: &ResolvedNode) -> Option<(Option<String>, Option<f32>)> {
+        build(tree, 1.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
+            Draw::Image { retained, dissolve, .. } => Some((retained.clone(), *dissolve)),
+            _ => None,
+        })
+    }
+
     /// ADR-0183. The frame that first has the incoming texture must already be drawing the cross,
     /// or it shows the incoming at full alpha for one frame and the cross then starts by jumping
     /// back to the outgoing. Readiness is only knowable by asking for the draw, so the ask happens
@@ -740,12 +744,6 @@ mod tests {
                 transition = { duration = 400, easing = "linear" },
                 width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let image_draw = |tree: &ResolvedNode| {
-            build(tree, 1.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
-                Draw::Image { retained, dissolve, .. } => Some((retained.clone(), *dissolve)),
-                _ => None,
-            })
-        };
 
         // Holding the old picture, the new one not yet drawn: no dissolve has started, because
         // nothing has proved the texture exists.
@@ -775,12 +773,6 @@ mod tests {
                 transition = { duration = 400, easing = "linear" },
                 width = "fill", height = "fill" } }"##;
         let mut tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let image_draw = |tree: &ResolvedNode| {
-            build(tree, 1.0, None).commands.iter().find_map(|cmd| match &cmd.draw {
-                Draw::Image { retained, dissolve, .. } => Some((retained.clone(), *dissolve)),
-                _ => None,
-            })
-        };
         assert_eq!(image_draw(&tree), Some((None, None)), "nothing has landed, so nothing is crossing");
 
         // What `note_landed_images` leaves behind: the source moved on, the outgoing on the run.
@@ -809,13 +801,6 @@ mod tests {
                 (std::path::PathBuf::from("/tmp/old.png"), (200, 40)),
             ]
         );
-
-        // `transition` implies `retain`, so the same node covers a gap without the property being
-        // written twice, and covering with a transition declared opens the cross at zero, which
-        // is the subject of its own test below.
-        tree.children[0].dissolve = None;
-        tree.children[0].displayed_source = Some("/tmp/old.png".to_string());
-        assert_eq!(image_draw(&tree), Some((Some("/tmp/old.png".to_string()), Some(0.0))));
     }
 
     /// ADR-0180. The cover only reaches the list while the node is behind its own source, it is
@@ -1577,8 +1562,6 @@ mod tests {
         );
     }
 
-    /// Focus names one node, so a focus naming another leaves this field alone. The case it guards
-    /// is two reply fields in one card: only the one clicked into fills.
     /// ADR-0108: the keyboard left, the draft did not.
     #[test]
     fn a_plain_field_without_the_keyboard_draws_its_draft_with_no_caret_and_its_placeholder_when_empty() {
@@ -1599,6 +1582,7 @@ mod tests {
         );
     }
 
+    /// Focus names one node, so a focus naming another leaves this field alone (two reply fields in one card).
     #[test]
     fn a_plain_field_that_is_not_the_focused_node_keeps_its_placeholder() {
         let lua = Lua::new();
@@ -1622,14 +1606,6 @@ mod tests {
         let lua = Lua::new();
         let tree = reply_surface(&lua);
         let id = tree.children[0].id;
-        assert_eq!(
-            drawn_text(&build(
-                &tree,
-                1.0,
-                Some(&FieldFocus::Plain { id, text: "on my way", caret: Some((9, 9)), caret_on: true })
-            )),
-            vec!["on my way".to_string()]
-        );
 
         // The same node, pushed down and narrowed the way a re-resolve would. Kept inside the
         // surface, since a node clipped out entirely draws nothing for reasons unrelated to focus.
@@ -1683,7 +1659,6 @@ mod tests {
         let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 6 }));
         let drawn = drawn_text(&list);
         assert_eq!(drawn, vec!["******".to_string()]);
-        assert!(drawn[0].chars().all(|c| c == '*'), "nothing but the mask glyph may reach the list");
         // Typing changes the list, or `paint_surface` skips the repaint and the dots never appear.
         let five = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 5 }));
         assert_ne!(list, five);

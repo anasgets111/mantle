@@ -85,7 +85,6 @@ fn set_channel_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: 
     write_device_volume(state, kind, id, Some(channels), None);
 }
 
-/// Sets one direction's default volume.
 fn set_default_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, volume: f32) {
     let Some((node_id, current)) = resolve_default(state, kind) else {
         debug!("a {kind:?} volume of {volume} has no resolved default device to write to; ignored");
@@ -127,7 +126,6 @@ pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
 /// Sets or toggles one direction's mute. `None` toggles using resolved `Props`; a set needs no
 /// channel count because mute carries no `channelVolumes`.
 fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted: Option<bool>) {
-    // A mute carries no `channelVolumes`, so an explicit set needs only the node, not its `Props`.
     let Some(node_id) = state.borrow().default_node(kind) else {
         debug!("a {kind:?} mute has no resolved default device to write to; ignored");
         return;

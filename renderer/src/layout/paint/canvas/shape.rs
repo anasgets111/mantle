@@ -208,12 +208,9 @@ pub(super) fn paint_border(
         && !radius.is_zero()
         && !radius.scoop()
     {
-        // `snap_border_band` rounds a box's own two edges to nearest, so it snaps the node's span
-        // on each axis, not only a hairline's thickness. The stroke's thickness is snapped the same
-        // way (band-of-one starting at `rect.x`, only the thickness half kept), so with integer box
-        // edges and an integer thickness the centerline lands on an integer for an even width and a
-        // half-integer for an odd one, the parity femtovg actually rasterizes (this module's
-        // `snap_border_band` doc comment).
+        // The span and the thickness snap as bands (thickness: a band-of-one at `rect.x`), so the
+        // centreline lands on an integer for an even width and a half-integer for an odd one, the
+        // parity femtovg rasterizes.
         let (box_x, box_width) = snap_border_band(rect.x, rect.width, scale);
         let (box_y, box_height) = snap_border_band(rect.y, rect.height, scale);
         let (_, width) = snap_border_band(rect.x, widths.top, scale);
@@ -778,18 +775,13 @@ mod tests {
         assert_eq!(px[2].3, 0, "the left edge has no colour");
     }
 
-    /// A pill's shape, and the bug it hid. `radius = side / 2`, and a radius over half the side,
-    /// both reached femtovg's half-box clamp, whose fill tessellation collapses to a rectangle:
-    /// every pill and circle had a square ground under a round border.
+    /// A pill's shape. `radius = side / 2`, and a radius over half the side, both reached femtovg's
+    /// half-box clamp, whose fill tessellation collapses to a rectangle: every pill and circle had
+    /// a square ground under a round border.
     ///
-    /// 40x40 at 20 rounded before the fix while
-    /// 32x32 did not, showing size-dependent degeneracy rather than a clean threshold; keep both
-    /// so one passing size cannot hide it. Both use [`box_path`]'s stadium branch: this catches an
-    /// exact half radius, while the companion test catches the just-below-half fill-fold case.
-    ///
-    /// Both halves are asserted: the corner must show the parent through the round fill, while the
-    /// mid-edge must remain border. Squaring the border to match a broken fill would satisfy only
-    /// one of those checks.
+    /// The degeneracy was size-dependent (40x40 at 20 failed, 32x32 did not), so both sizes stay.
+    /// This catches an exact half radius; the companion test catches the just-below-half fold.
+    /// The corner must show the parent through the fill while the mid-edge stays border.
     #[test]
     fn a_radius_of_half_the_box_fills_a_stadium_not_a_square() {
         let Some(instance) = init_headless_egl(64, 64) else { return };
@@ -891,27 +883,12 @@ mod tests {
     /// a fractional offset -- unsnapped, femtovg's own antialiasing fills part of row 10 and part
     /// of row 11 at partial coverage instead of one row at full coverage.
     ///
-    /// Proved this catches the bug it exists for: with `snap_border_band` removed from
-    /// `paint_border_edge`'s horizontal branch (using the raw, unsnapped `edge_rect` instead),
-    /// row 10 came back `(201, 178, 178, 255)`, a red/white blend rather than white, and the
-    /// row-10 assertion failed. Restored before finishing.
+    /// The 4px row must stay exactly four rows, which pins `snap_border_band` rounding both edges
+    /// independently rather than rounding the near edge and adding an unrounded thickness.
+    /// `padding.top = 31.3` is the geometry a content-sized surface resolves to.
     ///
-    /// The 4px row is wide enough that "one row either way" is not the whole story: the band must
-    /// stay exactly four rows, neither growing to five nor losing one, which is what pins
-    /// `snap_border_band` rounding both edges independently rather than rounding the near edge and
-    /// adding an unrounded thickness. `padding.top = 31.3` is the fractional geometry a
-    /// content-sized surface resolves to, so this is the real shape of the bug, not a contrived one.
-    ///
-    /// Note this is the filled-edge branch, not the stroke: `border_width = { top = 4 }` leaves
-    /// the other three edges at zero, so `paint_border`'s `uniform_width` test fails and it
-    /// takes the per-edge path. Stroke parity, the thing the deleted `snap_border_to_physical`
-    /// actually got wrong, is covered by
+    /// This is the filled-edge branch, not the stroke; stroke parity is covered by
     /// `a_uniform_stroked_border_at_a_fractional_position_covers_whole_pixel_columns` below.
-    ///
-    /// Proved the 4px row catches the bug: with the same unsnapped `edge_rect` change, row 31 came
-    /// back `(201, 178, 178, 255)` instead of full white -- the loop below fails on the first row
-    /// it checks, so this only pins that one value, not all four rows' worth of blend. Restored
-    /// before finishing.
     #[test]
     fn a_border_at_a_fractional_position_is_exactly_its_width_in_pixel_rows() {
         // (border width, padding.top, first white row)
@@ -952,9 +929,8 @@ mod tests {
     /// box span and the thickness as bands is what puts the centreline on the right side of that
     /// split without the caller reasoning about parity at all.
     ///
-    /// `padding.left = 10.3` is what makes this a real test: with an integer padding the stroke
-    /// already lands on whole pixels and passes without any snapping. Measured with the `snap_border_band` calls in that branch removed: column 10 came
-    /// back `(201, 178, 178, 255)`, a red/white blend, instead of full white.
+    /// `padding.left = 10.3` matters: with an integer padding the stroke already lands on whole
+    /// pixels and passes without any snapping.
     #[test]
     fn a_uniform_stroked_border_at_a_fractional_position_covers_whole_pixel_columns() {
         let Some(instance) = init_headless_egl(64, 64) else { return };

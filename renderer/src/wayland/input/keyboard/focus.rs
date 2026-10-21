@@ -788,8 +788,7 @@ mod tests {
             id: secure.id,
             target: node::SecureSubmitTarget { capability: "lock".into(), action: "authenticate".into(), name: None },
         };
-        let root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 30.0), false);
-        let mut root = root;
+        let mut root = hit_node(&lua, "panel", (0.0, 0.0, 100.0, 30.0), false);
         root.children = vec![secure, second, button];
         let field_control =
             FocusedControl { surface_id: field.surface_id.clone(), id: root.children[0].id, kind: ControlKind::Masked };

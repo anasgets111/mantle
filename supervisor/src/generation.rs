@@ -27,8 +27,7 @@ pub(crate) const RENDERER_BINARY: &str = "mantle-renderer";
 /// The sibling rule makes `cargo run` a trap: it rebuilds one half and launches the other's stale
 /// binary. `just run` builds both.
 pub(crate) fn renderer_binary_path() -> io::Result<PathBuf> {
-    let exe = std::env::current_exe()?;
-    Ok(exe.with_file_name(RENDERER_BINARY))
+    Ok(std::env::current_exe()?.with_file_name(RENDERER_BINARY))
 }
 
 /// glvnd loads every EGL vendor it finds, so without this a machine that renders only on NVIDIA
@@ -222,7 +221,6 @@ mod tests {
 
     #[test]
     fn a_renderer_departure_is_classified_by_exit_code_or_signal() {
-        // A signalled child has no exit code; calling `code()` first returns `None` and loses this.
         for (case, status, want) in [
             ("zero is not a crash", exited(0), RendererDeparture::Clean),
             ("nonzero carries its code", exited(101), RendererDeparture::Failed { code: 101 }),

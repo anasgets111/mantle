@@ -166,11 +166,8 @@ impl LockController {
 
 /// The longest a lock may stay up after a correct password.
 ///
-/// A ceiling and not a preference: this window is time the user has authenticated and is still
-/// looking at a lock screen, and a config that asked for ten seconds of it -- by typo, or by
-/// deriving the number from something that went wrong -- would be indistinguishable from a shell
-/// that has hung. 600ms is comfortably past anything that reads as an animation rather than a
-/// fault.
+/// A ceiling, not a preference: the user has authenticated and still sees a lock screen, so a
+/// config asking for ten seconds of it would look like a hung shell. 600ms is past any animation.
 pub const MAX_UNLOCK_ANIMATION: Duration = Duration::from_millis(600);
 
 /// `mantle.lock` action dispatch (ADR-0037).

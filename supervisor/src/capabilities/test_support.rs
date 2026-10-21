@@ -1,19 +1,13 @@
 //! Test helpers shared across capabilities.
 //!
-//! Capability-specific fixtures stay local; `notifications` builds its body span in its own
-//! `test_support`. This file holds [`p2p_pair`] and [`private_bus`], rather than duplicating or
-//! reaching across modules.
-//!
-//! `pub(crate)` rather than `pub(super)`, because `polkit` is a D-Bus test outside `capabilities`
-//! and needs the same pair. A second copy there is what this file exists to prevent.
+//! Capability-specific fixtures stay local. `pub(crate)` because `polkit`, outside `capabilities`,
+//! needs the same [`p2p_pair`].
 
 use tokio::io::AsyncBufReadExt;
 use tokio::net::UnixStream;
 
-#[cfg(test)]
 use zbus::zvariant::{OwnedValue, Value};
 
-#[cfg(test)]
 pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::HashMap<String, OwnedValue> {
     pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
 }

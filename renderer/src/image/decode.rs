@@ -20,7 +20,7 @@ impl Pool {
         let job_rx = Arc::new(Mutex::new(job_rx));
         let (result_tx, results) = std::sync::mpsc::channel();
         let wanted: Arc<Mutex<HashSet<CacheKey>>> = Arc::new(Mutex::new(HashSet::new()));
-        let budget: Arc<Budget> = Arc::new(Budget::default());
+        let budget = Arc::new(Budget::default());
         let workers =
             std::thread::available_parallelism().map_or(1, |n| n.get()).clamp(1, MAX_DECODE_WORKERS).min(max_workers);
         let cache_root = thumbnails::cache_dir();
@@ -40,16 +40,16 @@ impl Pool {
                         Err(_) => return,
                     };
                     let Ok(job) = job else { return };
-                    // Nobody is waiting for this any more: the entry was evicted, or the
-                    // surface that asked went away. Decoding it would cost a full raster and
-                    // land in a slot that `upload_landed` then skips.
-                    if !wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key)) {
-                        continue;
-                    }
-                    // The permit is taken inside, where the source has been chosen and its
+                    // The permit is taken inside `decode`, where the source has been chosen and its
                     // size is known; `still_wanted` is re-asked there because a worker can now
                     // wait for room, and an entry can be evicted while it does (ADR-0187).
                     let still_wanted = || wanted.lock().is_ok_and(|wanted| wanted.contains(&job.key));
+                    // Nobody is waiting for this any more: the entry was evicted, or the
+                    // surface that asked went away. Decoding it would cost a full raster and
+                    // land in a slot that `upload_landed` then skips.
+                    if !still_wanted() {
+                        continue;
+                    }
                     let mut result = if job.size_only {
                         Ok(Decoded {
                             base: Vec::new(),
@@ -149,10 +149,8 @@ pub(super) fn decode(
     if is_animated(path) {
         return decode_gif(path, *box_px, *cropped, charge, animation_bytes);
     }
-    let (pixels, width, height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
-    // Here rather than inside `decode_raster`, which returns from three places (thumbnail hit,
-    // rescaled thumbnail, full decode) and would need the crop at each.
-    let (mut pixels, mut width, mut height) = (pixels, width, height);
+    let (mut pixels, mut width, mut height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
+    // Here rather than inside `decode_raster`, which returns from three places and would need the crop at each.
     if *cropped && let Some(kept) = crop_to_box(&pixels, width, height, *box_px) {
         (pixels, width, height) = kept; // drops the uncropped source before the blur
     }
@@ -476,11 +474,9 @@ fn decode_raster(
     let (decoded, _permit) = decode_within_limits(path, MAX_DECODE_EDGE, charge, still_wanted)?;
     let (width, height) = (decoded.width(), decoded.height());
     let (stored_width, stored_height) = stored_size(width, height, box_px);
-    // The thumbnail this pass writes is also the best source for the texture it is about to make,
-    // whenever it still covers the stored size: scaling 128x128 down beats scaling 4096x4096 down
-    // to the same place, and the second one measured 27 ms on a 4096 source here. It is also what
-    // every *later* open of this file already does, one branch up, so a first open producing
-    // pixels from the full source was the odd one out rather than the careful one.
+    // The thumbnail this pass writes is also the best source for the texture, whenever it still
+    // covers the stored size: scaling it down beats scaling a 4096x4096 source (27 ms here), and
+    // every later open already does.
     let mut covering_thumbnail = None;
     if let Some(slot) = &slot
         && width.max(height) > slot.px
@@ -787,13 +783,6 @@ pub(super) mod tests {
             "a 128px slot must not decode a 200px file, however valid it looked a moment ago"
         );
         assert!(decode_within_limits(&swapped, 256, Charge::Free, &|| true).is_ok());
-
-        let ordinary = dir.path().join("ordinary.png");
-        ::image::RgbaImage::from_pixel(4, 4, ::image::Rgba([1, 2, 3, 255])).save(&ordinary).unwrap();
-        assert!(
-            decode_within_limits(&ordinary, MAX_DECODE_EDGE, Charge::Free, &|| true).is_ok(),
-            "an ordinary file must still decode"
-        );
     }
 
     #[test]

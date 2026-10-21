@@ -258,11 +258,11 @@ impl<'lua> LayoutPassBudget<'lua> {
     /// Starts the pass clock and holds the hook across it, putting `__index` under a budget. Also
     /// opens the [`EvaluationMemo`](super::tracking::EvaluationMemo) for the pass: a computed then answers once for every node and
     /// property that reads it, instead of once per property (ADR-0157).
-    pub(crate) fn enter(lua: &'lua Lua) -> mlua::Result<Self> {
+    pub(crate) fn enter(lua: &'lua Lua) -> Self {
         crate::lua::app_data_or_default::<PassDeadline>(lua).0 = Some(Deadline::lasting(LAYOUT_PASS_CAP));
         // Starts with or retains the memo table across passes, clearing it at pass end.
         crate::lua::app_data_or_default::<MemoTable>(lua).pass_opened = Some(super::tracking::current_clock());
-        Ok(Self { lua })
+        Self { lua }
     }
 
     /// Rust-boundary gate: config `pcall` can swallow the hook's ordinary Lua error in `__index` or

@@ -154,7 +154,6 @@ impl App {
             if steps == 0.0 {
                 return None;
             }
-            let on_wheel = on_wheel.clone();
             let lua = self.client.lua();
             match (rect_table(lua, rect), modifiers_table(lua, self.modifiers_held())) {
                 (Ok(rect), Ok(held)) => {

@@ -4,13 +4,10 @@ use zbus::zvariant::ObjectPath;
 
 #[zbus::proxy(interface = "org.bluez.Adapter1", default_service = "org.bluez")]
 pub(super) trait Adapter1 {
-    #[zbus(name = "StartDiscovery")]
     fn start_discovery(&self) -> zbus::Result<()>;
 
-    #[zbus(name = "StopDiscovery")]
     fn stop_discovery(&self) -> zbus::Result<()>;
 
-    #[zbus(name = "RemoveDevice")]
     fn remove_device(&self, device: &ObjectPath<'_>) -> zbus::Result<()>;
 
     #[zbus(property)]
@@ -29,13 +26,10 @@ pub(super) trait Adapter1 {
 
 #[zbus::proxy(interface = "org.bluez.Device1", default_service = "org.bluez")]
 pub(super) trait Device1 {
-    #[zbus(name = "Connect")]
     fn connect(&self) -> zbus::Result<()>;
 
-    #[zbus(name = "Disconnect")]
     fn disconnect(&self) -> zbus::Result<()>;
 
-    #[zbus(name = "Pair")]
     fn pair(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
@@ -68,10 +62,8 @@ pub(super) trait Battery1 {
 
 #[zbus::proxy(interface = "org.bluez.AgentManager1", default_service = "org.bluez", default_path = "/org/bluez")]
 pub(super) trait AgentManager1 {
-    #[zbus(name = "RegisterAgent")]
     fn register_agent(&self, agent: &ObjectPath<'_>, capability: &str) -> zbus::Result<()>;
 
-    #[zbus(name = "RequestDefaultAgent")]
     fn request_default_agent(&self, agent: &ObjectPath<'_>) -> zbus::Result<()>;
 }
 

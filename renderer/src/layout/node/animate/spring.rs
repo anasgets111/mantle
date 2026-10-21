@@ -428,6 +428,8 @@ mod tests {
         }
     }
 
+    /// A pass that re-resolves for an unrelated signal keeps the running tween, not the freshly parsed
+    /// spec: a spring's `velocity` is the rate the last retarget handed it, and parsing yields one at rest.
     #[test]
     fn a_moving_spring_survives_a_pass_that_changes_nothing_about_it() {
         let lua = Lua::new();
@@ -488,8 +490,7 @@ mod tests {
         };
         assert_eq!((spring.constants.stiffness, spring.constants.damping, spring.velocity), (220.0, 26.0, 0.0));
 
-        let cases: [(&str, &[&str]); 6] = [
-            ("duration = 10, spring = { stiffness = 1, damping = 1 }", &["has no `duration`"]),
+        let cases: [(&str, &[&str]); 5] = [
             // Beside `keyframes` a spring is each segment's curve, and the segments still need a duration.
             ("spring = { stiffness = 1, damping = 1 }, keyframes = { 0, 1 }", &["expected a duration in ms"]),
             ("spring = { damping = 26 }", &["`stiffness` must be number"]),

@@ -197,8 +197,8 @@ impl App {
                     && !pressed_a_field
                     && let Some(target) = hit.drag
                 {
-                    let motion = Motion::default();
-                    self.drag = Some(ActiveDrag { instance_id: instance_id.clone(), target, motion });
+                    self.drag =
+                        Some(ActiveDrag { instance_id: instance_id.clone(), target, motion: Motion::default() });
                     self.fire_on_drag(&instance_id, position, DragPhase::Start, Some(time));
                 }
                 // The compositor owns the pointer after a move or resize and may send no release,

@@ -513,18 +513,7 @@ mod tests {
     /// at 3x2 buffer px in 16-byte rows; ours is clear on the left and opaque on the right.
     #[test]
     fn a_capture_of_another_size_or_stride_maps_onto_the_read() {
-        let mut read = Read {
-            target: CaptureTarget::Output("DP-1".into()),
-            region: LogicalRect { x: 0.0, y: 0.0, width: 2.0, height: 1.0 },
-            clip: PhysicalRect { x0: 0, y0: 0, x1: 2, y1: 1 },
-            origin: (0.2, 0.1),
-            step: 1.0 / 1.5,
-            presented: vec![0, 0, 0, 0, 255, 255, 255, 255],
-            was: Vec::new(),
-            requests: 2,
-            changed: vec![0; 2],
-            sample: Vec::new(),
-        };
+        let mut read = Read { origin: (0.2, 0.1), step: 1.0 / 1.5, ..bare(vec![0, 0, 0, 0, 255, 255, 255, 255], 2) };
         let mut rows = vec![0; 32];
         for (x, value) in [(0, 40), (1, 80), (2, 120)] {
             for row in [0, 16] {

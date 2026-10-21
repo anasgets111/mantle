@@ -662,15 +662,13 @@ mod tests {
         }
     }
 
+    fn capture_node(node: NodeId, target: CaptureTarget, live: Option<f32>) -> CaptureNode {
+        CaptureNode { node, target, live, paint_cursor: false, region: None }
+    }
+
     #[test]
     fn a_dmabuf_failure_drops_the_shape_and_stays_failed() {
-        let node = CaptureNode {
-            node: NodeId::test(7),
-            target: CaptureTarget::Window("0xa11ce".into()),
-            live: None,
-            paint_cursor: false,
-            region: None,
-        };
+        let node = capture_node(NodeId::test(7), CaptureTarget::Window("0xa11ce".into()), None);
         let mut source = CaptureSource::new(&node, Protocol::Ext);
         let format = FormatModifier { fourcc: 0, modifier: 0 };
         let shape = DmabufShape { width: 1, height: 1, format };
@@ -694,13 +692,7 @@ mod tests {
     fn first_dmabuf_frame_requests_a_paint_before_texture_import() {
         let mut registry = registry();
         let mut cache = CaptureCache::default();
-        let node = CaptureNode {
-            node: NodeId::test(7),
-            target: CaptureTarget::Window("0xa11ce".into()),
-            live: None,
-            paint_cursor: false,
-            region: None,
-        };
+        let node = capture_node(NodeId::test(7), CaptureTarget::Window("0xa11ce".into()), None);
         assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
         assert!(cache.poll().is_empty());
         land_dmabuf_frame(&mut registry, &mut cache, &node.node);
@@ -713,13 +705,7 @@ mod tests {
     fn switching_capture_targets_retires_old_pixels_even_when_the_new_backend_is_missing() {
         let mut registry = registry();
         let mut cache = CaptureCache::default();
-        let mut node = CaptureNode {
-            node: NodeId::test(7),
-            target: CaptureTarget::Output("DP-1".into()),
-            live: Some(30.0),
-            paint_cursor: false,
-            region: None,
-        };
+        let mut node = capture_node(NodeId::test(7), CaptureTarget::Output("DP-1".into()), Some(30.0));
         assert!(registry.reconcile_source(&node, Some(Protocol::Wlr), &mut cache).is_some());
         registry.sources.get_mut(&node.node).unwrap().captured = true;
         registry.pending_import.push(node.node);
@@ -748,8 +734,7 @@ mod tests {
         for target in [CaptureTarget::Window("0xa11ce".into()), CaptureTarget::Output("DP-1".into())] {
             let mut registry = registry();
             let mut cache = CaptureCache::default();
-            let node =
-                CaptureNode { node: NodeId::test(7), target, live: Some(30.0), paint_cursor: false, region: None };
+            let node = capture_node(NodeId::test(7), target, Some(30.0));
             assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
             let source = registry.sources.get_mut(&node.node).unwrap();
             source.in_flight = true;
@@ -778,7 +763,7 @@ mod tests {
             for (node, target) in
                 [(output, CaptureTarget::Output("DP-1".into())), (window, CaptureTarget::Window("0xa11ce".into()))]
             {
-                let node = CaptureNode { node, target, live, paint_cursor: false, region: None };
+                let node = capture_node(node, target, live);
                 assert!(registry.reconcile_source(&node, Some(Protocol::Ext), &mut cache).is_some());
                 let source = registry.sources.get_mut(&node.node).unwrap();
                 source.captured = true;
@@ -864,13 +849,7 @@ mod tests {
         server.set_nonblocking(true).unwrap();
         let _ = server.read(&mut sink);
 
-        let node = CaptureNode {
-            node: NodeId::test(3),
-            target: CaptureTarget::Window("0xa11ce".into()),
-            live: None,
-            paint_cursor: false,
-            region: None,
-        };
+        let node = capture_node(NodeId::test(3), CaptureTarget::Window("0xa11ce".into()), None);
         let mut source = CaptureSource::new(&node, Protocol::Ext);
         source.proto = Some(Proto::Ext(ExtProto {
             session: Some(session.clone()),

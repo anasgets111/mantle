@@ -30,7 +30,7 @@ fn toplevel_size_for(
         if max > 0.0 {
             picked = picked.min(max);
         }
-        (picked.max(1.0)) as u32
+        picked.max(1.0) as u32
     };
     let min = spec.min_size.unwrap_or(SizeHint { width: 0.0, height: 0.0 });
     let max = spec.max_size.unwrap_or(SizeHint { width: 0.0, height: 0.0 });

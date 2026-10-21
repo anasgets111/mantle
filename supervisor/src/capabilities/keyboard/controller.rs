@@ -341,8 +341,7 @@ async fn pump_leds(fd: &AsyncFd<File>, state: &Mutex<KeyboardState>, events: &Un
 /// Re-opens the stream on every `input` uevent: a replugged keyboard is a new `/dev/input/event*`
 /// node, which the fd that died with the old one never sees. Without this the locks stay frozen
 /// where the unplug left them until the shell restarts.
-async fn watch_locks(first: Option<AsyncFd<File>>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
-    let mut stream = first;
+async fn watch_locks(mut stream: Option<AsyncFd<File>>, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
     let mut watch = udev_watch("input")
         .inspect_err(|err| {
             error!("failed to set up the udev input watch ({err}); lock state will freeze if the keyboard is replugged")

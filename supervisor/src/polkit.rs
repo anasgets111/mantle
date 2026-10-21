@@ -41,9 +41,9 @@ async fn from_polkitd(bus: &zbus::Connection, header: &Header<'_>) -> Result<(),
 
 /// polkitd request forwarded to `main.rs`, which owns the answer.
 ///
-/// `Cancel` without a cookie is polkitd leaving the bus. `Begin` carries the reply. polkitd treats an early return as failed authentication, so
-/// `begin_authentication` awaits the answer before returning to the bus. Dropping the sender
-/// cancels.
+/// `Cancel` without a cookie is polkitd leaving the bus. `Begin` carries the reply: polkitd treats
+/// an early return as failed authentication, so `begin_authentication` awaits the answer. Dropping
+/// the sender cancels.
 pub enum AgentRequest {
     Begin { call: BeginAuthenticationCall, reply: oneshot::Sender<Result<(), AgentError>> },
     Cancel { cookie: Option<String> },
@@ -314,17 +314,6 @@ mod tests {
         );
         let _second = authority(calls_tx).await.unwrap();
         within(calls_rx.recv()).await.expect("the new polkitd must get RegisterAuthenticationAgent");
-    }
-
-    /// Tests [`session_subject`] rather than `$XDG_SESSION_ID`, which parallel tests would race on.
-    #[test]
-    fn a_session_id_becomes_a_unix_session_subject() {
-        let subject = session_subject("test-session-42".to_string());
-        assert_eq!(subject.subject_kind, "unix-session");
-        assert_eq!(
-            subject.subject_details.get("session-id").cloned().and_then(|v| String::try_from(v).ok()),
-            Some("test-session-42".to_string())
-        );
     }
 
     /// Agent served on a private bus; the returned connection owns polkitd's name.

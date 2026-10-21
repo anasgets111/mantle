@@ -73,14 +73,9 @@ impl Row<'_> {
     }
 }
 
-/// How far `rows` rows of `line_height` overflow a `height` box.
-pub(crate) fn max_scroll(rows: usize, line_height: f32, height: f32) -> f32 {
-    (rows as f32 * line_height - height).max(0.0)
-}
-
-/// `scroll` kept within [`max_scroll`].
+/// `scroll` kept within how far `rows` rows of `line_height` overflow a `height` box.
 pub(crate) fn clamp_scroll(scroll: f32, rows: usize, line_height: f32, height: f32) -> f32 {
-    scroll.clamp(0.0, max_scroll(rows, line_height, height))
+    scroll.clamp(0.0, (rows as f32 * line_height - height).max(0.0))
 }
 
 /// `scroll` after an edit: moved the least that shows row `caret` whole, if given, then clamped.

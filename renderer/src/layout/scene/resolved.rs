@@ -1,7 +1,7 @@
 //! The resolved tree's node and the layout style parsed beside it.
 
 use super::*;
-use crate::layout::node::{self as node};
+use crate::layout::node;
 
 #[cfg(test)]
 impl ResolvedNode {
@@ -406,18 +406,9 @@ impl ResolvedNode {
 
     /// Its length along `axis`, margins included: what it takes in a flow along `axis`.
     pub(super) fn extent_on(&self, axis: MainAxis) -> f32 {
-        let length = match axis {
-            MainAxis::Horizontal => self.rect.width,
-            MainAxis::Vertical => self.rect.height,
-        };
-        length + self.margin_on(axis)
-    }
-
-    /// This node's margin along `axis`, both edges.
-    pub(super) fn margin_on(&self, axis: MainAxis) -> f32 {
         match axis {
-            MainAxis::Horizontal => self.margin.horizontal(),
-            MainAxis::Vertical => self.margin.vertical(),
+            MainAxis::Horizontal => self.rect.width + self.margin.horizontal(),
+            MainAxis::Vertical => self.rect.height + self.margin.vertical(),
         }
     }
 }

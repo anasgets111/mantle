@@ -3,19 +3,13 @@
 //! Proxies follow BlueZ's D-Bus API docs; `org.freedesktop.DBus.ObjectManager` reuses
 //! `zbus::fdo::ObjectManagerProxy` (ADR-0030: no maintained BlueZ proxy crate).
 //!
-//! ponytail: [`BluetoothController::new`] degrades instead of failing like `NetworkController::new`
-//! (`zbus::Result<Self>`). NetworkManager is assumed present for `mantle.network`; BlueZ may be
-//! absent with no hardware or no `bluetoothd`, so binding, adapter lookup, and agent registration
-//! log and produce an inert controller: `enabled`/`discovering` are `false`, lists are empty, and
-//! writes log and no-op.
+//! ponytail: [`BluetoothController::new`] degrades to an inert controller (logs, empty lists, no-op
+//! writes) when BlueZ is absent, unlike `NetworkController::new`, which assumes NetworkManager.
 //!
-//! ponytail: After `start_discovery` clears the list and pushes a fresh snapshot, matching the
-//! `last_snapshots` bookkeeping used by every capability, any
-//! `DeviceRegistryChanged` rebuilds both lists from the entire registry, not only devices newly
-//! seen this session, matching `NetworkController::build_available_networks`'s no-debounce
-//! discipline. A prior-session device can reappear after any registry change because BlueZ
-//! `Device1` objects persist and this controller does not track `RSSI`. This follows ADR-0030's
-//! deferred mechanics; a strict session-scoped list is the upgrade if hardware shows it wrong.
+//! ponytail: any `DeviceRegistryChanged` rebuilds the lists from the whole registry, so a
+//! prior-session device can reappear after `start_discovery` clears them, because BlueZ `Device1`
+//! objects persist and RSSI is not tracked (ADR-0030); upgrade to a session-scoped list if hardware
+//! shows it wrong.
 
 pub use shared::state::bluetooth::{
     BluetoothState, ConnectedDevice, DeviceAction, DeviceCategory, DiscoveredDevice, PairedDevice, PairingKind,
@@ -33,9 +27,6 @@ pub mod proxies;
 pub mod registry;
 
 pub use controller::BluetoothController;
-
-// State shape pushed as `mantle.bluetooth`'s StateSnapshot.
-// ---------------------------------------------------------------------------------------------
 
 /// What signal forwarders report to the bluetooth worker.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,8 +107,6 @@ pub fn dispatch(controller: &BluetoothController, envelope: &shared::CommandEnve
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ---- class_to_category ----
 
     #[test]
     fn class_to_category_reads_only_the_major_and_minor_bits() {

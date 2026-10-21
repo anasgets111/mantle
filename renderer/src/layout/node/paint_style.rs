@@ -1,11 +1,8 @@
-//! Paint properties are parsed during `Scene::apply`, not in `layout::paint`: keeping this type
-//! here avoids making `scene` depend on a module that already depends on it. Display-list builds
-//! run every dirty turn because list equality controls repaint (ADR-0063 decision 1), while applies
-//! run at capability-push cadence (ADR-0044 decision 2). This also makes malformed values fail once
-//! through `mantle.rescue` instead of painting with a default every frame. Geometry already fails
-//! `apply` and reaches `mantle.rescue`; one resolved map cannot give paint a second opinion on
-//! malformed values. Paint-time work remains arithmetic needing scale or focus; `icon.size` stays
-//! geometry for the scene's measure callback.
+//! Paint properties are parsed during `Scene::apply`, not in `layout::paint`, which `scene` cannot
+//! depend on. Display-list builds run every dirty turn (ADR-0063 decision 1) and applies at
+//! capability-push cadence (ADR-0044 decision 2), so a malformed value fails once through
+//! `mantle.rescue` instead of painting a default every frame. Paint-time work is arithmetic needing
+//! scale or focus; `icon.size` stays geometry for the scene's measure callback.
 
 use std::sync::Arc;
 

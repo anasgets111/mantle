@@ -232,7 +232,7 @@ impl Prop for Font {
         // An empty string is a config bug that would otherwise look like "no family named", and the
         // node would silently draw in the declared chain with nothing to point at.
         if family.is_empty() {
-            return Err(invalid("font", "must be a family name, got an empty string".to_string()));
+            return Err(invalid("font", "must be a family name, got an empty string"));
         }
         Ok(Some(Arc::from(family)))
     }
@@ -472,8 +472,6 @@ mod tests {
             ));
         }
     }
-
-    // ---- styled runs (ADR-0104) ----
 
     fn runs_content(lua: &mlua::Lua, src: &str) -> Result<(String, Vec<StyleRun>), LayoutError> {
         fields::text::content.read(&props_from_src(lua, format!(r#"return {{ kind = "text", content = {src} }}"#)))

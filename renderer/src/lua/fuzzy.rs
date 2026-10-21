@@ -2,13 +2,11 @@
 //! do not appear in order (ADR-0201).
 //!
 //! Ported from Ajit's JavaScript port of fzf: BSD-3-Clause, copyright 2021 Ajit. Constants are
-//! unchanged, so fzf's thresholds read across.
+//! unchanged, so fzf's thresholds read across. The scorer only: iterate, sort and cap stay in the
+//! config. No backtrack pass, so no match positions; `start` is returned for a tiebreak.
 //!
-//! The scorer only: iterate, sort, tiebreak and cap stay in the config. No backtrack
-//! pass, so no match positions; `start` is returned for a tiebreak.
-//!
-//! [`closest`] is the other fuzzy match: edit distance for the engine's own "did you mean", where a
-//! typo swaps letters that fzf's in-order match would reject.
+//! [`closest`] is the other match: edit distance for the engine's "did you mean", where a typo swaps
+//! letters that fzf's in-order match would reject.
 
 use mlua::Lua;
 

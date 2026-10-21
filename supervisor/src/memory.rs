@@ -228,8 +228,7 @@ fn mib_from_bytes(bytes: u64) -> f64 {
 fn read_process_memory(proc_root: &Path, who: &str) -> io::Result<ProcessMemory> {
     let process_dir = proc_root.join(who);
     let rollup_path = process_dir.join("smaps_rollup");
-    let rollup_text = std::fs::read_to_string(&rollup_path)?;
-    let rollup = parse_rollup(&rollup_text).ok_or_else(|| {
+    let rollup = parse_rollup(&std::fs::read_to_string(&rollup_path)?).ok_or_else(|| {
         io::Error::new(io::ErrorKind::InvalidData, format!("{} has no Pss: line", rollup_path.display()))
     })?;
     Ok(ProcessMemory { rollup, gpu: read_gpu(&process_dir) })
@@ -313,8 +312,6 @@ pub(crate) async fn tick_sampler(interval: &mut Option<tokio::time::Interval>) -
 mod tests {
     use super::*;
 
-    // ---- parse_rollup ----
-
     /// Real machine output: Pss 208 kB, Private_Clean 48 kB, Private_Dirty 108 kB, hence
     /// pss 208 and uss 156.
     const ROLLUP_FIXTURE: &str = "\
@@ -354,8 +351,6 @@ Locked:                0 kB
         let text = "Pss_Dirty:           108 kB\nPss_Anon:            108 kB\nPrivate_Clean:        48 kB\n";
         assert_eq!(parse_rollup(text), None);
     }
-
-    // ---- parse_drm_client ----
 
     /// Real i915 output. `drm-resident-system0` plus `drm-resident-stolen-system0` is 279968, equal
     /// to `drm-total-system0` only because the buffer is fully resident, not because `drm-total-*`
@@ -448,8 +443,6 @@ drm-engine-video-enhance:\t0 ns\n";
         }
     }
 
-    // ---- read_process_memory / read_gpu, against a fake proc root ----
-
     /// Writes `<root>/<who>/smaps_rollup`, plus one `fdinfo/<fd>` file per entry in `fds`. An
     /// empty `fds` writes no `fdinfo` directory at all, which is the process that holds no fds.
     fn write_process(root: &Path, who: &str, rollup: Option<&str>, fds: &[(&str, &str)]) {
@@ -516,8 +509,6 @@ drm-engine-video-enhance:\t0 ns\n";
         assert_eq!(memory.gpu, Gpu { resident: 279968, shared: 192368, clients: 1 });
     }
 
-    // ---- fold_drm_clients ----
-
     #[test]
     fn fold_drm_clients_dedupes_by_pdev_and_client_id_and_sums_distinct_clients() {
         let client =
@@ -547,8 +538,6 @@ drm-engine-video-enhance:\t0 ns\n";
             assert_eq!(fold_drm_clients(clients), expected, "{label}");
         }
     }
-
-    // ---- report_line ----
 
     #[test]
     fn report_line_formats_total_supervisor_and_the_renderer_clause() {

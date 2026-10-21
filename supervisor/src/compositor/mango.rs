@@ -6,8 +6,7 @@
 //! come from `build_monitor_json`, `build_tags_json` and `build_client_json` in mango's
 //! `src/ipc/ipc.c`.
 
-use std::io::{BufRead, Write};
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
@@ -349,7 +348,6 @@ impl Compositor for Mango {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, Write};
     use std::os::unix::net::UnixListener;
 
     // Trimmed from `get all-monitors` (`build_monitor_json`); tags 1 and 2 shown together on eDP-1.

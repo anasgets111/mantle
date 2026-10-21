@@ -42,7 +42,7 @@ pub(super) enum Repaint {
 pub(super) fn repaint_for_turn(changes: TurnChanges) -> Repaint {
     if changes.passed && !changes.targeted {
         Repaint::Everything
-    } else if (changes.passed && changes.targeted) || changes.ticked || changes.typed || changes.stale {
+    } else if changes.passed || changes.ticked || changes.typed || changes.stale {
         Repaint::Narrowed
     } else {
         Repaint::Nothing
@@ -136,7 +136,6 @@ mod tests {
         assert_eq!(turn(true, false, true, false), Repaint::Everything);
         assert_eq!(turn(true, false, false, false), Repaint::Everything);
 
-        // A targeted pass repaints narrowed.
         assert_eq!(
             repaint_for_turn(TurnChanges { passed: true, targeted: true, ticked: false, stale: false, typed: false }),
             Repaint::Narrowed
@@ -147,7 +146,6 @@ mod tests {
         assert_eq!(turn(false, true, false, false), Repaint::Narrowed);
         assert_eq!(turn(false, false, true, false), Repaint::Narrowed);
 
-        // A caret repaints narrowed to the typed surface.
         assert_eq!(turn(false, true, false, true), Repaint::Narrowed);
         assert_eq!(turn(false, false, false, true), Repaint::Narrowed);
 
@@ -168,7 +166,6 @@ mod tests {
         assert_eq!(turn(true, false, true), SurfaceStateWork { scope: StateScope::Everything, popup_latch: false });
         assert_eq!(turn(true, false, false), SurfaceStateWork { scope: StateScope::Everything, popup_latch: false });
 
-        // A targeted pass sets StateScope::Targeted and preserves popup latch on armed input.
         assert_eq!(
             surface_state_for_turn(true, true, false, true),
             SurfaceStateWork { scope: StateScope::Targeted, popup_latch: true }

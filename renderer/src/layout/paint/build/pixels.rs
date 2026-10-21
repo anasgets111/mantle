@@ -201,10 +201,8 @@ pub(super) fn physical_edge(logical: f32, scale: f32) -> u32 {
     physical.round() as u32
 }
 
-/// `image.source_blur` in physical pixels. Floored at 0, not [`physical_edge`]'s 1: a box always
-/// covers some area, but a blur may genuinely be off. the `source_blur` field already rejects
-/// negative, infinite and NaN logical values, and `scale` is always positive, so unlike
-/// `physical_edge` there is no out-of-range input here to clamp.
+/// `image.source_blur` in physical pixels. Floored at 0, not [`physical_edge`]'s 1, since a blur may
+/// be off; the field already rejects negative, infinite and NaN values, so nothing here needs clamping.
 pub(super) fn physical_blur(logical: f32, scale: f32) -> u32 {
     (logical * scale).round() as u32
 }
@@ -224,13 +222,16 @@ pub(super) fn blended(blend: Blend, command: DrawCmd) -> DrawCmd {
     }
 }
 
+/// Pushes a box's `fill`, its blended `layers` split out bottom-up: a run of normal layers stays
+/// one box, and each blended layer blends onto everything drawn under it.
+// ponytail: one offscreen and blend pass per blended layer; upgrade: one pass over one copy.
 pub(super) fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, Blend)]) {
+    if layers.iter().all(|(_, blend)| *blend == Blend::Normal) {
+        return out.push(fill);
+    }
     let DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } } = fill else {
         return out.push(fill);
     };
-    if layers.iter().all(|(_, blend)| *blend == Blend::Normal) {
-        return out.push(DrawCmd { rect, clip, draw: Draw::Box { background, radius, border, widths } });
-    }
     let boxed = |background| DrawCmd {
         rect,
         clip,

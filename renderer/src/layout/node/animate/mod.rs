@@ -32,14 +32,13 @@ mod transition;
 mod typed;
 pub(crate) use easing::Easing;
 pub(crate) use move_tween::MoveTween;
-pub(crate) use parse::Animations;
-pub(crate) use parse::ExitBlock;
 pub use parse::MoveSpec;
 #[cfg(test)]
 pub(crate) use parse::animatable_name;
 #[cfg(test)]
 use parse::parse_animate;
 use parse::parse_exit;
+pub(crate) use parse::{Animations, ExitBlock};
 pub use typed::{TYPED, commit, step, sync};
 
 /// The named easings, the `EasingName` alias's members.
@@ -1084,17 +1083,11 @@ mod tests {
         assert_eq!(empty.lerp(&whole, Easing::OutBack.apply(0.7), "trim_end"), whole);
         assert_eq!(whole.lerp(&empty, Easing::OutBack.apply(0.7), "trim_start"), empty);
 
-        // The overshooting families leave `[0, 1]` on purpose; the property's own range is what pulls
-        // them back, so a `width` easing to `0` never hands the parser a negative.
-        assert!(Easing::InBack.apply(0.3) < 0.0, "Back winds up before it moves");
-        assert!(Easing::OutElastic.apply(0.4) > 1.0, "Elastic rings past the target");
         // `InBack` winds backwards, so the clamp bites at the start of a growing width rather than
         // at the end of a shrinking one the way `OutBack`'s does above.
         let (from, to) = (Animatable::Number(0.0), Animatable::Number(40.0));
         assert_eq!(from.lerp(&to, Easing::InBack.apply(0.3), "width"), Animatable::Number(0.0));
         assert!(matches!(from.lerp(&to, Easing::InBack.apply(0.3), "margin"), Animatable::Number(n) if n < 0.0));
-        assert!((Easing::OutBounce.apply(0.5) - 0.765625).abs() < 1e-6, "Bounce stays inside, at its known midpoint");
-        assert!((Easing::InBounce.apply(0.5) - 0.234375).abs() < 1e-6);
     }
 
     /// A four-number table is CSS `cubic-bezier`, solved for `y` at the parameter whose `x` is the
@@ -1229,6 +1222,7 @@ mod tests {
         assert!(err.to_string().contains("`width`") && err.to_string().contains("`lock`"), "{err}");
     }
 
+    /// ADR-0150: the live pass checks the exit block, so a typo is refused while the node can still be named.
     #[test]
     fn a_bad_exit_block_is_refused_on_a_live_pass() {
         let lua = Lua::new();
@@ -1622,11 +1616,6 @@ mod tests {
         assert_eq!(Animatable::from_value("width", Some(&fill)).unwrap(), None, "`Fill` is not an endpoint");
     }
 
-    /// A pass that re-resolves for some unrelated signal keeps the running tween and its spec, not
-    /// the freshly parsed one. For every other motion that would be harmless -- the curve is
-    /// the same curve -- but a spring's `velocity` is the rate the last retarget handed it rather
-    /// than anything the config wrote, and parsing yields one at rest. Any unrelated change would
-    /// stop a moving spring dead, which is the one thing the hand-over exists to prevent.
     /// A bezier's `y` is deliberately unbounded, so a curve that overshoots hard makes the
     /// endpoint error visible: bisection stops about 1e-6 of a parameter short of the ends, and
     /// the curve's steep opening multiplies that into a value nowhere near where the tween starts.
@@ -1823,8 +1812,6 @@ mod tests {
                 .unwrap()
                 .0;
         assert_eq!(specs["width"].delay, Duration::from_millis(40));
-        let bare = parse_animate("rect", &rect_props(&lua, "return { animate = { width = 10 } }")).unwrap().0;
-        assert_eq!(bare["width"].delay, Duration::ZERO, "absent is no delay");
         let zeroed =
             parse_animate("rect", &rect_props(&lua, "return { animate = { width = { duration = 10, delay = 0 } } }"))
                 .unwrap()

@@ -1,7 +1,6 @@
-//! `secure_submit` tree analysis (`CONTEXT.md`, Secure submit). Kept here rather than
-//! `crate::wayland::input`, where these predicates grew; the last helper needed a fully-qualified
-//! path back into `crate::wayland`. Input routing consumes these predicates; `wayland::input` arms
-//! the keyboard, `wayland::lock` grants the lock, and `crate::socket` vetoes unsafe reloads.
+//! `secure_submit` tree analysis (`CONTEXT.md`, Secure submit). Input routing consumes these
+//! predicates; `wayland::input` arms the keyboard, `wayland::lock` grants the lock, and
+//! `crate::socket` vetoes unsafe reloads.
 
 use crate::layout::instance::SurfaceInstance;
 use crate::layout::node::{self, SecureSubmitTarget};

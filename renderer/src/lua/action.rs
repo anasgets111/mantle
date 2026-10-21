@@ -77,12 +77,9 @@ pub fn dispatch(lua: &Lua, name: &str, arguments: &[serde_json::Value]) -> share
             }
         }
     }
-    // The same cap a capability's `on_change` handler runs under: config code reached from outside
-    // is still config code, and a handler that spins must not take the frame with it.
+    // The cap a capability's `on_change` handler runs under: a spinning handler must not take the frame.
     match CpuBudget::call::<_, Value>(lua, &handler, MultiValue::from_vec(args)) {
-        // `nil` and no return at all are the same value here, because Lua cannot tell them apart.
-        // `from_value`, as a capability action marshals its arguments: one conversion for both
-        // directions across this boundary.
+        // `nil` and no return at all are the same value: Lua cannot tell them apart.
         Ok(value) => match lua.from_value::<serde_json::Value>(value) {
             Ok(json) => match serde_json::to_vec(&json).map(|bytes| bytes.len()) {
                 Ok(len) if len > MAX_ANSWER_BYTES => shared::CallOutcome::Failed(format!(

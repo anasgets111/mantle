@@ -316,17 +316,6 @@ mod tests {
         assert_eq!(samples(), 2);
     }
 
-    /// `publish_if_changed` needs a state and a channel; both tasks and this test build them the
-    /// same way, so a helper keeps the four cases below to their point.
-    fn state_and_channel() -> (
-        std::sync::Arc<std::sync::Mutex<super::SysinfoState>>,
-        tokio::sync::mpsc::UnboundedSender<()>,
-        tokio::sync::mpsc::UnboundedReceiver<()>,
-    ) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        (std::sync::Arc::new(std::sync::Mutex::new(super::SysinfoState::default())), tx, rx)
-    }
-
     #[test]
     fn a_failed_sample_keeps_the_last_good_value() {
         let mut disks = vec![1];
@@ -341,7 +330,8 @@ mod tests {
     fn a_sample_publishes_only_when_it_moved_a_field() {
         // An idle machine reports the same rounded percentage tick after tick, and each publish would
         // cost a scene re-resolve (ADR-0044 decision 2).
-        let (state, tx, mut rx) = state_and_channel();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = std::sync::Mutex::new(super::SysinfoState::default());
         for (measured, publishes) in [(42, true), (42, false)] {
             super::publish_if_changed(&state, &tx, |state| {
                 let changed = state.cpu_percent != measured;

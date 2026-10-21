@@ -126,11 +126,9 @@ pub(crate) fn spawn_and_register_process(
 
 /// The most bytes one child output line contributes to a `ProcessOutput` frame.
 ///
-/// `tokio::io::Lines` grows one `String` until it meets a newline, and a child that never writes
-/// one -- `yes | tr -d '\n'` is the whole recipe -- grows it without limit. That growth happens
-/// inside Supervisor, before framing's `MAX_FRAME_LEN` ever sees a frame to reject, so the frame
-/// limit does not bound it. Past this the line is delivered cut, its tail is dropped, and the next
-/// line starts clean: a diagnostic stream is worth truncating, never worth an OOM.
+/// `tokio::io::Lines` grows one `String` until it meets a newline, so a child that never writes one
+/// (`yes | tr -d '\n'`) grows it without limit, before framing's `MAX_FRAME_LEN` sees a frame.
+/// Past this the line is delivered cut, its tail is dropped, and the next line starts clean.
 const MAX_LINE_BYTES: u64 = 64 * 1024;
 
 /// `tokio::io::Lines` with a ceiling.
@@ -140,11 +138,8 @@ const MAX_LINE_BYTES: u64 = 64 * 1024;
 /// final unterminated line is still delivered.
 ///
 /// **The partial line lives on `self`, not in `next_line`'s frame, and that is load-bearing.**
-/// `read_until` is not cancellation safe -- it can consume bytes from the reader and then be
-/// dropped when the other arm of the `select!` below wins. Those bytes are already gone from the
-/// stream, so a buffer local to the call would lose them and silently corrupt the line. Holding it
-/// here means a cancelled call resumes into the same buffer on the next one, which is what makes
-/// this usable in a `select!` at all.
+/// `read_until` is not cancellation safe: it can consume bytes and then be dropped when the other
+/// `select!` arm wins. A buffer local to the call would lose them and corrupt the line.
 ///
 /// Unlike `Lines` this decodes lossily rather than failing the stream on invalid UTF-8, so one stray
 /// byte does not end a child's output reporting.
@@ -167,11 +162,9 @@ impl<R: tokio::io::AsyncRead + Unpin> BoundedLines<R> {
     /// The next line, truncated to [`MAX_LINE_BYTES`], or `Ok(None)` at EOF.
     async fn next_line(&mut self) -> io::Result<Option<String>> {
         loop {
-            // A full `line` is the whole discard state. `discard_to_newline` reads into its own
-            // buffer, so a cancelled discard leaves `line` at the cap and the next call resumes
-            // here; and once that await resolves there is no yield point before `take_line`
-            // empties it. One branch, so no second discard can run after the resumed one and eat
-            // the *next* line.
+            // A full `line` is the whole discard state: a cancelled discard leaves it at the cap
+            // and the next call resumes here, with no yield point before `take_line` empties it,
+            // so no second discard can eat the *next* line.
             if self.line.len() as u64 == MAX_LINE_BYTES {
                 self.discard_to_newline().await?;
                 return Ok(Some(self.take_line()));
@@ -559,8 +552,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.id == 9 && l.stream == ProcessStream::Stdout && l.line == "out1"));
         assert!(lines.iter().any(|l| l.id == 9 && l.stream == ProcessStream::Stderr && l.line == "err1"));
 
-        // stream_process_output never learns the exit code itself (it doesn't own the Child) --
-        // that's the caller's `remove` + wait_and_report_exit's job, via a detached task.
+        // The streamer does not own the Child, so the exit code comes from waiting on it.
         let mut child = processes.remove(&(1, 9)).expect("process must still be registered");
         assert_eq!(child.wait().await.unwrap().code(), Some(3));
     }

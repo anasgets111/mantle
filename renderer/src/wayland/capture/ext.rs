@@ -57,14 +57,9 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, N
                     return;
                 };
                 let dmabuf_formats = std::mem::take(&mut ext.dmabuf_formats);
-                let frame_outstanding = ext.frame.is_some();
                 let offer = DoneOffer { width, height, shm_format, dmabuf_formats };
-                if frame_outstanding {
-                    if let Some(source) = state.captures.sources.get_mut(id)
-                        && let Some(Proto::Ext(ext)) = source.proto.as_mut()
-                    {
-                        ext.pending_done = Some(offer);
-                    }
+                if ext.frame.is_some() {
+                    ext.pending_done = Some(offer);
                     return;
                 }
                 state.apply_ext_done(*id, offer);

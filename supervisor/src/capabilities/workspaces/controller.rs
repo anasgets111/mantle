@@ -198,8 +198,6 @@ mod tests {
         FocusedWindow { title: title.to_string(), app_id: app_id.to_string(), floating, fullscreen: None }
     }
 
-    // ---- derive_state: grouping and ordering ----
-
     #[test]
     fn derive_state_groups_by_output_and_orders_outputs_and_workspaces_deterministically() {
         // Deliberately out of order: adaptors fold maps, whose iteration is unordered.
@@ -285,8 +283,6 @@ mod tests {
         }
     }
 
-    // ---- derive_state: focus (ADR-0056 decision 4) ----
-
     #[test]
     fn derive_state_puts_focused_workspace_only_on_the_output_that_holds_focus() {
         let workspaces = [workspace(1, 1, "eDP-1", true, false), workspace(2, 1, "DP-2", true, true)];
@@ -299,8 +295,6 @@ mod tests {
         assert_eq!(edp.active_workspace, "1");
         assert_eq!(edp.focused_workspace, None, "an output that does not hold focus must not claim it does");
     }
-
-    // ---- derive_state: active_client (ADR-0056 decision 5) ----
 
     #[test]
     fn derive_state_maps_the_focused_window_onto_active_client() {
@@ -338,8 +332,6 @@ mod tests {
         assert!(rx.try_recv().is_ok(), "shut is a change from unsupported");
         assert_eq!(publisher.state.lock().unwrap().overview_open, Some(false));
     }
-
-    // ---- StatePublisher ----
 
     fn publisher() -> (StatePublisher, tokio::sync::mpsc::UnboundedReceiver<()>) {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();

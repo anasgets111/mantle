@@ -1,6 +1,5 @@
-//! Arch's `pacman`, as an `mantle.updates` backend (ADR-0034, ADR-0134). The one implementation
-//! of [`super::backend::Backend`] this Supervisor ships. Everything under here knows about
-//! `/etc/pacman.conf`, `pacman`'s own stdout and the AUR; nothing above the trait does.
+//! Arch's `pacman`, as an `mantle.updates` backend (ADR-0034, ADR-0134). Everything under here
+//! knows about `/etc/pacman.conf`, `pacman`'s own stdout and the AUR; nothing above the trait does.
 
 pub mod aur;
 pub mod check;

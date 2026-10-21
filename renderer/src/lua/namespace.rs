@@ -142,21 +142,17 @@ fn seeded_member(
 /// VM and defines the config API if workspace versions diverge.
 fn version_table(loader: &Loader) -> mlua::Result<mlua::Table> {
     let table = loader.lua().create_table()?;
-    let [major, minor, patch] = version_parts();
-    table.set("major", major)?;
-    table.set("minor", minor)?;
-    table.set("patch", patch)?;
+    // `expect`, not `0`: a non-numeric `CARGO_PKG_VERSION_*` is a broken build, while a silent `0.0.0`
+    // makes config guards take the wrong branch forever. The socket test
+    // `mantle_version_is_three_integers_a_config_can_compare` reaches this through [`build`].
+    for (key, part) in [
+        ("major", env!("CARGO_PKG_VERSION_MAJOR")),
+        ("minor", env!("CARGO_PKG_VERSION_MINOR")),
+        ("patch", env!("CARGO_PKG_VERSION_PATCH")),
+    ] {
+        table.set(key, part.parse::<u32>().expect("Cargo's CARGO_PKG_VERSION_* are numeric"))?;
+    }
     Ok(table)
-}
-
-/// `expect`, not `0`: a non-numeric `CARGO_PKG_VERSION_*` is a broken build, while silent `0.0.0`
-/// makes config guards take the wrong branch forever. The socket test
-/// `mantle_version_is_three_integers_a_config_can_compare` reaches this through [`build`] and
-/// catches panic or wrong values.
-fn version_parts() -> [u32; 3] {
-    [env!("CARGO_PKG_VERSION_MAJOR"), env!("CARGO_PKG_VERSION_MINOR"), env!("CARGO_PKG_VERSION_PATCH")].map(|part| {
-        part.parse().expect("Cargo's CARGO_PKG_VERSION_* are the numeric components of an already-parsed semver")
-    })
 }
 
 /// `mantle.rescue`'s `{ is_rescue, error_log }` table, rebuilt by

@@ -167,10 +167,8 @@ impl Cpu {
     fn now() -> Self {
         let seconds = |who| {
             getrusage(who).map_or(0.0, |usage| {
-                let user = usage.user_time();
-                let system = usage.system_time();
                 let secs = |t: nix::sys::time::TimeVal| t.tv_sec() as f64 + t.tv_usec() as f64 / 1_000_000.0;
-                secs(user) + secs(system)
+                secs(usage.user_time()) + secs(usage.system_time())
             })
         };
         Self { process: seconds(UsageWho::RUSAGE_SELF), thread: seconds(UsageWho::RUSAGE_THREAD) }

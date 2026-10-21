@@ -17,9 +17,9 @@ use crate::capabilities::audio::mixer::{CaptureApp, PrivacySources};
 
 use super::video::{enumerate_video_devices, find_device_openers, holds_device, is_video_name, read_comm};
 
-/// `app_name` if known, else `/proc/{pid}/comm`, else `pid {n}`.
-fn process_name(proc_root: &Path, pid: u32, app_name: Option<String>) -> String {
-    app_name.or_else(|| read_comm(proc_root, pid)).unwrap_or_else(|| format!("pid {pid}"))
+/// `/proc/{pid}/comm`, else `pid {n}`.
+fn process_name(proc_root: &Path, pid: u32) -> String {
+    read_comm(proc_root, pid).unwrap_or_else(|| format!("pid {pid}"))
 }
 
 /// Adds `app_name` unless a row already has it: browsers open one node per tab, but users need one
@@ -39,7 +39,7 @@ fn name_capture_users(proc_root: &Path, apps: &[CaptureApp]) -> Vec<PrivacyUser>
         let app_name = app
             .app_name
             .clone()
-            .or_else(|| app.pid.map(|pid| process_name(proc_root, pid, None)))
+            .or_else(|| app.pid.map(|pid| process_name(proc_root, pid)))
             .unwrap_or_else(|| format!("node {}", app.node_id));
         push_unique(&mut users, app_name);
     }
@@ -51,7 +51,7 @@ fn name_capture_users(proc_root: &Path, apps: &[CaptureApp]) -> Vec<PrivacyUser>
 fn name_camera_users(proc_root: &Path, opener_pids: &[u32], pipewire: &PrivacySources) -> Vec<PrivacyUser> {
     let mut users = name_capture_users(proc_root, &pipewire.cameras);
     for &pid in opener_pids.iter().filter(|&&pid| Some(pid) != pipewire.pipewire_pid) {
-        push_unique(&mut users, process_name(proc_root, pid, None));
+        push_unique(&mut users, process_name(proc_root, pid));
     }
     users
 }

@@ -336,16 +336,12 @@ fn collect_surfaces(value: Value) -> Result<Vec<VirtualNode>, LoaderError> {
         };
         surfaces.push(surface(&entry)?);
     }
-    // `return {}` declares no surfaces, not a mistake (ADR-0070 decision 7).
     Ok(surfaces)
 }
 
-/// Admits all four root roles (ADR-0040 decision 1). Declaration location and Wayland-object
-/// lifetime are separate (ADR-0052 decision 2), as ADR-0049 already established for `window` (no
-/// `xdg_toplevel`
-/// until `visible` is true) and `popup`. `lock` owns no `ext_session_lock_surface_v1` until the
-/// compositor sends `locked`; rejecting it would leave the authored lock-screen `child` nowhere
-/// legal to write.
+/// Admits all four root roles (ADR-0040 decision 1). Declaration and Wayland-object lifetime are
+/// separate (ADR-0052 decision 2): `lock` owns no surface until the compositor sends `locked`, but
+/// rejecting it would leave the authored lock-screen `child` nowhere legal to write.
 fn surface(table: &Table) -> Result<VirtualNode, LoaderError> {
     let node = nodes::deserialize_lua_table(table).map_err(|err| {
         let site = nodes::site_of(table);
@@ -1006,8 +1002,6 @@ return { panel { id = "a", layer = "top" }, missing, panel { id = "c", layer = "
         assert!(matches!(err, LoaderError::Eval(_)), "{err:?}");
         let message = err.to_string();
 
-        // The file and line to fix, relative to the config directory. Not
-        // `renderer/src/lua/mod.rs:74:127`, and not `[string "..."]`, which Lua truncates.
         assert_eq!(message, "syntax error: shell.lua:2: <eof> expected near 'this'");
     }
 

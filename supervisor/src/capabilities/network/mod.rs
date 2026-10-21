@@ -8,7 +8,6 @@
 //!
 //! A device added or removed after startup, such as a USB adapter, rescans the device set and
 //! restarts its watchers ([`NetworkSignal::DevicesChanged`]).
-//!
 pub use shared::state::network::{AccessPointInfo, JoinError, NetworkState};
 
 use zbus::zvariant::ObjectPath;

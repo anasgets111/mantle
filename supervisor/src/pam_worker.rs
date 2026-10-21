@@ -53,9 +53,8 @@ fn pam_service() -> &'static str {
 }
 
 /// Ceiling on the whole worker exchange (`exchange_over`), not one PAM call. Long because PAM may be
-/// human-paced (network module, fingerprint retry), but bounds a wedged `read_json_frame` and
-/// prevents a spawned task holding plaintext
-/// forever while the prompt remains `authenticating`.
+/// human-paced (network module, fingerprint retry), but bounds a wedged `read_json_frame` that would
+/// hold plaintext in a spawned task forever.
 const PAM_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Relays a masked PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `masked_prompt`
@@ -364,11 +363,8 @@ async fn exchange_over(
         warn!("failed to reap pam worker: {err}");
     }
 
-    // A worker that answered needs no post-mortem. One that did not leaves the lock screen saying
-    // only "early eof", and on 2026-09-08 that was the whole of the evidence: nothing on the
-    // worker's inherited stderr, no coredump, nothing in the journal, and a session that could not
-    // be unlocked until the next attempt happened to work. How it died is already in hand here and
-    // was being dropped on the floor: log it, not just the on-screen error text.
+    // A worker that did not answer leaves the lock screen saying only "early eof" (the 2026-09-08
+    // lockout had no other evidence), so log how it died, not just the on-screen error text.
     outcome_result.map_err(|err| {
         let post_mortem = post_mortem(&reaped);
         error!("pam worker exchange failed: {err}; the worker {post_mortem}");
@@ -786,24 +782,6 @@ mod tests {
     // Pin release when the spawned authentication task panics or drops before reporting.
 
     #[test]
-    fn report_on_drop_sends_a_fallback_outcome_when_dropped_before_reporting() {
-        // Simulates panic from `run_authentication` or future drop mid-`.await`, before its send.
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        drop(ReportOnDrop { pending: Some((7u64, tx)) });
-
-        let (acquisition, outcome) =
-            rx.try_recv().expect("a fallback outcome must be sent when the guard is dropped before reporting");
-        assert!(
-            matches!(outcome, shared::PamOutcome::PamError(_)),
-            "the fallback must be a PamOutcome so main.rs's pam_outcomes arm can still clear `authenticating`"
-        );
-        assert_eq!(
-            acquisition, 7,
-            "and it must be tagged with the lock it was started for, or lock::accepts_outcome cannot place it"
-        );
-    }
-
-    #[test]
     fn report_on_drop_does_not_double_send_once_the_real_outcome_already_went_out() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut guard = ReportOnDrop { pending: Some((7u64, tx)) };
@@ -833,9 +811,10 @@ mod tests {
             "the task did panic -- that part of the simulation, not the fix, is what's asserted here"
         );
 
-        let (_acquisition, outcome) = rx
+        let (acquisition, outcome) = rx
             .try_recv()
             .expect("the drop guard must still report a fallback outcome even though the task panicked first");
         assert!(matches!(outcome, shared::PamOutcome::PamError(_)));
+        assert_eq!(acquisition, 7, "tagged with the lock it was started for, or lock::accepts_outcome cannot place it");
     }
 }

@@ -860,16 +860,8 @@ pub(super) mod tests {
         );
     }
 
-    /// A `Stretch` child of a `Content`-sized row: the solver closes this, not anything written
-    /// here (ADR-0023).
-    ///
-    /// Same shape as the test above, minus the row's `height = "fill"`, which is the whole
-    /// difference: the row is now `Content`-sized, so its own height is not known until after its
-    /// children resolve. The hand-written pass could not pre-force a `Stretch` child's size in that
-    /// case, so it patched the child's own `rect` afterwards and left the child's descendants
-    /// positioned against the pre-stretch height -- the grandchild centred in 6 rather than in 50.
-    /// ADR-0023's upgrade path (g) named "a second constraint pass" as the fix. That is what a
-    /// solver is.
+    /// A `Stretch` child of a `Content`-sized row: its own height is unknown until its children
+    /// resolve, yet its descendants must centre against the stretched height, not 6 (ADR-0023).
     #[test]
     fn a_stretch_child_of_a_content_sized_row_repositions_its_descendants_too() {
         let (scene, _lua, _shaping, _surface) = applied(
@@ -891,15 +883,10 @@ pub(super) mod tests {
         );
     }
 
-    /// The one thing the solver swap narrows, pinned so it stays a decision rather than a surprise.
-    ///
-    /// An invisible node leaves the layout entirely, so its whole subtree resolves to zero geometry
-    /// instead of being sized and then declined a position. Nothing outside this module can tell:
-    /// `layout::paint`, `layout::hit` and `overlay_input_regions` all filter on `visible` before
-    /// they read a rect, and the two readers that do look at a hidden node -- `layout::hover`, and
-    /// `wayland::surface`'s `panel_spec` re-derive -- read `properties`, which is still here in
-    /// full. What was always specified is the part that still holds: a hidden child reserves no
-    /// space and no `spacing` gap, which the two tests above this pin.
+    /// Deliberate, the one thing the solver swap narrowed: an invisible node leaves the layout
+    /// entirely and its subtree resolves to zero geometry. Nothing can tell, since paint, hit and
+    /// input regions filter on `visible` and the readers of a hidden node (`layout::hover`,
+    /// `panel_spec`) read `properties`, which stay in full.
     #[test]
     fn an_invisible_subtree_resolves_to_no_geometry_at_all() {
         let (scene, _lua, _shaping, _surface) = applied(
@@ -1382,20 +1369,19 @@ pub(super) mod tests {
     /// either -- otherwise hiding a node would shrink the one beside it.
     #[test]
     fn an_invisible_sibling_reserves_nothing_from_a_fill_childs_share() {
-        let mut scene = Scene::new();
         let shaping = ShapingHandle::spawn();
         for hidden in [
             r#"rect { width = 100, height = 10, visible = false }"#,
             r#"rect { width = "fill", height = 10, visible = false }"#,
         ] {
-            let mut scene_for_case = std::mem::replace(&mut scene, Scene::new());
+            let mut scene = Scene::new();
             let (lua, surface) = surface_from(&format!(
                 r#"panel {{ id = "bar", child = row {{ width = 600, height = 40, children = {{
                     rect {{ width = "fill", height = 10 }}, {hidden},
                 }} }} }}"#
             ));
-            apply_at(&mut scene_for_case, &[surface], full(), &shaping, &lua).unwrap();
-            let row = &scene_for_case.surface("bar@TEST").unwrap().children[0];
+            apply_at(&mut scene, &[surface], full(), &shaping, &lua).unwrap();
+            let row = &scene.surface("bar@TEST").unwrap().children[0];
             assert_eq!(row.children[0].rect.width, 600.0, "the visible fill child takes the whole row");
         }
     }
@@ -1413,9 +1399,7 @@ pub(super) mod tests {
         assert_eq!(row.children[0].rect.height, 200.0);
     }
 
-    /// A percentage still resolves against the parent, not against the remainder, which is what a
-    /// CSS percentage width does. Deliberately left alone by this pass: changing it would be a
-    /// second behaviour change riding along inside a bug fix.
+    /// A percentage resolves against the parent, not the remainder, as in CSS.
     #[test]
     fn a_percentage_sibling_still_resolves_against_the_parent() {
         let (scene, _lua, _shaping, _surface) = applied(
@@ -1429,9 +1413,7 @@ pub(super) mod tests {
         assert_eq!(row.children[0].rect.width, 300.0, "and the fill child takes what that leaves");
     }
 
-    /// Unchanged, and deliberate: a row that states no width has no remainder to divide, so a
-    /// `Fill` child of it resolves to zero. See ADR-0077's own note on item 10
-    /// for the one-pass reasoning behind it and the upgrade path.
+    /// A row that states no width has no remainder to divide, so its `Fill` child is zero (ADR-0077 item 10).
     #[test]
     fn a_fill_child_of_a_content_sized_row_still_resolves_to_zero() {
         let (scene, _lua, _shaping, _surface) = applied(
@@ -1454,9 +1436,7 @@ pub(super) mod tests {
         let measure = |scene: &mut Scene, source: &str| {
             let (lua, surface) = surface_from(source);
             apply_at(scene, &[surface], full(), &shaping, &lua).unwrap();
-            let width = scene.surface("bar@TEST").unwrap().children[0].rect.width;
-            drop(lua);
-            width
+            scene.surface("bar@TEST").unwrap().children[0].rect.width
         };
 
         assert_eq!(
@@ -1544,11 +1524,7 @@ pub(super) mod tests {
         assert_eq!(row.rect.width, 130.0, "the row holds the 10 wide rect and the capped text");
     }
 
-    /// Found live: a content-sized `column` with 8px of padding reported the
-    /// bare height of its one child, and reported the same height with 50px of padding. Padding
-    /// insets the box children are laid out in (they are offset by exactly this
-    /// much), so a content-sized container that does not also grow by it positions its children
-    /// past its own edge.
+    /// Found live: a content-sized `column` ignored its padding, so its children sat past its own edge.
     #[test]
     fn a_content_sized_box_grows_by_its_own_padding_and_an_explicit_one_does_not() {
         let (scene, _lua, _shaping, _surface) = applied(
@@ -1635,10 +1611,8 @@ pub(super) mod tests {
         assert!(children[1].rect.width > children[0].rect.width + 5.0);
     }
 
-    /// taffy before 0.15 added a flex container's own margin to its children's minimum cross size when
-    /// it measured them (ADR-0111). The card here is a column
-    /// with a left margin of most of the output, holding a body that wraps at the card's width.
-    /// Its height has to be the wrapped body's, whatever the margin.
+    /// taffy before 0.15 added a flex container's own margin to its children's minimum cross size
+    /// (ADR-0111): a card with a huge left margin must still be as tall as its wrapped body.
     #[test]
     fn a_containers_own_margin_does_not_widen_what_its_children_are_measured_at() {
         let long = "have a look at this: https://example.com/project/mantle/pull/12345 and tell me what you think about it all";
@@ -1742,8 +1716,7 @@ pub(super) mod tests {
         assert_ne!(memo(), first);
     }
 
-    /// A stacking parent has no main axis, its children
-    /// may overlap by design (ADR-0023), and `Fill` there means the whole box.
+    /// A stacking parent has no main axis (ADR-0023), and `Fill` there means the whole box.
     #[test]
     fn fill_under_a_stacking_parent_is_still_the_whole_box() {
         let (scene, _lua, _shaping, _surface) = applied(

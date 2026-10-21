@@ -95,8 +95,8 @@ fn forget_subtree(
         wd_to_dir.iter().filter(|(_, watched)| watched.starts_with(dir)).map(|(wd, _)| wd.clone()).collect();
     for wd in doomed {
         // Kernel already invalidated this watch, typically by deletion.
-        let _ = watches.remove(wd.clone());
         wd_to_dir.remove(&wd);
+        let _ = watches.remove(wd);
     }
     let known = hashes.len();
     hashes.retain(|path, _| !path.starts_with(dir));

@@ -46,7 +46,7 @@ pub fn resolve(name: &str, px: u32) -> Option<PathBuf> {
         return Some(PathBuf::from(name));
     }
     // One path component. A slash would join outside the theme directory; `./x.png` is not a name.
-    if !is_icon_name(name) {
+    if Path::new(name).file_name() != Some(OsStr::new(name)) {
         return None;
     }
     #[cfg(test)]
@@ -55,10 +55,6 @@ pub fn resolve(name: &str, px: u32) -> Option<PathBuf> {
         return Some(found.unwrap_or_else(|| panic!("no fixture icon {name:?}: add {name}.svg to {}", dir.display())));
     }
     memoized(name, size, || lookup(name, size))
-}
-
-fn is_icon_name(name: &str) -> bool {
-    Path::new(name).file_name() == Some(OsStr::new(name))
 }
 
 fn lookup(name: &str, size: u32) -> Option<PathBuf> {
@@ -176,15 +172,8 @@ fn walk_theme(name: &str, px: u32, theme: &str, bases: &[PathBuf], seen: &mut Ha
     if !seen.insert(theme.to_string()) {
         return None;
     }
-    if let Some(path) = search_theme(name, px, theme, bases) {
-        return Some(path);
-    }
-    for parent in theme_inherits(theme, bases) {
-        if let Some(path) = walk_theme(name, px, &parent, bases, seen) {
-            return Some(path);
-        }
-    }
-    None
+    search_theme(name, px, theme, bases)
+        .or_else(|| theme_inherits(theme, bases).iter().find_map(|parent| walk_theme(name, px, parent, bases, seen)))
 }
 
 /// A copy of `theme` under `base` with the theme's index: its own, else the first base's. Packages
@@ -206,7 +195,7 @@ fn theme_inherits(theme: &str, bases: &[PathBuf]) -> Vec<String> {
     for base in bases {
         let Some((_, index)) = theme_index(base, theme, bases) else { continue };
         for parent in &index.inherits {
-            if !parents.iter().any(|have: &String| have == parent) {
+            if !parents.contains(parent) {
                 parents.push(parent.clone());
             }
         }

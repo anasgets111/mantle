@@ -218,8 +218,7 @@ impl App {
         let tree = self.client.scene().surface(&surface_id);
 
         let control = self.outline_control(&surface_id);
-        let is_clean =
-            self.surfaces[index].is_clean() && self.field_focus_for(&surface_id).is_none() && control.is_none();
+        let is_clean = !self.surfaces[index].dirty && self.field_focus_for(&surface_id).is_none() && control.is_none();
         if is_clean
             && !self.surfaces[index].owes_a_paint()
             && self.surfaces[index].last_painted.as_ref().is_some_and(|(s, _)| *s == paint_key)
@@ -549,10 +548,7 @@ impl App {
     pub(in crate::wayland) fn repaint_mapped_surfaces_where(&mut self, wanted: impl Fn(&TrackedSurface) -> bool) {
         let drawn = self.surfaces_drawn;
         for index in 0..self.surfaces.len() {
-            if self.surfaces[index].map_state != MapState::Mapped {
-                continue;
-            }
-            if !wanted(&self.surfaces[index]) {
+            if self.surfaces[index].map_state != MapState::Mapped || !wanted(&self.surfaces[index]) {
                 continue;
             }
             // Painted at the callback instead; the compositor still shows this surface's last frame.
@@ -560,12 +556,10 @@ impl App {
                 self.surfaces[index].paint_deferred = true;
                 continue;
             }
-            if self.surfaces[index].bound.is_none() {
-                // A panel shown after starting hidden was configured without EGL; bind here because
-                // no further configure is coming.
-                if !self.ensure_bound(index) {
-                    continue;
-                }
+            // A panel shown after starting hidden was configured without EGL; bind here because no
+            // further configure is coming.
+            if !self.ensure_bound(index) {
+                continue;
             }
             self.paint_surface(index);
             if self.exit {

@@ -342,9 +342,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
             if events.send(()).is_err() {
                 break;
             }
-            // Emitted last, and never between the cleanup steps: a stalled D-Bus write would
-            // otherwise hold up aborting the forwarders, reaping the spooled PNGs and telling our
-            // own config the registry moved. Nothing here depends on the signal landing.
+            // Emitted last: a stalled D-Bus write must not hold up the cleanup above.
             if let Ok(emitter) = zbus::object_server::SignalEmitter::new(&connection, super::WATCHER_OBJECT_PATH) {
                 for id in departed {
                     let _ =

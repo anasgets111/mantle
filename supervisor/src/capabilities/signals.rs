@@ -60,11 +60,7 @@ async fn recv_latest<T>(rx: &mut UnboundedReceiver<T>) -> Option<T> {
 /// Every roster variant appears in `channels` or `without_channel`; the exhaustive helper makes a
 /// missing row an `E0004` here. `Signal` stays hand-written because variants choose their payload;
 /// per-variant doc comments would flatten to punctuation in a macro row, while
-/// [`Capabilities::push`](super::Capabilities::push) guards the mapping exhaustively.
-///
-/// The chain is exhaustive: a new roster variant fails `start`, `dispatch`, and the channel helper;
-/// its channel row then fails on `Signal`, and that variant fails `push`. Each compiler error names
-/// the next required edit instead of allowing silent loss after the second.
+/// [`Capabilities::push`](super::Capabilities::push) guards the mapping exhaustively. Each compiler error names the next required edit.
 macro_rules! capability_channels {
     (
         channels {
@@ -142,7 +138,7 @@ capability_channels! {
         Folders => folders: (), Some(()) => Signal::Folders;
         Storage => storage: (), Some(()) => Signal::Storage;
         Processes => processes: (), Some(()) => Signal::Processes;
-            // `idle/controller.rs`'s inhibitor watch owns and sends state, like `Audio` (ADR-0141).
+        // `idle/controller.rs`'s inhibitor watch owns and sends state, like `Audio` (ADR-0141).
         Idle => idle: IdleState, Some(state) => Signal::Idle(state);
         Secrets => secrets: SecretsState, Some(state) => Signal::Secrets(state);
     }

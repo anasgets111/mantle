@@ -174,10 +174,7 @@ impl NetworkController {
                 }
                 // Read D-Bus before taking the plain mutex; never hold it across an await.
                 let mut next = self.build_state(&signal).await;
-                {
-                    let state = self.state.lock().expect("mutex poisoned");
-                    carry_scan(&mut next, Some(&state), &signal);
-                }
+                carry_scan(&mut next, Some(&self.state.lock().expect("mutex poisoned")), &signal);
                 next
             }
         };

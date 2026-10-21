@@ -50,20 +50,13 @@ pub fn spawn_group_leader(cmd: impl AsRef<OsStr>, args: &[String], envs: &[(&str
 /// Spawns `cmd` fully detached: its own session, reparented to init, and never this process's to
 /// wait on or signal.
 ///
-/// [`spawn_group_leader`] gives a new process *group*, which is enough to reap a subtree with one
-/// `killpg` but leaves the program a direct child of the Supervisor: it sits under the shell in
-/// every process tree, and it is one registry entry away from being reaped by a config reload. A
-/// text editor opened from the launcher should outlive the shell that opened it, and should not
-/// look like part of it.
+/// [`spawn_group_leader`] leaves the program a direct child of the Supervisor, reapable by a config
+/// reload; a text editor opened from the launcher should outlive the shell. So: `setsid` in the
+/// child, then fork again and let the intermediate leave at once, and `init` adopts the grandchild.
+/// `setsid` before the second fork stops the grandchild acquiring a controlling terminal, since only
+/// a session leader can.
 ///
-/// So: `setsid` in the child, then fork again and let the intermediate leave at once. The
-/// grandchild is orphaned the moment its parent exits and `init` adopts it. `setsid` before the
-/// second fork rather than after is what stops the grandchild ever acquiring a controlling
-/// terminal, since only a session leader can.
-///
-/// The three standard streams go to `/dev/null`. A detached program has nowhere to write: the
-/// Supervisor is not holding pipes for it, and leaving them inherited would let it scribble on the
-/// shell's own stdout long after nobody is reading.
+/// The three standard streams go to `/dev/null`, so it cannot scribble on the shell's own stdout.
 pub fn spawn_detached(cmd: &str, args: &[String]) -> io::Result<()> {
     let mut command = Command::new(cmd);
     command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
@@ -85,8 +78,7 @@ pub fn spawn_detached(cmd: &str, args: &[String]) -> io::Result<()> {
             }
         });
     }
-    // The intermediate exits immediately; dropping the handle leaves it to tokio's reaper, which
-    // is what keeps it from lingering as a zombie. The grandchild was never ours to hold.
+    // The intermediate exits at once; tokio's reaper collects it once the handle drops.
     command.spawn().map(drop)
 }
 

@@ -217,7 +217,7 @@ impl NetworkController {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
 
     fn home() -> PendingNetworkConnect {
@@ -230,7 +230,7 @@ mod tests {
         }
     }
 
-    fn joined(n: u32) -> InFlight {
+    pub(crate) fn joined(n: u32) -> InFlight {
         let active = OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/ActiveConnection/{n}"))
             .expect("valid object path");
         InFlight { active, created: None, unsaved: None }

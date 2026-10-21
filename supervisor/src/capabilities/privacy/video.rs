@@ -68,12 +68,6 @@ pub(super) fn write_fd_symlink(proc_root: &Path, pid: u32, fd: u32, target: impl
 mod tests {
     use super::*;
 
-    fn write_video_device_dir(video4linux_root: &Path, name: &str) {
-        std::fs::create_dir(video4linux_root.join(name)).unwrap();
-    }
-
-    // ---- enumerate_video_devices ----
-
     #[test]
     fn enumerate_video_devices_lists_videon_directories_and_ignores_the_rest() {
         // (label, entries, expected)
@@ -85,7 +79,7 @@ mod tests {
         for (label, entries, expected) in cases {
             let root = tempfile::tempdir().unwrap();
             for entry in entries {
-                write_video_device_dir(root.path(), entry);
+                std::fs::create_dir(root.path().join(entry)).unwrap();
             }
             let expected: Vec<PathBuf> = expected.iter().map(|name| root.path().join(name)).collect();
             assert_eq!(enumerate_video_devices(root.path()), expected, "{label}");
@@ -93,8 +87,6 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         assert!(enumerate_video_devices(&root.path().join("does-not-exist")).is_empty(), "nonexistent root");
     }
-
-    // ---- find_device_openers ----
 
     #[test]
     fn find_device_openers_lists_each_opening_pid_once_sorted() {
@@ -147,8 +139,6 @@ mod tests {
         assert!(!holds_device(root.path(), 2, &devices));
         assert!(!holds_device(root.path(), 3, &devices));
     }
-
-    // ---- read_comm ----
 
     #[test]
     fn read_comm_is_none_for_a_pid_with_no_comm_file() {

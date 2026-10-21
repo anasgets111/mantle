@@ -1,13 +1,6 @@
-//! `pacman` half of `updates:install()` (ADR-0034): install-progress syntax. The
-//! command is `env LC_ALL=C pkexec pacman -Syu --noconfirm`, run by `controller.rs` through
-//! `process::spawn_group_leader_piped`; `pkexec` talks to polkit and triggers the Mantle polkit
-//! agent's interactive prompt rather than a manual `CheckAuthorization` call. It modifies the real
-//! `/etc/pacman.conf`/`/var/lib/pacman` as root, unlike `check.rs`.
-//!
-//! Progress parsing is best-effort against pacman's real format
-//! (`"(2/5) installing nss (3.127-1 -> 3.128-1)"`), not end-to-end verified because a privileged
-//! run needs the user's polkit prompt. A missed line affects only UI progress; success comes from
-//! process exit status.
+//! pacman's install-progress syntax (ADR-0034), e.g. `(2/5) installing nss (3.127-1 -> 3.128-1)`.
+//! Best-effort and not verified end to end, since a privileged run needs the user's polkit prompt.
+//! A missed line affects only UI progress; success comes from the exit status.
 
 use super::super::backend::InstallStep;
 

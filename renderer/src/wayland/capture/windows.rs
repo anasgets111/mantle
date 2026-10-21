@@ -159,7 +159,7 @@ impl Dispatch<HyprlandToplevelWindowMappingHandleV1, ExtForeignToplevelHandleV1>
         if let hyprland_toplevel_window_mapping_handle_v1::Event::WindowAddress { address_hi, address: low } = event {
             let name = address(address_hi, low);
             row.address = Some(name.clone());
-            let target = CaptureTarget::Window(name.clone());
+            let target = CaptureTarget::Window(name);
             for id in
                 state.captures.sources_where(|source| source.target == target && !source.in_flight && !source.failed)
             {

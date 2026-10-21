@@ -19,8 +19,8 @@ use super::icon::{
     validate_trusted_path, write_icon_png,
 };
 use super::queue::{
-    Expiry, QueueCleanup, expire_entry, feed_view, find_expiring_entry, next_incarnation, remove_by_id,
-    replace_or_push, resolve_expiry, resolve_notification_id, resolve_sound_path, should_play_sound,
+    Expiry, QueueCleanup, expire_entry, feed_view, find_expiring_entry, remove_by_id, replace_or_push, resolve_expiry,
+    resolve_notification_id, resolve_sound_path, should_play_sound,
 };
 use super::sound::{SoundSender, default_trusted_sound_roots, resolve_sound_name};
 use super::{
@@ -223,10 +223,7 @@ impl NotificationsController {
     /// `notifications:dismiss(id)` removes the entry, lets its expiry task no-op on
     /// recheck, emits `NotificationClosed(..., Dismissed)`, and pushes state. Unknown ids no-op.
     pub async fn dismiss(&self, id: u32) {
-        let removed = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            state.remove(id)
-        };
+        let removed = self.state.lock().expect("mutex poisoned").remove(id);
         if removed.is_none() {
             debug!("dismiss({id}) ignored: no notification with that id is currently queued");
             return;
@@ -467,24 +464,23 @@ impl NotificationsController {
         // The positional argument wins where a sender set both: it says "this application's icon"
         // and nothing else, where the hint is a fallback from a field that meant a picture.
         let app_icon = (!app_icon.is_empty()).then_some(app_icon).or(image_name);
-        let icon_data = hints.icon_data;
         let app_muted = {
             let state = self.state.lock().expect("mutex poisoned");
             state.muted_apps.contains(&app_name)
                 || desktop_entry.as_ref().is_some_and(|entry| state.muted_apps.contains(entry))
         };
         let suppress_sound = app_muted || hints.suppress_sound.unwrap_or(false);
-        let sound_file = hints.sound_file;
-        let sound_name = hints.sound_name;
 
         let (id, incarnation) = {
             let mut state = self.state.lock().expect("mutex poisoned");
             let state = &mut *state;
             let id = resolve_notification_id(replaces_id, &state.queue, &mut state.next_id);
-            let incarnation = next_incarnation(&mut state.next_incarnation);
+            // The stamp expiry timers compare against replacements ([`find_expiring_entry`]).
+            let incarnation = state.next_incarnation;
+            state.next_incarnation = state.next_incarnation.wrapping_add(1);
             (id, incarnation)
         };
-        let image_path = self.resolve_and_spool_image(id, image_data, image_path, icon_data).await;
+        let image_path = self.resolve_and_spool_image(id, image_data, image_path, hints.icon_data).await;
         let app_icon = resolve_app_icon(app_icon, &self.trusted_roots);
         debug!(2; "notification id={id} from {app_name:?} ({summary:?}) queued");
 
@@ -518,8 +514,7 @@ impl NotificationsController {
                 if let Some(path) = image_path {
                     schedule_icon_deletion(path);
                 }
-                // A FIFO eviction past NOTIFICATION_QUEUE_CAP is a real close, not just an
-                // icon-file cleanup -- the evicted id is gone from the queue for good.
+                // An eviction is a real close, not only icon cleanup.
                 self.state.lock().expect("mutex poisoned").cancel_timer(evicted_id);
                 self.emit_notification_closed(evicted_id, CloseReason::Evicted).await;
             }
@@ -546,8 +541,9 @@ impl NotificationsController {
             }
             (state.dnd || state.quiet, state.sound_registry.get(&urgency).cloned())
         };
-        let client_sound_file = sound_file.and_then(|path| validate_trusted_path(hint_path(&path), &self.sound_roots));
-        let named_sound = sound_name.and_then(|name| resolve_sound_name(&name, &self.sound_roots));
+        let client_sound_file =
+            hints.sound_file.and_then(|path| validate_trusted_path(hint_path(&path), &self.sound_roots));
+        let named_sound = hints.sound_name.and_then(|name| resolve_sound_name(&name, &self.sound_roots));
         let sound_path = resolve_sound_path(suppress_sound, client_sound_file, named_sound, tier_default_sound);
         if should_play_sound(silenced, urgency)
             && let Some(sound_path) = sound_path
@@ -564,10 +560,7 @@ impl NotificationsController {
     /// ([`remove_by_id`]).
     #[zbus(name = "CloseNotification")]
     async fn close_notification(&self, id: u32) {
-        let removed = {
-            let mut state = self.state.lock().expect("mutex poisoned");
-            state.remove(id)
-        };
+        let removed = self.state.lock().expect("mutex poisoned").remove(id);
         if removed.is_some() {
             self.retire(id, removed, CloseReason::ClosedByMethod).await;
         }

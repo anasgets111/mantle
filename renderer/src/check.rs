@@ -1201,11 +1201,10 @@ os.getenv = function(name) return ({{ USER = "user", HOME = "/home/user" }})[nam
                 .apply_locked(&output.surfaces, &instances, shaping, lua, false, true)
                 .map_err(|err| err.to_string())?;
         }
-        let start = origin;
         let times: Vec<u64> = if frames.is_empty() { vec![10_000] } else { frames.to_vec() };
         let mut placed = Vec::new();
         for ms in times {
-            let at = start + Duration::from_millis(ms);
+            let at = origin + Duration::from_millis(ms);
             // A still is drawn with every tween finished, not with every wake come due.
             if !frames.is_empty() {
                 run_clock(at, &output, &mut scene, &instances, shaping, lua)?;

@@ -500,10 +500,7 @@ mod tests {
 
     #[test]
     fn a_path_to_shell_lua_resolves_to_its_directory() {
-        // Accommodate the common `-c ~/.config/mantle/shell.lua` after editing that file.
-        //
-        // The rule under test is "a path to a file resolves to its parent".
-        // Absolute, because `is_file()` has to see it and tests run from the crate root.
+        // The common `-c ~/.config/mantle/shell.lua`, absolute because `is_file()` must see it.
         let dir = tempfile::tempdir().unwrap();
         let shell_lua = dir.path().join("shell.lua");
         std::fs::write(&shell_lua, "return {}").unwrap();

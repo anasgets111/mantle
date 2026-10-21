@@ -199,10 +199,7 @@ impl Capabilities {
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no intent for the network the prompt names; dropping"
             ),
         };
-        let sent = match &self.network {
-            Some(network) => network.send(Box::new(connect)).is_ok(),
-            None => false,
-        };
+        let sent = self.network.as_ref().is_some_and(|network| network.send(Box::new(connect)).is_ok());
         if !sent {
             debug!(
                 "generation {generation_id}'s secure_submit(network, connect) arrived with no network backend; dropping"

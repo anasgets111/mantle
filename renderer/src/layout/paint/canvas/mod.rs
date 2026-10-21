@@ -698,10 +698,8 @@ fn offscreen(
     // Composited at whole pixels under the transform in force now.
     let snug = !aligned(painter.canvas_mut());
     let Some(image) = scratch(painter, walk, (width, height), snug) else {
-        // A mask source must never fall back to drawing independently into its parent.
-        // Existing clips and effects preserve the subtree unmasked on allocation failure.
-        // Into the parent's target, so it keeps the parent's frame: the clip this could not
-        // allocate is not where these commands are going.
+        // A mask source never falls back into its parent; clips and effects keep the subtree
+        // unmasked, in the parent's target and frame.
         if unmasked_fallback {
             run(painter, walk, commands, target, frame);
         }
@@ -776,9 +774,6 @@ fn apply_mask(
     }
 }
 
-/// File-draw parameters shared by icon and image commands. The request's `tint` is `None` for an
-/// `image`, which names a file the config chose rather than a themed icon, and its `blur_px` is
-/// `0` for an icon, which has no `source_blur` (ADR-0240).
 /// A shader's `images` entries and their textures, loaded inline like an icon: a sampler with no
 /// pixels is a frame of the wrong look.
 fn sampler_images<'a>(
@@ -796,6 +791,9 @@ fn sampler_images<'a>(
     files.iter().map(|(name, path, _)| (name.as_str(), load(path))).collect()
 }
 
+/// File-draw parameters shared by icon and image commands. The request's `tint` is `None` for an
+/// `image`, which names a file the config chose rather than a themed icon, and its `blur_px` is
+/// `0` for an icon, which has no `source_blur` (ADR-0240).
 #[derive(Debug, Clone, Copy)]
 struct FileDraw<'a> {
     request: ImageRequest<'a>,
@@ -1837,13 +1835,7 @@ pub(crate) mod tests {
     }
 
     /// A `text` node's content wider than the box layout gave it must stop at that box's edge, not
-    /// paint over whatever sits to its right. The live MPRIS-title-through-two-cells bug the doc
-    /// comment describes.
-    ///
-    /// Proved this test is real, not just a green test: with `run`'s `save`/
-    /// `intersect_scissor`/`restore` temporarily removed, this failed at the first scanned pixel
-    /// row with a mix of white (glyph) and black-background pixels found past the box, exactly
-    /// the escape this test exists to catch. Restored before finishing.
+    /// paint over whatever sits to its right (a long MPRIS title through two cells).
     #[test]
     fn a_text_wider_than_its_box_paints_nothing_outside_it() {
         let Some(instance) = init_headless_egl(200, 50) else { return };
@@ -1877,10 +1869,6 @@ pub(crate) mod tests {
     /// glyphs. A `row` whose children overflow is the same defect as an overflowing `text`, not a
     /// separate case. This is the non-text half of that claim: a child rect explicitly larger than
     /// its parent must not paint past the parent's own box.
-    ///
-    /// Proved this test is real the same way: with the clip removed, the assertion at (50, 50)
-    /// failed, reading the child's green instead of the surface's magenta. Restored before
-    /// finishing.
     #[test]
     fn an_oversized_child_rect_is_clipped_to_its_parents_box() {
         let Some(instance) = init_headless_egl(80, 80) else { return };

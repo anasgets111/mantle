@@ -18,7 +18,9 @@ use shared::debug;
 use crate::layout::field_rows;
 use crate::layout::node::{CaretStyle, Rgba, StyleRun, TextAlign, Typeface, font_runs};
 use crate::layout::paint::DrawCmd;
-use crate::text::shaping::{FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_x};
+use crate::text::shaping::{
+    FontFace, FontRun, Glyph, ShapeResult, ShapingHandle, caret_thickness, caret_x, cluster_span,
+};
 
 use super::snap::{LogicalRect, snap_to_physical};
 
@@ -175,11 +177,7 @@ fn x_spans(glyphs: &[Glyph], in_run: impl Fn(&Glyph) -> bool) -> Vec<(f32, f32)>
     glyphs
         .chunk_by(|a, b| in_run(a) == in_run(b))
         .filter(|group| in_run(&group[0]))
-        .map(|group| {
-            group.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), glyph| {
-                (lo.min(glyph.x), hi.max(glyph.x + glyph.advance))
-            })
-        })
+        .map(cluster_span)
         .filter(|(x0, x1)| x0 < x1)
         .collect()
 }

@@ -403,7 +403,8 @@ impl Supervisor {
         // At respawn, not departure, and `requested` counts: a lock asked for during a cooldown is still owed.
         let state = self.lock.snapshot();
         let was_locked = state.active || state.requested;
-        let replacement_generation_id = self.take_generation_id();
+        let replacement_generation_id = self.next_generation_id;
+        self.next_generation_id += 1;
         match self.renderer.spawn(replacement_generation_id) {
             Ok(child) => {
                 if let Some(pid) = child.id() {
@@ -451,16 +452,17 @@ impl Supervisor {
         }
     }
 
-    /// Handles a PAM lock answer (ADR-0042). `acquisition` rejects stale answers: PAM normally
-    /// takes a second, or `PAM_EXCHANGE_TIMEOUT`'s 30 seconds when wedged, while the compositor or
-    /// idle timer may change locks. `loginctl lock-session` (ADR-0138) arrives as logind's `Lock`
-    /// signal, uses the same lock path and already-locked guard as `mantle.lock:lock()`.
+    /// `loginctl lock-session` (ADR-0138) arrives as logind's `Lock` signal and takes the same lock
+    /// path and already-locked guard as `mantle.lock:lock()`.
     pub(crate) fn lock_requested_by_logind(&mut self) {
         info!("logind asked for a lock (loginctl lock-session)");
         self.lock.lock();
         self.push_lock_state();
     }
 
+    /// Handles a PAM lock answer (ADR-0042). `acquisition` rejects stale answers: PAM normally
+    /// takes a second, or `PAM_EXCHANGE_TIMEOUT`'s 30 seconds when wedged, while the compositor or
+    /// idle timer may change locks.
     pub(crate) fn record_pam_outcome(&mut self, acquisition: u64, outcome: shared::PamOutcome) {
         let succeeded = outcome == shared::PamOutcome::Success;
         // Every answer, not only the refusals below. A wrong password logged nothing at all, so a
@@ -566,13 +568,6 @@ impl Supervisor {
         // Session processes are not in `self.processes`: they outlive generations by design, so
         // the per-generation sweep never sees them and this is their only reap.
         self.capabilities.reap_sessions().await;
-    }
-
-    /// Hands out unique generation ids for replacements.
-    fn take_generation_id(&mut self) -> u32 {
-        let id = self.next_generation_id;
-        self.next_generation_id += 1;
-        id
     }
 }
 

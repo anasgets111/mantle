@@ -63,10 +63,7 @@ fn parent_instance_index<'a>(
 /// number in the spec at all (`surface::popup_requested_size`).
 fn popup_size_for(configured: (i32, i32), requested: (f32, f32)) -> (u32, u32) {
     let axis = |configured: i32, requested: f32| -> u32 {
-        if configured > 0 {
-            return configured as u32;
-        }
-        (requested.max(1.0)) as u32
+        if configured > 0 { configured as u32 } else { requested.max(1.0) as u32 }
     };
     (axis(configured.0, requested.0), axis(configured.1, requested.1))
 }
@@ -161,7 +158,6 @@ impl App {
                 // resolve measures one. Nothing opens before then; `apply_resolved_state` writes
                 // the real pair on every pass.
                 requested: crate::wayland::surface::popup_requested_size(spec, LogicalRect::default()),
-                // Nothing is open, so no positioner has been given anything yet.
                 positioned: None,
                 spec: spec.clone(),
                 dismissed_at: None,
@@ -283,7 +279,6 @@ impl App {
             }
             return;
         };
-        // Log the selected parent, observable mainly on multi-monitor sessions.
         let parent_id = parent_index.map_or("<none>", |parent| self.surfaces[parent].surface_id.as_str()).to_string();
 
         let Some(positioner) = self.positioner_for(&surface_id, &placement) else {
@@ -315,16 +310,14 @@ impl App {
         popup.wl_surface().commit();
         // `get_popup` copied the positioner, so dropping it is correct.
 
-        if let TrackedRole::Popup { popup: slot, refusal_logged, .. } = &mut self.surfaces[index].role {
+        if let TrackedRole::Popup { popup: slot, refusal_logged, positioned, .. } = &mut self.surfaces[index].role {
             *slot = Some(popup);
             *refusal_logged = None;
+            // What this popup's positioner now holds. Every later pass compares against it.
+            *positioned = Some(placement);
         }
         self.surfaces[index].scale = scale;
         self.surfaces[index].map_state = MapState::AwaitingConfigure;
-        // What this popup's positioner now holds. Every later pass compares against it.
-        if let TrackedRole::Popup { positioned, .. } = &mut self.surfaces[index].role {
-            *positioned = Some(placement);
-        }
         debug!(
             "{surface_id} creating: visible = true, anchored to {parent_id}, grab {}",
             if grab.is_some() { "taken" } else { "not requested" }

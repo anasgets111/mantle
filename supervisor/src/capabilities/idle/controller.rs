@@ -157,8 +157,6 @@ impl IdleController {
             export_screensaver(&session_bus, controller.clone()).await;
         }
 
-        let notify_for_task = notify.clone();
-        let published_for_task = published.clone();
         let controller_for_task = controller.clone();
         tokio::spawn(async move {
             let outcome =
@@ -169,12 +167,12 @@ impl IdleController {
                     spawn_idle_event_forwarder(
                         live.registry.clone(),
                         gate,
-                        published_for_task,
+                        published,
                         raw_events_rx,
                         events_tx,
                         state_tx,
                     );
-                    *notify_for_task.write().expect("rwlock poisoned") = NotifyState::Live(live);
+                    *notify.write().expect("rwlock poisoned") = NotifyState::Live(live);
                     debug!(
                         "dedicated Wayland connection for ext_idle_notifier_v1 established; notify live for this run"
                     );

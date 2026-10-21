@@ -135,10 +135,7 @@ fn unlink(text: &str) -> String {
     regex_lite::Regex::new(r"\[(`[^`]+`)\](\([^)]*\))?").expect("a valid pattern").replace_all(text, "$1").into_owned()
 }
 
-/// Renders an object schema as `---@class` plus one `---@field` per property.
-///
-/// A schema's own `description`, one `---` line each. One of the three callers guarded the empty
-/// line with `if line.is_empty() { "" } else { line }`, which is the identity.
+/// A schema's own `description`, one `---` line each.
 fn append_description(body: &serde_json::Value, out: &mut String) {
     if let Some(description) = body.get("description").and_then(|d| d.as_str()) {
         for line in unlink(description).lines() {
@@ -147,9 +144,9 @@ fn append_description(body: &serde_json::Value, out: &mut String) {
     }
 }
 
-/// `oneOf` tagged enums flatten. `NotificationSpan` is `#[serde(tag = "kind")]`: one variant's
-/// fields plus `kind`. LuaCATS lacks tagged unions, so emit one class with all variant fields
-/// optional; configs check `kind` before using them.
+/// Renders an object schema as `---@class` plus one `---@field` per property. LuaCATS lacks tagged
+/// unions, so a `oneOf` (`NotificationSpan`, `tag = "kind"`) flattens to one class with all variant
+/// fields optional.
 fn render_class(name: &str, body: &serde_json::Value, out: &mut String) {
     // Fieldless enums such as `Urgency` (`low`/`normal`/`critical`) are strings, not objects.
     // A fieldless `---@class` would type readers as empty tables and lose all three values.
@@ -425,9 +422,7 @@ mantle = {}
 
 #[cfg(test)]
 mod tests {
-    /// `lua-meta/mantle.lua` and every
-    /// `docs/capabilities/<name>.md`. A version bump alone restales `mantle.lua`, which stamps the
-    /// version.
+    /// `lua-meta/mantle.lua` and every `docs/capabilities/<name>.md`; a version bump restales `mantle.lua`.
     #[test]
     fn the_generated_stub_matches_what_is_checked_in() {
         let mut files = vec![("lua-meta/mantle.lua".to_string(), super::render())];

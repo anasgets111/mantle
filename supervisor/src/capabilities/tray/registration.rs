@@ -155,22 +155,13 @@ fn default_item_object_path() -> OwnedObjectPath {
         .expect("DEFAULT_ITEM_OBJECT_PATH is a valid object path literal")
 }
 
-/// Strips the leading `:` from `:N.M` for Lua `id` and PNG filenames (ADR-0031). D-Bus guarantees
-/// unique names contain only digits, colons, and dots.
-pub(super) fn sanitize_unique_name(unique_name: &str) -> String {
-    unique_name.trim_start_matches(':').to_string()
-}
-
-/// One item's identity: its connection and the object path it exports, as KDE's
-/// `StatusNotifierWatcher` composes `service + path` (ADR-0172).
+/// One item's identity for Lua `id` and PNG filenames: its connection (`:` stripped) plus the
+/// object path it exports, as KDE's `StatusNotifierWatcher` composes `service + path` (ADR-0172).
 ///
-/// The unique name alone is not an identity. A connection may export several items -- Chromium
-/// numbers them `/StatusNotifierItem/1`, `/StatusNotifierItem/2` -- and each is a separate icon
-/// with separate properties, while [`super::registry::ItemKey`] has always keyed them apart. Only
-/// the string handed to config collapsed them, and a `list` given two rows with one key refuses the
-/// whole tray.
+/// The unique name alone is not an identity: a connection may export several items (Chromium's
+/// `/StatusNotifierItem/1`, `/2`), and a `list` given two rows with one key refuses the whole tray.
 pub(super) fn item_id(unique_name: &str, object_path: &str) -> String {
-    format!("{}{}", sanitize_unique_name(unique_name), object_path)
+    format!("{}{}", unique_name.trim_start_matches(':'), object_path)
 }
 
 #[cfg(test)]
@@ -219,7 +210,6 @@ mod tests {
     #[test]
     fn two_items_on_one_connection_get_two_ids() {
         assert_eq!(item_id(":1.42", "/StatusNotifierItem"), "1.42/StatusNotifierItem");
-        assert_eq!(sanitize_unique_name("1.234"), "1.234", "no colon, no change");
         assert_ne!(item_id(":1.42", "/StatusNotifierItem/1"), item_id(":1.42", "/StatusNotifierItem/2"));
     }
 

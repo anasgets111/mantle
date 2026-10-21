@@ -18,6 +18,7 @@ fn layer_for(kind: LayerKind) -> Layer {
         LayerKind::Overlay => Layer::Overlay,
     }
 }
+
 /// `anchor` edge booleans to protocol bitflags.
 pub(super) fn anchor_for(anchor: node::Anchor) -> Anchor {
     let mut flags = Anchor::empty();
@@ -27,6 +28,7 @@ pub(super) fn anchor_for(anchor: node::Anchor) -> Anchor {
     flags.set(Anchor::RIGHT, anchor.right);
     flags
 }
+
 /// `keyboard_interactivity`. Before ADR-0038 each role hardcoded a mode, preventing
 /// `Exclusive` and `None` surfaces from coexisting.
 pub(super) fn keyboard_interactivity_for(mode: node::KeyboardInteractivity) -> KeyboardInteractivity {
@@ -36,6 +38,7 @@ pub(super) fn keyboard_interactivity_for(mode: node::KeyboardInteractivity) -> K
         node::KeyboardInteractivity::Exclusive => KeyboardInteractivity::Exclusive,
     }
 }
+
 /// What a `Content` axis asks for before the layout pass has measured one. An invisible root
 /// resolves to no geometry at all, so a panel created hidden has nothing to measure; one pixel
 /// rather than zero because zero on an axis this surface does not span is the protocol error
@@ -66,6 +69,7 @@ fn layer_extent_for(mode: SizeMode, output_extent: f32, measured_extent: f32, sp
         SizeMode::Percent(fraction) => (output_extent * fraction).max(0.0) as u32,
     }
 }
+
 /// Both `set_size` axes for a spec: `output` resolves its percentages, `measured` is the box the
 /// layout pass solved for its root.
 fn layer_size_for(spec: &PanelSpec, output: layout::LogicalSize, measured: layout::LogicalSize) -> (u32, u32) {
@@ -75,18 +79,7 @@ fn layer_size_for(spec: &PanelSpec, output: layout::LogicalSize, measured: layou
         layer_extent_for(spec.height, output.height, measured.height, anchor.top && anchor.bottom),
     )
 }
-/// Which axes this panel measures from its own tree rather than receives from the compositor, in
-/// `SurfaceInstance::measured_axes`' sense: `available` stays the ceiling there and
-/// `RendererClient::set_instance_size` leaves it alone, or the size the surface asked for would
-/// become the cap on what it may ask for next.
-///
-/// A spanned `Content` axis is not measured. Its `set_size` is `0` and the compositor's answer is
-/// an allocation like `Fill`'s, which is exactly what `available` wants.
-///
-/// The resolved spec, never `crate::socket::surface_specs`': a signal-bound `width` reads as
-/// `Content` on the evaluation pass by design (`Bound` defers it for
-/// [`App::apply_spec_change`] to re-derive), and pinning `available` for one of those would strand
-/// a panel sized by a signal at its output's width.
+
 /// The most room a measured axis can actually take, and so what `available` is on one: the output,
 /// less the margins on the edges this surface is anchored to. That is the same subtraction the
 /// compositor makes before it clamps -- smithay's `LayerMap::arrange` does `source.size.w -=
@@ -111,6 +104,7 @@ fn measured_ceiling(spec: &PanelSpec, output: layout::LogicalSize) -> layout::Lo
         height: axis(output.height, anchor.top, margin.top, anchor.bottom, margin.bottom),
     }
 }
+
 /// A panel's top-left on its output in logical px, as layer-shell places it: against an anchored
 /// edge plus its margin, centred between two anchored edges or none.
 ///
@@ -129,11 +123,25 @@ pub(super) fn layer_origin(spec: &PanelSpec, size: (f32, f32), output: (f32, f32
         axis(anchor.top, margin.top, anchor.bottom, margin.bottom, size.1, output.1),
     )
 }
+
 /// What `RendererClient::set_measured_axes` is given for this panel: which axes it measures, and
 /// the ceiling those axes are solved against.
 pub(super) fn measurement(spec: &PanelSpec, output: layout::LogicalSize) -> ((bool, bool), layout::LogicalSize) {
     (measured_axes(spec), measured_ceiling(spec, output))
 }
+
+/// Which axes this panel measures from its own tree rather than receives from the compositor, in
+/// `SurfaceInstance::measured_axes`' sense: `available` stays the ceiling there and
+/// `RendererClient::set_instance_size` leaves it alone, or the size the surface asked for would
+/// become the cap on what it may ask for next.
+///
+/// A spanned `Content` axis is not measured. Its `set_size` is `0` and the compositor's answer is
+/// an allocation like `Fill`'s, which is exactly what `available` wants.
+///
+/// The resolved spec, never `crate::socket::surface_specs`': a signal-bound `width` reads as
+/// `Content` on the evaluation pass by design (`Bound` defers it for
+/// [`App::apply_spec_change`] to re-derive), and pinning `available` for one of those would strand
+/// a panel sized by a signal at its output's width.
 fn measured_axes(spec: &PanelSpec) -> (bool, bool) {
     let anchor = spec.topology.anchor;
     (
@@ -141,6 +149,7 @@ fn measured_axes(spec: &PanelSpec) -> (bool, bool) {
         spec.height == SizeMode::Content && !(anchor.top && anchor.bottom),
     )
 }
+
 /// The axis on which `set_size(0, ...)` would be a protocol error. Layer-shell requires both
 /// opposite edges for an omitted axis; the error kills the connection, so name and refuse it
 /// instead of silently turning an auto-sized request into a full-screen bar.
@@ -153,6 +162,7 @@ fn ambiguous_zero_axis(size: (u32, u32), anchor: node::Anchor) -> Option<&'stati
     }
     None
 }
+
 fn warn_ambiguous_zero_axis(surface_id: &str, axis: &str, problem: &str, outcome: &str) {
     warn!(
         "surface {surface_id:?} {problem} without anchoring both {axis} edges, \
@@ -176,6 +186,7 @@ fn set_margin(layer: &LayerSurface, margin: node::EdgeInsets) {
 fn map_state_for_kept_layer(configured_size: (u32, u32)) -> MapState {
     if configured_size == (0, 0) { MapState::AwaitingConfigure } else { MapState::Mapped }
 }
+
 /// An `exclusive_zone` zone from the compositor-configured size, not creation-time guesses (`Fill` has
 /// no size yet). One top/bottom edge reserves height; one left/right edge reserves width; all
 /// other anchor shapes reserve `0` because the protocol defines only those strips.
@@ -189,6 +200,7 @@ fn exclusive_zone_for(anchor: node::Anchor, configured_size: (u32, u32)) -> i32 
         _ => 0,
     }
 }
+
 /// The zone `spec` asks for. Only `Reserve` needs the configured size, so every other mode is
 /// known before the first configure and must be sent before the first commit.
 fn zone_for(spec: &PanelSpec, configured_size: (u32, u32)) -> i32 {
@@ -200,6 +212,7 @@ fn zone_for(spec: &PanelSpec, configured_size: (u32, u32)) -> i32 {
         node::Exclusive::Ignore => -1,
     }
 }
+
 /// Double-buffered layer-shell changes: `margin`, `keyboard_interactivity`, size, and `exclusive_zone`
 /// (ADR-0038 decision 2). `None` means unchanged. Topology (`id`, `layer`, `anchor`,
 /// `output`, `namespace`) is absent because `get_layer_surface` consumes namespace/output, so an
@@ -223,6 +236,7 @@ impl SpecUpdate {
             || self.exclusive.is_some()
     }
 }
+
 fn spec_update(
     applied: &PanelSpec,
     fresh: &PanelSpec,
@@ -311,8 +325,7 @@ impl App {
         // panel, a permanent unmapped object for another. `show_panel` and
         // `apply_spec_change` both repeat [`ambiguous_zero_axis`], so a bad anchor is still
         // refused, on the pass that shows it.
-        let deferred = !visible;
-        if !deferred && let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
+        if visible && let Some(axis) = ambiguous_zero_axis(size, spec.topology.anchor) {
             warn_ambiguous_zero_axis(
                 &instance.instance_id,
                 axis,
@@ -321,8 +334,7 @@ impl App {
             );
             return;
         }
-        let fresh = (!deferred).then(|| self.spawn_panel_layer(qh, spec, output, size));
-        let (layer, scale) = match fresh {
+        let (layer, scale) = match visible.then(|| self.spawn_panel_layer(qh, spec, output, size)) {
             Some((layer, scale)) => (Some(layer), scale),
             None => (None, super::scale::SurfaceScale::integer()),
         };
@@ -337,7 +349,7 @@ impl App {
                     spec: spec.clone(),
                     output_size: instance.available,
                     measured,
-                    requested: if deferred { (0, 0) } else { size },
+                    requested: if visible { size } else { (0, 0) },
                 },
                 instance.instance_id.clone(),
             )
@@ -392,8 +404,7 @@ impl App {
         let TrackedRole::Panel { layer: Some(layer), spec, .. } = &tracked.role else {
             return;
         };
-        let zone = zone_for(spec, tracked.configured_size);
-        layer.set_exclusive_zone(zone);
+        layer.set_exclusive_zone(zone_for(spec, tracked.configured_size));
     }
 
     /// Diffs the fresh `panel` spec against layer-shell's baseline and sends only changed fields.
@@ -740,42 +751,21 @@ mod tests {
     #[test]
     fn each_in_place_field_is_pushed_on_its_own_and_only_when_it_moved() {
         let applied = panel("bar");
+        let diff = |fresh: &PanelSpec| {
+            let wire = on_the_wire(&applied, nothing_measured());
+            spec_update(&applied, fresh, wire, output_1080p(), nothing_measured())
+        };
 
-        assert_eq!(
-            spec_update(
-                &applied,
-                &applied.clone(),
-                on_the_wire(&applied, nothing_measured()),
-                output_1080p(),
-                nothing_measured()
-            ),
-            SpecUpdate::default(),
-            "a re-resolve that changed nothing sends no requests at all"
-        );
+        assert_eq!(diff(&applied.clone()), SpecUpdate::default(), "a re-resolve that changed nothing sends nothing");
 
         let mut moved_margin = applied.clone();
         moved_margin.margin = node::EdgeInsets { top: 12.0, right: 12.0, bottom: 0.0, left: 0.0 };
-        assert_eq!(
-            spec_update(
-                &applied,
-                &moved_margin,
-                on_the_wire(&applied, nothing_measured()),
-                output_1080p(),
-                nothing_measured()
-            ),
-            SpecUpdate { margin: Some(moved_margin.margin), ..SpecUpdate::default() }
-        );
+        assert_eq!(diff(&moved_margin), SpecUpdate { margin: Some(moved_margin.margin), ..SpecUpdate::default() });
 
         let mut takes_typing = applied.clone();
         takes_typing.keyboard_interactivity = node::KeyboardInteractivity::Exclusive;
         assert_eq!(
-            spec_update(
-                &applied,
-                &takes_typing,
-                on_the_wire(&applied, nothing_measured()),
-                output_1080p(),
-                nothing_measured()
-            ),
+            diff(&takes_typing),
             SpecUpdate {
                 keyboard_interactivity: Some(node::KeyboardInteractivity::Exclusive),
                 ..SpecUpdate::default()
@@ -785,13 +775,7 @@ mod tests {
         let mut stops_reserving = applied.clone();
         stops_reserving.exclusive = node::Exclusive::Respect;
         assert_eq!(
-            spec_update(
-                &applied,
-                &stops_reserving,
-                on_the_wire(&applied, nothing_measured()),
-                output_1080p(),
-                nothing_measured()
-            ),
+            diff(&stops_reserving),
             SpecUpdate { exclusive: Some(node::Exclusive::Respect), ..SpecUpdate::default() }
         );
 
@@ -801,13 +785,7 @@ mod tests {
         let mut covers_everything = applied.clone();
         covers_everything.exclusive = node::Exclusive::Ignore;
         assert_eq!(
-            spec_update(
-                &applied,
-                &covers_everything,
-                on_the_wire(&applied, nothing_measured()),
-                output_1080p(),
-                nothing_measured()
-            ),
+            diff(&covers_everything),
             SpecUpdate { exclusive: Some(node::Exclusive::Ignore), ..SpecUpdate::default() }
         );
     }

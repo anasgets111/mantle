@@ -1084,12 +1084,8 @@ mod ordering_tests {
     /// with nobody answering is enough.
     async fn entry(connection: &zbus::Connection, id: &str, registered: u64) -> PlayerEntry {
         PlayerEntry {
-            player: super::super::proxies::bind_player(connection, "org.mpris.MediaPlayer2.probe")
-                .await
-                .expect("binding makes no call"),
-            root: super::super::proxies::bind_root(connection, "org.mpris.MediaPlayer2.probe")
-                .await
-                .expect("binding makes no call"),
+            player: bind_player(connection, "org.mpris.MediaPlayer2.probe").await.expect("binding makes no call"),
+            root: bind_root(connection, "org.mpris.MediaPlayer2.probe").await.expect("binding makes no call"),
             track_list: None,
             playlists: None,
             last_known: PlayerState { id: id.to_string(), ..PlayerState::default() },

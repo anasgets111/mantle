@@ -15,17 +15,11 @@ pub(crate) mod properties;
 mod stubs;
 
 pub(crate) use properties::range;
-use properties::{KINDS, Property, kind_bit, properties, rows_named};
+use properties::{KINDS, Property, kind_bit, kind_of, properties, rows_named};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
     KINDS.iter().copied()
-}
-
-/// The table's own `&'static str` for `kind` and its bit, or `None` if it is not a node kind.
-fn kind_entry(kind: &str) -> Option<(&'static str, u16)> {
-    let bit = kind_bit(kind)?;
-    Some((KINDS[bit.trailing_zeros() as usize], bit))
 }
 
 /// The row for `property`, whose `&'static str` name is what a [`PropMap`] keys by.
@@ -122,7 +116,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
     let (kind, bit) = match table.get::<Value>("kind")? {
         // Borrowed for the lookup: the static the row hands back is what the node keeps, so a
         // supported kind allocates nothing. Only a refusal copies the spelling (ADR-0219).
-        Value::String(s) => match s.to_str().ok().and_then(|text| kind_entry(&text)) {
+        Value::String(s) => match s.to_str().ok().and_then(|text| kind_bit(&text)).map(|bit| (kind_of(bit), bit)) {
             Some(entry) => entry,
             None => return Err(DeserializeError::UnsupportedKind(s.to_string_lossy())),
         },
@@ -442,10 +436,8 @@ mod meta_stub_tests {
             let rest = &text[index + "properties".len()..];
             let head: String = rest.chars().take(40).collect();
             let opener = match head.trim_start().chars().next() {
-                // `properties.get("x")` and its `remove`/`contains_key` siblings.
-                Some('.') => head.find('"'),
-                // `(properties, "x")`, the trailing argument of a name-taking parser.
-                Some(',') => head.find('"'),
+                // `properties.get("x")` and its siblings, or `(properties, "x")`, a name-taking parser's argument.
+                Some('.' | ',') => head.find('"'),
                 _ => None,
             };
             let Some(quote) = opener else { continue };

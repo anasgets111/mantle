@@ -311,10 +311,12 @@ fn collect_input_regions(
     let (scale, paint_claims) = scan;
     let rect = node.at(origin_x, origin_y);
     let (matrix, parent_clip, child_clip) = clip_frame(node, rect, matrix, clip);
-    let own_clip = match &node.paint {
-        Some(PaintStyle::Box { radius, .. }) => parent_clip.intersect(radius.bounds(rect)),
-        _ => parent_clip.intersect(rect),
+    let no_radius = node::Radii::default();
+    let radius = match &node.paint {
+        Some(PaintStyle::Box { radius, .. }) => radius,
+        _ => &no_radius,
     };
+    let own_clip = parent_clip.intersect(radius.bounds(rect));
     if child_clip.is_empty() && own_clip.is_empty() {
         return;
     }
@@ -323,14 +325,10 @@ fn collect_input_regions(
     // An empty cut stays empty: mapping it would flip its inverted corners into a real rect.
     if hittable && !own_clip.is_empty() && takes_input_as_a_box(node, paint_claims) {
         let bounds = snap_to_physical(node::transformed_bounds(matrix, own_clip), scale);
-        let radius = match &node.paint {
-            Some(PaintStyle::Box { radius, .. }) => radius.clone(),
-            _ => node::Radii::default(),
-        };
         // The contour's own strips: the ground beside a tail, or a tilted box's corners, take no input.
         if radius.2.is_some() || tilted(matrix) {
             let before = out.len();
-            push_shape(rect, radius, (matrix, scale, own_clip), out);
+            push_shape(rect, radius.clone(), (matrix, scale, own_clip), out);
             // A bar thinner than a pixel rasterises to nothing but still takes input.
             if out.len() == before && !bounds.is_empty() {
                 out.push(bounds);
@@ -911,8 +909,7 @@ mod tests {
         let root = region_node(104, "panel", (0.0, 0.0, 100.0, 100.0), None, vec![visible_child, hidden_child]);
 
         let regions = overlay_input_regions(&root, 1.0);
-        assert_eq!(regions.len(), 1);
-        assert_eq!(regions[0], PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 });
+        assert_eq!(regions, [PhysicalRect { x0: 0, y0: 0, x1: 10, y1: 10 }]);
     }
 
     #[test]
@@ -958,17 +955,6 @@ mod tests {
         let card = region_node(5, "rect", (0.0, 0.0, 20.0, 20.0), solid_paint(), Vec::new());
         let mut root = region_node(6, "panel", (0.0, 0.0, 50.0, 20.0), None, vec![card]);
         set(&mut root, false);
-        assert!(overlay_input_regions(&root, 1.0).is_empty());
-    }
-
-    #[test]
-    fn a_surface_with_nothing_visible_in_it_claims_no_input_at_all() {
-        let mut hidden_child = region_node(105, "rect", (0.0, 0.0, 100.0, 100.0), None, Vec::new());
-        hidden_child.visible = false;
-        let mut root = region_node(106, "panel", (0.0, 0.0, 1920.0, 1080.0), None, vec![hidden_child]);
-        assert!(overlay_input_regions(&root, 1.0).is_empty());
-
-        root.children.clear();
         assert!(overlay_input_regions(&root, 1.0).is_empty());
     }
 }

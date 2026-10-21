@@ -683,9 +683,7 @@ impl ImageCache {
                 self.showing(canvas, &key, request.clock)
             }
             Load::Background => {
-                // One gate for the whole pipeline, not just the queue: see `MAX_INFLIGHT_DECODES`.
-                // Marked before the send, because a worker that takes the job immediately must
-                // find it in the set.
+                // Marked wanted before the send: see `admit`.
                 if !self.admit(&key) {
                     return None;
                 }

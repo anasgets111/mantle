@@ -122,9 +122,6 @@ pub(super) const RENAME: &str = r#"
 /// cannot get the node's `opacity` wrong (ADR-0184). The `#define` above renamed its entry point,
 /// so this is the real one: it runs the effect, then applies the opacity the node inherited to the
 /// premultiplied result -- all four channels, once, where the engine can guarantee it.
-///
-/// Documenting that rule and leaving a config to obey it would be the promise-without-mechanism
-/// this branch has already made twice.
 pub(super) const EPILOGUE: &str = r#"
 #undef main
 void main() {

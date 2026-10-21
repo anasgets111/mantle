@@ -122,8 +122,7 @@ mod tests {
 
     #[test]
     fn the_action_count_and_label_length_are_both_capped() {
-        let many: Vec<(String, String)> = (0..20).map(|i| (format!("k{i}"), format!("l{i}"))).collect();
-        let flattened: Vec<String> = many.iter().flat_map(|(k, l)| [k.clone(), l.clone()]).collect();
+        let flattened: Vec<String> = (0..20).flat_map(|i| [format!("k{i}"), format!("l{i}")]).collect();
         assert_eq!(parse_actions(&flattened, false).actions.len(), MAX_ACTIONS);
 
         let long = "x".repeat(1000);
