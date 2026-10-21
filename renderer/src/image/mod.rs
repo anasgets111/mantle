@@ -1270,7 +1270,14 @@ mod tests {
         assert!((0..20).all(|_| cache.poll().is_empty()), "an unchanged file is never a cue");
 
         std::fs::write(&png, [&PIL_2X2_RGBA_PNG[..], b"!"].concat()).unwrap();
-        assert_eq!(cache.poll(), std::slice::from_ref(&png), "a rewrite is, once");
+        // `IN_CLOSE_WRITE` waits for the last close, which a fork in another test thread delays to its exec.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let mut cue = cache.poll();
+        while cue.is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            cue = cache.poll();
+        }
+        assert_eq!(cue, std::slice::from_ref(&png), "a rewrite is, once");
         assert!(cache.poll().is_empty());
         let rewritten = cache.key_for(&request);
         assert_ne!(rewritten, key, "and the next draw keys the new version");
