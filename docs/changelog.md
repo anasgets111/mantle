@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a `mantle.mpris` Firefox or zen player's `position` could fall up to a second behind after a play, pause or seek, and step back mid-track. Those browsers report `position` in whole seconds; Mantle now keeps the precise offset they send with each seek.
+
 ## 0.9.0 - 2026-10-20
 
 - Added: `mantle.mpris` players carry `pid`, the process that owns the player, so a config can match a player to its `mantle.audio.apps[]` stream by `pid` instead of by name. It is `nil` when the bus does not report one.

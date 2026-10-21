@@ -115,9 +115,12 @@ struct Previous {
 /// A zero on a track we were *not* already inside is published, because that is where a new one
 /// begins.
 ///
-/// An unchanged reading under an unchanged `play_state` keeps its stamp too, so a re-sent
-/// `Metadata` from a paused player compares equal and is not pushed. A changed `play_state`
-/// restamps: extrapolation restarts from the moment playback resumed.
+/// A reading up to 1 s short of where the last one has got to is that position rounded down:
+/// Firefox and zen answer `Position` in whole seconds while their `Seeked` carries microseconds
+/// (busctl: `439000000` against `Seeked` `439069817`). Believing it puts the clock up to a second
+/// behind after every play/pause. The last reading is kept with its stamp under an unchanged
+/// `play_state`, so a re-sent `Metadata` compares equal and is not pushed; a changed one publishes
+/// where the last reading had got to, restamped so extrapolation restarts from now.
 fn resolve_position(
     read: zbus::Result<i64>,
     previous: Option<&PlayerState>,
@@ -127,13 +130,20 @@ fn resolve_position(
 ) -> (Option<i64>, i64) {
     let last = previous.map(|p| (p.position, p.position_updated_at));
     let settled = previous.is_some_and(|p| p.play_state == play_state);
+    let now = monotonic_micros();
+    let reached = previous.filter(|_| same_track).and_then(|p| reached(p, now));
     match read {
         Ok(0) if same_track && matches!(last, Some((Some(position), _)) if position > 0) => last.unwrap_or((None, 0)),
-        Ok(position) if same_track && settled && matches!(last, Some((known, _)) if known == Some(position)) => {
-            last.unwrap_or((None, 0))
+        // ponytail: a seek back under 1 s that sends no `Seeked` is ignored; MPRIS requires `Seeked`.
+        Ok(position) if reached.is_some_and(|reached| (0..1_000_000).contains(&(reached - position))) => {
+            if settled {
+                last.unwrap_or((None, 0))
+            } else {
+                (reached, now)
+            }
         }
         // A negative offset is a player bug, unknown like an unread one, as `length` treats it.
-        Ok(position) => (Some(position).filter(|p| *p >= 0), monotonic_micros()),
+        Ok(position) => (Some(position).filter(|p| *p >= 0), now),
         Err(err) => {
             debug!("Position read failed for {bus_name}; keeping the last known reading this round: {err}");
             // Only the track the reading belongs to. Publishing the previous track's offset under
@@ -142,6 +152,15 @@ fn resolve_position(
             if same_track { last.unwrap_or((None, 0)) } else { (None, 0) }
         }
     }
+}
+
+/// Where `previous`'s reading has got to by `now`, as a client extrapolating it would draw it.
+fn reached(previous: &PlayerState, now: i64) -> Option<i64> {
+    let position = previous.position?;
+    if previous.play_state != PlayState::Playing {
+        return Some(position);
+    }
+    Some(position.saturating_add(((now - previous.position_updated_at) as f64 * previous.rate) as i64))
 }
 
 /// Re-reads every `PlayerState` field from `player`/`root`, folding in `previous` for track
@@ -653,6 +672,12 @@ mod position_tests {
     #[test]
     fn resolve_position_keeps_the_stamp_of_a_kept_reading_and_restamps_a_believed_one() {
         let paused = || PlayerState { play_state: PlayState::Paused, ..previous_at(340_000_000) };
+        let playing = PlayerState {
+            play_state: PlayState::Playing,
+            rate: 1.0,
+            position_updated_at: monotonic_micros() - 100_000,
+            ..previous_at(439_069_817)
+        };
         // (label, read, previous, same_track, play_state, expected position, expected stamp: None = a fresh one)
         let cases = [
             // Firefox answers `0` for several seconds after a seek while playing on from the target.
@@ -704,6 +729,43 @@ mod position_tests {
                 true,
                 PlayState::Playing,
                 Some(340_000_000),
+                None,
+            ),
+            // Firefox floors `Position` to the second; its `Seeked` gave the precise offset.
+            (
+                "a reading rounded down to the second keeps the precise one",
+                Ok(3_000_000),
+                Some(PlayerState { play_state: PlayState::Paused, ..previous_at(3_789_773) }),
+                true,
+                PlayState::Paused,
+                Some(3_789_773),
+                Some(42),
+            ),
+            (
+                "a rounded reading while playing keeps the reading it trails",
+                Ok(439_000_000),
+                Some(playing.clone()),
+                true,
+                PlayState::Playing,
+                Some(439_069_817),
+                Some(playing.position_updated_at),
+            ),
+            (
+                "resuming on a rounded reading keeps the precise offset under a fresh stamp",
+                Ok(439_000_000),
+                Some(PlayerState { play_state: PlayState::Paused, ..previous_at(439_069_985) }),
+                true,
+                PlayState::Playing,
+                Some(439_069_985),
+                None,
+            ),
+            (
+                "a reading a second or more behind is a seek",
+                Ok(338_000_000),
+                Some(paused()),
+                true,
+                PlayState::Paused,
+                Some(338_000_000),
                 None,
             ),
             // ADR-0036: unavailable is not zero. Nothing has ever been read here.
