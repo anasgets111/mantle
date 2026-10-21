@@ -112,10 +112,8 @@ impl RendererClient {
     pub fn re_resolve_if_dirty(&mut self) -> bool {
         // Wheel clamps applied in place: no Lua reader by construction.
         self.dirty.take_quiet();
-        if !self.pass_if_dirty() {
-            return false;
-        }
-        let settled = self.scene.read_by_lua(self.dirty.take_quiet());
+        let passed = self.pass_if_dirty();
+        let settled = if passed { self.scene.read_by_lua(self.dirty.take_quiet()) } else { Vec::new() };
         if !settled.is_empty() {
             for cell in settled {
                 self.dirty.mark_cell(cell);
@@ -132,7 +130,10 @@ impl RendererClient {
                 first
             };
         }
-        true
+        if !self.layout_follow_up {
+            lua::signal::EvaluationMemo::forget_carried(self.loader.lua());
+        }
+        passed
     }
 
     fn pass_if_dirty(&mut self) -> bool {
@@ -145,9 +146,9 @@ impl RendererClient {
             return false;
         };
         // Keeps the memo table alive across `take_scope` and the subsequent `apply_locked`,
-        // handing over evaluated computeds so they evaluate exactly once per dirty push.
-        // Dropped on clean, empty-instance, or failed exits, clearing the memo table.
-        let _memo = crate::lua::signal::EvaluationMemo::enter(self.loader.lua());
+        // handing over evaluated computeds so they evaluate exactly once per dirty push, and
+        // from a pass to its follow-up.
+        let _memo = crate::lua::signal::EvaluationMemo::resume(self.loader.lua());
         // After a failure the read tracker is reset, so any mark retries the whole scene.
         let scope = if self.holds_session_lock || self.re_resolve_failure.is_some() {
             if !self.dirty.take() {
@@ -1024,7 +1025,49 @@ mod tests {
             let table = client.loader.lua().app_data_ref::<crate::lua::signal::MemoTable>().unwrap();
             assert!(table.map.is_empty(), "{case}: memo map must be empty after re-resolve");
             assert_eq!(table.depth, 0, "{case}: memo depth must be 0 after re-resolve");
+            assert!(table.carried.is_none(), "{case}: no follow-up is owed, so nothing is carried");
         }
+    }
+
+    /// A computed whose text moves a `geometry` read in its own surface: the follow-up pass
+    /// re-resolves that surface, and the computed, none of its inputs written, must not run again.
+    #[test]
+    fn a_layout_follow_up_does_not_run_an_unchanged_computed_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(
+            dir.path(),
+            r#"
+            runs = 0
+            s = state("s", "a")
+            local g = geometry("label")
+            c = computed({ s }, function(v) runs = runs + 1 return v end)
+            return panel { id = "bar", layer = "top", child = row { children = {
+                text { content = c:map(function(v) return "[" .. v .. "]" end), geometry = g },
+                rect { height = c:map(function(v) return #v end),
+                    width = g:map(function(r) return r and r.width or 0 end) },
+            } } }
+            "#,
+        );
+        let (mut client, _) = test_client(&path);
+        assert!(run_startup(&mut client));
+        while client.re_resolve_if_dirty() {}
+        let lua = client.loader.lua().clone();
+        lua.load(r#"runs = 0 s:set("abcdef")"#).exec().unwrap();
+        let mut passes = 0;
+        while client.re_resolve_if_dirty() {
+            passes += 1;
+        }
+        let row = &client.scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(row.children[1].rect.width, row.children[0].rect.width, "the reader saw the moved label");
+        assert_eq!((passes, lua.globals().get::<i64>("runs").unwrap()), (2, 1), "a follow-up pass, one run");
+
+        // A write, and a read that runs the computed again, between a pass and its follow-up.
+        lua.load(r#"s:set("abcdefghij")"#).exec().unwrap();
+        assert!(client.re_resolve_if_dirty());
+        lua.load(r#"s:set("xyz") assert(c:get() == "xyz")"#).exec().unwrap();
+        while client.re_resolve_if_dirty() {}
+        let row = &client.scene.surface("bar@TEST").unwrap().children[0];
+        assert_eq!(row.children[1].rect.height, 3.0, "the follow-up read the new value, not the carried one");
     }
 
     /// ADR-0374: a windowed list whose viewport outgrew its window builds again in the same turn.

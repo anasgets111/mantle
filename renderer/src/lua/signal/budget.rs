@@ -278,7 +278,10 @@ impl Drop for LayoutPassBudget<'_> {
             slot.0 = None;
         }
         if let Ok(Some(mut table)) = self.lua.try_app_data_mut::<MemoTable>() {
-            table.map.clear();
+            // An enclosing memo owns the answers past the pass: `EvaluationMemo::resume` carries them.
+            if table.depth == 0 {
+                table.map.clear();
+            }
             table.eval_stack.clear();
             table.pass_opened = None;
         }

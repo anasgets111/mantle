@@ -170,6 +170,8 @@ pub(crate) struct MemoTable {
     pub(super) eval_stack: Vec<Vec<CellId>>,
     /// The write clock when the open pass began, the oldest write a value it serves can predate.
     pub(super) pass_opened: Option<u64>,
+    /// The last pass's answers and the clock when it closed, for its follow-up ([`EvaluationMemo::resume`]).
+    pub(crate) carried: Option<(u64, FxHashMap<CellId, Value>)>,
 }
 
 /// The cells read between `enter` and `finish`, including through a memo hit or a nested frame,
@@ -466,10 +468,13 @@ fn add_unique(frame: &mut Vec<CellId>, cells: &[CellId]) {
 /// re-run once per path that reaches it: a filter read by every row's `background` directly and
 /// through a computed runs twice per row, and a diamond of depth N evaluates its root 2^N times.
 ///
-/// Scoped to one layout pass, never across them: between two passes a `state`/`Live` cell may have
-/// changed, and nothing here observes that. Within the scope the memo also makes an impure closure
-/// (`os.clock()`, `math.random`) answer consistently on every path instead of differing by which
-/// dependency edge reached it.
+/// Scoped to one layout pass. Within it the memo also makes an impure closure (`os.clock()`,
+/// `math.random`) answer consistently on every path instead of differing by which dependency edge
+/// reached it. A pass that owes a follow-up (a moved `geometry`, a settled scroll) hands its
+/// answers to it through [`Self::resume`], minus each whose computed ran again or had an input
+/// written since: the follow-up re-resolves a node for the cell that moved, and the node's other
+/// computeds would otherwise run again with nothing changed. So an impure answer holds through its
+/// pass's follow-up too, as it holds in a node no pass re-resolves.
 ///
 /// [`LayoutPassBudget`](super::LayoutPassBudget) opens the table, so one pass is the scope whenever a pass is running
 /// (ADR-0157): a shared computed answers once for the pass rather than once for
@@ -488,6 +493,8 @@ pub(crate) struct EvaluationMemo<'lua> {
     lua: &'lua Lua,
     owner: bool,
     incremented: bool,
+    /// Closing keeps the answers for a follow-up pass instead of dropping them.
+    carries: bool,
 }
 
 impl<'lua> EvaluationMemo<'lua> {
@@ -501,7 +508,35 @@ impl<'lua> EvaluationMemo<'lua> {
             table.depth += 1;
             (owner, true)
         };
-        Self { lua, owner, incremented }
+        Self { lua, owner, incremented, carries: false }
+    }
+
+    /// [`Self::enter`] for `RendererClient`'s pass, which starts from the answers the last one
+    /// carried that still hold and carries its own on close, until [`Self::forget_carried`].
+    pub(crate) fn resume(lua: &'lua Lua) -> Self {
+        let mut memo = Self::enter(lua);
+        memo.carries = memo.owner;
+        if memo.owner
+            && let Some(mut table) = lua.app_data_mut::<MemoTable>()
+            && let Some((closed, carried)) = table.carried.take()
+        {
+            WRITES.with_borrow(|log| {
+                // `at` past `closed`: it ran again since, and the carried value is not its last.
+                let holds = |out: &CellId| {
+                    log.computeds.get(out).is_some_and(|(at, inputs)| *at <= closed && !log.written(*at, inputs))
+                };
+                let held = carried.into_iter().filter(|(out, _)| holds(out));
+                table.map.extend(held.map(|(out, value)| (out, Ok(value))));
+            });
+        }
+        memo
+    }
+
+    /// Drops what the last pass carried: no follow-up is owed, so nothing holds its values.
+    pub(crate) fn forget_carried(lua: &Lua) {
+        if let Some(mut table) = lua.app_data_mut::<MemoTable>() {
+            table.carried = None;
+        }
     }
 
     /// A value already produced, with its cells noted as read by the active instance and the
@@ -559,7 +594,12 @@ impl Drop for EvaluationMemo<'_> {
         {
             table.depth = table.depth.saturating_sub(1);
             if self.owner {
-                table.map.clear();
+                let answers = std::mem::take(&mut table.map);
+                if self.carries {
+                    // A failure is the pass's answer, not the follow-up's.
+                    let ok = answers.into_iter().filter_map(|(out, value)| Some((out, value.ok()?)));
+                    table.carried = Some((current_clock(), ok.collect()));
+                }
                 table.eval_stack.clear();
             }
         }

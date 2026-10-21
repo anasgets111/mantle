@@ -3,8 +3,9 @@
 //! handles, so its body does not call `:get()` on declared deps.
 //!
 //! `computed`/`map` keep only their last scalar output, to tell their readers whether it changed.
-//! [`EvaluationMemo`] collapses repeats *within* one pass; across passes a node keeps its resolved
-//! properties until a cell it read is written (ADR-0270), so only signal reads invalidate.
+//! [`EvaluationMemo`] collapses repeats *within* one pass and its follow-up; across passes a node
+//! keeps its resolved properties until a cell it read is written (ADR-0270), so only signal reads
+//! invalidate.
 
 mod budget;
 mod dirty;
