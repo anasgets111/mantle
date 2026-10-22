@@ -8707,3 +8707,21 @@ follow-up drops the carry, so no Lua value is held while idle. A node reading bo
 Rejected: keeping each computed's last value for good, checked on every read. It roots output
 tables across turns (why `Output` keeps only a `Plain` copy) and freezes impure bodies indefinitely.
 Cost: an impure body's answer holds through its pass's follow-up.
+
+## 0376. `:map` and `computed` take `on_change`
+
+Amends ADR-0288 decision 1. A `persistent_table` key is a `:map` over `mantle.storage`, so a
+config hooked the whole capability and diffed keys by hand, or hooked every source of a computed.
+
+1. `s:on_change(fn(current, previous))` on `:map` and `computed`, and so on store keys. `delay`,
+   `pulse` and per-node signals still have none (the method reads `nil`).
+2. Map bodies stay pure: the handler runs in ADR-0288's drain, in the same rounds under the same
+   8-round cap and per-handler budget, never inside the map.
+3. Registration reads a baseline and fires nothing; a raising read leaves no baseline, and the
+   first good read is adopted silently. A drain re-reads a watcher only when
+   `written_since(stamp, [its cell])` holds, which follows the computed's current inputs, and fires
+   when `same_value` differs. A watcher is held strongly until `clear()`; a weak one stopped firing
+   once its computed was collected. A change left at the cap becomes the baseline.
+
+Rejected: re-reading every watcher each turn. The memo lasts one pass, so that runs every watched
+map once per turn with no source written.
