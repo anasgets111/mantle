@@ -9,9 +9,9 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 - Breaking: `file.write(path, text, on_done?)` is now `file.write(path, text, opts?, on_done?)`. Add `nil,` before an existing callback; a function in the `opts` slot raises.
 - Added: `file.write(..., { in_place = true })` rewrites the file in place, so a program watching that one path keeps its watch.
-- Changed: `file.read` no longer logs its errors; handle `err` in `on_done`.
 - Added: `process.detach(cmd, args, { env = { NAME = "value", OTHER = false } })` and `mantle.applications:launch(id, { env = ... })` set or unset environment variables for the program they start; a string sets, `false` unsets.
 - Added: `:map` and `computed` signals, and so `persistent_table` keys, have `on_change(fn(current, previous))`, run like a state's when a source's write changes the value. `delay` and `pulse` still have none.
+- Changed: `file.read` no longer logs its errors; handle `err` in `on_done`.
 
 ## 0.9.1 - 2026-10-21
 
