@@ -14,17 +14,30 @@ pub(super) struct InFlight {
     pub(super) unsaved: Option<OwnedObjectPath>,
 }
 
-/// One lock owns the pending intent, prompt, attempt ID and accepted join. An old verdict cannot
+/// Where a join stands; `Connecting` holds the accepted join so abort can stop it.
+#[derive(Debug, Default)]
+enum Phase {
+    #[default]
+    Idle,
+    Connecting {
+        ssid: String,
+        joined: Option<InFlight>,
+    },
+    AwaitingPassword {
+        ssid: String,
+        error: Option<JoinError>,
+    },
+    Failed(JoinError),
+}
+
+/// One lock owns the pending intent, phase, attempt ID and accepted join. An old verdict cannot
 /// consume a newer intent, including an abort followed by another click on the same SSID.
 #[derive(Debug, Default)]
 pub(super) struct JoinState {
     pending: Option<PendingNetworkConnect>,
     target_id: Option<String>,
     id: u64,
-    joined: Option<InFlight>,
-    connecting_ssid: Option<String>,
-    connect_error: Option<JoinError>,
-    password_ssid: Option<String>,
+    phase: Phase,
 }
 
 impl JoinState {
@@ -46,25 +59,27 @@ impl JoinState {
     }
 
     pub(super) fn take_prompted(&mut self) -> Option<PendingNetworkConnect> {
-        self.pending.take_if(|_| self.password_ssid.is_some())
+        self.pending.take_if(|_| matches!(self.phase, Phase::AwaitingPassword { .. }))
     }
 
     pub(super) fn request_password(&mut self, pending: &PendingNetworkConnect) -> bool {
         if self.pending.as_ref() != Some(pending) {
             return false;
         }
-        self.password_ssid = Some(pending.ssid.clone());
-        self.connect_error = None;
+        self.phase = Phase::AwaitingPassword { ssid: pending.ssid.clone(), error: None };
         true
     }
 
     pub(super) fn cancel(&mut self) -> bool {
         let pending = self.pending.take();
-        if pending.is_none() && self.password_ssid.is_none() && self.connect_error.is_none() {
+        let settled = matches!(self.phase, Phase::AwaitingPassword { .. } | Phase::Failed(_));
+        if pending.is_none() && !settled {
             return false;
         }
-        self.password_ssid = None;
-        self.connect_error = None;
+        // A running join stays in `Connecting` so abort can still stop its activation.
+        if settled {
+            self.phase = Phase::Idle;
+        }
         self.target_id = None;
         self.id += 1;
         true
@@ -76,25 +91,23 @@ impl JoinState {
         self.target_id.as_ref()?;
         let old = std::mem::take(self);
         self.id = old.id + 1;
-        Some(old.joined)
+        Some(if let Phase::Connecting { joined, .. } = old.phase { joined } else { None })
     }
 
     pub(super) fn begin(&mut self, pending: &PendingNetworkConnect) -> Option<u64> {
         if self.id != pending.attempt {
             return None;
         }
-        self.connecting_ssid = Some(pending.ssid.clone());
-        self.connect_error = None;
-        self.password_ssid = None;
-        self.joined = None;
+        self.phase = Phase::Connecting { ssid: pending.ssid.clone(), joined: None };
         Some(self.id)
     }
 
     pub(super) fn accept(&mut self, attempt: u64, in_flight: &InFlight) -> bool {
-        if self.id != attempt || self.connecting_ssid.is_none() {
+        let Phase::Connecting { joined, .. } = &mut self.phase else { return false };
+        if self.id != attempt {
             return false;
         }
-        self.joined = Some(in_flight.clone());
+        *joined = Some(in_flight.clone());
         true
     }
 
@@ -108,26 +121,32 @@ impl JoinState {
         if self.id != attempt {
             return false;
         }
-        self.connecting_ssid = None;
-        self.connect_error = error.map(|message| JoinError { ssid: pending.ssid.clone(), message });
-        self.joined = None;
-        if ask_password && self.pending.is_none() {
-            self.password_ssid = Some(pending.ssid.clone());
+        let error = error.map(|message| JoinError { ssid: pending.ssid.clone(), message });
+        self.phase = if ask_password && self.pending.is_none() {
             self.pending = Some(pending.clone());
-        }
+            Phase::AwaitingPassword { ssid: pending.ssid.clone(), error }
+        } else {
+            error.map_or(Phase::Idle, Phase::Failed)
+        };
         true
     }
 
     pub(super) fn overlay(&self, state: &mut NetworkState) {
+        let (connecting_ssid, connect_error, password_ssid) = match &self.phase {
+            Phase::Idle => (None, None, None),
+            Phase::Connecting { ssid, .. } => (Some(ssid.clone()), None, None),
+            Phase::AwaitingPassword { ssid, error } => (None, error.clone(), Some(ssid.clone())),
+            Phase::Failed(error) => (None, Some(error.clone()), None),
+        };
         for device in &mut state.wifi_devices {
             let current = self.target_id.as_ref() == Some(&device.id);
-            device.connecting_ssid = current.then(|| self.connecting_ssid.clone()).flatten();
-            device.connect_error = current.then(|| self.connect_error.clone()).flatten();
-            device.password_ssid = current.then(|| self.password_ssid.clone()).flatten();
+            device.connecting_ssid = current.then(|| connecting_ssid.clone()).flatten();
+            device.connect_error = current.then(|| connect_error.clone()).flatten();
+            device.password_ssid = current.then(|| password_ssid.clone()).flatten();
         }
-        state.connecting_ssid.clone_from(&self.connecting_ssid);
-        state.connect_error.clone_from(&self.connect_error);
-        state.password_ssid.clone_from(&self.password_ssid);
+        state.connecting_ssid = connecting_ssid;
+        state.connect_error = connect_error;
+        state.password_ssid = password_ssid;
     }
 }
 
@@ -271,7 +290,12 @@ pub(super) mod tests {
             Some(JoinError { ssid: "home".to_string(), message: "wrong password".to_string() }),
         );
         assert_eq!(join.take_prompted(), Some(pending));
+        assert!(join.cancel());
+        join.overlay(&mut state);
+        assert_eq!((&state.connecting_ssid, &state.password_ssid, &state.connect_error), (&None, &None, &None));
+        assert_eq!(join.take_prompted(), None);
         join.stash(PendingNetworkConnect { device_id: String::new(), ..home() });
+        assert_eq!(join.take_prompted(), None, "a stashed intent is not a prompt");
         let missing = join.pending().unwrap();
         join.take_current(&missing);
         let attempt = join.begin(&missing).unwrap();
@@ -279,6 +303,7 @@ pub(super) mod tests {
         state.wifi_devices.clear();
         join.overlay(&mut state);
         assert_eq!(state.connect_error.as_ref().unwrap().message, "no Wi-Fi device is present");
+        assert_eq!(state.password_ssid, None);
     }
 
     #[test]
@@ -303,6 +328,7 @@ pub(super) mod tests {
         let mut state = wifi_state();
         join.overlay(&mut state);
         assert_eq!(state.password_ssid.as_deref(), Some("office"));
+        assert_eq!((&state.connecting_ssid, &state.connect_error), (&None, &None));
         assert_eq!(state.wifi_devices[0].password_ssid, None);
         assert_eq!(state.wifi_devices[1].password_ssid.as_deref(), Some("office"));
         assert_eq!(join.take_prompted(), Some(second));
@@ -325,8 +351,17 @@ pub(super) mod tests {
         assert!(!join.accept(first_attempt, &joined(1)));
         assert!(join.accept(second_attempt, &joined(2)));
         assert!(!join.finish(first_attempt, &first, Some("disconnected".into()), false));
-        assert_eq!((join.connecting_ssid.as_deref(), join.connect_error.as_ref()), (Some("home"), None));
+        let mut state = wifi_state();
+        join.overlay(&mut state);
+        assert_eq!((state.connecting_ssid.as_deref(), state.connect_error.as_ref()), (Some("home"), None));
+        assert_eq!(state.wifi_devices[0].connecting_ssid.as_deref(), Some("home"));
+        assert_eq!(state.wifi_devices[1].connecting_ssid, None);
+        assert!(!join.cancel(), "cancel never drops a running join");
+        join.overlay(&mut state);
+        assert_eq!(state.connecting_ssid.as_deref(), Some("home"));
         assert!(join.finish(second_attempt, &second, None, false));
-        assert_eq!((join.connecting_ssid, join.connect_error, join.joined), (None, None, None));
+        join.overlay(&mut state);
+        assert_eq!((&state.connecting_ssid, &state.connect_error, &state.password_ssid), (&None, &None, &None));
+        assert_eq!(join.abort(), Some(None), "finish dropped the accepted join");
     }
 }
