@@ -505,9 +505,6 @@ impl Capabilities {
 
     /// Starts the PipeWire mixer once for whichever of `audio`/`privacy` asks first.
     fn ensure_mixer_thread(&mut self) {
-        if self.audio.is_some() {
-            return;
-        }
         let Some(privacy_tx) = self.privacy_tx.take() else { return };
         let (command_tx, command_rx) = audio::mixer::command_channel();
         let audio_tx = self.senders.audio.clone();
