@@ -90,8 +90,7 @@ struct CompositorReader {
     workspaces: Arc<Mutex<workspaces::controller::WorkspacesState>>,
     windows: Arc<Mutex<windows::controller::WindowsState>>,
     keyboard: keyboard::controller::LayoutSink,
-    compositor: Option<CompositorKind>,
-    started: bool,
+    compositor: std::cell::OnceCell<Option<CompositorKind>>,
 }
 
 impl Capabilities {
@@ -144,10 +143,9 @@ impl Capabilities {
     /// Spawns the compositor reader on the first call; later calls reuse it. Returns the
     /// detected compositor, if any.
     fn ensure_compositor_reader(&mut self) -> Option<CompositorKind> {
-        if !self.compositor_reader.started {
-            self.compositor_reader.started = true;
-            self.compositor_reader.compositor = crate::compositor::detect_compositor();
-            if let Some(kind) = self.compositor_reader.compositor {
+        *self.compositor_reader.compositor.get_or_init(|| {
+            let kind = crate::compositor::detect_compositor();
+            if let Some(kind) = kind {
                 let workspaces_publisher = workspaces::controller::StatePublisher::new(
                     Arc::clone(&self.compositor_reader.workspaces),
                     self.senders.workspaces.clone(),
@@ -164,8 +162,8 @@ impl Capabilities {
                     self.compositor_reader.keyboard.clone(),
                 );
             }
-        }
-        self.compositor_reader.compositor
+            kind
+        })
     }
 
     /// Stops every program declared with `session_process` and waits for it, the session-lifetime
