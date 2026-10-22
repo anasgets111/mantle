@@ -121,7 +121,7 @@ return rect {
 | Chains | A handler may write state, which runs that state's handlers next. After 8 rounds the rest are dropped with a logged error, so two handlers undoing each other stop |
 | Failure | Each handler runs under the [CPU budget](runtime.md#limits-and-budgets). A raise is logged; the value stays written and the other handlers still run |
 | Reload | Handlers are dropped before each evaluation, which registers them again. Several per state are allowed, and none can be removed: a call inside a callback adds another handler each time it runs, until the next reload |
-| Kinds | State signals and [capabilities](../capabilities/index.md) only. On a derived, hover, pointer, scroll, geometry, elided, settled or image_status signal it raises |
+| Kinds | State, [capabilities](../capabilities/index.md), and a `:map`, `computed` or `persistent_table` key, which runs `fn` when a source's write changes its value; a raise in its function is logged and the last value kept. `nil` on `delay`, `pulse`, hover, pointer, scroll, geometry, elided, settled and image_status |
 
 Derived signals (`:map`, `computed`, `delay`, `pulse`) have no name. Each evaluation builds them
 fresh, so a reload drops a pending `delay` and closes an open `pulse` window. See
@@ -367,7 +367,7 @@ builds fresh. Give each view its own `id`: [switching views with ids](../nodes/i
 | `sig:set(value)` | nothing | State signals only; see [who writes each kind](#who-writes-each-kind) |
 | `sig:reveal(index)` | nothing | `scroll` signals only; scrolls the `index`-th child into view ([input](input.md)) |
 | `sig:scroll_to(px)`, `sig:scroll_by(px)` | nothing | `scroll` signals only; moves to an offset, or by a distance from where it is headed ([input](input.md#scroll)) |
-| `sig:on_change(fn)` | nothing | State signals and capabilities only; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
+| `sig:on_change(fn)` | nothing | State, `:map`, `computed`, `persistent_table` keys and capabilities; `fn(current, previous)` after each change ([state](#on_change-react-to-a-write), [capabilities](../capabilities/index.md)) |
 | `cap:<action>(...)` | nothing | Capabilities only ([capabilities](../capabilities/index.md)) |
 | `computed({ a, b, ... }, fn, before?)` | signal | `fn(a_value, b_value, ...)`: the values in list order, not the signals. Signals and capabilities are read live; a string, number, boolean or table is a constant passed to `fn` unchanged. Until every capability among them has pushed, `fn` is skipped and the signal holds `before` ([details](#capabilities-before-their-first-push)). A `nil`, function, userdata or named key raises, naming the entry |
 | `state(name, initial)` | state signal | Writable [named state](#named-state), written with `:set(value)` |
@@ -418,7 +418,7 @@ again after changing it in place is a write.
 | ``delay: source must be a Signal or a `mantle` capability, got integer 5`` / the same for `pulse` | The first argument is not a signal or capability |
 | `delay: ms must be within [1, 60000]` / `pulse: ms must be within` | `ms` out of range, or rounds to 0 |
 | `signal:set() is only valid on a state(name, initial) signal` | `:set` on a derived, capability, hover, pointer, scroll, geometry, elided, settled or image_status signal |
-| `attempt to call a nil value (method 'on_change')` | `:on_change` on a derived, hover, pointer, scroll, geometry, elided, settled or image_status signal, which has none |
+| `attempt to call a nil value (method 'on_change')` | `:on_change` on a `delay`, `pulse`, hover, pointer, scroll, geometry, elided, settled or image_status signal, which has none |
 | `signal:set() refused its value at the marshalling boundary` | NaN, infinity, an integer past ±(2^53−1) or a string over 64 KiB |
 | `state("name", ...) refused its initial value` | The same checks on `initial` |
 | `signal:reveal() is only valid on a scroll(name) signal` / `index must be 1 or more` | `:reveal` on another kind, or an index below 1 |

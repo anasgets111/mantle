@@ -1406,6 +1406,32 @@ mod tests {
     }
 
     #[test]
+    fn a_stores_key_runs_on_change_for_a_write_to_that_key_only() {
+        let (client, _outbound_rx) = bare_client();
+        let lua = client.loader.lua();
+        lua.load(
+            r#"
+            store = persistent_table { path = "/tmp/bar/state.json", defaults = { theme = "mocha" } }
+            seen = {}
+            store.theme:on_change(function(now, before) seen[#seen + 1] = before .. "->" .. now end)
+            "#,
+        )
+        .exec()
+        .unwrap();
+        let push = |revision, payload| {
+            let snapshot = StateSnapshot { capability: "storage".to_string(), revision, payload };
+            client.apply_state_snapshot(snapshot).unwrap();
+            lua::signal::run_state_handlers(lua);
+        };
+
+        push(1, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte" } } }));
+        push(2, serde_json::json!({ "contents": { "/tmp/bar/state.json": { "theme": "latte", "font": "Inter" } } }));
+
+        let seen: Vec<String> = lua.load("return seen").eval().unwrap();
+        assert_eq!(seen, ["mocha->latte"], "a write to another key fires nothing");
+    }
+
+    #[test]
     fn a_store_the_first_push_omits_still_reads_its_defaults() {
         let (client, _outbound_rx) = bare_client();
         client

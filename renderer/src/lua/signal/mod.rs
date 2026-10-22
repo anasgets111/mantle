@@ -627,17 +627,16 @@ fn read_derived(lua: &Lua, ud: &mlua::AnyUserData) -> mlua::Result<Value> {
 }
 
 impl UserData for Signal {
-    // Named state's side-effect hook, the counterpart of a capability's (ADR-0115). A field, not a
-    // method: a derived signal reads `nil`, so a config can test `signal.on_change` for either kind.
+    // The side-effect hook of a state, `:map` or `computed`, the counterpart of a capability's
+    // (ADR-0115). A field, not a method: `delay`, `pulse` and the per-node signals read `nil`, so a
+    // config can test `signal.on_change` for any kind.
     fn add_fields<F: mlua::UserDataFields<Self>>(fields: &mut F) {
-        fields.add_field_method_get("on_change", |lua, this| {
-            let SignalKind::State { id, .. } = &this.0 else {
+        fields.add_field_function_get("on_change", |lua, ud| {
+            if !matches!(ud.borrow::<Signal>()?.0, SignalKind::State { .. } | SignalKind::Computed { .. }) {
                 return Ok(Value::Nil);
-            };
-            let id = *id;
+            }
             lua.create_function(move |lua, (_, handler): (mlua::AnyUserData, Function)| {
-                state_handlers::add(lua, id, handler);
-                Ok(())
+                state_handlers::add(lua, &ud, handler)
             })
             .map(Value::Function)
         });
