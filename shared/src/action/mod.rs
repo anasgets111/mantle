@@ -127,6 +127,28 @@ where
     }
 }
 
+/// `{ NAME = "value", OTHER = false }` as set (`Some`) and unset (`None`) pairs. A name that is empty or holds
+/// `=` or NUL, or a NUL value, fails the spawn; refusing it here puts the error on the config's call.
+fn env_overrides<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<(String, Option<String>)>, D::Error> {
+    use serde::de::Error;
+    let map = <std::collections::BTreeMap<String, Value> as serde::Deserialize>::deserialize(deserializer)?;
+    map.into_iter()
+        .map(|(name, value)| {
+            if name.is_empty() || name.contains(['=', '\0']) {
+                return Err(Error::custom(format!("env name {name:?} is empty or holds `=` or NUL")));
+            }
+            match value {
+                Value::String(text) if text.contains('\0') => {
+                    Err(Error::custom(format!("env {name}: value holds NUL")))
+                }
+                Value::String(text) => Ok((name, Some(text))),
+                Value::Bool(false) => Ok((name, None)),
+                _ => Err(Error::custom(format!("env {name}: expected a string, or false to unset"))),
+            }
+        })
+        .collect()
+}
+
 /// A string argument used as a key, where empty would name nothing.
 fn non_empty<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String, D::Error> {
     let value = <String as serde::Deserialize>::deserialize(deserializer)?;
@@ -203,6 +225,21 @@ mod tests {
                     "Configure { config: UpdatesConfigure { interval_secs: 3600, checked_at: None, packages: [], aur: false } }",
                 ),
             ),
+            (
+                decode::<ApplicationsAction>("launch", json!(["a", {"env": {"B": "1", "A": false}}])),
+                Ok(r#"Launch { id: "a", opts: LaunchOpts { env: [("A", None), ("B", Some("1"))] } }"#),
+            ),
+            (
+                decode::<ApplicationsAction>("launch", json!(["a", {}])),
+                Ok(r#"Launch { id: "a", opts: LaunchOpts { env: [] } }"#),
+            ),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"": "1"}}])), Err("empty")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A=B": "1"}}])), Err("empty or holds")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A\u{0}": "1"}}])), Err("empty or holds")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A": "x\u{0}"}}])), Err("NUL")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A": true}}])), Err("expected a string")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"env": {"A": 1}}])), Err("expected a string")),
+            (decode::<ApplicationsAction>("launch", json!(["a", {"envs": {}}])), Err("unknown field")),
             // A Lua `nil` value arrives as a missing argument and means delete.
             (
                 decode::<StorageAction>("set", json!(["/s.json", "theme"])),

@@ -22,7 +22,10 @@ copy under `~/.local/share/applications` overrides the system one. `Type=Applica
 their names and icons. Launchers filter out entries with `no_display = true`; `Hidden=true` entries
 are excluded entirely. inotify watches every
 directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
-codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`.
+codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`. `launch(id, { env = { NAME = "value", OTHER = false } })`
+sets or unsets variables for that launch (a string sets, `false` unsets; for a `Terminal=true` entry they apply to the `$TERMINAL` process); a single-instance app that is already running passes the launch to
+its existing process, which keeps its old environment. `open_url` takes no options: use
+`process.detach("xdg-open", { url }, { env = ... })`.
 
 ## How do I…
 

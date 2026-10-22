@@ -8,11 +8,32 @@ pub enum ApplicationsAction {
     /// Rescans installed desktop entries. The directories are watched, so only a failed watch
     /// (logged) needs this.
     Refresh,
-    /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
-    Launch { id: String },
+    /// Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env`
+    /// sets a variable to a string or unsets it with `false`.
+    Launch {
+        id: String,
+        #[serde(default)]
+        opts: LaunchOpts,
+    },
     /// Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or
     /// holding whitespace or a control character is refused.
     OpenUrl { url: String },
+}
+
+/// Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+#[derive(Debug, Default, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct LaunchOpts {
+    /// Changes to the Supervisor's environment: `NAME = "value"` sets, `NAME = false` unsets.
+    #[serde(default, deserialize_with = "super::env_overrides")]
+    #[cfg_attr(feature = "schema", schemars(schema_with = "env_schema"))]
+    pub env: Vec<(String, Option<String>)>,
+}
+
+#[cfg(feature = "schema")]
+fn env_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type": "object", "additionalProperties": {"anyOf": [{"type": "string"}, {"const": false}]}})
 }
 
 #[derive(Debug, serde::Deserialize)]

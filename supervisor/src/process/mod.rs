@@ -57,8 +57,16 @@ pub fn spawn_group_leader(cmd: impl AsRef<OsStr>, args: &[String], envs: &[(&str
 /// a session leader can.
 ///
 /// The three standard streams go to `/dev/null`, so it cannot scribble on the shell's own stdout.
-pub fn spawn_detached(cmd: &str, args: &[String]) -> io::Result<()> {
+/// `env` edits the inherited environment: `Some` sets, `None` unsets. The names and values must
+/// already be validated (`shared::action::LaunchOpts`): `Command::env` panics on NUL.
+pub fn spawn_detached(cmd: &str, args: &[String], env: &[(String, Option<String>)]) -> io::Result<()> {
     let mut command = Command::new(cmd);
+    for (name, value) in env {
+        match value {
+            Some(value) => command.env(name, value),
+            None => command.env_remove(name),
+        };
+    }
     command.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     // SAFETY: `pre_exec` runs in the forked child between `fork` and `exec`, where only the calling
     // thread exists. Every call here is async-signal-safe and on POSIX's list for that window:
@@ -371,7 +379,7 @@ mod tests {
         // for the handover would make the test's timing part of what it asserts, for nothing.
         // The rename lands the pid whole; `>` alone lets the poll below read an empty file.
         let script = format!("printf %s \"$PPID\" > {0}.part && mv {0}.part {0}", out.display());
-        spawn_detached("sh", &sh_args(&script)).expect("spawn");
+        spawn_detached("sh", &sh_args(&script), &[]).expect("spawn");
 
         crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
         let recorded = std::fs::read_to_string(&out).expect("the detached program must have run");
@@ -380,9 +388,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_detached_program_sees_the_env_overrides_and_not_what_they_unset() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let out = dir.path().join("env");
+        // HOME exists in every parent, so `false` has something real to remove.
+        let script = format!(
+            "printf '%s|%s' \"$MANTLE_PROBE\" \"${{HOME-unset}}\" > {0}.part && mv {0}.part {0}",
+            out.display()
+        );
+        let env = [("MANTLE_PROBE".to_string(), Some("set".to_string())), ("HOME".to_string(), None)];
+        spawn_detached("sh", &sh_args(&script), &env).expect("spawn");
+
+        crate::capabilities::test_support::poll_until(|| out.exists().then_some(())).await;
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "set|unset");
+    }
+
+    #[tokio::test]
     async fn a_nonexistent_detached_program_reports_an_error() {
         let path = tempfile::tempdir().unwrap().path().join("missing-program");
-        let result = spawn_detached(path.to_str().unwrap(), &[]);
+        let result = spawn_detached(path.to_str().unwrap(), &[], &[]);
         assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
     }
 }

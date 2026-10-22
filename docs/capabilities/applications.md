@@ -49,8 +49,16 @@ Call each as `mantle.applications:<action>(arguments...)`; `?` marks an argument
 | Action | Arguments | Description |
 | --- | --- | --- |
 | `refresh` |  | Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this. |
-| `launch` | `id: string` | Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. |
+| `launch` | `id: string, opts?: LaunchOpts` | Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`. |
 | `open_url` | `url: string` | Opens an `http`, `https` or `mailto` URL with `xdg-open`. One over 2048 bytes or holding whitespace or a control character is refused. |
+
+### `LaunchOpts`
+
+Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `env?` | `table<string, string\|false>` | Changes to the Supervisor's environment: `NAME = "value"` sets, `NAME = false` unsets. |
 
 ## Backend
 
@@ -61,7 +69,10 @@ copy under `~/.local/share/applications` overrides the system one. `Type=Applica
 their names and icons. Launchers filter out entries with `no_display = true`; `Hidden=true` entries
 are excluded entirely. inotify watches every
 directory, including ones created later. `launch` spawns the `Exec` command detached, dropping field
-codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`.
+codes such as `%u`; a `Terminal=true` entry runs as `$TERMINAL -e command args`. `launch(id, { env = { NAME = "value", OTHER = false } })`
+sets or unsets variables for that launch (a string sets, `false` unsets; for a `Terminal=true` entry they apply to the `$TERMINAL` process); a single-instance app that is already running passes the launch to
+its existing process, which keeps its old environment. `open_url` takes no options: use
+`process.detach("xdg-open", { url }, { env = ... })`.
 
 ## How do I…
 

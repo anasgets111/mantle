@@ -91,10 +91,15 @@ fn lua_type(fragment: &serde_json::Value) -> String {
     // `Option<SomeStruct>` uses `anyOf: [{$ref}, {"type": "null"}]`, not a type array: `$ref` has
     // no type to widen. Missing this made optional structs `any`, losing `ActiveClient` from
     // `WorkspacesState.active_client`.
-    if let Some(branches) = fragment.get("anyOf").and_then(|a| a.as_array())
-        && let Some(concrete) = branches.iter().find(|b| b.get("type").and_then(|t| t.as_str()) != Some("null"))
-    {
-        return lua_type(concrete);
+    if let Some(literal) = fragment.get("const").and_then(|c| c.as_bool()) {
+        return literal.to_string();
+    }
+    if let Some(branches) = fragment.get("anyOf").and_then(|a| a.as_array()) {
+        let concrete: Vec<_> =
+            branches.iter().filter(|b| b.get("type").and_then(|t| t.as_str()) != Some("null")).collect();
+        if !concrete.is_empty() {
+            return concrete.into_iter().map(lua_type).collect::<Vec<_>>().join("|");
+        }
     }
     // `Option<T>` also widens to `["T", "null"]` and removes the field from `required`.
     let type_name = match fragment.get("type") {

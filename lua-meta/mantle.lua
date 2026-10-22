@@ -190,6 +190,10 @@
 ---@field message string Display text, such as `"wrong password"` or `"network not found"`.
 ---@field ssid string The network the join was for.
 
+---@class LaunchOpts
+---Options of a detached launch: `process.detach`'s third argument and `launch`'s second.
+---@field env? table<string, string|false> Changes to the Supervisor's environment: `NAME = "value"` sets, `NAME = false` unsets.
+
 ---@alias LoopStatus
 ---| "none" # Plays through once.
 ---| "track" # Repeats the current track.
@@ -708,7 +712,7 @@
 ---[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
 ---@class ApplicationsCapability: Capability<ApplicationsState>, userdata
 ---@field refresh fun(self: ApplicationsCapability) Rescans installed desktop entries. The directories are watched, so only a failed watch (logged) needs this.
----@field launch fun(self: ApplicationsCapability, id: string) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`.
+---@field launch fun(self: ApplicationsCapability, id: string, opts?: LaunchOpts) Launches `entries[].id`, detached; `Terminal=true` entries run in `$TERMINAL`. `opts.env` sets a variable to a string or unsets it with `false`.
 ---@field open_url fun(self: ApplicationsCapability, url: string) Opens an `http`, `https` or `mailto` URL with `xdg-open` (ADR-0103). One over 2048 bytes or holding whitespace or a control character is refused.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/appearance.html)

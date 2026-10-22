@@ -24,8 +24,8 @@ pub fn dispatch(controller: &ApplicationsController, envelope: &shared::CommandE
     let Some(action) = crate::parse_action::<ApplicationsAction>(&envelope.params) else { return };
     match action {
         ApplicationsAction::Refresh => controller.refresh(),
-        ApplicationsAction::Launch { id } => {
-            if let Err(err) = controller.launch(&id) {
+        ApplicationsAction::Launch { id, opts } => {
+            if let Err(err) = controller.launch(&id, &opts.env) {
                 let reason = match err {
                     LaunchError::Unknown => format!("no application entry with id {id:?}"),
                     LaunchError::NoTerminal => {

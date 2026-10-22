@@ -121,8 +121,9 @@ return panel {
 
 | Part | Contract |
 | :--- | :--- |
-| Signature | `process.detach(cmd, args?)` → nothing |
+| Signature | `process.detach(cmd, args?, opts?)` → nothing |
 | `cmd`, `args` | As `process.run` |
+| `opts.env` | `{ NAME = "value", OTHER = false }`: a string sets the variable, `false` unsets it, on top of the shell's environment. An empty name, one holding `=`, a value holding NUL, or any other type raises. A single-instance app that is already running hands the launch to its existing process, which keeps its old environment |
 | Output, exit code | None. A failed spawn is logged as a warning and otherwise silent |
 
 ## session_process

@@ -73,7 +73,12 @@ pub(crate) fn dispatch(
         // from `run`, and it is why this sends no `ProcessExited` -- there is no `on_exit` waiting.
         "detach" => match process_run_args(&envelope.params.arguments) {
             Some((cmd, args)) => {
-                if let Err(err) = crate::process::spawn_detached(&cmd, &args) {
+                let opts = envelope.params.arguments.get(2).cloned().unwrap_or_default();
+                let opts = match serde_json::from_value::<Option<shared::action::LaunchOpts>>(opts) {
+                    Ok(opts) => opts.unwrap_or_default(),
+                    Err(err) => return warn!("process.detach: refused {cmd:?}: {err}"),
+                };
+                if let Err(err) = crate::process::spawn_detached(&cmd, &args, &opts.env) {
                     warn!("process.detach: spawning {cmd:?} failed: {err}");
                 }
             }
@@ -606,6 +611,25 @@ mod tests {
             &envelope(3, "detach", sh(&format!("touch '{}'", marker.display()))),
         );
         crate::capabilities::test_support::poll_until(|| marker.exists().then_some(())).await;
+    }
+
+    /// The refused call must spawn nothing: the valid call after it makes the same marker, so if
+    /// the first had spawned, its file would exist by the time the second one's does.
+    #[tokio::test]
+    async fn detach_with_an_invalid_env_spawns_nothing() {
+        let (registry, _rx) = registry_with_connection(1);
+        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut processes, mut reaps): (LiveProcesses, _) = (HashMap::new(), tokio::task::JoinSet::new());
+        let dir = tempfile::tempdir().unwrap();
+        let (refused, seen) = (dir.path().join("refused"), dir.path().join("seen"));
+        for (out, env) in [(&refused, serde_json::json!(true)), (&seen, serde_json::json!("yes"))] {
+            let script = format!("printf %s \"$PROBE\" > '{}'", out.display());
+            let opts = serde_json::json!({"env": {"PROBE": env}});
+            let arguments = vec![serde_json::json!("sh"), serde_json::json!(sh_args(&script)), opts];
+            dispatch(&mut processes, &registry, &done_tx, &mut reaps, &envelope(3, "detach", arguments));
+        }
+        crate::capabilities::test_support::poll_until(|| seen.exists().then_some(())).await;
+        assert!(!refused.exists(), "an invalid env must refuse before spawning");
     }
 
     async fn captured(script: &str) -> Vec<ProcessOutputLine> {

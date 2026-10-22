@@ -14,10 +14,10 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use mlua::{Function, Lua};
+use mlua::{Function, Lua, LuaSerdeExt, Value};
 use shared::ProcessStream;
 
-use super::luacats::{lua_class, lua_fn};
+use super::luacats::{As, lua_class, lua_fn, spelled};
 use crate::layout::node::prop::{Keyword, keywords};
 
 use super::capability::CommandSender;
@@ -79,8 +79,10 @@ impl ProcessRegistry {
     /// Queues a `"detach"` with no callbacks retained: a detached program has no handle, no
     /// output and no exit code to deliver, so there is no pending pair to leak (ADR-0188). The
     /// envelope still carries an id because every command does; nothing ever answers it.
-    fn detach(&self, cmd: String, args: Vec<String>) {
-        self.commands.send("process", "detach", vec![serde_json::json!(cmd), serde_json::json!(args)]);
+    fn detach(&self, cmd: String, args: Vec<String>, opts: Option<serde_json::Value>) {
+        let mut arguments = vec![serde_json::json!(cmd), serde_json::json!(args)];
+        arguments.extend(opts);
+        self.commands.send("process", "detach", arguments);
     }
 
     fn kill(&self, id: u64) {
@@ -149,7 +151,11 @@ lua_class! {
     }
 }
 
-/// Registers `process.run(cmd, args, on_line, on_exit)` and `process.detach(cmd, args)`; mlua's
+/// The `opts` table of `process.detach`, checked as `shared::action::LaunchOpts`.
+struct DetachOpts;
+spelled!(DetachOpts => r#"{ env?: table<string, string|false>, [string]: "no such property" }"#);
+
+/// Registers `process.run(cmd, args, on_line, on_exit)` and `process.detach(cmd, args, opts)`; mlua's
 /// closure signature supplies argument validation.
 pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
     let detach_registry = registry.clone();
@@ -197,15 +203,27 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
         lua,
         /// Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
         /// shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
+        /// `opts.env` sets variables (a string) or unsets them (`false`) on top of the shell's environment.
         /// [docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
         fn process.detach(
-            _lua,
+            lua,
             /// Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
             cmd: String,
             /// Already split: `"a b"` is one argument. `nil` is none.
             args: Option<Vec<String>>,
+            /// `{ env = { NAME = "value", OTHER = false } }`. A bad name or value raises.
+            opts: Option<As<Value, DetachOpts>>,
         ) {
-            detach_registry.detach(cmd, args.unwrap_or_default());
+            let opts = opts
+                .map(|opts| lua.from_value::<serde_json::Value>(opts.0))
+                .transpose()
+                .and_then(|json| {
+                    serde_json::from_value::<Option<shared::action::LaunchOpts>>(json.clone().unwrap_or_default())
+                        .map(|_| json)
+                        .map_err(mlua::Error::external)
+                })
+                .map_err(|err| mlua::Error::runtime(format!("process.detach: opts: {err}")))?;
+            detach_registry.detach(cmd, args.unwrap_or_default(), opts);
             Ok(())
         }
     )
@@ -280,6 +298,13 @@ mod tests {
             registry.pending.borrow().is_empty(),
             "nothing may be retained for a process that will never report an exit"
         );
+
+        lua.load(r#"process.detach("kate", nil, { env = { A = "1", B = false } })"#).exec().unwrap();
+        let with_env = queued_command(&mut rx).unwrap();
+        assert_eq!(with_env.params.arguments[2], serde_json::json!({"env": {"A": "1", "B": false}}));
+        let err = lua.load(r#"process.detach("kate", nil, { env = { A = true } })"#).exec().unwrap_err();
+        assert!(err.to_string().contains("process.detach: opts"), "{err}");
+        assert!(queued_command(&mut rx).is_none(), "a refused env must not reach the Supervisor");
 
         lua.load(r#"process.detach("kate")"#).exec().unwrap();
         let bare = queued_command(&mut rx).unwrap();

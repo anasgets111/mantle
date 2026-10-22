@@ -427,6 +427,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_bad_launch_env_raises_at_the_call_and_queues_nothing() {
+        let lua = Lua::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (apps, _) = Capability::new("applications", DirtyFlag::new(), CommandSender::new(0, tx));
+        lua.globals().set("apps", apps).unwrap();
+
+        let err = lua.load(r#"apps:launch("a", { env = { ["A=B"] = "1" } })"#).exec().unwrap_err();
+        assert!(err.to_string().contains("env name"), "{err}");
+        assert!(queued_command(&mut rx).is_none());
+    }
+
+    #[test]
     fn a_value_error_leads_with_the_caller_site_and_speaks_lua() {
         let lua = Lua::new();
         let (tx, _rx) = mpsc::unbounded_channel();

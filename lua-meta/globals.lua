@@ -275,10 +275,12 @@ function process.capture(cmd, args, on_done) end
 
 ---Spawns `cmd` in its own session with stdio on `/dev/null`; it outlives every reload and the
 ---shell. No handle, output or exit code, and a spawn failure is only logged (ADR-0188).
+---`opts.env` sets variables (a string) or unsets them (`false`) on top of the shell's environment.
 ---[docs](https://anasgets111.github.io/mantle/guide/processes.html#processdetach)
 ---@param cmd string Looked up on `PATH`; no shell, so no globbing, pipes or quoting.
 ---@param args? string[] Already split: `"a b"` is one argument. `nil` is none.
-function process.detach(cmd, args) end
+---@param opts? { env?: table<string, string|false>, [string]: "no such property" } `{ env = { NAME = "value", OTHER = false } }`. A bad name or value raises.
+function process.detach(cmd, args, opts) end
 
 palette = {}
 

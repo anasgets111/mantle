@@ -144,10 +144,10 @@ impl ApplicationsController {
     /// ponytail: `Terminal=true` reads `$TERMINAL` and refuses when unset. Probing `PATH` for
     /// known emulators is the upgrade; a set variable gets exactly that terminal, while guessing
     /// wrong is worse than naming the missing variable.
-    pub fn launch(&self, id: &str) -> Result<(), LaunchError> {
+    pub fn launch(&self, id: &str, env: &[(String, Option<String>)]) -> Result<(), LaunchError> {
         let target = self.launch_targets.lock().expect("applications launch map mutex poisoned").get(id).cloned();
         let (command, args) = command_line(std::env::var("TERMINAL").ok(), target.ok_or(LaunchError::Unknown)?)?;
-        crate::process::spawn_detached(&command, &args).map_err(|err| LaunchError::Spawn(err.to_string()))
+        crate::process::spawn_detached(&command, &args, env).map_err(|err| LaunchError::Spawn(err.to_string()))
     }
 
     /// After [`openable_url`] accepts it (ADR-0103), hands `url` to `xdg-open` detached. A
@@ -159,7 +159,7 @@ impl ApplicationsController {
     /// spawn error.
     pub fn open_url(&self, url: &str) -> Result<(), OpenUrlError> {
         openable_url(url).map_err(OpenUrlError::Refused)?;
-        crate::process::spawn_detached("xdg-open", &[url.to_string()])
+        crate::process::spawn_detached("xdg-open", &[url.to_string()], &[])
             .map_err(|err| OpenUrlError::Spawn(err.to_string()))
     }
 }
@@ -241,7 +241,7 @@ mod tests {
         let (controller, _dir) =
             controller_over(&[("t.desktop", &runnable("Toucher", &format!("touch {}", touched.display())))]).await;
 
-        controller.launch("t").expect("launching a known entry must succeed");
+        controller.launch("t", &[]).expect("launching a known entry must succeed");
 
         // Detached child: poll for the side effect because there is no handle to await.
         crate::capabilities::test_support::poll_until(|| touched.exists().then_some(())).await;
@@ -251,7 +251,7 @@ mod tests {
     async fn launching_an_id_that_is_not_installed_is_reported_rather_than_spawning_anything() {
         let (controller, _dir) = controller_over(&[("thing.desktop", &runnable("Thing", "/bin/true"))]).await;
 
-        assert_eq!(controller.launch("nothing-like-this"), Err(LaunchError::Unknown));
+        assert_eq!(controller.launch("nothing-like-this", &[]), Err(LaunchError::Unknown));
     }
 
     fn console_program() -> LaunchTarget {
