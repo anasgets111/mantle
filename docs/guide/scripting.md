@@ -389,7 +389,7 @@ in a callback, like [`palette.quantize`](#palettequantize). Worked example: [Col
 | Part | Contract |
 | :--- | :--- |
 | `file.read(path, on_done)` | `on_done(text, err)`: the text, or `nil` and a message for a missing, unreadable, non-UTF-8 or over-8 MiB file |
-| `file.write(path, text, on_done?)` | Creates parent directories. When the file already holds exactly `text`, writes nothing and calls `on_done(false)`; otherwise replaces it atomically (temporary in the same directory, then rename) and calls `on_done(true)`. On failure `on_done(nil, err)` |
+| `file.write(path, text, opts?, on_done?)` | Creates parent directories. When the file already holds exactly `text`, writes nothing and calls `on_done(false)`; otherwise replaces it atomically (temporary in the same directory, then rename) and calls `on_done(true)`. On failure `on_done(nil, err)`. `opts = { in_place = true }` truncates and rewrites the same inode, for files another program watches by path. An existing file keeps its mode, a new one gets the default. A crash mid-write leaves a truncated file, and a watcher can read it empty or partial. A callback in the `opts` slot raises: pass `nil` first |
 | `path` | Absolute, or `~/` under `$HOME`. Anything else raises at the call |
 | Order | Writes run one at a time in call order, so two writes to a path end with the later text. A read does not wait for them: read in the write's `on_done`. A symlink keeps its link and its target is replaced; the file's mode is kept |
 | Handle | `handle:cancel()` drops the callback. A started write still lands |

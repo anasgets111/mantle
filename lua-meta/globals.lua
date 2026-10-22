@@ -411,9 +411,12 @@ function file.read(path, on_done) end
 
 ---Writes `text` to a file off the Lua thread, creating parent directories. When the file already
 ---holds exactly `text`, nothing is written and `changed` is `false`; otherwise the file is replaced atomically.
+---`opts.in_place = true` rewrites the same inode instead, for files another program watches by path;
+---a crash mid-write leaves a truncated file, and a watcher can read it empty or partial meanwhile.
 ---[docs](https://anasgets111.github.io/mantle/guide/scripting.html#file)
 ---@param path string Absolute, or `~/` under `$HOME`; anything else raises.
 ---@param text string
+---@param opts? { in_place?: boolean, [string]: "no such property" } `in_place` (default `false`): truncate and rewrite the file instead of replacing it. Pass `nil` to skip it before a callback.
 ---@param on_done? fun(changed: boolean?, err: string?) Runs once with `changed`, or `nil` and an error message. Cancelling or reloading drops it; the write still lands.
 ---@return FileHandle
-function file.write(path, text, on_done) end
+function file.write(path, text, opts, on_done) end

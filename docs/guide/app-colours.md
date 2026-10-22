@@ -124,7 +124,7 @@ local function apply(seed, mode)
     for _, target in ipairs(targets) do
         file.read(mantle.config_dir .. "/templates/" .. target.template, function(template, err)
             if not template then return log.warn("app colours:", err) end
-            file.write(target.out, render(template, schemes, mode), function(changed, werr)
+            file.write(target.out, render(template, schemes, mode), nil, function(changed, werr)
                 if werr then return log.warn("app colours:", werr) end
                 if changed and target.reload then
                     process.run(target.reload[1], target.reload[2], function() end, function() end)
