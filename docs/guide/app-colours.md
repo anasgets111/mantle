@@ -141,3 +141,76 @@ end)
 
 A reload drops callbacks still pending. If one lands first, the file is written but its hook skipped,
 and the next run reports `changed = false`. Touch the output by hand to force the hook.
+
+`file.write` replaces a file by renaming a temporary over it, which ends an inotify watch an app holds
+on that one path. For an app that live-reloads a single file, pass `{ in_place = true }` in the
+`opts` slot: it rewrites the same inode and keeps the watch. A crash mid-write leaves a truncated
+file, so use it only where the app needs it.
+
+```lua,fragment
+file.write(target.out, text, { in_place = true }, on_done)
+```
+
+## Recolour the shell itself
+
+Keep the theme in one `state`, or a [`persistent_table`](scripting.md#persistent_table) key to survive
+restarts, and derive every colour token as a `:map` over it. Each node reading a token repaints when
+the theme changes; nothing else needs rebuilding.
+
+```lua
+local seed = "#6750A4"
+local schemes = {
+    dark = palette.scheme(seed, { dark = true }),
+    light = palette.scheme(seed, { dark = false }),
+}
+local theme = state("theme", "dark")
+
+local function token(role)
+    return theme:map(function(name) return schemes[name][role] end)
+end
+local surface, primary = token("surface"), token("primary")
+
+return rect {
+    padding = 12, radius = 8,
+    background = surface,
+    -- an alpha suffix goes inside the map: a signal does not concatenate
+    border_color = primary:map(function(hex) return hex .. "80" end),
+    border_width = 2,
+    on_click = function() theme:set(theme:get() == "dark" and "light" or "dark") end,
+    children = {
+        rect { width = 80, height = 6, background = {
+            gradient = "linear", angle = 90, stops = { { 0, primary }, { 1, surface } },
+        } },
+    },
+}
+```
+
+What takes a signal:
+
+| Where the colour goes | Pass |
+| :--- | :--- |
+| A property, such as `background` | The token |
+| A gradient stop's colour, a shader `params` entry | The token, or a `:map` of it, in the table. The walk reaches 8 tables deep and skips a table with a metatable |
+| A string built from a token, such as `token .. "80"` | The whole string as one `:map`. `..` on a signal raises |
+| A whole gradient or `params` table | One `:map` that returns the full table |
+
+A shader's `params` hold numbers, never hex: map the token to `{ r, g, b }` in `0..1`.
+
+## React to a theme change
+
+`on_change` runs `fn(current, previous)` after any write: `:set` or `mantle set` on a state; `store:set` or another process editing the file for a key.
+Rewrite the templates and relaunch from there instead of watching `mantle.storage` and diffing keys by hand.
+
+```lua,fragment
+local settings = persistent_table { path = "~/.local/state/myshell/theme.json", defaults = { mode = "dark" } }
+
+settings.mode:on_change(function(mode)
+    apply(seed, mode) -- the pipeline above
+    mantle.applications:launch("org.example.Editor", { env = { GTK_THEME = false } })
+end)
+```
+
+The `env` table sets variables with a string and unsets them with `false`; here the relaunched app
+reads the files just written, not a `GTK_THEME` inherited from the shell. A running single-instance
+app keeps its old environment: see [`process.detach`](processes.md#processdetach) and the
+[applications](../capabilities/applications.md) page.
