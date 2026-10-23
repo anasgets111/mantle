@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.11.0 - 2026-10-23
+
 - Breaking: `mantle.network` drops its flat `scanning`, `strength`, `wifi_ip` and `available_networks`, which repeated the primary Wi-Fi interface. Read them from `wifi_devices[1]` (`nil` without Wi-Fi hardware).
 - Added: `mantle.android_connect` lists your phone and other KDE Connect devices with battery, signal and pairing state, and can ring, ping, pair, send files and clipboard, switch plugins and clipboard sync per device, offer commands your phone can run on the PC, and show transfer progress and why browsing failed. It needs `kdeconnect-service` running.
 
