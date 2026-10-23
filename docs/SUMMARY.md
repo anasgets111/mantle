@@ -65,6 +65,7 @@
 # Capabilities
 
 - [Capabilities](capabilities/index.md)
+  - [android_connect](capabilities/android_connect.md)
   - [appearance](capabilities/appearance.md)
   - [applications](capabilities/applications.md)
   - [audio](capabilities/audio.md)

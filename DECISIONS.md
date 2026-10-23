@@ -8725,3 +8725,16 @@ config hooked the whole capability and diffed keys by hand, or hooked every sour
 
 Rejected: re-reading every watcher each turn. The memo lasts one pass, so that runs every watched
 map once per turn with no source written.
+
+## 0377. Android connection capability backed by a D-Bus daemon
+
+`mantle.android_connect` follows COSMIC's headless Rust `kdeconnect-service`
+(`io.github.hepp3n.kdeconnect`) over the session bus and supports no other backend. The TLS
+socket, packet framing and UDP discovery on port 1716 stay in that daemon. Nothing D-Bus-activates
+it: the capability is unavailable until the name has an owner. The daemon takes its name before it
+serves its object, so setup retries with backoff, and `available` turns true once `ListDevices` and
+`MountedDevices` answer. This lifts the roadmap's "Won't do" row for KDE Connect.
+
+Rejected: parsing the protocol in the supervisor (`kdeconnect-proto`), which would put untrusted
+LAN packets in the shell process. Rejected: KDE's `kdeconnectd` (`org.kde.kdeconnect`), whose Arch
+package depends on Qt 6 and 18 KDE Frameworks libraries.

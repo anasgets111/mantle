@@ -87,6 +87,7 @@ pub fn check(capability: Capability, action: &str, arguments: &[Value]) -> Resul
         decode::<A>(action, arguments).map(drop)
     }
     match capability {
+        Capability::AndroidConnect => fits::<AndroidConnectAction>(action, arguments),
         Capability::Applications => fits::<ApplicationsAction>(action, arguments),
         Capability::Audio => fits::<AudioAction>(action, arguments),
         Capability::Bluetooth => fits::<BluetoothAction>(action, arguments),

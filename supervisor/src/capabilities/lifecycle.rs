@@ -6,6 +6,7 @@ use shared::{Capability, CommandEnvelope, debug};
 use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use tokio::sync::watch;
 
+use super::android_connect::{self, AndroidConnectController};
 use super::appearance::AppearanceController;
 use super::applications::{self, ApplicationsController};
 use super::audio::{self, mixer::PrivacySources};
@@ -41,6 +42,7 @@ use crate::{log_unstarted, socket};
 /// On-demand controllers and their inputs. `audio` starts the PipeWire mixer and stores its command
 /// channel; `lock` is boot-built in `main.rs` for relock (ADR-0060) and passed to dispatch.
 pub struct Capabilities {
+    android_connect: Option<AndroidConnectController>,
     network: Option<Worker<NetworkController>>,
     bluetooth: Option<Worker<BluetoothController>>,
     tray: Option<TrayController>,
@@ -105,6 +107,7 @@ impl Capabilities {
         let (privacy_tx, privacy_sources) = watch::channel(PrivacySources::default());
 
         let capabilities = Self {
+            android_connect: None,
             network: None,
             bluetooth: None,
             tray: None,
@@ -246,6 +249,17 @@ impl Capabilities {
     /// after construction. Backends that wait on another service build in a [`Worker`].
     pub async fn start(&mut self, capability: Capability) {
         match capability {
+            Capability::AndroidConnect => {
+                if self.android_connect.is_none() {
+                    let bus = session_bus("android_connect stays unavailable").await;
+                    self.android_connect = Some(AndroidConnectController::new(
+                        bus,
+                        android_connect::controller::config_dir(),
+                        self.senders.android_connect.clone(),
+                    ));
+                    let _ = self.senders.android_connect.send(());
+                }
+            }
             Capability::Network => {
                 if self.network.as_ref().is_none_or(UnboundedSender::is_closed) {
                     let (events, signals) = unbounded_channel();
@@ -531,6 +545,7 @@ impl Capabilities {
             };
         }
         match signal {
+            Signal::AndroidConnect => push_held!(AndroidConnect, self.android_connect),
             Signal::Audio(state) => push!(Capability::Audio, &state),
             Signal::Network(state) => push!(Capability::Network, &state),
             Signal::Bluetooth(state) => push!(Capability::Bluetooth, &state),
@@ -585,6 +600,7 @@ impl Capabilities {
             };
         }
         match capability {
+            Capability::AndroidConnect => to!(self.android_connect, android_connect::dispatch),
             Capability::Network => queue(&self.network, envelope, network::dispatch),
             Capability::Bluetooth => queue(&self.bluetooth, envelope, bluetooth::dispatch),
             Capability::Tray => to!(self.tray, tray::dispatch),

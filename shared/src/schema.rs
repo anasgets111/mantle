@@ -10,6 +10,11 @@ pub use samples::check_samples;
 pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
     vec![
         (
+            "android_connect",
+            schema_for!(crate::state::android_connect::AndroidConnectState),
+            Some(schema_for!(crate::action::AndroidConnectAction)),
+        ),
+        (
             "applications",
             schema_for!(crate::state::applications::ApplicationsState),
             Some(schema_for!(crate::action::ApplicationsAction)),

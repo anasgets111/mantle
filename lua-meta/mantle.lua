@@ -42,6 +42,30 @@
 ---@field fullscreen? boolean Whether the window is fullscreen (maximized is `false`); `nil` on niri, which does not report it (ADR-0056).
 ---@field title string Window title; empty when unset.
 
+---@class AndroidCommand
+---A command a paired device can run on this PC.
+---@field command string Shell command line this PC runs with `sh -c` when a device asks.
+---@field id string Unique identifier, the key `remove_command` takes.
+---@field name string Label the device shows.
+
+---@class AndroidDevice
+---A remote Android or paired device known to the daemon.
+---@field battery? integer Battery level percentage (0 to 100), or `nil` if unknown or unannounced. With two devices connected, the daemon can report one's value as the other's.
+---@field browse_error? string Why the last `browse` failed, such as missing `sshfs`. Clears on the next `browse` or a mount.
+---@field charging? boolean Whether the battery is charging, or `nil` if unknown.
+---@field clipboard_auto_share boolean Whether every desktop clipboard change goes to this device. On unless switched off.
+---@field device_type DeviceType Device form-factor / category.
+---@field disabled_plugins string[] Plugins switched off for this device, by id: `battery`, `clipboard`, `connectivity_report`, `contacts`, `findmyphone`, `mpris`, `notification`, `ping`, `runcommand`, `sftp`, `share`, `sms`, `systemvolume`, `telephony`, or the daemon's default `mousepad` and `presenter`.
+---@field id string Unique KDE Connect device identifier.
+---@field mounted boolean Whether the device's SFTP storage is currently mounted.
+---@field name string Device's advertised or configured friendly name.
+---@field paired boolean Whether the device has established mutual pairing.
+---@field pairing_requested boolean Whether an incoming pairing request from this device is awaiting confirmation. Clears on accept, reject or disconnect, or after 30 s: the daemon reports no cancel from the device.
+---@field pairing_sent boolean Whether a pairing request this PC sent is awaiting the device's answer. Clears when the device accepts, on `unpair`, on disconnect, or after 30 s: the daemon reports no rejection.
+---@field reachable boolean Whether the device is currently reachable on the network.
+---@field reconnecting boolean Whether the device is reconnecting to apply a plugin switch. Clears when it connects again, or after 30 s.
+---@field signal_strength? integer Cellular network signal strength (0 to 4 bars), or `nil` if not reported. With two devices connected, the daemon can report one's value as the other's.
+
 ---@class AppStream
 ---One app's playback or recording stream (ADR-0053). Streams without a pid are left out.
 ---@field binary? string `application.process.binary`, e.g. `"firefox"`.
@@ -139,6 +163,9 @@
 ---| "computer"
 ---| "generic" # Any class not listed.
 ---A device's kind, read from its BlueZ class of device.
+
+---@alias DeviceType "phone"|"tablet"|"desktop"|"laptop"|"tv"|"unknown"
+---The device category reported by KDE Connect.
 
 ---@class DiscoveredDevice
 ---@field blocked boolean BlueZ refuses to pair with or connect to the device until it is unblocked.
@@ -506,6 +533,12 @@
 ---@field urgent boolean Whether a window here is asking for attention. Clears when the compositor clears it, on Hyprland when that window gains focus. Hyprland special workspaces carry none; their windows report it in `windows`.
 ---@field window_id? string `window_id` of a window here, chosen as `WorkspaceEntry.app_id` is. `nil` when empty.
 
+---@class AndroidConnectState
+---@field available boolean Whether the KDE Connect daemon (`io.github.hepp3n.kdeconnect`) is running on the session bus.
+---@field commands AndroidCommand[] Commands paired devices can run on this PC with `sh -c`, from `~/.config/kdeconnect/runcommand.json`.
+---@field devices AndroidDevice[] Known devices. Unordered; sort before drawing.
+---@field transfer_progress? integer Percent sent of the file transfer in progress, or `nil` when none runs. The daemon does not say which device it goes to.
+
 ---@class ApplicationsState
 ---`mantle.applications` payload (ADR-0061, ADR-0252).
 ---@field by_app_id table<string, integer> Window `app_id` to its 1-based index: `entries[by_app_id[app_id]]`. Keys are exact `StartupWMClass` and desktop ids, then lowercased and last-dot-segment guesses.
@@ -708,6 +741,25 @@
 ---@field windows WindowEntry[] Sorted by numeric `workspace_id`, then Hyprland named ones. Windows with a non-numeric id (sway names such as `1:web`, mango's `DP-1:3`) or none come last, in backend order.
 
 --- Capabilities -------------------------------------------------------------------------------
+
+---[docs](https://anasgets111.github.io/mantle/capabilities/android_connect.html)
+---@class AndroidConnectCapability: Capability<AndroidConnectState>, userdata
+---@field broadcast fun(self: AndroidConnectCapability) Broadcasts identity over UDP to discover nearby devices and prompt them to re-announce.
+---@field ring fun(self: AndroidConnectCapability, id: string) Rings the device to locate it.
+---@field ping fun(self: AndroidConnectCapability, id: string, message?: string) Sends a ping notification with an optional custom message.
+---@field send_clipboard fun(self: AndroidConnectCapability, id: string, text: string) Sends text to the remote device's clipboard.
+---@field share_clipboard fun(self: AndroidConnectCapability, id: string) Sends the current desktop clipboard to the device.
+---@field send_files fun(self: AndroidConnectCapability, id: string, files: string[]) Sends existing local files to the device.
+---@field browse fun(self: AndroidConnectCapability, id: string) Mounts the device's storage via SFTP and opens it in the file manager.
+---@field unmount fun(self: AndroidConnectCapability, id: string) Unmounts the device's SFTP storage.
+---@field pair fun(self: AndroidConnectCapability, id: string) Initiates pairing with an unpaired device.
+---@field unpair fun(self: AndroidConnectCapability, id: string) Unpairs a paired device.
+---@field accept_pairing fun(self: AndroidConnectCapability, id: string) Accepts an incoming pairing request from a device.
+---@field reject_pairing fun(self: AndroidConnectCapability, id: string) Rejects an incoming pairing request from a device.
+---@field set_plugin_enabled fun(self: AndroidConnectCapability, id: string, plugin: string, enabled: boolean) Switches one of the device's plugins on or off; `disabled_plugins` lists the ids. The daemon drops the connection so the device learns the change, and the device reconnects.
+---@field add_command fun(self: AndroidConnectCapability, name: string, command: string) Offers paired devices a `name` button that runs `command` on this PC with `sh -c`. Saved to `runcommand.json`, then the list is resent to every connected paired device.
+---@field remove_command fun(self: AndroidConnectCapability, id: string) Stops offering the command with this `commands[].id`, then resends the list to every connected paired device. An unknown id does nothing.
+---@field set_clipboard_auto_share fun(self: AndroidConnectCapability, id: string, enabled: boolean) Switches `clipboard_auto_share` for the device. Takes effect at the next clipboard change.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/applications.html)
 ---@class ApplicationsCapability: Capability<ApplicationsState>, userdata
@@ -934,6 +986,7 @@ local PrivacyCapability = {}
 ---@field patch integer The Renderer's `CARGO_PKG_VERSION_PATCH`.
 
 ---@class Mantle
+---@field android_connect AndroidConnectCapability Android device synchronization through KDE Connect: battery, cellular signal, find my phone, clipboard sync, file sharing, and SFTP mount.
 ---@field audio AudioCapability PipeWire: output and input volume and mute, device lists, per-app streams and Bluetooth codecs.
 ---@field network NetworkCapability NetworkManager: connectivity, Wi-Fi and wired state, scanned access points and join progress.
 ---@field secrets SecretsCapability Named Secret Service writes and their pending, stored or error status. Names are public metadata.

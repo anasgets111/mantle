@@ -1,5 +1,6 @@
 //! Capability snapshot payloads shared by controllers, stubs and config checks.
 
+pub mod android_connect;
 pub mod appearance;
 pub mod applications;
 pub mod audio;

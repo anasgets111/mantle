@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.android_connect` lists your phone and other KDE Connect devices with battery, signal and pairing state, and can ring, ping, pair, send files and clipboard, switch plugins and clipboard sync per device, offer commands your phone can run on the PC, and show transfer progress and why browsing failed. It needs `kdeconnect-service` running.
+
 ## 0.10.0 - 2026-10-22
 
 - Breaking: `file.write(path, text, on_done?)` is now `file.write(path, text, opts?, on_done?)`. Add `nil,` before an existing callback; a function in the `opts` slot raises.

@@ -41,6 +41,7 @@ macro_rules! roster {
 }
 
 roster! {
+    AndroidConnect => "android_connect", "Android device synchronization through KDE Connect: battery, cellular signal, find my phone, clipboard sync, file sharing, and SFTP mount.",
     Audio => "audio", "PipeWire: output and input volume and mute, device lists, per-app streams and Bluetooth codecs.",
     Network => "network", "NetworkManager: connectivity, Wi-Fi and wired state, scanned access points and join progress.",
     Secrets => "secrets", "Named Secret Service writes and their pending, stored or error status. Names are public metadata.",
@@ -80,6 +81,24 @@ impl Capability {
     /// `supervisor/src/stubs.rs` pins each list to its serde action enum.
     pub const fn actions(self) -> &'static [&'static str] {
         match self {
+            Capability::AndroidConnect => &[
+                "broadcast",
+                "ring",
+                "ping",
+                "send_clipboard",
+                "share_clipboard",
+                "send_files",
+                "browse",
+                "unmount",
+                "pair",
+                "unpair",
+                "accept_pairing",
+                "reject_pairing",
+                "set_plugin_enabled",
+                "add_command",
+                "remove_command",
+                "set_clipboard_auto_share",
+            ],
             Capability::Applications => &["refresh", "launch", "open_url"],
             Capability::Audio => &[
                 "set_volume",

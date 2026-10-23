@@ -87,6 +87,7 @@ pages. On the LuaLS library path, `mantle.audio:get().` completes fields and
 
 | Name | What it gives you | Note |
 | :--- | :--- | :--- |
+| [`android_connect`](android_connect.md) | Android device synchronization through KDE Connect | No devices until daemon runs |
 | [`appearance`](appearance.md) | Dark mode, accent colour, contrast and reduced motion from the desktop portal | Defaults without a portal |
 | [`applications`](applications.md) | Desktop entries, window `app_id` index, launching | |
 | [`audio`](audio.md) | Output and input volume and mute, devices, per-app streams, Bluetooth codecs | |

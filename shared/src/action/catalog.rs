@@ -4,6 +4,51 @@
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
+pub enum AndroidConnectAction {
+    /// Broadcasts identity over UDP to discover nearby devices and prompt them to re-announce.
+    Broadcast,
+    /// Rings the device to locate it.
+    Ring { id: String },
+    /// Sends a ping notification with an optional custom message.
+    Ping {
+        id: String,
+        #[serde(default)]
+        message: Option<String>,
+    },
+    /// Sends text to the remote device's clipboard.
+    SendClipboard { id: String, text: String },
+    /// Sends the current desktop clipboard to the device.
+    ShareClipboard { id: String },
+    /// Sends existing local files to the device.
+    SendFiles { id: String, files: Vec<String> },
+    /// Mounts the device's storage via SFTP and opens it in the file manager.
+    Browse { id: String },
+    /// Unmounts the device's SFTP storage.
+    Unmount { id: String },
+    /// Initiates pairing with an unpaired device.
+    Pair { id: String },
+    /// Unpairs a paired device.
+    Unpair { id: String },
+    /// Accepts an incoming pairing request from a device.
+    AcceptPairing { id: String },
+    /// Rejects an incoming pairing request from a device.
+    RejectPairing { id: String },
+    /// Switches one of the device's plugins on or off; `disabled_plugins` lists the ids. The daemon
+    /// drops the connection so the device learns the change, and the device reconnects.
+    SetPluginEnabled { id: String, plugin: String, enabled: bool },
+    /// Offers paired devices a `name` button that runs `command` on this PC with `sh -c`. Saved to
+    /// `runcommand.json`, then the list is resent to every connected paired device.
+    AddCommand { name: String, command: String },
+    /// Stops offering the command with this `commands[].id`, then resends the list to every
+    /// connected paired device. An unknown id does nothing.
+    RemoveCommand { id: String },
+    /// Switches `clipboard_auto_share` for the device. Takes effect at the next clipboard change.
+    SetClipboardAutoShare { id: String, enabled: bool },
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
 pub enum ApplicationsAction {
     /// Rescans installed desktop entries. The directories are watched, so only a failed watch
     /// (logged) needs this.

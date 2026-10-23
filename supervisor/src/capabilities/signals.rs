@@ -12,6 +12,7 @@ use super::secrets::SecretsState;
 /// [`Signals::next`] only awaits `recv()`, so losing the `tokio::select!` race drops no signal.
 #[derive(Debug)]
 pub enum Signal {
+    AndroidConnect,
     /// Carries mixer state directly, not a controller name.
     Audio(AudioState),
     /// Worker capabilities send finished state, like `Audio`.
@@ -113,6 +114,7 @@ macro_rules! capability_channels {
 
 capability_channels! {
     channels {
+        AndroidConnect => android_connect: (), Some(()) => Signal::AndroidConnect;
         // Mixer sends state directly (see `Signal::Audio`).
         Audio => audio: AudioState, Some(state) => Signal::Audio(state);
         // Workers send finished state (see `spawn_worker`).

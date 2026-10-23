@@ -47,6 +47,7 @@ async fn session_bus(what: &str) -> Option<zbus::Connection> {
         .ok()
 }
 
+pub mod android_connect;
 pub mod appearance;
 pub mod applications;
 pub mod audio;
