@@ -122,16 +122,12 @@ pub struct WifiDeviceInfo {
 pub struct NetworkState {
     /// Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths.
     pub wifi_devices: Vec<WifiDeviceInfo>,
-    /// A scan is in flight on the primary Wi-Fi device.
-    pub scanning: bool,
     /// A connection carries the default route; `false` means offline.
     pub connected: bool,
     /// `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An
     /// association still getting an address has an `ssid` while `connected` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ssid: Option<String>,
-    /// The primary Wi-Fi device's associated network strength, `0` to `100`.
-    pub strength: u8,
     /// Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
     pub wifi_enabled: bool,
     /// At least one Wi-Fi device exists.
@@ -142,9 +138,6 @@ pub struct NetworkState {
     pub networking_enabled: bool,
     /// A wired device is activated; `set_ethernet_enabled`'s read-back, unlike carrier.
     pub ethernet_enabled: bool,
-    /// The primary Wi-Fi device's IPv4 address without prefix, or `nil`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub wifi_ip: Option<String>,
     /// The first activated wired device's IPv4 address without prefix, or `nil`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ethernet_ip: Option<String>,
@@ -162,9 +155,6 @@ pub struct NetworkState {
     /// `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password_ssid: Option<String>,
-    /// The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated,
-    /// then saved, then strongest. `{}` without Wi-Fi hardware.
-    pub available_networks: Vec<AccessPointInfo>,
     /// Saved VPN and WireGuard profiles, ordered by name.
     pub vpns: Vec<VpnInfo>,
     /// The last failed VPN activation, or `nil` before any or after the next `connect_vpn`.

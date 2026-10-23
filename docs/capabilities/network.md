@@ -12,7 +12,8 @@ text {
         elseif network.ssid == "Ethernet" then
             return "wired"
         end
-        return string.format("%s %d%%", network.ssid or "", network.strength)
+        local wifi = network.wifi_devices[1] -- the primary interface
+        return string.format("%s %d%%", network.ssid or "", wifi and wifi.strength or 0)
     end, ""),
 }
 ```
@@ -25,7 +26,6 @@ text {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `available_networks` | `AccessPointInfo[]` | The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware. |
 | `connect_error?` | `JoinError` | The last failed join on any Wi-Fi device, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it. |
 | `connected` | `boolean` | A connection carries the default route; `false` means offline. |
 | `connecting_ssid?` | `string` | The current join's SSID on any Wi-Fi device, or `nil`; clears on a verdict or `abort_connect`. |
@@ -35,15 +35,12 @@ text {
 | `ethernet_speed?` | `integer` | That wired device's link speed in Mb/s; `nil` when unknown or none is activated. |
 | `networking_enabled` | `boolean` | NetworkManager networking is on (`NetworkingEnabled`). |
 | `password_ssid?` | `string` | The join SSID awaiting a password from a `network`/`connect` secure field on any device, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`. |
-| `scanning` | `boolean` | A scan is in flight on the primary Wi-Fi device. |
 | `ssid?` | `string` | `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An association still getting an address has an `ssid` while `connected` is `false`. |
-| `strength` | `integer` | The primary Wi-Fi device's associated network strength, `0` to `100`. |
 | `vpn_error?` | `VpnError` | The last failed VPN activation, or `nil` before any or after the next `connect_vpn`. |
 | `vpn_secret?` | `VpnSecretRequest` | The one pending VPN secret request, or `nil`. Answer it with `network`/`vpn_secret` secure fields or drop it with `cancel_vpn_secret`. |
 | `vpns` | `VpnInfo[]` | Saved VPN and WireGuard profiles, ordered by name. |
 | `wifi_devices` | `WifiDeviceInfo[]` | Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths. |
 | `wifi_enabled` | `boolean` | Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`. |
-| `wifi_ip?` | `string` | The primary Wi-Fi device's IPv4 address without prefix, or `nil`. |
 | `wifi_present` | `boolean` | At least one Wi-Fi device exists. |
 
 ### `AccessPointInfo`
@@ -155,9 +152,9 @@ Call each as `mantle.network:<action>(arguments...)`; `?` marks an argument you 
 | Contract | Behavior |
 | :--- | :--- |
 | Updates | Every manager, device-list, device-state, access-point, association and saved-profile change re-reads the whole state from NetworkManager. A hotplugged adapter rescans the device set |
-| Devices | `wifi_devices` lists each Wi-Fi interface by name, primary first. Flat association, scan, address and access-point fields use the primary; flat join fields describe the one join on any device. Old actions use the primary. Wired fields describe the first activated wired device |
+| Devices | `wifi_devices` lists each Wi-Fi interface by name, primary first, with its association, scan, address and access points; `{}` without Wi-Fi hardware. Flat join fields describe the one join on any device. Actions without `_device` use the primary. Wired fields describe the first activated wired device |
 | Toggles | Networking through `Enable`, Wi-Fi through `WirelessEnabled` |
-| Scan | `RequestScan`. `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
+| Scan | `RequestScan`. The device's `scanning` turns `true` on the call and `false` when `LastScan` moves or NetworkManager refuses |
 | Access points | The associated one's strength is live. The others' are read when they appear and after each scan, when NetworkManager updates them |
 | Connect | A saved profile or an open network in range joins at once. Anything else sets `password_ssid` and waits for the key from a `secure_submit = { capability = "network", action = "connect" }` field ([secure fields](../guide/input.md#secure-fields)); the key never reaches Lua |
 | Join verdict | Watched for up to 45 s. A rejected key sets `password_ssid` again. A new network's profile, key included, is saved when the join starts and stays after a rejection; a key retyped for a saved profile reaches disk only once NetworkManager accepts it |
@@ -174,9 +171,9 @@ Use `scan_device(id)`, `connect_device(ssid, hidden, id)` and `disconnect_wifi_d
 
 ### Ask for a Wi-Fi password
 
-A click on an `available_networks` entry calls `mantle.network:connect(entry.ssid, false)`; a secured one without a
-saved profile then sets `password_ssid`. Show the field while it is set. Escape clears a secure field and keeps it armed, then
-calls its `on_cancel`, the place to call `cancel_connect`:
+A click on an `available_networks` entry of a `wifi_devices` interface calls `mantle.network:connect(entry.ssid, false)`;
+a secured one without a saved profile then sets `password_ssid`. Show the field while it is set. Escape clears a secure
+field and keeps it armed, then calls its `on_cancel`, the place to call `cancel_connect`:
 
 ```lua
 local asking = mantle.network:map(function(network)
@@ -279,7 +276,7 @@ text {
 
 | Trap | Fix |
 | :--- | :--- |
-| `available_networks` has a row with `ssid == ""` | Hidden networks broadcast no name; they merge into one nameless row. Skip it and join hidden networks with `connect(ssid, true)` |
+| A `wifi_devices` entry's `available_networks` has a row with `ssid == ""` | Hidden networks broadcast no name; they merge into one nameless row. Skip it and join hidden networks with `connect(ssid, true)` |
 | A hidden network asks for a password even when open | Its security is unknown until it answers. Enter on the empty field joins it as open |
 
 Source: [`supervisor/src/capabilities/network/`](../../supervisor/src/capabilities/network/)

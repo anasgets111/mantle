@@ -12,7 +12,7 @@ local seeds = {
     mock_notifications = { dnd = false, feed = { feeds.notification(feeds.SARAH) } },
     mock_media = feeds.player(61, "playing", mantle.config_dir),
     mock_tray = feeds.TRAY,
-    mock_network = { wifi_enabled = true, connected = true, ssid = "Home", strength = 82 },
+    mock_network = { wifi_enabled = true, connected = true, ssid = "Home", wifi_devices = { { strength = 82 } } },
     mock_bluetooth = { enabled = true, connected_devices = { { name = "WH-1000XM5", battery = 80 } } },
     mock_brightness = { percent = 85 },
     mock_privacy = feeds.privacy(true, true, true),

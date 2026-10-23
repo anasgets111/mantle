@@ -1672,19 +1672,19 @@ mod tests {
             .apply_state_snapshot(StateSnapshot {
                 capability: "network".to_string(),
                 revision: 1,
-                payload: serde_json::json!({ "scanning": true }),
+                payload: serde_json::json!({ "connected": true }),
             })
             .unwrap();
         client
             .apply_state_snapshot(StateSnapshot {
                 capability: "network".to_string(),
                 revision: 2,
-                payload: serde_json::json!({ "scanning": false }),
+                payload: serde_json::json!({ "connected": false }),
             })
             .unwrap();
 
         assert!(
-            !probe::<bool>(&client.loader, "scanning = mantle.network:get().scanning", "scanning"),
+            !probe::<bool>(&client.loader, "connected = mantle.network:get().connected", "connected"),
             "the second push must update the same registered global, not fail or create a second one"
         );
     }

@@ -49,7 +49,6 @@ fn carry_scan(next: &mut NetworkState, previous: Option<&NetworkState>, signal: 
         device.scanning = matches!(signal, NetworkSignal::ScanStarted(id) if id == &device.id)
             || (was_scanning && !matches!(signal, NetworkSignal::ScanCompleted(id) if id == &device.id));
     }
-    next.scanning = next.wifi_devices.first().is_some_and(|wifi| wifi.scanning);
 }
 
 /// `device`'s first IPv4 address without its prefix, read uncached because `Ip4Config`'s path
@@ -217,21 +216,17 @@ impl NetworkController {
         if let Some(index) = primary_wifi_index(route.as_ref(), &links) {
             promote_primary(&mut wifi_devices, index);
         }
-        let primary = wifi_devices.first();
         let ethernet = self.activated_ethernet().await;
         let ethernet_ip = read_ipv4(&self.connection, ethernet.as_ref().map(|ethernet| &ethernet.device)).await;
         NetworkState {
-            scanning: false,
             connected,
-            ssid: display_ssid(wired, primary),
-            strength: primary.map_or(0, |device| device.strength),
+            ssid: display_ssid(wired, wifi_devices.first()),
             wifi_enabled: self.nm.wireless_enabled().await.unwrap_or_default(),
             wifi_present: !wifi.is_empty(),
             // `ethernet()` clones out, so no guard lives across the awaits below.
             ethernet_present: !self.ethernet().is_empty(),
             networking_enabled: self.nm.networking_enabled().await.unwrap_or_default(),
             ethernet_enabled: ethernet.is_some(),
-            wifi_ip: primary.and_then(|device| device.wifi_ip.clone()),
             ethernet_ip,
             // NetworkManager reports an unknown speed as `0`.
             ethernet_speed: match &ethernet {
@@ -242,7 +237,6 @@ impl NetworkController {
             connecting_ssid: None,
             connect_error: None,
             password_ssid: None,
-            available_networks: primary.map_or_else(Vec::new, |device| device.available_networks.clone()),
             wifi_devices,
             vpns: self.build_vpns().await,
             // Overlaid with the VPN state.
@@ -397,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn a_rebuild_keeps_a_scan_until_it_completes_or_its_device_disappears() {
+    fn a_rebuild_keeps_a_scan_until_it_completes() {
         let previous = NetworkState {
             wifi_devices: ["wlan0", "wlan1"]
                 .map(|id| WifiDeviceInfo { id: id.into(), scanning: true, ..WifiDeviceInfo::default() })
@@ -406,14 +400,11 @@ mod tests {
         };
         let mut next = previous.clone();
         carry_scan(&mut next, Some(&previous), &NetworkSignal::ScanCompleted("wlan1".into()));
-        assert!(next.scanning && next.wifi_devices[0].scanning && !next.wifi_devices[1].scanning);
+        assert!(next.wifi_devices[0].scanning && !next.wifi_devices[1].scanning);
         let mut own = previous.clone();
         own.wifi_devices[0].scanning = false;
         carry_scan(&mut own, None, &NetworkSignal::ScanStarted("wlan0".into()));
-        assert!(own.scanning && own.wifi_devices[1].scanning, "None carries the state's own flags");
-        next.wifi_devices.clear();
-        carry_scan(&mut next, Some(&previous), &NetworkSignal::DevicesChanged);
-        assert!(!next.scanning);
+        assert!(own.wifi_devices[0].scanning && own.wifi_devices[1].scanning, "None carries the state's own flags");
     }
 
     #[test]

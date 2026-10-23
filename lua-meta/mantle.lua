@@ -630,7 +630,6 @@
 
 ---@class NetworkState
 ---`mantle.network`'s payload (ADR-0037).
----@field available_networks AccessPointInfo[] The primary Wi-Fi device's visible networks: one per SSID, at most 20, ordered associated, then saved, then strongest. `{}` without Wi-Fi hardware.
 ---@field connect_error? JoinError The last failed join on any Wi-Fi device, or `nil` before any or after a success. Kept until the next `connect`, `cancel_connect` or `abort_connect`; check its `ssid` before showing it.
 ---@field connected boolean A connection carries the default route; `false` means offline.
 ---@field connecting_ssid? string The current join's SSID on any Wi-Fi device, or `nil`; clears on a verdict or `abort_connect`.
@@ -640,15 +639,12 @@
 ---@field ethernet_speed? integer That wired device's link speed in Mb/s; `nil` when unknown or none is activated.
 ---@field networking_enabled boolean NetworkManager networking is on (`NetworkingEnabled`).
 ---@field password_ssid? string The join SSID awaiting a password from a `network`/`connect` secure field on any device, or `nil`. Also set after a rejected key; cleared when a join starts or by `cancel_connect`.
----@field scanning boolean A scan is in flight on the primary Wi-Fi device.
 ---@field ssid? string `"Ethernet"` when the default route is wired, else the associated SSID, else `nil`. An association still getting an address has an `ssid` while `connected` is `false`.
----@field strength integer The primary Wi-Fi device's associated network strength, `0` to `100`.
 ---@field vpn_error? VpnError The last failed VPN activation, or `nil` before any or after the next `connect_vpn`.
 ---@field vpn_secret? VpnSecretRequest The one pending VPN secret request, or `nil`. Answer it with `network`/`vpn_secret` secure fields or drop it with `cancel_vpn_secret`.
 ---@field vpns VpnInfo[] Saved VPN and WireGuard profiles, ordered by name.
 ---@field wifi_devices WifiDeviceInfo[] Every Wi-Fi interface, primary first. IDs are interface names, never NetworkManager object paths.
 ---@field wifi_enabled boolean Wi-Fi radio power (`WirelessEnabled`); can be `true` with no Wi-Fi hardware, see `wifi_present`.
----@field wifi_ip? string The primary Wi-Fi device's IPv4 address without prefix, or `nil`.
 ---@field wifi_present boolean At least one Wi-Fi device exists.
 
 ---@class SecretsState

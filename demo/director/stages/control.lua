@@ -5,7 +5,7 @@ local layout = require("layout")
 
 local placed = layout.placed("control")
 
-local network = state("mock_network", { wifi_enabled = false, connected = false, strength = 0 })
+local network = state("mock_network", { wifi_enabled = false, connected = false, wifi_devices = {} })
 local bluetooth = state("mock_bluetooth", { enabled = false, connected_devices = {} })
 local brightness = state("mock_brightness", { percent = 40 })
 local open = state("control_open", false)
@@ -26,7 +26,8 @@ action("setting", flip)
 local function wifi_icon(n)
     if not n.wifi_enabled then return "network-wireless-offline-symbolic" end
     if not n.connected then return "network-wireless-acquiring-symbolic" end
-    local level = n.strength > 75 and "excellent" or n.strength > 50 and "good" or "ok"
+    local strength = n.wifi_devices[1] and n.wifi_devices[1].strength or 0
+    local level = strength > 75 and "excellent" or strength > 50 and "good" or "ok"
     return "network-wireless-signal-" .. level .. "-symbolic"
 end
 
