@@ -92,7 +92,7 @@ for Lua. Don't run those before committing; on failure, fix and recommit. The ho
   `docs/changelog.md`, in the same commit. One entry per change, typed `Added`, `Changed`, `Fixed`
   or `Breaking`. Lead with what the user sees or must edit; no engine internals. It is also the
   GitHub release notes.
-- **Perf.** A performance change needs an A/B on real low-end hardware, not only headless.
+- **Perf.** A performance change needs an A/B on real hardware, not only headless.
   Headless timing can invert.
 - **Deferred work.** Work the user defers to later becomes a GitHub issue on this repo (`gh issue
   create`) with the findings, measurements and planned fix, so it survives the session.
