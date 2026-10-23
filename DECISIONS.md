@@ -8738,3 +8738,17 @@ serves its object, so setup retries with backoff, and `available` turns true onc
 Rejected: parsing the protocol in the supervisor (`kdeconnect-proto`), which would put untrusted
 LAN packets in the shell process. Rejected: KDE's `kdeconnectd` (`org.kde.kdeconnect`), whose Arch
 package depends on Qt 6 and 18 KDE Frameworks libraries.
+
+## 0378. `mantle.network` keeps per-interface Wi-Fi facts only in `wifi_devices`
+
+The flat `scanning`, `strength`, `wifi_ip` and `available_networks` copied `wifi_devices[1]`, so
+every push carried the access-point list twice: 4142 → 2187 JSON bytes with 20 access points.
+
+1. Configs read the primary interface as `wifi_devices[1]`, `nil` without Wi-Fi hardware.
+2. The flat join fields stay: a `connect` with no Wi-Fi device reports its error there, with no
+   device entry to hold it.
+3. The flat `ssid` stays: only it says the default route is wired (`"Ethernet"`).
+
+Rejected: field-level invalidation of capability pushes. `:map` and `computed` already drop
+unchanged outputs, so a strength tick re-resolved the same 5 of 18 fixture nodes either way and
+saved 4 map calls; per-field tracking needed a proxy `:get()` table that breaks `rawget`/`next`.
