@@ -1,13 +1,16 @@
 //! PipeWire-backed audio state. `mixer` tracks the registry lists; `master` holds the pure
-//! parsing/resolution logic (ADR-0053 decision 3).
+//! volume/mute parsing and default-device resolution (ADR-0053 decision 3); `route` builds and
+//! extracts ALSA hardware `Route` pods.
 //!
 //! Write actions dispatch here; see [`dispatch`] for the two unbuilt actions.
 //!
-//! BlueZ codec control lives here as well, because PipeWire, not BlueZ, picks the codec: each
-//! BlueZ device's profiles are its codecs (ADR-0030).
+//! BlueZ codec control (`bluez`) lives here as well, because PipeWire, not BlueZ, picks the codec:
+//! each BlueZ device's profiles are its codecs (ADR-0030).
 
+mod bluez;
 pub mod master;
 pub mod mixer;
+mod route;
 
 use mixer::{AudioCommand, AudioCommandSender};
 use shared::action::AudioAction;

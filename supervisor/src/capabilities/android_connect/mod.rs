@@ -1,5 +1,6 @@
 //! `mantle.android_connect` tracks connected Android / KDE Connect devices and actions.
 
+pub(super) mod config;
 pub mod controller;
 pub mod proxies;
 

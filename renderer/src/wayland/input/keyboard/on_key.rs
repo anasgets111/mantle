@@ -78,7 +78,7 @@ pub(super) type KeyRoute = (String, Option<layout::scene::NodeId>);
 
 /// The held press a release of `raw_code` ends; `None` for one never offered to `on_key`, or pressed
 /// before the keyboard entered (`leave` empties the list). A new press of the key drops a stale one.
-pub(super) fn take_press(pressed: &mut Vec<HeldPress>, raw_code: u32) -> Option<HeldPress> {
+pub(in crate::wayland::input) fn take_press(pressed: &mut Vec<HeldPress>, raw_code: u32) -> Option<HeldPress> {
     let at = pressed.iter().position(|held| held.event.raw_code == raw_code)?;
     Some(pressed.swap_remove(at))
 }

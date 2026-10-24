@@ -1,17 +1,18 @@
 //! The Wayland thread's half: [`RendererClient`], which services each frame [`pump`](super::pump)
 //! decodes.
 
+mod frame;
 mod reset;
 mod resolve;
+mod scroll;
+
+pub use frame::FrameOutcome;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use shared::{
-    IdleEvent, ProcessExited, ProcessOutputLine, RendererFrame, SetSessionLock, StateSnapshot, SupervisorFrame, debug,
-    error, warn,
-};
+use shared::{RendererFrame, debug, error, warn};
 use tokio::sync::mpsc;
 
 use crate::layout::instance::SurfaceInstance;
@@ -41,22 +42,6 @@ struct ReloadState {
     applied_specs: Vec<SurfaceSpec>,
     applied_output: Option<lua::LoadOutput>,
     pending: Option<(lua::LoadOutput, Vec<SurfaceSpec>)>,
-}
-
-/// What an inbound frame still owes Wayland after [`RendererClient::handle_frame`]: `ApplyPending`
-/// needs `crate::wayland::App`'s surfaces, `SetSessionLock` its SCTK lock state (ADR-0042).
-#[derive(Debug, Clone, PartialEq)]
-pub enum FrameOutcome {
-    /// Fully serviced by [`RendererClient::handle_frame`].
-    Handled,
-    /// ADR-0042/ADR-0052's `SetSessionLock`: match the session lock to this flag
-    /// (`crate::wayland::App::set_session_lock`).
-    SetSessionLock(bool),
-    /// A control client's `mantle input`: only `crate::wayland::App` has the surfaces to deliver it
-    /// to, and it answers the call.
-    Inject { id: u64, inject: shared::Inject },
-    /// A successful `Reevaluate`, which may change the surface set (`crate::wayland::App::apply_pending`).
-    ApplyPending,
 }
 
 /// One generation's Lua side: VM, retained scene, live signals, and reload state. Deliberately
@@ -246,18 +231,6 @@ impl RendererClient {
             }
             Err(err) => warn!("failed to build rescue state: {err}"),
         }
-    }
-
-    /// Hydrates only `snapshot.capability`; no Lua evaluation (module docs). `&self` is needed for
-    /// the lazy `capabilities` registration.
-    fn apply_state_snapshot(&self, snapshot: StateSnapshot) -> mlua::Result<()> {
-        let value = crate::lua::json::to_lua(self.loader.lua(), &snapshot.payload)?;
-        let handle = self.capability_handle(&snapshot.capability)?;
-        let previous = handle.hydrate(value);
-        // Run `on_change` handlers (ADR-0115) after hydration and before layout. This is the only
-        // Lua a push runs, not a `shell.lua` evaluation.
-        handle.notify_change(self.loader.lua(), previous);
-        Ok(())
     }
 
     /// Before each `shell.lua` evaluation, clear what the last one registered: `process.run` children,
@@ -454,76 +427,6 @@ impl RendererClient {
         self.scene.set_field_scroll(instance_id, id, scroll)
     }
 
-    /// A wheel's `delta` for `signal` ([`Scene::wheel`]): the instances to repaint now.
-    pub fn wheel(
-        &mut self,
-        signal: &crate::lua::signal::Signal,
-        delta: f32,
-        notch: bool,
-        now: std::time::Instant,
-    ) -> Vec<String> {
-        match self.scene.wheel(signal, delta, notch, now) {
-            crate::layout::scene::WheelScroll::Eased(animating) => {
-                self.publish_marks();
-                animating
-            }
-            crate::layout::scene::WheelScroll::Write(offset) => self.write_scroll(signal, offset),
-        }
-    }
-
-    /// Writes `settled` after a scroll run starts or ends outside a pass or tick, owing its readers a pass.
-    fn publish_marks(&mut self) {
-        self.scene.publish_marks(self.loader.lua());
-        self.mark_layout_readers();
-    }
-
-    /// Fingers lifted from `signal` at `velocity` px/s ([`Scene::fling`]): the instances to animate.
-    pub fn fling(
-        &mut self,
-        signal: &crate::lua::signal::Signal,
-        velocity: f32,
-        now: std::time::Instant,
-    ) -> Vec<String> {
-        let flung = self.scene.fling(signal, velocity, now);
-        self.publish_marks();
-        flung
-    }
-
-    /// Stops every run on `signal` ([`Scene::stop_scroll`]).
-    pub fn stop_scroll(&mut self, signal: &crate::lua::signal::Signal) {
-        self.scene.stop_scroll(signal);
-        self.publish_marks();
-    }
-
-    /// One frame of every smooth scroll in `due`, ahead of the pass so a reader lays out from the
-    /// offset this frame draws: the instances moved in place.
-    pub fn advance_scrolls(&mut self, due: &[String], now: std::time::Instant) -> Vec<String> {
-        let mut moved = Vec::new();
-        for (signal, offset) in self.scene.advance_scrolls(due, now) {
-            moved.extend(self.write_scroll(&signal, offset));
-        }
-        self.publish_marks();
-        moved
-    }
-
-    /// In place when only `scroll` slots read the signal, else a write this turn's pass reads.
-    fn write_scroll(&mut self, signal: &crate::lua::signal::Signal, offset: f32) -> Vec<String> {
-        if let Some(moved) = self.scroll_in_place(signal, offset) {
-            return moved;
-        }
-        if let Some(handle) = signal.scroll_handle() {
-            handle.set_changed(mlua::Value::Number(f64::from(offset)));
-        }
-        Vec::new()
-    }
-
-    /// [`Scene::scroll_in_place`], with a pass owed to the readers of each `geometry` rect it moved.
-    pub fn scroll_in_place(&mut self, signal: &crate::lua::signal::Signal, asked: f32) -> Option<Vec<String>> {
-        let moved = self.scene.scroll_in_place(signal, asked, self.loader.lua());
-        self.publish_marks();
-        moved
-    }
-
     /// `initial_text` of the fields created since the last call; see [`Scene::take_seeds`].
     pub fn take_seeds(&mut self) -> Vec<(crate::layout::scene::NodeId, String)> {
         self.scene.take_seeds()
@@ -579,87 +482,6 @@ impl RendererClient {
     /// the call; see [`crate::wayland::App::fire_on_click`].
     pub fn lua(&self) -> &mlua::Lua {
         self.loader.lua()
-    }
-
-    /// Handles one [`pump`](super::pump)-decoded frame. Returns [`FrameOutcome`]: `Handled`, or work handed to
-    /// `crate::wayland::App` for its surfaces or SCTK
-    /// `SessionLockState`/lock surfaces (ADR-0042).
-    #[must_use]
-    pub fn handle_frame(&mut self, frame: SupervisorFrame) -> FrameOutcome {
-        match frame {
-            SupervisorFrame::StateSnapshot(snapshot) => {
-                if let Err(err) = self.apply_state_snapshot(snapshot) {
-                    warn!("failed to convert a pushed StateSnapshot to a Lua value: {err}");
-                }
-            }
-            SupervisorFrame::Reevaluate => {
-                if self.reevaluate() {
-                    return FrameOutcome::ApplyPending;
-                }
-            }
-            SupervisorFrame::ProcessOutput(ProcessOutputLine { id, stream, line }) => {
-                self.process_registry.dispatch_output(id, stream, line);
-            }
-            SupervisorFrame::ProcessExited(ProcessExited { id, code }) => {
-                self.process_registry.dispatch_exit(id, code);
-            }
-            // `ext_session_lock_v1` is a Wayland object; `crate::wayland::App` services it
-            // (ADR-0042, ADR-0052 decision 1).
-            SupervisorFrame::SetSessionLock(SetSessionLock { locked }) => return FrameOutcome::SetSessionLock(locked),
-            // The Supervisor addresses this process via its own socket (ADR-0032).
-            SupervisorFrame::IdleEvent(IdleEvent { generation_id: _, threshold_sec, state }) => {
-                self.idle_registry.dispatch_event(threshold_sec, state);
-            }
-            // ADR-0112: `mantle set`/`mantle toggle`. The refusal goes to the log and back to the
-            // waiting client, which exits non-zero with it; the write dirties the scene.
-            SupervisorFrame::SetState { id, set } => {
-                let outcome = match lua::signal::write_state(self.lua(), &set) {
-                    Ok(()) => shared::CallOutcome::Returned(serde_json::Value::Null),
-                    Err(why) => {
-                        warn!("`mantle` asked to write state {:?} and was refused: {why}", set.name);
-                        shared::CallOutcome::Failed(why)
-                    }
-                };
-                if let Err(err) =
-                    self.commands.frames().send(RendererFrame::CallResult(shared::CallResult { id, outcome }))
-                {
-                    error!("failed to answer the write to state {:?}: {err}", set.name);
-                }
-            }
-            // ADR-0197: `mantle call`. Runs outside layout, like an `on_change` handler, and
-            // always answers -- a caller is holding its socket open for this.
-            SupervisorFrame::Call(call) => {
-                let outcome = lua::action::dispatch(self.lua(), &call.name, &call.arguments);
-                // A keybind's caller discards stderr, so the log is where a failure stays visible.
-                if let shared::CallOutcome::Failed(why) = &outcome {
-                    warn!("`mantle call {}` failed: {why}", call.name);
-                }
-                let result = shared::CallResult { id: call.id, outcome };
-                if let Err(err) = self.commands.frames().send(RendererFrame::CallResult(result)) {
-                    error!("failed to answer `mantle call {}`: {err}", call.name);
-                }
-            }
-            // A bare `mantle call`/`set`/`toggle`: what this generation answers for.
-            SupervisorFrame::ListDeclared { id, declared } => {
-                let outcome = match declared {
-                    shared::Declared::Actions => shared::CallOutcome::Returned(lua::action::names(self.lua())),
-                    shared::Declared::States => {
-                        shared::CallOutcome::Returned(serde_json::json!(lua::signal::declared_states(self.lua())))
-                    }
-                };
-                if let Err(err) =
-                    self.commands.frames().send(RendererFrame::CallResult(shared::CallResult { id, outcome }))
-                {
-                    error!("failed to answer a `mantle` listing: {err}");
-                }
-            }
-            SupervisorFrame::Inject { id, inject } => return FrameOutcome::Inject { id, inject },
-            // The Supervisor routes these to control clients; one arriving here is a wire fault.
-            SupervisorFrame::CallResult(result) => {
-                error!("ignoring a CallResult for id {}; nothing here calls", result.id);
-            }
-        }
-        FrameOutcome::Handled
     }
 
     /// Evaluates `shell.lua` into `pending`, or sets rescue. `true` means there is something to
@@ -721,6 +543,7 @@ mod tests {
     use crate::layout::instance::{OutputGeometry, expand_instances};
     use crate::lua::surfaces::surface_specs;
     use crate::lua::tests::probe;
+    use shared::{ProcessExited, ProcessOutputLine, SetSessionLock, StateSnapshot, SupervisorFrame};
 
     pub(super) fn write_shell_lua(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
         let path = dir.join("shell.lua");
@@ -1661,7 +1484,10 @@ mod tests {
             panic!("a capability write must be queued as RendererFrame::Command");
         };
         assert_eq!(envelope.params.capability, "lock");
-        assert_eq!(envelope.params.action, "lock", "the action `supervisor/src/lock.rs`'s dispatch answers to");
+        assert_eq!(
+            envelope.params.action, "lock",
+            "the action `supervisor/src/capabilities/lock/controller.rs`'s dispatch answers to"
+        );
     }
 
     #[test]

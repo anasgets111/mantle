@@ -147,7 +147,7 @@ pub fn deserialize_lua_table(table: &Table) -> Result<VirtualNode, DeserializeEr
                 other => other.to_string()?,
             };
             let accepted = accepted_properties(kind);
-            let hint = super::fuzzy::hint(&property, &accepted);
+            let hint = super::hint::hint(&property, &accepted);
             return Err(DeserializeError::UnknownProperty { kind: kind.to_string(), property, hint });
         };
         properties.insert(name, value);

@@ -343,7 +343,7 @@ mod tests {
     /// shares the slot's texture.
     #[test]
     fn each_node_plays_a_gif_on_its_own_clock_and_texture() {
-        use super::super::decode::tests::gif_fixture;
+        use super::super::gif::tests::gif_fixture;
         use super::super::{Fit, ImageRequest, Load};
         use crate::layout::paint::{init_headless_egl, text_painter};
         use gif::DisposalMethod::Keep;

@@ -1143,9 +1143,11 @@ See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animati
 
 Source: [allowlist](../../renderer/src/lua/nodes/properties.rs),
 [parsers](../../renderer/src/layout/node/style/mod.rs),
+[effect parsers](../../renderer/src/layout/node/style/effect.rs),
 [paint style](../../renderer/src/layout/node/paint_style.rs),
 [paint order](../../renderer/src/layout/paint/build.rs),
 [canvas](../../renderer/src/layout/paint/canvas/mod.rs),
+[clips and masks](../../renderer/src/layout/paint/canvas/offscreen.rs),
 [effects](../../renderer/src/layout/paint/canvas/effects.rs),
 [shapes](../../renderer/src/layout/paint/canvas/shape.rs),
 [blur region](../../renderer/src/layout/region.rs),

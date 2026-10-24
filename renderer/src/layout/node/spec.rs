@@ -234,7 +234,7 @@ impl Prop for SecureSubmitTarget {
         let (capability, action) = (field("capability")?, field("action")?);
         if !SECURE_SUBMIT_TARGETS.contains(&(capability.as_str(), action.as_str())) {
             let known: Vec<String> = SECURE_SUBMIT_TARGETS.iter().map(|(c, a)| format!("{c}/{a}")).collect();
-            let hint = crate::lua::fuzzy::hint(
+            let hint = crate::lua::hint::hint(
                 &format!("{capability}/{action}"),
                 &known.iter().map(String::as_str).collect::<Vec<_>>(),
             );

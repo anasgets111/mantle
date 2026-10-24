@@ -14,7 +14,7 @@ use tokio::sync::watch;
 use super::devices::{AudioDevice, BluetoothCodecs};
 use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
 use super::streams::{AppStream, CameraGraph, CaptureApp, running};
-use crate::capabilities::audio::master;
+use crate::capabilities::audio::{master, route};
 use crate::capabilities::scale::percent_from_fraction;
 
 /// All PipeWire inputs to `mantle.privacy` in one snapshot (ADR-0137). One channel keeps the three
@@ -86,7 +86,7 @@ pub(super) struct MixerState {
     /// Bound ALSA `Device` proxies/listeners for writes. BlueZ proxies live in `bluez_devices`.
     pub(super) devices: HashMap<u32, (Rc<pw::device::Device>, pw::device::DeviceListener)>,
     /// `(device global id, card.profile.device)` -> active ALSA or BlueZ `Route`.
-    pub(super) device_routes: HashMap<(u32, i32), master::ActiveRoute>,
+    pub(super) device_routes: HashMap<(u32, i32), route::ActiveRoute>,
     /// BlueZ `Device` id -> its MAC and profiles, for [`AudioState::bluetooth`].
     pub(super) bluez_cards: HashMap<u32, BluezCard>,
     /// Bound BlueZ `Device` proxies/listeners, separate from `bluez_cards` so state stays plain.
@@ -293,6 +293,7 @@ pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
 mod tests {
     use super::super::devices::{CodecProfile, DeviceNames};
     use super::*;
+    use crate::capabilities::audio::bluez;
     use shared::state::audio::AudioChannel;
 
     fn sample_stream(node_id: u32) -> AppStream {
@@ -446,7 +447,7 @@ mod tests {
         let mut state = mixer_state(updates, privacy_updates);
         let profile = |index: i32, name: &str, description: &str, available: bool| {
             let profile =
-                master::Profile { index, name: name.to_string(), description: description.to_string(), available };
+                bluez::Profile { index, name: name.to_string(), description: description.to_string(), available };
             (index, profile)
         };
         state.bluez_cards = HashMap::from([(
@@ -606,7 +607,7 @@ mod tests {
 
         state
             .device_routes
-            .insert((80, 0), master::ActiveRoute { index: 0, port: None, props: Some(props_at(0.4, true)) });
+            .insert((80, 0), route::ActiveRoute { index: 0, port: None, props: Some(props_at(0.4, true)) });
         state.publish_audio();
         let published = rx.try_recv().unwrap();
         assert!(published.source_muted);
@@ -649,7 +650,7 @@ mod tests {
         state.remove_global(5);
         assert_eq!(rx.try_recv().unwrap().apps.len(), 1);
 
-        state.device_routes.insert((80, 0), master::ActiveRoute { index: 0, port: None, props: None });
+        state.device_routes.insert((80, 0), route::ActiveRoute { index: 0, port: None, props: None });
         state.remove_global(80);
         assert!(state.device_routes.is_empty(), "a removed BlueZ device must not leave routes for a reused id");
     }

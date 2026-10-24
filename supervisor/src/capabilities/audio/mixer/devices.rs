@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use pipewire::keys;
 
 use super::PropsLookup;
-use crate::capabilities::audio::master;
+use crate::capabilities::audio::{bluez, master, route};
 
 /// What the mixer tracks for one bound BlueZ device. Proxies live in `bluez_devices`, keeping this
 /// plain test data like [`DeviceEntry`].
@@ -16,16 +16,16 @@ use crate::capabilities::audio::master;
 pub(super) struct BluezCard {
     pub(super) mac: String,
     /// The profiles from the last finished `EnumProfile`, keyed by index.
-    pub(super) profiles: std::collections::BTreeMap<i32, master::Profile>,
+    pub(super) profiles: std::collections::BTreeMap<i32, bluez::Profile>,
     /// The index `Profile` reports.
     pub(super) active: Option<i32>,
     /// `EnumProfile` answers collected since the last `Profile` answer, swapped in when it arrives.
-    pub(super) incoming: std::collections::BTreeMap<i32, master::Profile>,
+    pub(super) incoming: std::collections::BTreeMap<i32, bluez::Profile>,
 }
 
 impl BluezCard {
     /// Collects one `EnumProfile` answer.
-    pub(super) fn enumerated(&mut self, profile: master::Profile) {
+    pub(super) fn enumerated(&mut self, profile: bluez::Profile) {
         self.incoming.insert(profile.index, profile);
     }
 
@@ -52,8 +52,8 @@ pub(super) fn bluetooth_codecs(cards: &HashMap<u32, BluezCard>) -> Vec<Bluetooth
                 .filter_map(|profile| {
                     Some(CodecProfile {
                         index: profile.index,
-                        codec: master::codec_from_name(&profile.name)
-                            .or_else(|| master::codec_of(&profile.description))?,
+                        codec: bluez::codec_from_name(&profile.name)
+                            .or_else(|| bluez::codec_of(&profile.description))?,
                         description: profile.description.clone(),
                     })
                 })
@@ -99,7 +99,7 @@ pub(super) struct DeviceEntry {
 impl DeviceEntry {
     pub(super) fn reported_props<'a>(
         &'a self,
-        routes: &'a HashMap<(u32, i32), master::ActiveRoute>,
+        routes: &'a HashMap<(u32, i32), route::ActiveRoute>,
     ) -> Option<&'a master::RawSinkProps> {
         self.route
             .and_then(|route| routes.get(&(route.device_id, route.profile_device)))
@@ -119,7 +119,7 @@ pub(super) struct DeviceRoute {
 /// Builds a device array with `active` marked, ordered by registry id for deterministic publishes.
 pub(super) fn device_list(
     entries: &HashMap<u32, DeviceEntry>,
-    routes: &HashMap<(u32, i32), master::ActiveRoute>,
+    routes: &HashMap<(u32, i32), route::ActiveRoute>,
     active: Option<u32>,
 ) -> Vec<AudioDevice> {
     let mut list: Vec<AudioDevice> = entries
@@ -222,7 +222,7 @@ mod tests {
         ]);
         entries.get_mut(&59).unwrap().route = Some(DeviceRoute { device_id: 51, profile_device: 3 });
         let routes =
-            HashMap::from([((51, 3), master::ActiveRoute { index: 5, port: Some("hdmi".to_string()), props: None })]);
+            HashMap::from([((51, 3), route::ActiveRoute { index: 5, port: Some("hdmi".to_string()), props: None })]);
 
         let devices = device_list(&entries, &routes, Some(70));
 
@@ -257,7 +257,7 @@ mod tests {
 
     #[test]
     fn a_profile_enumeration_replaces_the_list_and_reports_only_a_change() {
-        let profile = |index: i32, name: &str| master::Profile {
+        let profile = |index: i32, name: &str| bluez::Profile {
             index,
             name: name.to_string(),
             description: String::new(),

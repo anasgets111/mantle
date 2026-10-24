@@ -18,7 +18,7 @@ use shared::{CommandEnvelope, CommandParams, RendererFrame, error};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::layout::node::preview_for_error;
-use crate::lua::fuzzy::{closest, hint};
+use crate::lua::hint::{closest, hint};
 use crate::lua::location::LocatedMethods;
 use crate::lua::luacats::rust_type_in_lua;
 use crate::lua::marshal::number_word;

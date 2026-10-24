@@ -8,7 +8,7 @@ use std::rc::Rc;
 use pipewire as pw;
 use shared::debug;
 
-use crate::capabilities::audio::master;
+use crate::capabilities::audio::{bluez, master, route};
 
 use super::devices::DeviceRoute;
 use super::state::{AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState};
@@ -186,7 +186,7 @@ fn write_device_route(
         );
         return;
     };
-    let object = master::route_object(index, route.profile_device, channel_volumes, muted);
+    let object = route::route_object(index, route.profile_device, channel_volumes, muted);
     with_pod(&object, format_args!("a Route object for device {}", route.device_id), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) =
@@ -202,7 +202,7 @@ fn write_device_route(
 /// Sends `SPA_PARAM_Profile`, which changes a BlueZ device's codec; the new profile returns through
 /// `bind_bluez_device`'s listener.
 fn write_bluetooth_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, index: i32) {
-    with_pod(&master::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
+    with_pod(&bluez::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) = state.bluez_devices.get(&device_id) else {
             debug!("set_bluetooth_profile({device_id}, {index}) names no bound Bluetooth device; ignored");

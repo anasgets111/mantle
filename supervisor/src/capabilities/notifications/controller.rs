@@ -13,6 +13,7 @@ use tokio::time::Instant;
 use zbus::fdo::RequestNameFlags;
 
 use super::actions::{declares_action, parse_actions};
+use super::hints::{Hints, desktop_entry_from_hint, reply_placeholder_from_hint, urgency_from_hint_byte};
 use super::icon::{
     ImageInput, RawImageData, default_trusted_icon_roots, delete_icon_file, encode_image_data_to_png, hint_path,
     image_data_is_valid, resolve_app_icon, resolve_image_input, sanitize_body, split_image_path_hint,
@@ -24,9 +25,8 @@ use super::queue::{
 };
 use super::sound::{SoundSender, default_trusted_sound_roots, resolve_sound_name};
 use super::{
-    Hints, MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
-    NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsState, Urgency, desktop_entry_from_hint,
-    reply_placeholder_from_hint, urgency_from_hint_byte,
+    MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
+    NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsState, Urgency,
 };
 use crate::capabilities::clock::controller::epoch_seconds;
 use crate::capabilities::truncate_utf8_bytes;

@@ -939,6 +939,7 @@ See also: [signals](signals.md) (`pulse`, `delay`, `hover`), [nodes](../nodes/in
 identity), [input](input.md) (hover and clicks that drive motion), [paint](paint.md) (what the
 painted properties draw).
 
-Source: [animate](../../renderer/src/layout/node/animate/mod.rs), [easing](../../renderer/src/layout/node/animate/easing.rs),
+Source: [animate](../../renderer/src/layout/node/animate/mod.rs),
+[interpolation](../../renderer/src/layout/node/animate/animatable.rs), [easing](../../renderer/src/layout/node/animate/easing.rs),
 [spring](../../renderer/src/layout/node/animate/spring.rs), [keyframes](../../renderer/src/layout/node/animate/sequence.rs),
-[leaving nodes](../../renderer/src/layout/scene/tick.rs), [range clamps](../../renderer/src/layout/node/style/mod.rs).
+[leaving nodes](../../renderer/src/layout/scene/tick.rs), [range clamps](../../renderer/src/layout/node/style/effect.rs).

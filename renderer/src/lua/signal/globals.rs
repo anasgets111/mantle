@@ -12,10 +12,10 @@ use crate::lua::marshal::{Num, a_type, list_entries, out_of_range, rect_table};
 use crate::text::snap::LogicalRect;
 
 use super::budget::install_hook;
+use super::equality::literal_was_edited;
 use super::tracking::Output;
 use super::{
-    CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, before_slot, from_userdata, is_signal, literal_was_edited,
-    new_derived, next_cell_id,
+    CellId, DirtyFlag, HELD_SLOT, Signal, SignalKind, before_slot, from_userdata, is_signal, new_derived, next_cell_id,
 };
 
 /// Applies an `mantle set`/`toggle` to named `state` (ADR-0112), using `set`'s marshalling and

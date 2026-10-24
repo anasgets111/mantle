@@ -18,7 +18,7 @@ pub(super) struct Output {
 }
 
 /// An owned copy of a plain-data output: scalars, and tables with no metatable, scalar keys and
-/// plain values, [`super::SAME_TABLE_ENTRIES`] entries in all. Owned, so the last output is
+/// plain values, [`super::equality::SAME_TABLE_ENTRIES`] entries in all. Owned, so the last output is
 /// compared without rooting a table (`M.x = computed(...)` would keep its module alive), and
 /// taken at settle, so a table mutated in place since then still reads as a change.
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -26,7 +26,7 @@ enum Plain {
     Nil,
     Bool(bool),
     Int(i64),
-    /// By bits, as [`super::same_scalar`] compares.
+    /// By bits, as `equality::same_scalar` compares.
     Num(u64),
     Str(Vec<u8>),
     /// Sorted, since `pairs` order differs between equal tables.
@@ -50,7 +50,7 @@ impl Plain {
                 for pair in table.pairs::<Value, Value>() {
                     let (key, value) = pair.ok()?;
                     *budget = budget.checked_sub(1)?;
-                    if !super::is_comparable_literal(&key) {
+                    if !super::equality::is_comparable_literal(&key) {
                         return None;
                     }
                     entries.push((Self::of(&key, budget)?, Self::of(&value, budget)?));
@@ -73,8 +73,8 @@ impl Output {
     /// anything else is new every run, so it changes when an input was written since the last run.
     pub(super) fn settle(&self, lua: &Lua, value: &Value, at: u64, inputs: Vec<CellId>) {
         let stale = WRITES.with_borrow(|log| log.computeds.get(&self.cell).map(|(was, prev)| log.written(*was, prev)));
-        let scalar = super::is_comparable_literal(value);
-        let plain = Plain::of(value, &mut { super::SAME_TABLE_ENTRIES });
+        let scalar = super::equality::is_comparable_literal(value);
+        let plain = Plain::of(value, &mut { super::equality::SAME_TABLE_ENTRIES });
         let mut last = self.last.borrow_mut();
         let same = plain.is_some() && *last == plain;
         // Anything else re-run with no input written is the pass reading it again, not a change.

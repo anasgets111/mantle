@@ -5,8 +5,8 @@
 //! a monotonic timestamp and interpolate elapsed time client-side; read live position only when
 //! seeking. Hand-written proxies (`proxies.rs`), a live `HashMap<bus_name, entry>` registry with
 //! one forwarder per player (`player.rs`), controller dispatch (`controller.rs`), and pure
-//! parsing/comparison helpers in `metadata.rs`, unit-testable without a live D-Bus connection,
-//! make the boundaries explicit.
+//! parsing/comparison helpers in `metadata.rs` and `position.rs`, unit-testable without a live
+//! D-Bus connection, make the boundaries explicit.
 //!
 //! Players never register; discovery is active (`watcher.rs`): scan `ListNames` once, then watch
 //! `NameOwnerChanged` for `org.mpris.MediaPlayer2.` arrivals and departures. ADR-0036 also fixes
@@ -17,6 +17,7 @@ pub mod collections;
 pub mod controller;
 pub mod metadata;
 pub mod player;
+mod position;
 pub mod proxies;
 pub mod watcher;
 

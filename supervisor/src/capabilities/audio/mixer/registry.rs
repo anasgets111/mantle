@@ -18,7 +18,7 @@ use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-use crate::capabilities::audio::master;
+use crate::capabilities::audio::{bluez, master, route};
 
 use super::PropsLookup;
 use super::devices::{BluezCard, DeviceEntry, DeviceRoute, device_names};
@@ -246,7 +246,7 @@ fn decode(param: Option<&pw::spa::pod::Pod>) -> Option<Value> {
 
 fn record_route(state: &Rc<RefCell<MixerState>>, device_id: u32, value: &Value) {
     let mut current = state.borrow_mut();
-    let Some((profile_device, route)) = master::extract_route_target(value, &current.device_routes, device_id) else {
+    let Some((profile_device, route)) = route::extract_route_target(value, &current.device_routes, device_id) else {
         return;
     };
     let previous = current.device_routes.insert((device_id, profile_device), route.clone());
@@ -578,7 +578,7 @@ fn bind_bluez_device(
     registry: &pw::registry::RegistryRc,
     obj: &GlobalObject<&DictRef>,
 ) {
-    let Some(mac) = obj.props.and_then(|props| props.get_prop(*keys::DEVICE_NAME)).and_then(master::mac_from_card_name)
+    let Some(mac) = obj.props.and_then(|props| props.get_prop(*keys::DEVICE_NAME)).and_then(bluez::mac_from_card_name)
     else {
         debug!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
         return;
@@ -605,7 +605,7 @@ fn bind_bluez_device(
                 record_route(&state_for_param, device_id, &value);
                 return;
             }
-            let Some(profile) = master::extract_profile(&value) else { return };
+            let Some(profile) = bluez::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
             let Some(card) = state.bluez_cards.get_mut(&device_id) else { return };
             match param_type {

@@ -254,7 +254,7 @@ impl Capabilities {
                     let bus = session_bus("android_connect stays unavailable").await;
                     self.android_connect = Some(AndroidConnectController::new(
                         bus,
-                        android_connect::controller::config_dir(),
+                        android_connect::config::config_dir(),
                         self.senders.android_connect.clone(),
                     ));
                     let _ = self.senders.android_connect.send(());

@@ -363,6 +363,7 @@ mod tests {
         instances_for, push_workspace, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
     };
     use super::super::*;
+    use shared::StateSnapshot;
 
     /// ADR-0070 decision 5: polkit has no roster entry or `mantle.polkit`, so only a
     /// `secure_submit` naming it can request the authentication agent.

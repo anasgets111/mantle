@@ -138,11 +138,80 @@ impl App {
         self.keeping_foreign_focus(&surface_id, |app| app.pointer_event(index, position, &kind, true));
         Ok(())
     }
+
+    /// Runs `deliver` as though `surface_id` held the keyboard and `ctrl`/`shift` were the only
+    /// modifiers down, then puts the real keyboard focus and modifiers back. Refuses while a masked
+    /// field holds focus: injection never reaches a secret.
+    fn with_injected_keyboard<T>(
+        &mut self,
+        surface_id: &str,
+        (ctrl, shift): (bool, bool),
+        deliver: impl FnOnce(&mut Self) -> T,
+    ) -> Result<T, String> {
+        if self.focused_secure_submit.is_some() {
+            return Err("a `secure_submit` field holds the keyboard".to_string());
+        }
+        let focus = self.keyboard_focus.replace(surface_id.to_string());
+        let held = std::mem::replace(&mut self.held, Held { ctrl, shift, ..Held::default() });
+        let result = self.keeping_foreign_focus(surface_id, deliver);
+        self.keyboard_focus = focus;
+        // The scope moved back, and `focus_visible` follows it.
+        self.sync_focused();
+        self.held = held;
+        Ok(result)
+    }
+
+    /// `mantle input key`: [`Self::apply_key`] with no serial and no repeat, so the clipboard chords
+    /// that need the compositor's selection are refused, then the key's `on_key_release`.
+    fn inject_key(&mut self, surface_id: &str, event: &KeyEvent, modifiers: (bool, bool)) -> Result<(), String> {
+        if modifiers.0 && matches!(event.keysym, Keysym::c | Keysym::C | Keysym::x | Keysym::X | Keysym::v | Keysym::V)
+        {
+            return Err("copy, cut and paste need the compositor's clipboard".to_string());
+        }
+        self.with_injected_keyboard(surface_id, modifiers, |app| {
+            keyboard::take_press(&mut app.pressed_keys, event.raw_code);
+            app.apply_key(event, false, None);
+            app.release_offered_key(event.raw_code);
+        })
+    }
+
+    /// `mantle input type`: the commit path of an input method, so `max_length` and `on_change`
+    /// apply. Fails when no plain field is typing, which a real keystroke would drop silently.
+    fn inject_text(&mut self, surface_id: &str, text: &str) -> Result<(), String> {
+        check_injected_text(text)?;
+        self.with_injected_keyboard(surface_id, (false, false), |app| {
+            app.prune_text_field_focus();
+            if !app.focused_text_field.as_ref().is_some_and(|field| app.text_field_takes_keys(field)) {
+                return Err(format!("no textfield is focused in {surface_id}; press one first"));
+            }
+            app.apply_ime_edit((0, 0), Some(text));
+            Ok(())
+        })?
+    }
+}
+
+/// The text `ime_change` would drop silently, named so `mantle input type` can fail.
+fn check_injected_text(text: &str) -> Result<(), String> {
+    if text.is_empty() {
+        return Err("`type` needs text".to_string());
+    }
+    if text.chars().any(char::is_control) {
+        return Err("text with a control character is dropped; send those through `key`".to_string());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn injected_text_the_input_method_path_would_drop_is_an_error() {
+        assert!(check_injected_text("héllo ").is_ok());
+        assert!(check_injected_text("").is_err());
+        assert!(check_injected_text("a\nb").is_err());
+        assert!(check_injected_text("\u{7f}").is_err());
+    }
 
     #[test]
     fn a_bad_combo_anywhere_refuses_the_whole_sequence() {

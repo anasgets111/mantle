@@ -111,12 +111,12 @@ pub(crate) fn only_keys(table: &mlua::Table, keys: &[&str]) -> Result<(), String
         }
     }
     let Some(first) = unknown.into_iter().min() else { return Ok(()) };
-    Err(format!("unknown key {first}; {}", super::fuzzy::hint(first.trim_matches('`'), keys)))
+    Err(format!("unknown key {first}; {}", super::hint::hint(first.trim_matches('`'), keys)))
 }
 
 /// "got {shown}; did you mean `c`?" or "got {shown}; expected one of `a`, `b`".
 pub(crate) fn expected_one_of(names: &[&str], got: &str, shown: &str) -> String {
-    format!("got {shown}; {}", super::fuzzy::hint(got, names))
+    format!("got {shown}; {}", super::hint::hint(got, names))
 }
 
 /// A config list's entries `1..=n` in order, ending at the first hole, which reads as `nil` so

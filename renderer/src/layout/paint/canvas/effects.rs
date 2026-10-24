@@ -11,12 +11,10 @@ use crate::text::atlas::TextPainter;
 use crate::text::snap::{LogicalRect, PhysicalRect};
 
 use super::super::{LayerShader, UNCLIPPED, any_draw_matches, grow, reads_under, shadow_rect, transformed, volatile};
+use super::offscreen::{aligned, apply_mask, fill_pooled, offscreen, pooled_paint, scratch};
 use super::shape::box_path;
 use super::vector_path::femtovg_path;
-use super::{
-    Draw, DrawCmd, Frame, Shaders, Walk, aligned, apply_mask, fill_image, fill_pooled, flush, offscreen, pooled_paint,
-    scratch,
-};
+use super::{Draw, DrawCmd, Frame, Shaders, Walk, fill_image, flush};
 use crate::layout::node::shape::inset;
 use kurbo::Shape as _;
 
@@ -686,6 +684,7 @@ mod tests {
     use super::super::*;
     use super::*;
 
+    use femtovg::{ImageFlags, PixelFormat};
     use mlua::Lua;
 
     use crate::layout::node::Fill;

@@ -172,4 +172,4 @@ See also: [input](../guide/input.md), [list](list.md), [text](text.md), [surface
 
 Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [secure_submit](../../renderer/src/layout/node/spec.rs), [plain fields](../../renderer/src/wayland/input/keyboard/plain.rs),
-[focus](../../renderer/src/wayland/input/keyboard/mod.rs).
+[focus](../../renderer/src/wayland/input/keyboard/focus.rs).

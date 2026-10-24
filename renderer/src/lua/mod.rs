@@ -1,6 +1,7 @@
 //! Lua VM bootstrap and loader (`CONTEXT.md`, Loader): evaluates `shell.lua` into top-level `panel`
-//! nodes and topology for a generation's first evaluation and every re-evaluation. `Loader::evaluate_file` reads `~/.config/mantle/shell.lua`
-//! (`shared::shell_lua_path`) and is the `renderer/src/socket/client/mod.rs` entry point on startup and every
+//! nodes and topology for a generation's first evaluation and every re-evaluation.
+//! `Loader::evaluate_file` reads `~/.config/mantle/shell.lua` (`shared::shell_lua_path`); the
+//! client reaches it through `surfaces::evaluate_and_specs` on startup and every
 //! Supervisor-triggered `Reevaluate`.
 pub mod action;
 pub mod calls;
@@ -9,6 +10,7 @@ pub mod file;
 pub(crate) mod focus;
 pub mod fonts;
 pub mod fuzzy;
+pub(crate) mod hint;
 pub mod idle;
 pub mod json;
 pub(crate) mod location;

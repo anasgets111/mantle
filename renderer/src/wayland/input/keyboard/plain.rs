@@ -1,22 +1,21 @@
-//! Plain `textfield`s: which one `autofocus` arms, the draft and selection a key edits, the
-//! caret's blink, and the edits delivered to Lua (ADR-0092).
+//! Plain `textfield`s: the draft and selection a key edits, the caret's blink, and the edits
+//! delivered to Lua (ADR-0092).
 
 use shared::{debug, warn};
 
 use super::edit::{PlainEdit, field_took, fit_to_limit, ime_change, ime_commit, limited_append};
+#[cfg(test)]
+use super::focus::autofocus_in_scope;
 use super::*;
 use crate::lua::call_logged;
 use crate::lua::focus::FieldAction;
 
-/// First `autofocus = true` control in scope document order (ADR-0112); duplicate search boxes are a
-/// config mistake, so deterministic order beats refusing both. A hidden subtree is skipped whole (ADR-0124).
-fn autofocus_in_scope(scope: &[(&str, &layout::ResolvedNode)]) -> Option<super::focus::FocusedControl> {
-    let on = |node: &layout::ResolvedNode| node::fields::common::autofocus.read(&node.properties).is_ok_and(|on| on);
-    scope.iter().find_map(|(surface_id, tree)| super::focus::first_focusable(surface_id, tree, on))
-}
-
 /// The node `id`'s `initial_text` now, `""` when unset or gone.
-fn initial_text_of(tree: Option<&layout::ResolvedNode>, id: layout::scene::NodeId, lua: &mlua::Lua) -> String {
+pub(super) fn initial_text_of(
+    tree: Option<&layout::ResolvedNode>,
+    id: layout::scene::NodeId,
+    lua: &mlua::Lua,
+) -> String {
     let path = tree.and_then(|tree| layout::hit::path_to_node(tree, id));
     path.and_then(|path| path.last().map(|node| node.current_initial_text(lua))).unwrap_or_default()
 }
@@ -335,7 +334,7 @@ impl App {
         }
     }
 
-    fn set_draft(&mut self, surface_id: String, id: layout::scene::NodeId, text: &str) {
+    pub(super) fn set_draft(&mut self, surface_id: String, id: layout::scene::NodeId, text: &str) {
         let text = fit_to_limit(text, self.field_max_length(&surface_id, id), 0);
         if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), &surface_id, id, text) {
             self.cancel_text_input_composition();
@@ -343,62 +342,6 @@ impl App {
         }
         self.mark_field_input_changed(&surface_id);
         self.fit_field(&surface_id, id);
-    }
-
-    /// Give the keyboard to `autofocus` (ADR-0112).
-    pub(super) fn arm_autofocus(&mut self, scope: &[String]) {
-        let trees = self.scoped_trees(scope);
-        let Some(control) = autofocus_in_scope(&trees) else { return };
-        drop(trees);
-        // A closed launcher can retain its tree and focus id without a `leave`; require its live
-        // `wl_surface` or every turn would arm then prune the same field.
-        if !self.surface_is_live(&control.surface_id) {
-            return;
-        }
-        if control.kind != super::focus::ControlKind::Plain {
-            // Once per appearance or keyboard enter: a control the user left must not pull focus back.
-            let nothing_focused = self.focused_control.is_none();
-            if super::focus::should_arm_control(&mut self.armed_control, &control, nothing_focused) {
-                self.focus_control(Some(control));
-            }
-            return;
-        }
-        let (surface_id, id) = (control.surface_id.clone(), control.id);
-        let seed = initial_text_of(self.client.scene().surface(&surface_id), id, self.client.lua());
-        debug!("{surface_id}'s `autofocus` textfield takes the keyboard");
-        // Autofocus starts from the seed, so a parked draft must not come back.
-        self.parked_drafts.remove(&(surface_id.clone(), id));
-        self.focus_control(Some(control));
-        self.set_draft(surface_id.clone(), id, &seed);
-        let opened = self.focused_text_field.as_ref().and_then(|field| field.on_change.clone());
-        if let Some(on_change) = opened {
-            let text = self.focused_text_field.as_ref().map(|field| field.buffer.clone()).unwrap_or_default();
-            call_logged(&on_change, text, format_args!("{surface_id}: on_change"));
-        }
-    }
-
-    /// Arm a newly appearing `autofocus` field or control under existing focus (ADR-0112), unless a plain
-    /// field is typing or a press just stopped that same field. A different field is new; masked
-    /// focus wins as on `enter`.
-    pub(in crate::wayland) fn arm_autofocus_if_unfocused(&mut self, scope: &[String]) {
-        if self.focused_secure_submit.is_some() || self.keyboard_focus.is_none() {
-            return;
-        }
-        self.prune_text_field_focus();
-        if let Some(field) = self.focused_text_field.as_ref() {
-            if field.typing {
-                return;
-            }
-            let trees = self.scoped_trees(scope);
-            let same_field = matches!(
-                autofocus_in_scope(&trees),
-                Some(control) if control.kind == super::focus::ControlKind::Plain && control.id == field.id
-            );
-            if same_field {
-                return;
-            }
-        }
-        self.arm_autofocus(scope);
     }
 
     pub(super) fn caret_on(&self, now: std::time::Instant) -> bool {
@@ -796,55 +739,6 @@ mod tests {
         {
             assert_eq!(key_action(&key(keysym, utf8), false, false, false), KeyAction::Ignore);
         }
-    }
-
-    fn autofocus_textfield(lua: &Lua) -> layout::ResolvedNode {
-        let mut node = plain_textfield(lua);
-        std::rc::Rc::make_mut(&mut node.properties).insert("autofocus", Value::Boolean(true));
-        node
-    }
-
-    /// ADR-0112: the control the keyboard is handed to unasked. With two the first in document order
-    /// does, since two search boxes on one surface is a mistake to pick through, not a secret to refuse.
-    #[test]
-    fn the_first_autofocus_field_or_control_in_the_scope_is_the_one_armed() {
-        use super::super::tests::{button, with_property};
-        let lua = Lua::new();
-        let on = || Value::Boolean(true);
-        let first = autofocus_textfield(&lua);
-        let first_id = first.id;
-        let tree = tree_with(&lua, vec![plain_textfield(&lua), first, autofocus_textfield(&lua)]);
-        let found = autofocus_in_scope(&[("launcher@eDP-1", &tree)]).expect("armed");
-        assert_eq!((found.surface_id.as_str(), found.id), ("launcher@eDP-1", first_id));
-        assert_eq!(found.kind, super::focus::ControlKind::Plain);
-
-        let control = with_property(button(&lua), "autofocus", on());
-        let control_id = control.id;
-        let tree = tree_with(&lua, vec![control, autofocus_textfield(&lua)]);
-        let found = autofocus_in_scope(&[("dialog@TEST", &tree)]).expect("armed");
-        assert_eq!((found.id, found.kind), (control_id, super::focus::ControlKind::Button));
-
-        // Hidden, masked, callback-less, disabled, zero-size, or unnamed: never candidates, whatever they say.
-        let mut hidden = autofocus_textfield(&lua);
-        hidden.visible = false;
-        let mut masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
-        std::rc::Rc::make_mut(&mut masked.properties).insert("autofocus", on());
-        let key = || Value::Function(lua.create_function(|_, ()| Ok(())).unwrap());
-        let name = || Value::String(lua.create_string("Field").unwrap());
-        let masked = with_property(with_property(masked, "on_key", key()), "accessible_name", name());
-        let mute = with_property(with_property(textfield(&lua, None), "on_key", key()), "accessible_name", name());
-        let mute = with_property(mute, "autofocus", on());
-        let disabled = with_property(autofocus_textfield(&lua), "disabled", on());
-        let disabled = with_property(with_property(disabled, "on_key", key()), "accessible_name", name());
-        let mut flat = with_property(button(&lua), "autofocus", on());
-        flat.rect.width = 0.0;
-        let unnamed = with_property(
-            crate::wayland::input::tests::hit_node(&lua, "rect", (0.0, 0.0, 9.0, 9.0), false),
-            "autofocus",
-            on(),
-        );
-        let none = tree_with(&lua, vec![hidden, masked, mute, disabled, flat, unnamed, plain_textfield(&lua)]);
-        assert!(autofocus_in_scope(&[("launcher@eDP-1", &none)]).is_none());
     }
 
     #[test]

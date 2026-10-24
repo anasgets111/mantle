@@ -363,7 +363,7 @@ See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../gu
 
 Source: [node vocabulary](../../renderer/src/lua/nodes/properties.rs),
 [layout solver](../../renderer/src/layout/scene/solver.rs),
-[pass and reconciliation](../../renderer/src/layout/scene/pass.rs),
+[pass](../../renderer/src/layout/scene/pass.rs), [reconciliation](../../renderer/src/layout/scene/children.rs),
 [property resolution](../../renderer/src/layout/node/resolve.rs),
 [geometry parsers](../../renderer/src/layout/node/style/mod.rs),
 [transforms](../../renderer/src/layout/node/style/transform.rs),

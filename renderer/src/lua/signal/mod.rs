@@ -9,10 +9,12 @@
 
 mod budget;
 mod dirty;
+mod equality;
 mod globals;
 mod held;
 pub(crate) mod image_status;
 pub(crate) mod marks;
+mod scroll;
 mod state_handlers;
 mod tracking;
 
@@ -27,12 +29,15 @@ use crate::lua::marshal;
 
 pub(crate) use budget::{CpuBudget, LayoutPassBudget, anchor_cpu_budget, thread_cpu_time};
 pub use dirty::{DirtyFlag, DirtyScope, LiveSignalHandle};
+use equality::same_value;
 pub use globals::{
     any_focused_registered, any_hover_registered, any_pointer_registered, begin_evaluation, declared_states,
     promote_states, register, take_layout_changed, write_selection, write_state,
 };
 pub(crate) use globals::{note_layout_changed, reset, reset_target};
 pub use held::{next_wake_deadline, take_due_wake};
+pub(crate) use scroll::ScrollRequest;
+use scroll::finite;
 pub use state_handlers::{clear as clear_state_handlers, run as run_state_handlers};
 #[cfg(test)]
 pub(crate) use tracking::MemoTable;
@@ -133,28 +138,6 @@ enum SignalKind {
     Pulse { hold: Duration, until: Rc<Cell<Option<Instant>>>, cell: CellId },
 }
 
-/// A move Lua asks of a `scroll` signal's containers; the pass turns it into an offset.
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub(crate) enum ScrollRequest {
-    /// The least move that shows this 1-based visible child.
-    Reveal(usize),
-    To(f32),
-    /// Added to the run's target, like a wheel notch, so repeated calls mid-run accumulate.
-    By(f32),
-}
-
-/// `offset` as a pixel request for `method`, refusing NaN and infinity.
-fn finite(method: &str, offset: f64) -> mlua::Result<f32> {
-    let pixels = offset as f32;
-    if !pixels.is_finite() {
-        return Err(mlua::Error::runtime(format!(
-            "signal:{method}(): offset must be finite, got {}",
-            crate::lua::marshal::number_word(offset)
-        )));
-    }
-    Ok(pixels)
-}
-
 impl SignalKind {
     /// Name used in `:set()` refusal messages.
     fn describe(&self) -> &'static str {
@@ -195,72 +178,6 @@ fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
         _ => {}
     }
     Ok(())
-}
-
-/// Whether a `state` literal is comparable across evaluations. Tables, functions, and userdata use
-/// pointer identity; fresh values would always look edited.
-fn is_comparable_literal(value: &Value) -> bool {
-    matches!(value, Value::Nil | Value::Boolean(_) | Value::Integer(_) | Value::Number(_) | Value::String(_))
-}
-
-/// Whether writing `b` over `a` changes nothing a reader sees. Strict by variant, since Lua 5.4
-/// prints `1` and `1.0` differently, and floats by bits, so `-0.0` differs from `0.0` and NaN matches itself.
-fn same_scalar(a: &Value, b: &Value) -> bool {
-    match (a, b) {
-        (Value::Nil, Value::Nil) => true,
-        (Value::Boolean(a), Value::Boolean(b)) => a == b,
-        (Value::Integer(a), Value::Integer(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => a.to_bits() == b.to_bits(),
-        (Value::String(a), Value::String(b)) => a.as_bytes() == b.as_bytes(),
-        _ => false,
-    }
-}
-
-/// Entries [`same_value`] walks before calling two tables different.
-pub(super) const SAME_TABLE_ENTRIES: usize = 256;
-
-/// [`same_scalar`], plus two different plain-data tables (no metatable, scalar keys, scalar or
-/// plain-table values) equal entry for entry. The same table, anywhere in either, is a change: a
-/// writer that mutated it in place and wrote it again is signalling one.
-fn same_value(a: &Value, b: &Value) -> bool {
-    fn same_table(a: &mlua::Table, b: &mlua::Table, budget: &mut usize) -> bool {
-        if a == b || a.metatable().is_some() || b.metatable().is_some() {
-            return false;
-        }
-        let mut entries = 0;
-        for pair in a.pairs::<Value, Value>() {
-            let Ok((key, value)) = pair else { return false };
-            if *budget == 0 || !is_comparable_literal(&key) {
-                return false;
-            }
-            *budget -= 1;
-            entries += 1;
-            let Ok(other) = b.raw_get::<Value>(key) else { return false };
-            let same = match (&value, &other) {
-                (Value::Table(value), Value::Table(other)) => same_table(value, other, budget),
-                _ => same_scalar(&value, &other),
-            };
-            if !same {
-                return false;
-            }
-        }
-        b.pairs::<Value, Value>().count() == entries
-    }
-    match (a, b) {
-        (Value::Table(a), Value::Table(b)) => same_table(a, b, &mut { SAME_TABLE_ENTRIES }),
-        _ => same_scalar(a, b),
-    }
-}
-
-/// Whether the `state` literal changed. `None` means no edit per ADR-0044's amendment. This keeps
-/// a table literal, such as a popup's anchor rect, from looking edited on every reload and snapping
-/// the popup to the corner. `Value`'s own `PartialEq` compares an `Integer` against a `Number` the way
-/// Lua `==` does, so `0` and `0.0` match; scalar types differing do not.
-fn literal_was_edited(current: &Value, seeded: &Value) -> Option<bool> {
-    if !is_comparable_literal(current) || !is_comparable_literal(seeded) {
-        return None;
-    }
-    Some(current != seeded)
 }
 
 /// Read-only reactive value: plain (`State`/Rust-pushed) or recomputed Lua closure (`Computed`).
@@ -327,71 +244,6 @@ impl Signal {
     /// Starts `nil`: the pointer is not over the node until a motion says so.
     pub fn new_pointer(dirty: DirtyFlag) -> Self {
         Signal(SignalKind::Pointer { id: next_cell_id(), cell: Rc::new(RefCell::new(Value::Nil)), dirty })
-    }
-
-    /// Scroll offset starting at top (ADR-0069 decision 2). Plain number, not a hover-like pair: no
-    /// scrollbar uses content extent yet, so the first such config can define its shape.
-    pub fn new_scroll(dirty: DirtyFlag) -> Self {
-        Signal(SignalKind::Scroll {
-            id: next_cell_id(),
-            cell: Rc::new(RefCell::new(Value::Number(0.0))),
-            dirty,
-            request: Rc::new(Cell::new(None)),
-        })
-    }
-
-    /// Asks the next positioning pass for `asked`, marking dirty (ADR-0112). The last request
-    /// wins, except that a `By` adds to a pending `To` or `By`. Other kinds return false for the
-    /// method's named refusal.
-    fn request_scroll(&self, asked: ScrollRequest) -> bool {
-        let SignalKind::Scroll { id, request, dirty, .. } = &self.0 else { return false };
-        request.set(Some(match (request.get(), asked) {
-            (Some(ScrollRequest::To(to)), ScrollRequest::By(by)) => ScrollRequest::To(to + by),
-            (Some(ScrollRequest::By(first)), ScrollRequest::By(by)) => ScrollRequest::By(first + by),
-            _ => asked,
-        }));
-        dirty.note_scroll_request(*id, request);
-        dirty.mark_cell(*id);
-        true
-    }
-
-    /// The request waiting for the next positioning pass, left in place.
-    pub(crate) fn pending_scroll(&self) -> Option<ScrollRequest> {
-        if let SignalKind::Scroll { request, .. } = &self.0 { request.get() } else { None }
-    }
-
-    /// Consumes the request in `layout::scene`'s positioning pass, so a later wheel event does not
-    /// fight an already honored one.
-    pub(crate) fn take_scroll(&self) -> Option<ScrollRequest> {
-        if let SignalKind::Scroll { request, .. } = &self.0 { request.take() } else { None }
-    }
-
-    fn scroll_request(&self, method: &str, asked: ScrollRequest) -> mlua::Result<()> {
-        if self.request_scroll(asked) {
-            return Ok(());
-        }
-        Err(mlua::Error::runtime(format!(
-            "signal:{method}() is only valid on a scroll(name) signal, and this is {} signal",
-            self.0.describe()
-        )))
-    }
-
-    /// Scroll write end for wheel and positioning clamp; `None` for other kinds keeps wheels off
-    /// capability signals.
-    pub(crate) fn scroll_handle(&self) -> Option<LiveSignalHandle> {
-        let SignalKind::Scroll { id, cell, dirty, .. } = &self.0 else { return None };
-        Some(LiveSignalHandle(*id, Rc::clone(cell), dirty.clone()))
-    }
-
-    /// Scroll offset without `Lua`: `layout::scene` clamps deep in a pass holding no VM reference,
-    /// and threading one through every layout frame just to read a `RefCell` would add a parameter.
-    pub(crate) fn scroll_offset(&self) -> Option<f32> {
-        let SignalKind::Scroll { cell, .. } = &self.0 else { return None };
-        Some(match *cell.borrow() {
-            Value::Number(n) => n as f32,
-            Value::Integer(n) => n as f32,
-            _ => 0.0,
-        })
     }
 
     /// Geometry write end for `layout::scene`; `None` for other kinds, so `geometry = hover(...)`
