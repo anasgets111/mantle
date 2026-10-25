@@ -42,7 +42,7 @@ use fit::cache_box;
 pub use fit::fitted_rect;
 
 use budget::{Budget, Charge};
-use decode::decode;
+use decode::{Refused, decode};
 pub(crate) use decode::{is_animated, is_vector};
 use svg::packed_rgb;
 use texture::{Animation, Clock, NodeClock, upload_or_log};
@@ -53,7 +53,7 @@ use crate::text::shaping::{FontDatabase, ShapingHandle};
 use rustc_hash::FxHashMap as HashMap;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, SyncSender, TryRecvError};
+use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -82,7 +82,7 @@ const MAX_DECODE_WORKERS: usize = 4;
 
 /// Background decodes in flight at once, counted until their pixels are *consumed*.
 ///
-/// Bounding the job channel alone does not bound the pipeline: a worker frees its queue slot the
+/// Bounding the job queue alone does not bound the pipeline: a worker frees its queue slot the
 /// moment it dequeues, so more jobs enqueue while finished results pile up in the result channel
 /// waiting for [`ImageCache::poll`]. Queued, decoding and decoded-but-unconsumed all have to be
 /// one number, which is what the pool's `wanted` set already counts -- a key joins it at enqueue
@@ -274,7 +274,7 @@ struct Job {
 /// Shared decode queue and result channel, at most `MAX_DECODE_WORKERS` threads. If resource
 /// limits refuse every worker, background requests fall back to the inline path.
 struct Pool {
-    jobs: SyncSender<Job>,
+    jobs: Arc<decode::Queue>,
     workers: usize,
     results: Receiver<(CacheKey, Result<Decoded, String>)>,
     /// Keys whose decode is still wanted. A worker checks this before spending anything on a job,
@@ -617,7 +617,7 @@ impl ImageCache {
                 if !self.admit(&key) {
                     return None;
                 }
-                match self.pool.jobs.try_send(Job {
+                match self.pool.try_send(Job {
                     fonts: self.fonts.clone(),
                     key: key.clone(),
                     tint,
@@ -628,13 +628,13 @@ impl ImageCache {
                     Ok(()) => {
                         self.insert(key, Slot::Pending);
                     }
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
-                        // The set has room but the channel does not, which the workers will clear.
+                    Err(Refused::Full) => {
+                        // The set has room but the queue does not, which the workers will clear.
                         // No slot again, so this owes the same repaint the ceiling above does.
                         self.unwant(&key);
                         self.deferred = Some(Instant::now());
                     }
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    Err(Refused::Disconnected) => {
                         debug!("{}: no decode worker left to take it", key.path.display());
                         self.unwant(&key);
                         self.insert(key, Slot::Failed);
@@ -668,15 +668,15 @@ impl ImageCache {
             };
             // `sized` only once queued, so a refused send is asked again next draw.
             if self.admit(&key) {
-                match self.pool.jobs.try_send(job) {
+                match self.pool.try_send(job) {
                     Ok(()) => {}
-                    Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    Err(Refused::Full) => {
                         self.unwant(&key);
                         self.deferred = Some(Instant::now());
                         return Some(loaded);
                     }
                     // No worker will ever answer; asking again every draw would only repeat this.
-                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => self.unwant(&key),
+                    Err(Refused::Disconnected) => self.unwant(&key),
                 }
                 if let Some(entry) = self.entries.get_mut(&key) {
                     entry.sized = true;
@@ -737,12 +737,13 @@ impl ImageCache {
         }
     }
 
-    /// Drops `key` from the pool's wanted set, so a queued job for it is skipped rather than
-    /// decoded. A poisoned lock is ignored: the worst case is one wasted decode.
+    /// Drops `key` from the pool's wanted set and its jobs from the queue, so a cancelled decode
+    /// frees its slot instead of waiting behind newer ones. A poisoned lock is ignored: the worst case is one wasted decode.
     fn unwant(&self, key: &CacheKey) {
         if let Ok(mut wanted) = self.pool.wanted.lock() {
             wanted.remove(key);
         }
+        self.pool.jobs.remove(key);
     }
 }
 
@@ -795,6 +796,29 @@ mod tests {
         0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
     ];
 
+    pub(super) fn job(key: CacheKey) -> Job {
+        Job {
+            fonts: FontDatabase::default(),
+            key,
+            tint: None,
+            animation_bytes: STARTING_TEXTURE_BUDGET,
+            wants_size: false,
+            size_only: false,
+        }
+    }
+
+    pub(super) fn request(path: &Path, edge: u32) -> ImageRequest<'_> {
+        ImageRequest {
+            path,
+            box_px: (edge, edge),
+            tint: None,
+            fit: Fit::Contain,
+            blur_px: 0,
+            wants_size: false,
+            clock: None,
+        }
+    }
+
     pub(super) fn key(path: impl Into<PathBuf>, px: u32, version: FileVersion) -> CacheKey {
         CacheKey {
             path: path.into(),
@@ -813,15 +837,7 @@ mod tests {
         let png = dir.path().join("tray.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::new();
-        let request = ImageRequest {
-            path: &png,
-            box_px: (8, 8),
-            tint: None,
-            fit: Fit::Contain,
-            blur_px: 0,
-            wants_size: false,
-            clock: None,
-        };
+        let request = request(&png, 8);
         // A draw's two lookups, `image` and `loaded`.
         let key = cache.key_for(&request);
         cache.key_for(&request);
@@ -921,17 +937,9 @@ mod tests {
         let png = dir.path().join("fixture.png");
         std::fs::write(&png, PIL_2X2_RGBA_PNG).unwrap();
         let mut cache = ImageCache::inline();
-        let (jobs, queue) = std::sync::mpsc::sync_channel(8);
-        cache.pool.jobs = jobs;
-        let request = ImageRequest {
-            path: &png,
-            box_px: (8, 8),
-            tint: None,
-            fit: Fit::Contain,
-            blur_px: 0,
-            wants_size: true,
-            clock: None,
-        };
+        // Stands in for a worker holding the queue; dropped below, the pool has none left.
+        let queue = Arc::clone(&cache.pool.jobs);
+        let request = ImageRequest { wants_size: true, ..request(&png, 8) };
         let key = cache.key_for(&request);
         cache.insert(
             key.clone(),
@@ -941,10 +949,13 @@ mod tests {
             cache.admit(&super::tests::key(format!("/busy{n}.png"), 8, FileVersion::default()));
         }
         assert_eq!(cache.loaded(&request), Some(Loaded::Ready(None)));
-        assert!(queue.try_recv().is_err() && !cache.entries[&key].sized, "refused, so not marked as asked");
+        assert!(
+            queue.state.lock().unwrap().0.is_empty() && !cache.entries[&key].sized,
+            "refused, so not marked as asked"
+        );
         cache.pool.wanted.lock().unwrap().clear();
         cache.loaded(&request);
-        assert!(queue.try_recv().is_ok_and(|job| job.size_only), "the next draw asks again");
+        assert!(queue.state.lock().unwrap().0.pop_back().is_some_and(|job| job.size_only), "the next draw asks again");
         assert!(cache.entries[&key].sized);
 
         // No worker left: marked asked, and no immediate repaint for an answer that cannot come.
@@ -1017,18 +1028,7 @@ mod tests {
         let key = CacheKey { font_generation: cache.font_generation, ..key(&path, 120, FileVersion::read(&path)) };
         assert!(cache.admit(&key));
         cache.insert(key.clone(), Slot::Pending);
-        cache
-            .pool
-            .jobs
-            .send(Job {
-                fonts: cache.fonts.clone(),
-                key,
-                tint: None,
-                animation_bytes: STARTING_TEXTURE_BUDGET,
-                wants_size: false,
-                size_only: false,
-            })
-            .unwrap();
+        cache.pool.try_send(Job { fonts: cache.fonts.clone(), ..job(key) }).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         while cache.poll().is_empty() {
             assert!(Instant::now() < deadline, "the SVG decode never landed");
@@ -1050,18 +1050,7 @@ mod tests {
         // A worker skips a job nobody wants, so this stands in for what `image` records when it
         // queues one.
         cache.pool.wanted.lock().unwrap().insert(key.clone());
-        cache
-            .pool
-            .jobs
-            .send(Job {
-                fonts: FontDatabase::default(),
-                key: key.clone(),
-                tint: None,
-                animation_bytes: STARTING_TEXTURE_BUDGET,
-                wants_size: false,
-                size_only: false,
-            })
-            .unwrap();
+        cache.pool.try_send(job(key.clone())).unwrap();
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let mut files = cache.poll();
         while files.is_empty() {

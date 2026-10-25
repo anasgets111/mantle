@@ -1,8 +1,8 @@
 //! Off-thread worker pool (`Pool`) and raster image decoding (`decode_raster`, ADR-0122, ADR-0187).
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use shared::{debug, error};
@@ -15,11 +15,79 @@ use super::{
 };
 use crate::layout::node::Rgba;
 
+/// Why a job was not queued.
+#[derive(Debug)]
+pub(super) enum Refused {
+    Full,
+    Disconnected,
+}
+
+/// Jobs bounded at [`MAX_INFLIGHT_DECODES`], popped newest first: after a fast scroll the tiles
+/// on screen are the last asked for, and the older ones are about to be cancelled.
+#[derive(Default)]
+pub(super) struct Queue {
+    pub(super) state: Mutex<(VecDeque<Job>, bool)>,
+    ready: Condvar,
+}
+
+impl Queue {
+    fn try_push(&self, job: Job) -> Result<(), Refused> {
+        let Ok(mut state) = self.state.lock() else { return Err(Refused::Disconnected) };
+        if state.0.len() >= MAX_INFLIGHT_DECODES {
+            return Err(Refused::Full);
+        }
+        state.0.push_back(job);
+        self.ready.notify_one();
+        Ok(())
+    }
+
+    /// Blocks for the newest job; `None` once the pool has dropped and the queue is empty.
+    fn pop(&self) -> Option<Job> {
+        let mut state = self.state.lock().ok()?;
+        loop {
+            if let Some(job) = state.0.pop_back() {
+                return Some(job);
+            }
+            if state.1 {
+                return None;
+            }
+            state = self.ready.wait(state).ok()?;
+        }
+    }
+
+    /// Drops `key`'s queued jobs, so a cancelled decode frees its slot and cannot run beside a re-ask.
+    pub(super) fn remove(&self, key: &CacheKey) {
+        if let Ok(mut state) = self.state.lock() {
+            state.0.retain(|job| job.key != *key);
+        }
+    }
+
+    pub(super) fn close(&self) {
+        if let Ok(mut state) = self.state.lock() {
+            state.0.clear();
+            state.1 = true;
+        }
+        self.ready.notify_all();
+    }
+}
+
+impl Drop for Pool {
+    fn drop(&mut self) {
+        self.jobs.close();
+    }
+}
+
 impl Pool {
+    pub(super) fn try_send(&self, job: Job) -> Result<(), Refused> {
+        if Arc::strong_count(&self.jobs) == 1 {
+            return Err(Refused::Disconnected);
+        }
+        self.jobs.try_push(job)
+    }
+
     /// `max_workers` threads at most; zero decodes every request inline.
     pub(super) fn spawn(waker: Option<crate::wake::Waker>, max_workers: usize) -> Self {
-        let (jobs, job_rx) = std::sync::mpsc::sync_channel::<Job>(MAX_INFLIGHT_DECODES);
-        let job_rx = Arc::new(Mutex::new(job_rx));
+        let jobs = Arc::new(Queue::default());
         let (result_tx, results) = std::sync::mpsc::channel();
         let wanted: Arc<Mutex<HashSet<CacheKey>>> = Arc::new(Mutex::new(HashSet::new()));
         let budget = Arc::new(Budget::default());
@@ -28,7 +96,7 @@ impl Pool {
         let cache_root = thumbnails::cache_dir();
         let mut started = 0;
         for index in 0..workers {
-            let job_rx = Arc::clone(&job_rx);
+            let jobs = Arc::clone(&jobs);
             let result_tx = result_tx.clone();
             let cache_root = cache_root.clone();
             let waker = waker.clone();
@@ -36,12 +104,7 @@ impl Pool {
             let budget = Arc::clone(&budget);
             let spawned = std::thread::Builder::new().name(format!("mantle-image-decode-{index}")).spawn(move || {
                 loop {
-                    // Hold the lock only to take a job; workers drain while another decodes.
-                    let job = match job_rx.lock() {
-                        Ok(rx) => rx.recv(),
-                        Err(_) => return,
-                    };
-                    let Ok(job) = job else { return };
+                    let Some(job) = jobs.pop() else { return };
                     // The permit is taken inside `decode`, where the source has been chosen and its
                     // size is known; `still_wanted` is re-asked there because a worker can now
                     // wait for room, and an entry can be evicted while it does (ADR-0187).
@@ -428,9 +491,47 @@ pub(super) fn decode_within_limits<'a>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::tests::{PIL_2X2_RGBA_PNG, key};
+    use super::super::tests::{PIL_2X2_RGBA_PNG, job, key};
     use super::super::{FileVersion, STARTING_TEXTURE_BUDGET};
     use super::*;
+
+    #[test]
+    fn the_newest_queued_job_decodes_first_and_the_bound_holds() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = Pool::spawn(None, 1);
+        let keys = ["a", "b", "c"].map(|name| {
+            let path = dir.path().join(format!("{name}.png"));
+            std::fs::write(&path, PIL_2X2_RGBA_PNG).unwrap();
+            let key = key(&path, 8, FileVersion::read(&path));
+            pool.wanted.lock().unwrap().insert(key.clone());
+            key
+        });
+        // The worker is blocked on this lock, so all three are queued before it takes one.
+        let mut held = pool.jobs.state.lock().unwrap();
+        keys.iter().for_each(|key| held.0.push_back(job(key.clone())));
+        drop(held);
+        pool.jobs.ready.notify_one();
+        let order: Vec<_> = (0..3).map(|_| pool.results.recv_timeout(Duration::from_secs(5)).unwrap().0).collect();
+        assert_eq!(order, [&keys[2], &keys[1], &keys[0]].map(Clone::clone), "FIFO would decode a first");
+
+        let full = Queue::default();
+        for n in 0..MAX_INFLIGHT_DECODES as u32 {
+            assert!(full.try_push(job(key("/full.png", n, FileVersion::default()))).is_ok());
+        }
+        assert!(matches!(full.try_push(job(key("/full.png", 99, FileVersion::default()))), Err(Refused::Full)));
+    }
+
+    #[test]
+    fn workers_exit_when_the_pool_drops() {
+        let pool = Pool::spawn(None, 2);
+        let queue = Arc::clone(&pool.jobs);
+        drop(pool);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&queue) > 1 {
+            assert!(std::time::Instant::now() < deadline, "a worker is still waiting on the dropped pool's queue");
+            std::thread::yield_now();
+        }
+    }
 
     #[test]
     fn only_svg_is_rasterized_by_size_and_only_gif_is_animated() {

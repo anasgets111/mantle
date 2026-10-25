@@ -8764,3 +8764,20 @@ measured the same.
 Cost: those threads share one malloc lock for allocations under the 1 MiB mmap threshold
 (ADR-0123). Busy main-thread CPU (42.5% vs 43.0%) and repaint time per surface (p50 2.56 vs 2.55
 ms over 10 s windows) did not move; stalls shorter than a window would not show.
+
+## 0380. A paint cancels the decodes no surface still draws, and the queue serves the newest first
+
+Amends ADR-0185, where eviction was the only cancel: scrolled-off, hidden or replaced `async`
+tiles kept decoding, and at the 64-job cap the oldest, scrolled-away requests held every slot and
+ran before the tiles on screen.
+
+1. **Cancel.** `ImageCache::trim` already receives the requests every mapped surface's last list
+   names. Each Pending entry outside that set is evicted through the existing path (`unwant`,
+   reported in `cancelled`, ADR-0185), unless it was asked since `paint_start`: its surface has
+   not recorded its list yet. `unwant` also drops the key's queued job, so a cancel frees its slot.
+2. **Order.** The job queue is a `Mutex<VecDeque>` + `Condvar` with the same bound, popped newest
+   first: what was asked last is what is on screen. Only `async` images queue, so there is no
+   background class to keep FIFO.
+
+Rejected: a priority queue or per-surface queues; cancellation already removes the stale work. Not
+measured on hardware: `tools/heavy-shell` has no fixture that scrolls through many large images.

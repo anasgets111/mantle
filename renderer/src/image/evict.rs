@@ -238,25 +238,18 @@ fn compatible_stand_in(wanted: &CacheKey, candidate: &CacheKey) -> bool {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Arc;
     use std::time::{Duration, Instant};
 
     use super::*;
-    use crate::image::tests::{PIL_2X2_RGBA_PNG, key};
+    use crate::image::tests::{PIL_2X2_RGBA_PNG, job, key};
     use crate::image::texture::Clock;
-    use crate::image::{FileVersion, Fit, Load, Loaded};
+    use crate::image::{FileVersion, Fit, Load, Loaded, MAX_INFLIGHT_DECODES};
 
     #[test]
     fn trim_cancels_pending_decodes_no_list_names_and_reports_them() {
         let mut cache = ImageCache::inline();
-        let request = |path: &'static str| ImageRequest {
-            path: Path::new(path),
-            box_px: (8, 8),
-            tint: None,
-            fit: Fit::Contain,
-            blur_px: 0,
-            wants_size: false,
-            clock: None,
-        };
+        let request = |path| crate::image::tests::request(Path::new(path), 8);
         let [shown, gone, fresh] = ["/shown.png", "/gone.png", "/fresh.png"].map(|path| cache.key_for(&request(path)));
         for key in [&shown, &gone] {
             assert!(cache.admit(key));
@@ -273,6 +266,23 @@ mod tests {
         assert!(!wanted.contains(&gone), "a worker must skip what no list names");
         assert!(!cache.entries.contains_key(&gone) && cache.entries.contains_key(&shown));
         assert_eq!(cache.poll(), vec![gone.path.clone()], "the cancellation owes its lists a repaint (ADR-0185)");
+    }
+
+    #[test]
+    fn a_cancelled_decode_leaves_the_queue_and_frees_its_slot() {
+        let mut cache = ImageCache::inline();
+        let _worker = Arc::clone(&cache.pool.jobs);
+        for n in 0..MAX_INFLIGHT_DECODES as u32 {
+            let key = key("/scrolled.png", n, FileVersion::default());
+            assert!(cache.admit(&key));
+            cache.insert(key.clone(), Slot::Pending);
+            assert!(cache.pool.try_send(job(key)).is_ok());
+        }
+        cache.begin_paint();
+        cache.trim(|| vec![crate::image::tests::request(Path::new("/scrolled.png"), 8)]);
+        let queued = cache.pool.jobs.state.lock().unwrap().0.iter().map(|job| job.key.box_px.0).collect::<Vec<_>>();
+        assert_eq!(queued, [8], "only the job a list still names stays queued");
+        assert!(cache.pool.try_send(job(key("/on-screen.png", 1, FileVersion::default()))).is_ok());
     }
 
     #[test]
@@ -308,15 +318,7 @@ mod tests {
         if cache.pool.workers == 0 {
             return;
         }
-        let small = ImageRequest {
-            path: &path,
-            box_px: (16, 16),
-            tint: None,
-            fit: Fit::Contain,
-            blur_px: 0,
-            wants_size: false,
-            clock: None,
-        };
+        let small = crate::image::tests::request(&path, 16);
         let large = ImageRequest { box_px: (32, 32), ..small };
         let first = cache.image(painter.canvas_mut(), &small, Load::Inline).unwrap();
         assert!(cache.image(painter.canvas_mut(), &large, Load::Background).is_none());
