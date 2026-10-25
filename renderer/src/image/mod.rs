@@ -739,12 +739,6 @@ impl ImageCache {
 
     /// Drops `key` from the pool's wanted set, so a queued job for it is skipped rather than
     /// decoded. A poisoned lock is ignored: the worst case is one wasted decode.
-    ///
-    /// ponytail: eviction is the only thing that cancels today, so hiding a surface leaves its
-    /// tiles decoding until the budget or the capacity evicts them. Bounded waste, not unbounded:
-    /// [`MAX_INFLIGHT_DECODES`] caps how much can be in flight at all. Upgrade path: cancel
-    /// against the pin set `wayland::App` already computes after paint, which names exactly the
-    /// path/box pairs a mapped surface still shows.
     fn unwant(&self, key: &CacheKey) {
         if let Ok(mut wanted) = self.pool.wanted.lock() {
             wanted.remove(key);

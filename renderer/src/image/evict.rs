@@ -1,6 +1,8 @@
 //! Image cache capacity bound, idle texture budget eviction, and stand-in texture selection
 //! (ADR-0123, ADR-0182, ADR-0183).
 
+use std::collections::HashSet;
+
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, ImageId};
 
@@ -40,19 +42,23 @@ impl ImageCache {
     /// requests from mapped surfaces' last display lists, collected by `wayland::App`
     /// after paint. Compute it lazily because list walks matter only when evicting. Icons are not
     /// pinned: lists carry theme names, not paths; an icon costs a few KB and one inline reraster.
-    /// Node textures no list draws are freed here too, whatever the budget.
+    /// Node textures no list draws are freed here too, whatever the budget. Pending decodes no
+    /// list names are cancelled the same way, whatever the budget.
     ///
     /// ponytail: so while any node texture exists, every paint walks every painted list. Upgrade:
     /// skip the walk when the lists and the node set are unchanged since the last one.
     pub fn trim<'a>(&mut self, pinned: impl FnOnce() -> Vec<ImageRequest<'a>>) {
         let over = self.resident_bytes > self.texture_budget;
-        if !over && !self.clocks.values().flatten().any(|own| own.texture.is_some()) {
+        let pending = self.entries.values().any(|entry| matches!(entry.slot, Slot::Pending));
+        if !over && !pending && !self.clocks.values().flatten().any(|own| own.texture.is_some()) {
             return;
         }
+        let mut asked = HashSet::new();
         let pinned = pinned()
             .into_iter()
             .map(|request| {
                 let wanted = self.key_for(&request);
+                asked.insert(wanted.clone());
                 let drawn = if self
                     .entries
                     .get(&wanted)
@@ -65,6 +71,17 @@ impl ImageCache {
                 (request.clock.map(|(node, _)| node), drawn)
             })
             .collect::<Vec<_>>();
+        // A decode no mapped surface names is scrolled off, hidden or replaced; one asked since
+        // `paint_start` belongs to a surface that has not recorded its list yet (ADR-0185).
+        let stale = self
+            .entries
+            .iter()
+            .filter(|(key, entry)| {
+                matches!(entry.slot, Slot::Pending) && entry.last_hit <= self.paint_start && !asked.contains(*key)
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        stale.iter().for_each(|key| self.evict(key));
         self.release_undrawn_node_textures(&pinned);
         if !over {
             return;
@@ -220,12 +237,43 @@ fn compatible_stand_in(wanted: &CacheKey, candidate: &CacheKey) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use std::time::{Duration, Instant};
 
     use super::*;
     use crate::image::tests::{PIL_2X2_RGBA_PNG, key};
     use crate::image::texture::Clock;
     use crate::image::{FileVersion, Fit, Load, Loaded};
+
+    #[test]
+    fn trim_cancels_pending_decodes_no_list_names_and_reports_them() {
+        let mut cache = ImageCache::inline();
+        let request = |path: &'static str| ImageRequest {
+            path: Path::new(path),
+            box_px: (8, 8),
+            tint: None,
+            fit: Fit::Contain,
+            blur_px: 0,
+            wants_size: false,
+            clock: None,
+        };
+        let [shown, gone, fresh] = ["/shown.png", "/gone.png", "/fresh.png"].map(|path| cache.key_for(&request(path)));
+        for key in [&shown, &gone] {
+            assert!(cache.admit(key));
+            cache.insert(key.clone(), Slot::Pending);
+        }
+        cache.begin_paint();
+        assert!(cache.admit(&fresh));
+        cache.insert(fresh.clone(), Slot::Pending);
+
+        cache.trim(|| vec![request("/shown.png")]);
+
+        let wanted = cache.pool.wanted.lock().unwrap().clone();
+        assert!(wanted.contains(&shown) && wanted.contains(&fresh), "named, or asked this paint: kept");
+        assert!(!wanted.contains(&gone), "a worker must skip what no list names");
+        assert!(!cache.entries.contains_key(&gone) && cache.entries.contains_key(&shown));
+        assert_eq!(cache.poll(), vec![gone.path.clone()], "the cancellation owes its lists a repaint (ADR-0185)");
+    }
 
     #[test]
     fn a_temporary_texture_keeps_source_identity_and_crop_geometry() {
