@@ -8752,3 +8752,15 @@ every push carried the access-point list twice: 4142 → 2187 JSON bytes with 20
 Rejected: field-level invalidation of capability pushes. `:map` and `computed` already drop
 unchanged outputs, so a strength tick re-resolved the same 5 of 18 fixture nodes either way and
 saved 4 map calls; per-field tracking needed a proxy `:get()` table that breaks `rawget`/`next`.
+
+## 0379. The renderer runs on one malloc arena too
+
+Extends ADR-0354 to the renderer; `mallopt` does not survive `exec`, so the Supervisor's cap never
+reached it. Up to four decode workers, the shaping thread and the socket thread each kept an arena
+of freed chunks. `tools/heavy-shell`, 3 runs each, 30 s after busy: Private_Dirty 62.9 -> 60.0 MB
+(every capped run below every uncapped one; spread 1.8 MB), Rss 100.8 -> 97.9 MB. `M_ARENA_MAX=2`
+measured the same.
+
+Cost: those threads share one malloc lock for allocations under the 1 MiB mmap threshold
+(ADR-0123). Busy main-thread CPU (42.5% vs 43.0%) and repaint time per surface (p50 2.56 vs 2.55
+ms over 10 s windows) did not move; stalls shorter than a window would not show.

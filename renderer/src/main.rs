@@ -26,10 +26,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Pinning it makes image decodes and SVG rasters transient mappings; cost: one `mmap` per
     // allocation over 1 MB, not a per-frame path.
     //
-    // SAFETY: a plain FFI call with two integers, before any thread exists.
+    // SAFETY: a plain FFI call with integers, before any thread exists.
     #[cfg(target_env = "gnu")]
     unsafe {
         libc::mallopt(libc::M_MMAP_THRESHOLD, 1 << 20);
+        // One arena: decode workers each keep their freed chunks otherwise.
+        libc::mallopt(libc::M_ARENA_MAX, 1);
     }
     // Tagged, because these lines land in the Supervisor's log through inherited descriptors
     // (ADR-0199) and are the minority there.
