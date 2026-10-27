@@ -7,6 +7,12 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: Images in a fast-scrolled list decode the ones now on screen first, and drop decodes for images no longer shown.
+- Fixed: The Renderer settles about 3 MB lower after image-heavy use.
+- Fixed: A missing `lsblk` now logs a warning instead of leaving `mantle.sysinfo.disks` silently empty.
+- Fixed: Unreadable `/dev/input` devices log a warning naming the `input` group, instead of `caps_lock` and `num_lock` quietly stopping updates.
+- Fixed: When screen capture can't use dma-buf, the warning names the cause, such as a render node the user cannot open.
+
 ## 0.11.0 - 2026-10-23
 
 - Breaking: `mantle.network` drops its flat `scanning`, `strength`, `wifi_ip` and `available_networks`, which repeated the primary Wi-Fi interface. Read them from `wifi_devices[1]` (`nil` without Wi-Fi hardware).
