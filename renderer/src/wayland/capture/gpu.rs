@@ -40,9 +40,9 @@ impl CaptureRegistry {
             && let Some(egl) = egl
         {
             self.dmabuf_probe = match DmabufSupport::probe(egl) {
-                Some(support) => DmabufProbe::Supported(support),
-                None => {
-                    warn!("this GPU/driver offers no usable dma-buf import; `capture` nodes use the slower shm path");
+                Ok(support) => DmabufProbe::Supported(support),
+                Err(why) => {
+                    warn!("no usable dma-buf import ({why}); `capture` nodes use the slower shm path");
                     DmabufProbe::Unsupported
                 }
             };

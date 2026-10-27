@@ -7,10 +7,11 @@ use std::io::{self, Read};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use shared::state::keyboard::KeyboardState;
-use shared::{debug, error};
+use shared::{debug, error, warn};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -157,24 +158,52 @@ fn sync_locks(file: &File, state: &Mutex<KeyboardState>) -> nix::Result<()> {
     Ok(())
 }
 
+/// Why [`find_led_device`] found nothing.
+#[derive(Debug, PartialEq, Eq)]
+enum NoLedDevice {
+    /// No `event*` node with `LED_CAPSL`: the ordinary gap between unplug and replug.
+    Absent,
+    /// A node or `dir` exists but this user cannot open it.
+    Denied,
+}
+
+/// First readable `event*` in `dir` that exposes `LED_CAPSL`. One unreadable node does not stop the
+/// search, but it decides the failure when no other node qualifies.
+fn find_led_device(dir: &Path) -> Result<File, NoLedDevice> {
+    let denied = |err: &io::Error| err.kind() == io::ErrorKind::PermissionDenied;
+    let entries =
+        std::fs::read_dir(dir).map_err(|err| if denied(&err) { NoLedDevice::Denied } else { NoLedDevice::Absent })?;
+    let mut any_denied = false;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("event")) {
+            continue;
+        }
+        match File::options().read(true).custom_flags(libc::O_NONBLOCK).open(&path) {
+            Ok(file) if supports_caps_led(&file) => return Ok(file),
+            Ok(_) => {}
+            Err(err) => any_denied |= denied(&err),
+        }
+    }
+    Err(if any_denied { NoLedDevice::Denied } else { NoLedDevice::Absent })
+}
+
 /// First readable `/dev/input/event*` that exposes `LED_CAPSL`. Publishes its LED bitmap and
 /// returns the fd for live `EV_LED` events. The kernel queues those per open fd, so there is no
-/// subscribe-before-read race. Silent when nothing is readable: that is the ordinary gap between
-/// unplug and replug.
-///
-/// ponytail: the directory is `/dev/input` and the first `event*` with `LED_CAPSL` wins. A test
-/// cannot mount device nodes the way `leds_root` stands in for sysfs. Upgrade: take the directory
-/// the same way, once a fixture can expose event nodes.
+/// subscribe-before-read race. Silent when nothing is there; warns once when the nodes exist but
+/// cannot be opened.
 fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
-    let entries = std::fs::read_dir("/dev/input").ok()?;
-    let file = entries.flatten().find_map(|entry| {
-        let path = entry.path();
-        if !path.file_name()?.to_str()?.starts_with("event") {
+    static WARNED: AtomicBool = AtomicBool::new(false);
+    let file = match find_led_device(Path::new("/dev/input")) {
+        Ok(file) => file,
+        Err(NoLedDevice::Denied) => {
+            if !WARNED.swap(true, Ordering::Relaxed) {
+                warn!("cannot open /dev/input/event*; lock state will freeze. Add the user to the `input` group");
+            }
             return None;
         }
-        let file = File::options().read(true).custom_flags(libc::O_NONBLOCK).open(&path).ok()?;
-        supports_caps_led(&file).then_some(file)
-    })?;
+        Err(NoLedDevice::Absent) => return None,
+    };
     if let Err(err) = sync_locks(&file, state) {
         debug!("failed to read initial evdev LED state; will pick up from the first EV_LED event: {err}");
     }
@@ -305,6 +334,23 @@ mod tests {
         std::fs::create_dir(&led_dir).unwrap();
         std::fs::write(led_dir.join("brightness"), brightness).unwrap();
         led_dir
+    }
+
+    #[test]
+    fn find_led_device_tells_an_unreadable_node_from_an_empty_directory() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(find_led_device(dir.path()).err(), Some(NoLedDevice::Absent), "empty");
+        assert_eq!(find_led_device(&dir.path().join("missing")).err(), Some(NoLedDevice::Absent));
+        std::fs::write(dir.path().join("event0"), b"").unwrap();
+        assert_eq!(find_led_device(dir.path()).err(), Some(NoLedDevice::Absent), "readable, no LED_CAPSL");
+        let locked = dir.path().join("event1");
+        std::fs::write(&locked, b"").unwrap();
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if File::open(&locked).is_ok() {
+            return; // root ignores the mode bits
+        }
+        assert_eq!(find_led_device(dir.path()).err(), Some(NoLedDevice::Denied));
     }
 
     #[test]

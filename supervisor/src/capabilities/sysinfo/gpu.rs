@@ -7,7 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use super::super::{read_attr, read_parsed};
-use super::run_limited;
+use super::run_logged;
 
 static NVTOP_BUSY: AtomicBool = AtomicBool::new(false);
 static NVIDIA_SMI_BUSY: AtomicBool = AtomicBool::new(false);
@@ -109,7 +109,7 @@ fn find_amd_sysfs(drm_root: &Path) -> Option<GpuTelemetry> {
 /// Samples GPU metrics using available backend tools or sysfs.
 pub async fn sample_gpu(drm_root: &Path, fallback_temp: Option<i64>) -> Option<GpuTelemetry> {
     // 1. Try nvtop -s: unifies AMD, Intel and NVIDIA.
-    if let Some(stdout) = run_limited("nvtop", &["-s"], Duration::from_secs(3), &NVTOP_BUSY).await
+    if let Some(stdout) = run_logged("nvtop", &["-s"], Duration::from_secs(3), &NVTOP_BUSY, true).await
         && let Some(mut gpu) = parse_nvtop(&String::from_utf8_lossy(&stdout))
     {
         gpu.temp = gpu.temp.or(fallback_temp);
@@ -119,7 +119,7 @@ pub async fn sample_gpu(drm_root: &Path, fallback_temp: Option<i64>) -> Option<G
     // 2. Try nvidia-smi if nvtop is absent.
     let query =
         ["--query-gpu=name,utilization.gpu,temperature.gpu,memory.used,memory.total", "--format=csv,noheader,nounits"];
-    if let Some(stdout) = run_limited("nvidia-smi", &query, Duration::from_secs(3), &NVIDIA_SMI_BUSY).await
+    if let Some(stdout) = run_logged("nvidia-smi", &query, Duration::from_secs(3), &NVIDIA_SMI_BUSY, true).await
         && let Some(gpu) = parse_nvidia_smi(&String::from_utf8_lossy(&stdout))
     {
         return Some(gpu);

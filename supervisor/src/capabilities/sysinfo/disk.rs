@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use super::gpu::parse_json_u64;
-use super::run_limited;
+use super::run_logged;
 
 #[derive(serde::Deserialize)]
 struct LsblkResponse {
@@ -99,7 +99,7 @@ static LSBLK_BUSY: AtomicBool = AtomicBool::new(false);
 /// good list instead of publishing an empty one.
 pub async fn read_disks() -> Option<Vec<DiskDevice>> {
     let args = ["--json", "--bytes", "--output", "NAME,TYPE,MOUNTPOINTS,FSUSED,FSSIZE"];
-    let stdout = run_limited("lsblk", &args, Duration::from_secs(3), &LSBLK_BUSY).await?;
+    let stdout = run_logged("lsblk", &args, Duration::from_secs(3), &LSBLK_BUSY, false).await?;
     Some(parse_lsblk(&String::from_utf8_lossy(&stdout)))
 }
 

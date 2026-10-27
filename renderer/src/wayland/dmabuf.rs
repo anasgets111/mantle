@@ -5,6 +5,7 @@
 
 use std::fs::File;
 use std::os::unix::io::AsFd;
+use std::path::Path;
 
 use femtovg::renderer::OpenGl;
 use femtovg::{Canvas, ImageFlags, ImageId, ImageInfo, PixelFormat};
@@ -56,19 +57,18 @@ pub struct DmabufShape {
 }
 
 /// Process-wide dma-buf capability, probed once EGL exists (ADR-0248 amendment decision 1).
-/// `None` from [`Self::probe`] means this process draws every capture through shm, logged once by
-/// the caller.
+/// An `Err` from [`Self::probe`] means this process draws every capture through shm, logged once
+/// by the caller with the reason.
 pub struct DmabufSupport {
     gbm: gbm::Device<File>,
     entry_points: DmabufEntryPoints,
 }
 
 impl DmabufSupport {
-    pub fn probe(egl: &EglState) -> Option<Self> {
-        let entry_points = DmabufEntryPoints::load(egl)?;
-        let render_node = entry_points.render_node(egl)?;
-        let gbm = gbm::Device::new(File::open(&render_node).ok()?).ok()?;
-        Some(DmabufSupport { gbm, entry_points })
+    pub fn probe(egl: &EglState) -> Result<Self, String> {
+        let entry_points = DmabufEntryPoints::load(egl).ok_or("the driver lacks the EGL dma-buf extensions")?;
+        let render_node = entry_points.render_node(egl).ok_or("EGL reports no DRM render node")?;
+        Ok(DmabufSupport { gbm: open_gbm(&render_node)?, entry_points })
     }
 
     pub fn importable_modifiers(&self, egl: &EglState, fourcc: u32) -> Vec<FormatModifier> {
@@ -78,6 +78,12 @@ impl DmabufSupport {
             .map(|modifier| FormatModifier { fourcc, modifier })
             .collect()
     }
+}
+
+/// Opens `node` as a gbm device, naming whether the open or gbm itself failed.
+fn open_gbm(node: &Path) -> Result<gbm::Device<File>, String> {
+    let file = File::open(node).map_err(|e| format!("cannot open {}: {e}", node.display()))?;
+    gbm::Device::new(file).map_err(|e| format!("gbm cannot use {}: {e}", node.display()))
 }
 
 /// A dma-buf-backed capture buffer: the gbm allocation, its `wl_buffer`, and, once imported at a
@@ -325,6 +331,17 @@ delegate_noop!(App: ignore wayland_client::protocol::wl_buffer::WlBuffer);
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn open_gbm_names_the_failing_step() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let missing = open_gbm(&dir.path().join("renderD128")).expect_err("no such node");
+        assert!(missing.starts_with("cannot open ") && missing.contains("No such file"), "{missing}");
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, b"").expect("write");
+        let not_drm = open_gbm(&plain).expect_err("a regular file is no DRM device");
+        assert!(not_drm.starts_with("gbm cannot use "), "{not_drm}");
+    }
 
     fn fm(fourcc: u32, modifier: u64) -> FormatModifier {
         FormatModifier { fourcc, modifier }

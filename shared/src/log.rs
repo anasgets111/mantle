@@ -227,9 +227,28 @@ fn clock(buf: &mut [u8; 8]) -> &str {
     std::str::from_utf8(buf).unwrap_or("--:--:--")
 }
 
+/// Whether this is the first failure seen for `key` (an icon name, an image path, a tool and its
+/// cause), so one retried every frame or tick warns once. ponytail: cleared wholesale at 1024 keys, like the icon memo, so a stream of
+/// novel failing names can repeat a warning; an LRU is the upgrade if that ever floods the log.
+pub fn first_failure(key: &str) -> bool {
+    static WARNED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    let mut warned = WARNED.get_or_init(Default::default).lock().expect("warned set poisoned");
+    if warned.len() >= 1024 {
+        warned.clear();
+    }
+    warned.insert(key.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failing_key_warns_once() {
+        assert!(first_failure("a-failing-key-warns-once"));
+        assert!(!first_failure("a-failing-key-warns-once"), "the second frame drawing it must stay quiet");
+    }
 
     fn config(tag: &'static str, raw: &str) -> Config {
         let (mut default, mut overrides) = (Some(Level::Notice), Vec::new());

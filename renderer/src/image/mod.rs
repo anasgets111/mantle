@@ -37,9 +37,9 @@ pub mod thumbnails;
 mod watch;
 
 pub use file::FileVersion;
-pub(crate) use file::first_failure;
 use fit::cache_box;
 pub use fit::fitted_rect;
+pub(crate) use shared::log::first_failure;
 
 use budget::{Budget, Charge};
 use decode::{Refused, decode};
@@ -754,12 +754,6 @@ mod tests {
 
     fn box_rect() -> LogicalRect {
         LogicalRect { x: 10.0, y: 20.0, width: 100.0, height: 50.0 }
-    }
-
-    #[test]
-    fn a_failing_name_warns_once() {
-        assert!(first_failure("a-failing-name-warns-once"));
-        assert!(!first_failure("a-failing-name-warns-once"), "the second frame drawing it must stay quiet");
     }
 
     #[test]
