@@ -101,7 +101,7 @@ impl ApplicationsController {
     pub fn new(dirs: Vec<PathBuf>, events: UnboundedSender<()>) -> Self {
         let state = Arc::new(Mutex::new(ApplicationsState::default()));
         let launch_targets = Arc::new(Mutex::new(HashMap::new()));
-        let dirs = Arc::new(dirs);
+        let dirs: Arc<[PathBuf]> = dirs.into();
         // One scan at a time, so state and launch map always come from the same scan.
         let scanning = Mutex::new(());
         let rescan: Arc<dyn Fn() + Send + Sync> = {

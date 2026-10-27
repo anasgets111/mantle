@@ -139,8 +139,10 @@ fn build_node(
     let child_clip =
         if node.clips_children() { parent_clip.intersect(snap_to_physical(rect, scale)) } else { parent_clip };
     let effect = &node.layout_style.effect;
-    let read =
-        snap_to_physical(grow(bounds, reach(effect.backdrop).max(shader_padding(&effect.backdrop_shader))), scale);
+    let read = snap_to_physical(
+        grow(bounds, reach(effect.backdrop).max(shader_padding(effect.backdrop_shader.as_ref()))),
+        scale,
+    );
     let opacity = inherited_opacity * node.opacity;
     let layers = match &node.paint {
         Some(PaintStyle::Box { background, .. }) => background.as_slice(),
@@ -208,7 +210,7 @@ fn build_node(
         _ => None,
     };
     // A backdrop shader's padding can reach back into the clip from a box that is itself outside it.
-    let padded_read = shader_padding(&effect.backdrop_shader) > 0.0 && !parent_clip.intersect(read).is_empty();
+    let padded_read = shader_padding(effect.backdrop_shader.as_ref()) > 0.0 && !parent_clip.intersect(read).is_empty();
     // Outside the node's own offscreen, which holds nothing to read (ADR-0256).
     if let Some(PaintStyle::Box { radius, .. }) = &node.paint
         && (effect.backdrop > 0.0 || !effect.backdrop_tone.is_identity() || effect.backdrop_shader.is_some())
@@ -383,7 +385,7 @@ fn build_node(
             pad.max(self::reach(shadow.blur / 2.0) + shadow.offset.0.abs().max(shadow.offset.1.abs()))
         });
         let target = snap_to_physical(
-            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(&layered.shader))),
+            grow(surface, pad.max(self::reach(layered.blur)).max(shader_padding(layered.shader.as_ref()))),
             scale,
         );
         let shader = layered.shader.take().map(|shader| layer_shader(shader, radius));
@@ -630,8 +632,8 @@ fn reach(sigma: f32) -> f32 {
 }
 
 /// How far past the box `effect.shader` reads and draws, logical px.
-fn shader_padding(shader: &Option<node::EffectShader>) -> f32 {
-    shader.as_ref().map_or(0.0, |shader| shader.padding)
+fn shader_padding(shader: Option<&node::EffectShader>) -> f32 {
+    shader.map_or(0.0, |shader| shader.padding)
 }
 
 /// `shader` as a draw carries it: the file's version, so an edit repaints, and the outline.

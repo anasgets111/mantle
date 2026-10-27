@@ -291,7 +291,7 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
                 Some(name) => Command::Call { name, arguments: positional.map(json_or_string).collect() },
             }
         }
-        Some("input") => Command::Input(inject_from(positional)?),
+        Some("input") => Command::Input(inject_from(&positional)?),
         Some("log") => Command::Log { follow },
         Some("list") => Command::List,
         Some("stop") => Command::Stop,
@@ -341,10 +341,10 @@ pub fn parse<I: IntoIterator<Item = String>>(argv: I) -> Result<Args, String> {
 
 /// `input`'s words after the verb: `<surface> <verb> args...`. `click` and `drag` are the move,
 /// press and release a real pointer would send.
-fn inject_from(words: Vec<String>) -> Result<shared::Inject, String> {
+fn inject_from(words: &[String]) -> Result<shared::Inject, String> {
     use shared::{InputButton, InputStep};
     const USAGE: &str = "input takes a surface and a verb: move X Y | press [BUTTON] | release [BUTTON] | leave | click X Y [BUTTON] | drag X1 Y1 X2 Y2 [BUTTON] | wheel X Y DY | key COMBO | type TEXT";
-    let [surface, verb, args @ ..] = words.as_slice() else { return Err(USAGE.into()) };
+    let [surface, verb, args @ ..] = words else { return Err(USAGE.into()) };
     let number = |raw: &String| {
         raw.parse::<f64>().ok().filter(|n| n.is_finite()).ok_or_else(|| format!("{raw:?} is not a number"))
     };

@@ -3,7 +3,7 @@
 
 use std::cell::OnceCell;
 use std::io::{Read, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
@@ -113,7 +113,7 @@ fn resolve(call: &str, path: &str) -> mlua::Result<PathBuf> {
         .map_err(|err| mlua::Error::runtime(format!("{call}: {err}, got {}", crate::layout::node::preview_str(path))))
 }
 
-fn read(path: &PathBuf) -> Result<String, String> {
+fn read(path: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
     file.take(READ_CAP + 1).read_to_end(&mut bytes).map_err(|err| err.to_string())?;
@@ -123,7 +123,7 @@ fn read(path: &PathBuf) -> Result<String, String> {
     String::from_utf8(bytes).map_err(|_| "file is not UTF-8".to_string())
 }
 
-fn write(path: &PathBuf, text: &str, in_place: bool) -> Result<bool, String> {
+fn write(path: &Path, text: &str, in_place: bool) -> Result<bool, String> {
     // Opening a FIFO blocks until the other end appears and writes run one at a time, so only a regular file is read or written in place.
     let existing = std::fs::metadata(path).ok();
     if in_place && existing.as_ref().is_some_and(|meta| !meta.is_file()) {

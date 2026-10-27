@@ -20,7 +20,7 @@ use crate::lua::luacats::LuaType;
 use crate::text::snap::LogicalRect;
 
 /// The input shapes [`NODES_HEADER`] names as `{Name}`, each supplied by its parser's type.
-const NODE_SHAPES: [fn(String) -> String; 27] = [
+const NODE_SHAPES: [fn(&str) -> String; 27] = [
     fill::<PathCommand>,
     fill::<AnchorInput>,
     fill::<ShapeCommand>,
@@ -51,10 +51,10 @@ const NODE_SHAPES: [fn(String) -> String; 27] = [
 ];
 
 /// As [`NODE_SHAPES`], for [`SURFACES_HEADER`].
-const SURFACE_SHAPES: [fn(String) -> String; 1] = [fill::<LogicalRect>];
+const SURFACE_SHAPES: [fn(&str) -> String; 1] = [fill::<LogicalRect>];
 
 /// `header` with `T`'s stub at its `{Name}`, which must be there.
-fn fill<T: LuaType>(header: String) -> String {
+fn fill<T: LuaType>(header: &str) -> String {
     let at = format!("{{{}}}", T::lua());
     assert!(header.contains(&at), "the header has no `{at}` for its stub");
     let mut stub = Vec::new();
@@ -218,7 +218,7 @@ fn nodes_lua() -> String {
     header = header.replace("{EASING}", &union(&crate::layout::node::easing_names().collect::<Vec<_>>()));
     header = header.replace("{ANIMATABLE}", &Animatable::lua());
     header = header.replace("{GradientStop}", &GradientStop::lua());
-    header = NODE_SHAPES.iter().fold(header, |header, fill| fill(header));
+    header = NODE_SHAPES.iter().fold(header, |header, fill| fill(&header));
     for (class, kinds) in BASES {
         let marker = format!("{{{class}}}");
         // `animate` is each kind's own: its keys are that kind's properties.
@@ -233,7 +233,7 @@ fn nodes_lua() -> String {
 fn surfaces_lua() -> String {
     let header = SURFACES_HEADER.replace("{POPUP_ANCHOR}", &union(PopupAnchor::NAMES));
     render_stub(
-        &SURFACE_SHAPES.iter().fold(header, |header, fill| fill(header)),
+        &SURFACE_SHAPES.iter().fold(header, |header, fill| fill(&header)),
         &KINDS.iter().copied().filter(|kind| kind_bit(kind) & SURFACES != 0).collect::<Vec<_>>(),
     )
 }

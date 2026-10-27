@@ -254,7 +254,7 @@ impl App {
                     warn!("{surface_id}: a single-line field refuses focus_target(\"{name}\"):set_text's newline");
                     continue;
                 }
-                self.set_draft(surface_id, id, &text);
+                self.set_draft(&surface_id, id, &text);
             }
         }
     }
@@ -318,7 +318,7 @@ impl App {
                 .find(|(_, tree)| layout::hit::contains_node(tree, id))
                 .map(|(surface_id, _)| surface_id.to_string());
             match surface {
-                Some(surface_id) if self.surface_is_live(&surface_id) => self.set_draft(surface_id, id, &text),
+                Some(surface_id) if self.surface_is_live(&surface_id) => self.set_draft(&surface_id, id, &text),
                 Some(_) => self.pending_seeds.push((id, text)),
                 None => {}
             }
@@ -334,14 +334,14 @@ impl App {
         }
     }
 
-    pub(super) fn set_draft(&mut self, surface_id: String, id: layout::scene::NodeId, text: &str) {
-        let text = fit_to_limit(text, self.field_max_length(&surface_id, id), 0);
-        if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), &surface_id, id, text) {
+    pub(super) fn set_draft(&mut self, surface_id: &str, id: layout::scene::NodeId, text: &str) {
+        let text = fit_to_limit(text, self.field_max_length(surface_id, id), 0);
+        if store_draft(&mut self.parked_drafts, self.focused_text_field.as_mut(), surface_id, id, text) {
             self.cancel_text_input_composition();
             self.text_input.note_other_change();
         }
-        self.mark_field_input_changed(&surface_id);
-        self.fit_field(&surface_id, id);
+        self.mark_field_input_changed(surface_id);
+        self.fit_field(surface_id, id);
     }
 
     pub(super) fn caret_on(&self, now: std::time::Instant) -> bool {

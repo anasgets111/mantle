@@ -194,7 +194,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         }
         cli::Command::Init { force } => setup::run(&config_dir()?, force),
         cli::Command::SetState(set) => control_client::send(set, &instance(false)?.dir),
-        cli::Command::Call { name, arguments } => control_client::call(name, arguments, &instance(false)?.dir),
+        cli::Command::Call { name, arguments } => control_client::call(&name, arguments, &instance(false)?.dir),
         cli::Command::Input(inject) => control_client::inject(inject, &instance(false)?.dir),
         cli::Command::ListDeclared(declared) => control_client::list(declared, &instance(false)?.dir),
         cli::Command::Log { follow } => {
@@ -379,7 +379,7 @@ async fn run_supervisor(
                 );
             }
             Some(request) = agent_requests.recv() => supervisor.handle_polkit_request(request),
-            Some((cookie, outcome)) = polkit_outcomes.recv() => supervisor.record_polkit_outcome(cookie, outcome),
+            Some((cookie, outcome)) = polkit_outcomes.recv() => supervisor.record_polkit_outcome(&cookie, outcome),
             Some(generation_id) = connected.recv() => supervisor.hydrate(generation_id),
             // One arm per snapshot capability (ADR-0076); `Signals::next` is cancel-safe.
             Some(signal) = signals.next() => supervisor.push_capability_signal(signal),

@@ -61,8 +61,8 @@ pub fn send(set: SetState, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
 }
 
 /// Sends one `mantle call` and prints what the config returned.
-pub fn call(name: String, arguments: Vec<serde_json::Value>, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
-    match ask(instance_dir, RendererFrame::Call(Call { id: 0, name: name.clone(), arguments }), &name)? {
+pub fn call(name: &str, arguments: Vec<serde_json::Value>, instance_dir: &Path) -> Result<(), Box<dyn Error>> {
+    match ask(instance_dir, RendererFrame::Call(Call { id: 0, name: name.to_owned(), arguments }), name)? {
         CallOutcome::Failed(why) => Err(format!("`{name}` failed: {why}").into()),
         CallOutcome::Returned(value) => {
             match value {
@@ -153,7 +153,7 @@ mod tests {
             (RendererFrame::SetState { id: 0, set: set.clone() }, Box::new(move |dir| send(set.clone(), dir))),
             (
                 RendererFrame::Call(Call { id: 0, name: "go".into(), arguments: vec![serde_json::json!(1)] }),
-                Box::new(|dir| call("go".into(), vec![serde_json::json!(1)], dir)),
+                Box::new(|dir| call("go", vec![serde_json::json!(1)], dir)),
             ),
             (
                 RendererFrame::Inject { id: 0, inject: inject.clone() },

@@ -601,13 +601,13 @@ impl Capabilities {
         }
         match capability {
             Capability::AndroidConnect => to!(self.android_connect, android_connect::dispatch),
-            Capability::Network => queue(&self.network, envelope, network::dispatch),
-            Capability::Bluetooth => queue(&self.bluetooth, envelope, bluetooth::dispatch),
+            Capability::Network => queue(self.network.as_ref(), envelope, network::dispatch),
+            Capability::Bluetooth => queue(self.bluetooth.as_ref(), envelope, bluetooth::dispatch),
             Capability::Tray => to!(self.tray, tray::dispatch),
             Capability::Notifications => to!(self.notifications, notifications::dispatch),
             Capability::Mpris => to!(self.mpris, mpris::dispatch),
             Capability::Sysinfo => to!(self.sysinfo, sysinfo::dispatch),
-            Capability::Keyboard => queue(&self.keyboard, envelope, keyboard::dispatch),
+            Capability::Keyboard => queue(self.keyboard.as_ref(), envelope, keyboard::dispatch),
             Capability::Brightness => to!(self.brightness, brightness::dispatch),
             Capability::Radio => to!(self.radio, radio::dispatch),
             Capability::Workspaces => to!(self.workspaces, workspaces::dispatch),

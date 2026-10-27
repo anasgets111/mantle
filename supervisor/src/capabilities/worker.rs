@@ -51,7 +51,7 @@ where
 
 /// Queues a command for a worker capability, or logs it like any unstarted one.
 pub(super) fn queue<C: 'static>(
-    worker: &Option<Worker<C>>,
+    worker: Option<&Worker<C>>,
     envelope: &CommandEnvelope,
     dispatch: fn(&C, &CommandEnvelope),
 ) {

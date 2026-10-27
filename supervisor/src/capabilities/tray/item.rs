@@ -19,8 +19,8 @@ use super::{MAX_TRAY_TEXT_BYTES, RawIconPixmap, RawToolTip};
 use crate::capabilities::{properties_proxy, truncate_utf8_bytes};
 
 /// [`MAX_TRAY_TEXT_BYTES`] applied to one application-supplied property.
-fn capped(value: String) -> String {
-    truncate_utf8_bytes(&value, MAX_TRAY_TEXT_BYTES)
+fn capped(value: &str) -> String {
+    truncate_utf8_bytes(value, MAX_TRAY_TEXT_BYTES)
 }
 
 /// Resolves `TrayItem.name`: `Title`, falling back to `Id` when empty (ADR-0031).
@@ -106,8 +106,8 @@ pub(super) async fn fetch_tray_item_base(
     let (got_name, got_status, got_tooltip) = (got("Id") && got("Title"), got("Status"), got("ToolTip"));
     // Every string below is whatever application owns this item; cap each on the way in
     // (`MAX_TRAY_TEXT_BYTES`) rather than trusting SNI, which bounds none of them.
-    let id_prop = capped(take(&mut all, "Id").unwrap_or_default());
-    let title = capped(take(&mut all, "Title").unwrap_or_default());
+    let id_prop = capped(&take::<String>(&mut all, "Id").unwrap_or_default());
+    let title = capped(&take::<String>(&mut all, "Title").unwrap_or_default());
     let status = parse_status(&take::<String>(&mut all, "Status").unwrap_or_default());
     let item_is_menu = take(&mut all, "ItemIsMenu").unwrap_or(false);
     let tooltip = take::<RawToolTip>(&mut all, "ToolTip");
@@ -118,7 +118,7 @@ pub(super) async fn fetch_tray_item_base(
 
     let name = resolve_display_name(&title, &id_prop);
     let tooltip_flat =
-        tooltip.and_then(|(_, _, tt_title, tt_text)| flatten_tooltip(&capped(tt_title), &capped(tt_text)));
+        tooltip.and_then(|(_, _, tt_title, tt_text)| flatten_tooltip(&capped(&tt_title), &capped(&tt_text)));
     if text_only {
         let mut kept = TrayItem { menu: None, ..previous.clone() };
         if got_name {
@@ -182,7 +182,7 @@ fn resolve_variant(
         pixmaps_raw.into_iter().map(|(width, height, bytes)| IconPixmap { width, height, bytes }).collect();
     // Capped here rather than at the three call sites, so no `{X}IconName` can reach a `TrayItem`
     // uncapped by being passed in from a fourth one later.
-    match resolve_icon_source(&capped(icon_name_prop), &pixmaps, theme_path) {
+    match resolve_icon_source(&capped(&icon_name_prop), &pixmaps, theme_path) {
         IconSource::ThemePathFile(path) => ((None, Some(path)), None),
         IconSource::Name(name) => ((Some(name), None), None),
         IconSource::Pixmap => {

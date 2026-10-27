@@ -278,7 +278,7 @@ impl App {
         // Autofocus starts from the seed, so a parked draft must not come back.
         self.parked_drafts.remove(&(surface_id.clone(), id));
         self.focus_control(Some(control));
-        self.set_draft(surface_id.clone(), id, &seed);
+        self.set_draft(&surface_id, id, &seed);
         let opened = self.focused_text_field.as_ref().and_then(|field| field.on_change.clone());
         if let Some(on_change) = opened {
             let text = self.focused_text_field.as_ref().map(|field| field.buffer.clone()).unwrap_or_default();

@@ -48,7 +48,7 @@ impl ProcessRegistry {
 
     /// `process.capture`: the Supervisor answers a `"capture"` with at most one stdout frame carrying
     /// the whole text, so the callbacks are plain `run` ones: the line is stashed, `on_exit` delivers it.
-    fn capture(&self, lua: &Lua, cmd: String, args: Vec<String>, on_done: Function) -> mlua::Result<ProcessHandle> {
+    fn capture(&self, lua: &Lua, cmd: &str, args: &[String], on_done: Function) -> mlua::Result<ProcessHandle> {
         let stdout = Rc::new(RefCell::new(String::new()));
         let stash = stdout.clone();
         let on_line = lua.create_function(move |_, (text, _stream): (String, String)| {
@@ -62,14 +62,7 @@ impl ProcessRegistry {
         Ok(self.start("capture", cmd, args, on_line, on_exit))
     }
 
-    fn start(
-        &self,
-        action: &str,
-        cmd: String,
-        args: Vec<String>,
-        on_line: Function,
-        on_exit: Function,
-    ) -> ProcessHandle {
+    fn start(&self, action: &str, cmd: &str, args: &[String], on_line: Function, on_exit: Function) -> ProcessHandle {
         let id = self.commands.next_id();
         self.pending.borrow_mut().insert(id, PendingProcess { on_line, on_exit });
         self.send(action, vec![serde_json::json!(cmd), serde_json::json!(args)], id);
@@ -79,7 +72,7 @@ impl ProcessRegistry {
     /// Queues a `"detach"` with no callbacks retained: a detached program has no handle, no
     /// output and no exit code to deliver, so there is no pending pair to leak (ADR-0188). The
     /// envelope still carries an id because every command does; nothing ever answers it.
-    fn detach(&self, cmd: String, args: Vec<String>, opts: Option<serde_json::Value>) {
+    fn detach(&self, cmd: &str, args: &[String], opts: Option<serde_json::Value>) {
         let mut arguments = vec![serde_json::json!(cmd), serde_json::json!(args)];
         arguments.extend(opts);
         self.commands.send("process", "detach", arguments);
@@ -178,7 +171,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             /// `nil` when a signal ended it or it failed to spawn.
             on_exit: fn(code: Option<i32>),
         ) -> ProcessHandle {
-            Ok(registry.start("run", cmd, args.unwrap_or_default(), on_line.0, on_exit.0))
+            Ok(registry.start("run", &cmd, &args.unwrap_or_default(), on_line.0, on_exit.0))
         }
     )?;
     lua_fn!(
@@ -196,7 +189,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
             /// `stdout` and `code` are both `nil` when a signal ended it or it failed to spawn.
             on_done: fn(stdout: Option<String>, code: Option<i32>),
         ) -> ProcessHandle {
-            capture_registry.capture(lua, cmd, args.unwrap_or_default(), on_done.0)
+            capture_registry.capture(lua, &cmd, &args.unwrap_or_default(), on_done.0)
         }
     )?;
     lua_fn!(
@@ -223,7 +216,7 @@ pub fn register(lua: &Lua, registry: ProcessRegistry) -> mlua::Result<()> {
                         .map_err(mlua::Error::external)
                 })
                 .map_err(|err| mlua::Error::runtime(format!("process.detach: opts: {err}")))?;
-            detach_registry.detach(cmd, args.unwrap_or_default(), opts);
+            detach_registry.detach(&cmd, &args.unwrap_or_default(), opts);
             Ok(())
         }
     )

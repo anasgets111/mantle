@@ -130,7 +130,7 @@ impl IdleRegistry {
 
     /// `idle:inhibit(reason)` (ADR-0032). The Supervisor counts holds per generation, so two
     /// callers hold two references to one logind fd and either release leaves the other alive.
-    fn inhibit(&self, reason: String) {
+    fn inhibit(&self, reason: &str) {
         self.state.commands().start_capability("idle");
         self.state.commands().send("idle", "inhibit", vec![serde_json::json!(reason)]);
     }
@@ -258,7 +258,7 @@ impl UserData for IdleMember {
             },
         );
         methods.located_method("inhibit", |_, this, reason: String| {
-            this.0.inhibit(reason);
+            this.0.inhibit(&reason);
             Ok(())
         });
         methods.add_method("release_inhibit", |_, this, ()| {

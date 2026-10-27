@@ -44,6 +44,8 @@ unsafe_op_in_unsafe_fn = "deny"
 
 [workspace.lints.clippy]
 undocumented_unsafe_blocks = "warn"
+rc_buffer = "warn"
+ref_option = "warn"
 unwrap_used = "warn"
 
 [profile.release]

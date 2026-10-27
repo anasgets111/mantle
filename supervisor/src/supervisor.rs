@@ -300,8 +300,8 @@ impl Supervisor {
 
     /// Handles the helper's answer. On success polkitd was already told; release the held
     /// `BeginAuthentication` reply in the required order.
-    pub(crate) fn record_polkit_outcome(&mut self, cookie: String, outcome: shared::PamOutcome) {
-        match self.polkit.record_outcome(&cookie, outcome) {
+    pub(crate) fn record_polkit_outcome(&mut self, cookie: &str, outcome: shared::PamOutcome) {
+        match self.polkit.record_outcome(cookie, outcome) {
             Answer::Stale => {
                 debug!("dropping a polkit outcome for {cookie:?}, which is no longer the challenge on screen")
             }

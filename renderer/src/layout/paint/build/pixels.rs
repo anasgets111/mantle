@@ -256,7 +256,7 @@ pub(super) fn push_fill(out: &mut Vec<DrawCmd>, fill: DrawCmd, layers: &[(Fill, 
 /// A layer's offscreen: the box padded for the furthest blur or shader, united with where it lands as the shadow.
 pub(super) fn layer_bounds(rect: LogicalRect, effect: &node::Effect, scale: f32) -> PhysicalRect {
     let shadow_reach = effect.shadows.iter().fold(0.0_f32, |most, shadow| most.max(reach(shadow.blur / 2.0)));
-    let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(&effect.shader)));
+    let padded = grow(rect, shadow_reach.max(reach(effect.blur)).max(shader_padding(effect.shader.as_ref())));
     let own = snap_to_physical(padded, scale);
     effect
         .shadows

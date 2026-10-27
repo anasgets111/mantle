@@ -99,8 +99,8 @@ pub struct NotificationsController {
     state: Arc<Mutex<NotificationsQueueState>>,
     events: UnboundedSender<()>,
     sound_tx: SoundSender,
-    trusted_roots: Arc<Vec<PathBuf>>,
-    sound_roots: Arc<Vec<PathBuf>>,
+    trusted_roots: Arc<[PathBuf]>,
+    sound_roots: Arc<[PathBuf]>,
     /// Deadline stopping all expiry countdowns, or `None` (ADR-0094). A `watch` wakes spawned
     /// countdowns when it changes; a queue field would only be seen on their next check.
     expiry_hold: watch::Sender<Option<Instant>>,
@@ -147,8 +147,8 @@ impl NotificationsController {
             state: Arc::new(Mutex::new(NotificationsQueueState::new())),
             events,
             sound_tx,
-            trusted_roots: Arc::new(default_trusted_icon_roots()),
-            sound_roots: Arc::new(default_trusted_sound_roots()),
+            trusted_roots: default_trusted_icon_roots().into(),
+            sound_roots: default_trusted_sound_roots().into(),
             expiry_hold: watch::Sender::new(None),
         }
     }
@@ -845,7 +845,7 @@ mod tests {
         let sound = sounds.path().join("message.oga");
         std::fs::write(&sound, b"").unwrap();
         let mut inert = NotificationsController::inert(events, sound_tx);
-        inert.sound_roots = Arc::new(vec![sounds.path().to_path_buf()]);
+        inert.sound_roots = Arc::from([sounds.path().to_path_buf()]);
         let controller = &inert;
         controller.set_sound(Urgency::Normal, sound.to_str().unwrap());
         controller.set_app_muted("vesktop".into(), true);

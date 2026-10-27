@@ -118,7 +118,7 @@ async fn run_privacy_task(
                     // A close only removes pids: recheck the known openers instead of walking `/proc`.
                     // A pid that dropped out may have passed the fd to a child no open announced: walk.
                     DeviceEvent::Closed if opener_pids.is_empty() => false,
-                    DeviceEvent::Closed => recheck_openers(&proc_root, watched_devices(&inotify_stream), &mut opener_pids).await,
+                    DeviceEvent::Closed => recheck_openers(&proc_root, watched_devices(inotify_stream.as_ref()), &mut opener_pids).await,
                     DeviceEvent::Failed(err) => {
                         warn!("inotify read failed: {err}");
                         continue;
@@ -130,7 +130,7 @@ async fn run_privacy_task(
                     }
                 };
                 if rescan {
-                    let (root, watched) = (proc_root.clone(), watched_devices(&inotify_stream));
+                    let (root, watched) = (proc_root.clone(), watched_devices(inotify_stream.as_ref()));
                     if let Ok(pids) = tokio::task::spawn_blocking(move || find_device_openers(&root, &watched)).await {
                         opener_pids = pids;
                     }
@@ -237,8 +237,8 @@ struct VideoWatch {
     devices: Vec<PathBuf>,
 }
 
-fn watched_devices(watch: &Option<VideoWatch>) -> Vec<PathBuf> {
-    watch.as_ref().map(|watch| watch.devices.clone()).unwrap_or_default()
+fn watched_devices(watch: Option<&VideoWatch>) -> Vec<PathBuf> {
+    watch.map(|watch| watch.devices.clone()).unwrap_or_default()
 }
 
 /// Camera watch event. The enum names cases and lets [`next_device_event`] flatten a missing watch.
@@ -473,11 +473,11 @@ mod tests {
 
         std::fs::write(&second, "").unwrap();
         assert!(matches!(within(next_device_event(&mut watch)).await, DeviceEvent::Opened));
-        assert_eq!(watched_devices(&watch), vec![first.clone(), second.clone()]);
+        assert_eq!(watched_devices(watch.as_ref()), vec![first.clone(), second.clone()]);
 
         std::fs::remove_file(&first).unwrap();
         assert!(matches!(within(next_device_event(&mut watch)).await, DeviceEvent::Opened));
-        assert_eq!(watched_devices(&watch), vec![second]);
+        assert_eq!(watched_devices(watch.as_ref()), vec![second]);
     }
 
     /// Nodes that are not cameras churn in `/dev`; none may pay for a `/proc` scan.

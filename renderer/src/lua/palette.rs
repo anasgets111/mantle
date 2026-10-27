@@ -111,7 +111,7 @@ lua_class! {
     }
 }
 
-fn method(opts: &Option<Table>) -> mlua::Result<Method> {
+fn method(opts: Option<&Table>) -> mlua::Result<Method> {
     let value = match opts {
         Some(opts) => opts.get::<Value>("method")?,
         None => Value::Nil,
@@ -135,7 +135,7 @@ fn method(opts: &Option<Table>) -> mlua::Result<Method> {
     }
 }
 
-fn opt(opts: &Option<Table>, key: &str, default: i64) -> mlua::Result<i64> {
+fn opt(opts: Option<&Table>, key: &str, default: i64) -> mlua::Result<i64> {
     Ok(match opts {
         Some(opts) => opts.get::<Option<i64>>(key)?.unwrap_or(default),
         None => default,
@@ -163,9 +163,9 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
                 super::marshal::only_keys(opts, &["depth", "method", "rescale"])
                     .map_err(|detail| mlua::Error::runtime(format!("palette.quantize: options: {detail}")))?;
             }
-            let depth = opt(&opts, "depth", DEFAULT_DEPTH)?;
-            let method = method(&opts)?;
-            let rescale = opt(&opts, "rescale", DEFAULT_RESCALE)?;
+            let depth = opt(opts.as_ref(), "depth", DEFAULT_DEPTH)?;
+            let method = method(opts.as_ref())?;
+            let rescale = opt(opts.as_ref(), "rescale", DEFAULT_RESCALE)?;
             let Ok(depth @ 0..=8) = u8::try_from(depth) else {
                 let range = out_of_range(0, 8, format!("integer {depth}"));
                 return Err(mlua::Error::runtime(format!("palette.quantize: options: `depth` {range}")));
