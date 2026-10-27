@@ -62,7 +62,7 @@ nix = { workspace = true, features = ["event", "fs", "inotify", "poll", "resourc
 # Arc length for `path` stroke trims. Already compiled for resvg's `svgtypes`, so it adds no crate.
 kurbo = "0.13.1"
 # SVG text uses a snapshot of Mantle's configured fonts. `svgz` reuses flate2 from `png`.
-resvg = { version = "0.48.1", default-features = false, features = ["svgz", "text"] }
+resvg = { version = "0.49.0", default-features = false, features = ["svgz", "text"] }
 serde_json.workspace = true
 shared.workspace = true
 # No `calloop`: the event loop is our own poll (`wake.rs`). 154 to 150.
