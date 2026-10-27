@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.11.1 - 2026-10-27
+
 - Fixed: Images in a fast-scrolled list decode the ones now on screen first, and drop decodes for images no longer shown.
 - Fixed: The Renderer settles about 3 MB lower after image-heavy use.
 - Fixed: A missing `lsblk` now logs a warning instead of leaving `mantle.sysinfo.disks` silently empty.
