@@ -29,7 +29,7 @@ struct LedBacklight {
 #[derive(Clone)]
 pub struct KeyboardController {
     state: Arc<Mutex<KeyboardState>>,
-    backlight: Arc<Option<LedBacklight>>,
+    backlight: Option<LedBacklight>,
     compositor: &'static dyn Compositor,
     system_bus: zbus::Connection,
     events: UnboundedSender<()>,
@@ -76,7 +76,7 @@ impl KeyboardController {
         watch_locks(leds_root, Arc::clone(&state), events_tx.clone());
         Self {
             state,
-            backlight: Arc::new(backlight),
+            backlight,
             compositor: backend_or_unsupported(compositor, "layout"),
             system_bus,
             events: events_tx,

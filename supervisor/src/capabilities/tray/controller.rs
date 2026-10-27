@@ -51,7 +51,7 @@ impl TrayController {
         let watcher = StatusNotifierWatcher {
             connection: connection.clone(),
             registry: registry.clone(),
-            host_registered: Arc::new(Mutex::new(false)),
+            host_registered: Arc::default(),
             events: events.clone(),
         };
         // Continue after export failure; tray setup must not abort the Supervisor.
