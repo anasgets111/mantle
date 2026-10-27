@@ -180,7 +180,8 @@ fn layout_index<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u32
 }
 
 fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
-    let root: serde_json::Value = serde_json::from_str(json).ok()?;
+    let root: serde_json::Value =
+        serde_json::from_str(json).inspect_err(|err| debug!("Hyprland `devices` reply did not parse: {err}")).ok()?;
     let keyboards = root.get("keyboards")?.as_array()?;
     // `"none"`/`"error"` is what Hyprland reports for a device xkb resolved no layout for, which a
     // `wtype` virtual keyboard is while it holds `main`. Either draws as the layout name.

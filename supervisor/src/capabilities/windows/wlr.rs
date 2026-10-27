@@ -220,8 +220,12 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ThreadState {
 }
 
 fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>) -> Option<Handle> {
-    let connection = Connection::connect_to_env().ok()?;
-    let (globals, mut event_queue) = registry_queue_init::<ThreadState>(&connection).ok()?;
+    let connection = Connection::connect_to_env()
+        .inspect_err(|err| error!("failed to connect to the Wayland display for window reporting: {err}"))
+        .ok()?;
+    let (globals, mut event_queue) = registry_queue_init::<ThreadState>(&connection)
+        .inspect_err(|err| error!("failed to read the Wayland registry for window reporting: {err}"))
+        .ok()?;
     let qh = event_queue.handle();
 
     let _manager: ZwlrForeignToplevelManagerV1 = match globals.bind(&qh, 1..=3, ()) {
@@ -235,7 +239,10 @@ fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>
             return None;
         }
     };
-    let seat: WlSeat = globals.bind(&qh, 1..=1, ()).ok()?;
+    let seat: WlSeat = globals
+        .bind(&qh, 1..=1, ())
+        .inspect_err(|err| error!("failed to bind wl_seat for window reporting: {err}"))
+        .ok()?;
     for global in globals.contents().clone_list().into_iter().filter(|global| global.interface == "wl_output") {
         let _: WlOutput = globals.registry().bind(global.name, global.version.min(4), &qh, ());
     }
@@ -252,7 +259,10 @@ fn connect_blocking(events: UnboundedSender<()>, state: Arc<Mutex<WindowsState>>
         listening: true,
     };
     // Output names arrive before any toplevel does, so the first `output_enter` can resolve one.
-    event_queue.roundtrip(&mut thread_state).ok()?;
+    event_queue
+        .roundtrip(&mut thread_state)
+        .inspect_err(|err| error!("the Wayland roundtrip for window reporting failed: {err}"))
+        .ok()?;
 
     let handle = Arc::new(Wlr { connection, seat, handles });
     std::thread::spawn(move || {

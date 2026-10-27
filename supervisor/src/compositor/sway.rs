@@ -359,7 +359,8 @@ fn parse_sway_inputs(json: &[u8]) -> Option<(String, u32, u32)> {
         #[serde(default)]
         xkb_active_layout_index: u32,
     }
-    let inputs: Vec<Input> = serde_json::from_slice(json).ok()?;
+    let inputs: Vec<Input> =
+        serde_json::from_slice(json).inspect_err(|err| debug!("sway `GET_INPUTS` reply did not parse: {err}")).ok()?;
     let keyboard = inputs.into_iter().find(|input| input.kind == "keyboard" && !input.xkb_layout_names.is_empty())?;
     let name = keyboard
         .xkb_active_layout_name

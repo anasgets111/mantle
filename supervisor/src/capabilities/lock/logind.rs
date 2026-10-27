@@ -45,15 +45,16 @@ pub(crate) trait Login1Session {
 
 /// This process's logind session path. Prefer `$XDG_SESSION_ID`, then `"auto"`; they differ only
 /// when the variable was inherited from elsewhere, and there the explicit session name wins.
-async fn resolve_session_path(connection: &zbus::Connection) -> Option<zbus::zvariant::OwnedObjectPath> {
-    let manager = Login1ManagerProxy::new(connection).await.ok()?;
-    let explicit = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.is_empty());
-    if let Some(id) = explicit
-        && let Ok(path) = manager.get_session(&id).await
-    {
-        return Some(path);
+async fn resolve_session_path(connection: &zbus::Connection) -> Result<zbus::zvariant::OwnedObjectPath, String> {
+    let manager = Login1ManagerProxy::new(connection).await.map_err(|err| format!("logind is unreachable: {err}"))?;
+    let mut tried = String::new();
+    if let Some(id) = std::env::var("XDG_SESSION_ID").ok().filter(|id| !id.is_empty()) {
+        match manager.get_session(&id).await {
+            Ok(path) => return Ok(path),
+            Err(err) => tried = format!("XDG_SESSION_ID={id}: {err}; "),
+        }
     }
-    manager.get_session("auto").await.ok()
+    manager.get_session("auto").await.map_err(|err| format!("{tried}auto: {err}"))
 }
 
 /// logind session bridge. Holds the hint sender; both directions run as spawned tasks.
@@ -66,12 +67,15 @@ impl SessionBridge {
     /// Resolves the session, spawns the `Lock`/`Unlock` listener and `SetLockedHint` writer, then
     /// returns. `()` on `lock_requests` means logind requested a lock; `main.rs` decides.
     pub async fn new(connection: zbus::Connection, lock_requests: UnboundedSender<()>) -> Self {
-        let Some(path) = resolve_session_path(&connection).await else {
-            warn!(
-                "could not resolve this process's logind session; `loginctl lock-session` will not reach the \
-                 shell and LockedHint will not be published"
-            );
-            return Self { hints: None };
+        let path = match resolve_session_path(&connection).await {
+            Ok(path) => path,
+            Err(why) => {
+                warn!(
+                    "could not resolve this process's logind session ({why}); `loginctl lock-session` will not \
+                     reach the shell and LockedHint will not be published"
+                );
+                return Self { hints: None };
+            }
         };
         let session = match Login1SessionProxy::builder(&connection).path(path.clone()) {
             Ok(builder) => match builder.build().await {
