@@ -105,7 +105,7 @@ void main() {
 | :--- | :--- |
 | Declared for you | `uniform sampler2D <name>;` and `uniform vec2 <name>_size;` (pixels). Do not declare them |
 | Names | A GLSL identifier of up to 64 characters, not `u_*`, `mantle_*`, `gl_*`, `v_uv`, `fragColor`, `main` or a GLSL keyword or builtin such as `texture`, `float`, `vec2` or `mix`, with no `__` and not ending in `_size`. Others are refused |
-| Files | `.png`, `.jpg`, `.jpeg` or `.webp` (any case), absolute or `~/` under `$HOME`; at most 8 entries. GIF, SVG and other extensions are refused. A side over 2048 px is downscaled to 2048; each image is decoded in the frame that first draws it and held for the node's life, at most 16 MiB, so 128 MiB for eight |
+| Files | `.png`, `.jpg`, `.jpeg` or `.webp` (any case), absolute or `~/` under `$HOME`; at most 8 entries. GIF, SVG and other extensions are refused. An animated WebP or APNG draws its first frame. A side over 2048 px is downscaled to 2048; each image is decoded in the frame that first draws it and held for the node's life, at most 16 MiB, so 128 MiB for eight |
 | Sampling | `texture(name, uv)` with `uv` in `0..1`, top-left origin like `v_uv`. Linear filter, no mipmaps. Clamped to the edge, so use `fract(uv)` to tile. Texels are premultiplied, as `fragColor` is, and in sRGB as stored: no linearising, so a normal map reads as written |
 | Missing or undecodable file | Samples `vec4(0.0)` with `name_size` of `vec2(1.0)`, logged once per path. The node still draws |
 | Changed file | A new modification time or length reloads it, as an `image` does |

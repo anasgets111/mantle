@@ -7,10 +7,10 @@ use femtovg::{Canvas, ImageFlags, ImageId, ImageSource};
 use shared::warn;
 
 use super::decode::premultiply;
-use super::{CacheKey, Decoded, GifDelta, ImageCache, Slot};
+use super::{CacheKey, Decoded, Delta, ImageCache, Slot};
 use crate::layout::scene::NodeId;
 
-/// A landed GIF's replay state (ADR-0235): the base frame's own pixels, kept to re-upload on loop
+/// A landed animation's replay state (ADR-0235): the base frame's own pixels, kept to re-upload on loop
 /// wrap, and the rects later frames change, applied to the live texture in [`ImageCache::showing`]
 /// as its shown index advances.
 pub(super) struct Animation {
@@ -18,7 +18,7 @@ pub(super) struct Animation {
     width: u32,
     height: u32,
     delays: Vec<Duration>,
-    deltas: Vec<GifDelta>,
+    deltas: Vec<Delta>,
     /// The frame index on the slot's texture.
     current: usize,
 }
@@ -274,7 +274,7 @@ impl ImageCache {
     }
 
     /// Texture bytes on the GPU: slots' and nodes'. Not `resident_bytes`, which also counts an
-    /// animation's frames kept on the CPU and would refuse every large GIF a node texture.
+    /// animation's frames kept on the CPU and would refuse every large animation a node texture.
     fn gpu_bytes(&self) -> usize {
         let slots = self.entries.values().filter_map(|entry| match &entry.slot {
             Slot::Ready { image: Some(_), anim, bytes, .. } => {
@@ -323,6 +323,56 @@ impl ImageCache {
         });
     }
 
+    /// Counts `slot` into, or out of, `path`'s animated slots when it is one, for
+    /// [`ImageCache::is_animated`]: a slot where one size fails or plays nothing says nothing of another's.
+    pub(super) fn count_animated(&mut self, path: &Path, slot: &Slot, landed: bool) {
+        if !matches!(slot, Slot::Ready { anim: Some(anim), .. } if !anim.deltas.is_empty()) {
+            return;
+        }
+        if landed {
+            *self.animated.entry(path.to_path_buf()).or_default() += 1;
+        } else if let Some(count) = self.animated.get_mut(path) {
+            *count -= 1;
+            if *count == 0 {
+                self.animated.remove(path);
+            }
+        }
+    }
+
+    /// Whether `path` is a GIF, or a WebP or APNG some slot of which animates: what a node keeps a
+    /// playback for. A map lookup, so the scene may ask per node.
+    pub fn is_animated(&self, path: &Path) -> bool {
+        super::is_gif(path) || self.animated.contains_key(path)
+    }
+
+    /// Drops the playback of nodes `scene` no longer draws an animation in, after a pass. A node
+    /// that holds a clock for its file keeps it with no slot left (scrolled out, mid-resize, paused:
+    /// the playback outlives its slot), until a slot of that file lands as a still or fails.
+    pub fn forget_idle_node_clocks(&mut self, scene: &crate::layout::scene::Scene) {
+        let held: std::collections::HashSet<&Path> =
+            self.clocks.values().flatten().map(|own| own.path.as_path()).collect();
+        let live = scene
+            .animated_image_nodes(|path| self.is_animated(path) || held.contains(path) && !self.plays_nothing(path));
+        self.forget_node_clocks(|node| live.contains(&node));
+    }
+
+    /// Whether a slot `image` nodes asked to play of `path` came back a still, or failed: the file
+    /// was replaced, or is gone. Only its current version counts: a truncated write's `Failed`
+    /// outlives the rewrite, being no `Ready` for the budget to trim.
+    fn plays_nothing(&self, path: &Path) -> bool {
+        let current = self.versions.get(path);
+        self.entries.iter().any(|(key, entry)| {
+            key.path == path
+                && key.plays
+                && Some(key.version) == current
+                && match &entry.slot {
+                    Slot::Pending => false,
+                    Slot::Ready { anim, .. } => anim.is_none(),
+                    Slot::Failed => true,
+                }
+        })
+    }
+
     /// Whether any node keeps its own playback, which [`ImageCache::forget_node_clocks`] prunes.
     pub fn has_node_clocks(&self) -> bool {
         !self.clocks.is_empty()
@@ -330,8 +380,47 @@ impl ImageCache {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::image) mod tests {
     use super::*;
+
+    fn animation() -> Animation {
+        Animation {
+            base: vec![0; 16],
+            width: 2,
+            height: 2,
+            delays: vec![Duration::from_millis(20); 2],
+            deltas: vec![Delta { rect: (0, 0, 1, 1), pixels: vec![0; 4] }],
+            current: 0,
+        }
+    }
+
+    /// The slot an `image` node's request for `path` lands in, at the file's current version.
+    fn play_key(cache: &mut ImageCache, path: &Path) -> CacheKey {
+        let version = cache.versions.read(path, Instant::now());
+        CacheKey { plays: true, ..crate::image::tests::key(path, 2, version) }
+    }
+
+    /// A node playing `path`, one slot of which animates, for tests outside `image`.
+    pub(crate) fn play_for_test(cache: &mut ImageCache, node: NodeId, path: &Path) {
+        let key = play_key(cache, path);
+        let slot =
+            Slot::Ready { image: None, bytes: 0, clock: Clock::default(), anim: Some(animation()), natural: None };
+        cache.insert(key, slot);
+        let clock = NodeClock { path: path.to_path_buf(), clock: Clock::default(), texture: None };
+        cache.clocks.entry(node).or_default().push(clock);
+    }
+
+    /// The file's current version failed to decode as the animation a node asked for.
+    pub(crate) fn fail_for_test(cache: &mut ImageCache, path: &Path) {
+        let key = play_key(cache, path);
+        cache.insert(key, Slot::Failed);
+    }
+
+    pub(crate) fn evict_all_for_test(cache: &mut ImageCache) {
+        for key in cache.entries.keys().cloned().collect::<Vec<_>>() {
+            cache.evict(&key);
+        }
+    }
 
     fn own(cache: &mut ImageCache, node: u64) -> &mut NodeClock {
         &mut cache.clocks.get_mut(&NodeId::test(node)).unwrap()[0]
@@ -343,7 +432,7 @@ mod tests {
     /// shares the slot's texture.
     #[test]
     fn each_node_plays_a_gif_on_its_own_clock_and_texture() {
-        use super::super::gif::tests::gif_fixture;
+        use super::super::animation::tests::gif_fixture;
         use super::super::{Fit, ImageRequest, Load};
         use crate::layout::paint::{init_headless_egl, text_painter};
         use gif::DisposalMethod::Keep;
@@ -408,6 +497,112 @@ mod tests {
         let resident = cache.resident_bytes;
         cache.forget_node_clocks(|node| node == NodeId::test(1));
         assert_eq!((cache.clocks.len(), cache.resident_bytes), (1, resident - 16), "gone from every tree");
+    }
+
+    /// The cache remembers which paths animate, for the scene to ask without reading the file. A
+    /// path's sizes are separate slots, so one that fails or plays nothing (too big for the
+    /// animation budget) says nothing of another that animates. A GIF is known by its extension.
+    #[test]
+    fn a_path_animates_while_any_of_its_slots_does() {
+        let mut cache = ImageCache::inline();
+        let path = Path::new("/w/a.webp");
+        let slot = |animated: bool| {
+            let anim = animated.then(animation);
+            Slot::Ready { image: None, bytes: 0, clock: Clock::default(), anim, natural: None }
+        };
+        let at = |edge| super::super::tests::key(path, edge, super::super::FileVersion::default());
+        assert!(!cache.is_animated(path) && cache.is_animated(Path::new("/w/a.gif")));
+
+        cache.insert(at(2), slot(true));
+        cache.insert(at(4), slot(true));
+        cache.insert(at(64), slot(false));
+        cache.insert(at(128), Slot::Failed);
+        assert!(cache.is_animated(path));
+        cache.evict(&at(64));
+        cache.evict(&at(128));
+        cache.evict(&at(2));
+        assert!(cache.is_animated(path), "one animated slot is left");
+        cache.evict(&at(4));
+        assert!(!cache.is_animated(path), "forgotten with its last animated slot");
+
+        // What a node's clock outlives: a slot still pending, then one that landed a still or failed.
+        let plays = |edge| CacheKey { plays: true, ..at(edge) };
+        cache.versions.read(path, Instant::now());
+        assert!(!cache.plays_nothing(path));
+        cache.insert(plays(8), Slot::Pending);
+        cache.insert(at(16), slot(false));
+        let stale = super::super::FileVersion { len: 1, ..Default::default() };
+        cache.insert(CacheKey { version: stale, ..plays(4) }, Slot::Failed);
+        assert!(!cache.plays_nothing(path), "pending, a mask's still and an older version's failure say nothing");
+        cache.insert(plays(32), slot(false));
+        assert!(cache.plays_nothing(path), "a still where a node asked to play");
+        cache.evict(&plays(32));
+        cache.insert(plays(64), Slot::Failed);
+        assert!(cache.plays_nothing(path), "failed");
+    }
+
+    /// A WebP is known to animate once an `image` node's request lands it, inline or from the pool,
+    /// and a still PNG never is. A mask, a shader sampler or an icon asking for the same file gets
+    /// a slot of its own holding the first frame and no deltas, and owes no frame.
+    #[test]
+    fn a_webp_animates_for_an_image_node_and_is_a_still_for_a_mask_or_sampler() {
+        use super::super::animation::tests::{frames, webp_fixture};
+        use super::super::budget::Charge;
+        use super::super::decode::decode;
+        use super::super::{Fit, ImageRequest, Load};
+        use crate::layout::paint::{init_headless_egl, text_painter};
+
+        let Some(instance) = init_headless_egl(8, 8) else { return eprintln!("skipped: no headless EGL") };
+        let shaping = crate::text::shaping::ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 8, 8) else {
+            return eprintln!("skipped: no text painter");
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let (inline, pooled, sampler) = (
+            webp_fixture(dir.path(), "inline.webp", &frames(), &[50; 3]),
+            webp_fixture(dir.path(), "pooled.webp", &frames(), &[50; 3]),
+            webp_fixture(dir.path(), "sampler.webp", &frames(), &[50; 3]),
+        );
+        let png = dir.path().join("still.png");
+        std::fs::write(&png, super::super::tests::PIL_2X2_RGBA_PNG).unwrap();
+        let request = |path| ImageRequest {
+            path,
+            box_px: (4, 4),
+            tint: None,
+            fit: Fit::Stretch,
+            blur_px: 0,
+            wants_size: false,
+            clock: Some((NodeId::test(1), true)),
+        };
+        let mut cache = ImageCache::inline();
+
+        assert!(cache.image(painter.canvas_mut(), &request(&inline), Load::Inline).is_some());
+        assert!(cache.is_animated(&inline), "landed inline");
+        assert!(cache.take_deferred().is_some(), "the node's clock owes a frame");
+        assert!(cache.image(painter.canvas_mut(), &request(&png), Load::Inline).is_some());
+        assert!(!cache.is_animated(&png));
+
+        let key = cache.key_for(&request(&pooled));
+        cache.insert(key.clone(), Slot::Pending);
+        let fonts = cache.fonts.clone();
+        let decoded = decode(&key, None, None, Charge::Free, &|| true, cache.animation_bytes(), &fonts);
+        cache.landed.push((key, decoded));
+        cache.upload_landed(painter.canvas_mut());
+        assert!(cache.is_animated(&pooled), "landed from the pool");
+
+        // The sampler and mask request, which has no node. The same file as the node's gets its own slot.
+        for path in [&sampler, &inline] {
+            let before = cache.entries.len();
+            let mask = ImageRequest::mask(path, (4, 4));
+            assert!(cache.image(painter.canvas_mut(), &mask, Load::Inline).is_some());
+            assert!(cache.take_deferred().is_none(), "a first frame owes none: {}", path.display());
+            assert_eq!(cache.entries.len(), before + 1, "a slot of its own: {}", path.display());
+            let key = cache.key_for(&mask);
+            let Some(Slot::Ready { anim: None, image: Some(_), .. }) = cache.entries.get(&key).map(|e| &e.slot) else {
+                panic!("{} is one texture and no animation", path.display());
+            };
+        }
+        assert!(!cache.is_animated(&sampler), "no slot of it animates");
     }
 
     /// ADR-0233. Each frame's own delay, the zero-delay frame skipped, and a loop rather than a

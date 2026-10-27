@@ -205,7 +205,7 @@ pub(in crate::layout::node) fn parse_shader_images(what: &str, value: &Value) ->
         if !path.starts_with('/') {
             return Err(invalid(field, format!("expected an absolute path, got {}", preview_str(&path))));
         }
-        // No GIF: an animated sampler has no frame tick.
+        // No GIF: an animated sampler has no frame tick. An animated WebP or PNG draws its first frame.
         let raster = std::path::Path::new(&path)
             .extension()
             .and_then(|e| e.to_str())

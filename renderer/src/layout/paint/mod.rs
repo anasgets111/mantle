@@ -250,7 +250,7 @@ fn any_draw_matches(commands: &[DrawCmd], matches: impl Fn(&Draw) -> bool + Copy
 }
 
 /// Whether `draw`'s pixels can change under an unchanged command: a decode or capture landing, a
-/// GIF frame (ADR-0258).
+/// animation frame (ADR-0258).
 fn volatile(draw: &Draw) -> bool {
     matches!(
         draw,
@@ -408,7 +408,7 @@ impl DisplayList {
 
     /// The pixels that can differ from `previous`, empty if none can. Commands outside the common
     /// prefix and suffix are the only ones whose list entry differs, so their bounds, old and new,
-    /// cover those. A texture changes under an unchanged entry (a decode or capture landing, a GIF
+    /// cover those. A texture changes under an unchanged entry (a decode or capture landing, an animation
     /// frame) only on a paint its surface owes for that (ADR-0182, ADR-0233), and then `textures`
     /// adds the bounds of every command drawing one. A rounded clip whose own fields match
     /// composites pixel for pixel, so both look inside it (ADR-0258). One rect per changed
@@ -690,7 +690,7 @@ mod tests {
         border_width = 1, border_color = "#FFFFFFFF", mask = { source = "/tmp/m.png" },
         children = { rect { width = 30, height = "fill", background = "#FF0000FF" } } }"##;
 
-    /// A mask texture changes under an unchanged list like an `image`'s: a decode landing, a GIF
+    /// A mask texture changes under an unchanged list like an `image`'s: a decode landing, an animation
     /// frame, the file rewritten. So it is pinned, marks its surface stale, and damages its group.
     #[test]
     fn an_image_mask_is_a_texture_for_pinning_staleness_and_damage() {

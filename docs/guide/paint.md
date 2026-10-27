@@ -617,7 +617,7 @@ shows through.
 
 **`source_blur`.** The blur is baked into the decoded pixels, which are stored cropped to the box
 under `fit = "cover"`, so it is exact there. Under `"contain"` or `"stretch"` the stored pixels
-are rescaled and the blur with them. Animated GIFs ignore it. Changing it re-decodes; under `async = true` the image draws nothing until that lands, and `retain` does not cover it (the `source` did not change). See
+are rescaled and the blur with them. Animations ignore it. Changing it re-decodes; under `async = true` the image draws nothing until that lands, and `retain` does not cover it (the `source` did not change). See
 [image](../nodes/image.md).
 
 ```lua

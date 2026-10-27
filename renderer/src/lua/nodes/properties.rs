@@ -478,9 +478,9 @@ props! {
     }
     /// A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, SVG or SVGZ.
     mod image(IMAGE) {
-        /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop (ADR-0233).
+        /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
         ///
-        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIFs loop
+        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop
         source: Bound<FileText> = absent(Lua(r#""""#));
         /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
         ///
@@ -494,15 +494,15 @@ props! {
         ///
         /// Book: Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition)
         transition: Bound<TransitionSpec>;
-        /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animated GIFs ignore it.
+        /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animations ignore it.
         ///
-        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animated GIFs ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
+        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animations ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it.
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));
         /// Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint.
         corner_smoothing: Bound<Num> = range(0.0, 1.0).absent(Number(0.0));
-        /// `false` holds an animated GIF on its current frame, the first if it never played, and stops its frame requests; `true` resumes from there. Per node: another image showing the same file plays on, and a node keeps its place while scrolled out or resized. Stills ignore it.
+        /// `false` holds an animation on its current frame, the first if it never played, and stops its frame requests; `true` resumes from there. Per node: another image showing the same file plays on, and a node keeps its place while scrolled out or resized. Stills ignore it.
         playing: Bound<Flag> = absent(Bool(true));
         /// An `image_status(name)` signal; the engine writes the load of `source`: empty, loading, ready with the file's own size, or failed.
         ///

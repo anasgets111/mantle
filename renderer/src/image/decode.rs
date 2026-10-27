@@ -168,11 +168,16 @@ pub(crate) fn is_vector(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("svg") || ext.eq_ignore_ascii_case("svgz"))
 }
 
-/// ponytail: GIF only, so an animated WebP or APNG draws its first frame like a still (and so, per
-/// [`ImageCache::image`](super::ImageCache::image), can carry a `source_blur`). Upgrade: match the sniffed format;
-/// `AnimationDecoder` covers both.
-pub(crate) fn is_animated(path: &Path) -> bool {
+/// By extension, like [`is_vector`]. WebP and APNG are told apart by content instead, since most
+/// of those files are stills: [`animation::decode_frames`](super::animation::decode_frames) and
+/// [`ImageCache::is_animated`](super::ImageCache::is_animated).
+pub(crate) fn is_gif(path: &Path) -> bool {
     path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("gif"))
+}
+
+/// A WebP, PNG or APNG, by extension: what [`animation::decode_frames`](super::animation::decode_frames) sniffs for an animation.
+pub(super) fn may_animate(path: &Path) -> bool {
+    path.extension().is_some_and(|ext| ["webp", "png", "apng"].iter().any(|kind| ext.eq_ignore_ascii_case(kind)))
 }
 
 /// Canvas-free load half for pool threads: raster decode/downscale through `thumbnails` when
@@ -186,7 +191,7 @@ pub(super) fn decode(
     animation_bytes: usize,
     fonts: &crate::text::shaping::FontDatabase,
 ) -> Result<Decoded, String> {
-    let CacheKey { path, box_px, cropped, blur_px, .. } = key;
+    let CacheKey { path, box_px, cropped, blur_px, plays, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
     // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
@@ -204,15 +209,21 @@ pub(super) fn decode(
             text,
         });
     }
-    // `blur_px` is never passed on here (ADR-0240): the delta replay `decode_gif` stores keeps
+    // `blur_px` is never passed on to an animation (ADR-0240): the delta replay `decode_gif` stores keeps
     // only each frame's changed rect, and a blur samples past that rect's edge, so blurring
     // correctly means storing a full frame per delta -- the exact cost the deltas exist to avoid.
     // A `source_blur` on an animated source is silently ignored, matching ADR-0195 decision 7's
     // rule for a capability the config asked for and the pipeline does not have; `ImageCache::
-    // image` also zeroes it in the key, so a blurred and a sharp draw of the same GIF share one
-    // slot instead of each paying the animation budget for identical frames.
-    if is_animated(path) {
-        return super::gif::decode_gif(path, *box_px, *cropped, charge, animation_bytes);
+    // image` also zeroes it in the key of a GIF, so a blurred and a sharp draw share one slot
+    // instead of each paying the animation budget for identical frames. ponytail: a WebP or APNG
+    // is not known to animate until it decodes, so there each `source_blur` value is a slot.
+    // Upgrade: re-key a landed animation to blur 0.
+    if is_gif(path) {
+        return super::animation::decode_gif(path, *box_px, *cropped, charge, animation_bytes);
+    }
+    if *plays && let Some(animation) = super::animation::decode_frames(path, *box_px, *cropped, charge, animation_bytes)
+    {
+        return Ok(animation);
     }
     let (mut pixels, mut width, mut height, natural) = decode_raster(path, *box_px, thumbnails, charge, still_wanted)?;
     // Here rather than inside `decode_raster`, which returns from three places and would need the crop at each.
@@ -246,7 +257,7 @@ pub(super) fn crop_to_box(pixels: &[u8], width: u32, height: u32, box_px: (u32, 
         return None;
     }
     let (left, top) = ((width - kept_width) / 2, (height - kept_height) / 2);
-    Some((super::gif::read_rect(pixels, width, (left, top, kept_width, kept_height)), kept_width, kept_height))
+    Some((super::animation::read_rect(pixels, width, (left, top, kept_width, kept_height)), kept_width, kept_height))
 }
 
 /// Scales each RGBA8 pixel's colour by its own alpha, rounding the way a straight-to-premultiplied
@@ -534,17 +545,18 @@ mod tests {
     }
 
     #[test]
-    fn only_svg_is_rasterized_by_size_and_only_gif_is_animated() {
+    fn only_svg_is_rasterized_by_size_and_only_gif_is_animated_by_extension() {
         assert!(is_vector(Path::new("/usr/share/icons/Adwaita/symbolic/x.svg")));
         assert!(is_vector(Path::new("/tmp/X.SVG")));
         assert!(is_vector(Path::new("/tmp/gzipped.svgz")));
         assert!(!is_vector(Path::new("/run/user/1000/mantle/tray/telegram.png")));
         assert!(!is_vector(Path::new("/tmp/no-extension")));
 
-        assert!(is_animated(Path::new("/tmp/wallpaper.gif")));
-        assert!(is_animated(Path::new("/tmp/WALLPAPER.GIF")));
-        assert!(!is_animated(Path::new("/tmp/still.png")));
-        assert!(!is_animated(Path::new("/tmp/no-extension")));
+        assert!(is_gif(Path::new("/tmp/wallpaper.gif")));
+        assert!(is_gif(Path::new("/tmp/WALLPAPER.GIF")));
+        assert!(!is_gif(Path::new("/tmp/still.png")));
+        assert!(!is_gif(Path::new("/tmp/animated.webp")));
+        assert!(!is_gif(Path::new("/tmp/no-extension")));
     }
 
     #[test]

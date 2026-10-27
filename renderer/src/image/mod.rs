@@ -1,7 +1,7 @@
 //! Decodes, caches, and fits images into GPU textures (ADR-0054). PNG/JPEG/WebP use `image`
-//! (`decode::decode_raster`); SVG uses `resvg` because Adwaita ships scalable icons; a GIF is one texture
-//! plus its frames' changed rects, replayed onto it as the slot's elapsed time advances
-//! (`gif::decode_gif`, ADR-0233, ADR-0235).
+//! (`decode::decode_raster`); SVG uses `resvg` because Adwaita ships scalable icons; an animated GIF, WebP or APNG
+//! is one texture plus its frames' changed rects, replayed onto it as the slot's elapsed time advances
+//! (`animation::decode_gif` and `animation::decode_frames` for WebP and APNG, ADR-0233, ADR-0235).
 //!
 //! The key is path plus physical-pixel box: a vector made for 12px would blur at 24px, while a
 //! raster is downscaled to cover its box (ADR-0122), so a 4K wallpaper in a 230px thumbnail is a
@@ -21,13 +21,13 @@
 //! first. `wayland::App` triggers it after each paint using pins from surfaces' last lists.
 //! [`ImageCache::release_evicted`] frees textures at the next paint's start, never mid-frame.
 
+mod animation;
 mod budget;
 pub mod capture;
 mod decode;
 mod evict;
 mod file;
 mod fit;
-mod gif;
 mod icon_index;
 pub mod icons;
 pub mod quantize;
@@ -43,8 +43,10 @@ pub(crate) use shared::log::first_failure;
 
 use budget::{Budget, Charge};
 use decode::{Refused, decode};
-pub(crate) use decode::{is_animated, is_vector};
+pub(crate) use decode::{is_gif, is_vector};
 use svg::packed_rgb;
+#[cfg(test)]
+pub(crate) use texture::tests::{evict_all_for_test, fail_for_test, play_for_test};
 use texture::{Animation, Clock, NodeClock, upload_or_log};
 
 use crate::layout::node::Rgba;
@@ -139,9 +141,13 @@ struct CacheKey {
     /// `Contain` draw of the same file and box needs the uncropped pixels.
     cropped: bool,
     /// `image.source_blur` in physical pixels (ADR-0240): a sharp and a blurred draw of the same
-    /// file and box are different slots. Zero for every kind but a static `image`; `decode_gif`
-    /// never reads it, so an animated source is keyed as if it were always zero.
+    /// file and box are different slots. Zero for every kind but a static `image`; an animation
+    /// never reads it, and a GIF is keyed as if it were always zero.
     blur_px: u32,
+    /// A WebP or PNG drawn by an `image` node, the one request that plays it. A mask, a shader
+    /// sampler or an icon takes the first frame, from the still path, and no animation's deltas:
+    /// a different slot even for the same file and box.
+    plays: bool,
     font_generation: u64,
 }
 
@@ -196,7 +202,7 @@ pub enum Load {
 /// A source's own pixel size, before any downscale for its box.
 pub type Natural = (u32, u32);
 
-/// Decoder output awaiting texture upload: a still's one frame, or a GIF's base frame plus its
+/// Decoder output awaiting texture upload: a still's one frame, or an animation's base frame plus its
 /// later frames' changed rects (ADR-0235). `deltas` and `delays` are empty and length-1
 /// respectively for anything that is not an animation.
 struct Decoded {
@@ -205,7 +211,7 @@ struct Decoded {
     /// One delay per shown frame: `delays[0]` is the base's, `delays[i]` pairs with `deltas[i - 1]`.
     delays: Vec<Duration>,
     /// Frame `i + 1`'s rect, already composited with its disposal applied.
-    deltas: Vec<GifDelta>,
+    deltas: Vec<Delta>,
     width: u32,
     height: u32,
     /// The source's own size, before any downscale for the box: what `image_status` reports.
@@ -217,9 +223,9 @@ struct Decoded {
     text: bool,
 }
 
-/// One GIF frame's changed rectangle after disposal (ADR-0235): physical-pixel left/top/width/
+/// One animation frame's changed rectangle after disposal (ADR-0235): physical-pixel left/top/width/
 /// height and its RGBA8 pixels, ready for `Canvas::update_image`.
-struct GifDelta {
+struct Delta {
     rect: (u32, u32, u32, u32),
     pixels: Vec<u8>,
 }
@@ -311,6 +317,9 @@ pub struct ImageCache {
     entries: HashMap<CacheKey, Entry>,
     /// Recent stats of the paths in `entries`, so a draw does not stat its file.
     versions: file::VersionCache,
+    /// Animated slots per path, the sizes of one file being separate slots: a WebP or APNG is told
+    /// from a still only by decoding it, and the scene must not read the file to ask.
+    animated: HashMap<PathBuf, usize>,
     /// Evicted since [`ImageCache::release_evicted`], not yet freed.
     evicted: Vec<ImageId>,
     /// Textures released, textures uploaded and slots that failed to decode, over the cache's
@@ -387,6 +396,7 @@ impl ImageCache {
             fonts: FontDatabase::default(),
             entries: HashMap::default(),
             versions: Default::default(),
+            animated: HashMap::default(),
             evicted: Vec::new(),
             evicted_total: 0,
             freed: false,
@@ -547,6 +557,7 @@ impl ImageCache {
             }
             let text = result.as_ref().is_ok_and(|decoded| decoded.text);
             let slot = upload_or_log(canvas, &key.path, result);
+            self.count_animated(&key.path, &slot, true);
             match slot {
                 Slot::Ready { bytes, .. } => {
                     self.resident_bytes += bytes;
@@ -686,7 +697,7 @@ impl ImageCache {
         Some(loaded)
     }
 
-    fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px, .. }: &ImageRequest) -> CacheKey {
+    fn key_for(&mut self, &ImageRequest { path, box_px, tint, fit, blur_px, clock, .. }: &ImageRequest) -> CacheKey {
         let vector = is_vector(path);
         // Bounded by the slots, not wholesale: a forgotten path with a texture on screen would miss
         // its next rewrite. Paths without a slot are the transient ones, refused for capacity.
@@ -706,10 +717,11 @@ impl ImageCache {
             tint: if vector { tint.map(packed_rgb) } else { None },
             // An SVG rasterizes straight to its box, so there is never overflow to crop.
             cropped: !vector && fit == Fit::Cover,
-            // `decode` never reads `blur_px` for an animated source (ADR-0240); zeroed here too,
-            // or a blurred and a sharp draw of the same GIF would be two slots each paying its
+            // `decode` never reads `blur_px` for an animated source (ADR-0240); zeroed here too
+            // for a GIF, or a blurred and a sharp draw of it would be two slots each paying its
             // full animation budget for byte-identical frames.
-            blur_px: if is_animated(path) { 0 } else { blur_px },
+            blur_px: if is_gif(path) { 0 } else { blur_px },
+            plays: clock.is_some() && decode::may_animate(path),
         }
     }
 
@@ -821,6 +833,7 @@ mod tests {
             tint: None,
             cropped: false,
             blur_px: 0,
+            plays: false,
             font_generation: 0,
         }
     }
@@ -1062,6 +1075,25 @@ mod tests {
             matches!(cache.entries.get(&key).map(|e| &e.slot), Some(Slot::Pending)),
             "no canvas, so nothing uploaded yet"
         );
+    }
+
+    /// Only an `image` node, which has a clock, asks for a WebP, PNG or APNG to play; a mask, sampler or
+    /// icon takes a slot of its own, and no other kind of file splits on it.
+    #[test]
+    fn only_an_image_node_asks_for_a_webp_png_or_apng_to_play() {
+        let mut cache = ImageCache::inline();
+        for (file, node, plays) in [
+            ("/w/a.webp", true, true),
+            ("/w/a.PNG", true, true),
+            ("/w/a.apng", true, true),
+            ("/w/a.webp", false, false),
+            ("/w/a.png", false, false),
+            ("/w/a.jpg", true, false),
+            ("/w/a.gif", true, false),
+        ] {
+            let request = ImageRequest { clock: node.then(|| (NodeId::test(1), true)), ..request(Path::new(file), 8) };
+            assert_eq!(cache.key_for(&request).plays, plays, "{file}, node: {node}");
+        }
     }
 
     #[test]

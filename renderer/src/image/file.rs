@@ -86,6 +86,11 @@ impl VersionCache {
         version
     }
 
+    /// The remembered version of `path`, without a stat.
+    pub(super) fn get(&self, path: &Path) -> Option<FileVersion> {
+        self.stats.get(path).map(|stat| stat.version)
+    }
+
     pub(super) fn len(&self) -> usize {
         self.stats.len()
     }

@@ -155,6 +155,7 @@ impl ImageCache {
             };
             self.evict(&coldest);
         }
+        self.count_animated(&key.path, &slot, true);
         match &slot {
             Slot::Ready { bytes, .. } => self.resident_bytes += *bytes,
             Slot::Failed => self.failed_total += 1,
@@ -170,6 +171,7 @@ impl ImageCache {
             if !self.entries.keys().any(|other| other.path == key.path) {
                 self.versions.forget(&key.path);
             }
+            self.count_animated(&key.path, &entry.slot, false);
             match &entry.slot {
                 Slot::Ready { image, bytes, .. } => {
                     self.evicted.extend(*image);
@@ -222,6 +224,7 @@ fn compatible_stand_in(wanted: &CacheKey, candidate: &CacheKey) -> bool {
         || wanted.tint != candidate.tint
         || wanted.cropped != candidate.cropped
         || wanted.blur_px != candidate.blur_px
+        || wanted.plays != candidate.plays
         || wanted.font_generation != candidate.font_generation
         || wanted.box_px == candidate.box_px
     {

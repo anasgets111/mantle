@@ -309,8 +309,7 @@ pub fn run(
         // narrowed repaint and makes every surface's protocol state worth re-deriving.
         let passed = app.client.re_resolve_if_dirty();
         if passed && app.image_cache.has_node_clocks() {
-            let live = app.client.scene().animated_image_nodes();
-            app.image_cache.forget_node_clocks(|node| live.contains(&node));
+            app.image_cache.forget_idle_node_clocks(app.client.scene());
         }
         let targeted_instances = if passed { app.client.take_last_resolved() } else { None };
         phases.mark_resolve();

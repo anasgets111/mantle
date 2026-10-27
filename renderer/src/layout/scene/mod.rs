@@ -448,10 +448,13 @@ impl Scene {
     /// Every `image` node drawing an animated file, or crossing from one, for the image cache's
     /// per-node playback.
     ///
-    /// ponytail: O(nodes) after each pass while any GIF clock exists. Upgrade: the ids reconcile
+    /// ponytail: O(nodes) after each pass while any animation clock exists. Upgrade: the ids reconcile
     /// removes, plus the images whose `source` changed.
-    pub fn animated_image_nodes(&self) -> std::collections::HashSet<NodeId> {
-        let animated = |path: &str| crate::image::is_animated(std::path::Path::new(path));
+    pub fn animated_image_nodes(
+        &self,
+        is_animated: impl Fn(&std::path::Path) -> bool,
+    ) -> std::collections::HashSet<NodeId> {
+        let animated = |path: &str| is_animated(std::path::Path::new(path));
         let mut out = std::collections::HashSet::new();
         self.surfaces.values().for_each(|tree| {
             image_status::each_bound(tree, true, &mut |node, source, _| {
@@ -687,10 +690,40 @@ pub(super) mod tests {
             r#"path = state("path", "/w/a.gif")
             return panel { id = "bar", child = image { width = 4, height = 4, source = path } }"#,
         );
-        assert_eq!(scene.animated_image_nodes().len(), 1);
+        assert_eq!(scene.animated_image_nodes(crate::image::is_gif).len(), 1);
         lua.load(r#"path:set("/w/a.png")"#).exec().unwrap();
         apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
-        assert!(scene.animated_image_nodes().is_empty(), "a still frees the node's clocks");
+        assert!(scene.animated_image_nodes(crate::image::is_gif).is_empty(), "a still frees the node's clocks");
+    }
+
+    /// A WebP or APNG is no GIF by extension, so the cache is what says a node's playback is worth
+    /// keeping: through a pass it stays while a slot of the file animates or the node holds its clock,
+    /// and goes with the source.
+    #[test]
+    fn an_image_on_a_file_the_cache_knows_animates_keeps_its_playback_through_a_pass() {
+        let (mut scene, lua, shaping, surface) = applied(
+            r#"path = state("path", "/w/a.webp")
+            return panel { id = "bar", child = image { width = 4, height = 4, source = path } }"#,
+        );
+        let node = *scene.animated_image_nodes(|_| true).iter().next().expect("one image node");
+        let (mut cache, path) = (crate::image::ImageCache::inline(), std::path::Path::new("/w/a.webp"));
+        crate::image::play_for_test(&mut cache, node, path);
+
+        cache.forget_idle_node_clocks(&scene);
+        assert!(cache.has_node_clocks(), "the file animates: its node keeps the clock");
+        // Scrolled out, mid-resize or paused, the slot can go while the node is still in the scene.
+        crate::image::evict_all_for_test(&mut cache);
+        assert!(!cache.is_animated(path));
+        cache.forget_idle_node_clocks(&scene);
+        assert!(cache.has_node_clocks(), "no slot left: the node keeps its playback");
+        crate::image::fail_for_test(&mut cache, path);
+        cache.forget_idle_node_clocks(&scene);
+        assert!(!cache.has_node_clocks(), "the file no longer plays: the clock goes");
+        crate::image::play_for_test(&mut cache, node, path);
+        lua.load(r#"path:set("/w/a.png")"#).exec().unwrap();
+        apply_at(&mut scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        cache.forget_idle_node_clocks(&scene);
+        assert!(!cache.has_node_clocks(), "a still frees it");
     }
 
     /// ADR-0180, ADR-0183. A drawn source moves a retaining image onto it, and reaches only images

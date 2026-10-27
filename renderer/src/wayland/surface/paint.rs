@@ -527,7 +527,7 @@ impl App {
         self.surfaces.iter().any(|surface| surface.due_a_repaint() && surface.map_state == MapState::Mapped)
     }
 
-    /// When the earliest owed repaint comes due, for the poll loop's only timeout. A GIF's next
+    /// When the earliest owed repaint comes due, for the poll loop's only timeout. An animation's next
     /// frame is owed by no tree, no signal and no frame callback, so nothing else would wake for
     /// it (ADR-0233).
     pub(in crate::wayland) fn next_stale_deadline(&self) -> Option<std::time::Instant> {
@@ -577,8 +577,8 @@ impl App {
 mod tests {
     use super::*;
 
-    /// ADR-0258. A GIF's next-frame deadline outlives a paint that did not owe it: that paint's
-    /// region may have skipped the GIF, which then deferred nothing. A paint it owed draws the GIF,
+    /// ADR-0258. An animation's next-frame deadline outlives a paint that did not owe it: that paint's
+    /// region may have skipped the animation, which then deferred nothing. A paint it owed draws it,
     /// so what that paint deferred replaces the deadline.
     #[test]
     fn a_paint_that_owed_no_texture_keeps_the_gifs_deadline() {
