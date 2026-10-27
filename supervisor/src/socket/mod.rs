@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use nix::unistd::Pid;
 use shared::framing::{self, FramingError};
 use shared::{ConnectionHandshake, RendererFrame, SupervisorFrame, debug, error, info, warn};
 use tokio::net::{UnixListener, UnixStream};
@@ -94,7 +95,7 @@ pub struct GenerationRegistry {
     next_token: Arc<AtomicU64>,
     /// `generation_id` to the pid of the Renderer Supervisor spawned for it. Written at spawn,
     /// before the child can have connected, and read once per handshake.
-    expected_pids: Arc<Mutex<HashMap<u32, u32>>>,
+    expected_pids: Arc<Mutex<HashMap<u32, Pid>>>,
 }
 
 impl GenerationRegistry {
@@ -131,10 +132,7 @@ impl GenerationRegistry {
                     let pid = registry.expected_pids.lock().expect("mutex poisoned").get(&generation_id).copied();
                     if let Some(pid) = pid {
                         warn!("generation {generation_id} (pid {pid}) is still running after the hangup; killing it");
-                        let _ = crate::process::signal_group_best_effort(
-                            nix::unistd::Pid::from_raw(pid as i32),
-                            nix::sys::signal::Signal::SIGKILL,
-                        );
+                        let _ = crate::process::signal_group_best_effort(pid, nix::sys::signal::Signal::SIGKILL);
                     }
                 });
                 false
@@ -169,7 +167,7 @@ impl GenerationRegistry {
     ///
     /// Replaces any previous entry: generation ids are handed out monotonically, and a reused id
     /// would mean a new process is the rightful holder anyway.
-    pub fn expect_generation(&self, generation_id: u32, pid: u32) {
+    pub fn expect_generation(&self, generation_id: u32, pid: Pid) {
         self.expected_pids.lock().expect("mutex poisoned").insert(generation_id, pid);
     }
 
@@ -183,7 +181,7 @@ impl GenerationRegistry {
     ///
     /// The three states matter: recorded-and-matching admits, recorded-and-different refuses, and
     /// not-yet-recorded is neither. See [`Self::await_claim`].
-    fn may_claim(&self, generation_id: u32, pid: u32) -> Option<bool> {
+    fn may_claim(&self, generation_id: u32, pid: Pid) -> Option<bool> {
         self.expected_pids.lock().expect("mutex poisoned").get(&generation_id).map(|expected| *expected == pid)
     }
 
@@ -193,7 +191,7 @@ impl GenerationRegistry {
     /// Renderer could connect first and be refused, and a refused boot Renderer is a shell that never
     /// starts. Waiting closes that window without weakening the check: an impostor waits too, then
     /// is refused on the pid it does not have.
-    async fn await_claim(&self, generation_id: u32, pid: u32) -> bool {
+    async fn await_claim(&self, generation_id: u32, pid: Pid) -> bool {
         let deadline = tokio::time::Instant::now() + HANDSHAKE_TIMEOUT;
         loop {
             if let Some(verdict) = self.may_claim(generation_id, pid) {
@@ -312,7 +310,7 @@ async fn handle_connection(
 ) -> Result<(), FramingError> {
     // Read the peer's identity before its first byte: `SO_PEERCRED` is stamped by the kernel at
     // connect, so nothing the connection sends afterwards can change it.
-    let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid()).map(|pid| pid as u32);
+    let peer_pid = stream.peer_cred().ok().and_then(|cred| cred.pid()).map(Pid::from_raw);
     let (mut read_half, mut write_half) = stream.into_split();
 
     // A peer that connects and says nothing holds this task and its buffers forever without the
@@ -544,15 +542,19 @@ mod tests {
     #[test]
     fn a_generation_may_be_claimed_only_by_the_pid_supervisor_spawned_for_it() {
         let registry = GenerationRegistry::default();
-        assert_eq!(registry.may_claim(0, 4242), None, "an unrecorded generation is not yet decidable");
-        registry.expect_generation(0, 4242);
-        assert_eq!(registry.may_claim(0, 4242), Some(true));
-        assert_eq!(registry.may_claim(0, 4243), Some(false), "another process must not displace the Renderer");
-        assert_eq!(registry.may_claim(1, 4242), None, "the binding is per generation, not per process");
+        assert_eq!(registry.may_claim(0, Pid::from_raw(4242)), None, "an unrecorded generation is not yet decidable");
+        registry.expect_generation(0, Pid::from_raw(4242));
+        assert_eq!(registry.may_claim(0, Pid::from_raw(4242)), Some(true));
+        assert_eq!(
+            registry.may_claim(0, Pid::from_raw(4243)),
+            Some(false),
+            "another process must not displace the Renderer"
+        );
+        assert_eq!(registry.may_claim(1, Pid::from_raw(4242)), None, "the binding is per generation, not per process");
 
         // Pids are recycled; a reaped generation's stale expectation would eventually match something unrelated.
         registry.forget_generation(0);
-        assert_eq!(registry.may_claim(0, 4242), None);
+        assert_eq!(registry.may_claim(0, Pid::from_raw(4242)), None);
     }
 
     #[tokio::test]
@@ -581,7 +583,7 @@ mod tests {
         let mut child =
             crate::process::spawn_group_leader("sh", &crate::process::sh_args("trap '' HUP TERM; sleep 30"), &[])
                 .unwrap();
-        registry.expect_generation(5, child.id().unwrap());
+        registry.expect_generation(5, Pid::from_raw(child.id().unwrap() as i32));
         let (tx, _rx) = mpsc::channel::<Vec<u8>>(MAX_OUTBOUND_FRAMES);
         registry.register(5, tx, Arc::new(tokio::sync::Notify::new()));
         for _ in 0..=MAX_OUTBOUND_FRAMES {
@@ -626,7 +628,7 @@ mod tests {
     /// this pid the way Supervisor binds a Renderer's at spawn.
     fn expect_this_process(registry: &GenerationRegistry, generation_ids: &[u32]) {
         for generation_id in generation_ids {
-            registry.expect_generation(*generation_id, std::process::id());
+            registry.expect_generation(*generation_id, Pid::this());
         }
     }
 

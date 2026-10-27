@@ -408,7 +408,7 @@ impl Supervisor {
         match self.renderer.spawn(replacement_generation_id) {
             Ok(child) => {
                 if let Some(pid) = child.id() {
-                    self.registry.expect_generation(replacement_generation_id, pid);
+                    self.registry.expect_generation(replacement_generation_id, nix::unistd::Pid::from_raw(pid as i32));
                 }
                 // The departed generation's id must not stay claimable by whatever inherits its pid.
                 let departed = self.authoritative.generation_id;

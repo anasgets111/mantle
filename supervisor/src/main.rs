@@ -324,7 +324,7 @@ async fn run_supervisor(
     // Immediately, and before the child can have finished starting: generation 0 belongs to this
     // pid, and the listener refuses any other process claiming it (`socket::GenerationRegistry`).
     if let Some(pid) = boot_child.id() {
-        registry.expect_generation(0, pid);
+        registry.expect_generation(0, nix::unistd::Pid::from_raw(pid as i32));
         let argv: String = std::env::args().skip(1).map(|arg| format!(" {arg}")).collect();
         let detached = if detached { " (detached)" } else { "" };
         notice!("started `mantle{argv}`{detached} on {}; renderer pid {pid}", config_dir.display());
