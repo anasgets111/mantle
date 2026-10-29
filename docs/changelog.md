@@ -9,6 +9,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 - Added: Animated WebP and APNG images (`.apng` files too) now play and loop in `image` nodes, like GIFs, and `playing` pauses them. Masks and a shader's `images` still draw the first frame. `source_blur` is ignored on them, as on GIFs. Still WebP and PNG files draw as before.
 - Changed: A long GIF on a large canvas may now loop over fewer frames, and a GIF whose frames never change draws as a still.
+- Fixed: On Hyprland 0.57, `mantle.workspaces`, `mantle.windows` and the special workspace list stayed empty whenever a special workspace existed. Hyprland 0.57 sends no `id` for specials.
 
 ## 0.11.1 - 2026-10-27
 

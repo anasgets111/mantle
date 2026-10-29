@@ -13,7 +13,9 @@ use shared::debug;
 /// client scan.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct HyprlandWorkspace {
-    pub(super) id: i64,
+    /// Absent on specials since 0.57; the name is the key that every version and kind has.
+    #[serde(default)]
+    pub(super) id: Option<i64>,
     #[serde(default)]
     pub(super) name: String,
     #[serde(default)]
@@ -32,17 +34,19 @@ pub(super) struct HyprlandMonitor {
     id: i64,
     name: String,
     active_workspace: WorkspaceRef,
-    /// `{ "id": 0, "name": "" }` when no special is shown here.
+    /// `{ "name": "" }` when no special is shown here (`"id": 0` before 0.57).
     #[serde(default)]
     special_workspace: WorkspaceRef,
     #[serde(default)]
     focused: bool,
 }
 
-/// `{ "id": 3, "name": "3" }`, the monitor/client workspace reference.
+/// `{ "id": 3, "name": "3" }`, the monitor/client workspace reference. A special has no `id` since
+/// 0.57.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub(super) struct WorkspaceRef {
-    id: i64,
+    #[serde(default)]
+    id: Option<i64>,
     #[serde(default)]
     name: String,
 }
@@ -109,10 +113,10 @@ pub(super) fn fullscreen_mode<'de, D: serde::Deserializer<'de>>(deserializer: D)
 }
 
 /// Workspace representative: mapped, classed, and most recently focused.
-pub(super) fn standing_client(clients: &[HyprlandClient], workspace_id: i64) -> Option<&HyprlandClient> {
+pub(super) fn standing_client<'a>(clients: &'a [HyprlandClient], workspace: &str) -> Option<&'a HyprlandClient> {
     clients
         .iter()
-        .filter(|client| client.mapped && client.workspace.id == workspace_id && !client.class.is_empty())
+        .filter(|client| client.mapped && client.workspace.name == workspace && !client.class.is_empty())
         .min_by_key(|client| client.focus_history_id)
 }
 
@@ -125,17 +129,18 @@ pub(super) fn workspace_rows(
     workspaces
         .iter()
         .filter(|workspace| !is_special(&workspace.name))
-        .map(|workspace| {
+        .filter_map(|workspace| {
+            let id = workspace.id?;
             let monitor = monitors.iter().find(|monitor| monitor.name == workspace.monitor);
-            let is_active = monitor.is_some_and(|monitor| monitor.active_workspace.id == workspace.id);
+            let is_active = monitor.is_some_and(|monitor| monitor.active_workspace.name == workspace.name);
             let is_focused = is_active && monitor.is_some_and(|monitor| monitor.focused);
-            let standing = standing_client(clients, workspace.id);
+            let standing = standing_client(clients, &workspace.name);
             let app_id = standing.map(|client| client.class.clone());
             let window_id = standing.map(|client| client.address.clone());
-            let number = workspace.id.to_string();
-            WorkspaceRow {
-                id: workspace.id.to_string(),
-                number: u32::try_from(workspace.id).ok().filter(|&number| number > 0),
+            let number = id.to_string();
+            Some(WorkspaceRow {
+                id: id.to_string(),
+                number: u32::try_from(id).ok().filter(|&number| number > 0),
                 name: (workspace.name != number && !workspace.name.is_empty()).then(|| workspace.name.clone()),
                 output: (!workspace.monitor.is_empty()).then(|| workspace.monitor.clone()),
                 is_active,
@@ -144,7 +149,7 @@ pub(super) fn workspace_rows(
                 app_id,
                 window_id,
                 urgent: false,
-            }
+            })
         })
         .collect()
 }
@@ -164,7 +169,7 @@ pub(super) fn special_list(
         .iter()
         .filter(|workspace| is_special(&workspace.name))
         .map(|workspace| {
-            let standing = standing_client(clients, workspace.id);
+            let standing = standing_client(clients, &workspace.name);
             SpecialWorkspace {
                 name: workspace.name.clone(),
                 populated: workspace.windows > 0,
@@ -226,7 +231,7 @@ pub(super) fn window_rows(
             id: client.address.clone(),
             title: client.title.clone(),
             app_id: client.class.clone(),
-            workspace_id: (!is_special(&client.workspace.name)).then(|| client.workspace.id.to_string()),
+            workspace_id: client.workspace.id.filter(|_| !is_special(&client.workspace.name)).map(|id| id.to_string()),
             output: monitors.iter().find(|monitor| monitor.id == client.monitor).map(|monitor| monitor.name.clone()),
             focused: active_address.is_some_and(|address| address == client.address),
             floating: Some(client.floating),
@@ -342,9 +347,8 @@ pub(super) type State = (Vec<WorkspaceRow>, Option<FocusedWindow>, Vec<SpecialWo
 mod tests {
     use super::*;
 
-    /// Handwritten fixtures follow the wiki's "Using hyprctl" page and documented `hyprctl -j`
-    /// shapes, with read fields and ignored samples; no Hyprland session was available. On
-    /// Hyprland, replace them with a capture first if a renamed field breaks the tests.
+    /// Fixtures follow `hyprctl -j` on Hyprland 0.57.0, trimmed to the read fields and some ignored
+    /// ones. Since 0.57 a special has no `id`; tests that build one with an id cover older versions.
     fn workspaces(json: serde_json::Value) -> Vec<HyprlandWorkspace> {
         serde_json::from_value(json).unwrap()
     }
@@ -359,29 +363,41 @@ mod tests {
 
     fn workspace(id: i64, name: &str, monitor: &str, windows: u32) -> serde_json::Value {
         serde_json::json!({
-            "id": id, "name": name, "monitor": monitor, "monitorID": 0, "windows": windows,
+            "address": name, "id": id, "type": "normal", "name": name, "monitor": monitor, "monitorID": 0, "windows": windows,
             "hasfullscreen": false, "lastwindow": "0x0", "lastwindowtitle": "", "ispersistent": false
+        })
+    }
+
+    fn special(name: &str, monitor: &str, windows: u32) -> serde_json::Value {
+        serde_json::json!({
+            "address": name, "type": "special", "name": name, "monitor": monitor, "monitorID": 0,
+            "windows": windows, "hasfullscreen": false, "lastwindow": "0x0", "lastwindowtitle": "", "ispersistent": false
         })
     }
 
     fn monitor(name: &str, active: i64, focused: bool) -> serde_json::Value {
         serde_json::json!({
             "id": 0, "name": name, "description": "Some Vendor Model", "width": 2560, "height": 1440,
-            "activeWorkspace": { "id": active, "name": active.to_string() },
-            "specialWorkspace": { "id": 0, "name": "" },
+            "activeWorkspace": { "address": active.to_string(), "id": active, "type": "normal", "name": active.to_string() },
+            "specialWorkspace": { "address": "", "type": "", "name": "" },
             "focused": focused, "disabled": false
         })
     }
 
-    fn showing_special(mut monitor: serde_json::Value, id: i64, name: &str) -> serde_json::Value {
-        monitor["specialWorkspace"] = serde_json::json!({ "id": id, "name": name });
+    fn showing_special(mut monitor: serde_json::Value, name: &str) -> serde_json::Value {
+        monitor["specialWorkspace"] = serde_json::json!({ "address": name, "type": "special", "name": name });
         monitor
+    }
+
+    fn in_special(mut client: serde_json::Value, name: &str) -> serde_json::Value {
+        client["workspace"] = serde_json::json!({ "address": name, "type": "special", "name": name });
+        client
     }
 
     fn client(class: &str, title: &str, workspace: i64, focus_history_id: i64, floating: bool) -> serde_json::Value {
         serde_json::json!({
             "address": "0x55d1c0a3b2c0", "mapped": true, "hidden": false, "at": [0, 0], "size": [1280, 1440],
-            "workspace": { "id": workspace, "name": workspace.to_string() },
+            "workspace": { "address": workspace.to_string(), "id": workspace, "type": "normal", "name": workspace.to_string() },
             "floating": floating, "pseudo": false, "monitor": 0, "class": class, "title": title,
             "initialClass": class, "initialTitle": title, "pid": 4242, "xwayland": false, "pinned": false,
             "fullscreen": 0, "fullscreenClient": 0, "grouped": [], "tags": [], "swallowing": "0x0",
@@ -477,6 +493,19 @@ mod tests {
             Some("slack"),
             "the classless and unmapped ones lose, the other workspace's does not count"
         );
+    }
+
+    #[test]
+    fn an_open_special_without_an_id_parses_and_leaves_the_rows_intact() {
+        let workspaces =
+            workspaces(serde_json::json!([workspace(1, "1", "DP-1", 1), special("special:term", "DP-1", 1)]));
+        let monitors = monitors(serde_json::json!([monitor("DP-1", 1, true)]));
+        let clients = clients(serde_json::json!([in_special(client("kitty", "~", 0, 0, true), "special:term")]));
+
+        let rows = workspace_rows(&workspaces, &monitors, &clients);
+        assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), ["1"]);
+        assert!(rows[0].is_active && rows[0].is_focused);
+        assert_eq!(rows[0].app_id, None, "the special's client stands for the special only");
     }
 
     #[test]
@@ -651,14 +680,16 @@ mod tests {
 
     #[test]
     fn window_rows_drops_the_workspace_id_for_a_special_but_keeps_a_named_one() {
-        let mut special = client("kitty", "~", -99, 0, true);
-        special["workspace"]["name"] = serde_json::json!("special:scratch");
+        let special = in_special(client("kitty", "~", 0, 0, true), "special:scratch");
+        let mut with_id = client("kitty", "~", -99, 0, true);
+        with_id["workspace"]["name"] = serde_json::json!("special:scratch");
         let mut named = client("kitty", "~", -1, 0, true);
         named["workspace"]["name"] = serde_json::json!("notes");
-        let rows = window_rows(&clients(serde_json::json!([special, named])), &[], None);
+        let rows = window_rows(&clients(serde_json::json!([special, with_id, named])), &[], None);
 
         assert_eq!(rows[0].workspace_id, None, "a special is not a `WorkspaceEntry.id`");
-        assert_eq!(rows[1].workspace_id.as_deref(), Some("-1"));
+        assert_eq!(rows[1].workspace_id, None, "nor is one from before 0.57, which had an id");
+        assert_eq!(rows[2].workspace_id.as_deref(), Some("-1"));
     }
 
     #[test]
@@ -667,14 +698,18 @@ mod tests {
             &workspaces(serde_json::json!([
                 workspace(1, "1", "DP-1", 1),
                 workspace(-1, "notes", "DP-1", 1),
-                workspace(-99, "special:term", "DP-1", 2),
-                workspace(-98, "special", "HDMI-A-1", 0),
+                special("special:term", "DP-1", 2),
+                special("special", "HDMI-A-1", 0),
             ])),
             &monitors(serde_json::json!([
-                showing_special(monitor("DP-1", 1, true), -99, "special:term"),
+                showing_special(monitor("DP-1", 1, true), "special:term"),
                 monitor("HDMI-A-1", 2, false),
             ])),
-            &clients(serde_json::json!([client("kitty", "~", -99, 0, true), client("btop", "btop", -99, 3, true)])),
+            &clients(serde_json::json!([
+                in_special(client("kitty", "~", 0, 0, true), "special:term"),
+                in_special(client("btop", "btop", 0, 3, true), "special:term"),
+                client("firefox", "Hyprland Wiki", 1, 1, false),
+            ])),
         );
 
         assert_eq!(

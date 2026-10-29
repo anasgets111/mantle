@@ -38,7 +38,7 @@ pub(super) fn dispatch_to_workspace(
     }
     on_command_socket(move |socket_path| {
         let Some(workspaces) = read::<Vec<HyprlandWorkspace>>(socket_path, "workspaces") else { return };
-        let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == parsed) else {
+        let Some(workspace) = workspaces.iter().find(|workspace| workspace.id == Some(parsed)) else {
             return warn!("no Hyprland workspace has id {parsed}; ignored");
         };
         hyprland_command(socket_path, &format!("dispatch {}", build(&named_selector(&workspace.name))), capability);
