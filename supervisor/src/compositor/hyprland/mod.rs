@@ -47,7 +47,7 @@ use super::{Compositor, connect, toggle_needed};
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::StatePublisher as WindowsPublisher;
 use crate::capabilities::workspaces::controller::StatePublisher;
-use shared::{Capability, debug, error};
+use shared::{Capability, debug, error, warn};
 
 mod commands;
 mod wire;
@@ -65,6 +65,11 @@ pub(super) fn read<T: for<'de> Deserialize<'de>>(socket_path: &Path, name: &str)
     };
     match serde_json::from_str(&reply) {
         Ok(parsed) => Some(parsed),
+        // A protocol change, not a dropped request: it fails every read, so it warns once.
+        Err(err) if shared::log::first_failure(&format!("hyprland-{name}")) => {
+            warn!("Hyprland `{name}` reply did not parse; its state stays stale: {err}");
+            None
+        }
         Err(err) => {
             debug!("Hyprland `{name}` reply did not parse: {err}");
             None
