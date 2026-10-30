@@ -7,6 +7,8 @@ lock screens; save your Lua config to reload the shell.
 [Examples](https://anasgets111.github.io/mantle/cookbook/) ·
 [Changelog](https://anasgets111.github.io/mantle/changelog.html)
 
+> "I daily-drove quickshell until mantle fully replaced it and more"
+
 Version 0.x: a minor release can break the Lua API.
 
 Mantle ships no shell of its own. [`share/starter`](share/starter) is a one-clock bar;
