@@ -209,7 +209,7 @@ impl Supervisor {
     /// Handles a polkitd challenge or withdrawal (ADR-0114).
     pub(crate) fn handle_polkit_request(&mut self, request: AgentRequest) {
         let changed = match request {
-            AgentRequest::Begin { call, reply } => self.polkit.begin(call, reply),
+            AgentRequest::Begin { call, reply } => self.polkit.begin(call, reply, nix::unistd::Uid::current().as_raw()),
             AgentRequest::Cancel { cookie } => self.polkit.cancel(cookie.as_deref()),
         };
         if changed {

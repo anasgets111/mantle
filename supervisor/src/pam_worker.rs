@@ -183,7 +183,7 @@ pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn username_for(uid: u32) -> Result<String, String> {
+pub(crate) fn username_for(uid: u32) -> Result<String, String> {
     match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
         Ok(Some(user)) => Ok(user.name),
         Ok(None) => Err(format!("uid {uid} has no passwd entry")),

@@ -53,6 +53,7 @@ off until polkitd restarts. polkitd accepts an answer only from uid 0, so the
 | A second program's prompt never shows | One request at a time: a request arriving while another is on screen is cancelled, and its program sees the cancel. Finish or `cancel` the first |
 | Prompts go to another agent | polkit-gnome, hyprpolkitagent or similar registered first. Stop it and restart Mantle |
 | The prompt stays open after a wrong password | By design: `error` says why, and the next submit starts a new helper |
+| Another admin should authenticate | List `identities` and call `select_identity(uid)` from a click. The default is your own account when polkit offers it. Switching after a submit ends that attempt, which PAM may count |
 | `prompt` is `nil` before anything is typed | polkit's helper starts on the first submit, because closing a helper that waits on a prompt counts as a failed attempt |
 
 See also: [secure fields](../guide/input.md#secure-fields); [FAQ](../guide/faq.md#capabilities) for prompts that never appear.
