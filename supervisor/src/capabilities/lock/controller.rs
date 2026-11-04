@@ -5,7 +5,9 @@ use std::time::Duration;
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
-use super::state::{LockEvent, LockState, accepts_outcome, apply, may_authenticate, releases};
+use super::state::{LockEvent, LockState, apply, may_authenticate, releases};
+use crate::capabilities::conversation::{Dialogue, Heard};
+use crate::pam_worker::Conversation;
 use shared::action::LockAction;
 
 /// Owns [`LockState`] and the outbound `SetSessionLock` queue. Not `Clone`: `main.rs` mutates it
@@ -20,13 +22,20 @@ pub struct LockController {
     /// second mutex: it is written once at config load and read once per unlock, and it has no
     /// invariant tying it to the lock state beside it.
     unlock_animation_ms: AtomicU64,
+    /// The lock's PAM conversation (ADR-0381). Locked after `state` wherever both are held.
+    dialogue: Mutex<Dialogue>,
 }
 
 impl LockController {
     /// `commands_tx` returns commands to `main.rs`, the only holder of the authoritative generation
     /// id, which a swap reassigns.
     pub fn new(commands_tx: UnboundedSender<shared::SetSessionLock>) -> Self {
-        Self { state: Arc::new(Mutex::new(LockState::default())), commands_tx, unlock_animation_ms: AtomicU64::new(0) }
+        Self {
+            state: Arc::new(Mutex::new(LockState::default())),
+            commands_tx,
+            unlock_animation_ms: AtomicU64::new(0),
+            dialogue: Mutex::default(),
+        }
     }
 
     /// Sends `lock()`, unless a lock is already active. Renderer answers `Nothing` for
@@ -49,7 +58,7 @@ impl LockController {
         self.send(shared::SetSessionLock { locked: true });
     }
 
-    /// Orders unlock only from `main.rs`'s `secure_submit(lock, authenticate)` arm after
+    /// Orders unlock only from `main.rs`'s PAM conversation arm after
     /// `PamOutcome::Success`; it is absent from [`dispatch`] so ADR-0042 is checkable in one arm.
     /// Records no event: Renderer `Unlocked` clears `active`.
     pub fn unlock(&self) {
@@ -71,8 +80,8 @@ impl LockController {
     /// Releases the lock the password answered, after the configured window if there is one. With or
     /// without a window it refuses unless a recorded password answered the current acquisition.
     ///
-    /// **The release names its acquisition.** `record_authentication` checks that a PAM answer
-    /// belongs to the lock on the glass (`accepts_outcome`), but a *delayed* release outlives that
+    /// **The release names its acquisition.** `hear` checks that a PAM answer
+    /// belongs to the conversation of the lock on the glass, but a *delayed* release outlives that
     /// check: a lock can end and another begin while the timer sleeps, and an unconditional unlock
     /// would then release a lock nobody authenticated for -- the ADR-0042 bypass, arrived at by
     /// waiting instead of by a Lua action. So the acquisition is captured here and re-read when the
@@ -125,35 +134,50 @@ impl LockController {
         });
     }
 
+    /// Applies `event`. A new lock or a lock ending ends the running conversation, so nothing it
+    /// says later can answer for the lock on the glass.
     pub fn record(&self, event: LockEvent) {
-        apply(&mut self.state.lock().expect("mutex poisoned"), event);
+        let mut state = self.state.lock().expect("mutex poisoned");
+        let relock = event == LockEvent::Reported(shared::LockOutcome::Locked);
+        apply(&mut state, event);
+        if relock || !state.active {
+            self.dialogue.lock().expect("mutex poisoned").stop(&mut *state);
+        }
     }
 
     pub fn snapshot(&self) -> LockState {
         self.state.lock().expect("mutex poisoned").clone()
     }
 
-    /// Atomically admits and marks one PAM conversation, or refuses. `main.rs` spawns it, so a
-    /// getter plus record would race. `Some` carries the acquisition for
-    /// [`Self::record_authentication`], the only moment the worker's lock number is known.
-    pub fn try_begin_authentication(&self) -> Option<u64> {
-        let mut state = self.state.lock().expect("mutex poisoned");
-        if !may_authenticate(&state) {
-            return None;
+    /// Starts PAM for the lock on the glass unless it already runs (ADR-0381): after `Locked`,
+    /// and after a failure that showed a prompt.
+    pub fn converse(&self, start: impl FnOnce(u64) -> Conversation) {
+        let state = self.state.lock().expect("mutex poisoned");
+        let mut dialogue = self.dialogue.lock().expect("mutex poisoned");
+        if state.active && !state.unlocking && !dialogue.is_live() {
+            dialogue.start(start);
         }
-        apply(&mut state, LockEvent::AuthenticationStarted);
-        Some(state.acquisition)
     }
 
-    /// Applies a PAM answer to its acquisition or refuses it. `main.rs`'s `pam_outcomes` arm then
-    /// avoids unlocking a lock that no longer exists (see [`accepts_outcome`]).
-    pub fn record_authentication(&self, acquisition: u64, outcome: shared::PamOutcome) -> bool {
+    /// `secure_submit(lock, authenticate)`: answers PAM's prompt, or holds the answer until one
+    /// comes, starting a conversation if none runs. Refused with no lock held, while unlocking, or
+    /// while an answer is already with PAM.
+    pub fn submit(&self, secret: shared::Zeroizing<Vec<u8>>, start: impl FnOnce(u64) -> Conversation) -> bool {
         let mut state = self.state.lock().expect("mutex poisoned");
-        if !accepts_outcome(&state, acquisition) {
+        if !may_authenticate(&state) {
             return false;
         }
-        apply(&mut state, LockEvent::Authenticated(outcome));
-        true
+        self.dialogue.lock().expect("mutex poisoned").submit(&mut *state, secret, start)
+    }
+
+    /// Applies one frame of conversation `serial`; a verdict also counts or clears the attempt.
+    pub fn hear(&self, serial: u64, message: shared::PamMessage) -> Heard {
+        let mut state = self.state.lock().expect("mutex poisoned");
+        let heard = self.dialogue.lock().expect("mutex poisoned").hear(&mut *state, serial, message);
+        if let Heard::Ended { outcome, .. } = &heard {
+            apply(&mut state, LockEvent::Authenticated(outcome.clone()));
+        }
+        heard
     }
 
     /// A closed channel means `main.rs`'s loop is gone; log and drop.
@@ -224,57 +248,105 @@ mod tests {
         );
     }
 
-    #[test]
-    fn try_begin_authentication_admits_exactly_one_attempt_at_a_time() {
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+    /// Starts a detached conversation and records its serial and answer receiver.
+    fn start_into(
+        slot: &mut Option<(u64, tokio::sync::mpsc::UnboundedReceiver<shared::Zeroizing<Vec<u8>>>)>,
+    ) -> impl FnOnce(u64) -> Conversation + '_ {
+        move |serial| {
+            let (conversation, answers) = Conversation::detached();
+            *slot = Some((serial, answers));
+            conversation
+        }
+    }
+
+    fn prompt() -> shared::PamMessage {
+        shared::PamMessage::Prompt { text: "Password:".into(), echo: false }
+    }
+
+    fn secret() -> shared::Zeroizing<Vec<u8>> {
+        shared::Zeroizing::new(b"hunter2".to_vec())
+    }
+
+    /// A held lock whose conversation showed a prompt, and that conversation's serial.
+    fn locked() -> (LockController, tokio::sync::mpsc::UnboundedReceiver<shared::SetSessionLock>, u64) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = LockController::new(tx);
-
-        assert!(
-            controller.try_begin_authentication().is_none(),
-            "no lock is held, so there is nothing to authenticate against"
-        );
         controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
-        let acquisition = controller.try_begin_authentication().expect("a held lock admits the first attempt");
-        assert!(controller.snapshot().authenticating);
-        assert!(
-            controller.try_begin_authentication().is_none(),
-            "the second submission must find the first still in flight"
-        );
-
-        assert!(controller.record_authentication(acquisition, shared::PamOutcome::AuthFailed));
-        assert!(controller.try_begin_authentication().is_some(), "the worker's answer released it");
+        let mut started = None;
+        controller.converse(start_into(&mut started));
+        let (serial, _) = started.expect("a confirmed lock starts PAM");
+        assert_eq!(controller.hear(serial, prompt()), Heard::Changed);
+        (controller, rx, serial)
     }
 
     #[test]
-    fn a_stale_failure_neither_counts_against_the_new_lock_nor_overwrites_its_message() {
-        // The same binding, on the other outcome: a stale failure landing after the new
-        // acquisition's reset would show the user a failure they never made.
+    fn pam_starts_only_for_a_held_lock_and_one_answer_is_with_it_at_a_time() {
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let controller = LockController::new(tx);
-        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
-        let stale = controller.try_begin_authentication().expect("a held lock admits the attempt");
-        controller.record(LockEvent::Reported(shared::LockOutcome::Finished));
-        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        let mut started = None;
+        controller.converse(start_into(&mut started));
+        assert!(!controller.submit(secret(), start_into(&mut started)), "no lock is held");
+        assert!(started.is_none(), "so no worker starts either");
 
-        assert!(
-            !controller.record_authentication(stale, shared::PamOutcome::AuthFailed),
-            "the refusal is reported so main.rs can log it"
+        let (controller, _rx, serial) = locked();
+        let mut again = None;
+        controller.converse(start_into(&mut again));
+        assert!(again.is_none(), "one conversation per lock");
+        assert_eq!(controller.snapshot().prompt.map(|p| p.text), Some("Password:".to_string()));
+        assert!(controller.submit(secret(), start_into(&mut again)));
+        assert!(controller.snapshot().authenticating);
+        assert!(!controller.submit(secret(), start_into(&mut again)), "the second Enter finds the first with PAM");
+
+        let failed = shared::PamMessage::Outcome(shared::PamOutcome::AuthFailed);
+        assert_eq!(
+            controller.hear(serial, failed),
+            Heard::Ended { outcome: shared::PamOutcome::AuthFailed, prompted: true }
         );
-
         let state = controller.snapshot();
-        assert_eq!(state.attempts, 0, "the new lock has seen no attempts");
-        assert_eq!(state.error, "", "and nothing to say about one");
+        assert_eq!((state.attempts, state.error.as_str(), state.authenticating), (1, "authentication failed", false));
+        controller.converse(start_into(&mut again));
+        assert!(again.is_some(), "the caller restarts PAM for the next attempt");
+    }
+
+    /// The ADR-0042 bypass, in order: a worker started against lock N answers after the compositor
+    /// ended lock N and lock N+1 took the glass. Its verdict, right or wrong, applies to nothing.
+    #[test]
+    fn a_stale_verdict_neither_releases_nor_counts_against_the_lock_that_replaced_its_own() {
+        for outcome in [shared::PamOutcome::Success, shared::PamOutcome::AuthFailed] {
+            let (controller, mut rx, stale) = locked();
+            controller.record(LockEvent::Reported(shared::LockOutcome::Finished));
+            assert_eq!(controller.snapshot().prompt, None, "the lock's prompt left with it");
+            controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+            assert_eq!(controller.hear(stale, shared::PamMessage::Outcome(outcome)), Heard::Stale);
+            let state = controller.snapshot();
+            assert!(!state.unlocking && state.attempts == 0 && state.error.is_empty(), "{state:?}");
+            controller.unlock_after_animation();
+            assert!(rx.try_recv().is_err(), "nobody authenticated for the lock on the glass");
+        }
+    }
+
+    /// A lock confirmed again without ending (a respawned Renderer retaking it) is a new lock: the
+    /// old conversation ends with it, and only a new one starts.
+    #[test]
+    fn a_second_confirmed_lock_ends_the_first_lock_s_conversation() {
+        let (controller, _rx, stale) = locked();
+        controller.record(LockEvent::LockRequested);
+        assert!(controller.snapshot().prompt.is_some(), "a request alone ends nothing");
+        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        assert_eq!(controller.snapshot().prompt, None);
+        assert_eq!(controller.hear(stale, prompt()), Heard::Stale);
+        let mut started = None;
+        controller.converse(start_into(&mut started));
+        assert!(started.is_some_and(|(serial, _)| serial != stale));
     }
 
     /// A held lock with one attempt answered `outcome`.
     fn answered(
         outcome: shared::PamOutcome,
     ) -> (LockController, tokio::sync::mpsc::UnboundedReceiver<shared::SetSessionLock>) {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = LockController::new(tx);
-        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
-        let acquisition = controller.try_begin_authentication().expect("a held lock admits the attempt");
-        assert!(controller.record_authentication(acquisition, outcome));
+        let (controller, rx, serial) = locked();
+        assert!(controller.submit(secret(), |_| unreachable!("the conversation is running")));
+        assert!(matches!(controller.hear(serial, shared::PamMessage::Outcome(outcome)), Heard::Ended { .. }));
         (controller, rx)
     }
 

@@ -6,7 +6,8 @@ The pending polkit authentication request, its progress and the last failure.
 
 The password never reaches Lua: a [secure field](../guide/input.md#secure-fields) with
 `secure_submit = { capability = "polkit", action = "authenticate" }` sends it straight to the
-Supervisor.
+Supervisor. The first submit starts polkit's helper; after that `prompt` and `messages` relay its
+PAM conversation as on [`lock`](lock.md), and the same field answers each prompt.
 
 ```lua
 column {
@@ -50,10 +51,37 @@ column {
 | --- | --- | --- |
 | `action_id` | `string` | Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`. |
 | `active` | `boolean` | polkitd is waiting for the user to authenticate. |
-| `authenticating` | `boolean` | A password is with PAM. A second submit is refused while true. |
+| `authenticating` | `boolean` | An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true. |
 | `error` | `string` | Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry. |
 | `icon_name` | `string` | Themed icon name, or empty when the caller set none. |
 | `message` | `string` | The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with. |
+| `messages` | `PamNotice[]` | The helper's info and error lines, as on `mantle.lock`. |
+| `prompt?` | `PamPrompt` | The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it. |
+
+### `PamNotice`
+
+One line a PAM module showed without asking anything, e.g. a fingerprint hint or a lockout.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `kind` | `PamNoticeKind` | `"info"` or `"error"`. |
+| `text` | `string` | What the module said, as it said it. |
+
+### `PamNoticeKind`
+
+What a `PamNotice` reports.
+
+One of `"info"`, `"error"`.
+
+### `PamPrompt`
+
+A question a PAM module asked.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `echo` | `boolean` | The answer is meant to be seen: set the secure field's `masked` to `not echo`. |
+| `id` | `integer` | Unique for this session, so two identical prompts in a row still differ. |
+| `text` | `string` | PAM's own text, e.g. `"Password: "` or `"Verification code:"`. |
 
 ## Actions
 
@@ -78,7 +106,8 @@ off until polkitd restarts. polkitd accepts an answer only from uid 0, so the
 | :--- | :--- |
 | A second program's prompt never shows | One request at a time: a request arriving while another is on screen is cancelled, and its program sees the cancel. Finish or `cancel` the first |
 | Prompts go to another agent | polkit-gnome, hyprpolkitagent or similar registered first. Stop it and restart Mantle |
-| The prompt stays open after a wrong password | By design: `error` says why, and the next submit retries |
+| The prompt stays open after a wrong password | By design: `error` says why, and the next submit starts a new helper |
+| `prompt` is `nil` before anything is typed | polkit's helper starts on the first submit, because closing a helper that waits on a prompt counts as a failed attempt |
 
 See also: [secure fields](../guide/input.md#secure-fields); [FAQ](../guide/faq.md#capabilities) for prompts that never appear.
 

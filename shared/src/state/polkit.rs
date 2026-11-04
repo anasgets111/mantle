@@ -15,7 +15,12 @@ pub struct PolkitState {
     pub action_id: String,
     /// Themed icon name, or empty when the caller set none.
     pub icon_name: String,
-    /// A password is with PAM. A second submit is refused while true.
+    /// The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
+    pub prompt: Option<super::lock::PamPrompt>,
+    /// The helper's info and error lines, as on `mantle.lock`.
+    pub messages: Vec<super::lock::PamNotice>,
+    /// An answer is with PAM, or typed before its prompt and held for it. A second submit is
+    /// refused while true.
     pub authenticating: bool,
     /// Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
     pub error: String,

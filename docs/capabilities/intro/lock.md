@@ -1,5 +1,8 @@
 The lock screen itself is a [`lock` surface](../surfaces/lock.md); this capability locks the
-session and reports the password attempt.
+session and relays PAM's conversation. PAM starts when the session locks: `prompt` is its own
+question (`"Password: "`, a verification code) and `messages` its info and error lines. The one
+[secure field](../guide/input.md#secure-fields) answers every prompt; bind its `masked` to
+`not prompt.echo` so a visible answer shows.
 
 ```lua
 rect {
@@ -16,7 +19,8 @@ rect {
 | :--- | :--- |
 | Ownership | The Supervisor decides lock and unlock; the Renderer holds and paints `ext_session_lock_v1`. Built at boot, unlike other capabilities |
 | Triggers | The `lock` action, and logind's `Lock` signal (`loginctl lock-session`). logind's `Unlock` is logged and ignored. Each lock and unlock sets logind's `LockedHint` |
-| Unlock | Only a successful PAM conversation, run in a re-exec'd [worker](../../supervisor/src/pam_worker.rs) with the `mantle` PAM service from `/etc/pam.d` or `/usr/lib/pam.d`, else `login`. An exchange that takes over 30 s fails |
+| Unlock | Only a successful PAM conversation, run in a re-exec'd [worker](../../supervisor/src/pam_worker.rs) with the `mantle` PAM service from `/etc/pam.d` or `/usr/lib/pam.d`, else `login`. PAM must reply within 30 s of an answer; a prompt waits for you without limit. An expired password still unlocks |
+| Conversation | Starts on lock and again after a wrong password. A failure before any prompt (a faillock lockout) waits for the next submit. An answer typed before its prompt goes to the next masked prompt; a visible prompt drops it |
 | Unlock animation | `set_unlock_animation` delays the release by up to 600 ms; the value persists across reloads |
 | Crash | A dead Renderer never unlocks; the replacement retakes the lock. `$XDG_RUNTIME_DIR/mantle/session-locked` carries the lock across a Supervisor restart |
 | Refused or lost | Sets [`mantle.rescue`](index.md#renderer-members) with the reason |
@@ -27,6 +31,8 @@ rect {
 | Task | Answer |
 | :--- | :--- |
 | Show "wrong password" | `error` and `attempts`: [lock surface example](../surfaces/lock.md) |
+| Ask for a second factor | Show `prompt.text` above the field and set `masked = lock:map(function(l) return not (l.prompt and l.prompt.echo) end, true)` |
+| Show a fingerprint or lockout notice | `messages`, each `{ kind = "info" or "error", text }`, cleared by the next answer |
 | Animate the lock screen out | `set_unlock_animation` with the animation's length, then drive the fade from `unlocking`: [Lock screen](../cookbook/lock-screen.md) recipe |
 
 ## Gotchas

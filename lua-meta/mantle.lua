@@ -302,6 +302,20 @@
 ---@field mac string The device's MAC address.
 ---@field name string The device's advertised name, or empty.
 
+---@class PamNotice
+---One line a PAM module showed without asking anything, e.g. a fingerprint hint or a lockout.
+---@field kind PamNoticeKind `"info"` or `"error"`.
+---@field text string What the module said, as it said it.
+
+---@alias PamNoticeKind "info"|"error"
+---What a `PamNotice` reports.
+
+---@class PamPrompt
+---A question a PAM module asked (ADR-0381).
+---@field echo boolean The answer is meant to be seen: set the secure field's `masked` to `not echo`.
+---@field id integer Unique for this session, so two identical prompts in a row still differ.
+---@field text string PAM's own text, e.g. `"Password: "` or `"Verification code:"`.
+
 ---@class PeripheralBattery
 ---One UPower battery outside the system supply.
 ---@field icon? string UPower icon name, or `nil` when absent.
@@ -621,8 +635,10 @@
 ---`mantle.lock`'s payload (ADR-0052).
 ---@field active boolean The Renderer confirmed the session locked; a requested lock stays `false` until then.
 ---@field attempts integer Rejected passwords since this lock was confirmed; reset by the next lock.
----@field authenticating boolean A password is with PAM. A second submit is refused while true.
+---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
 ---@field error string Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
+---@field messages PamNotice[] PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends.
+---@field prompt? PamPrompt PAM's pending question (ADR-0381), or `nil` while it owes nothing.
 ---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
 
 ---@class MprisState
@@ -694,10 +710,12 @@
 ---`mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
 ---@field action_id string Action being authorized, e.g. `org.freedesktop.systemd1.manage-units`.
 ---@field active boolean polkitd is waiting for the user to authenticate.
----@field authenticating boolean A password is with PAM. A second submit is refused while true.
+---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
 ---@field error string Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
 ---@field icon_name string Themed icon name, or empty when the caller set none.
 ---@field message string The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with.
+---@field messages PamNotice[] The helper's info and error lines, as on `mantle.lock`.
+---@field prompt? PamPrompt The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
 
 ---@class TrayState
 ---@field items TrayItem[] Registered items in registration order, oldest first; updates never reorder them.

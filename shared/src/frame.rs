@@ -374,8 +374,8 @@ pub enum RendererFrame {
 /// Final result of the Supervisor's re-exec'd PAM worker's conversation, carried as the last
 /// [`PamMessage::Outcome`] on the worker's stdout (ADR-0028, ADR-0241). It crosses a different
 /// process boundary from `RendererFrame`/`SupervisorFrame`, so is not reused as one. There is no
-/// `OtherError`: spawn failure, pipe I/O, a wedged worker or an undecodable frame returns
-/// `io::Result::Err` from `supervisor::pam_worker::exchange_over`.
+/// `OtherError`: spawn failure, pipe I/O, a wedged worker or an undecodable frame ends as
+/// `StartFailed` in `supervisor::pam_worker`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PamOutcome {
     Success,
@@ -394,6 +394,8 @@ pub enum PamMessage {
     /// A PAM module asked for input. `echo` tells `pam_prompt`'s echo-on kind from the masked one;
     /// neither is refused.
     Prompt { text: String, echo: bool },
+    /// A PAM module's info or error line.
+    Message { kind: crate::state::lock::PamNoticeKind, text: String },
     /// The answer to the most recent `Prompt`.
     Response {
         #[serde(deserialize_with = "secure_buffer::deserialize_secret")]
@@ -411,6 +413,7 @@ impl std::fmt::Debug for PamMessage {
             Self::Response { secret } => {
                 f.debug_struct("Response").field("secret", &format_args!("<{} bytes redacted>", secret.len())).finish()
             }
+            Self::Message { kind, text } => f.debug_struct("Message").field("kind", kind).field("text", text).finish(),
             Self::Outcome(outcome) => f.debug_tuple("Outcome").field(outcome).finish(),
         }
     }

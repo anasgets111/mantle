@@ -10,6 +10,7 @@ use std::collections::HashMap;
 
 use shared::{Capability, SupervisorFrame, debug, error, info, notice, warn};
 
+use crate::capabilities::conversation::Heard;
 use crate::capabilities::lock::{self, LockController};
 use crate::capabilities::polkit::{self, Answer, PolkitController};
 use crate::capabilities::{Capabilities, Signal};
@@ -94,13 +95,12 @@ pub(crate) struct Supervisor {
     pub(crate) capabilities: Capabilities,
     /// Lock capability, built here rather than in `Capabilities` (ADR-0052).
     pub(crate) lock: LockController,
-    /// Kept alive so the channel stays open; outcomes carry their acquisition
-    /// (`lock::accepts_outcome`).
-    pub(crate) pam_outcome_tx: tokio::sync::mpsc::UnboundedSender<(u64, shared::PamOutcome)>,
+    /// The lock's PAM conversation frames, tagged by conversation serial (ADR-0381).
+    pub(crate) pam_events_tx: pam_worker::Events,
     /// Onscreen polkit challenge, built here like `lock` (ADR-0114).
     polkit: PolkitController,
-    /// Polkit counterpart to `pam_outcome_tx`, tagged by challenge cookie.
-    polkit_outcome_tx: tokio::sync::mpsc::UnboundedSender<(String, shared::PamOutcome)>,
+    /// Polkit counterpart to `pam_events_tx`.
+    polkit_events_tx: pam_worker::Events,
 
     /// Persistent `$XDG_RUNTIME_DIR/mantle/session-locked` marker (ADR-0060).
     locked_flag: lock::SessionLockedFlag,
@@ -140,8 +140,8 @@ impl Supervisor {
         lock: LockController,
         locked_flag: lock::SessionLockedFlag,
         session_bridge: lock::logind::SessionBridge,
-        pam_outcome_tx: tokio::sync::mpsc::UnboundedSender<(u64, shared::PamOutcome)>,
-        polkit_outcome_tx: tokio::sync::mpsc::UnboundedSender<(String, shared::PamOutcome)>,
+        pam_events_tx: pam_worker::Events,
+        polkit_events_tx: pam_worker::Events,
         process_done_tx: tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
     ) -> Self {
         // Read before boot registration; reading later would race it.
@@ -158,9 +158,9 @@ impl Supervisor {
             authoritative: Authoritative { generation_id: 0, child: boot_child },
             capabilities,
             lock,
-            pam_outcome_tx,
+            pam_events_tx,
             polkit: PolkitController::default(),
-            polkit_outcome_tx,
+            polkit_events_tx,
             locked_flag,
             session_bridge,
             last_snapshots: HashMap::new(),
@@ -256,56 +256,44 @@ impl Supervisor {
         }
     }
 
-    /// ADR-0042, ADR-0052: this and `record_pam_outcome` are the only unlock path. No pending
-    /// intent is needed; the lock submission is complete.
-    fn begin_lock_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
-        // Rejects no-lock and concurrent submissions. The acquisition travels through the worker so
-        // `pam_outcomes` matches this lock.
-        let Some(acquisition) = self.lock.try_begin_authentication() else {
-            debug!(
-                "generation {generation_id}'s secure_submit(lock, authenticate) arrived with no lock held, or with an attempt already in flight; dropping"
-            );
-            return;
-        };
-        // Pairs with `record_pam_outcome`'s answer. Without both, a worker that never reports is
-        // indistinguishable from a submit that never arrived.
-        info!("starting pam for lock acquisition {acquisition}");
-        self.push_lock_state();
-        // Spawn instead of await: Enter is unbounded and common, while pam_unix's ~2s failure delay
-        // would stall LockReport, reload, and process reap. The Supervisor runs as the user.
-        tokio::spawn(pam_worker::run_authentication(
-            nix::unistd::Uid::current().as_raw(),
-            secret,
-            acquisition,
-            self.pam_outcome_tx.clone(),
-        ));
+    /// Starts the lock's worker for this session's user.
+    fn lock_starter(&self) -> impl FnOnce(u64) -> pam_worker::Conversation + use<> {
+        let events = self.pam_events_tx.clone();
+        move |serial| pam_worker::start_lock_conversation(nix::unistd::Uid::current().as_raw(), serial, events)
     }
 
-    /// Starts one helper conversation for the onscreen challenge. Spawned like lock; `secret` is
-    /// scrubbed on rejection here and by the helper otherwise.
+    /// Answers the lock's PAM prompt (ADR-0381). ADR-0042, ADR-0052: this and
+    /// `record_pam_message` are the only unlock path.
+    fn begin_lock_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
+        if !self.lock.submit(secret, self.lock_starter()) {
+            debug!(
+                "generation {generation_id}'s secure_submit(lock, authenticate) arrived with no lock held, or with an answer already with PAM; dropping"
+            );
+            return;
+        }
+        self.push_lock_state();
+    }
+
+    /// Answers the polkit helper's prompt, starting the helper on the first submit; `secret` is
+    /// scrubbed on refusal here and by the conversation otherwise.
     fn begin_polkit_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
-        match self.polkit.try_begin_authentication() {
-            Some((uid, cookie)) => {
-                self.push_polkit_state();
-                let outcome_tx = self.polkit_outcome_tx.clone();
-                tokio::spawn(pam_worker::run_polkit_helper(uid, cookie, secret, outcome_tx));
-            }
-            None => {
-                warn!(
-                    "generation {generation_id}'s secure_submit(polkit, authenticate) arrived with no challenge on screen, or with an attempt already in flight; dropping"
-                );
-            }
+        let events = self.polkit_events_tx.clone();
+        let start = move |serial, uid, cookie| pam_worker::start_polkit_conversation(uid, cookie, serial, events);
+        if self.polkit.submit(secret, start) {
+            self.push_polkit_state();
+        } else {
+            warn!(
+                "generation {generation_id}'s secure_submit(polkit, authenticate) arrived with no challenge on screen, or with an answer already with PAM; dropping"
+            );
         }
     }
 
-    /// Handles the helper's answer. On success polkitd was already told; release the held
-    /// `BeginAuthentication` reply in the required order.
-    pub(crate) fn record_polkit_outcome(&mut self, cookie: &str, outcome: shared::PamOutcome) {
-        match self.polkit.record_outcome(cookie, outcome) {
-            Answer::Stale => {
-                debug!("dropping a polkit outcome for {cookie:?}, which is no longer the challenge on screen")
-            }
-            Answer::Failed => self.push_polkit_state(),
+    /// One frame of the polkit helper's conversation. On success polkitd was already told;
+    /// release the held `BeginAuthentication` reply in the required order.
+    pub(crate) fn record_polkit_message(&mut self, serial: u64, message: shared::PamMessage) {
+        match self.polkit.hear(serial, message) {
+            Answer::Stale => debug!("dropping polkit conversation {serial}'s frame; it is no longer the one on screen"),
+            Answer::Changed | Answer::Failed => self.push_polkit_state(),
             Answer::Succeeded { reply } => {
                 self.push_polkit_state();
                 let _ = reply.send(Ok(()));
@@ -460,27 +448,30 @@ impl Supervisor {
         self.push_lock_state();
     }
 
-    /// Handles a PAM lock answer (ADR-0042). `acquisition` rejects stale answers: PAM normally
-    /// takes a second, or `PAM_EXCHANGE_TIMEOUT`'s 30 seconds when wedged, while the compositor or
-    /// idle timer may change locks.
-    pub(crate) fn record_pam_outcome(&mut self, acquisition: u64, outcome: shared::PamOutcome) {
-        let succeeded = outcome == shared::PamOutcome::Success;
-        // Every answer, not only the refusals below. A wrong password logged nothing at all, so a
-        // lock screen that would not open read the same in the log whether PAM said no or the
-        // attempt never arrived.
-        info!("pam answered {outcome:?} for lock acquisition {acquisition}");
-        if !self.lock.record_authentication(acquisition, outcome) {
-            // No push: refusal changed no state; `push_lock_state` would bump the revision anyway.
-            debug!(
-                "dropping a pam outcome for lock acquisition {acquisition}, which is no longer the lock on the glass"
-            );
-        } else {
-            // Push before scheduling: `unlocking` is now true, and the config cannot animate a
-            // window it has not been told about (ADR-0190). The release is already committed by
-            // the time the config sees it. Every accepted outcome pushes exactly once.
-            self.push_lock_state();
-            if succeeded {
-                self.lock.unlock_after_animation();
+    /// One frame of the lock's PAM conversation (ADR-0042, ADR-0381). The serial rejects frames
+    /// from a conversation whose lock is gone: PAM can outlive its lock while the compositor or
+    /// idle timer changes locks. A failure that showed a prompt starts the next attempt at once;
+    /// one that showed none waits for a submit, or a broken stack would spin.
+    pub(crate) fn record_pam_message(&mut self, serial: u64, message: shared::PamMessage) {
+        match self.lock.hear(serial, message) {
+            Heard::Stale => {
+                debug!("dropping pam conversation {serial}'s frame; it no longer belongs to the lock on the glass")
+            }
+            Heard::Changed => self.push_lock_state(),
+            Heard::Ended { outcome, prompted } => {
+                // Every answer: a wrong password logged nothing at all once, so a lock screen that
+                // would not open read the same whether PAM said no or the attempt never arrived.
+                info!("pam answered {outcome:?} for lock conversation {serial}");
+                let succeeded = outcome == shared::PamOutcome::Success;
+                if !succeeded && prompted {
+                    self.lock.converse(self.lock_starter());
+                }
+                // Push before scheduling: `unlocking` is now true, and the config cannot animate a
+                // window it has not been told about (ADR-0190).
+                self.push_lock_state();
+                if succeeded {
+                    self.lock.unlock_after_animation();
+                }
             }
         }
     }
@@ -513,6 +504,8 @@ impl Supervisor {
             lock::SessionLock::Unchanged => {}
         }
         self.lock.record(lock::LockEvent::Reported(report.outcome));
+        // PAM starts with the lock, so its prompt is on screen before anything is typed (ADR-0381).
+        self.lock.converse(self.lock_starter());
         self.push_lock_state();
     }
 

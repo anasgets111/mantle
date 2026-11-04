@@ -102,16 +102,37 @@ pub fn spawn_group_leader_piped(cmd: &str, args: &[String]) -> io::Result<Child>
         .spawn()
 }
 
-/// [`spawn_group_leader`] with piped stdin/stdout for PAM (ADR-0028): write one password,
-/// read one `shared::PamOutcome`; stderr stays inherited.
+/// [`spawn_group_leader`] with piped stdin/stdout for the PAM worker (ADR-0381); stderr stays
+/// inherited. The child is SIGKILLed when the spawning thread dies: a worker blocked inside a PAM
+/// module never sees its stdin close.
+///
+/// The parent-death signal follows the *thread* that forked, not the process. Callers spawn from
+/// tokio tasks, whose worker threads live as long as the runtime; a `spawn_blocking` thread idles
+/// out after 10 s and would kill a live worker.
 pub fn spawn_group_leader_stdio_piped(cmd: &str, args: &[String], envs: &[(String, String)]) -> io::Result<Child> {
-    Command::new(cmd)
+    let parent = std::process::id();
+    let mut command = Command::new(cmd);
+    command
         .args(args)
         .envs(envs.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .process_group(0)
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
+        .stdout(Stdio::piped());
+    // SAFETY: runs in the forked child before `exec`; `prctl`, `getppid` and `_exit` are
+    // async-signal-safe and touch no Rust state.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                return Err(io::Error::last_os_error());
+            }
+            // The parent may have died before the prctl, which then never fires.
+            if libc::getppid() as u32 != parent {
+                libc::_exit(1);
+            }
+            Ok(())
+        });
+    }
+    command.spawn()
 }
 
 /// Reaps `child`'s group: SIGTERM, wait `grace`, then SIGKILL. Signaling the group reaches
@@ -220,6 +241,28 @@ mod tests {
             assert_eq!(child_pgid.as_raw(), child_pid as i32, "{variant}: a group leader's pgid equals its pid");
             reap_process_group(&mut child, Duration::from_millis(200)).await.expect("cleanup reap failed");
         }
+    }
+
+    /// A worker blocked in a PAM module ignores its stdin, so it must die with whoever spawned it.
+    #[test]
+    fn a_stdio_piped_child_dies_with_the_thread_that_spawned_it() {
+        let pid = std::thread::spawn(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+            let child = runtime.block_on(async { spawn_group_leader_stdio_piped("sh", &sh_args("sleep 30"), &[]) });
+            child.unwrap().id().unwrap()
+        })
+        .join()
+        .unwrap();
+        let dead = || {
+            std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                .map_or(true, |stat| stat.rsplit(')').next().is_some_and(|rest| rest.trim_start().starts_with('Z')))
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !dead() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(dead(), "the child outlived the thread that spawned it");
+        let _ = nix::sys::wait::waitpid(Pid::from_raw(pid as i32), None);
     }
 
     #[tokio::test]

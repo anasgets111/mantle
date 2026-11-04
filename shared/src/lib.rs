@@ -25,6 +25,7 @@ pub use paths::{
     session_locked_flag_path, shell_lua_path, xdg_data_dirs, xdg_dir,
 };
 pub use secure_buffer::SecureBuffer;
+pub use state::lock::PamNoticeKind;
 pub use zeroize::{Zeroize, Zeroizing};
 
 /// std's `eprintln!`/`eprint!` panic on a failed write, and under `panic = "abort"` a full log tmpfs

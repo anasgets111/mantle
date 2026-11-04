@@ -1,6 +1,7 @@
 The password never reaches Lua: a [secure field](../guide/input.md#secure-fields) with
 `secure_submit = { capability = "polkit", action = "authenticate" }` sends it straight to the
-Supervisor.
+Supervisor. The first submit starts polkit's helper; after that `prompt` and `messages` relay its
+PAM conversation as on [`lock`](lock.md), and the same field answers each prompt.
 
 ```lua
 column {
@@ -51,6 +52,7 @@ off until polkitd restarts. polkitd accepts an answer only from uid 0, so the
 | :--- | :--- |
 | A second program's prompt never shows | One request at a time: a request arriving while another is on screen is cancelled, and its program sees the cancel. Finish or `cancel` the first |
 | Prompts go to another agent | polkit-gnome, hyprpolkitagent or similar registered first. Stop it and restart Mantle |
-| The prompt stays open after a wrong password | By design: `error` says why, and the next submit retries |
+| The prompt stays open after a wrong password | By design: `error` says why, and the next submit starts a new helper |
+| `prompt` is `nil` before anything is typed | polkit's helper starts on the first submit, because closing a helper that waits on a prompt counts as a failed attempt |
 
 See also: [secure fields](../guide/input.md#secure-fields); [FAQ](../guide/faq.md#capabilities) for prompts that never appear.

@@ -55,6 +55,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
 pub mod clock;
+pub mod conversation;
 pub(crate) mod file_url;
 pub mod folders;
 pub mod idle;

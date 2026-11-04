@@ -1,18 +1,18 @@
 //! Real PAM conversation, closing ADR-0015. ADR-0028's halves share `shared::PamMessage`/
 //! `PamOutcome` over `shared::framing` and [`pam_service`]. Blocking `nonstick` FFI runs in a
 //! re-exec'd worker, not the async Supervisor. [`run_worker`] handles `MANTLE_PAM_WORKER=1`,
-//! relaying masked prompts over stdio and answering with a `Response`, echo-on refused (ADR-0241).
-//! [`run_authentication`] re-execs via [`crate::process::spawn_group_leader_stdio_piped`],
-//! exchanges piped stdin/stdout, and reports to `main.rs`, the only unlock authority (ADR-0052).
-//! [`run_polkit_helper`] uses polkit's root helper instead: polkitd accepts the agent response only
-//! from uid 0 (ADR-0114). It does not reuse `RendererFrame`/`SupervisorFrame`, which cross a
-//! different boundary.
+//! relaying every prompt, info and error line over stdio and answering each prompt with a
+//! `Response` (ADR-0241, ADR-0381). [`start_lock_conversation`] re-execs it via
+//! [`crate::process::spawn_group_leader_stdio_piped`] and reports each frame to `main.rs`, the
+//! only unlock authority (ADR-0052). [`start_polkit_conversation`] uses polkit's root helper
+//! instead: polkitd accepts the agent response only from uid 0 (ADR-0114). It does not reuse
+//! `RendererFrame`/`SupervisorFrame`, which cross a different boundary.
 
 use std::cell::RefCell;
 use std::time::Duration;
 
 use nonstick::{ConversationAdapter, Transaction};
-use shared::{debug, error, info, warn};
+use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Set (to anything) in the re-exec'd worker; `main.rs` checks it before any other setup.
@@ -52,54 +52,69 @@ fn pam_service() -> &'static str {
     pam_service_in(std::path::Path::new(PAM_CONFIG_DIR), std::path::Path::new(PAM_VENDOR_DIR))
 }
 
-/// Ceiling on the whole worker exchange (`exchange_over`), not one PAM call. Long because PAM may be
-/// human-paced (network module, fingerprint retry), but bounds a wedged `read_json_frame` that would
-/// hold plaintext in a spawned task forever.
-const PAM_EXCHANGE_TIMEOUT: Duration = Duration::from_secs(30);
+/// Ceiling on PAM's reply once an answer is sent, until its next prompt or verdict. It never runs
+/// while a prompt waits for the user, who may take minutes (ADR-0381); it bounds a wedged module
+/// holding plaintext. A `Message` frame leaves it running: only a prompt hands the turn back.
+const PAM_REPLY_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Relays a masked PAM prompt to the Supervisor and blocks for its answer (ADR-0241): `masked_prompt`
-/// forwards its text rather than replaying a password captured up front. Blocking `std::io`, not
-/// `shared::framing`: `nonstick` calls these synchronously from FFI, with no async context to
-/// `.await` in. The received `secret` moves without a copy into the `OsString` nonstick takes.
+/// Relays every PAM message to the Supervisor and blocks for the answer to each prompt (ADR-0241,
+/// ADR-0381). Blocking `std::io`, not `shared::framing`: `nonstick` calls these synchronously from
+/// FFI, with no async context to `.await` in. The received `secret` moves without a copy into the
+/// `OsString` nonstick takes.
 ///
 /// ponytail: nonstick copies that `OsString` into PAM's `char*` and drops it unscrubbed; upgrade by
 /// patching nonstick to zeroize its answers.
 struct RelayConversation<R, W> {
     reader: RefCell<R>,
     writer: RefCell<W>,
+    /// Called when the Supervisor is gone. Returning `ConversationError` instead would let
+    /// `pam_faillock authfail` count a failure nobody typed.
+    hangup: fn() -> !,
 }
 
 impl<R: std::io::Read, W: std::io::Write> RelayConversation<R, W> {
-    fn relay(&self, text: String) -> nonstick::Result<std::ffi::OsString> {
-        use std::os::unix::ffi::OsStringExt;
-        write_frame(&mut *self.writer.borrow_mut(), &shared::PamMessage::Prompt { text, echo: false })
-            .map_err(|_| nonstick::ErrorCode::ConversationError)?;
-        match read_frame(&mut *self.reader.borrow_mut()).map_err(|_| nonstick::ErrorCode::ConversationError)? {
-            shared::PamMessage::Response { secret } => Ok(std::ffi::OsString::from_vec(secret)),
-            _ => Err(nonstick::ErrorCode::ConversationError),
+    fn send(&self, message: &shared::PamMessage) {
+        if write_frame(&mut *self.writer.borrow_mut(), message).is_err() {
+            (self.hangup)()
         }
+    }
+
+    fn relay(&self, request: &std::ffi::OsStr, echo: bool) -> nonstick::Result<std::ffi::OsString> {
+        use std::os::unix::ffi::OsStringExt;
+        self.send(&shared::PamMessage::Prompt { text: request.to_string_lossy().into_owned(), echo });
+        match read_frame(&mut *self.reader.borrow_mut()) {
+            Ok(shared::PamMessage::Response { secret }) => Ok(std::ffi::OsString::from_vec(secret)),
+            Ok(_) => Err(nonstick::ErrorCode::ConversationError),
+            Err(_) => (self.hangup)(),
+        }
+    }
+
+    fn notify(&self, kind: shared::PamNoticeKind, message: &std::ffi::OsStr) {
+        self.send(&shared::PamMessage::Message { kind, text: message.to_string_lossy().into_owned() });
     }
 }
 
 impl<R: std::io::Read, W: std::io::Write> ConversationAdapter for RelayConversation<R, W> {
-    /// Echo-on has no safe answer: the only secret held here is the lock password, and PAM treats
-    /// an echo-on answer as displayable/loggable. Refusing, not relaying, keeps that password out
-    /// of a channel PAM considers non-secret.
-    fn prompt(&self, _request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
-        Err(nonstick::ErrorCode::ConversationError)
+    fn prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
+        self.relay(request.as_ref(), true)
     }
 
     fn masked_prompt(&self, request: impl AsRef<std::ffi::OsStr>) -> nonstick::Result<std::ffi::OsString> {
-        self.relay(request.as_ref().to_string_lossy().into_owned())
+        self.relay(request.as_ref(), false)
     }
 
     fn error_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        warn!("{}", message.as_ref().to_string_lossy());
+        self.notify(shared::PamNoticeKind::Error, message.as_ref());
     }
 
     fn info_msg(&self, message: impl AsRef<std::ffi::OsStr>) {
-        info!("{}", message.as_ref().to_string_lossy());
+        self.notify(shared::PamNoticeKind::Info, message.as_ref());
     }
+}
+
+/// The worker's [`RelayConversation::hangup`]: `exit`, so no PAM module sees the conversation fail.
+fn exit_now() -> ! {
+    std::process::exit(1)
 }
 
 /// Blocking because nonstick's conversation callbacks are synchronous FFI.
@@ -128,26 +143,31 @@ fn outcome_for_error(err: nonstick::ErrorCode) -> shared::PamOutcome {
     }
 }
 
+/// GDM's reauthentication rule (ADR-0381): the session is already logged in, so an expired
+/// password still unlocks it. Changing it is the login's job, not the lock screen's.
+fn account_verdict(result: nonstick::Result<()>) -> shared::PamOutcome {
+    match result {
+        Ok(()) | Err(nonstick::ErrorCode::NewAuthTokRequired) => shared::PamOutcome::Success,
+        Err(err) => outcome_for_error(err),
+    }
+}
+
 /// Runs `pam_start` via `TransactionBuilder`, then `authenticate` and `account_management`,
-/// relaying masked prompts over stdio (ADR-0241).
+/// relaying every message over stdio (ADR-0381).
 fn run_conversation(username: &str) -> shared::PamOutcome {
     let conversation = RelayConversation {
         reader: RefCell::new(std::io::stdin().lock()),
         writer: RefCell::new(std::io::stdout().lock()),
+        hangup: exit_now,
     };
     match nonstick::TransactionBuilder::new_with_service(pam_service())
         .username(username)
         .build(conversation.into_conversation())
     {
-        Ok(mut txn) => {
-            if let Err(err) = txn.authenticate(nonstick::AuthnFlags::empty()) {
-                outcome_for_error(err)
-            } else if let Err(err) = txn.account_management(nonstick::AuthnFlags::empty()) {
-                outcome_for_error(err)
-            } else {
-                shared::PamOutcome::Success
-            }
-        }
+        Ok(mut txn) => match txn.authenticate(nonstick::AuthnFlags::empty()) {
+            Err(err) => outcome_for_error(err),
+            Ok(()) => account_verdict(txn.account_management(nonstick::AuthnFlags::empty())),
+        },
         Err(err) => shared::PamOutcome::StartFailed(format!("{err:?}")),
     }
 }
@@ -163,17 +183,6 @@ pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-/// Resolves `uid` and runs the worker round trip. Borrows, but never zeroizes, `secret`;
-/// [`run_authentication`] owns scrubbing on every path.
-///
-/// ponytail: `User::from_uid` blocks in libc (`getpwuid_r`), but stays inline because local passwd
-/// lookup is fast, has no NSS/LDAP, and is rare (one challenge/lock submission). Upgrade:
-/// `spawn_blocking` if a networked NSS backend appears.
-async fn authenticate_uid(uid: u32, secret: &[u8]) -> Result<shared::PamOutcome, String> {
-    let username = username_for(uid)?;
-    spawn_worker_and_exchange(&username, secret).await.map_err(|err| format!("pam worker failed: {err}"))
-}
-
 fn username_for(uid: u32) -> Result<String, String> {
     match nix::unistd::User::from_uid(nix::unistd::Uid::from_raw(uid)) {
         Ok(Some(user)) => Ok(user.name),
@@ -187,110 +196,329 @@ fn username_for(uid: u32) -> Result<String, String> {
 /// It reads our uid and pid from the socket.
 const POLKIT_HELPER_SOCKET: &str = "/run/polkit/agent-helper.socket";
 
-/// [`run_authentication`]'s polkit sibling (ADR-0114): same report and `Drop` backstop, but the
-/// conversation is the helper's behind [`POLKIT_HELPER_SOCKET`]. `Success` means polkitd was told;
-/// the caller answers the held `BeginAuthentication`.
-pub async fn run_polkit_helper(
-    uid: u32,
-    cookie: String,
-    mut secret: shared::Zeroizing<Vec<u8>>,
-    outcome_tx: UnboundedSender<(String, shared::PamOutcome)>,
-) {
-    let mut guard = ReportOnDrop { pending: Some((cookie.clone(), outcome_tx)) };
-    let outcome = match authenticate_via_helper(uid, &cookie, &secret).await {
-        Ok(outcome) => outcome,
-        Err(reason) => shared::PamOutcome::StartFailed(reason),
-    };
-    shared::Zeroize::zeroize(&mut *secret);
-    guard.report(outcome, "polkit");
+/// A running conversation: the lock's worker or polkit's helper. Dropping it ends the conversation,
+/// by SIGTERM to the worker or by closing the helper's socket, never by answering.
+pub struct Conversation {
+    answers: UnboundedSender<shared::Zeroizing<Vec<u8>>>,
 }
 
-async fn authenticate_via_helper(uid: u32, cookie: &str, secret: &[u8]) -> Result<shared::PamOutcome, String> {
+impl Conversation {
+    /// Answers the prompt the conversation is waiting on. A closed channel means the task already
+    /// ended, and its `Outcome` is on the way.
+    pub fn answer(&self, secret: shared::Zeroizing<Vec<u8>>) {
+        let _ = self.answers.send(secret);
+    }
+
+    /// A conversation with no task behind it, and the receiver its answers reach.
+    #[cfg(test)]
+    pub fn detached() -> (Self, tokio::sync::mpsc::UnboundedReceiver<shared::Zeroizing<Vec<u8>>>) {
+        let (answers, received) = tokio::sync::mpsc::unbounded_channel();
+        (Self { answers }, received)
+    }
+}
+
+/// Each frame a conversation relays, tagged with the serial it was started under, so the receiver
+/// drops what a killed one says late.
+pub type Events = UnboundedSender<(u64, shared::PamMessage)>;
+
+/// Starts the lock's worker for `uid` (ADR-0381). The worker begins PAM at once, so its prompt is
+/// on screen before anything is typed.
+pub fn start_lock_conversation(uid: u32, serial: u64, events: Events) -> Conversation {
+    let (answers, received) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(lock_conversation(uid, serial, events, received));
+    Conversation { answers }
+}
+
+/// Starts polkit's helper for `uid` and `cookie` (ADR-0114, ADR-0381). Called on the first submit,
+/// not on the challenge: closing a helper that is waiting on a prompt fails its PAM conversation,
+/// and `pam_faillock` would count every cancel.
+pub fn start_polkit_conversation(uid: u32, cookie: String, serial: u64, events: Events) -> Conversation {
+    let (answers, received) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(polkit_conversation(uid, cookie, serial, events, received));
+    Conversation { answers }
+}
+
+type Answers = tokio::sync::mpsc::UnboundedReceiver<shared::Zeroizing<Vec<u8>>>;
+
+async fn lock_conversation(uid: u32, serial: u64, events: Events, answers: Answers) {
+    let mut guard = ReportOnDrop { pending: Some((serial, events.clone())) };
+    let ended = match username_for(uid).and_then(|name| spawn_worker(&name).map_err(|err| err.to_string())) {
+        Err(reason) => Exchange::Verdict(shared::PamOutcome::StartFailed(reason)),
+        Ok(child) => converse_with_worker(child, serial, &events, answers, PAM_REPLY_TIMEOUT).await,
+    };
+    guard.finish(ended, "pam");
+}
+
+async fn polkit_conversation(uid: u32, cookie: String, serial: u64, events: Events, answers: Answers) {
+    let mut guard = ReportOnDrop { pending: Some((serial, events.clone())) };
+    let ended = match open_helper(uid, &cookie).await {
+        Err(reason) => Exchange::Verdict(shared::PamOutcome::StartFailed(reason)),
+        Ok((reader, mut writer)) => {
+            let (frames_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+            let lines = tokio::spawn(read_helper_lines(reader, frames_tx));
+            let ended = converse(frames, &mut writer, Wire::Lines, serial, &events, answers, PAM_REPLY_TIMEOUT).await;
+            lines.abort();
+            ended
+        }
+    };
+    guard.finish(ended, "polkit");
+}
+
+/// libpolkit-agent's `polkitagentsession.c` protocol opens with the username and cookie lines.
+/// Verified against polkit 127.
+async fn open_helper(
+    uid: u32,
+    cookie: &str,
+) -> Result<(tokio::net::unix::OwnedReadHalf, tokio::net::unix::OwnedWriteHalf), String> {
+    use tokio::io::AsyncWriteExt;
     let username = username_for(uid)?;
-    let (reader, writer) = tokio::net::UnixStream::connect(POLKIT_HELPER_SOCKET)
+    let (reader, mut writer) = tokio::net::UnixStream::connect(POLKIT_HELPER_SOCKET)
         .await
         .map_err(|err| format!("could not connect to {POLKIT_HELPER_SOCKET}: {err}"))?
         .into_split();
-    match tokio::time::timeout(PAM_EXCHANGE_TIMEOUT, drive_helper(reader, writer, &username, cookie, secret)).await {
-        Ok(Ok(outcome)) => Ok(outcome),
-        Ok(Err(err)) => Err(format!("polkit helper exchange failed: {err}")),
-        Err(_elapsed) => Err("the polkit helper did not respond within the timeout".to_string()),
-    }
+    writer
+        .write_all(format!("{username}\n{cookie}\n").as_bytes())
+        .await
+        .map_err(|err| format!("could not write to the polkit helper: {err}"))?;
+    Ok((reader, writer))
 }
 
-/// libpolkit-agent's `polkitagentsession.c` protocol: username and cookie lines first; answer
-/// `PAM_PROMPT_ECHO_OFF` with the password and `PAM_PROMPT_ECHO_ON` with an empty line (a visible
-/// answer is loggable, ADR-0241); log `PAM_ERROR_MSG`/`PAM_TEXT_INFO`; `SUCCESS`/`FAILURE` end it.
-/// Verified against polkit 127.
-async fn drive_helper(
+/// Forwards the helper's lines as [`shared::PamMessage`]s until its verdict or EOF.
+async fn read_helper_lines(
     reader: impl tokio::io::AsyncRead + Unpin,
-    mut writer: impl tokio::io::AsyncWrite + Unpin,
-    username: &str,
-    cookie: &str,
-    secret: &[u8],
-) -> std::io::Result<shared::PamOutcome> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-    for line in [username, cookie] {
-        writer.write_all(line.as_bytes()).await?;
-        writer.write_all(b"\n").await?;
-    }
+    frames: UnboundedSender<std::io::Result<shared::PamMessage>>,
+) {
+    use tokio::io::AsyncBufReadExt;
     let mut lines = tokio::io::BufReader::new(reader).lines();
-    while let Some(line) = lines.next_line().await? {
-        if line.starts_with("PAM_PROMPT_ECHO_OFF") {
-            writer.write_all(secret).await?;
-            writer.write_all(b"\n").await?;
-        } else if line.starts_with("PAM_PROMPT_ECHO_ON") {
-            writer.write_all(b"\n").await?;
-        } else if line == "SUCCESS" {
-            return Ok(shared::PamOutcome::Success);
-        } else if line == "FAILURE" {
-            return Ok(shared::PamOutcome::AuthFailed);
-        } else {
-            debug!("polkit helper: {line}");
+    loop {
+        let message = match lines.next_line().await {
+            Ok(Some(line)) => match helper_message(&line) {
+                Some(message) => Ok(message),
+                None => {
+                    debug!("polkit helper: {line}");
+                    continue;
+                }
+            },
+            Ok(None) => Err(std::io::Error::other("the helper closed without a verdict")),
+            Err(err) => Err(err),
+        };
+        let last = !matches!(message, Ok(shared::PamMessage::Prompt { .. } | shared::PamMessage::Message { .. }));
+        if frames.send(message).is_err() || last {
+            return;
         }
     }
-    Err(std::io::Error::other("the helper closed without a verdict"))
 }
 
-/// One worker round trip for `uid`; send the outcome on `outcome_tx` tagged by the lock acquisition
-/// number or polkit cookie, so the receiver matches answer to request (`lock::accepts_outcome` and
-/// the polkit pending cookie). Both callers spawn it: Enter is unbounded and common, and
-/// `pam_unix`'s failure delay would stall every frame if awaited inline.
+/// One helper line as the worker would have framed it. The helper `g_strescape`s each line;
+/// libpolkit-agent undoes it with `g_strcompress` before parsing, and so does this.
+fn helper_message(line: &str) -> Option<shared::PamMessage> {
+    use shared::{PamMessage, PamNoticeKind};
+    let line = unescape(line);
+    let text = |prefix: &str| line.strip_prefix(prefix).map(|rest| rest.strip_prefix(' ').unwrap_or(rest).to_string());
+    match line.as_str() {
+        "SUCCESS" => return Some(PamMessage::Outcome(shared::PamOutcome::Success)),
+        "FAILURE" => return Some(PamMessage::Outcome(shared::PamOutcome::AuthFailed)),
+        _ => {}
+    }
+    if let Some(text) = text("PAM_PROMPT_ECHO_OFF") {
+        Some(PamMessage::Prompt { text, echo: false })
+    } else if let Some(text) = text("PAM_PROMPT_ECHO_ON") {
+        Some(PamMessage::Prompt { text, echo: true })
+    } else if let Some(text) = text("PAM_ERROR_MSG") {
+        Some(PamMessage::Message { kind: PamNoticeKind::Error, text })
+    } else {
+        text("PAM_TEXT_INFO").map(|text| PamMessage::Message { kind: PamNoticeKind::Info, text })
+    }
+}
+
+/// GLib's `g_strcompress`: C escapes and up to three octal digits, so a localized `Contraseña` and a
+/// multi-line notice arrive as written.
+fn unescape(line: &str) -> String {
+    let mut out = Vec::with_capacity(line.len());
+    let mut bytes = line.bytes().peekable();
+    while let Some(byte) = bytes.next() {
+        if byte != b'\\' {
+            out.push(byte);
+            continue;
+        }
+        match bytes.next() {
+            Some(digit @ b'0'..=b'7') => {
+                let mut value = u32::from(digit - b'0');
+                for _ in 0..2 {
+                    match bytes.next_if(|next| (b'0'..=b'7').contains(next)) {
+                        Some(next) => value = value * 8 + u32::from(next - b'0'),
+                        None => break,
+                    }
+                }
+                out.push((value & 0xff) as u8);
+            }
+            Some(b'b') => out.push(0x08),
+            Some(b'f') => out.push(0x0c),
+            Some(b'n') => out.push(b'\n'),
+            Some(b'r') => out.push(b'\r'),
+            Some(b't') => out.push(b'\t'),
+            Some(b'v') => out.push(0x0b),
+            Some(other) => out.push(other),
+            None => {}
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// How a conversation ended, before it becomes the reported [`shared::PamOutcome`].
+enum Exchange {
+    Verdict(shared::PamOutcome),
+    Failed(std::io::Error),
+    /// The [`Conversation`] was dropped; nobody is waiting for a verdict.
+    Cancelled,
+}
+
+/// How an answer goes onto the wire.
+enum Wire {
+    /// The worker's `shared::framing` `Response`.
+    Framed,
+    /// One line for polkit's helper, which reads with `fgets`.
+    Lines,
+}
+
+impl Wire {
+    async fn send(
+        &self,
+        writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+        mut secret: shared::Zeroizing<Vec<u8>>,
+    ) -> std::io::Result<()> {
+        use tokio::io::AsyncWriteExt;
+        match self {
+            Wire::Framed => {
+                let response =
+                    shared::Zeroizing::new(shared::PamMessage::Response { secret: std::mem::take(&mut *secret) });
+                shared::framing::write_json_frame(writer, &*response).await.map_err(std::io::Error::other)
+            }
+            // A line break would end the answer early and turn the rest into the next one.
+            Wire::Lines if secret.contains(&b'\n') => {
+                Err(std::io::Error::other("an answer with a line break cannot reach polkit's helper"))
+            }
+            Wire::Lines => {
+                writer.write_all(&secret).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await
+            }
+        }
+    }
+}
+
+/// Relays `frames` as events and writes each answer, until a verdict, a failure, the reply
+/// timeout, or the [`Conversation`] being dropped. Frames arrive over a channel, not a read in the
+/// `select!`, because a frame read is not cancel-safe.
+async fn converse(
+    mut frames: tokio::sync::mpsc::UnboundedReceiver<std::io::Result<shared::PamMessage>>,
+    writer: &mut (impl tokio::io::AsyncWrite + Unpin),
+    wire: Wire,
+    serial: u64,
+    events: &Events,
+    mut answers: Answers,
+    reply_timeout: Duration,
+) -> Exchange {
+    let mut deadline = None;
+    loop {
+        tokio::select! {
+            frame = frames.recv() => match frame {
+                Some(Ok(shared::PamMessage::Outcome(outcome))) => return Exchange::Verdict(outcome),
+                Some(Ok(shared::PamMessage::Response { .. })) => {
+                    return Exchange::Failed(std::io::Error::other("the worker sent a Response, which is the Supervisor's to send"));
+                }
+                Some(Ok(message)) => {
+                    if matches!(message, shared::PamMessage::Prompt { .. }) {
+                        deadline = None;
+                    }
+                    let _ = events.send((serial, message));
+                }
+                Some(Err(err)) => return Exchange::Failed(err),
+                None => return Exchange::Failed(std::io::Error::other("the conversation closed without a verdict")),
+            },
+            answer = answers.recv() => match answer {
+                Some(secret) => {
+                    if let Err(err) = wire.send(writer, secret).await {
+                        return Exchange::Failed(err);
+                    }
+                    deadline = Some(tokio::time::Instant::now() + reply_timeout);
+                }
+                None => return Exchange::Cancelled,
+            },
+            () = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                return Exchange::Failed(std::io::Error::new(std::io::ErrorKind::TimedOut, "pam did not reply within the timeout"));
+            }
+        }
+    }
+}
+
+/// [`converse`] over the worker's pipes, then reaps it. The SIGTERM lands while stdin is still
+/// open, so a module waiting on an answer is killed rather than failed. A failed exchange carries
+/// [`post_mortem`]'s account of how the worker died, because the reap already knows and the lock
+/// screen otherwise reports an I/O error with no subject.
+async fn converse_with_worker(
+    mut child: tokio::process::Child,
+    serial: u64,
+    events: &Events,
+    answers: Answers,
+    reply_timeout: Duration,
+) -> Exchange {
+    let mut stdin = child.stdin.take().expect("spawn_group_leader_stdio_piped always pipes stdin");
+    let mut stdout = child.stdout.take().expect("spawn_group_leader_stdio_piped always pipes stdout");
+    let (frames_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+    let reader = tokio::spawn(async move {
+        loop {
+            let frame = shared::framing::read_json_frame(&mut stdout).await.map_err(std::io::Error::other);
+            let last = !matches!(frame, Ok(shared::PamMessage::Prompt { .. } | shared::PamMessage::Message { .. }));
+            if frames_tx.send(frame).is_err() || last {
+                return;
+            }
+        }
+    });
+    let ended = converse(frames, &mut stdin, Wire::Framed, serial, events, answers, reply_timeout).await;
+    let reaped = crate::process::reap_process_group(&mut child, crate::process::DEFAULT_REAP_GRACE).await;
+    reader.abort();
+    drop(stdin);
+    if let Err(err) = &reaped {
+        warn!("failed to reap pam worker: {err}");
+    }
+    match ended {
+        // A worker that did not answer leaves the lock screen saying only "early eof" (the 2026-09-08
+        // lockout had no other evidence), so log how it died, not just the on-screen error text.
+        Exchange::Failed(err) => {
+            let post_mortem = post_mortem(&reaped);
+            error!("pam worker exchange failed: {err}; the worker {post_mortem}");
+            Exchange::Verdict(shared::PamOutcome::StartFailed(format!(
+                "pam worker failed: {err}; the worker {post_mortem}"
+            )))
+        }
+        other => other,
+    }
+}
+
+/// The task's `Drop` backstop: reports once if dropped before [`Self::finish`].
 ///
-/// `secret` is zeroized even when the future is dropped during shutdown or unwinds on panic, via
-/// `Zeroizing::Drop` (ADR-0005). The wrapper is an argument because spawned arguments are captured
-/// before the body is polled. Failure before PAM is `StartFailed`, matching `pam_start` failure.
-///
-/// [`ReportOnDrop`] sends something on every task exit. The caller sets `authenticating` and only
-/// an outcome clears it; missing a send would create a one-way latch, leaving the lock screen
-/// stuck until a VT switch. `UnboundedSender::send` is synchronous, so `Drop::drop` can send while
-/// unwinding.
-pub async fn run_authentication<T: Send + 'static>(
-    uid: u32,
-    mut secret: shared::Zeroizing<Vec<u8>>,
-    tag: T,
-    outcome_tx: UnboundedSender<(T, shared::PamOutcome)>,
-) {
-    let mut guard = ReportOnDrop { pending: Some((tag, outcome_tx)) };
-    let outcome = match authenticate_uid(uid, &secret).await {
-        Ok(outcome) => outcome,
-        Err(reason) => shared::PamOutcome::StartFailed(reason),
-    };
-    shared::Zeroize::zeroize(&mut *secret);
-    guard.report(outcome, "pam");
+/// The controller sets `authenticating` and only an outcome clears it; missing a send would create
+/// a one-way latch, leaving the lock screen stuck until a VT switch. `UnboundedSender::send` is
+/// synchronous, so `Drop::drop` can send while unwinding.
+struct ReportOnDrop {
+    pending: Option<(u64, Events)>,
 }
 
-/// [`run_authentication`]'s `Drop` backstop: reports once if dropped before ordinary `.take()`.
-struct ReportOnDrop<T> {
-    pending: Option<(T, UnboundedSender<(T, shared::PamOutcome)>)>,
-}
-
-impl<T> ReportOnDrop<T> {
-    /// Sends the one outcome this authentication owes, or logs that nobody is left to hear it.
-    /// `label` names the caller because the two paths log under their own names.
-    fn report(&mut self, outcome: shared::PamOutcome, label: &str) {
+impl ReportOnDrop {
+    /// Sends the outcome this conversation owes, or nothing for a cancelled one. `label` names the
+    /// caller because the two paths log under their own names.
+    fn finish(&mut self, ended: Exchange, label: &str) {
+        let outcome = match ended {
+            Exchange::Verdict(outcome) => outcome,
+            Exchange::Failed(err) => shared::PamOutcome::StartFailed(err.to_string()),
+            Exchange::Cancelled => {
+                self.pending = None;
+                return;
+            }
+        };
         if let Some((tag, tx)) = self.pending.take()
-            && tx.send((tag, outcome)).is_err()
+            && tx.send((tag, shared::PamMessage::Outcome(outcome))).is_err()
         {
             // A closed channel means `main.rs`'s loop is gone, which `LockController::send` permits.
             warn!("{label}: the outcome channel is closed; dropping an authentication result");
@@ -298,17 +526,15 @@ impl<T> ReportOnDrop<T> {
     }
 }
 
-impl<T> Drop for ReportOnDrop<T> {
+impl Drop for ReportOnDrop {
     fn drop(&mut self) {
         if let Some((tag, tx)) = self.pending.take() {
-            // Reached by a panic or a dropped future, not by any ordinary `.report()` call: the
+            // Reached by a panic or a dropped future, not by any ordinary `.finish()` call: the
             // security decision this authentication owed was lost, not just delayed.
             error!("an authentication task ended without ever reporting a PAM outcome");
-            // Any `PamOutcome` clears `authenticating`; `PamError` supplies the prompt's error
-            // text when no real PAM answer exists.
             let outcome =
                 shared::PamOutcome::PamError("pam authentication task ended without reporting an outcome".to_string());
-            let _ = tx.send((tag, outcome));
+            let _ = tx.send((tag, shared::PamMessage::Outcome(outcome)));
         }
     }
 }
@@ -325,54 +551,16 @@ impl<T> Drop for ReportOnDrop<T> {
 /// " (deleted)" filename and rebuilds a real sibling path.
 pub(crate) const SELF_EXE: &str = "/proc/self/exe";
 
-/// Re-execs this binary as a PAM worker for `username`, then calls [`exchange_over`].
-async fn spawn_worker_and_exchange(username: &str, secret: &[u8]) -> std::io::Result<shared::PamOutcome> {
-    let child = crate::process::spawn_group_leader_stdio_piped(
+/// Re-execs this binary as a PAM worker for `username`.
+fn spawn_worker(username: &str) -> std::io::Result<tokio::process::Child> {
+    crate::process::spawn_group_leader_stdio_piped(
         SELF_EXE,
         &[],
         &[(WORKER_ENV.to_string(), "1".to_string()), (USERNAME_ENV.to_string(), username.to_string())],
-    )?;
-    exchange_over(child, secret, PAM_EXCHANGE_TIMEOUT).await
+    )
 }
 
-/// Reads Prompt/Outcome frames from stdout and answers each Prompt with `secret` on stdin
-/// ([`exchange_messages`]), then reaps the process group (ADR-0241). Stdin/stdout are taken out of
-/// `child` before the timeout so `exchange_messages` is testable over a plain duplex pipe. Reap
-/// always runs, including after failed/timed-out I/O, so a hung worker is not untracked. `timeout`
-/// covers only the message loop; `reap_process_group` has its own grace. Without it, a wedged
-/// prompt could hang forever and the inline polkit path would stall `main.rs`'s `select!`.
-/// Parameterize it so tests avoid the real 30-second [`PAM_EXCHANGE_TIMEOUT`]. A failed exchange
-/// carries [`post_mortem`]'s account of how the worker died, because the reap already knows and the
-/// lock screen otherwise reports an I/O error with no subject.
-async fn exchange_over(
-    mut child: tokio::process::Child,
-    secret: &[u8],
-    timeout: Duration,
-) -> std::io::Result<shared::PamOutcome> {
-    let stdin = child.stdin.take().expect("spawn_group_leader_stdio_piped always pipes stdin");
-    let stdout = child.stdout.take().expect("spawn_group_leader_stdio_piped always pipes stdout");
-    let outcome_result = match tokio::time::timeout(timeout, exchange_messages(stdout, stdin, secret)).await {
-        Ok(result) => result,
-        Err(_elapsed) => {
-            Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "pam worker did not respond within the timeout"))
-        }
-    };
-
-    let reaped = crate::process::reap_process_group(&mut child, crate::process::DEFAULT_REAP_GRACE).await;
-    if let Err(err) = &reaped {
-        warn!("failed to reap pam worker: {err}");
-    }
-
-    // A worker that did not answer leaves the lock screen saying only "early eof" (the 2026-09-08
-    // lockout had no other evidence), so log how it died, not just the on-screen error text.
-    outcome_result.map_err(|err| {
-        let post_mortem = post_mortem(&reaped);
-        error!("pam worker exchange failed: {err}; the worker {post_mortem}");
-        std::io::Error::new(err.kind(), format!("{err}; the worker {post_mortem}"))
-    })
-}
-
-/// How the worker died, for an [`exchange_over`] that never got a frame.
+/// How the worker died, for a [`converse_with_worker`] that failed.
 ///
 /// `reap_process_group` sends `SIGTERM` before waiting, so a live worker dies by our hand and
 /// reports signal 15. That is not the ambiguity it looks like: this runs only when the pipe already
@@ -383,37 +571,6 @@ fn post_mortem(reaped: &std::io::Result<std::process::ExitStatus>) -> String {
         // here points at that line rather than telling the whole story.
         Ok(status) => crate::generation::classify_departure(*status).to_string(),
         Err(err) => format!("could not be reaped, so how it died is unknown: {err}"),
-    }
-}
-
-/// Answers every `Prompt` with `secret` until `Outcome` ends the conversation (ADR-0241): the
-/// lock's only caller today has one password. The worker only ever sends echo-off prompts
-/// (`prompt` refuses echo-on), so every prompt that arrives gets the same answer. A `Response`
-/// arriving from the worker is a protocol violation, not a valid frame.
-async fn exchange_messages(
-    mut reader: impl tokio::io::AsyncRead + Unpin,
-    mut writer: impl tokio::io::AsyncWrite + Unpin,
-    secret: &[u8],
-) -> std::io::Result<shared::PamOutcome> {
-    // One clone for the whole exchange, not one per round. `Zeroizing` clears it on every exit,
-    // including `exchange_over`'s timeout dropping this future mid-`.await`.
-    let response = shared::Zeroizing::new(shared::PamMessage::Response { secret: secret.to_vec() });
-    loop {
-        let message = match shared::framing::read_json_frame(&mut reader).await {
-            Ok(message) => message,
-            Err(err) => break Err(std::io::Error::other(err)),
-        };
-        match message {
-            shared::PamMessage::Outcome(outcome) => break Ok(outcome),
-            shared::PamMessage::Prompt { .. } => {
-                if let Err(err) = shared::framing::write_json_frame(&mut writer, &*response).await {
-                    break Err(std::io::Error::other(err));
-                }
-            }
-            shared::PamMessage::Response { .. } => {
-                break Err(std::io::Error::other("the worker sent a Response, which is the Supervisor's to send"));
-            }
-        }
     }
 }
 
@@ -548,7 +705,7 @@ mod tests {
         );
     }
 
-    /// Upper bound for ordinary paths, never waited on in a passing run. Distinct from [`PAM_EXCHANGE_TIMEOUT`].
+    /// Upper bound for ordinary paths, never waited on in a passing run. Distinct from [`PAM_REPLY_TIMEOUT`].
     const TEST_TIMEOUT: Duration = Duration::from_secs(10);
 
     #[test]
@@ -562,38 +719,71 @@ mod tests {
         }
     }
 
+    /// GDM's rule: an expired password still unlocks the session it already logged in.
+    #[test]
+    fn an_expired_password_passes_the_account_check_and_other_refusals_do_not() {
+        assert_eq!(account_verdict(Ok(())), shared::PamOutcome::Success);
+        assert_eq!(account_verdict(Err(nonstick::ErrorCode::NewAuthTokRequired)), shared::PamOutcome::Success);
+        assert_eq!(account_verdict(Err(nonstick::ErrorCode::PermissionDenied)), shared::PamOutcome::AuthFailed);
+    }
+
+    /// A frame as the worker writes it: 4-byte big-endian length, then JSON.
+    fn frame_bytes(message: &shared::PamMessage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        write_frame(&mut bytes, message).unwrap();
+        bytes
+    }
+
+    /// A fake worker: `sh` printing `frames`, then running `then`.
+    fn fake_worker(frames: &[shared::PamMessage], then: &str) -> tokio::process::Child {
+        let octal: String = frames.iter().flat_map(frame_bytes).map(|byte| format!("\\{byte:03o}")).collect();
+        let script = format!("printf '{octal}'; {then}");
+        crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(&script), &[])
+            .expect("failed to spawn the fake worker")
+    }
+
+    async fn with_worker(child: tokio::process::Child, timeout: Duration) -> (Exchange, Vec<shared::PamMessage>) {
+        let (events, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        // Held so the exchange is never cancelled.
+        let (_answer_tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        let ended = within(converse_with_worker(child, 7, &events, answers, timeout)).await;
+        let mut seen = Vec::new();
+        while let Ok((serial, message)) = heard.try_recv() {
+            assert_eq!(serial, 7, "every frame carries the conversation's serial");
+            seen.push(message);
+        }
+        (ended, seen)
+    }
+
+    fn verdict(ended: Exchange) -> shared::PamOutcome {
+        match ended {
+            Exchange::Verdict(outcome) => outcome,
+            Exchange::Failed(err) => panic!("expected a verdict, got failure {err}"),
+            Exchange::Cancelled => panic!("expected a verdict, got a cancel"),
+        }
+    }
+
     // Real libpam re-exec needs a real PAM stack; unit-test the wire protocol with a fake shell
     // worker instead.
 
     #[tokio::test]
-    async fn exchange_over_reads_back_the_worker_s_final_outcome_frame() {
-        // `shared::framing`: 4-byte big-endian length, then JSON. `{"Outcome":"Success"}` is 21
-        // bytes. No `Prompt` is sent, so nothing is written back; the script need not drain stdin.
-        let script = r#"printf '\000\000\000\025{"Outcome":"Success"}'"#;
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
-            .expect("failed to spawn the fake worker");
-
-        let outcome = exchange_over(child, b"the-password", TEST_TIMEOUT).await.expect("exchange_over failed");
-
-        assert_eq!(outcome, shared::PamOutcome::Success);
+    async fn the_worker_s_messages_are_relayed_and_its_outcome_ends_the_conversation() {
+        let info = shared::PamMessage::Message { kind: shared::PamNoticeKind::Info, text: "Place your finger".into() };
+        let child = fake_worker(&[info.clone(), shared::PamMessage::Outcome(shared::PamOutcome::Success)], "");
+        let (ended, seen) = with_worker(child, TEST_TIMEOUT).await;
+        assert_eq!(verdict(ended), shared::PamOutcome::Success);
+        assert_eq!(seen, [info]);
     }
 
     #[tokio::test]
-    async fn exchange_over_still_reaps_the_worker_when_the_frame_read_fails() {
-        // Malformed frame, then a hang. Read must fail and the process must still be reaped.
+    async fn an_undecodable_frame_fails_and_the_worker_is_still_reaped() {
         let script = r#"printf '\000\000\000\004evil'; sleep 30"#;
         let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
             .expect("failed to spawn the fake worker");
         let pid = child.id().expect("freshly spawned child has a pid");
-
-        let result = exchange_over(child, b"the-password", TEST_TIMEOUT).await;
-
-        assert!(result.is_err(), "an undecodable frame must surface as an error, not a silent outcome");
-
-        assert!(
-            crate::process::exited(&[pid]).await,
-            "the worker (pid {pid}) should be reaped even though exchange_over returned an error, not left sleeping"
-        );
+        let (ended, _) = with_worker(child, TEST_TIMEOUT).await;
+        assert!(matches!(verdict(ended), shared::PamOutcome::StartFailed(_)));
+        assert!(crate::process::exited(&[pid]).await, "the worker (pid {pid}) should be reaped, not left sleeping");
     }
 
     /// The 2026-09-08 lockout: the worker vanished and "early eof" was the entire diagnosis.
@@ -602,102 +792,101 @@ mod tests {
         for (script, expected) in [("exit 3", "exited with code 3"), ("kill -KILL $$", "was killed by signal 9")] {
             let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
                 .expect("failed to spawn the fake worker");
-
-            let err = exchange_over(child, b"the-password", TEST_TIMEOUT)
-                .await
-                .expect_err("a worker that writes no frame must fail the exchange");
-
-            let message = err.to_string();
+            let (ended, _) = with_worker(child, TEST_TIMEOUT).await;
+            let shared::PamOutcome::StartFailed(message) = verdict(ended) else { panic!("{script}: not StartFailed") };
             assert!(message.contains(expected), "`{script}` should report `{expected}`, got: {message}");
         }
     }
 
-    /// The multi-round case ADR-0241 exists for: a module asking twice, once echo-off and once
-    /// echo-on, gets the same secret both times, then `Outcome` ends it. An in-memory duplex
-    /// stands in for the worker's piped stdio; `exchange_over`'s own tests already cover the real
-    /// child/reap plumbing around this loop.
-    #[tokio::test]
-    async fn exchange_messages_answers_every_prompt_with_the_secret_until_outcome() {
-        let (ours, theirs) = tokio::io::duplex(256);
-        let (their_reader, their_writer) = tokio::io::split(theirs);
-        let fake_worker = tokio::spawn(async move {
-            let mut writer = their_writer;
-            let mut reader = their_reader;
-            let mut secrets_seen = Vec::new();
-            for (text, echo) in [("Password:", false), ("One-time code:", true)] {
-                shared::framing::write_json_frame(&mut writer, &shared::PamMessage::Prompt { text: text.into(), echo })
-                    .await
-                    .unwrap();
-                match shared::framing::read_json_frame(&mut reader).await.unwrap() {
-                    shared::PamMessage::Response { secret } => secrets_seen.push(secret),
-                    other => panic!("expected a Response, got {other:?}"),
+    /// A prompt waits for the user with no limit; once an answer is written, PAM owes a reply within
+    /// the timeout, and info lines do not buy it more time.
+    #[tokio::test(start_paused = true)]
+    async fn the_reply_timeout_runs_only_after_an_answer_and_a_message_does_not_pause_it() {
+        let (frames_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+        let (answer_tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        let (events, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let timeout = Duration::from_secs(30);
+        let mut writer = Vec::new();
+        let task = async { converse(frames, &mut writer, Wire::Lines, 1, &events, answers, timeout).await };
+        let driver = async {
+            frames_tx.send(Ok(shared::PamMessage::Prompt { text: "Password:".into(), echo: false })).unwrap();
+            tokio::time::sleep(timeout * 10).await;
+            assert!(heard.try_recv().is_ok(), "the prompt reached the controller and is still waiting");
+            answer_tx.send(shared::Zeroizing::new(b"hunter2".to_vec())).unwrap();
+            for _ in 0..10 {
+                tokio::time::sleep(timeout / 5).await;
+                let line = shared::PamMessage::Message { kind: shared::PamNoticeKind::Info, text: "...".into() };
+                if frames_tx.send(Ok(line)).is_err() {
+                    break;
                 }
             }
-            shared::framing::write_json_frame(&mut writer, &shared::PamMessage::Outcome(shared::PamOutcome::Success))
-                .await
-                .unwrap();
-            secrets_seen
-        });
+            std::future::pending::<()>().await
+        };
+        let ended = tokio::select! { ended = task => ended, () = driver => unreachable!() };
+        let Exchange::Failed(err) = ended else { panic!("a module silent after the answer must time out") };
+        assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        assert_eq!(writer, b"hunter2\n");
+    }
 
-        let (my_reader, my_writer) = tokio::io::split(ours);
-        let outcome = exchange_messages(my_reader, my_writer, b"hunter2").await.expect("exchange_messages failed");
-
-        assert_eq!(outcome, shared::PamOutcome::Success);
-        assert_eq!(fake_worker.await.unwrap(), [b"hunter2".to_vec(), b"hunter2".to_vec()]);
+    /// Dropping the [`Conversation`] cancels without an answer and without a verdict.
+    #[tokio::test]
+    async fn dropping_the_conversation_cancels_without_writing_anything() {
+        let (_frames_tx, frames) = tokio::sync::mpsc::unbounded_channel();
+        let (answer_tx, answers) = tokio::sync::mpsc::unbounded_channel();
+        let (events, _heard) = tokio::sync::mpsc::unbounded_channel();
+        drop(answer_tx);
+        let mut writer = Vec::new();
+        let ended = within(converse(frames, &mut writer, Wire::Framed, 1, &events, answers, TEST_TIMEOUT)).await;
+        assert!(matches!(ended, Exchange::Cancelled));
+        assert!(writer.is_empty());
     }
 
     #[tokio::test]
-    async fn exchange_over_times_out_and_still_reaps_a_worker_that_never_responds() {
-        // A sleeping worker models a PAM module blocked on unreachable network auth. Return an
-        // error within `timeout` and still reap it.
-        let script = "sleep 30";
-        let child = crate::process::spawn_group_leader_stdio_piped("sh", &crate::process::sh_args(script), &[])
-            .expect("failed to spawn the fake worker");
-        let pid = child.id().expect("freshly spawned child has a pid");
+    async fn an_answer_with_a_line_break_never_reaches_the_helper() {
+        let mut writer = Vec::new();
+        let sent = Wire::Lines.send(&mut writer, shared::Zeroizing::new(b"one\ntwo".to_vec())).await;
+        assert!(sent.is_err());
+        assert!(writer.is_empty());
+    }
 
-        let started = tokio::time::Instant::now();
-        let result = exchange_over(child, b"the-password", Duration::from_millis(50)).await;
-        let elapsed = started.elapsed();
-
-        assert!(result.is_err(), "a worker that never responds must surface as an error, not hang forever");
-        assert!(elapsed < Duration::from_secs(5), "exchange_over took {elapsed:?} -- the timeout did not bound it");
-
-        assert!(
-            crate::process::exited(&[pid]).await,
-            "the worker (pid {pid}) should be reaped even after a timeout, not left sleeping for the full 30s"
-        );
+    #[test]
+    fn helper_lines_are_unescaped_into_prompts_messages_and_verdicts() {
+        use shared::{PamMessage, PamNoticeKind};
+        for (line, want) in [
+            (
+                r"PAM_PROMPT_ECHO_OFF Contrase\303\261a: ",
+                Some(PamMessage::Prompt { text: "Contraseña: ".into(), echo: false }),
+            ),
+            ("PAM_PROMPT_ECHO_ON Code:", Some(PamMessage::Prompt { text: "Code:".into(), echo: true })),
+            (
+                r"PAM_ERROR_MSG locked\nfor 10 minutes",
+                Some(PamMessage::Message { kind: PamNoticeKind::Error, text: "locked\nfor 10 minutes".into() }),
+            ),
+            (
+                r#"PAM_TEXT_INFO say \"hi\"\t\\"#,
+                Some(PamMessage::Message { kind: PamNoticeKind::Info, text: "say \"hi\"\t\\".into() }),
+            ),
+            ("SUCCESS", Some(PamMessage::Outcome(shared::PamOutcome::Success))),
+            ("FAILURE", Some(PamMessage::Outcome(shared::PamOutcome::AuthFailed))),
+            ("SUCCESS but not quite", None),
+        ] {
+            assert_eq!(helper_message(line), want, "{line}");
+        }
+        assert_eq!(unescape(r"\b\f\r\v\101\7x\"), "\u{8}\u{c}\r\u{b}A\u{7}x");
     }
 
     #[tokio::test]
-    async fn drive_helper_writes_the_opening_lines_then_answers_echo_on_blank_and_echo_off_with_the_password() {
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-        let (ours, theirs) = tokio::io::duplex(256);
-        let helper = tokio::spawn(async move {
-            let (reader, mut writer) = tokio::io::split(theirs);
-            let mut lines = tokio::io::BufReader::new(reader).lines();
-            let mut seen = vec![lines.next_line().await.unwrap().unwrap(), lines.next_line().await.unwrap().unwrap()];
-            writer.write_all(b"PAM_PROMPT_ECHO_ON Code: \n").await.unwrap();
-            seen.push(lines.next_line().await.unwrap().unwrap());
-            writer.write_all(b"PAM_PROMPT_ECHO_OFF Password: \n").await.unwrap();
-            seen.push(lines.next_line().await.unwrap().unwrap());
-            writer.write_all(b"SUCCESS\n").await.unwrap();
-            seen
-        });
-
-        let (reader, writer) = tokio::io::split(ours);
-        let outcome = drive_helper(reader, writer, "alice", "cookie-1", b"hunter2").await.unwrap();
-
-        assert_eq!(outcome, shared::PamOutcome::Success);
-        assert_eq!(helper.await.unwrap(), ["alice", "cookie-1", "", "hunter2"]);
-    }
-
-    #[tokio::test]
-    async fn drive_helper_takes_only_the_verdict_line_as_the_verdict() {
+    async fn the_helper_s_lines_are_relayed_until_its_verdict() {
         let (ours, mut theirs) = tokio::io::duplex(256);
-        tokio::io::AsyncWriteExt::write_all(&mut theirs, b"PAM_TEXT_INFO hi\nFAILURE\n").await.unwrap();
-        let (reader, writer) = tokio::io::split(ours);
-        let outcome = within(drive_helper(reader, writer, "alice", "cookie-1", b"hunter2")).await.unwrap();
-        assert_eq!(outcome, shared::PamOutcome::AuthFailed);
+        tokio::io::AsyncWriteExt::write_all(&mut theirs, b"PAM_TEXT_INFO hi\nnoise\nFAILURE\nPAM_TEXT_INFO late\n")
+            .await
+            .unwrap();
+        let (frames_tx, mut frames) = tokio::sync::mpsc::unbounded_channel();
+        within(read_helper_lines(ours, frames_tx)).await;
+        let info = shared::PamMessage::Message { kind: shared::PamNoticeKind::Info, text: "hi".into() };
+        assert_eq!(frames.recv().await.unwrap().unwrap(), info);
+        assert_eq!(frames.recv().await.unwrap().unwrap(), shared::PamMessage::Outcome(shared::PamOutcome::AuthFailed));
+        assert!(frames.recv().await.is_none(), "nothing after the verdict");
     }
 
     #[test]
@@ -710,16 +899,22 @@ mod tests {
     const UNMAPPED_UID: u32 = 3_999_999_999;
 
     #[tokio::test]
-    async fn run_authentication_reports_its_own_outcome_not_the_drop_fallback() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        run_authentication(UNMAPPED_UID, shared::Zeroizing::new(b"hunter2".to_vec()), 7u64, tx).await;
-        let (tag, outcome) = rx.try_recv().expect("every authentication reports");
-        assert_eq!(tag, 7);
-        assert!(
-            matches!(&outcome, shared::PamOutcome::StartFailed(reason) if reason.contains("no passwd entry")),
-            "{outcome:?}"
-        );
-        assert!(rx.try_recv().is_err(), "exactly one report");
+    async fn a_conversation_that_cannot_start_reports_once_under_its_serial() {
+        let (events, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _lock = start_lock_conversation(UNMAPPED_UID, 7, events.clone());
+        let _polkit = start_polkit_conversation(UNMAPPED_UID, "cookie".into(), 8, events);
+        let mut serials = Vec::new();
+        for _ in 0..2 {
+            let (serial, message) = within(heard.recv()).await.expect("every conversation reports");
+            serials.push(serial);
+            assert!(
+                matches!(&message, shared::PamMessage::Outcome(shared::PamOutcome::StartFailed(reason)) if reason.contains("no passwd entry")),
+                "{message:?}"
+            );
+        }
+        serials.sort();
+        assert_eq!(serials, [7, 8]);
+        assert!(within(heard.recv()).await.is_none(), "exactly one report each, then the tasks are gone");
     }
 
     #[test]
@@ -755,45 +950,52 @@ mod tests {
         assert_eq!(err.to_string(), "simulated mid-read pipe failure");
     }
 
-    /// The worker's actual conversation driver, proven without PAM or a subprocess: more than one
-    /// prompt, echo-off then echo-on, each answered from the wire rather than one password
-    /// replayed (ADR-0241).
-    #[test]
-    fn relay_conversation_relays_a_masked_prompt_but_refuses_an_echo_on_one() {
-        let mut canned = Vec::new();
-        write_frame(&mut canned, &shared::PamMessage::Response { secret: b"hunter2".to_vec() }).unwrap();
-        let conversation =
-            RelayConversation { reader: RefCell::new(std::io::Cursor::new(canned)), writer: RefCell::new(Vec::new()) };
-
-        assert_eq!(conversation.masked_prompt("Password:").unwrap(), std::ffi::OsString::from("hunter2"));
-        assert!(conversation.prompt("One-time code:").is_err(), "an echo-on prompt has no safe answer to relay");
-
-        let mut sent = std::io::Cursor::new(conversation.writer.into_inner());
-        assert_eq!(
-            read_frame(&mut sent).unwrap(),
-            shared::PamMessage::Prompt { text: "Password:".into(), echo: false }
-        );
-        assert!(
-            sent.position() as usize == sent.get_ref().len(),
-            "refusing must not write a frame for the echo-on prompt"
-        );
+    fn hung_up() -> ! {
+        panic!("the supervisor hung up")
     }
 
-    // Pin release when the spawned authentication task panics or drops before reporting.
-
+    /// The worker's actual conversation driver, proven without PAM or a subprocess: both prompt
+    /// kinds and both message kinds go out as frames, each prompt answered from the wire.
     #[test]
-    fn report_on_drop_does_not_double_send_once_the_real_outcome_already_went_out() {
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut guard = ReportOnDrop { pending: Some((7u64, tx)) };
-        let (tag, tx) = guard.pending.take().expect("freshly built guard holds a sender");
-        tx.send((tag, shared::PamOutcome::Success)).expect("send failed");
-        drop(guard);
+    fn relay_conversation_relays_every_prompt_and_message() {
+        let mut canned = Vec::new();
+        for secret in [&b"hunter2"[..], b"123456"] {
+            write_frame(&mut canned, &shared::PamMessage::Response { secret: secret.to_vec() }).unwrap();
+        }
+        let conversation = RelayConversation {
+            reader: RefCell::new(std::io::Cursor::new(canned)),
+            writer: RefCell::new(Vec::new()),
+            hangup: hung_up,
+        };
 
-        assert_eq!(rx.try_recv(), Ok((7, shared::PamOutcome::Success)));
-        assert!(
-            rx.try_recv().is_err(),
-            "the drop guard must not also send its fallback once the real outcome already went out"
-        );
+        assert_eq!(conversation.masked_prompt("Password:").unwrap(), std::ffi::OsString::from("hunter2"));
+        conversation.info_msg("Place your finger");
+        assert_eq!(conversation.prompt("Code:").unwrap(), std::ffi::OsString::from("123456"));
+        conversation.error_msg("Wrong code");
+
+        let mut sent = std::io::Cursor::new(conversation.writer.into_inner());
+        let kinds = [shared::PamNoticeKind::Info, shared::PamNoticeKind::Error];
+        for want in [
+            shared::PamMessage::Prompt { text: "Password:".into(), echo: false },
+            shared::PamMessage::Message { kind: kinds[0], text: "Place your finger".into() },
+            shared::PamMessage::Prompt { text: "Code:".into(), echo: true },
+            shared::PamMessage::Message { kind: kinds[1], text: "Wrong code".into() },
+        ] {
+            assert_eq!(read_frame(&mut sent).unwrap(), want);
+        }
+    }
+
+    /// A closed stdin is the Supervisor gone: the worker leaves rather than fail PAM's conversation,
+    /// which `pam_faillock authfail` would count.
+    #[test]
+    fn a_closed_pipe_hangs_up_instead_of_failing_the_prompt() {
+        let conversation = RelayConversation {
+            reader: RefCell::new(std::io::Cursor::new(Vec::new())),
+            writer: RefCell::new(Vec::new()),
+            hangup: hung_up,
+        };
+        let asked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| conversation.masked_prompt("Password:")));
+        assert!(asked.is_err(), "the prompt must not return into PAM");
     }
 
     #[tokio::test]
@@ -802,19 +1004,27 @@ mod tests {
         // this pins that fallback send.
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let handle = tokio::spawn(async move {
-            let _guard = ReportOnDrop { pending: Some((7u64, tx)) };
+            let _guard = ReportOnDrop { pending: Some((7, tx)) };
             panic!("simulated panic before the task's own explicit send");
         });
-        let join_result = handle.await;
-        assert!(
-            join_result.is_err(),
-            "the task did panic -- that part of the simulation, not the fix, is what's asserted here"
-        );
+        assert!(handle.await.is_err(), "the task did panic");
 
-        let (acquisition, outcome) = rx
-            .try_recv()
-            .expect("the drop guard must still report a fallback outcome even though the task panicked first");
-        assert!(matches!(outcome, shared::PamOutcome::PamError(_)));
-        assert_eq!(acquisition, 7, "tagged with the lock it was started for, or lock::accepts_outcome cannot place it");
+        let (serial, message) = rx.try_recv().expect("the drop guard must still report a fallback outcome");
+        assert!(matches!(message, shared::PamMessage::Outcome(shared::PamOutcome::PamError(_))));
+        assert_eq!(serial, 7, "tagged with its serial, or the controller cannot place it");
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_finished_or_cancelled_conversation_sends_no_fallback() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut guard = ReportOnDrop { pending: Some((7, tx.clone())) };
+        guard.finish(Exchange::Verdict(shared::PamOutcome::Success), "test");
+        drop(guard);
+        assert_eq!(rx.try_recv(), Ok((7, shared::PamMessage::Outcome(shared::PamOutcome::Success))));
+        let mut guard = ReportOnDrop { pending: Some((8, tx)) };
+        guard.finish(Exchange::Cancelled, "test");
+        drop(guard);
+        assert!(rx.try_recv().is_err(), "a cancelled conversation owes nobody a verdict");
     }
 }
