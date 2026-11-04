@@ -9,6 +9,8 @@ pub use shared::state::polkit::PolkitState;
 use shared::{error, info, warn};
 use tokio::sync::oneshot;
 
+use crate::capabilities::conversation::{Dialogue, Heard, PamFields};
+use crate::pam_worker::Conversation;
 use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
 use shared::action::PolkitAction;
 
@@ -20,13 +22,17 @@ struct Pending {
     cookie: String,
     uid: u32,
     reply: oneshot::Sender<Result<(), AgentError>>,
+    /// The helper's conversation, started by the first submit (ADR-0381).
+    dialogue: Dialogue,
 }
 
 /// Effect of a PAM answer on the pending challenge.
 pub enum Answer {
     /// Cookie no longer names the on-screen challenge: it was canceled or replaced during PAM.
     Stale,
-    /// Recorded in `error`; the prompt stays open.
+    /// A prompt or line to show.
+    Changed,
+    /// Recorded in `error`; the dialog stays open and the next submit starts a new helper.
     Failed,
     /// The challenge is over; the helper told polkitd and `reply` ends the held call.
     Succeeded { reply: oneshot::Sender<Result<(), AgentError>> },
@@ -66,7 +72,7 @@ impl PolkitController {
             icon_name: call.icon_name,
             ..PolkitState::default()
         };
-        self.pending = Some(Pending { cookie: call.cookie, uid, reply });
+        self.pending = Some(Pending { cookie: call.cookie, uid, reply, dialogue: Dialogue::default() });
         true
     }
 
@@ -81,30 +87,46 @@ impl PolkitController {
         true
     }
 
-    /// Admits and marks one PAM conversation, refusing when none is pending or one is already in
-    /// flight; held Enter must not spawn a worker per repeat.
-    pub fn try_begin_authentication(&mut self) -> Option<(u32, String)> {
-        let pending = self.pending.as_ref().filter(|_| !self.state.authenticating)?;
-        self.state.authenticating = true;
-        Some((pending.uid, pending.cookie.clone()))
+    /// `secure_submit(polkit, authenticate)`. The first submit starts the helper and holds the
+    /// answer for its prompt; closing a helper that waits on a prompt fails PAM, so none runs
+    /// before anything is typed. Refused with no challenge or while an answer is with PAM.
+    pub fn submit(
+        &mut self,
+        secret: shared::Zeroizing<Vec<u8>>,
+        start: impl FnOnce(u64, u32, String) -> Conversation,
+    ) -> bool {
+        let Some(pending) = self.pending.as_mut() else { return false };
+        let (uid, cookie) = (pending.uid, pending.cookie.clone());
+        pending.dialogue.submit(&mut self.state, secret, |serial| start(serial, uid, cookie))
     }
 
-    /// Applies the PAM answer for `cookie`. Success returns the reply that ends the held call; the
-    /// controller has already forgotten the challenge.
-    pub fn record_outcome(&mut self, cookie: &str, outcome: shared::PamOutcome) -> Answer {
-        if !self.pending.as_ref().is_some_and(|p| p.cookie == cookie) {
-            return Answer::Stale;
+    /// Applies one frame of the helper's conversation `serial`. Success returns the reply that
+    /// ends the held call; the controller has already forgotten the challenge.
+    pub fn hear(&mut self, serial: u64, message: shared::PamMessage) -> Answer {
+        let Some(pending) = self.pending.as_mut() else { return Answer::Stale };
+        match pending.dialogue.hear(&mut self.state, serial, message) {
+            Heard::Stale => Answer::Stale,
+            Heard::Changed => Answer::Changed,
+            Heard::Ended { outcome: shared::PamOutcome::Success, .. } => {
+                info!("challenge {:?} authenticated successfully", pending.cookie);
+                let Some(pending) = self.pending.take() else { return Answer::Stale };
+                self.state = PolkitState::default();
+                Answer::Succeeded { reply: pending.reply }
+            }
+            Heard::Ended { outcome, .. } => {
+                error!("authentication for challenge {:?} failed: {outcome:?}", pending.cookie);
+                self.state.error = super::lock::error_for_outcome(&outcome);
+                Answer::Failed
+            }
         }
-        self.state.authenticating = false;
-        if outcome != shared::PamOutcome::Success {
-            error!("authentication for challenge {cookie:?} failed: {outcome:?}");
-            self.state.error = super::lock::error_for_outcome(&outcome);
-            return Answer::Failed;
-        }
-        info!("challenge {cookie:?} authenticated successfully");
-        let Some(pending) = self.pending.take() else { return Answer::Stale };
-        self.state = PolkitState::default();
-        Answer::Succeeded { reply: pending.reply }
+    }
+}
+
+impl PamFields for PolkitState {
+    fn pam(
+        &mut self,
+    ) -> (&mut Option<shared::state::lock::PamPrompt>, &mut Vec<shared::state::lock::PamNotice>, &mut bool) {
+        (&mut self.prompt, &mut self.messages, &mut self.authenticating)
     }
 }
 
@@ -153,26 +175,49 @@ mod tests {
         assert!(first.try_recv().is_err(), "the first is still waiting on the user");
     }
 
+    /// Submits `secret`, recording the serial a started helper got.
+    fn submit(c: &mut PolkitController, started: &mut Option<u64>) -> bool {
+        c.submit(shared::Zeroizing::new(b"hunter2".to_vec()), |serial, uid, cookie| {
+            assert_eq!((uid, cookie.as_str()), (1000, "a"));
+            *started = Some(serial);
+            Conversation::detached().0
+        })
+    }
+
     #[test]
-    fn a_failed_password_keeps_the_prompt_open_with_the_reason() {
+    fn the_helper_starts_on_the_first_submit_and_a_failure_waits_for_the_next() {
         let mut c = PolkitController::default();
         let mut answer = begun(&mut c, "a");
-        let (uid, cookie) = c.try_begin_authentication().expect("one attempt is admitted");
-        assert_eq!(uid, 1000);
-        assert!(c.try_begin_authentication().is_none(), "not two at once");
-        assert!(matches!(c.record_outcome(&cookie, shared::PamOutcome::AuthFailed), Answer::Failed));
+        assert_eq!(c.snapshot().prompt, None, "no helper runs before anything is typed");
+        let mut started = None;
+        assert!(submit(&mut c, &mut started));
+        let serial = started.expect("the first submit starts the helper");
+        assert!(c.snapshot().authenticating);
+        assert!(!submit(&mut c, &mut None), "not two at once");
+        let prompt = shared::PamMessage::Prompt { text: "Password:".into(), echo: false };
+        assert!(matches!(c.hear(serial, prompt), Answer::Changed), "the held answer goes to it");
+        let failed = shared::PamMessage::Outcome(shared::PamOutcome::AuthFailed);
+        assert!(matches!(c.hear(serial, failed), Answer::Failed));
         let state = c.snapshot();
         assert!(state.active && !state.authenticating);
         assert_eq!(state.error, "authentication failed");
         assert!(answer.try_recv().is_err(), "polkitd is still waiting");
+
+        let mut restarted = None;
+        assert!(submit(&mut c, &mut restarted));
+        assert!(restarted.is_some_and(|next| next != serial), "a new helper, a new serial");
+        let late = shared::PamMessage::Outcome(shared::PamOutcome::Success);
+        assert!(matches!(c.hear(serial, late), Answer::Stale), "the old helper's late word is dropped");
     }
 
     #[test]
     fn success_hands_the_challenge_back_and_clears_the_state() {
         let mut c = PolkitController::default();
         let _answer = begun(&mut c, "a");
-        let (_, cookie) = c.try_begin_authentication().unwrap();
-        assert!(matches!(c.record_outcome(&cookie, shared::PamOutcome::Success), Answer::Succeeded { .. }));
+        let mut started = None;
+        submit(&mut c, &mut started);
+        let success = shared::PamMessage::Outcome(shared::PamOutcome::Success);
+        assert!(matches!(c.hear(started.unwrap(), success), Answer::Succeeded { .. }));
         assert_eq!(c.snapshot(), PolkitState::default());
     }
 
@@ -180,12 +225,15 @@ mod tests {
     fn cancel_answers_polkitd_and_a_late_pam_answer_is_stale() {
         let mut c = PolkitController::default();
         let mut answer = begun(&mut c, "a");
-        let (_, cookie) = c.try_begin_authentication().unwrap();
+        let mut started = None;
+        submit(&mut c, &mut started);
         assert!(!c.cancel(Some("other")), "polkitd cancelling a different cookie changes nothing");
         assert!(c.cancel(None));
         assert!(matches!(answer.try_recv(), Ok(Err(AgentError::Cancelled))));
         assert!(!c.snapshot().active);
-        assert!(matches!(c.record_outcome(&cookie, shared::PamOutcome::Success), Answer::Stale));
+        let success = shared::PamMessage::Outcome(shared::PamOutcome::Success);
+        assert!(matches!(c.hear(started.unwrap(), success), Answer::Stale));
         assert!(!c.cancel(None), "nothing left to cancel");
+        assert!(!submit(&mut c, &mut None), "no challenge to answer");
     }
 }

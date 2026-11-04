@@ -5,10 +5,8 @@ pub use shared::state::lock::LockState;
 pub enum LockEvent {
     /// `lock.lock()` reached `lock::dispatch`; `SetSessionLock` is on its way out.
     LockRequested,
-    /// `secure_submit(lock, authenticate)` arrived and PAM is starting.
-    AuthenticationStarted,
-    /// Answer from the re-exec'd worker (ADR-0028), checked by
-    /// `LockController::record_authentication` against its acquisition.
+    /// Verdict of the running conversation (ADR-0381), checked against its serial by
+    /// `LockController::hear`.
     Authenticated(shared::PamOutcome),
     /// Renderer report of the lock outcome.
     Reported(shared::LockOutcome),
@@ -26,7 +24,6 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             state.requested = true;
             state.error.clear();
         }
-        LockEvent::AuthenticationStarted => state.authenticating = true,
         LockEvent::Authenticated(shared::PamOutcome::Success) => {
             state.authenticating = false;
             state.error.clear();
@@ -75,7 +72,7 @@ pub fn apply(state: &mut LockState, event: LockEvent) {
             state.unlocking = false;
         }
         // Clear `active` so a replacement can re-acquire (`lock` drops requests while active), and
-        // clear `authenticating` (see [`accepts_outcome`]); keep acquisition and error.
+        // clear `authenticating`; keep acquisition and error.
         LockEvent::RendererLost => {
             state.active = false;
             state.requested = false;
@@ -115,23 +112,20 @@ pub fn compositor_lock_change(outcome: &shared::LockOutcome) -> SessionLock {
     }
 }
 
-/// Whether `secure_submit(lock, authenticate)` may start PAM. Without `active`, any config
-/// textfield gets an unbounded password oracle; without `!authenticating`, held Enter spawns one
-/// re-exec'd worker per keypress, each retaining a plaintext secret and paying `pam_unix`'s delay; without `!unlocking`, a submit
-/// mid-exit restarts PAM.
+/// Whether `secure_submit(lock, authenticate)` may answer PAM. Without `active`, any config
+/// textfield gets an unbounded password oracle; without `!authenticating`, held Enter sends one
+/// answer per keypress, each paying `pam_unix`'s delay; without `!unlocking`, a submit mid-exit
+/// restarts PAM.
 pub fn may_authenticate(state: &LockState) -> bool {
     state.active && !state.authenticating && !state.unlocking
 }
 
-/// Whether `acquisition` from `LockController::try_begin_authentication` still names the lock on
-/// screen. Lock N can finish before a stale answer while N+1 makes `active` true again; only the
-/// number binds the password to its lock. It also covers teardown clearing `authenticating` while
-/// worker N runs, which could otherwise admit worker N+1 with two plaintext copies (only one can
-/// apply; the older dies within `PAM_EXCHANGE_TIMEOUT`). Mismatches drop safely, with
-/// `pam_worker::ReportOnDrop` and every [`apply`] arm clearing `active`/`acquisition` also clearing
-/// `authenticating`.
-pub fn accepts_outcome(state: &LockState, acquisition: u64) -> bool {
-    state.active && state.acquisition == acquisition
+impl crate::capabilities::conversation::PamFields for LockState {
+    fn pam(
+        &mut self,
+    ) -> (&mut Option<shared::state::lock::PamPrompt>, &mut Vec<shared::state::lock::PamNotice>, &mut bool) {
+        (&mut self.prompt, &mut self.messages, &mut self.authenticating)
+    }
 }
 
 /// The lock screen's failed-authentication line, not `mantle.rescue`, which ordinary config
@@ -178,6 +172,8 @@ mod tests {
             error: "authentication failed".to_string(),
             requested: false,
             acquisition: 4,
+            prompt: None,
+            messages: Vec::new(),
             unlocking: false,
         }
     }
@@ -185,18 +181,12 @@ mod tests {
     #[test]
     fn losing_the_renderer_frees_the_lock_for_a_replacement_and_rejects_an_in_flight_answer() {
         let mut state = locked_with_one_failure();
-        let in_flight = state.acquisition;
 
         apply(&mut state, LockEvent::RendererLost);
 
         // LockController::lock refuses while active, so the replacement's re-acquisition needs it cleared (ADR-0058 decision 4).
         assert!(!state.active, "the lock object died with the process that held it");
         assert!(!state.requested, "a request nothing will answer must not stay pending forever");
-        assert!(
-            !accepts_outcome(&state, in_flight),
-            "a password answered against a lock whose holder has since died must not be applied: the unlock it would \
-             order is an unlock nobody authenticated for"
-        );
         // A stranded authenticating flag would refuse every future attempt via may_authenticate.
         assert!(!state.authenticating, "the conversation's answer can no longer be applied, so its slot must be free");
         // Only a confirmed Locked moves acquisition; bumping here would number a lock never taken.
@@ -266,6 +256,8 @@ mod tests {
                 error: String::new(),
                 requested: false,
                 acquisition: 1,
+                prompt: None,
+                messages: Vec::new(),
                 unlocking: false
             }
         );
@@ -284,24 +276,8 @@ mod tests {
                 error: "no lock node is declared".to_string(),
                 requested: false,
                 acquisition: 0,
-                unlocking: false
-            }
-        );
-    }
-
-    #[test]
-    fn authentication_started_sets_authenticating() {
-        let mut state = LockState { active: true, ..LockState::default() };
-        apply(&mut state, LockEvent::AuthenticationStarted);
-        assert_eq!(
-            state,
-            LockState {
-                active: true,
-                authenticating: true,
-                attempts: 0,
-                error: String::new(),
-                requested: false,
-                acquisition: 0,
+                prompt: None,
+                messages: Vec::new(),
                 unlocking: false
             }
         );
@@ -320,6 +296,8 @@ mod tests {
                 error: "authentication failed".to_string(),
                 requested: false,
                 acquisition: 0,
+                prompt: None,
+                messages: Vec::new(),
                 unlocking: false
             }
         );
@@ -343,6 +321,8 @@ mod tests {
                 error: String::new(),
                 requested: false,
                 acquisition: 4,
+                prompt: None,
+                messages: Vec::new(),
                 // PAM said yes and the lock is still up: the window a config animates out in
                 // (ADR-0190).
                 unlocking: true
@@ -420,41 +400,12 @@ mod tests {
                     error: String::new(),
                     requested: false,
                     acquisition: 4,
+                    prompt: None,
+                    messages: Vec::new(),
                     unlocking: false
                 },
                 "{outcome:?}"
             );
         }
-    }
-
-    #[test]
-    fn a_stale_pam_outcome_cannot_release_the_lock_that_replaced_the_one_it_authenticated_against() {
-        // The bypass, in order: a worker started against lock N is still running (pam_unix ~1s,
-        // PAM_EXCHANGE_TIMEOUT allows 30) when the compositor ends lock N and something else
-        // takes lock N+1. Nothing about active/authenticating distinguishes the two by then; only
-        // the acquisition number does.
-        let mut state = LockState::default();
-        apply(&mut state, LockEvent::LockRequested);
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Locked));
-        apply(&mut state, LockEvent::AuthenticationStarted);
-        let acquisition = state.acquisition;
-        assert!(
-            accepts_outcome(&state, acquisition),
-            "the ordinary case: the answer is about the lock still on the glass"
-        );
-
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Finished));
-        assert!(
-            !accepts_outcome(&state, acquisition),
-            "the lock the password was typed against is gone; the answer is about nothing"
-        );
-
-        apply(&mut state, LockEvent::LockRequested);
-        apply(&mut state, LockEvent::Reported(shared::LockOutcome::Locked));
-        assert!(
-            !accepts_outcome(&state, acquisition),
-            "a new lock is on the glass and nobody has authenticated against it -- accepting the old worker's Success here is the bypass"
-        );
-        assert!(accepts_outcome(&state, state.acquisition), "and the new lock's own attempt is still accepted");
     }
 }

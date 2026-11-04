@@ -3,7 +3,7 @@
 The session lock screen: one `ext_session_lock_surface_v1` per connected output, covering it for as
 long as the compositor holds the session locked. Declaring a `lock` does not lock;
 `mantle.lock:lock()` does, and only a correct password typed into its secure field unlocks.
-The lock's state (`active`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
+The lock's state (`active`, `prompt`, `messages`, `authenticating`, `attempts`, `error`, `unlocking`) and actions are on
 the [lock capability](../capabilities/lock.md). Rules every role shares are in [surfaces](index.md).
 
 <!-- shot-alt: A lock screen: a large 12:45 clock and the date, the output name, a rounded password field, and a pink hint reading Wrong password (2). -->
@@ -19,6 +19,7 @@ end
 local hint = mantle.lock:map(function(lock)
     if lock.error ~= "" then return string.format("%s (%d)", lock.error, lock.attempts) end
     if lock.authenticating then return "Checking…" end
+    if lock.prompt then return lock.prompt.text end
     return lock.active and "Enter your password" or "Locking…"
 end, "")
 
@@ -43,6 +44,7 @@ local lock_screen = lock {
                             height = 20,
                             placeholder = "Password",
                             mask_character = "•",
+                            masked = mantle.lock:map(function(lock) return not (lock.prompt and lock.prompt.echo) end, true),
                             secure_submit = { capability = "lock", action = "authenticate" },
                         },
                     },

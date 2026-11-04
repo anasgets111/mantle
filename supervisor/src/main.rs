@@ -274,8 +274,7 @@ async fn run_supervisor(
 
     let (tx, mut agent_requests) = tokio::sync::mpsc::unbounded_channel();
     let mut polkit_agent = PolkitAgent::new(tx);
-    let (polkit_outcome_tx, mut polkit_outcomes) =
-        tokio::sync::mpsc::unbounded_channel::<(String, shared::PamOutcome)>();
+    let (polkit_events_tx, mut polkit_events) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamMessage)>();
 
     // Notifications' sound player (ADR-0033): one `std::sync::mpsc` recv loop with no connection,
     // so it stays eager and config cannot gate it.
@@ -306,7 +305,7 @@ async fn run_supervisor(
     // rather than after config happens to read a member.
     let (logind_lock_tx, mut logind_lock_requests) = tokio::sync::mpsc::unbounded_channel::<()>();
     let session_bridge = lock::logind::SessionBridge::new(connection.clone(), logind_lock_tx).await;
-    let (pam_outcome_tx, mut pam_outcomes) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamOutcome)>();
+    let (pam_events_tx, mut pam_events) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamMessage)>();
     let (process_done_tx, mut process_done) = tokio::sync::mpsc::unbounded_channel::<(u32, u64)>();
 
     let mut reload_events = watcher::spawn_watcher(&config_dir, RELOAD_DEBOUNCE)?;
@@ -338,8 +337,8 @@ async fn run_supervisor(
         lock,
         lock::SessionLockedFlag::at(shared::session_locked_flag_path()?),
         session_bridge,
-        pam_outcome_tx.clone(),
-        polkit_outcome_tx,
+        pam_events_tx.clone(),
+        polkit_events_tx,
         process_done_tx,
     );
 
@@ -379,7 +378,7 @@ async fn run_supervisor(
                 );
             }
             Some(request) = agent_requests.recv() => supervisor.handle_polkit_request(request),
-            Some((cookie, outcome)) = polkit_outcomes.recv() => supervisor.record_polkit_outcome(&cookie, outcome),
+            Some((serial, message)) = polkit_events.recv() => supervisor.record_polkit_message(serial, message),
             Some(generation_id) = connected.recv() => supervisor.hydrate(generation_id),
             // One arm per snapshot capability (ADR-0076); `Signals::next` is cancel-safe.
             Some(signal) = signals.next() => supervisor.push_capability_signal(signal),
@@ -393,7 +392,7 @@ async fn run_supervisor(
             Some(()) = logind_lock_requests.recv() => supervisor.lock_requested_by_logind(),
             // Other half of the `secure_submit(lock, authenticate)` arm: the only path where
             // Success becomes an unlock order (ADR-0042).
-            Some((acquisition, outcome)) = pam_outcomes.recv() => supervisor.record_pam_outcome(acquisition, outcome),
+            Some((serial, message)) = pam_events.recv() => supervisor.record_pam_message(serial, message),
             Some(()) = reload_events.recv() => supervisor.begin_reload(),
             Some((generation_id, id)) = process_done.recv() => supervisor.reap_exited_process(generation_id, id),
             Some(inbound) = inbound_frames.recv() => {

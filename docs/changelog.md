@@ -7,6 +7,11 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.lock` and `mantle.polkit` gain `prompt` (`{ id, text, echo }`, PAM's own question, `nil` while PAM owes nothing) and `messages` (PAM's info and error lines). Two-factor codes, a re-asked password and fingerprint hints now reach the lock screen. Bind the secure field's `masked` to `not prompt.echo` to show a visible answer.
+- Changed: The lock screen starts PAM when the session locks, so `prompt` is ready before you type. A password typed before PAM asks is held for its first masked prompt, and `authenticating` now means an answer is with PAM.
+- Changed: A polkit prompt starts PAM on the first submit, so its `prompt` is `nil` until then.
+- Fixed: A lock screen no longer refuses a correct password once the account's password has expired. The session is already logged in, as GDM decides.
+- Fixed: Polkit prompts in other languages show their real text instead of escape codes, and a visible polkit prompt is no longer answered with an empty line.
 - Added: `masked = false` on a `secure_submit` textfield draws what is typed instead of the mask. Turning it off wipes what was typed under the mask.
 
 ## 0.11.2 - 2026-10-29

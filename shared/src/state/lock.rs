@@ -1,6 +1,6 @@
 //! `mantle.lock` snapshot payload.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// `mantle.lock`'s payload (ADR-0052).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -8,7 +8,13 @@ use serde::Serialize;
 pub struct LockState {
     /// The Renderer confirmed the session locked; a requested lock stays `false` until then.
     pub active: bool,
-    /// A password is with PAM. A second submit is refused while true.
+    /// PAM's pending question (ADR-0381), or `nil` while it owes nothing.
+    pub prompt: Option<PamPrompt>,
+    /// PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when
+    /// the lock ends.
+    pub messages: Vec<PamNotice>,
+    /// An answer is with PAM, or typed before its prompt and held for it. A second submit is
+    /// refused while true.
     pub authenticating: bool,
     /// Rejected passwords since this lock was confirmed; reset by the next lock.
     pub attempts: u32,
@@ -24,9 +30,39 @@ pub struct LockState {
     #[serde(skip)]
     pub requested: bool,
     /// Acquisition number, bumped only on Renderer `Locked`. `#[serde(skip)]` like `requested`.
-    /// PAM can outlive its lock (`pam_unix` ~1s, `PAM_EXCHANGE_TIMEOUT` 30s): `finished` after
-    /// `locked` (also `loginctl unlock-session`) can end N while an idle timer takes N+1. The
-    /// number binds an answer to its question and blocks stale success (`accepts_outcome`).
+    /// A delayed release names it, so a lock that ended while the timer slept is not the one
+    /// released (ADR-0190). PAM answers are bound by their conversation's serial instead.
     #[serde(skip)]
     pub acquisition: u64,
+}
+
+/// A question a PAM module asked (ADR-0381).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PamPrompt {
+    /// Unique for this session, so two identical prompts in a row still differ.
+    pub id: u64,
+    /// PAM's own text, e.g. `"Password: "` or `"Verification code:"`.
+    pub text: String,
+    /// The answer is meant to be seen: set the secure field's `masked` to `not echo`.
+    pub echo: bool,
+}
+
+/// What a `PamNotice` reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum PamNoticeKind {
+    Info,
+    Error,
+}
+
+/// One line a PAM module showed without asking anything, e.g. a fingerprint hint or a lockout.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PamNotice {
+    /// `"info"` or `"error"`.
+    pub kind: PamNoticeKind,
+    /// What the module said, as it said it.
+    pub text: String,
 }

@@ -8781,3 +8781,22 @@ ran before the tiles on screen.
 
 Rejected: a priority queue or per-surface queues; cancellation already removes the stale work. Not
 measured on hardware: `tools/heavy-shell` has no fixture that scrolls through many large images.
+
+## 0381. PAM: one live conversation per lock or challenge, every prompt and line relayed
+
+Amends ADR-0241, which assumed no module asks more than once: pam_systemd_home re-prompts after a
+wrong password, pam_google_authenticator asks for a password then a code, and pam_fprintd shows an
+info line before any prompt. Every prompt and line now reaches Lua through one secure field,
+unmasked for an echo-on prompt, so typed text never crosses Lua or the action log.
+
+The lock worker starts on `Locked`, so PAM's prompt is on screen before anything is typed; an early
+answer is held for the first masked prompt. A worker refused by faillock's preauth before its first
+prompt is restarted by the next submit, since that `required` failure decides the verdict. Polkit's
+helper starts on the first submit instead: closing it fails its `fgets`, and faillock counts every
+cancel. An expired password unlocks, as in GDM: the session is already logged in.
+
+The 30 s reply timeout runs only between an answer and PAM's next frame, since pam_fprintd waits
+30 s at a prompt. The cost: a module wedged before the first prompt hangs with no error.
+
+Rejected: a `respond(text)` action for echo-on prompts, which puts the text in Lua and the
+action log; starting polkit's helper with the challenge.
