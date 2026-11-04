@@ -86,18 +86,16 @@ pub struct BeginAuthenticationCall {
     pub identities: Vec<(String, HashMap<String, OwnedValue>)>,
 }
 
-/// uid for `AuthenticationAgentResponse2`, parsed from `BeginAuthentication`'s `identities`: a
-/// `unix-user` identity stores `uint32` under `"uid"`.
-///
-/// ponytail: takes the *first* `unix-user`, not all. polkitd may list several (for example every
-/// `wheel` member), but this codebase has no picker. First-match stands until one exists; upgrade
-/// path: ADR-0028.
-pub fn first_unix_user_uid(identities: &[(String, HashMap<String, OwnedValue>)]) -> Option<u32> {
+/// uids `BeginAuthentication` offers, in its order: a `unix-user` identity stores `uint32` under
+/// `"uid"`. polkitd has already expanded `unix-group` admins into their members, so nothing else
+/// needs reading.
+pub fn unix_user_uids(identities: &[(String, HashMap<String, OwnedValue>)]) -> Vec<u32> {
     identities
         .iter()
-        .find(|(kind, _)| kind == "unix-user")
-        .and_then(|(_, details)| details.get("uid"))
-        .and_then(|v| u32::try_from(v.clone()).ok())
+        .filter(|(kind, _)| kind == "unix-user")
+        .filter_map(|(_, details)| details.get("uid"))
+        .filter_map(|v| u32::try_from(v.clone()).ok())
+        .collect()
 }
 
 /// `org.freedesktop.PolicyKit1.AuthenticationAgent`, called by polkitd after [`PolkitAgent::register`].
@@ -380,11 +378,7 @@ mod tests {
         assert_eq!(received.icon_name, "dialog-password");
         assert_eq!(received.cookie, "cookie-123");
         assert_eq!(received.details.get("polkit.gettext_domain").map(String::as_str), Some("polkit"));
-        assert_eq!(
-            first_unix_user_uid(&received.identities),
-            Some(1000),
-            "identities must be forwarded, not discarded"
-        );
+        assert_eq!(unix_user_uids(&received.identities), [1000], "identities must be forwarded, not discarded");
     }
 
     #[tokio::test]
@@ -425,21 +419,21 @@ mod tests {
     }
 
     #[test]
-    fn first_unix_user_uid_takes_the_first_unix_user_and_nothing_else() {
+    fn unix_user_uids_takes_every_unix_user_in_order_and_nothing_else() {
         let group = (
             "unix-group".to_string(),
             HashMap::from([("gid".to_string(), OwnedValue::try_from(Value::from(100u32)).unwrap())]),
         );
         let no_uid = ("unix-user".to_string(), HashMap::new());
         let cases = [
-            ("empty list", vec![], None),
-            ("only a unix group", vec![group], None),
-            ("unix-user without a uid key", vec![no_uid], None),
-            ("one unix user", vec![unix_user_identity(1000)], Some(1000)),
-            ("several unix users", vec![unix_user_identity(1000), unix_user_identity(2000)], Some(1000)),
+            ("empty list", vec![], vec![]),
+            ("only a unix group", vec![group], vec![]),
+            ("unix-user without a uid key", vec![no_uid], vec![]),
+            ("one unix user", vec![unix_user_identity(1000)], vec![1000]),
+            ("several unix users", vec![unix_user_identity(2000), unix_user_identity(1000)], vec![2000, 1000]),
         ];
         for (case, identities, want) in cases {
-            assert_eq!(first_unix_user_uid(&identities), want, "{case}");
+            assert_eq!(unix_user_uids(&identities), want, "{case}");
         }
     }
 }

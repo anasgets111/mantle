@@ -8800,3 +8800,7 @@ The 30 s reply timeout runs only between an answer and PAM's next frame, since p
 
 Rejected: a `respond(text)` action for echo-on prompts, which puts the text in Lua and the
 action log; starting polkit's helper with the challenge.
+
+Amendment (#7): `identities` are polkit's `unix-user` entries as offered, since polkitd expands
+groups; the default is the session's uid when offered, else the first (GNOME, KDE). Switching ends
+a running helper, which costs an attempt only once it was answered.

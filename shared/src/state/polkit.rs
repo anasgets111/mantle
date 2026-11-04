@@ -15,6 +15,10 @@ pub struct PolkitState {
     pub action_id: String,
     /// Themed icon name, or empty when the caller set none.
     pub icon_name: String,
+    /// The accounts polkit accepts, as it offered them; groups arrive already expanded.
+    pub identities: Vec<PolkitIdentity>,
+    /// The uid the next helper authenticates: this session's user if offered, else the first.
+    pub identity: u32,
     /// The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
     pub prompt: Option<super::lock::PamPrompt>,
     /// The helper's info and error lines, as on `mantle.lock`.
@@ -24,4 +28,13 @@ pub struct PolkitState {
     pub authenticating: bool,
     /// Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
     pub error: String,
+}
+
+/// One account a polkit challenge accepts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct PolkitIdentity {
+    pub uid: u32,
+    /// Login name, or empty when the uid has no passwd entry.
+    pub name: String,
 }

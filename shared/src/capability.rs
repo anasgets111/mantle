@@ -180,7 +180,7 @@ impl Capability {
             Capability::Power => &["set_profile"],
             Capability::Sysinfo => &["configure"],
             Capability::Storage => &["open", "set"],
-            Capability::Polkit => &["cancel"],
+            Capability::Polkit => &["cancel", "select_identity"],
             Capability::Tray => {
                 &["activate", "context_menu", "secondary_activate", "scroll", "activate_menu_item", "menu_will_show"]
             }

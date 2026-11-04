@@ -379,6 +379,11 @@
 ---@field playlists PlaylistSummary[] At most 100 playlist entries.
 ---@field reverse boolean Whether the page is reversed.
 
+---@class PolkitIdentity
+---One account a polkit challenge accepts.
+---@field name string Login name, or empty when the uid has no passwd entry.
+---@field uid integer
+
 ---@class PrivacyUser
 ---One app using a camera, microphone or screen capture.
 ---@field app_name string PipeWire `application.name`, else `/proc/<pid>/comm`, else `"pid 1234"` (or `"node 56"`); never empty.
@@ -713,6 +718,8 @@
 ---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
 ---@field error string Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry.
 ---@field icon_name string Themed icon name, or empty when the caller set none.
+---@field identities PolkitIdentity[] The accounts polkit accepts, as it offered them; groups arrive already expanded.
+---@field identity integer The uid the next helper authenticates: this session's user if offered, else the first.
 ---@field message string The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with.
 ---@field messages PamNotice[] The helper's info and error lines, as on `mantle.lock`.
 ---@field prompt? PamPrompt The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
@@ -934,6 +941,7 @@ local PrivacyCapability = {}
 ---[docs](https://anasgets111.github.io/mantle/capabilities/polkit.html)
 ---@class PolkitCapability: Capability<PolkitState>, userdata
 ---@field cancel fun(self: PolkitCapability) Dismisses the prompt; the requesting program sees the request cancelled.
+---@field select_identity fun(self: PolkitCapability, uid: integer) Authenticates as `uid`, one of `identities`. Clears the prompt and error; the next submit starts PAM for it. After a submit it ends that conversation, which PAM may count as a failure.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/tray.html)
 ---@class TrayCapability: Capability<TrayState>, userdata

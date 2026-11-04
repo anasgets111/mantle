@@ -466,6 +466,9 @@ pub enum StorageAction {
 pub enum PolkitAction {
     /// Dismisses the prompt; the requesting program sees the request cancelled.
     Cancel,
+    /// Authenticates as `uid`, one of `identities`. Clears the prompt and error; the next submit
+    /// starts PAM for it. After a submit it ends that conversation, which PAM may count as a failure.
+    SelectIdentity { uid: u32 },
 }
 
 #[derive(Debug, serde::Deserialize)]

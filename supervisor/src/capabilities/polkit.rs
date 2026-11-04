@@ -4,23 +4,21 @@
 //! builds and pushes it because the bus callback, `secure_submit` frame, and PAM answer all land
 //! in that loop.
 
-pub use shared::state::polkit::PolkitState;
+pub use shared::state::polkit::{PolkitIdentity, PolkitState};
 
 use shared::{error, info, warn};
 use tokio::sync::oneshot;
 
 use crate::capabilities::conversation::{Dialogue, Heard, PamFields};
 use crate::pam_worker::Conversation;
-use crate::polkit::{AgentError, BeginAuthenticationCall, first_unix_user_uid};
+use crate::polkit::{AgentError, BeginAuthenticationCall, unix_user_uids};
 use shared::action::PolkitAction;
 
 /// polkitd's pending `BeginAuthentication` call and its completing reply.
 struct Pending {
-    /// Only the cookie outlives `begin`. The display fields move into [`PolkitState`] and the
-    /// identities are read for the uid and then dropped, so keeping the whole call would hold an
-    /// authentication request's message and subject resident for the life of the challenge.
+    /// Only the cookie outlives `begin`. The display fields and uids move into [`PolkitState`];
+    /// keeping the whole call would hold the request's details and subject for the challenge's life.
     cookie: String,
-    uid: u32,
     reply: oneshot::Sender<Result<(), AgentError>>,
     /// The helper's conversation, started by the first submit (ADR-0381).
     dialogue: Dialogue,
@@ -52,10 +50,16 @@ impl PolkitController {
     /// polkitd's `BeginAuthentication`, admitting one at a time. A second request is answered
     /// `Cancelled`, not queued or shown, because one password field cannot serve two callers; the
     /// refused caller retries or reports the failure. A request without `unix-user` is also
-    /// canceled; this agent takes the first identity
-    /// (ADR-0028 left a picker for later). Returns whether the request became state.
-    pub fn begin(&mut self, call: BeginAuthenticationCall, reply: oneshot::Sender<Result<(), AgentError>>) -> bool {
-        let Some(uid) = first_unix_user_uid(&call.identities) else {
+    /// canceled. `me` is this session's uid, the default identity when offered (ADR-0381).
+    /// Returns whether the request became state.
+    pub fn begin(
+        &mut self,
+        call: BeginAuthenticationCall,
+        reply: oneshot::Sender<Result<(), AgentError>>,
+        me: u32,
+    ) -> bool {
+        let uids = unix_user_uids(&call.identities);
+        let Some(&first) = uids.first() else {
             warn!("challenge {:?} carried no unix-user identity; cancelling it", call.cookie);
             let _ = reply.send(Err(AgentError::Cancelled));
             return false;
@@ -70,9 +74,16 @@ impl PolkitController {
             message: call.message,
             action_id: call.action_id,
             icon_name: call.icon_name,
+            identity: if uids.contains(&me) { me } else { first },
+            // ponytail: `getpwuid_r` inline, fast for local passwd; `spawn_blocking` if a
+            // networked NSS backend appears.
+            identities: uids
+                .into_iter()
+                .map(|uid| PolkitIdentity { uid, name: crate::pam_worker::username_for(uid).unwrap_or_default() })
+                .collect(),
             ..PolkitState::default()
         };
-        self.pending = Some(Pending { cookie: call.cookie, uid, reply, dialogue: Dialogue::default() });
+        self.pending = Some(Pending { cookie: call.cookie, reply, dialogue: Dialogue::default() });
         true
     }
 
@@ -96,8 +107,26 @@ impl PolkitController {
         start: impl FnOnce(u64, u32, String) -> Conversation,
     ) -> bool {
         let Some(pending) = self.pending.as_mut() else { return false };
-        let (uid, cookie) = (pending.uid, pending.cookie.clone());
+        let (uid, cookie) = (self.state.identity, pending.cookie.clone());
         pending.dialogue.submit(&mut self.state, secret, |serial| start(serial, uid, cookie))
+    }
+
+    /// Authenticates as `uid` from now on (#7). Ends a running helper, whose late verdict is then
+    /// stale, and clears its prompt, lines, error and held answer; the next submit starts one for
+    /// `uid`. Not an attempt. Returns whether state changed.
+    pub fn select_identity(&mut self, uid: u32) -> bool {
+        let Some(pending) = self.pending.as_mut() else { return false };
+        if uid == self.state.identity {
+            return false;
+        }
+        if !self.state.identities.iter().any(|identity| identity.uid == uid) {
+            warn!("select_identity({uid}) names no identity challenge {:?} offered; ignoring it", pending.cookie);
+            return false;
+        }
+        pending.dialogue.stop(&mut self.state);
+        self.state.identity = uid;
+        self.state.error.clear();
+        true
     }
 
     /// Applies one frame of the helper's conversation `serial`. Success returns the reply that
@@ -135,6 +164,7 @@ pub fn dispatch(controller: &mut PolkitController, envelope: &shared::CommandEnv
     let Some(action) = crate::parse_action::<PolkitAction>(&envelope.params) else { return false };
     match action {
         PolkitAction::Cancel => controller.cancel(None),
+        PolkitAction::SelectIdentity { uid } => controller.select_identity(uid),
     }
 }
 
@@ -147,21 +177,79 @@ mod tests {
     use super::*;
 
     fn challenge(cookie: &str) -> BeginAuthenticationCall {
-        let uid = HashMap::from([("uid".to_string(), OwnedValue::try_from(Value::from(1000u32)).unwrap())]);
+        offering(cookie, &[1000])
+    }
+
+    fn offering(cookie: &str, uids: &[u32]) -> BeginAuthenticationCall {
+        let user = |uid: u32| HashMap::from([("uid".to_string(), OwnedValue::try_from(Value::from(uid)).unwrap())]);
         BeginAuthenticationCall {
             action_id: "org.test.act".into(),
             message: "Authenticate to test".into(),
             icon_name: "dialog-password".into(),
             details: HashMap::new(),
             cookie: cookie.into(),
-            identities: vec![("unix-user".to_string(), uid)],
+            identities: uids.iter().map(|&uid| ("unix-user".to_string(), user(uid))).collect(),
         }
     }
 
     fn begun(controller: &mut PolkitController, cookie: &str) -> oneshot::Receiver<Result<(), AgentError>> {
         let (reply, answer) = oneshot::channel();
-        controller.begin(challenge(cookie), reply);
+        controller.begin(challenge(cookie), reply, 1000);
         answer
+    }
+
+    #[test]
+    fn the_session_user_is_the_default_identity_else_the_first_offered() {
+        for (me, want) in [(2000, 2000), (3000, 0)] {
+            let mut c = PolkitController::default();
+            c.begin(offering("a", &[0, 2000]), oneshot::channel().0, me);
+            let state = c.snapshot();
+            assert_eq!(state.identity, want, "session uid {me}");
+            assert_eq!(state.identities.iter().map(|i| i.uid).collect::<Vec<_>>(), [0, 2000], "as offered");
+            assert_eq!(state.identities[0].name, "root");
+        }
+    }
+
+    /// Switching ends the running helper and starts nothing; the next submit runs as the new uid,
+    /// and the old helper's late verdict is dropped.
+    #[test]
+    fn selecting_an_identity_restarts_for_it_and_drops_the_old_helper() {
+        let mut c = PolkitController::default();
+        let _answer = {
+            let (reply, answer) = oneshot::channel();
+            c.begin(offering("a", &[1000, 2000]), reply, 1000);
+            answer
+        };
+        let select = |uid: u32| shared::CommandEnvelope {
+            params: shared::CommandParams {
+                generation_id: 0,
+                capability: "polkit".into(),
+                action: "select_identity".into(),
+                arguments: vec![uid.into()],
+                legacy_expected_revision: 0,
+            },
+            id: 1,
+        };
+        assert!(!dispatch(&mut c, &select(1000)), "already the identity");
+        assert!(!c.select_identity(4000), "not offered");
+        let mut old = None;
+        assert!(submit(&mut c, &mut old));
+        let old = old.unwrap();
+        let prompt = shared::PamMessage::Prompt { text: "Code:".into(), echo: true };
+        assert!(matches!(c.hear(old, prompt), Answer::Changed));
+        assert!(c.snapshot().prompt.is_some());
+
+        assert!(dispatch(&mut c, &select(2000)));
+        let state = c.snapshot();
+        assert_eq!((state.identity, state.prompt, state.authenticating), (2000, None, false));
+        let late = shared::PamMessage::Outcome(shared::PamOutcome::Success);
+        assert!(matches!(c.hear(old, late), Answer::Stale));
+        let mut started = None;
+        c.submit(shared::Zeroizing::new(b"x".to_vec()), |serial, uid, _| {
+            started = Some((serial, uid));
+            Conversation::detached().0
+        });
+        assert!(started.is_some_and(|(serial, uid)| serial != old && uid == 2000));
     }
 
     #[test]

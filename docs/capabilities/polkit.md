@@ -54,6 +54,8 @@ column {
 | `authenticating` | `boolean` | An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true. |
 | `error` | `string` | Drawable reason for the last failure, e.g. `"authentication failed"`. The prompt stays open to retry. |
 | `icon_name` | `string` | Themed icon name, or empty when the caller set none. |
+| `identities` | `PolkitIdentity[]` | The accounts polkit accepts, as it offered them; groups arrive already expanded. |
+| `identity` | `integer` | The uid the next helper authenticates: this session's user if offered, else the first. |
 | `message` | `string` | The action's prompt, e.g. `"Authentication is required to ..."`, in `en_US`: the locale the agent registers with. |
 | `messages` | `PamNotice[]` | The helper's info and error lines, as on `mantle.lock`. |
 | `prompt?` | `PamPrompt` | The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it. |
@@ -83,6 +85,15 @@ A question a PAM module asked.
 | `id` | `integer` | Unique for this session, so two identical prompts in a row still differ. |
 | `text` | `string` | PAM's own text, e.g. `"Password: "` or `"Verification code:"`. |
 
+### `PolkitIdentity`
+
+One account a polkit challenge accepts.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Login name, or empty when the uid has no passwd entry. |
+| `uid` | `integer` |  |
+
 ## Actions
 
 Call each as `mantle.polkit:<action>(arguments...)`; `?` marks an argument you may omit.
@@ -90,6 +101,7 @@ Call each as `mantle.polkit:<action>(arguments...)`; `?` marks an argument you m
 | Action | Arguments | Description |
 | --- | --- | --- |
 | `cancel` |  | Dismisses the prompt; the requesting program sees the request cancelled. |
+| `select_identity` | `uid: integer` | Authenticates as `uid`, one of `identities`. Clears the prompt and error; the next submit starts PAM for it. After a submit it ends that conversation, which PAM may count as a failure. |
 
 ## Backend
 
@@ -107,6 +119,7 @@ off until polkitd restarts. polkitd accepts an answer only from uid 0, so the
 | A second program's prompt never shows | One request at a time: a request arriving while another is on screen is cancelled, and its program sees the cancel. Finish or `cancel` the first |
 | Prompts go to another agent | polkit-gnome, hyprpolkitagent or similar registered first. Stop it and restart Mantle |
 | The prompt stays open after a wrong password | By design: `error` says why, and the next submit starts a new helper |
+| Another admin should authenticate | List `identities` and call `select_identity(uid)` from a click. The default is your own account when polkit offers it. Switching after a submit ends that attempt, which PAM may count |
 | `prompt` is `nil` before anything is typed | polkit's helper starts on the first submit, because closing a helper that waits on a prompt counts as a failed attempt |
 
 See also: [secure fields](../guide/input.md#secure-fields); [FAQ](../guide/faq.md#capabilities) for prompts that never appear.
