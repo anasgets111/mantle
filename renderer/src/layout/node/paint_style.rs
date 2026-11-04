@@ -230,6 +230,8 @@ pub enum PaintStyle {
         target: Option<SecureSubmitTarget>,
         placeholder: String,
         mask: String,
+        /// `false` draws the typed text of a `secure_submit` field (`textfield.masked`).
+        masked: bool,
         face: Typeface,
         color: Rgba,
         /// `color` unless `placeholder_color` is set.
@@ -383,6 +385,7 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
                 placeholder: textfield::placeholder.read(properties)?,
                 // Drawn once per typed character: `""` draws nothing, a longer string its first one.
                 mask: textfield::mask_character.read(properties)?.chars().next().map(String::from).unwrap_or_default(),
+                masked: textfield::masked.read(properties)?,
                 face,
                 color,
                 placeholder_color: textfield::placeholder_color.read(properties)?.unwrap_or(color),

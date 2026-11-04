@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `masked = false` on a `secure_submit` textfield draws what is typed instead of the mask. Turning it off wipes what was typed under the mask.
+
 ## 0.11.2 - 2026-10-29
 
 - Added: Animated WebP and APNG images (`.apng` files too) now play and loop in `image` nodes, like GIFs, and `playing` pauses them. Masks and a shader's `images` still draw the first frame. `source_blur` is ignored on them, as on GIFs. Still WebP and PNG files draw as before.

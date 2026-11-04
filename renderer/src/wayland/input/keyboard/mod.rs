@@ -469,13 +469,15 @@ impl App {
     }
 
     /// Focus for `surface_id` in `layout::paint::FieldFocus` form. Keep masked `{ capability,
-    /// action }` routing here; paint receives only its filled count, never secret bytes.
+    /// action }` routing here; paint receives only its filled count, and the text only while the
+    /// field is `masked = false`.
     pub(in crate::wayland) fn field_focus_for(&self, surface_id: &str) -> Option<layout::paint::FieldFocus<'_>> {
         if let Some(focused) = self.focused_secure_submit.as_ref().filter(|f| f.surface_id == surface_id) {
             return Some(layout::paint::FieldFocus::Masked {
                 id: focused.id,
                 target: &focused.target,
                 filled: focused.buffer.grapheme_count(),
+                revealed: focused.revealed.then(|| std::str::from_utf8(focused.buffer.expose_secret()).ok()).flatten(),
             });
         }
         let focused = self.focused_text_field.as_ref().filter(|f| f.surface_id == surface_id)?;

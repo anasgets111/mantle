@@ -589,6 +589,7 @@ pub(crate) mod tests {
         PaintStyle::TextField {
             target: None,
             placeholder: placeholder.to_string(),
+            masked: true,
             mask: "*".to_string(),
             caret: crate::layout::node::CaretStyle::plain(face.font_size, white),
             face,

@@ -35,6 +35,8 @@ pub enum FieldFocus<'a> {
         target: &'a node::SecureSubmitTarget,
         /// `shared::SecureBuffer::grapheme_count`.
         filled: usize,
+        /// The typed text, only while the field is `masked = false`; drawn instead of the mask.
+        revealed: Option<&'a str>,
     },
     Plain {
         /// Focused node, stable across movement, resizing, and inserted siblings.
@@ -529,6 +531,7 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
             placeholder_color,
             caret: bar,
             mask,
+            masked,
             face,
             color,
             align,
@@ -541,12 +544,20 @@ fn draw_for(node: &ResolvedNode, rect: LogicalRect, scale: f32, opacity: f32, fo
                 .iter()
                 .find_map(|field| match field {
                     // An empty masked field remains a prompt.
-                    FieldFocus::Masked { id, target: focused, filled }
+                    FieldFocus::Masked { id, target: focused, filled, revealed }
                         if *filled > 0
                             && *id == node_id
                             && target.as_ref().is_some_and(|declared| declared == *focused) =>
                     {
-                        Some((mask.repeat(*filled), None, false, Vec::new(), false))
+                        // ponytail: revealed text is ordinary display text (PAM's `echo` says it may be
+                        // seen), so it is copied into this list, the shaping caches and the frame unscrubbed;
+                        // only masked input is kept out (ADR-0005). Upgrade: a zeroizing draw if that changes.
+                        // Revealed text scrolls to its end, where typing lands, with the bar still hidden.
+                        let (content, scroll_end) = match revealed {
+                            Some(text) if !*masked => (text.to_string(), Some((text.len(), text.len()))),
+                            _ => (mask.repeat(*filled), None),
+                        };
+                        Some((content, scroll_end, false, Vec::new(), false))
                     }
                     // Empty focused fields show the placeholder rather than a bare caret (ADR-0135):
                     // the caret-only rule hid the prompt of every `autofocus` field, which holds the
@@ -1465,7 +1476,7 @@ mod tests {
         assert_eq!(drawn_text(&list), vec!["half a sentence".to_string()]);
         // A password being typed elsewhere in the form must not hide it.
         let target = lock_target();
-        let typing = FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 4 };
+        let typing = FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 4, revealed: None };
         assert_eq!(drawn_text(&build_with_control(&tree, 1.0, &[typing, draft], None)), vec!["half a sentence"]);
     }
 
@@ -1641,10 +1652,13 @@ mod tests {
         for (what, focus) in [
             ("a plain focus", Some(FieldFocus::Plain { id, text: "hunter2", caret: Some((0, 0)), caret_on: true })),
             ("no focus", None),
-            ("an empty count", Some(FieldFocus::Masked { id, target: &target, filled: 0 })),
-            ("another node", Some(FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9 })),
+            ("an empty count", Some(FieldFocus::Masked { id, target: &target, filled: 0, revealed: None })),
+            (
+                "another node",
+                Some(FieldFocus::Masked { id: NodeId::test(999), target: &target, filled: 9, revealed: None }),
+            ),
             // A PSK's length must not leak onto the lock screen's field.
-            ("another capability", Some(FieldFocus::Masked { id, target: &elsewhere, filled: 9 })),
+            ("another capability", Some(FieldFocus::Masked { id, target: &elsewhere, filled: 9, revealed: None })),
         ] {
             assert_eq!(drawn_text(&build(&tree, 1.0, focus.as_ref())), vec!["password".to_string()], "{what}");
         }
@@ -1658,12 +1672,47 @@ mod tests {
         let lua = Lua::new();
         let target = lock_target();
         let tree = password_surface(&lua);
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 6 }));
+        let list = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 6, revealed: None }),
+        );
         let drawn = drawn_text(&list);
         assert_eq!(drawn, vec!["******".to_string()]);
         // Typing changes the list, or `paint_surface` skips the repaint and the dots never appear.
-        let five = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 5 }));
+        let five = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 5, revealed: None }),
+        );
         assert_ne!(list, five);
+    }
+
+    /// `masked = false` draws the text, but only when the node itself says so: a revealed focus on a
+    /// masked node still draws the mask.
+    #[test]
+    fn an_unmasked_secure_field_draws_its_text_and_a_masked_one_never_does() {
+        let lua = Lua::new();
+        let target = lock_target();
+        let focus = |tree: &ResolvedNode| FieldFocus::Masked {
+            id: tree.children[0].id,
+            target: &target,
+            filled: 6,
+            revealed: Some("123456"),
+        };
+        let masked = password_surface(&lua);
+        assert_eq!(drawn_text(&build(&masked, 1.0, Some(&focus(&masked)))), vec!["******".to_string()]);
+        let src = r##"return panel { id = "bar", width = 200, height = 40,
+            child = textfield { width = "fill", height = 28, masked = false,
+                secure_submit = { capability = "lock", action = "authenticate" } } }"##;
+        let shown = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let list = build(&shown, 1.0, Some(&focus(&shown)));
+        assert_eq!(drawn_text(&list), vec!["123456".to_string()]);
+        let scroll = list.commands.iter().find_map(|c| match c.draw {
+            Draw::Text { caret, caret_on, .. } => Some((caret, caret_on)),
+            _ => None,
+        });
+        assert_eq!(scroll, Some((Some((6, 6)), false)), "a long answer scrolls to its end, with no bar drawn");
     }
 
     /// The dots are shaped in the field's own typeface, and no caret position is ever derived from them.
@@ -1675,7 +1724,11 @@ mod tests {
                 secure_submit = { capability = "lock", action = "authenticate" } } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
         let target = lock_target();
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
+        let list = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3, revealed: None }),
+        );
         let Some(Draw::Text { face, caret, .. }) =
             list.commands.iter().map(|cmd| &cmd.draw).find(|d| matches!(d, Draw::Text { .. }))
         else {
@@ -1692,7 +1745,11 @@ mod tests {
             child = textfield { width = "fill", height = 28,
                 secure_submit = { capability = "lock", action = "authenticate" } } }"##;
         let tree = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
-        let list = build(&tree, 1.0, Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3 }));
+        let list = build(
+            &tree,
+            1.0,
+            Some(&FieldFocus::Masked { id: tree.children[0].id, target: &target, filled: 3, revealed: None }),
+        );
         assert_eq!(drawn_text(&list), vec!["\u{2022}\u{2022}\u{2022}".to_string()]);
     }
 

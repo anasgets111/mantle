@@ -154,6 +154,14 @@ pub(in crate::wayland) fn secure_target_at(
     }
 }
 
+/// The node's `masked`; a node that is gone or not a textfield counts as masked.
+pub(in crate::wayland) fn secure_field_masked(root: &layout::ResolvedNode, id: layout::scene::NodeId) -> bool {
+    match find(root, id).and_then(|(node, _)| node.paint.as_ref()) {
+        Some(node::PaintStyle::TextField { masked, .. }) => *masked,
+        _ => true,
+    }
+}
+
 fn secure_focus_accepts_keys(control: Option<&FocusedControl>, field: Option<&FocusedField>) -> bool {
     let Some(field) = field else { return false };
     let Some(control) = control else { return true };
@@ -601,6 +609,21 @@ mod tests {
     };
     use crate::wayland::input::tests::hit_node;
 
+    /// Only a field that says `masked = false` is unmasked; a missing or non-field node never is.
+    #[test]
+    fn a_secure_field_is_masked_unless_it_says_otherwise() {
+        let lua = Lua::new();
+        let masked = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let shown = textfield(&lua, Some(secure_submit_table(&lua, "lock", "authenticate")));
+        let shown = with_property(shown, "masked", Value::Boolean(false));
+        let root = tree_with(&lua, vec![masked, shown]);
+        let fields = &root.children[1].children;
+        assert!(secure_field_masked(&root, fields[0].id));
+        assert!(!secure_field_masked(&root, fields[1].id));
+        assert!(secure_field_masked(&root, root.children[0].id), "a label is no field");
+        assert!(secure_field_masked(&root, layout::scene::NodeId::test(999_999)), "a gone node stays masked");
+    }
+
     fn autofocus_textfield(lua: &Lua) -> layout::ResolvedNode {
         let mut node = plain_textfield(lua);
         std::rc::Rc::make_mut(&mut node.properties).insert("autofocus", Value::Boolean(true));
@@ -922,7 +945,7 @@ mod tests {
         assert!(secure_focus_accepts_keys(None, Some(&field)), "sole secure field auto-arms");
         let mut buffer = shared::SecureBuffer::new();
         buffer.push_str("secret");
-        let mut held = Some(SecureFocus { field: field.clone(), buffer });
+        let mut held = Some(SecureFocus { field: field.clone(), buffer, revealed: false });
         super::secure::retarget_secure_submit(&mut held, Some(field));
         assert_eq!(held.as_ref().unwrap().buffer.expose_secret(), b"secret", "button focus keeps the pending submit");
         super::secure::retarget_secure_submit(&mut held, Some(second_field));

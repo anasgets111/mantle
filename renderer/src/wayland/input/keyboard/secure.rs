@@ -59,6 +59,8 @@ fn submit_frame_for(
 pub(in crate::wayland) struct SecureFocus {
     pub(super) field: FocusedField,
     pub(super) buffer: shared::SecureBuffer,
+    /// The field is `masked = false`, so paint may draw `buffer` (see [`follow_mask`]).
+    pub(super) revealed: bool,
 }
 
 impl std::ops::Deref for SecureFocus {
@@ -74,8 +76,21 @@ impl std::ops::Deref for SecureFocus {
 /// Free for unit-testing without Wayland, as with [`secure_submit_frame`].
 pub(super) fn retarget_secure_submit(focused: &mut Option<SecureFocus>, next: Option<FocusedField>) {
     if focused.as_deref() != next.as_ref() {
-        *focused = next.map(|field| SecureFocus { field, buffer: shared::SecureBuffer::new() });
+        *focused = next.map(|field| SecureFocus { field, buffer: shared::SecureBuffer::new(), revealed: false });
     }
+}
+
+/// Follows the field's `masked`; returns whether that changed. Unmasking scrubs the buffer, so a
+/// password typed before an echo-on prompt arrived is never drawn when the prompt unmasks the field.
+fn follow_mask(focus: &mut SecureFocus, masked: bool) -> bool {
+    if focus.revealed != masked {
+        return false;
+    }
+    if !masked {
+        focus.buffer.zeroize();
+    }
+    focus.revealed = !masked;
+    true
 }
 
 /// Reconcile secure focus on keyboard enter from the scoped trees. Empty/untracked scopes and
@@ -151,7 +166,25 @@ impl App {
             self.mark_field_input_changed(&next_field.surface_id);
         }
         retarget_secure_submit(&mut self.focused_secure_submit, next);
+        self.follow_secure_mask();
         self.invalidate_text_input_focus();
+    }
+
+    /// Applies the focused field's current `masked` through [`follow_mask`].
+    fn follow_secure_mask(&mut self) {
+        let Some(field) = self.focused_secure_submit.as_ref() else {
+            return;
+        };
+        let masked = self
+            .client
+            .scene()
+            .surface(&field.surface_id)
+            .is_none_or(|tree| super::focus::secure_field_masked(tree, field.id));
+        if let Some(focus) = self.focused_secure_submit.as_mut()
+            && follow_mask(focus, masked)
+        {
+            self.mark_focused_secure_submit_changed();
+        }
     }
 
     /// Ask [`focus_on_enter`] over scoped trees; called both on `enter` and when trees change under
@@ -216,6 +249,7 @@ impl App {
         if stale {
             self.focus_secure_submit(None);
         }
+        self.follow_secure_mask();
     }
 
     /// Poll-turn cleanup for a destroyed surface. Only liveness is checked here: checking routing
@@ -385,7 +419,23 @@ mod tests {
     fn typed_into(field: FocusedField, text: &str) -> Option<SecureFocus> {
         let mut buffer = shared::SecureBuffer::new();
         buffer.push_str(text);
-        Some(SecureFocus { field, buffer })
+        Some(SecureFocus { field, buffer, revealed: false })
+    }
+
+    /// A password typed under the mask before an echo-on prompt arrived must not be drawn when that
+    /// prompt unmasks the field; text typed while unmasked survives masking again.
+    #[test]
+    fn unmasking_scrubs_what_was_typed_under_the_mask() {
+        let mut focus = typed_into(field("screen@TEST", "lock", "authenticate"), "hunter2").unwrap();
+        assert!(!follow_mask(&mut focus, true), "a masked field stays as it was");
+        assert_eq!(focus.buffer.expose_secret(), b"hunter2");
+        assert!(follow_mask(&mut focus, false));
+        assert!(focus.revealed && focus.buffer.is_empty());
+        focus.buffer.push_str("123456");
+        assert!(!follow_mask(&mut focus, false), "staying unmasked keeps the code being typed");
+        assert!(follow_mask(&mut focus, true));
+        assert!(!focus.revealed);
+        assert_eq!(focus.buffer.expose_secret(), b"123456");
     }
 
     #[test]

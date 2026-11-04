@@ -691,6 +691,7 @@ secret or its length.
 | Priority | While a secure field is armed, plain fields in the same focus take no keys |
 | `on_escape` | A surface's `on_escape` fires when the buffer is empty and the field has no `on_cancel`, so it reveals that one bit (ADR-0320) |
 | `mask_character` | Drawn once per typed character. Default `"•"`; only the first character counts; `""` draws nothing and hides the length. Only secure fields draw it. An empty field shows its `placeholder` |
+| `masked` | `false` draws the typed text instead of the mask, for a PAM prompt meant to be seen (`prompt.echo`). Keys, sending and the no-IME rule stay the same, and the text still never reaches Lua. Turning it off wipes what was typed under the mask, so a password typed early is never shown |
 
 ```lua
 return lock {
