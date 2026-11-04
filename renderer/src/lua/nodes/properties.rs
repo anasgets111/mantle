@@ -623,6 +623,8 @@ props! {
         secure_submit: Bound<SecureSubmitTarget>;
         /// Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length.
         mask_character: Bound<Text> = absent(Lua(r#""•""#));
+        /// `false` draws a `secure_submit` field's typed text instead of the mask, for a prompt PAM shows (`prompt.echo`). Still no IME, caret or selection, and the text never reaches Lua. Turning it off scrubs what was typed under the mask. Ignored without `secure_submit`.
+        masked: Bound<Flag> = absent(Bool(true));
     }
     mod surface(SURFACES) {
         /// The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id`.

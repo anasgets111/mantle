@@ -96,6 +96,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 | `on_cancel` | `fun(cleared: boolean)` | None | Escape; `cleared` says whether it removed text. A plain field clears (firing `on_change("")` only if there was text), gives up focus, then calls this. A `secure_submit` field scrubs and stays armed. Without it Escape clears and keeps focus |
 | `secure_submit` | `{ capability: string, action: string, name?: string }\|Bound` | None | Makes the field masked; bytes never reach Lua. Targets: `lock`/`authenticate`, `polkit`/`authenticate`, `network`/`connect`, `network`/`vpn_secret` with a request id and key in `name`, `secrets`/`store` with a public `name`, or `bluetooth`/`pair` with a request id and MAC in `name` ([secure fields](../guide/input.md#secure-fields)) |
 | `mask_character` | `string\|Bound` | `"•"` | Drawn per typed character in a `secure_submit` field. Only the first character counts; `""` hides the length |
+| `masked` | `boolean\|Bound` | `true` | `false` draws a `secure_submit` field's typed text instead of the mask, for a prompt PAM shows (`prompt.echo`). Still no IME, caret or selection, and the text never reaches Lua. Turning it off scrubs what was typed under the mask. Ignored without `secure_submit` |
 <!-- End of the generated table. -->
 
 The field has no intrinsic width, so give it `width`; without `height` it is one line tall
