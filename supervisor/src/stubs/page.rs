@@ -63,7 +63,10 @@ pub(super) fn render_page(capability: &str, payload: &Schema, actions: Option<&S
         out.push_str(&format!("\n{outro}\n"));
     }
     let module = format!("supervisor/src/capabilities/{capability}");
-    let source = if std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(&module).is_dir() {
+    let source = if capability == "audio_levels" {
+        // The audio mixer's thread runs the meters; the capability has no module of its own.
+        "supervisor/src/capabilities/audio/mixer/meters.rs".to_string()
+    } else if std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join(&module).is_dir() {
         format!("{module}/")
     } else {
         format!("{module}.rs")

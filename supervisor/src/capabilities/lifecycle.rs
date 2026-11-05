@@ -514,15 +514,17 @@ impl Capabilities {
                     self.secrets = Some(SecretsController::new(self.senders.secrets.clone()));
                 }
             }
+            // Pushes nothing until `audio:set_level_meters` names a device.
+            Capability::AudioLevels => self.ensure_mixer_thread(),
             Capability::Lock | Capability::Polkit => {}
         }
     }
 
-    /// Starts the PipeWire mixer once for whichever of `audio`/`privacy` asks first.
+    /// Starts the PipeWire mixer once for whichever of `audio`, `audio_levels` or `privacy` asks first.
     fn ensure_mixer_thread(&mut self) {
         let Some(privacy_tx) = self.privacy_tx.take() else { return };
-        let audio_tx = self.senders.audio.clone();
-        self.audio = Some(audio::Audio::start(audio_tx, privacy_tx));
+        let (audio_tx, levels_tx) = (self.senders.audio.clone(), self.senders.audio_levels.clone());
+        self.audio = Some(audio::Audio::start(audio_tx, privacy_tx, levels_tx));
     }
 
     /// Pushes one received [`Signal`] from the winning `select!` arm.
@@ -548,6 +550,7 @@ impl Capabilities {
         match signal {
             Signal::AndroidConnect => push_held!(AndroidConnect, self.android_connect),
             Signal::Audio(state) => push!(Capability::Audio, &state),
+            Signal::AudioLevels(state) => push!(Capability::AudioLevels, &state),
             Signal::Network(state) => push!(Capability::Network, &state),
             Signal::Bluetooth(state) => push!(Capability::Bluetooth, &state),
             // No debounce: `snapshot` already reads recomputed data (ADR-0031).
@@ -627,7 +630,11 @@ impl Capabilities {
             // beside the state push that cancel handling needs.
             Capability::Polkit => {}
             // Read-only: no action enum; a named command is malformed Renderer input.
-            Capability::Appearance | Capability::Battery | Capability::Privacy | Capability::Secrets => {
+            Capability::Appearance
+            | Capability::AudioLevels
+            | Capability::Battery
+            | Capability::Privacy
+            | Capability::Secrets => {
                 debug!(
                     "{capability}: read-only capability received a command from generation {}; dropping",
                     envelope.params.generation_id

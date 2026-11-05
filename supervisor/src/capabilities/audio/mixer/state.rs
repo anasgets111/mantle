@@ -32,7 +32,7 @@ pub struct PrivacySources {
 /// proxies are `!Send`; `pipewire::channel` gives the loop an eventfd, so commands apply between
 /// PipeWire events. Array ids resolve against live maps; stale ids are logged and dropped because
 /// PipeWire recycles them. Volumes are linear fractions. `SetNullSinks` replaces the declared null
-/// sinks (ADR-0383).
+/// sinks (ADR-0383); `SetLevelMeters` the metered sinks and sources.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     SetVolume { id: u32, volume: f32 },
@@ -48,6 +48,7 @@ pub enum AudioCommand {
     SetCardProfile { device: u32, index: i32 },
     SetPort { card: u32, index: i32 },
     SetNullSinks(Vec<shared::action::VirtualDevice>),
+    SetLevelMeters(Vec<u32>),
 }
 
 /// Listener-owned state and snapshot channels. Held for the thread lifetime. `sink_*`/`metadata*`
@@ -100,6 +101,8 @@ pub(super) struct MixerState {
     pub(super) app_pins: HashMap<u32, String>,
     /// `node.name` -> a declared null sink and the `adapter` proxy this connection created for it.
     pub(super) null_sinks: HashMap<String, (shared::action::VirtualDevice, pw::node::Node)>,
+    /// Metered sink or source id -> its capture stream.
+    pub(super) meters: HashMap<u32, super::meters::Meter>,
 }
 
 impl MixerState {
@@ -130,6 +133,7 @@ impl MixerState {
             metadata_id: None,
             app_pins: HashMap::new(),
             null_sinks: HashMap::new(),
+            meters: HashMap::new(),
         }
     }
 
@@ -142,6 +146,7 @@ impl MixerState {
         self.devices.clear();
         self.metadata = None;
         self.null_sinks.clear();
+        self.meters.clear();
     }
 
     /// Entry map for one direction, shared by binding and writing.
@@ -195,6 +200,7 @@ impl MixerState {
         audio |= self.cards.remove(&id).is_some();
         audio |= self.apps.remove(&id).is_some();
         self.app_pins.remove(&id);
+        self.meters.remove(&id);
         // ALSA and BlueZ devices both record routes; drop this id's so a reused id inherits none.
         let routes = self.device_routes.len();
         self.device_routes.retain(|&(device_id, _), _| device_id != id);

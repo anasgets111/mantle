@@ -20,16 +20,17 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
 use crate::capabilities::audio::{master, profile, route, virtual_devices};
+use shared::state::audio_levels::AudioLevelsState;
 
 use super::PropsLookup;
 use super::devices::{Card, DeviceEntry, DeviceRoute, device_names};
-use super::null_sinks;
 use super::state::{
     AudioCommand, AudioState, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState,
     PrivacySources, TARGET_OBJECT_KEY,
 };
 use super::streams::{NodeKind, apply_capture_info_event, apply_info_event, classify, prop_u32};
 use super::write::{apply_command, cap_default_sink};
+use super::{meters, null_sinks};
 
 /// Runs the listener until process exit. Sends [`AudioState`] on every relevant
 /// node-added/-properties-changed/-removed/param-changed event, and [`PrivacySources`] on the
@@ -48,10 +49,11 @@ use super::write::{apply_command, cap_default_sink};
 pub fn run(
     updates: UnboundedSender<AudioState>,
     privacy_updates: watch::Sender<PrivacySources>,
+    level_updates: UnboundedSender<AudioLevelsState>,
     commands: AudioCommandReceiver,
     virtual_devices: UnboundedSender<virtual_devices::Request>,
 ) {
-    reconnect(None, &updates, &privacy_updates, commands, &virtual_devices);
+    reconnect(None, &updates, &privacy_updates, &level_updates, commands, &virtual_devices);
 }
 
 /// The declared null sinks, outliving each connection so the next one creates them again.
@@ -62,6 +64,7 @@ fn reconnect(
     remote: Option<&str>,
     updates: &UnboundedSender<AudioState>,
     privacy_updates: &watch::Sender<PrivacySources>,
+    level_updates: &UnboundedSender<AudioLevelsState>,
     commands: AudioCommandReceiver,
     virtual_devices: &UnboundedSender<virtual_devices::Request>,
 ) {
@@ -70,9 +73,10 @@ fn reconnect(
     let (mut delay, mut lost) = (RETRY_FIRST, false);
     loop {
         let started = std::time::Instant::now();
+        let levels = Rc::new(RefCell::new(meters::Levels::new(level_updates.clone())));
         // The virtual devices' child outlives a lost daemon with none of its modules.
         let restart = lost.then(|| virtual_devices.clone());
-        match run_inner(remote, updates, privacy_updates, &mut commands, &null_sinks, restart) {
+        match run_inner(remote, updates, privacy_updates, &mut commands, &null_sinks, &levels, restart) {
             Ok(true) => {
                 lost = true;
                 warn!("lost the PipeWire connection; reconnecting");
@@ -107,6 +111,7 @@ fn run_inner(
     privacy_updates: &watch::Sender<PrivacySources>,
     commands: &mut Option<AudioCommandReceiver>,
     declared: &NullSinks,
+    levels: &Rc<RefCell<meters::Levels>>,
     restart: Option<UnboundedSender<virtual_devices::Request>>,
 ) -> Result<bool, pw::Error> {
     pw::init();
@@ -240,6 +245,7 @@ fn run_inner(
     // every later command is silently discarded.
     null_sinks::sync(&state, &core, &declared.borrow());
     let (state_for_command, core_for_command, declared) = (Rc::clone(&state), core.clone(), Rc::clone(declared));
+    let levels = Rc::clone(levels);
     let Some(receiver) = commands.take() else { return Ok(false) };
     let attached = receiver.attach(main_loop.loop_(), move |command| {
         // Names, not ids: applied before hydration too.
@@ -250,6 +256,9 @@ fn run_inner(
         // Sent before this connection's first snapshot, as during an outage: its ids name nothing live.
         if !state_for_command.borrow().hydrated {
             return debug!("dropped {command:?}: PipeWire has not answered yet");
+        }
+        if let AudioCommand::SetLevelMeters(ids) = command {
+            return meters::sync(&state_for_command, &core_for_command, &levels, &ids);
         }
         apply_command(&state_for_command, command)
     });
@@ -734,23 +743,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_route_change_asks_only_the_route_and_a_profile_change_the_card_params() {
-        use pw::spa::param::ParamType;
-        let raw = |param: ParamType| param.as_raw();
-        let mut seen = HashMap::new();
-        let all =
-            [raw(ParamType::EnumProfile), raw(ParamType::EnumRoute), raw(ParamType::Profile), raw(ParamType::Route)];
-        let info = |flipped: &[u32]| all.map(|id| (id, if flipped.contains(&id) { 0b11 } else { 0b10 }));
-        let card = vec![ParamType::EnumProfile, ParamType::EnumRoute, ParamType::Profile];
-
-        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [card.clone(), vec![ParamType::Route]].concat());
-        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [], "nothing changed");
-        assert_eq!(params_to_ask(&mut seen, info(&[raw(ParamType::Route)]).into_iter()), [ParamType::Route]);
-        let profile = [raw(ParamType::Route), raw(ParamType::Profile)];
-        assert_eq!(params_to_ask(&mut seen, info(&profile).into_iter()), card, "the route's flag is unchanged");
-    }
-
     /// The ids and `node.name`s of the `class` nodes `pw-dump` lists on the private daemon at `dir`.
     fn nodes(dir: &std::path::Path, class: &str) -> Vec<(u64, String)> {
         let output = Command::new("pw-dump").env("PIPEWIRE_RUNTIME_DIR", dir).output().expect("pw-dump runs");
@@ -781,6 +773,7 @@ mod tests {
     struct Mixer {
         published: tokio::sync::mpsc::UnboundedReceiver<AudioState>,
         commands: AudioCommandSender,
+        levels: tokio::sync::mpsc::UnboundedReceiver<AudioLevelsState>,
         restarts: tokio::sync::mpsc::UnboundedReceiver<virtual_devices::Request>,
     }
 
@@ -789,11 +782,47 @@ mod tests {
         let (updates, published) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy) = watch::channel(PrivacySources::default());
         let (commands, receiver) = command_channel();
+        let (level_updates, levels) = tokio::sync::mpsc::unbounded_channel();
         let (restart, restarts) = tokio::sync::mpsc::unbounded_channel();
         std::thread::spawn(move || {
-            reconnect(Some(&remote), &updates, &privacy_updates, receiver, &restart);
+            reconnect(Some(&remote), &updates, &privacy_updates, &level_updates, receiver, &restart);
         });
-        Mixer { published, commands, restarts }
+        Mixer { published, commands, levels, restarts }
+    }
+
+    /// No id, no stream: metering the sink opens one capture stream, a repeat call keeps that
+    /// stream, an unknown id opens none, and the empty list closes it and pushes an empty list.
+    #[test]
+    fn a_metered_sink_has_one_capture_stream_until_the_list_empties() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pipewire = daemon(dir.path());
+        let mut mixer = mixer(dir.path());
+        let sink = until(&mut mixer.published, |audio| audio.sinks.len() == 1).sinks[0].id;
+        assert!(nodes(dir.path(), "Stream/Input/Audio").is_empty());
+
+        mixer.commands.send(AudioCommand::SetLevelMeters(vec![sink, sink + 1000])).unwrap();
+        let stream = until_nodes(dir.path(), "Stream/Input/Audio", |found| found.len() == 1);
+        while mixer.levels.try_recv().is_ok() {}
+        mixer.commands.send(AudioCommand::SetLevelMeters(vec![sink])).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while mixer.levels.try_recv().is_err() {
+            assert!(Instant::now() < deadline, "the repeat call pushed nothing");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(nodes(dir.path(), "Stream/Input/Audio"), stream, "the repeat call kept the same stream");
+
+        mixer.commands.send(AudioCommand::SetLevelMeters(Vec::new())).unwrap();
+        until_nodes(dir.path(), "Stream/Input/Audio", <[_]>::is_empty);
+        let mut last = None;
+        while let Ok(state) = mixer.levels.try_recv() {
+            last = Some(state);
+        }
+        assert_eq!(last, Some(AudioLevelsState::default()), "the emptied list is pushed");
+        let mut audio = None;
+        while let Ok(state) = mixer.published.try_recv() {
+            audio = Some(state);
+        }
+        assert!(audio.is_none_or(|audio| audio.apps.is_empty()), "the meter is not an app");
     }
 
     /// A declared null sink appears, comes back after a daemon restart, which also asks the
@@ -848,6 +877,23 @@ mod tests {
             .unwrap();
         let _child = Daemon(child);
         until_nodes(dir.path(), "Audio/Sink", |found| found.iter().any(|(_, name)| name == "mantle-test-loop"));
+    }
+
+    #[test]
+    fn a_route_change_asks_only_the_route_and_a_profile_change_the_card_params() {
+        use pw::spa::param::ParamType;
+        let raw = |param: ParamType| param.as_raw();
+        let mut seen = HashMap::new();
+        let all =
+            [raw(ParamType::EnumProfile), raw(ParamType::EnumRoute), raw(ParamType::Profile), raw(ParamType::Route)];
+        let info = |flipped: &[u32]| all.map(|id| (id, if flipped.contains(&id) { 0b11 } else { 0b10 }));
+        let card = vec![ParamType::EnumProfile, ParamType::EnumRoute, ParamType::Profile];
+
+        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [card.clone(), vec![ParamType::Route]].concat());
+        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [], "nothing changed");
+        assert_eq!(params_to_ask(&mut seen, info(&[raw(ParamType::Route)]).into_iter()), [ParamType::Route]);
+        let profile = [raw(ParamType::Route), raw(ParamType::Profile)];
+        assert_eq!(params_to_ask(&mut seen, info(&profile).into_iter()), card, "the route's flag is unchanged");
     }
 
     /// Absent at start, then up, lost, and back, as a PipeWire started late at login and then

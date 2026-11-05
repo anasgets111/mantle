@@ -13,6 +13,8 @@ mod profile;
 mod route;
 mod virtual_devices;
 
+use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
+
 use mixer::{AudioCommand, AudioCommandSender};
 use shared::action::AudioAction;
 use tokio::sync::mpsc::UnboundedSender;
@@ -21,26 +23,36 @@ use tokio::sync::mpsc::UnboundedSender;
 pub struct Audio {
     commands: AudioCommandSender,
     virtual_devices: tokio::sync::mpsc::UnboundedSender<virtual_devices::Request>,
+    /// The generation whose `set_level_meters` runs the meters, or [`NO_OWNER`].
+    meters_owner: AtomicU64,
     /// The virtual devices' conf, removed here on exit: the task is cancelled, not finished.
     conf: Option<std::path::PathBuf>,
 }
+
+/// No generation runs the meters; generation ids are `u32`.
+const NO_OWNER: u64 = u64::MAX;
 
 impl Audio {
     /// Starts the PipeWire mixer thread and the virtual devices' task.
     pub fn start(
         updates: UnboundedSender<mixer::AudioState>,
         privacy_updates: tokio::sync::watch::Sender<mixer::PrivacySources>,
+        level_updates: UnboundedSender<shared::state::audio_levels::AudioLevelsState>,
     ) -> Self {
         let (commands, receiver) = mixer::command_channel();
         let virtual_devices = virtual_devices::spawn(commands.clone());
         let restarts = virtual_devices.clone();
-        std::thread::spawn(move || mixer::run(updates, privacy_updates, receiver, restarts));
-        Self { commands, virtual_devices, conf: virtual_devices::conf_path() }
+        std::thread::spawn(move || mixer::run(updates, privacy_updates, level_updates, receiver, restarts));
+        Self { commands, virtual_devices, meters_owner: AtomicU64::new(NO_OWNER), conf: virtual_devices::conf_path() }
     }
 
-    /// Removes the virtual devices `generation` declared, unless a newer one re-declared them.
+    /// Removes the virtual devices and stops the meters `generation` asked for, unless a newer one
+    /// asked again.
     pub fn forget(&self, generation: u32) {
         let _ = self.virtual_devices.send(virtual_devices::Request::Forget(generation));
+        if self.meters_owner.compare_exchange(u64::from(generation), NO_OWNER, SeqCst, SeqCst).is_ok() {
+            let _ = self.commands.send(AudioCommand::SetLevelMeters(Vec::new()));
+        }
     }
 }
 
@@ -61,7 +73,12 @@ impl Drop for Audio {
 pub fn dispatch(audio: &Audio, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<AudioAction>(&envelope.params) else { return };
     let sent = match command(action) {
-        Ok(command) => audio.commands.send(command).is_ok(),
+        Ok(command) => {
+            if matches!(command, AudioCommand::SetLevelMeters(_)) {
+                audio.meters_owner.store(u64::from(envelope.params.generation_id), SeqCst);
+            }
+            audio.commands.send(command).is_ok()
+        }
         Err(devices) => {
             let generation = envelope.params.generation_id;
             audio.virtual_devices.send(virtual_devices::Request::Declare { generation, devices }).is_ok()
@@ -90,12 +107,56 @@ fn command(action: AudioAction) -> Result<AudioCommand, Vec<shared::action::Virt
         AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
         AudioAction::SetPort { card, index } => AudioCommand::SetPort { card, index },
         AudioAction::SetVirtualDevices { devices } => return Err(devices),
+        AudioAction::SetLevelMeters { ids } => AudioCommand::SetLevelMeters(ids),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The meters belong to the last generation that set them: a departed older one leaves them,
+    /// and the owner's departure stops them once.
+    #[test]
+    fn only_the_generation_that_set_the_meters_stops_them_on_departure() {
+        pipewire::init();
+        let main_loop = pipewire::main_loop::MainLoopRc::new(None).unwrap();
+        let (commands, receiver) = mixer::command_channel();
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let into = std::rc::Rc::clone(&sent);
+        let _attached = receiver.attach(main_loop.loop_(), move |command| into.borrow_mut().push(command));
+        let (virtual_devices, _requests) = tokio::sync::mpsc::unbounded_channel();
+        let dir = tempfile::tempdir().unwrap();
+        let conf = dir.path().join("devices.conf");
+        std::fs::write(&conf, "").unwrap();
+        let audio =
+            Audio { commands, virtual_devices, meters_owner: AtomicU64::new(NO_OWNER), conf: Some(conf.clone()) };
+        let meter = |generation_id| shared::CommandEnvelope {
+            params: shared::CommandParams {
+                generation_id,
+                capability: "audio".into(),
+                action: "set_level_meters".into(),
+                arguments: vec![serde_json::json!([59])],
+                legacy_expected_revision: 0,
+            },
+            id: 0,
+        };
+        let drain = || {
+            main_loop.loop_().iterate(pipewire::loop_::Timeout::Finite(std::time::Duration::from_millis(50)));
+            std::mem::take(&mut *sent.borrow_mut())
+        };
+
+        dispatch(&audio, &meter(1));
+        dispatch(&audio, &meter(2));
+        audio.forget(1);
+        assert_eq!(drain(), [AudioCommand::SetLevelMeters(vec![59]), AudioCommand::SetLevelMeters(vec![59])]);
+        audio.forget(2);
+        audio.forget(2);
+        assert_eq!(drain(), [AudioCommand::SetLevelMeters(Vec::new())], "the owner's departure stops them once");
+
+        drop(audio);
+        assert!(!conf.exists(), "dropping the audio capability removes its conf");
+    }
 
     #[test]
     fn volumes_arrive_as_percents_and_leave_as_fractions() {

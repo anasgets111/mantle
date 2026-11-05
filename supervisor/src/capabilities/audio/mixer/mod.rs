@@ -33,6 +33,7 @@
 
 mod devices;
 mod graph;
+mod meters;
 mod null_sinks;
 mod publish;
 mod registry;

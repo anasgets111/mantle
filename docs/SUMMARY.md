@@ -69,6 +69,7 @@
   - [appearance](capabilities/appearance.md)
   - [applications](capabilities/applications.md)
   - [audio](capabilities/audio.md)
+  - [audio_levels](capabilities/audio_levels.md)
   - [battery](capabilities/battery.md)
   - [bluetooth](capabilities/bluetooth.md)
   - [brightness](capabilities/brightness.md)

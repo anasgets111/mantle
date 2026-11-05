@@ -4,6 +4,7 @@ pub mod android_connect;
 pub mod appearance;
 pub mod applications;
 pub mod audio;
+pub mod audio_levels;
 pub mod battery;
 pub mod bluetooth;
 pub mod brightness;

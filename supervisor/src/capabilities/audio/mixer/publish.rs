@@ -58,7 +58,12 @@ impl MixerState {
         let _ = self.privacy_updates.send(PrivacySources {
             cameras: self.graph.camera_consumers(&self.camera_streams),
             pipewire_pid: self.graph.core_pid,
-            microphones: running(&self.microphones),
+            // This connection's own peak meters read a mic but record nothing. Matched by node id,
+            // since a property such as `stream.monitor` is one any app could set.
+            microphones: running(&self.microphones)
+                .into_iter()
+                .filter(|app| !self.meters.values().any(|meter| meter.node_id() == app.node_id))
+                .collect(),
             screencasts: running(&self.screencasts),
         });
     }

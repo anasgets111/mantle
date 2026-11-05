@@ -68,7 +68,7 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         AudioCommand::SetCardProfile { device, index } => write_card_profile(state, device, index),
         AudioCommand::SetPort { card, index } => write_port(state, card, index),
         // `registry` applies it, since creating a node needs the core.
-        AudioCommand::SetNullSinks(_) => {}
+        AudioCommand::SetNullSinks(_) | AudioCommand::SetLevelMeters(_) => {}
     }
 }
 

@@ -7,6 +7,7 @@ use super::idle::IdleState;
 use super::keyboard::KeyboardState;
 use super::network::NetworkState;
 use super::secrets::SecretsState;
+use shared::state::audio_levels::AudioLevelsState;
 
 /// A received signal waiting for [`Capabilities::push`](super::Capabilities::push).
 /// [`Signals::next`] only awaits `recv()`, so losing the `tokio::select!` race drops no signal.
@@ -15,6 +16,8 @@ pub enum Signal {
     AndroidConnect,
     /// Carries mixer state directly, not a controller name.
     Audio(AudioState),
+    /// The mixer's peak meters, beside `Audio` so 30 pushes a second carry only levels.
+    AudioLevels(AudioLevelsState),
     /// Worker capabilities send finished state, like `Audio`.
     Network(NetworkState),
     Bluetooth(BluetoothState),
@@ -117,6 +120,7 @@ capability_channels! {
         AndroidConnect => android_connect: (), Some(()) => Signal::AndroidConnect;
         // Mixer sends state directly (see `Signal::Audio`).
         Audio => audio: AudioState, Some(state) => Signal::Audio(state);
+        AudioLevels => audio_levels: AudioLevelsState, Some(state) => Signal::AudioLevels(state);
         // Workers send finished state (see `spawn_worker`).
         Network => network: NetworkState, Some(state) => Signal::Network(state);
         Bluetooth => bluetooth: BluetoothState, Some(state) => Signal::Bluetooth(state);

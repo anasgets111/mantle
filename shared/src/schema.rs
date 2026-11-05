@@ -56,6 +56,7 @@ pub fn capability_schemas() -> Vec<(&'static str, Schema, Option<Schema>)> {
         ),
         ("power", schema_for!(crate::state::power::PowerState), Some(schema_for!(crate::action::PowerAction))),
         ("privacy", schema_for!(crate::state::privacy::PrivacyState), None),
+        ("audio_levels", schema_for!(crate::state::audio_levels::AudioLevelsState), None),
         ("sysinfo", schema_for!(crate::state::sysinfo::SysinfoState), Some(schema_for!(crate::action::SysinfoAction))),
         ("clock", schema_for!(crate::state::clock::ClockState), Some(schema_for!(crate::action::ClockAction))),
         ("storage", schema_for!(crate::state::storage::StorageState), Some(schema_for!(crate::action::StorageAction))),

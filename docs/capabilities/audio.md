@@ -153,6 +153,7 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice. |
 | `set_port` | `card: integer, index: integer` | Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice. |
 | `set_virtual_devices` | `devices?: VirtualDevice[]` | Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed, and an empty list removes them. A reload keeps them until the next call; a replaced Renderer's go. A change to any kind but a null sink restarts the other kinds' devices, which drop out briefly. |
+| `set_level_meters` | `ids?: integer[]` | Meters these `sinks[].id` and `sources[].id`: `mantle.audio_levels` carries their peaks. Replaces the last list; an empty one stops every meter, and none runs before the first call. A reload keeps them until the next call; a replaced Renderer's go. |
 
 ### `VirtualDevice`
 
@@ -190,6 +191,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
 | Each ALSA and BlueZ device's `EnumRoute` | `cards[].ports`; `set_port` writes a `Route` on the profile device a sink or source of the active profile uses, so a port outside the active profile is dropped |
 | `support.null-audio-sink` adapters and one `pipewire -c` child | `set_virtual_devices`: a null sink is an `adapter` the mixer creates on its own connection, so it goes with the Supervisor. Every other kind is a module in one child `pipewire`, whose conf the Supervisor writes under `$XDG_RUNTIME_DIR` and removes on exit. It restarts the child with backoff when it exits, and again when the mixer reconnects to a restarted PipeWire, which the child outlives with no modules; the child dies with the Supervisor. A module that fails to load is skipped, with PipeWire's warning on the Supervisor's stderr, and the others still load |
+| A capture stream per id `set_level_meters` names | [`audio_levels`](audio_levels.md), pushed apart from this state |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no

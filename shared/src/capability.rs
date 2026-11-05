@@ -68,6 +68,7 @@ roster! {
     Processes => "processes", "Programs declared with `session_process`: running state, start time and last exit.",
     Appearance => "appearance", "Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.",
     Windows => "windows", "Open toplevel windows with title, app ID, workspace, output and state flags.",
+    AudioLevels => "audio_levels", "Peak levels of the sinks and sources `mantle.audio:set_level_meters` names; `nil` before the first call this session.",
 }
 
 impl Capability {
@@ -114,6 +115,7 @@ impl Capability {
                 "set_card_profile",
                 "set_port",
                 "set_virtual_devices",
+                "set_level_meters",
             ],
             Capability::Bluetooth => &[
                 "set_enabled",
@@ -190,6 +192,7 @@ impl Capability {
             }
             Capability::Clock => &["configure"],
             Capability::Appearance
+            | Capability::AudioLevels
             | Capability::Battery
             | Capability::Idle
             | Capability::Privacy

@@ -127,6 +127,13 @@ pub enum AudioAction {
         #[serde(default, deserialize_with = "super::lua_list")]
         devices: Vec<VirtualDevice>,
     },
+    /// Meters these `sinks[].id` and `sources[].id`: `mantle.audio_levels` carries their peaks.
+    /// Replaces the last list; an empty one stops every meter, and none runs before the first call.
+    /// A reload keeps them until the next call; a replaced Renderer's go.
+    SetLevelMeters {
+        #[serde(default, deserialize_with = "super::lua_list")]
+        ids: Vec<u32>,
+    },
 }
 
 /// One `set_virtual_devices` entry.

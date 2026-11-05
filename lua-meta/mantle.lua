@@ -122,6 +122,11 @@
 ---@field port? string The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
 ---@field volume? number Volume in percent, the loudest channel; `nil` before its first report. A sink's default is pulled back to `150` when another client sets it louder.
 
+---@class AudioLevel
+---One metered sink or source.
+---@field id integer The `sinks[].id` or `sources[].id`.
+---@field peak number The loudest sample since the last push, in percent of full scale, `0` to `100`; linear, not the cubic scale of `volume`. A sink's is read from its monitor, which PipeWire takes before the sink's own volume unless the sink sets `monitor.channel-volumes`.
+
 ---@alias BatteryStatus
 ---| "unknown" # No answer: UPower unreachable, an unknown state number, or a device without a battery state.
 ---| "charging" # Taking current from an adapter.
@@ -733,6 +738,11 @@
 ---@field microphone_users PrivacyUser[] Apps with a running PipeWire audio capture, one per name (ADR-0137). Idle streams and sink-monitor captures are absent; a muted microphone still counts.
 ---@field screencast_users PrivacyUser[] Apps with a running PipeWire screen-capture stream, one per name (ADR-0137). wlr-screencopy tools such as `wf-recorder` and `grim` never appear.
 
+---@class AudioLevelsState
+---`mantle.audio_levels`' payload: the peaks of the devices `mantle.audio:set_level_meters` names,
+---pushed at most 30 times a second and only when one moves by 1 % or more.
+---@field levels AudioLevel[] One entry per metered device that has sent audio since the call, ordered by `id`.
+
 ---@class SysinfoState
 ---`mantle.sysinfo`'s payload; `nil` until `configure` sets an interval and a reading changes a field.
 ---Pushes only on a change (ADR-0035).
@@ -851,6 +861,7 @@ local AppearanceCapability = {}
 ---@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
 ---@field set_port fun(self: AudioCapability, card: integer, index: integer) Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice.
 ---@field set_virtual_devices fun(self: AudioCapability, devices?: VirtualDevice[]) Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed, and an empty list removes them. A reload keeps them until the next call; a replaced Renderer's go. A change to any kind but a null sink restarts the other kinds' devices, which drop out briefly.
+---@field set_level_meters fun(self: AudioCapability, ids?: integer[]) Meters these `sinks[].id` and `sources[].id`: `mantle.audio_levels` carries their peaks. Replaces the last list; an empty one stops every meter, and none runs before the first call. A reload keeps them until the next call; a replaced Renderer's go.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
 ---@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata
@@ -967,6 +978,10 @@ local SecretsCapability = {}
 ---@class PrivacyCapability: ReadOnlyCapability<PrivacyState>, userdata
 local PrivacyCapability = {}
 
+---[docs](https://anasgets111.github.io/mantle/capabilities/audio_levels.html)
+---@class AudioLevelsCapability: ReadOnlyCapability<AudioLevelsState>, userdata
+local AudioLevelsCapability = {}
+
 ---[docs](https://anasgets111.github.io/mantle/capabilities/sysinfo.html)
 ---@class SysinfoCapability: Capability<SysinfoState>, userdata
 ---@field configure fun(self: SysinfoCapability, intervals: SysinfoConfigure) Sets poll intervals; every one starts at `0`, so nothing is read until this. The first reading lands on the next wall-clock second (CPU: one interval after it).
@@ -1078,6 +1093,7 @@ local PrivacyCapability = {}
 ---@field processes ProcessesCapability Programs declared with `session_process`: running state, start time and last exit.
 ---@field appearance AppearanceCapability Portal appearance settings: colour scheme, accent colour, contrast and reduced motion.
 ---@field windows WindowsCapability Open toplevel windows with title, app ID, workspace, output and state flags.
+---@field audio_levels AudioLevelsCapability Peak levels of the sinks and sources `mantle.audio:set_level_meters` names; `nil` before the first call this session.
 ---@field screens WatchedSignal<Screen[]> Connected outputs from the Renderer. `{}` rather than `nil` at first evaluation (ADR-0041). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field rescue WatchedSignal<RescueState> Whether the last evaluation, apply, live update or the session lock failed; the previous scene stays up (ADR-0046). [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
 ---@field version MantleVersion The engine's version. Not a signal. [docs](https://anasgets111.github.io/mantle/capabilities/index.html#renderer-members)
