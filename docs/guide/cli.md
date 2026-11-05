@@ -225,6 +225,11 @@ real layout code, on one 1920x1080 output plus one per `output` name a panel pin
 | `with alternate sample data` | The same push with every boolean `false` and every enum its last variant | A branch taken only on `false` or a later variant, such as unmuted audio or a launcher that drops `no_display` entries |
 | `with empty sample lists` | The first push with every list and map empty | An empty-state branch, such as "No notifications" |
 
+In the sample passes, reading a field a capability's state does not have raises, naming the
+nearest one: ``mantle.audio:get().sinks[1] has no `volum`: did you mean `volume`?``. A running shell
+reads `nil` there, so a field removed by an engine update fails the check instead of hiding. An
+`on_change` handler runs on each push, and its error fails the pass; a running shell only logs it.
+
 It prints `<path>: ok, N surface(s)` and one `<role> <id>` line per surface, preceded by anything
 the config `print`ed, then one `warning:` line per outer shadow the surface cuts off by 4 px or
 more, naming the side and the room it needs. A warning leaves the exit status at 0, and a side
@@ -251,7 +256,7 @@ stack traceback:
 
 | Caught | Not caught |
 | :--- | :--- |
-| Lua syntax errors, in any required module | Handler errors: `on_click`, `action` and `timer` never fire, and a capability `on_change` that raises on the sample push only logs a warning. At run time a raising handler logs `... (defined at file:line)`, and identical repeats fold into `raised again (N times)` |
+| Lua syntax errors, in any required module | Handler errors: `on_click`, `action` and `timer` never fire. A capability `on_change` does run on each sample push, and its error fails the check. At run time a raising handler logs `... (defined at file:line)`, and identical repeats fold into `raised again (N times)` |
 | Runtime errors at the top level of `shell.lua` and its modules | Branches that need a particular value: the samples take the first enum value, `true` (`false` for an application's `no_display`) and non-empty lists |
 | A top-level return that is not surfaces, including `require`'s second value | `process.run` output: commands are queued and never run |
 | Surface and node properties: unknown names, wrong value types, bad colours, out-of-range sizes | Fonts, images, shaders and the compositor's response |

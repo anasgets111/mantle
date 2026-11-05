@@ -195,6 +195,16 @@ impl CapabilityHandle {
         }
     }
 
+    /// [`Self::notify_change`] for `mantle check`, which fails on the first raise rather than log it.
+    pub(crate) fn check_change(&self, lua: &Lua, previous: Value) -> mlua::Result<()> {
+        // Copied first, as in `notify_change`: a handler may register another.
+        let (current, handlers) = (self.signal.get(), self.handlers.borrow().clone());
+        for handler in handlers {
+            CpuBudget::call::<_, ()>(lua, &handler, (current.clone(), previous.clone()))?;
+        }
+        Ok(())
+    }
+
     /// Clears handlers before the client re-evaluates `shell.lua`; re-registering without this
     /// would double every reload side effect.
     pub fn clear_handlers(&self) {

@@ -94,9 +94,11 @@ fn lay_out_passes(
         ("with alternate sample data", Some("alternate")),
         ("with empty sample lists", Some("empty")),
     ];
+    let shape = sample_shape();
     for (pass, set) in passes {
         if let Some(set) = set {
-            push_samples(namespace, loader, set).map_err(|err| vec![format!("{pass}: {err}")])?;
+            push_samples(namespace, loader, set, &shape)
+                .map_err(|err| vec![format!("{pass}: {}", crate::lua::location::describe(&err))])?;
         }
         match lay_out(output, specs, loader, shaping, size) {
             Ok((scene, instances)) => shadow_cuts(&scene, &instances, specs, &mut cuts),
@@ -252,14 +254,94 @@ pub(crate) fn samples(set: &str) -> serde_json::Map<String, serde_json::Value> {
     }
 }
 
-/// One `StateSnapshot`-shaped push per capability from [`samples`] of `set`.
+/// One `StateSnapshot`-shaped push per capability from [`samples`] of `set`, each payload
+/// [`strict`]. An `on_change` handler's raise fails the pass, where a running shell only logs it.
 /// ponytail: each set takes one value per field, so boolean combinations and enum variants between
 /// the first and last never run; a pass per combination or variant is the upgrade.
-fn push_samples(namespace: &Namespace, loader: &Loader, set: &str) -> mlua::Result<()> {
+fn push_samples(namespace: &Namespace, loader: &Loader, set: &str, shape: &serde_json::Value) -> mlua::Result<()> {
     for (capability, payload) in &samples(set) {
         let Some(handle) = namespace.capabilities.get(capability) else { continue };
-        let previous = handle.hydrate(crate::lua::json::to_lua(loader.lua(), payload)?);
-        handle.notify_change(loader.lua(), previous);
+        let value = crate::lua::json::to_lua(loader.lua(), payload)?;
+        strict(loader.lua(), &value, &shape[capability], &format!("mantle.{capability}:get()"))?;
+        let previous = handle.hydrate(value);
+        handle.check_change(loader.lua(), previous)?;
+    }
+    Ok(())
+}
+
+/// Every sample set merged: each object holds the keys it has in any set, each array one element
+/// holding its items' keys, so both tagged variants the first and alternate sets pick count.
+fn sample_shape() -> serde_json::Value {
+    fn merge(into: &mut serde_json::Value, from: &serde_json::Value) {
+        use serde_json::Value;
+        match from {
+            Value::Object(fields) => {
+                if !into.is_object() {
+                    *into = Value::Object(serde_json::Map::new());
+                }
+                let Value::Object(into) = into else { return };
+                for (field, value) in fields {
+                    merge(into.entry(field.as_str()).or_insert(Value::Null), value);
+                }
+            }
+            Value::Array(items) => {
+                if !into.is_array() {
+                    *into = Value::Array(vec![Value::Null]);
+                }
+                for item in items {
+                    merge(&mut into[0], item);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut shape = serde_json::Value::Null;
+    for set in ["first", "alternate", "empty"] {
+        merge(&mut shape, &serde_json::Value::Object(samples(set)));
+    }
+    shape
+}
+
+/// Makes every struct table in a sample payload raise on a key its `shape` lacks, naming the
+/// nearest, so a config reading a removed or misspelled field fails the check rather than reading
+/// `nil`. Arrays and maps (a lone `sample` key) take any key, their items checked; a running
+/// shell's payloads stay plain.
+fn strict(lua: &mlua::Lua, value: &mlua::Value, shape: &serde_json::Value, path: &str) -> mlua::Result<()> {
+    let mlua::Value::Table(table) = value else { return Ok(()) };
+    match shape {
+        serde_json::Value::Array(item) => {
+            for (at, element) in table.clone().sequence_values::<mlua::Value>().enumerate() {
+                strict(lua, &element?, &item[0], &format!("{path}[{}]", at + 1))?;
+            }
+        }
+        // A map: any key reads, and each value is checked against the one sample value.
+        serde_json::Value::Object(fields) if fields.keys().eq(["sample"]) => {
+            for pair in table.clone().pairs::<mlua::Value, mlua::Value>() {
+                let (key, inner) = pair?;
+                let key = key.to_string().unwrap_or_default();
+                strict(lua, &inner, &fields["sample"], &format!("{path}[\"{key}\"]"))?;
+            }
+        }
+        serde_json::Value::Object(fields) if !fields.is_empty() => {
+            for (field, inner) in fields {
+                strict(lua, &table.raw_get(field.as_str())?, inner, &format!("{path}.{field}"))?;
+            }
+            let (keys, path): (Vec<String>, String) = (fields.keys().cloned().collect(), path.to_owned());
+            let index = lua.create_function(move |lua, (_, key): (mlua::Value, mlua::Value)| {
+                let mlua::Value::String(key) = key else { return Ok(mlua::Value::Nil) };
+                let (key, keys) = (key.to_string_lossy(), keys.iter().map(String::as_str).collect::<Vec<_>>());
+                // The other tagged variant's field, absent from this one.
+                if keys.contains(&key.as_str()) {
+                    return Ok(mlua::Value::Nil);
+                }
+                let hint = crate::lua::hint::hint(&key, &keys);
+                Err(crate::lua::location::located(lua, mlua::Error::runtime(format!("{path} has no `{key}`: {hint}"))))
+            })?;
+            let meta = lua.create_table()?;
+            meta.set("__index", index)?;
+            table.set_metatable(Some(meta))?;
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -757,6 +839,44 @@ mod tests {
             seen += 1;
         }
         assert!(seen > 0, "no fixtures found");
+    }
+
+    /// The first set's text span and the alternate's image span both name their fields, and a
+    /// map takes any key.
+    #[test]
+    fn a_sample_reads_either_tagged_variants_fields_and_any_map_key() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "local s = mantle.notifications:map(function(n) local b = n.feed[1] and n.feed[1].body[1] \
+             return tostring(b and (b.image_path or b.text)) end, '')\n\
+             local a = mantle.applications:map(function(a) return tostring(a.by_app_id.firefox) end, '')\n\
+             return panel { id = 'bar', layer = 'top', child = row { children = { text { content = s }, text { content = a } } } }\n",
+        )
+        .unwrap();
+        super::run(dir.path()).expect("both variants' fields and a map key read without raising");
+    }
+
+    /// The handler list is copied before any runs, as a running shell does.
+    #[test]
+    fn an_on_change_that_registers_another_passes_the_check() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("shell.lua"),
+            "mantle.audio:on_change(function() mantle.audio:on_change(function() end) end)\n\
+             return panel { id = 'bar', layer = 'top', child = text { content = 'x' } }\n",
+        )
+        .unwrap();
+        super::run(dir.path()).expect("a handler may register another");
+    }
+
+    /// An object with no known fields, such as a struct with none, takes any key.
+    #[test]
+    fn a_table_whose_shape_has_no_fields_reads_any_key() {
+        let lua = mlua::Lua::new();
+        let table = lua.create_table().unwrap();
+        super::strict(&lua, &mlua::Value::Table(table.clone()), &serde_json::json!({}), "t").unwrap();
+        assert_eq!(table.get::<mlua::Value>("anything").unwrap(), mlua::Value::Nil);
     }
 
     #[test]
