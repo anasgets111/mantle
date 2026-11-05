@@ -149,7 +149,9 @@
 ---@field codec? string The Bluetooth codec the profile names, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`; `nil` when it names none, as `off` and every ALSA profile.
 ---@field description string PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`.
 ---@field index integer Profile index, the second argument of `set_card_profile`.
+---@field inputs integer Sources the profile makes; `0` for an output-only profile or `off`.
 ---@field name string PipeWire's untranslated id, e.g. `"output:hdmi-stereo"` or `"off"`.
+---@field outputs integer Sinks the profile makes; `0` for an input-only profile or `off`.
 
 ---@class ClockConfigure
 ---`clock:configure`'s table. An absent `interval` keeps the current one.

@@ -146,6 +146,10 @@ pub struct CardProfile {
     pub codec: Option<String>,
     /// `false` when PipeWire reports the profile unavailable, such as HDMI with no display plugged in.
     pub available: bool,
+    /// Sinks the profile makes; `0` for an input-only profile or `off`.
+    pub outputs: u32,
+    /// Sources the profile makes; `0` for an output-only profile or `off`.
+    pub inputs: u32,
 }
 
 /// One app's playback or recording stream (ADR-0053). Streams without a pid are left out.

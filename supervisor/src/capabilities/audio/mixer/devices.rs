@@ -77,6 +77,8 @@ pub(super) fn card_list(
                     description: profile.description.clone(),
                     codec: profile::codec_from_name(&profile.name).or_else(|| profile::codec_of(&profile.description)),
                     available: profile.available,
+                    outputs: profile.outputs,
+                    inputs: profile.inputs,
                 })
                 .collect(),
             active: card.active,
@@ -353,6 +355,8 @@ mod tests {
             name: name.to_string(),
             description: String::new(),
             available: true,
+            outputs: 1,
+            inputs: 0,
         };
         let mut card = Card::default();
 

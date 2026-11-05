@@ -153,6 +153,8 @@ mod tests {
                         description: "Digital Stereo (HDMI) Output".to_string(),
                         codec: None,
                         available: false,
+                        outputs: 1,
+                        inputs: 0,
                     }],
                     active: None,
                     ports: vec![CardPort {
@@ -176,6 +178,8 @@ mod tests {
                         description: "High Fidelity Playback (A2DP Sink, codec AAC)".to_string(),
                         codec: Some("AAC".to_string()),
                         available: true,
+                        outputs: 1,
+                        inputs: 0,
                     }],
                     active: Some(2),
                     ports: vec![],
@@ -221,6 +225,8 @@ mod tests {
                             "name": "output:hdmi-stereo",
                             "description": "Digital Stereo (HDMI) Output",
                             "available": false,
+                            "outputs": 1,
+                            "inputs": 0,
                         }],
                         "ports": [{
                             "index": 2,
@@ -243,6 +249,8 @@ mod tests {
                             "description": "High Fidelity Playback (A2DP Sink, codec AAC)",
                             "codec": "AAC",
                             "available": true,
+                            "outputs": 1,
+                            "inputs": 0,
                         }],
                         "active": 2,
                         "ports": [],
@@ -337,8 +345,14 @@ mod tests {
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         let profile = |index: i32, name: &str, description: &str, available: bool| {
-            let profile =
-                profile::Profile { index, name: name.to_string(), description: description.to_string(), available };
+            let profile = profile::Profile {
+                index,
+                name: name.to_string(),
+                description: description.to_string(),
+                available,
+                outputs: 1,
+                inputs: 0,
+            };
             (index, profile)
         };
         state.cards = HashMap::from([

@@ -14,6 +14,9 @@ pub(super) struct Profile {
     pub description: String,
     /// `false` only when PipeWire reports the profile unavailable; unknown counts as available.
     pub available: bool,
+    /// `Audio/Sink` and `Audio/Source` nodes the profile makes, from its `classes`.
+    pub outputs: u32,
+    pub inputs: u32,
 }
 
 /// Pulls a [`Profile`] from an `EnumProfile` or `Profile` object. `None` skips an object missing
@@ -24,6 +27,7 @@ pub(super) fn extract_profile(value: &Value) -> Option<Profile> {
     let mut name = String::new();
     let mut description = None;
     let mut available = true;
+    let (mut outputs, mut inputs) = (0, 0);
     for property in &object.properties {
         match (property.key, &property.value) {
             (spa_sys::SPA_PARAM_PROFILE_index, Value::Int(value)) => index = Some(*value),
@@ -32,10 +36,23 @@ pub(super) fn extract_profile(value: &Value) -> Option<Profile> {
             (spa_sys::SPA_PARAM_PROFILE_available, Value::Id(Id(value))) => {
                 available = *value != spa_sys::SPA_PARAM_AVAILABILITY_no;
             }
+            // `[count, [class, nodes, "card.profile.devices", [device, ...]], ...]`, as `pw-dump` shows.
+            (spa_sys::SPA_PARAM_PROFILE_classes, Value::Struct(classes)) => {
+                for class in classes.iter().skip(1) {
+                    let Value::Struct(class) = class else { continue };
+                    let [Value::String(class), Value::Int(nodes), ..] = class.as_slice() else { continue };
+                    let nodes = u32::try_from(*nodes).unwrap_or(0);
+                    match class.as_str() {
+                        "Audio/Sink" => outputs += nodes,
+                        "Audio/Source" => inputs += nodes,
+                        _ => {}
+                    }
+                }
+            }
             _ => {}
         }
     }
-    Some(Profile { index: index?, name, description: description?, available })
+    Some(Profile { index: index?, name, description: description?, available, outputs, inputs })
 }
 
 /// The codec after a BlueZ profile name's role, e.g. `"AAC"` from `a2dp-sink-aac`, or `None` for
@@ -126,12 +143,40 @@ mod tests {
                 index: 2,
                 name: "a2dp-sink-aac".to_string(),
                 description: aac.to_string(),
-                available: true
+                available: true,
+                outputs: 0,
+                inputs: 0,
             })
         );
         let gone = enum_profile(3, aac, spa_sys::SPA_PARAM_AVAILABILITY_no);
         assert_eq!(extract_profile(&gone).map(|profile| profile.available), Some(false));
         assert_eq!(extract_profile(&Value::Bool(true)), None);
+    }
+
+    /// `output:analog-stereo+input:analog-stereo` on an Intel HDA card, as `pw-dump` recorded it:
+    /// `[2, ["Audio/Source", 1, "card.profile.devices", [0]], ["Audio/Sink", 1, "card.profile.devices", [7]]]`.
+    #[test]
+    fn extract_profile_counts_the_sinks_and_sources_its_classes_name() {
+        let class = |name: &str, device| {
+            Value::Struct(vec![
+                Value::String(name.to_string()),
+                Value::Int(1),
+                Value::String("card.profile.devices".to_string()),
+                Value::ValueArray(pipewire::spa::pod::ValueArray::Int(vec![device])),
+            ])
+        };
+        let Value::Object(mut duplex) = enum_profile(1, "Analog Stereo Duplex", spa_sys::SPA_PARAM_AVAILABILITY_yes)
+        else {
+            unreachable!()
+        };
+        let classes = vec![Value::Int(2), class("Audio/Source", 0), class("Audio/Sink", 7)];
+        duplex.properties.push(Property::new(spa_sys::SPA_PARAM_PROFILE_classes, Value::Struct(classes)));
+        let off = Value::Struct(vec![Value::Int(0)]);
+
+        let counts = |profile: Option<Profile>| profile.map(|profile| (profile.outputs, profile.inputs));
+        assert_eq!(counts(extract_profile(&Value::Object(duplex.clone()))), Some((1, 1)));
+        duplex.properties.last_mut().unwrap().value = off;
+        assert_eq!(counts(extract_profile(&Value::Object(duplex))), Some((0, 0)), "`off` makes no node");
     }
 
     #[test]
