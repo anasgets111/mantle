@@ -393,24 +393,27 @@ pub(crate) mod tests {
     fn an_action_queues_the_generation_guarded_envelope_with_an_array_of_arguments_and_its_own_id() {
         let (lua, _handle, mut rx) = lua_with_capability(4);
 
-        lua.load(r#"mantle.probe:set_volume(0.75)"#).exec().unwrap();
+        lua.load(r#"mantle.probe:set_volume(59, 0.75)"#).exec().unwrap();
 
         let envelope = queued_command(&mut rx).expect("an action must queue a command");
         assert_eq!(envelope.params.generation_id, 4);
         assert_eq!(envelope.params.capability, "audio");
         assert_eq!(envelope.params.action, "set_volume");
-        assert_eq!(envelope.params.arguments, vec![serde_json::json!(0.75)]);
+        assert_eq!(envelope.params.arguments, vec![serde_json::json!(59), serde_json::json!(0.75)]);
         assert_eq!(envelope.params.legacy_expected_revision, 0);
         assert_eq!(envelope.id, 0);
 
-        // `null` would not deserialize into `Vec<serde_json::Value>`.
-        lua.load(r#"mantle.probe:toggle_mute(); mantle.probe:toggle_mute()"#).exec().unwrap();
-
-        let first = queued_command(&mut rx).unwrap();
-        assert_eq!(first.params.arguments, Vec::<serde_json::Value>::new());
+        lua.load(r#"mantle.probe:toggle_mute(59); mantle.probe:toggle_mute(59)"#).exec().unwrap();
         // Each action gets a distinct JSON-RPC id.
-        assert_eq!(first.id, 1);
+        assert_eq!(queued_command(&mut rx).unwrap().id, 1);
         assert_eq!(queued_command(&mut rx).unwrap().id, 2);
+
+        // `null` would not deserialize into `Vec<serde_json::Value>`. Every audio action takes an id.
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (network, _handle) = Capability::new("network", DirtyFlag::new(), CommandSender::new(4, tx));
+        lua.globals().get::<mlua::Table>("mantle").unwrap().set("network", network).unwrap();
+        lua.load("mantle.network:scan()").exec().unwrap();
+        assert_eq!(queued_command(&mut rx).unwrap().params.arguments, Vec::<serde_json::Value>::new());
     }
 
     #[test]
@@ -481,13 +484,13 @@ pub(crate) mod tests {
     fn reading_a_state_field_off_the_capability_names_its_get_path() {
         let (lua, _handle, _rx) = lua_with_capability(0);
 
-        let err = lua.load("return mantle.probe.volume").exec().unwrap_err();
+        let err = lua.load("return mantle.probe.sinks").exec().unwrap_err();
         assert!(
-            err.to_string().contains("mantle.audio has no `volume`: did you mean `mantle.audio:get().volume`?"),
+            err.to_string().contains("mantle.audio has no `sinks`: did you mean `mantle.audio:get().sinks`?"),
             "{err}"
         );
-        let err = lua.load("return mantle.probe.volme").exec().unwrap_err();
-        assert!(err.to_string().contains("did you mean `mantle.audio:get().volume`?"), "{err}");
+        let err = lua.load("return mantle.probe.snks").exec().unwrap_err();
+        assert!(err.to_string().contains("did you mean `mantle.audio:get().sinks`?"), "{err}");
 
         let (tx, _rx) = mpsc::unbounded_channel();
         let (battery, _) = Capability::new("battery", DirtyFlag::new(), CommandSender::new(0, tx));
@@ -500,7 +503,7 @@ pub(crate) mod tests {
     fn a_dot_call_is_a_config_error_naming_the_colon_form_and_queues_nothing() {
         let (lua, _handle, mut rx) = lua_with_capability(0);
 
-        let err = lua.load("mantle.probe.set_volume(0.5)").exec().unwrap_err();
+        let err = lua.load("mantle.probe.set_volume(59, 0.5)").exec().unwrap_err();
 
         assert!(err.to_string().contains("mantle.audio:set_volume("), "{err}");
         assert!(queued_command(&mut rx).is_none(), "a dot call must not send 0.5 as the receiver");

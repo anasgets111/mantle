@@ -646,11 +646,14 @@ mod tests {
         Daemon(child)
     }
 
-    fn until(updates: &mut tokio::sync::mpsc::UnboundedReceiver<AudioState>, done: impl Fn(&AudioState) -> bool) {
+    fn until(
+        updates: &mut tokio::sync::mpsc::UnboundedReceiver<AudioState>,
+        done: impl Fn(&AudioState) -> bool,
+    ) -> AudioState {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             match updates.try_recv() {
-                Ok(state) if done(&state) => return,
+                Ok(state) if done(&state) => return state,
                 Ok(_) => {}
                 Err(_) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
                 Err(err) => panic!("no matching audio state: {err}"),
@@ -659,7 +662,8 @@ mod tests {
     }
 
     /// Absent at start, then up, lost, and back, as a PipeWire started late at login and then
-    /// restarted. A write queued during the outage is dropped; one sent after it lands.
+    /// restarted. A write queued during the outage is dropped; one sent after it lands, and a mute
+    /// toggle flips the sink.
     #[test]
     fn a_missing_or_lost_pipewire_is_reconnected() {
         let dir = tempfile::tempdir().unwrap();
@@ -671,18 +675,21 @@ mod tests {
 
         std::thread::sleep(Duration::from_millis(200));
         let pipewire = daemon(dir.path());
-        until(&mut published, |audio| audio.sinks.len() == 1);
+        let first = until(&mut published, |audio| audio.sinks.len() == 1).sinks[0].id;
         drop(pipewire);
         until(&mut published, |audio| *audio == AudioState::default());
 
-        commands.send(AudioCommand::SetMasterVolume(0.9)).unwrap();
+        commands.send(AudioCommand::SetVolume { id: first, volume: 0.9 }).unwrap();
         let _pipewire = daemon(dir.path());
-        until(&mut published, |audio| audio.sinks.len() == 1);
-        commands.send(AudioCommand::SetMasterVolume(0.5)).unwrap();
+        let sink = until(&mut published, |audio| audio.sinks.len() == 1).sinks[0].id;
+        commands.send(AudioCommand::SetVolume { id: sink, volume: 0.5 }).unwrap();
         until(&mut published, |audio| {
-            let near = |percent: f64| audio.volume.is_some_and(|volume| (volume - percent).abs() < 1.0);
+            let volume = audio.sinks.first().and_then(|sink| sink.volume);
+            let near = |percent: f64| volume.is_some_and(|volume| (volume - percent).abs() < 1.0);
             assert!(!near(90.0), "the write queued during the outage was replayed");
             near(50.0)
         });
+        commands.send(AudioCommand::ToggleMute(sink)).unwrap();
+        until(&mut published, |audio| audio.sinks.first().is_some_and(|sink| sink.muted));
     }
 }

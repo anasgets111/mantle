@@ -34,20 +34,39 @@ pub struct PrivacySources {
 /// PipeWire recycles them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
-    SetMasterVolume(f32),
-    SetMasterMuted(bool),
-    ToggleMasterMute,
-    SetBalance(f32),
+    /// A sink or source volume as a linear fraction.
+    SetVolume {
+        id: u32,
+        volume: f32,
+    },
+    SetMuted {
+        id: u32,
+        muted: bool,
+    },
+    ToggleMute(u32),
+    SetBalance {
+        id: u32,
+        balance: f32,
+    },
     SetDefaultSink(u32),
     SetDefaultSource(u32),
-    SetSinkChannelVolume { id: u32, index: u32, volume: f32 },
-    SetSourceChannelVolume { id: u32, index: u32, volume: f32 },
-    SetSourceVolume(f32),
-    SetSourceMuted(bool),
-    ToggleSourceMute,
-    SetAppVolume { id: u32, volume: f32 },
-    SetAppMuted { id: u32, muted: bool },
-    SetCardProfile { device: u32, index: i32 },
+    SetChannelVolume {
+        id: u32,
+        index: u32,
+        volume: f32,
+    },
+    SetAppVolume {
+        id: u32,
+        volume: f32,
+    },
+    SetAppMuted {
+        id: u32,
+        muted: bool,
+    },
+    SetCardProfile {
+        device: u32,
+        index: i32,
+    },
 }
 
 /// Listener-owned state and snapshot channels. Held for the thread lifetime. `sink_*`/`metadata*`
@@ -150,6 +169,13 @@ impl MixerState {
             DefaultDevice::Sink => &self.sinks,
             DefaultDevice::Source => &self.sources,
         }
+    }
+
+    /// Whether node `id` is a tracked sink or source.
+    pub(super) fn kind_of(&self, id: u32) -> Option<DefaultDevice> {
+        [DefaultDevice::Sink, DefaultDevice::Source]
+            .into_iter()
+            .find(|&kind| self.device_entries(kind).contains_key(&id))
     }
 
     /// The node `default` metadata routes one direction to, per [`master::resolve_default_device`].

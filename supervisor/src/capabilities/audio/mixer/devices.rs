@@ -9,6 +9,7 @@ use pipewire::keys;
 
 use super::PropsLookup;
 use crate::capabilities::audio::{master, profile, route};
+use crate::capabilities::scale::percent_from_fraction;
 
 /// What the mixer tracks for one bound ALSA or BlueZ device. Proxies live in `devices`, keeping this
 /// plain test data like [`DeviceEntry`].
@@ -127,15 +128,24 @@ pub(super) fn device_list(
 ) -> Vec<AudioDevice> {
     let mut list: Vec<AudioDevice> = entries
         .iter()
-        .map(|(&id, entry)| AudioDevice {
-            id,
-            name: entry.names.display(),
-            active: active == Some(id),
-            icon: entry.names.icon.clone(),
-            port: entry.route.and_then(|route| routes.get(&(route.device_id, route.profile_device))?.port.clone()),
-            bus: entry.names.bus.clone(),
-            form_factor: entry.names.form_factor.clone(),
-            channels: entry.reported_props(routes).and_then(master::channel_levels),
+        .map(|(&id, entry)| {
+            let props = entry.reported_props(routes);
+            let measured = props.map(master::master_volume_from_props);
+            AudioDevice {
+                id,
+                node_name: entry.names.node_name.clone(),
+                name: entry.names.display(),
+                active: active == Some(id),
+                card: entry.route.map(|route| route.device_id),
+                volume: measured.map(|m| percent_from_fraction(f64::from(m.volume))),
+                muted: measured.is_some_and(|m| m.muted),
+                balance: measured.and_then(|m| m.balance),
+                icon: entry.names.icon.clone(),
+                port: entry.route.and_then(|route| routes.get(&(route.device_id, route.profile_device))?.port.clone()),
+                bus: entry.names.bus.clone(),
+                form_factor: entry.names.form_factor.clone(),
+                channels: props.and_then(master::channel_levels),
+            }
         })
         .collect();
     list.sort_by_key(|device| device.id);
@@ -234,11 +244,19 @@ mod tests {
             vec![
                 AudioDevice {
                     id: 59,
+                    node_name: "alsa_output.analog".to_string(),
                     name: "Built-in Audio Analog Stereo".to_string(),
+                    card: Some(51),
                     port: Some("hdmi".to_string()),
                     ..AudioDevice::default()
                 },
-                AudioDevice { id: 70, name: "WH-1000XM4".to_string(), active: true, ..AudioDevice::default() },
+                AudioDevice {
+                    id: 70,
+                    node_name: "bluez_output.headset".to_string(),
+                    name: "WH-1000XM4".to_string(),
+                    active: true,
+                    ..AudioDevice::default()
+                },
             ]
         );
 
@@ -250,6 +268,7 @@ mod tests {
             devices,
             vec![AudioDevice {
                 id: 59,
+                node_name: "alsa_output.analog".to_string(),
                 name: "alsa_output.analog".to_string(),
                 active: true,
                 ..AudioDevice::default()

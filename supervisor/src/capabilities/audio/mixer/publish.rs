@@ -15,8 +15,6 @@ impl MixerState {
             return;
         }
         let (sink, source) = (self.default_node(DefaultDevice::Sink), self.default_node(DefaultDevice::Source));
-        let measured = |kind, id: Option<u32>| self.device_props(kind, id?).map(master::master_volume_from_props);
-        let (master, source_master) = (measured(DefaultDevice::Sink, sink), measured(DefaultDevice::Source, source));
         // Join here: identity and volume arrive on unordered PipeWire `info` and `param` events;
         // folding volume in at info time could overwrite a reading already landed.
         let apps = self
@@ -33,11 +31,6 @@ impl MixerState {
             })
             .collect();
         let next = AudioState {
-            volume: master.map(|m| percent_from_fraction(f64::from(m.volume.min(master::SINK_MAX_VOLUME)))),
-            muted: master.is_some_and(|m| m.muted),
-            balance: master.and_then(|m| m.balance),
-            source_volume: source_master.map(|s| percent_from_fraction(f64::from(s.volume))),
-            source_muted: source_master.is_some_and(|s| s.muted),
             sinks: device_list(&self.sinks, &self.device_routes, sink),
             sources: device_list(&self.sources, &self.device_routes, source),
             apps,
@@ -72,7 +65,7 @@ mod tests {
     use tokio::sync::mpsc::UnboundedSender;
     use tokio::sync::watch;
 
-    use super::super::devices::{AudioCard, AudioDevice, Card, CardProfile, DeviceEntry, DeviceNames};
+    use super::super::devices::{AudioCard, AudioDevice, Card, CardProfile, DeviceEntry, DeviceNames, DeviceRoute};
     use super::super::streams::CaptureApp;
     use super::*;
     use crate::capabilities::audio::{profile, route};
@@ -110,22 +103,23 @@ mod tests {
         // 50 avoids serde_json's long widened-f32 tail, keeping this about field shape.
         let stream = sample_stream(1);
         let state = AudioState {
-            volume: Some(50.0),
-            muted: false,
-            balance: None,
-            source_volume: Some(25.0),
-            source_muted: true,
             sinks: vec![AudioDevice {
                 id: 59,
+                node_name: "alsa_output.analog-stereo".to_string(),
                 name: "Built-in Audio Analog Stereo".to_string(),
                 active: true,
+                card: Some(51),
+                volume: Some(50.0),
                 icon: Some("audio-card-analog".to_string()),
                 ..AudioDevice::default()
             }],
             sources: vec![AudioDevice {
                 id: 60,
+                node_name: "alsa_input.analog-stereo".to_string(),
                 name: "Built-in Audio Analog Stereo".to_string(),
                 active: true,
+                volume: Some(25.0),
+                muted: true,
                 ..AudioDevice::default()
             }],
             apps: vec![stream.clone()],
@@ -162,12 +156,24 @@ mod tests {
         assert_eq!(
             json,
             serde_json::json!({
-                "volume": 50.0,
-                "muted": false,
-                "source_volume": 25.0,
-                "source_muted": true,
-                "sinks": [{ "id": 59, "name": "Built-in Audio Analog Stereo", "active": true, "icon": "audio-card-analog" }],
-                "sources": [{ "id": 60, "name": "Built-in Audio Analog Stereo", "active": true }],
+                "sinks": [{
+                    "id": 59,
+                    "node_name": "alsa_output.analog-stereo",
+                    "name": "Built-in Audio Analog Stereo",
+                    "active": true,
+                    "card": 51,
+                    "volume": 50.0,
+                    "muted": false,
+                    "icon": "audio-card-analog",
+                }],
+                "sources": [{
+                    "id": 60,
+                    "node_name": "alsa_input.analog-stereo",
+                    "name": "Built-in Audio Analog Stereo",
+                    "active": true,
+                    "volume": 25.0,
+                    "muted": true,
+                }],
                 "apps": [{
                     "id": stream.id,
                     "pid": stream.pid,
@@ -242,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_combines_master_volume_and_app_snapshot() {
+    fn publish_audio_reports_each_devices_volume_and_the_app_snapshot() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
@@ -254,8 +260,8 @@ mod tests {
         state.publish_audio();
 
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
-        assert_eq!(published.volume, Some(30.0), "a whole percent, not f32 noise");
-        assert!(!published.muted);
+        assert_eq!(published.sinks[0].volume, Some(30.0), "a whole percent, not f32 noise");
+        assert!(!published.sinks[0].muted);
         assert_eq!(published.apps, vec![sample_stream(1)]);
     }
 
@@ -418,13 +424,18 @@ mod tests {
         assert_eq!(published.sinks.iter().map(|sink| sink.active).collect::<Vec<_>>(), [false, true]);
         assert_eq!(published.sinks[1].name, "WH-1000XM4");
         assert_eq!(published.sinks[0].channels.as_ref().unwrap()[0].volume, 200.0);
+        assert_eq!(published.sinks[0].volume, Some(200.0), "a sink that is not the default is reported uncorrected");
         assert_eq!(published.sinks[1].channels, None);
+        // The source's Props use the sink's cube-root conversion.
         assert_eq!(
             published.sources,
             vec![AudioDevice {
                 id: 60,
+                node_name: "alsa_input.analog".to_string(),
                 name: "Built-in Microphone".to_string(),
                 active: true,
+                volume: Some(60.0),
+                muted: true,
                 channels: Some(vec![
                     AudioChannel { index: 0, position: None, volume: 60.0 },
                     AudioChannel { index: 1, position: None, volume: 60.0 },
@@ -432,9 +443,6 @@ mod tests {
                 ..AudioDevice::default()
             }]
         );
-        // The source's Props use the master's cube-root conversion.
-        assert!((published.source_volume.unwrap() - 60.0).abs() < 1e-4, "got {:?}", published.source_volume);
-        assert!(published.source_muted);
     }
 
     #[test]
@@ -445,13 +453,15 @@ mod tests {
         let mut source = sink_at("bluez_input.headset", None, Some(props_at(1.0, false)));
         source.props.as_mut().unwrap().channel_map =
             vec![pipewire::spa::sys::SPA_AUDIO_CHANNEL_FL, pipewire::spa::sys::SPA_AUDIO_CHANNEL_FR];
-        source.route = Some(super::super::devices::DeviceRoute { device_id: 80, profile_device: 0 });
+        source.route = Some(DeviceRoute { device_id: 80, profile_device: 0 });
         state.sources.insert(91, source);
         state.default_source_name = Some("bluez_input.headset".to_string());
 
         state.publish_audio();
         let before_route = rx.try_recv().unwrap();
-        assert!(!before_route.source_muted);
+        assert!(!before_route.sources[0].muted);
+        assert_eq!(before_route.sources[0].balance, Some(0.0), "a front pair reads centred");
+        assert_eq!(before_route.sources[0].card, Some(80));
         assert_eq!(before_route.sources[0].channels.as_ref().unwrap()[0].position.as_deref(), Some("front_left"));
 
         state
@@ -459,8 +469,8 @@ mod tests {
             .insert((80, 0), route::ActiveRoute { index: 0, port: None, props: Some(props_at(0.4, true)) });
         state.publish_audio();
         let published = rx.try_recv().unwrap();
-        assert!(published.source_muted);
-        assert!((published.source_volume.unwrap() - 40.0).abs() < 1e-4);
+        assert!(published.sources[0].muted);
+        assert_eq!(published.sources[0].volume, Some(40.0));
         assert_eq!(
             published.sources[0].channels.as_ref().unwrap().iter().map(|channel| channel.volume).collect::<Vec<_>>(),
             [40.0, 40.0]
@@ -469,14 +479,12 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_of_a_fresh_state_reports_no_master_volume_and_deduplicates_identical_state() {
+    fn publish_audio_of_a_fresh_state_reports_empty_lists_and_deduplicates_identical_state() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
         state.publish_audio();
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
-        assert_eq!(published.volume, None, "no master volume with no sink tracked");
-        assert!(!published.muted);
         assert!(published.apps.is_empty());
         assert!(published.sinks.is_empty());
         assert!(published.sources.is_empty());

@@ -5,19 +5,33 @@ a read-only signal, and its action methods ask its backend to act. This page hol
 capability shares; each capability's page holds its state, actions and backend.
 
 ```lua
+local function default_sink(audio)
+    for _, sink in ipairs(audio and audio.sinks or {}) do
+        if sink.active then
+            return sink
+        end
+    end
+end
+
 text {
-    on_click = function() mantle.audio:toggle_mute() end,
+    on_click = function()
+        local sink = default_sink(mantle.audio:get())
+        if sink then
+            mantle.audio:toggle_mute(sink.id)
+        end
+    end,
     on_wheel = function(_, steps)
-        local audio = mantle.audio:get()
-        if audio and audio.volume then
-            mantle.audio:set_volume(audio.volume + steps * 5) -- percent, clamped to [0, 150]
+        local sink = default_sink(mantle.audio:get())
+        if sink and sink.volume then
+            mantle.audio:set_volume(sink.id, sink.volume + steps * 5) -- percent, clamped to [0, 150]
         end
     end,
     content = mantle.audio:map(function(audio)
-        if audio.volume == nil then
+        local sink = default_sink(audio)
+        if sink == nil or sink.volume == nil then
             return "--" -- no volume without a default sink
         end
-        return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
+        return sink.muted and "muted" or string.format("%d%%", math.floor(sink.volume + 0.5))
     end, "--"),
 }
 ```
@@ -32,7 +46,7 @@ a property and the property stays live. Each push replaces the whole snapshot.
 | `:get()` | The last pushed snapshot; `nil` before the first |
 | `:map(fn, before?)` | Derived signal. `fn` never sees the pre-push `nil`: until the first push the signal holds `before` (default `nil`, the property's default). `computed` skips `fn` the same way; see [Capabilities before their first push](../guide/signals.md#capabilities-before-their-first-push) |
 | `:on_change(fn)` | `fn(current, previous)` once per push, after it lands; `previous` is `nil` on the first. Runs under the [Lua CPU budget](../guide/runtime.md#limits-and-budgets) and may call actions, `process.run` or write state. A raise logs a warning and the next handler still runs. Every evaluation clears them before `shell.lua` registers its own |
-| `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(50)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
+| `:<action>(...)` | One method per action on the capability's page, e.g. `mantle.audio:set_volume(sink.id, 50)`. Queues one command and returns nothing. Read the state it changes for the outcome. Call it with `:`; a `.` call raises |
 
 There is no `:set` on the state; `mantle.brightness:set` and `mantle.storage:set` are actions. `mantle.idle` has no actions; it takes [methods](idle.md#methods) instead.
 
@@ -60,12 +74,12 @@ still exists.
 
 | Mistake | Result |
 | :--- | :--- |
-| A state field read off the capability (`mantle.audio.volume`) | Raises at the read: ``did you mean `mantle.audio:get().volume`?`` |
+| A state field read off the capability (`mantle.audio.sinks`) | Raises at the read: ``did you mean `mantle.audio:get().sinks`?`` |
 | A misspelled action (`mantle.audio:set_volum(1)`) | Raises at the read: ``did you mean `mantle.audio:set_volume(...)`?`` |
 | Any other unknown name | Raises at the read, listing the actions the capability takes |
 | Any other method but `get`, `map` and `on_change` on `appearance`, `battery`, `privacy` or `clock` | Raises: they have no actions |
 | A function or userdata argument | Raises at the call, naming its slot |
-| Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #1: expected a number, got string "loud"`, or `mantle.audio:set_volume: expects 1 argument, got 2` |
+| Wrong type, range or argument count | Raises at the call: `mantle.audio:set_volume: bad argument #2: expected a number, got string "loud"`, or `mantle.audio:set_volume: expects 2 arguments, got 3` |
 | A value the type rules out | Raises at the call: an empty name, a relative `folders:watch` path, a negative `hold_expiry` |
 | A float where an `integer` goes | Raises: `5.0` is refused, `5` works. `math.floor(x + 0.5)` returns an integer |
 | Arguments to an action that takes none | Raises: `mantle.network:scan(1)` is refused |
@@ -173,7 +187,7 @@ Five members come from the Renderer, not a backend, so they are never `nil` and 
 | Trap | Fix |
 | :--- | :--- |
 | `attempt to index a nil value` in a `:map` at startup | Guard the whole payload before its fields |
-| An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (`audio.volume` with no default sink) |
+| An optional field is `nil` | A JSON `null` arrives as an absent key. Fields marked `?` need their own guard (a sink's `volume` before its first report) |
 | `local ok = mantle.audio:set_volume(...)` is always `nil` | Bind the state the action changes; read `mantle log` for refused commands |
 | An action raises `bad argument #N: expected ...` or `expects N arguments, got M` | Wrong argument type or count, often a float where an `integer` goes (`keyboard:switch_layout(1.0)`) |
 | An action silently does nothing | Its target is stale or unknown to the Supervisor, such as a closed window's ID. Check `mantle log` |

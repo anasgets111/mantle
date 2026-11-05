@@ -189,7 +189,7 @@ mod tests {
             (decode::<NetworkAction>("connect", json!(["Home", true, 3])), Err("invalid length 3")),
             (decode::<NetworkAction>("unlock", json!([])), Err("unknown variant")),
             // Lua has one number type, so `1` is a volume.
-            (decode::<AudioAction>("set_volume", json!([1])), Ok("SetVolume { volume: 1.0 }")),
+            (decode::<AudioAction>("set_volume", json!([59, 1])), Ok("SetVolume { id: 59, volume: 1.0 }")),
             (decode::<AudioAction>("set_default_sink", json!([u64::from(u32::MAX) + 1])), Err("u32")),
             (decode::<TrayAction>("activate_menu_item", json!(["1.42", 1u64 << 31])), Err("i32")),
             (decode::<TrayAction>("scroll", json!(["1.42", 1, "diagonal"])), Err("unknown variant")),

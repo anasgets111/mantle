@@ -85,28 +85,23 @@ fn env_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AudioAction {
-    /// Sets master output volume in percent, clamped to `[0, 150]`.
-    SetVolume { volume: f32 },
-    /// Sets master output mute.
-    SetMuted { muted: bool },
-    /// Toggles master output mute.
-    ToggleMute,
-    /// Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
-    SetBalance { balance: f32 },
+    /// Sets a `sinks[].id` or `sources[].id` volume in percent, clamped to `[0, 150]` for a sink and
+    /// `[0, 100]` for a source. It need not be the default.
+    SetVolume { id: u32, volume: f32 },
+    /// Sets a `sinks[].id` or `sources[].id` mute.
+    SetMuted { id: u32, muted: bool },
+    /// Toggles a `sinks[].id` or `sources[].id` mute.
+    ToggleMute { id: u32 },
+    /// Sets a `sinks[].id` or `sources[].id` balance, `-1.0` (left) to `1.0` (right), clamped; the
+    /// louder side keeps its level.
+    SetBalance { id: u32, balance: f32 },
     /// Makes this `sinks[].id` the default output.
     SetDefaultSink { id: u32 },
     /// Makes this `sources[].id` the default input.
     SetDefaultSource { id: u32 },
-    /// Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged.
-    SetSinkChannelVolume { id: u32, index: u32, volume: f32 },
-    /// Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged.
-    SetSourceChannelVolume { id: u32, index: u32, volume: f32 },
-    /// Sets default input volume in percent, clamped to `[0, 100]`.
-    SetSourceVolume { volume: f32 },
-    /// Sets default input mute.
-    SetSourceMuted { muted: bool },
-    /// Toggles default input mute.
-    ToggleSourceMute,
+    /// Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as
+    /// `set_volume`. Other channels stay unchanged.
+    SetChannelVolume { id: u32, index: u32, volume: f32 },
     /// Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
     SetAppVolume { id: u32, volume: f32 },
     /// Sets an `apps[].id` stream's mute.

@@ -30,21 +30,15 @@ pub fn dispatch(commands: &AudioCommandSender, envelope: &shared::CommandEnvelop
 
 fn command(action: AudioAction) -> AudioCommand {
     match action {
-        AudioAction::SetVolume { volume } => AudioCommand::SetMasterVolume(volume / 100.0),
-        AudioAction::SetMuted { muted } => AudioCommand::SetMasterMuted(muted),
-        AudioAction::ToggleMute => AudioCommand::ToggleMasterMute,
-        AudioAction::SetBalance { balance } => AudioCommand::SetBalance(balance),
+        AudioAction::SetVolume { id, volume } => AudioCommand::SetVolume { id, volume: volume / 100.0 },
+        AudioAction::SetMuted { id, muted } => AudioCommand::SetMuted { id, muted },
+        AudioAction::ToggleMute { id } => AudioCommand::ToggleMute(id),
+        AudioAction::SetBalance { id, balance } => AudioCommand::SetBalance { id, balance },
         AudioAction::SetDefaultSink { id } => AudioCommand::SetDefaultSink(id),
         AudioAction::SetDefaultSource { id } => AudioCommand::SetDefaultSource(id),
-        AudioAction::SetSinkChannelVolume { id, index, volume } => {
-            AudioCommand::SetSinkChannelVolume { id, index, volume: volume / 100.0 }
+        AudioAction::SetChannelVolume { id, index, volume } => {
+            AudioCommand::SetChannelVolume { id, index, volume: volume / 100.0 }
         }
-        AudioAction::SetSourceChannelVolume { id, index, volume } => {
-            AudioCommand::SetSourceChannelVolume { id, index, volume: volume / 100.0 }
-        }
-        AudioAction::SetSourceVolume { volume } => AudioCommand::SetSourceVolume(volume / 100.0),
-        AudioAction::SetSourceMuted { muted } => AudioCommand::SetSourceMuted(muted),
-        AudioAction::ToggleSourceMute => AudioCommand::ToggleSourceMute,
         AudioAction::SetAppVolume { id, volume } => AudioCommand::SetAppVolume { id, volume: volume / 100.0 },
         AudioAction::SetAppMuted { id, muted } => AudioCommand::SetAppMuted { id, muted },
         AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
@@ -59,16 +53,13 @@ mod tests {
     fn volumes_arrive_as_percents_and_leave_as_fractions() {
         let decode =
             |action, arguments: &[serde_json::Value]| command(shared::action::decode(action, arguments).unwrap());
-        assert_eq!(decode("set_volume", &[150.into()]), AudioCommand::SetMasterVolume(1.5));
-        assert_eq!(decode("set_source_volume", &[50.into()]), AudioCommand::SetSourceVolume(0.5));
+        assert_eq!(decode("set_volume", &[59.into(), 150.into()]), AudioCommand::SetVolume { id: 59, volume: 1.5 });
         assert_eq!(
-            decode("set_sink_channel_volume", &[7.into(), 1.into(), 150.into()]),
-            AudioCommand::SetSinkChannelVolume { id: 7, index: 1, volume: 1.5 }
+            decode("set_channel_volume", &[7.into(), 1.into(), 150.into()]),
+            AudioCommand::SetChannelVolume { id: 7, index: 1, volume: 1.5 }
         );
-        assert_eq!(
-            decode("set_source_channel_volume", &[8.into(), 0.into(), 40.into()]),
-            AudioCommand::SetSourceChannelVolume { id: 8, index: 0, volume: 0.4 }
-        );
+        assert_eq!(decode("toggle_mute", &[60.into()]), AudioCommand::ToggleMute(60));
+        assert_eq!(decode("set_muted", &[60.into(), true.into()]), AudioCommand::SetMuted { id: 60, muted: true });
         assert_eq!(
             decode("set_app_volume", &[7.into(), 25.into()]),
             AudioCommand::SetAppVolume { id: 7, volume: 0.25 }

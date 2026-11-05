@@ -6,25 +6,9 @@ use serde::Serialize;
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioState {
-    /// Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients
-    /// are pulled back to `150`. `nil` with no sink or before its first volume report.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub volume: Option<f64>,
-    /// Default output mute; `false` with no default sink or before its first report.
-    pub muted: bool,
-    /// Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown
-    /// channel map.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub balance: Option<f32>,
-    /// Default input volume in percent; `set_source_volume` caps at `100`, another client may not.
-    /// `nil` with no source or before its first volume report.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_volume: Option<f64>,
-    /// Default input (microphone) mute; `false` with no default source or before its first report.
-    pub source_muted: bool,
-    /// Every output device.
+    /// Every output device; the `active` one is the default.
     pub sinks: Vec<AudioDevice>,
-    /// Every input device.
+    /// Every input device; the `active` one is the default.
     pub sources: Vec<AudioDevice>,
     /// Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
     pub apps: Vec<AppStream>,
@@ -37,13 +21,28 @@ pub struct AudioState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioDevice {
-    /// PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
+    /// PipeWire node id, the first argument of every device action; not reboot-stable.
     pub id: u32,
+    /// `node.name`, e.g. `"alsa_output.pci-0000_00_1f.3.analog-stereo"`: stable across reboots, so
+    /// a config keys its own labels on it.
+    pub node_name: String,
     /// `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`.
     pub name: String,
     /// This is the default output or input; with no default known, or one not in this list, the lowest
     /// `id` is.
     pub active: bool,
+    /// The `cards[].device` this comes from; `nil` for a virtual device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub card: Option<u32>,
+    /// Volume in percent, the loudest channel; `nil` before its first report. A sink's default is
+    /// pulled back to `150` when another client sets it louder.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub volume: Option<f64>,
+    /// `false` before its first report.
+    pub muted: bool,
+    /// `-1.0` (left) to `1.0` (right); `nil` for mono, an unknown channel map, or before its first report.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub balance: Option<f32>,
     /// `device.icon-name` theme name, e.g. `"audio-card-analog"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
@@ -66,7 +65,7 @@ pub struct AudioDevice {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioChannel {
-    /// Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`.
+    /// Zero-based index for `set_channel_volume`.
     pub index: u32,
     /// Speaker position, e.g. `"front_left"` or `"front_right"`.
     #[serde(skip_serializing_if = "Option::is_none")]

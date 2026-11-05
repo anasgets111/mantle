@@ -537,8 +537,8 @@ mod tests {
             ),
             (
                 "capability field read",
-                &[("shell.lua", "\nlocal v = mantle.audio.volume\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio has no `volume`: did you mean `mantle.audio:get().volume`?"],
+                &[("shell.lua", "\nlocal v = mantle.audio.sinks\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio has no `sinks`: did you mean `mantle.audio:get().sinks`?"],
             ),
             (
                 "capability field far from every name",
@@ -600,8 +600,8 @@ mod tests {
             ),
             (
                 "action with a wrong argument count",
-                &[("shell.lua", "\nmantle.audio:set_volume(1, 2)\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio:set_volume: expects 1 argument, got 2"],
+                &[("shell.lua", "\nmantle.audio:set_volume(1, 2, 3)\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: expects 2 arguments, got 3"],
             ),
             (
                 "action value out of range",
@@ -628,8 +628,8 @@ mod tests {
             ),
             (
                 "action argument NaN",
-                &[("shell.lua", "\nmantle.audio:set_volume(0 / 0)\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio:set_volume: bad argument #1: expected a finite number, got number nan"],
+                &[("shell.lua", "\nmantle.audio:set_volume(59, 0 / 0)\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: bad argument #2: expected a finite number, got number nan"],
             ),
             (
                 "action argument nil before another",
@@ -689,8 +689,8 @@ mod tests {
             ),
             (
                 "set_volume with a string",
-                &[("shell.lua", "\nmantle.audio:set_volume(\"loud\")\nreturn {}\n")],
-                &["shell.lua:2: mantle.audio:set_volume: bad argument #1: expected a number, got string \"loud\""],
+                &[("shell.lua", "\nmantle.audio:set_volume(59, \"loud\")\nreturn {}\n")],
+                &["shell.lua:2: mantle.audio:set_volume: bad argument #2: expected a number, got string \"loud\""],
             ),
             (
                 "an integral float is a number",
@@ -846,7 +846,7 @@ mod tests {
     fn false_last_variant_and_empty_list_branches_fail_their_own_pass() {
         for (source, pass) in [
             (
-                "mantle.audio:map(function(s) return (s and not s.muted) and { 1 } or {} end)",
+                "mantle.audio:map(function(s) return (s and s.sinks[1] and not s.sinks[1].muted) and { 1 } or {} end)",
                 "with alternate sample data",
             ),
             (

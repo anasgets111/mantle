@@ -30,14 +30,9 @@ list {
 | Field | Type | Description |
 | --- | --- | --- |
 | `apps` | `AppStream[]` | Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures. |
-| `balance?` | `number` | Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map. |
 | `cards` | `AudioCard[]` | ALSA and BlueZ cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile: analog or HDMI on one Intel HDA card, a codec on a headset. |
-| `muted` | `boolean` | Default output mute; `false` with no default sink or before its first report. |
-| `sinks` | `AudioDevice[]` | Every output device. |
-| `source_muted` | `boolean` | Default input (microphone) mute; `false` with no default source or before its first report. |
-| `source_volume?` | `number` | Default input volume in percent; `set_source_volume` caps at `100`, another client may not. `nil` with no source or before its first volume report. |
-| `sources` | `AudioDevice[]` | Every input device. |
-| `volume?` | `number` | Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients are pulled back to `150`. `nil` with no sink or before its first volume report. |
+| `sinks` | `AudioDevice[]` | Every output device; the `active` one is the default. |
+| `sources` | `AudioDevice[]` | Every input device; the `active` one is the default. |
 
 ### `AppStream`
 
@@ -74,7 +69,7 @@ One sink or source channel. `position` is `nil` if PipeWire omits or does not na
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `index` | `integer` | Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`. |
+| `index` | `integer` | Zero-based index for `set_channel_volume`. |
 | `position?` | `string` | Speaker position, e.g. `"front_left"` or `"front_right"`. |
 | `volume` | `number` | Reported level in percent. Sink writes stop at `150`; only the default output is corrected above it. |
 
@@ -85,13 +80,18 @@ One `sinks` or `sources` entry.
 | Field | Type | Description |
 | --- | --- | --- |
 | `active` | `boolean` | This is the default output or input; with no default known, or one not in this list, the lowest `id` is. |
+| `balance?` | `number` | `-1.0` (left) to `1.0` (right); `nil` for mono, an unknown channel map, or before its first report. |
 | `bus?` | `string` | `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`. |
+| `card?` | `integer` | The `cards[].device` this comes from; `nil` for a virtual device. |
 | `channels?` | `AudioChannel[]` | Channel levels in percent, or `nil` before valid channel volumes arrive. Indices name the current channel order; read a fresh snapshot after a device changes. |
 | `form_factor?` | `string` | `device.form-factor`, e.g. `"headset"`. |
 | `icon?` | `string` | `device.icon-name` theme name, e.g. `"audio-card-analog"`. |
-| `id` | `integer` | PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable. |
+| `id` | `integer` | PipeWire node id, the first argument of every device action; not reboot-stable. |
+| `muted` | `boolean` | `false` before its first report. |
 | `name` | `string` | `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`. |
+| `node_name` | `string` | `node.name`, e.g. `"alsa_output.pci-0000_00_1f.3.analog-stereo"`: stable across reboots, so a config keys its own labels on it. |
 | `port?` | `string` | The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`. |
+| `volume?` | `number` | Volume in percent, the loudest channel; `nil` before its first report. A sink's default is pulled back to `150` when another client sets it louder. |
 
 ### `CardProfile`
 
@@ -111,17 +111,13 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 
 | Action | Arguments | Description |
 | --- | --- | --- |
-| `set_volume` | `volume: number` | Sets master output volume in percent, clamped to `[0, 150]`. |
-| `set_muted` | `muted: boolean` | Sets master output mute. |
-| `toggle_mute` |  | Toggles master output mute. |
-| `set_balance` | `balance: number` | Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level. |
+| `set_volume` | `id: integer, volume: number` | Sets a `sinks[].id` or `sources[].id` volume in percent, clamped to `[0, 150]` for a sink and `[0, 100]` for a source. It need not be the default. |
+| `set_muted` | `id: integer, muted: boolean` | Sets a `sinks[].id` or `sources[].id` mute. |
+| `toggle_mute` | `id: integer` | Toggles a `sinks[].id` or `sources[].id` mute. |
+| `set_balance` | `id: integer, balance: number` | Sets a `sinks[].id` or `sources[].id` balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level. |
 | `set_default_sink` | `id: integer` | Makes this `sinks[].id` the default output. |
 | `set_default_source` | `id: integer` | Makes this `sources[].id` the default input. |
-| `set_sink_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged. |
-| `set_source_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged. |
-| `set_source_volume` | `volume: number` | Sets default input volume in percent, clamped to `[0, 100]`. |
-| `set_source_muted` | `muted: boolean` | Sets default input mute. |
-| `toggle_source_mute` |  | Toggles default input mute. |
+| `set_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as `set_volume`. Other channels stay unchanged. |
 | `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`. |
 | `set_app_muted` | `id: integer, muted: boolean` | Sets an `apps[].id` stream's mute. |
 | `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice. |
@@ -132,7 +128,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 
 | PipeWire object | Feeds |
 | :--- | :--- |
-| `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `channels`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
+| `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `active`, `channels`, `volume`, `muted` and `balance`; `card` is the node's `device.id` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
@@ -144,36 +140,48 @@ way the Supervisor retries after 1 s, doubling to every 30 s, and the first push
 is a full one.
 
 Writes are not optimistic: state changes when PipeWire reports the new value. An action with no
-target (a stale `id`, no default device, or a volume write or mute toggle before that device's first
-report) is dropped with a `debug` log.
+target (a stale `id`, or a volume write or mute toggle before that device's first report) is dropped
+with a `debug` log. Volume, mute and balance writes go to the device named, which need not be the
+default.
 
 ## How do I…
 
 ### Change volume on the scroll wheel, mute on middle click
 
 A handler reads with `:get()`: it needs the value now, not a binding ([input](../guide/input.md)).
+The default output is the `active` entry of `sinks`.
 
 ```lua
+local function default_sink(audio)
+    for _, sink in ipairs(audio and audio.sinks or {}) do
+        if sink.active then
+            return sink
+        end
+    end
+end
+
 rect {
     on_wheel = function(_, steps)
-        local audio = mantle.audio:get()
-        if audio == nil or audio.volume == nil then
+        local sink = default_sink(mantle.audio:get())
+        if sink == nil or sink.volume == nil then
             return
         end
-        mantle.audio:set_volume(math.max(0, math.min(100, audio.volume + steps * 5)))
+        mantle.audio:set_volume(sink.id, math.max(0, math.min(100, sink.volume + steps * 5)))
     end,
     on_click = function(_, which)
-        if which == "middle" then
-            mantle.audio:toggle_mute()
+        local sink = default_sink(mantle.audio:get())
+        if which == "middle" and sink then
+            mantle.audio:toggle_mute(sink.id)
         end
     end,
     children = {
         text {
             content = mantle.audio:map(function(audio)
-                if audio.volume == nil then
+                local sink = default_sink(audio)
+                if sink == nil or sink.volume == nil then
                     return "--"
                 end
-                return audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume + 0.5))
+                return sink.muted and "muted" or string.format("%d%%", math.floor(sink.volume + 0.5))
             end, "--"),
         },
     },
@@ -190,14 +198,23 @@ local osd_text = state("osd_text", "")
 local osd_visible = state("osd_visible", false)
 local hide_timer
 
-mantle.audio:on_change(function(audio, previous)
-    if previous == nil or audio.volume == nil then
-        return -- the first push is learned state, not a change
+local function default_sink(audio)
+    for _, sink in ipairs(audio.sinks) do
+        if sink.active then
+            return sink
+        end
     end
-    if audio.volume == previous.volume and audio.muted == previous.muted then
+end
+
+mantle.audio:on_change(function(audio, previous)
+    local sink, before = default_sink(audio), previous and default_sink(previous)
+    if before == nil or sink == nil or sink.id ~= before.id or before.volume == nil or sink.volume == nil then
+        return -- the first push, or a new default, is learned state, not a change
+    end
+    if sink.volume == before.volume and sink.muted == before.muted then
         return
     end
-    osd_text:set(audio.muted and "Muted" or string.format("Volume %d%%", math.floor(audio.volume + 0.5)))
+    osd_text:set(sink.muted and "Muted" or string.format("Volume %d%%", math.floor(sink.volume + 0.5)))
     osd_visible:set(true)
     if hide_timer then
         hide_timer:cancel()

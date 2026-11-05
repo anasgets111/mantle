@@ -23,17 +23,23 @@ const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
 pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioCommand) {
     debug!(2; "applying command: {command:?}");
     match command {
-        AudioCommand::SetMasterVolume(volume) => set_volume(state, DefaultDevice::Sink, None, volume),
-        AudioCommand::SetMasterMuted(muted) => set_muted(state, DefaultDevice::Sink, None, Some(muted)),
-        AudioCommand::ToggleMasterMute => set_muted(state, DefaultDevice::Sink, None, None),
-        AudioCommand::SetBalance(balance) => {
-            set_levels(state, DefaultDevice::Sink, None, format_args!("balance {balance}"), |props, _| {
+        AudioCommand::SetVolume { id, volume } => {
+            set_levels(state, id, format_args!("volume {volume}"), |props, max| {
+                master::cubed_channel_volumes(volume, &props.channel_volumes, max)
+            })
+        }
+        AudioCommand::SetChannelVolume { id, index, volume } => {
+            set_levels(state, id, format_args!("channel {index} volume {volume}"), |props, max| {
+                master::channel_volume(props, index, volume, max)
+            });
+        }
+        AudioCommand::SetBalance { id, balance } => {
+            set_levels(state, id, format_args!("balance {balance}"), |props, _| {
                 master::balanced_channel_volumes(props, balance)
             });
         }
-        AudioCommand::SetSourceVolume(volume) => set_volume(state, DefaultDevice::Source, None, volume),
-        AudioCommand::SetSourceMuted(muted) => set_muted(state, DefaultDevice::Source, None, Some(muted)),
-        AudioCommand::ToggleSourceMute => set_muted(state, DefaultDevice::Source, None, None),
+        AudioCommand::SetMuted { id, muted } => set_muted(state, id, Some(muted)),
+        AudioCommand::ToggleMute(id) => set_muted(state, id, None),
         AudioCommand::SetAppVolume { id, volume } => {
             let Some(current) = state.borrow().app_props.get(&id).cloned() else {
                 debug!("set_app_volume({id}, {volume}) names a stream with no known Props; ignored");
@@ -56,47 +62,25 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         }
         AudioCommand::SetDefaultSink(id) => write_default_device(state, DefaultDevice::Sink, id),
         AudioCommand::SetDefaultSource(id) => write_default_device(state, DefaultDevice::Source, id),
-        AudioCommand::SetSinkChannelVolume { id, index, volume } => {
-            set_channel_volume(state, DefaultDevice::Sink, id, index, volume);
-        }
-        AudioCommand::SetSourceChannelVolume { id, index, volume } => {
-            set_channel_volume(state, DefaultDevice::Source, id, index, volume);
-        }
         AudioCommand::SetCardProfile { device, index } => write_card_profile(state, device, index),
     }
 }
 
-fn set_channel_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: u32, index: u32, volume: f32) {
-    set_levels(state, kind, Some(id), format_args!("channel {index} volume {volume}"), |props, max| {
-        master::channel_volume(props, index, volume, max)
-    });
-}
-
-fn set_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>, volume: f32) {
-    set_levels(state, kind, id, format_args!("volume {volume}"), |props, max| {
-        master::cubed_channel_volumes(volume, &props.channel_volumes, max)
-    });
-}
-
-/// The node a write targets: `id`, else the default device, resolved once here.
-fn target(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>) -> Option<u32> {
-    id.or_else(|| state.borrow().default_node(kind))
-}
-
-/// Writes the channel volumes `levels` derives from node `id`'s current `Props` and the direction's
-/// cap; every volume write shares it.
+/// Writes the channel volumes `levels` derives from sink or source `id`'s current `Props` and its
+/// direction's cap; every volume write shares it.
 fn set_levels(
     state: &Rc<RefCell<MixerState>>,
-    kind: DefaultDevice,
-    id: Option<u32>,
+    id: u32,
     what: std::fmt::Arguments,
     levels: impl FnOnce(&master::RawSinkProps, f32) -> Option<Vec<f32>>,
 ) {
     // ponytail: two writes within one PipeWire round trip can share stale Props; upgrade with write acknowledgments.
-    let target = target(state, kind, id);
-    let channels = target.and_then(|id| levels(state.borrow().device_props(kind, id)?, kind.max_volume()));
-    let (Some(id), Some(channels)) = (target, channels) else {
-        debug!("{what} for {kind:?} device {target:?} has no channels to write; ignored");
+    let target = {
+        let state = state.borrow();
+        state.kind_of(id).and_then(|kind| Some((kind, levels(state.device_props(kind, id)?, kind.max_volume())?)))
+    };
+    let Some((kind, channels)) = target else {
+        debug!("{what} for device {id} has no tracked device or channels to write; ignored");
         return;
     };
     write_device_volume(state, kind, id, Some(channels), None);
@@ -127,23 +111,23 @@ pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
     }
 }
 
-/// Sets or toggles a device's mute. `None` toggles using resolved `Props`; a set needs no channel
-/// count because mute carries no `channelVolumes`.
-fn set_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>, muted: Option<bool>) {
-    let Some(node_id) = target(state, kind, id) else {
-        debug!("a {kind:?} mute has no device to write to; ignored");
+/// Sets or toggles a sink's or source's mute. `None` toggles using resolved `Props`; a set needs no
+/// channel count because mute carries no `channelVolumes`.
+fn set_muted(state: &Rc<RefCell<MixerState>>, id: u32, muted: Option<bool>) {
+    let Some(kind) = state.borrow().kind_of(id) else {
+        debug!("a mute names no tracked device {id}; ignored");
         return;
     };
     // A toggle needs the current value; an explicit set does not, so only the toggle waits for
     // the first `Props`. Requiring it for both dropped a mute keypress during startup.
     //
     // A routed device still needs its Route index before the write can be sent.
-    let current = || state.borrow().device_props(kind, node_id).map(|props| !props.mute);
+    let current = || state.borrow().device_props(kind, id).map(|props| !props.mute);
     let Some(muted) = muted.or_else(current) else {
-        debug!("a {kind:?} mute toggle has no Props on node {node_id} to read; ignored");
+        debug!("a mute toggle has no Props on device {id} to read; ignored");
         return;
     };
-    write_device_volume(state, kind, node_id, None, Some(muted));
+    write_device_volume(state, kind, id, None, Some(muted));
 }
 
 /// Writes through the owning object. A hardware sink's node `Props` accepts

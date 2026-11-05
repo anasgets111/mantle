@@ -99,20 +99,25 @@
 
 ---@class AudioChannel
 ---One sink or source channel. `position` is `nil` if PipeWire omits or does not name its channel map.
----@field index integer Zero-based index for `set_sink_channel_volume` or `set_source_channel_volume`.
+---@field index integer Zero-based index for `set_channel_volume`.
 ---@field position? string Speaker position, e.g. `"front_left"` or `"front_right"`.
 ---@field volume number Reported level in percent. Sink writes stop at `150`; only the default output is corrected above it.
 
 ---@class AudioDevice
 ---One `sinks` or `sources` entry.
 ---@field active boolean This is the default output or input; with no default known, or one not in this list, the lowest `id` is.
+---@field balance? number `-1.0` (left) to `1.0` (right); `nil` for mono, an unknown channel map, or before its first report.
 ---@field bus? string `device.bus`, e.g. `"pci"`, `"usb"`, `"bluetooth"`.
+---@field card? integer The `cards[].device` this comes from; `nil` for a virtual device.
 ---@field channels? AudioChannel[] Channel levels in percent, or `nil` before valid channel volumes arrive. Indices name the current channel order; read a fresh snapshot after a device changes.
 ---@field form_factor? string `device.form-factor`, e.g. `"headset"`.
 ---@field icon? string `device.icon-name` theme name, e.g. `"audio-card-analog"`.
----@field id integer PipeWire node id, the argument of `set_default_sink`/`set_default_source`; not reboot-stable.
+---@field id integer PipeWire node id, the first argument of every device action; not reboot-stable.
+---@field muted boolean `false` before its first report.
 ---@field name string `node.description`, e.g. `"Built-in Audio Analog Stereo"`, else `node.nick`, else `node.name`.
+---@field node_name string `node.name`, e.g. `"alsa_output.pci-0000_00_1f.3.analog-stereo"`: stable across reboots, so a config keys its own labels on it.
 ---@field port? string The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`.
+---@field volume? number Volume in percent, the loudest channel; `nil` before its first report. A sink's default is pulled back to `150` when another client sets it louder.
 
 ---@alias BatteryStatus
 ---| "unknown" # No answer: UPower unreachable, an unknown state number, or a device without a battery state.
@@ -582,14 +587,9 @@
 ---@class AudioState
 ---`mantle.audio`'s payload (ADR-0053).
 ---@field apps AppStream[] Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
----@field balance? number Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map.
 ---@field cards AudioCard[] ALSA and BlueZ cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile: analog or HDMI on one Intel HDA card, a codec on a headset.
----@field muted boolean Default output mute; `false` with no default sink or before its first report.
----@field sinks AudioDevice[] Every output device.
----@field source_muted boolean Default input (microphone) mute; `false` with no default source or before its first report.
----@field source_volume? number Default input volume in percent; `set_source_volume` caps at `100`, another client may not. `nil` with no source or before its first volume report.
----@field sources AudioDevice[] Every input device.
----@field volume? number Default output volume in percent, `0` to `150`, loudest channel; louder writes by other clients are pulled back to `150`. `nil` with no sink or before its first volume report.
+---@field sinks AudioDevice[] Every output device; the `active` one is the default.
+---@field sources AudioDevice[] Every input device; the `active` one is the default.
 
 ---@class BatteryState
 ---`mantle.battery`'s payload. Without a system battery, `present = false`; peripherals may remain.
@@ -802,17 +802,13 @@ local AppearanceCapability = {}
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/audio.html)
 ---@class AudioCapability: Capability<AudioState>, userdata
----@field set_volume fun(self: AudioCapability, volume: number) Sets master output volume in percent, clamped to `[0, 150]`.
----@field set_muted fun(self: AudioCapability, muted: boolean) Sets master output mute.
----@field toggle_mute fun(self: AudioCapability) Toggles master output mute.
----@field set_balance fun(self: AudioCapability, balance: number) Sets default output balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
+---@field set_volume fun(self: AudioCapability, id: integer, volume: number) Sets a `sinks[].id` or `sources[].id` volume in percent, clamped to `[0, 150]` for a sink and `[0, 100]` for a source. It need not be the default.
+---@field set_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets a `sinks[].id` or `sources[].id` mute.
+---@field toggle_mute fun(self: AudioCapability, id: integer) Toggles a `sinks[].id` or `sources[].id` mute.
+---@field set_balance fun(self: AudioCapability, id: integer, balance: number) Sets a `sinks[].id` or `sources[].id` balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
 ---@field set_default_sink fun(self: AudioCapability, id: integer) Makes this `sinks[].id` the default output.
 ---@field set_default_source fun(self: AudioCapability, id: integer) Makes this `sources[].id` the default input.
----@field set_sink_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `sinks[].channels[]` level in percent, clamped to `[0, 150]`. Other channels stay unchanged.
----@field set_source_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `sources[].channels[]` level in percent, clamped to `[0, 100]`. Other channels stay unchanged.
----@field set_source_volume fun(self: AudioCapability, volume: number) Sets default input volume in percent, clamped to `[0, 100]`.
----@field set_source_muted fun(self: AudioCapability, muted: boolean) Sets default input mute.
----@field toggle_source_mute fun(self: AudioCapability) Toggles default input mute.
+---@field set_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as `set_volume`. Other channels stay unchanged.
 ---@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
 ---@field set_app_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets an `apps[].id` stream's mute.
 ---@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.

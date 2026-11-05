@@ -5,10 +5,18 @@ local layout = require("layout")
 local placed = layout.placed("osd")
 local osd = state("volume_osd", { volume = 0, muted = false })
 
+local function default_sink(audio)
+    for _, sink in ipairs(audio.sinks) do
+        if sink.active then return sink end
+    end
+end
+
 mantle.audio:on_change(function(audio, previous)
-    if previous == nil or audio.volume == nil then return end
-    if audio.volume ~= previous.volume or audio.muted ~= previous.muted then
-        osd:set({ volume = audio.volume, muted = audio.muted })
+    local sink, before = default_sink(audio), previous and default_sink(previous)
+    if before == nil or sink == nil or sink.id ~= before.id then return end
+    if before.volume == nil or sink.volume == nil then return end
+    if sink.volume ~= before.volume or sink.muted ~= before.muted then
+        osd:set({ volume = sink.volume, muted = sink.muted })
     end
 end)
 

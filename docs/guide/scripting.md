@@ -153,12 +153,14 @@ something.
 -- Keybind: mantle call volume.up 10
 action("volume.up", function(step)
     local audio = mantle.audio:get()
-    if not audio or not audio.volume then
-        return "no output device"
+    for _, sink in ipairs(audio and audio.sinks or {}) do
+        if sink.active and sink.volume then
+            local volume = math.max(0, math.min(150, sink.volume + (tonumber(step) or 5)))
+            mantle.audio:set_volume(sink.id, volume)
+            return string.format("%d%%", math.floor(volume + 0.5))
+        end
     end
-    local volume = math.min(150, audio.volume + (tonumber(step) or 5))
-    mantle.audio:set_volume(volume)
-    return string.format("%d%%", math.floor(volume + 0.5))
+    return "no output device"
 end)
 ```
 

@@ -9,12 +9,21 @@ changes, whether from a media key, `wpctl` or a mixer. It fades and slides in, t
 -- The last change worth showing. `n` makes every write differ: `:set` skips a table equal to the held one.
 local osd = state("volume_osd", { volume = 0, muted = false, n = 0 })
 
-mantle.audio:on_change(function(audio, previous)
-    if previous == nil or previous.volume == nil or audio.volume == nil then
-        return -- the first push is learned state, not a change
+local function default_sink(audio)
+    for _, sink in ipairs(audio.sinks) do
+        if sink.active then
+            return sink
+        end
     end
-    if audio.volume ~= previous.volume or audio.muted ~= previous.muted then
-        osd:set({ volume = audio.volume, muted = audio.muted, n = osd:get().n + 1 })
+end
+
+mantle.audio:on_change(function(audio, previous)
+    local sink, before = default_sink(audio), previous and default_sink(previous)
+    if before == nil or sink == nil or sink.id ~= before.id or before.volume == nil or sink.volume == nil then
+        return -- the first push, or a new default, is learned state, not a change
+    end
+    if sink.volume ~= before.volume or sink.muted ~= before.muted then
+        osd:set({ volume = sink.volume, muted = sink.muted, n = osd:get().n + 1 })
     end
 end)
 
@@ -97,7 +106,7 @@ Bind the volume keys to anything that changes the default sink, for example
 
 ## How it works
 
-- `on_change` reacts to each audio push and skips the first one, and a sink appearing (`previous.volume` is `nil`), which is learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
+- `on_change` reacts to each audio push and follows the `active` sink. It skips the first push, a new default and a sink's first volume report, which are learned state ([on_change](../capabilities/index.md#reading-and-acting), [audio](../capabilities/audio.md)).
 - It writes a fresh table, counted by `n`, into a [named state](../guide/signals.md#named-state); `pulse` reads `true` for a while after each change ([pulse](../guide/signals.md#pulse-mark-a-change)).
 - A longer second `pulse` keeps the surface mapped while the card fades, since hiding a surface plays no exit ([delay](../guide/signals.md#delay-hold-a-value) is the general form).
 - `output = "active"` shows it on the output the compositor picks, usually the focused one, and a bottom-only anchor centres it ([panel output](../surfaces/panel.md#output), [OSD](../surfaces/panel.md#osd)).

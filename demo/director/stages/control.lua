@@ -168,7 +168,10 @@ local panel_node = panel {
             row { width = "fill", spacing = 14, children = { tile(tiles[3]), tile(tiles[4]) } },
             slider("display-brightness-symbolic", brightness:map(function(b) return b.percent end)),
             slider("audio-volume-high-symbolic", mantle.audio:map(function(a)
-                return a.volume and math.min(a.volume, 100) or 0
+                for _, sink in ipairs(a.sinks) do
+                    if sink.active and sink.volume then return math.min(sink.volume, 100) end
+                end
+                return 0
             end, 0)),
         },
     },

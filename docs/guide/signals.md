@@ -443,7 +443,12 @@ List every source in `computed`; `before` here is `"..."` ([why](#capabilities-b
 ```lua
 local status = computed({ mantle.network, mantle.audio }, function(network, audio)
   local net = network.connected and "online" or "offline"
-  local sound = audio.muted and "muted" or string.format("%d%%", math.floor(audio.volume or 0))
+  local sink = audio.sinks[1]
+  for _, each in ipairs(audio.sinks) do
+    if each.active then sink = each end
+  end
+  local sound = not sink and "no output"
+    or sink.muted and "muted" or string.format("%d%%", math.floor(sink.volume or 0))
   return net .. " / " .. sound
 end, "...")
 
