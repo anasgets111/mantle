@@ -30,11 +30,13 @@ impl LockController {
     /// `commands_tx` returns commands to `main.rs`, the only holder of the authoritative generation
     /// id, which a swap reassigns.
     pub fn new(commands_tx: UnboundedSender<shared::SetSessionLock>) -> Self {
+        let mut dialogue = Dialogue::default();
+        dialogue.info_refuses = true;
         Self {
             state: Arc::new(Mutex::new(LockState::default())),
             commands_tx,
             unlock_animation_ms: AtomicU64::new(0),
-            dialogue: Mutex::default(),
+            dialogue: Mutex::new(dialogue),
         }
     }
 
@@ -306,6 +308,24 @@ mod tests {
         assert_eq!((state.attempts, state.error.as_str(), state.authenticating), (1, "authentication failed", false));
         controller.converse(start_into(&mut again));
         assert!(again.is_some(), "the caller restarts PAM for the next attempt");
+    }
+
+    /// Stock pam_faillock's lockout is an info line, so on the lock one before the prompt makes the
+    /// next submit restart PAM (ADR-0381).
+    #[test]
+    fn an_early_info_line_on_the_lock_restarts_pam_on_submit() {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let controller = LockController::new(tx);
+        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        let mut started = None;
+        controller.converse(start_into(&mut started));
+        let (serial, _) = started.expect("a confirmed lock starts PAM");
+        let locked = shared::PamMessage::Message { kind: shared::PamNoticeKind::Info, text: "locked".into() };
+        controller.hear(serial, locked);
+        controller.hear(serial, prompt());
+        let mut again = None;
+        assert!(controller.submit(secret(), start_into(&mut again)));
+        assert!(again.is_some(), "the refused worker was replaced");
     }
 
     /// The ADR-0042 bypass, in order: a worker started against lock N answers after the compositor
