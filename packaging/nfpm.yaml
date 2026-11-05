@@ -68,6 +68,10 @@ overrides:
       - fontconfig
     recommends:
       - pkexec
+    # Fingerprint unlock: Debian ships pam_fprintd apart from the daemon.
+    suggests:
+      - fprintd
+      - libpam-fprintd
   rpm:
     # rpm's own soname capabilities, so no Fedora package name is hardcoded.
     depends:
@@ -84,3 +88,6 @@ overrides:
       - fontconfig
     recommends:
       - polkit
+    suggests:
+      - fprintd
+      - fprintd-pam

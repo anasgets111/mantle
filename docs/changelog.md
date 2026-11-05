@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: Packages point to what fingerprint unlock needs: `mantle-bin` lists `fprintd` as optional, the `.deb` suggests `fprintd` and `libpam-fprintd`, and the `.rpm` suggests `fprintd` and `fprintd-pam`.
+
 ## 0.12.0 - 2026-11-05
 
 - Added: The lock screen unlocks with a fingerprint when fprintd has a finger enrolled. Packages install the `mantle-fingerprint` PAM stack. `mantle.lock.fingerprint` is `nil` while fingerprint is off, else `{ messages }` with pam_fprintd's lines. A missed scan never counts as an attempt.
