@@ -148,6 +148,30 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `set_app_target` | `id: integer, device?: integer` | Moves an `apps[].id` stream to a `sinks[].id`, or a recording to a `sources[].id`; `nil` returns it to the default. WirePlumber keeps the choice for that app. |
 | `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice. |
 | `set_port` | `card: integer, index: integer` | Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice. |
+| `set_virtual_devices` | `devices?: VirtualDevice[]` | Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed, and an empty list removes them. A reload keeps them until the next call; a replaced Renderer's go. A change to any kind but a null sink restarts the other kinds' devices, which drop out briefly. |
+
+### `VirtualDevice`
+
+One `set_virtual_devices` entry.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `args?` | `table<string, any>` | More arguments for the PipeWire module, or node properties for a null sink, as PipeWire's docs spell them, e.g. `{ ["filter.graph"] = {...} }`. Each top-level key replaces Mantle's default for it, `capture.props` included. |
+| `description?` | `string` | `node.description`, the name a mixer shows. |
+| `kind` | `VirtualKind` |  |
+| `name` | `string` | `node.name`, unique among the declared devices. |
+
+### `VirtualKind`
+
+What makes a virtual device.
+
+| Value | Description |
+| --- | --- |
+| `"null_sink"` | A sink that plays nowhere, `support.null-audio-sink`; its monitor records what it receives. |
+| `"combine"` | One sink playing to several, `libpipewire-module-combine-stream`; `args` takes its `stream.rules`. |
+| `"loopback"` | A sink that plays into the default output, `libpipewire-module-loopback`. For a source instead, pass `args` with `capture.props = {}` and `playback.props` holding `["media.class"] = "Audio/Source"` and `["node.name"]`. |
+| `"echo_cancel"` | A microphone with the speakers' echo removed, `libpipewire-module-echo-cancel`: the source is `name`, the sink it listens to `name .. ".sink"`. |
+| `"filter_chain"` | A sink through a filter graph such as an equalizer, `libpipewire-module-filter-chain`; `args` takes its `filter.graph`. For a source, set `capture.props` and `playback.props` as for a loopback. |
 
 ## Backend
 
@@ -161,6 +185,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | `target.object` in the `default` metadata, keyed by the stream's id | `set_app_target` writes the device's `node.name` there, how WirePlumber moves a stream; `nil` deletes it. WirePlumber's stream restore keeps the choice per app, so a stream that reconnects goes back to it, unless `node.stream.restore-target` is off |
 | ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
 | Each ALSA and BlueZ device's `EnumRoute` | `cards[].ports`; `set_port` writes a `Route` on the profile device a sink or source of the active profile uses, so a port outside the active profile is dropped |
+| `support.null-audio-sink` adapters and one `pipewire -c` child | `set_virtual_devices`: a null sink is an `adapter` the mixer creates on its own connection, so it goes with the Supervisor. Every other kind is a module in one child `pipewire`, whose conf the Supervisor writes under `$XDG_RUNTIME_DIR` and removes on exit. It restarts the child with backoff when it exits, and again when the mixer reconnects to a restarted PipeWire, which the child outlives with no modules; the child dies with the Supervisor. A module that fails to load is skipped, with PipeWire's warning on the Supervisor's stderr, and the others still load |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no
@@ -267,5 +292,19 @@ return osd
 ```
 
 See also: [Volume OSD](../cookbook/volume-osd.md) recipe.
+
+### Add a virtual sink or an echo-cancelled microphone
+
+Declare the whole list once; each device shows up in `sinks` or `sources` like a hardware one, and
+`args` passes PipeWire's own module arguments through:
+
+```lua
+mantle.audio:set_virtual_devices({
+    { kind = "null_sink", name = "stream_mix", description = "Stream mix" },
+    { kind = "echo_cancel", name = "mic_aec", description = "Microphone (echo cancelled)" },
+})
+
+return text { content = "Virtual devices declared" }
+```
 
 Source: [`supervisor/src/capabilities/audio/`](../../supervisor/src/capabilities/audio/)

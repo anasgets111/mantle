@@ -118,6 +118,56 @@ pub enum AudioAction {
     /// Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers.
     /// The port must work under the active profile. WirePlumber keeps the choice.
     SetPort { card: u32, index: i32 },
+    /// Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed,
+    /// and an empty list removes them. A reload keeps them until the next call; a replaced
+    /// Renderer's go.
+    /// A change to any kind but a null sink restarts the other kinds' devices, which drop out
+    /// briefly.
+    SetVirtualDevices {
+        #[serde(default, deserialize_with = "super::lua_list")]
+        devices: Vec<VirtualDevice>,
+    },
+}
+
+/// One `set_virtual_devices` entry.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(deny_unknown_fields)]
+pub struct VirtualDevice {
+    pub kind: VirtualKind,
+    /// `node.name`, unique among the declared devices.
+    #[serde(deserialize_with = "super::non_empty")]
+    pub name: String,
+    /// `node.description`, the name a mixer shows.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// More arguments for the PipeWire module, or node properties for a null sink, as PipeWire's
+    /// docs spell them, e.g. `{ ["filter.graph"] = {...} }`. Each top-level key replaces Mantle's
+    /// default for it, `capture.props` included.
+    #[serde(default)]
+    pub args: serde_json::Map<String, serde_json::Value>,
+}
+
+/// What makes a virtual device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum VirtualKind {
+    /// A sink that plays nowhere, `support.null-audio-sink`; its monitor records what it receives.
+    NullSink,
+    /// One sink playing to several, `libpipewire-module-combine-stream`; `args` takes its `stream.rules`.
+    Combine,
+    /// A sink that plays into the default output, `libpipewire-module-loopback`. For a source
+    /// instead, pass `args` with `capture.props = {}` and `playback.props` holding
+    /// `["media.class"] = "Audio/Source"` and `["node.name"]`.
+    Loopback,
+    /// A microphone with the speakers' echo removed, `libpipewire-module-echo-cancel`: the source
+    /// is `name`, the sink it listens to `name .. ".sink"`.
+    EchoCancel,
+    /// A sink through a filter graph such as an equalizer, `libpipewire-module-filter-chain`;
+    /// `args` takes its `filter.graph`. For a source, set `capture.props` and `playback.props` as
+    /// for a loopback.
+    FilterChain,
 }
 
 #[derive(Debug, serde::Deserialize)]

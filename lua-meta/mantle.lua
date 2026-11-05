@@ -517,6 +517,21 @@
 ---@alias Urgency "low"|"normal"|"critical"
 ---Notification urgency, also the `set_sound` tier.
 
+---@class VirtualDevice
+---One `set_virtual_devices` entry.
+---@field args? table<string, any> More arguments for the PipeWire module, or node properties for a null sink, as PipeWire's docs spell them, e.g. `{ ["filter.graph"] = {...} }`. Each top-level key replaces Mantle's default for it, `capture.props` included.
+---@field description? string `node.description`, the name a mixer shows.
+---@field kind VirtualKind
+---@field name string `node.name`, unique among the declared devices.
+
+---@alias VirtualKind
+---| "null_sink" # A sink that plays nowhere, `support.null-audio-sink`; its monitor records what it receives.
+---| "combine" # One sink playing to several, `libpipewire-module-combine-stream`; `args` takes its `stream.rules`.
+---| "loopback" # A sink that plays into the default output, `libpipewire-module-loopback`. For a source instead, pass `args` with `capture.props = {}` and `playback.props` holding `["media.class"] = "Audio/Source"` and `["node.name"]`.
+---| "echo_cancel" # A microphone with the speakers' echo removed, `libpipewire-module-echo-cancel`: the source is `name`, the sink it listens to `name .. ".sink"`.
+---| "filter_chain" # A sink through a filter graph such as an equalizer, `libpipewire-module-filter-chain`; `args` takes its `filter.graph`. For a source, set `capture.props` and `playback.props` as for a loopback.
+---What makes a virtual device.
+
 ---@class VpnError
 ---A failed VPN activation, as `vpn_error`.
 ---@field message string Display text, such as `"login failed"` or `"connection timed out"`.
@@ -831,6 +846,7 @@ local AppearanceCapability = {}
 ---@field set_app_target fun(self: AudioCapability, id: integer, device?: integer) Moves an `apps[].id` stream to a `sinks[].id`, or a recording to a `sources[].id`; `nil` returns it to the default. WirePlumber keeps the choice for that app.
 ---@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
 ---@field set_port fun(self: AudioCapability, card: integer, index: integer) Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice.
+---@field set_virtual_devices fun(self: AudioCapability, devices?: VirtualDevice[]) Replaces the declared virtual devices: each appears in `sinks` or `sources` while listed, and an empty list removes them. A reload keeps them until the next call; a replaced Renderer's go. A change to any kind but a null sink restarts the other kinds' devices, which drop out briefly.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
 ---@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata

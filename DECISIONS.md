@@ -8817,3 +8817,19 @@ resets a below-threshold tally. Packages ship it.
 
 Rejected: one stack with pam_fprintd first, which blocks typing until the scan times out; KDE's
 250 ms timing heuristic; restarting on failure with a brake, which duplicates pam_fprintd's retries.
+
+## 0383. Virtual audio devices: null sinks on the mixer's connection, modules in one `pipewire -c` child
+
+`set_virtual_devices` declares null sinks, combined sinks, loopbacks, echo-cancel sources and
+filter chains. A module runs in the process that loads it, and no protocol call loads one into the
+daemon, so every module kind goes into one generated client conf that a Supervisor-owned
+`pipewire -c` child runs, `PR_SET_PDEATHSIG` tying it to the session; it respawns with the mixer's
+backoff, a changed list restarts it, so those devices drop briefly (unmeasured), and so does the
+mixer reconnecting after PipeWire restarts, since the child outlives its daemon with no modules. A null sink is
+the `adapter` daemon factory, which a client conf cannot export, so the mixer creates it on its own
+connection with `object.linger = false` and recreates it on reconnect. The declaration belongs to
+the generation that sent it: a reload keeps it until the next call, a replaced Renderer's goes.
+
+Rejected: `pw_context_load_module` in the Supervisor (unsafe FFI, DSP and crashes shared with it,
+idle memory); pipewire-pulse `load-module` (no filter chain, lost when pipewire-pulse restarts);
+`pipewire.conf.d` drop-ins (files left behind, a PipeWire restart to apply).

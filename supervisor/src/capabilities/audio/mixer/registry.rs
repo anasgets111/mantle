@@ -19,10 +19,11 @@ use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-use crate::capabilities::audio::{master, profile, route};
+use crate::capabilities::audio::{master, profile, route, virtual_devices};
 
 use super::PropsLookup;
 use super::devices::{Card, DeviceEntry, DeviceRoute, device_names};
+use super::null_sinks;
 use super::state::{
     AudioCommand, AudioState, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState,
     PrivacySources,
@@ -48,9 +49,13 @@ pub fn run(
     updates: UnboundedSender<AudioState>,
     privacy_updates: watch::Sender<PrivacySources>,
     commands: AudioCommandReceiver,
+    virtual_devices: UnboundedSender<virtual_devices::Request>,
 ) {
-    reconnect(None, &updates, &privacy_updates, commands);
+    reconnect(None, &updates, &privacy_updates, commands, &virtual_devices);
 }
+
+/// The declared null sinks, outliving each connection so the next one creates them again.
+type NullSinks = Rc<RefCell<Vec<shared::action::VirtualDevice>>>;
 
 /// [`run`]'s loop; `remote` names a socket other than the default, for tests.
 fn reconnect(
@@ -58,13 +63,18 @@ fn reconnect(
     updates: &UnboundedSender<AudioState>,
     privacy_updates: &watch::Sender<PrivacySources>,
     commands: AudioCommandReceiver,
+    virtual_devices: &UnboundedSender<virtual_devices::Request>,
 ) {
     let mut commands = Some(commands);
-    let mut delay = RETRY_FIRST;
+    let null_sinks = NullSinks::default();
+    let (mut delay, mut lost) = (RETRY_FIRST, false);
     loop {
         let started = std::time::Instant::now();
-        match run_inner(remote, updates, privacy_updates, &mut commands) {
+        // The virtual devices' child outlives a lost daemon with none of its modules.
+        let restart = lost.then(|| virtual_devices.clone());
+        match run_inner(remote, updates, privacy_updates, &mut commands, &null_sinks, restart) {
             Ok(true) => {
+                lost = true;
                 warn!("lost the PipeWire connection; reconnecting");
                 let _ = updates.send(AudioState::default());
                 privacy_updates.send_replace(PrivacySources::default());
@@ -96,6 +106,8 @@ fn run_inner(
     updates: &UnboundedSender<AudioState>,
     privacy_updates: &watch::Sender<PrivacySources>,
     commands: &mut Option<AudioCommandReceiver>,
+    declared: &NullSinks,
+    restart: Option<UnboundedSender<virtual_devices::Request>>,
 ) -> Result<bool, pw::Error> {
     pw::init();
 
@@ -105,6 +117,8 @@ fn run_inner(
     let registry = core.get_registry_rc()?;
 
     let state = Rc::new(RefCell::new(MixerState::new(updates.clone(), privacy_updates.clone())));
+    // `done` answers once per barrier, and only the last opens the gate; take, so one restart.
+    let restart = Cell::new(restart);
 
     // Weak: the listener is stored on registry's C object, so a captured strong RegistryRc would
     // keep itself alive forever.
@@ -188,6 +202,9 @@ fn run_inner(
             if id != pw::core::PW_ID_CORE || barrier_for_done.get() != Some(seq.seq()) {
                 return;
             }
+            if let Some(restart) = restart.take() {
+                let _ = restart.send(virtual_devices::Request::Restart);
+            }
             // Publish once here even with no sink at all: a machine with no audio hardware still
             // owes the config an answer, and waiting for a nonempty map would never end.
             let mut state = state_for_done.borrow_mut();
@@ -221,9 +238,15 @@ fn run_inner(
 
     // Hold it for the loop lifetime; dropping AttachedReceiver detaches the eventfd source and
     // every later command is silently discarded.
-    let state_for_command = Rc::clone(&state);
+    null_sinks::sync(&state, &core, &declared.borrow());
+    let (state_for_command, core_for_command, declared) = (Rc::clone(&state), core.clone(), Rc::clone(declared));
     let Some(receiver) = commands.take() else { return Ok(false) };
     let attached = receiver.attach(main_loop.loop_(), move |command| {
+        // Names, not ids: applied before hydration too.
+        if let AudioCommand::SetNullSinks(devices) = command {
+            *declared.borrow_mut() = devices;
+            return null_sinks::sync(&state_for_command, &core_for_command, &declared.borrow());
+        }
         // Sent before this connection's first snapshot, as during an outage: its ids name nothing live.
         if !state_for_command.borrow().hydrated {
             return debug!("dropped {command:?}: PipeWire has not answered yet");
@@ -667,7 +690,7 @@ mod tests {
             context.spa-libs = { audio.convert.* = audioconvert/libspa-audioconvert support.* = support/libspa-support }
             context.modules = [
                 { name = libpipewire-module-protocol-native } { name = libpipewire-module-access }
-                { name = libpipewire-module-adapter }
+                { name = libpipewire-module-adapter } { name = libpipewire-module-client-node }
             ]
             context.objects = [ { factory = adapter args = {
                 factory.name = support.null-audio-sink node.name = test-sink media.class = Audio/Sink
@@ -718,17 +741,112 @@ mod tests {
         assert_eq!(params_to_ask(&mut seen, info(&profile).into_iter()), card, "the route's flag is unchanged");
     }
 
+    /// The ids and `node.name`s of the `class` nodes `pw-dump` lists on the private daemon at `dir`.
+    fn nodes(dir: &std::path::Path, class: &str) -> Vec<(u64, String)> {
+        let output = Command::new("pw-dump").env("PIPEWIRE_RUNTIME_DIR", dir).output().expect("pw-dump runs");
+        let dump: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap_or_default();
+        dump.iter()
+            .filter(|object| object["info"]["props"]["media.class"] == class)
+            .map(|object| {
+                let name = object["info"]["props"]["node.name"].as_str().unwrap_or_default().to_owned();
+                (object["id"].as_u64().unwrap_or_default(), name)
+            })
+            .collect()
+    }
+
+    /// Polls [`nodes`] until `done` accepts them, within 10 s.
+    fn until_nodes(dir: &std::path::Path, class: &str, done: impl Fn(&[(u64, String)]) -> bool) -> Vec<(u64, String)> {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let found = nodes(dir, class);
+            if done(&found) {
+                return found;
+            }
+            assert!(Instant::now() < deadline, "the daemon never held the {class} nodes wanted: {found:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// A mixer thread on the private daemon at `dir`, and the far ends of its channels.
+    struct Mixer {
+        published: tokio::sync::mpsc::UnboundedReceiver<AudioState>,
+        commands: AudioCommandSender,
+        restarts: tokio::sync::mpsc::UnboundedReceiver<virtual_devices::Request>,
+    }
+
+    fn mixer(dir: &std::path::Path) -> Mixer {
+        let remote = dir.join("pipewire-0").to_str().unwrap().to_owned();
+        let (updates, published) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy) = watch::channel(PrivacySources::default());
+        let (commands, receiver) = command_channel();
+        let (restart, restarts) = tokio::sync::mpsc::unbounded_channel();
+        std::thread::spawn(move || {
+            reconnect(Some(&remote), &updates, &privacy_updates, receiver, &restart);
+        });
+        Mixer { published, commands, restarts }
+    }
+
+    /// A declared null sink appears, comes back after a daemon restart, which also asks the
+    /// virtual devices' child to restart, and goes with an empty list.
+    #[test]
+    fn a_null_sink_is_made_again_after_a_restart_and_goes_with_an_empty_list() {
+        let dir = tempfile::tempdir().unwrap();
+        let pipewire = daemon(dir.path());
+        let mut mixer = mixer(dir.path());
+        let device = shared::action::VirtualDevice {
+            kind: shared::action::VirtualKind::NullSink,
+            name: "mantle-test-null".to_string(),
+            description: None,
+            args: serde_json::Map::new(),
+        };
+        let declared = |audio: &AudioState| audio.sinks.iter().any(|sink| sink.node_name == "mantle-test-null");
+        until(&mut mixer.published, |audio| audio.sinks.len() == 1);
+        mixer.commands.send(AudioCommand::SetNullSinks(vec![device])).unwrap();
+        until(&mut mixer.published, declared);
+        assert!(mixer.restarts.try_recv().is_err(), "the first connection restarts nothing");
+
+        drop(pipewire);
+        until(&mut mixer.published, |audio| *audio == AudioState::default());
+        let _pipewire = daemon(dir.path());
+        until(&mut mixer.published, declared);
+        assert!(matches!(mixer.restarts.try_recv(), Ok(virtual_devices::Request::Restart)));
+
+        mixer.commands.send(AudioCommand::SetNullSinks(Vec::new())).unwrap();
+        until(&mut mixer.published, |audio| audio.sinks.len() == 1 && !declared(audio));
+    }
+
+    /// The conf `set_virtual_devices` writes loads in `pipewire -c`: a loopback is a sink by its name.
+    #[test]
+    fn a_loopback_in_the_generated_conf_loads_as_a_sink() {
+        let dir = tempfile::tempdir().unwrap();
+        let _pipewire = daemon(dir.path());
+        let device = shared::action::VirtualDevice {
+            kind: shared::action::VirtualKind::Loopback,
+            name: "mantle-test-loop".to_string(),
+            description: Some("Test loop".to_string()),
+            args: serde_json::Map::new(),
+        };
+        let conf = dir.path().join("devices.conf");
+        std::fs::write(&conf, virtual_devices::conf_text(&[device])).unwrap();
+        let child = Command::new("pipewire")
+            .arg("-c")
+            .arg(&conf)
+            .env("PIPEWIRE_RUNTIME_DIR", dir.path())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let _child = Daemon(child);
+        until_nodes(dir.path(), "Audio/Sink", |found| found.iter().any(|(_, name)| name == "mantle-test-loop"));
+    }
+
     /// Absent at start, then up, lost, and back, as a PipeWire started late at login and then
     /// restarted. A write queued during the outage is dropped; one sent after it lands, and a mute
     /// toggle flips the sink.
     #[test]
     fn a_missing_or_lost_pipewire_is_reconnected() {
         let dir = tempfile::tempdir().unwrap();
-        let remote = dir.path().join("pipewire-0").to_str().unwrap().to_owned();
-        let (updates, mut published) = tokio::sync::mpsc::unbounded_channel();
-        let (privacy_updates, _privacy) = watch::channel(PrivacySources::default());
-        let (commands, receiver) = command_channel();
-        std::thread::spawn(move || reconnect(Some(&remote), &updates, &privacy_updates, receiver));
+        let Mixer { mut published, commands, .. } = mixer(dir.path());
 
         std::thread::sleep(Duration::from_millis(200));
         let pipewire = daemon(dir.path());

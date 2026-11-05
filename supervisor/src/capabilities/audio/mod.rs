@@ -11,9 +11,46 @@ pub mod master;
 pub mod mixer;
 mod profile;
 mod route;
+mod virtual_devices;
 
 use mixer::{AudioCommand, AudioCommandSender};
 use shared::action::AudioAction;
+use tokio::sync::mpsc::UnboundedSender;
+
+/// The mixer thread's command channel and the virtual devices' task.
+pub struct Audio {
+    commands: AudioCommandSender,
+    virtual_devices: tokio::sync::mpsc::UnboundedSender<virtual_devices::Request>,
+    /// The virtual devices' conf, removed here on exit: the task is cancelled, not finished.
+    conf: Option<std::path::PathBuf>,
+}
+
+impl Audio {
+    /// Starts the PipeWire mixer thread and the virtual devices' task.
+    pub fn start(
+        updates: UnboundedSender<mixer::AudioState>,
+        privacy_updates: tokio::sync::watch::Sender<mixer::PrivacySources>,
+    ) -> Self {
+        let (commands, receiver) = mixer::command_channel();
+        let virtual_devices = virtual_devices::spawn(commands.clone());
+        let restarts = virtual_devices.clone();
+        std::thread::spawn(move || mixer::run(updates, privacy_updates, receiver, restarts));
+        Self { commands, virtual_devices, conf: virtual_devices::conf_path() }
+    }
+
+    /// Removes the virtual devices `generation` declared, unless a newer one re-declared them.
+    pub fn forget(&self, generation: u32) {
+        let _ = self.virtual_devices.send(virtual_devices::Request::Forget(generation));
+    }
+}
+
+impl Drop for Audio {
+    fn drop(&mut self) {
+        if let Some(conf) = &self.conf {
+            let _ = std::fs::remove_file(conf);
+        }
+    }
+}
 
 /// Unlike every other capability's adapter, this has no controller to call. It dispatches each
 /// action as an [`AudioCommand`] on the PipeWire thread (ADR-0037); no result is awaited here.
@@ -21,15 +58,23 @@ use shared::action::AudioAction;
 ///
 /// `play_sound(sound)` and `set_event_sounds_enabled(en)` are not actions: they'd need a sound
 /// player, event-sound theme, and toggle storage, none of which exists.
-pub fn dispatch(commands: &AudioCommandSender, envelope: &shared::CommandEnvelope) {
+pub fn dispatch(audio: &Audio, envelope: &shared::CommandEnvelope) {
     let Some(action) = crate::parse_action::<AudioAction>(&envelope.params) else { return };
-    if commands.send(command(action)).is_err() {
-        shared::error!("the PipeWire command channel is closed; {} was dropped", envelope.params.action);
+    let sent = match command(action) {
+        Ok(command) => audio.commands.send(command).is_ok(),
+        Err(devices) => {
+            let generation = envelope.params.generation_id;
+            audio.virtual_devices.send(virtual_devices::Request::Declare { generation, devices }).is_ok()
+        }
+    };
+    if !sent {
+        shared::error!("the audio command channel is closed; {} was dropped", envelope.params.action);
     }
 }
 
-fn command(action: AudioAction) -> AudioCommand {
-    match action {
+/// The mixer's command, or the devices for `virtual_devices`, which partitions them.
+fn command(action: AudioAction) -> Result<AudioCommand, Vec<shared::action::VirtualDevice>> {
+    Ok(match action {
         AudioAction::SetVolume { id, volume } => AudioCommand::SetVolume { id, volume: volume / 100.0 },
         AudioAction::SetMuted { id, muted } => AudioCommand::SetMuted { id, muted },
         AudioAction::ToggleMute { id } => AudioCommand::ToggleMute(id),
@@ -44,7 +89,8 @@ fn command(action: AudioAction) -> AudioCommand {
         AudioAction::SetAppTarget { id, device } => AudioCommand::SetAppTarget { id, device },
         AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
         AudioAction::SetPort { card, index } => AudioCommand::SetPort { card, index },
-    }
+        AudioAction::SetVirtualDevices { devices } => return Err(devices),
+    })
 }
 
 #[cfg(test)]
@@ -53,8 +99,9 @@ mod tests {
 
     #[test]
     fn volumes_arrive_as_percents_and_leave_as_fractions() {
-        let decode =
-            |action, arguments: &[serde_json::Value]| command(shared::action::decode(action, arguments).unwrap());
+        let decode = |action, arguments: &[serde_json::Value]| {
+            command(shared::action::decode(action, arguments).unwrap()).unwrap()
+        };
         assert_eq!(decode("set_volume", &[59.into(), 150.into()]), AudioCommand::SetVolume { id: 59, volume: 1.5 });
         assert_eq!(
             decode("set_channel_volume", &[7.into(), 1.into(), 150.into()]),

@@ -412,7 +412,7 @@ impl Supervisor {
                 self.authoritative = Authoritative { generation_id: replacement_generation_id, child };
                 self.renderer_departed = false;
                 notice!("spawned generation {replacement_generation_id} to replace it");
-                self.capabilities.forget_departed_requests();
+                self.capabilities.forget_departed_requests(departed);
                 // Otherwise the dead id keeps its idle fan-out entry (a failed push per idle
                 // transition, and any inhibit it held) and its `process.run` children.
                 if let Some(idle) = self.capabilities.idle() {

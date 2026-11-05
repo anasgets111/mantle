@@ -31,7 +31,8 @@ pub struct PrivacySources {
 /// One audio write crossing from tokio to the PipeWire loop. A channel is required because the
 /// proxies are `!Send`; `pipewire::channel` gives the loop an eventfd, so commands apply between
 /// PipeWire events. Array ids resolve against live maps; stale ids are logged and dropped because
-/// PipeWire recycles them. Volumes are linear fractions.
+/// PipeWire recycles them. Volumes are linear fractions. `SetNullSinks` replaces the declared null
+/// sinks (ADR-0383).
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
     SetVolume { id: u32, volume: f32 },
@@ -46,6 +47,7 @@ pub enum AudioCommand {
     SetAppTarget { id: u32, device: Option<u32> },
     SetCardProfile { device: u32, index: i32 },
     SetPort { card: u32, index: i32 },
+    SetNullSinks(Vec<shared::action::VirtualDevice>),
 }
 
 /// Listener-owned state and snapshot channels. Held for the thread lifetime. `sink_*`/`metadata*`
@@ -94,6 +96,8 @@ pub(super) struct MixerState {
     /// needs this. `None` until `metadata.name == "default"` is found.
     pub(super) metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
     pub(super) metadata_id: Option<u32>,
+    /// `node.name` -> a declared null sink and the `adapter` proxy this connection created for it.
+    pub(super) null_sinks: HashMap<String, (shared::action::VirtualDevice, pw::node::Node)>,
 }
 
 impl MixerState {
@@ -122,6 +126,7 @@ impl MixerState {
             default_source_name: None,
             metadata: None,
             metadata_id: None,
+            null_sinks: HashMap::new(),
         }
     }
 
@@ -133,6 +138,7 @@ impl MixerState {
         self.source_nodes.clear();
         self.devices.clear();
         self.metadata = None;
+        self.null_sinks.clear();
     }
 
     /// Entry map for one direction, shared by binding and writing.

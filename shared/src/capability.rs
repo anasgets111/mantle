@@ -113,6 +113,7 @@ impl Capability {
                 "set_app_target",
                 "set_card_profile",
                 "set_port",
+                "set_virtual_devices",
             ],
             Capability::Bluetooth => &[
                 "set_enabled",

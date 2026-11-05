@@ -169,8 +169,11 @@ fn render_class(name: &str, body: &serde_json::Value, out: &mut String) {
     {
         out.push_str(&format!("\n---@alias {name}\n"));
         for (variant, description) in variants {
-            match description.and_then(|d| d.lines().next()) {
-                Some(first) => out.push_str(&format!("---| \"{variant}\" # {}\n", unlink(first))),
+            match description.filter(|d| !d.is_empty()) {
+                Some(text) => out.push_str(&format!(
+                    "---| \"{variant}\" # {}\n",
+                    unlink(&text.split_whitespace().collect::<Vec<_>>().join(" "))
+                )),
                 None => out.push_str(&format!("---| \"{variant}\"\n")),
             }
         }

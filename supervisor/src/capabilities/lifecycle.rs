@@ -65,7 +65,7 @@ pub struct Capabilities {
     storage: Option<StorageController>,
     secrets: Option<SecretsController>,
     processes: Option<ProcessesController>,
-    audio: Option<audio::mixer::AudioCommandSender>,
+    audio: Option<audio::Audio>,
     idle: Option<IdleController>,
 
     senders: Senders,
@@ -230,7 +230,10 @@ impl Capabilities {
     /// or the Wi-Fi prompt cancel the old one owed, and discovery ran for the rest of the session.
     /// Its folder watches likewise kept a task and a kernel watch. The worker sends are queued
     /// behind that generation's own requests, so none runs after it.
-    pub fn forget_departed_requests(&self) {
+    pub fn forget_departed_requests(&self, departed: u32) {
+        if let Some(audio) = &self.audio {
+            audio.forget(departed);
+        }
         if let Some(bluetooth) = &self.bluetooth {
             let _ = bluetooth.send(Box::new(|bluetooth| bluetooth.set_discovery(false)));
         }
@@ -518,10 +521,8 @@ impl Capabilities {
     /// Starts the PipeWire mixer once for whichever of `audio`/`privacy` asks first.
     fn ensure_mixer_thread(&mut self) {
         let Some(privacy_tx) = self.privacy_tx.take() else { return };
-        let (command_tx, command_rx) = audio::mixer::command_channel();
         let audio_tx = self.senders.audio.clone();
-        std::thread::spawn(move || audio::mixer::run(audio_tx, privacy_tx, command_rx));
-        self.audio = Some(command_tx);
+        self.audio = Some(audio::Audio::start(audio_tx, privacy_tx));
     }
 
     /// Pushes one received [`Signal`] from the winning `select!` arm.
