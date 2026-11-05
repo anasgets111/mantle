@@ -125,6 +125,7 @@ source build, these files are in [`packaging/`](../../packaging):
 | File | Install to | Without it |
 | :--- | :--- | :--- |
 | `pam.d/mantle` | `/etc/pam.d/mantle` | Unlock uses the `login` stack, whose `pam_nologin` or `pam_shells` may refuse the right password. Polkit prompts use polkit's own stack either way |
+| `pam.d/mantle-fingerprint` | `/etc/pam.d/mantle-fingerprint` | The lock screen takes no fingerprint |
 | `polkit-1/rules.d/50-mantle-pacman.rules` | `/etc/polkit-1/rules.d/` | `updates` installs through pacman ask for a password on every `pkexec`; with it, a `wheel` user approves once per run |
 
 ## Gotchas

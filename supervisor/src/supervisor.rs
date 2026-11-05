@@ -256,21 +256,30 @@ impl Supervisor {
         }
     }
 
-    /// Starts the lock's worker for this session's user.
-    fn lock_starter(&self) -> impl FnOnce(u64) -> pam_worker::Conversation + use<> {
+    /// Starts the lock's worker for this session's user, in `mode`.
+    fn lock_starter(&self, mode: &'static str) -> impl FnOnce(u64) -> pam_worker::Conversation + use<> {
         let events = self.pam_events_tx.clone();
-        move |serial| pam_worker::start_lock_conversation(nix::unistd::Uid::current().as_raw(), serial, events)
+        move |serial| pam_worker::start_lock_conversation(nix::unistd::Uid::current().as_raw(), mode, serial, events)
+    }
+
+    /// Starts the lock's fingerprint conversation when its stack is installed (ADR-0382).
+    fn listen_for_fingerprint(&self) {
+        if pam_worker::fingerprint_installed() {
+            self.lock.listen(self.lock_starter(pam_worker::FINGERPRINT));
+        }
     }
 
     /// Answers the lock's PAM prompt (ADR-0381). ADR-0042, ADR-0052: this and
     /// `record_pam_message` are the only unlock path.
     fn begin_lock_authentication(&mut self, secret: shared::Zeroizing<Vec<u8>>, generation_id: u32) {
-        if !self.lock.submit(secret, self.lock_starter()) {
+        if !self.lock.submit(secret, self.lock_starter(pam_worker::PASSWORD)) {
             debug!(
                 "generation {generation_id}'s secure_submit(lock, authenticate) arrived with no lock held, or with an answer already with PAM; dropping"
             );
             return;
         }
+        // A cheap retry after a fault or an expired lockout ended the fingerprint conversation.
+        self.listen_for_fingerprint();
         self.push_lock_state();
     }
 
@@ -464,7 +473,7 @@ impl Supervisor {
                 info!("pam answered {outcome:?} for lock conversation {serial}");
                 let succeeded = outcome == shared::PamOutcome::Success;
                 if !succeeded && prompted {
-                    self.lock.converse(self.lock_starter());
+                    self.lock.converse(self.lock_starter(pam_worker::PASSWORD));
                 }
                 // Push before scheduling: `unlocking` is now true, and the config cannot animate a
                 // window it has not been told about (ADR-0190).
@@ -505,7 +514,8 @@ impl Supervisor {
         }
         self.lock.record(lock::LockEvent::Reported(report.outcome));
         // PAM starts with the lock, so its prompt is on screen before anything is typed (ADR-0381).
-        self.lock.converse(self.lock_starter());
+        self.lock.converse(self.lock_starter(pam_worker::PASSWORD));
+        self.listen_for_fingerprint();
         self.push_lock_state();
     }
 

@@ -22,6 +22,10 @@ pub struct LockState {
     /// PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a
     /// confirmed lock, and unlock.
     pub error: String,
+    /// The fingerprint conversation beside the password one (ADR-0382), or `nil` while none runs:
+    /// no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next
+    /// lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
+    pub fingerprint: Option<FingerprintState>,
     /// PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
     pub unlocking: bool,
     /// `SetSessionLock { locked: true }` is in flight before Renderer confirmation.
@@ -34,6 +38,15 @@ pub struct LockState {
     /// released (ADR-0190). PAM answers are bound by their conversation's serial instead.
     #[serde(skip)]
     pub acquisition: u64,
+}
+
+/// `mantle.lock.fingerprint` while its conversation runs (ADR-0382).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct FingerprintState {
+    /// pam_fprintd's lines, such as "Place your finger" or "Failed to match", oldest first, at
+    /// most 8. Translated: show them, never match on them.
+    pub messages: Vec<PamNotice>,
 }
 
 /// A question a PAM module asked (ADR-0381).

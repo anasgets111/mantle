@@ -8796,7 +8796,7 @@ helper starts on the first submit instead: closing it fails its `fgets`, and fai
 cancel. An expired password unlocks, as in GDM: the session is already logged in.
 
 The 30 s reply timeout runs only between an answer and PAM's next frame, since pam_fprintd waits
-30 s at a prompt. The cost: a module wedged before the first prompt hangs with no error.
+after an info line. The cost: a module wedged before the first prompt hangs with no error.
 
 Rejected: a `respond(text)` action for echo-on prompts, which puts the text in Lua and the
 action log; starting polkit's helper with the challenge.
@@ -8804,3 +8804,16 @@ action log; starting polkit's helper with the challenge.
 Amendment (#7): `identities` are polkit's `unix-user` entries as offered, since polkitd expands
 groups; the default is the session's uid when offered, else the first (GNOME, KDE). Switching ends
 a running helper, which costs an attempt only once it was answered.
+
+## 0382. Lock fingerprint: a second PAM stack beside the password, first success wins
+
+The lock runs a second worker on its own `mantle-fingerprint` service, only when that file exists,
+with no fallback. Either worker's first `Success` unlocks and stops the other; a fingerprint
+failure never touches `attempts` or `error`. The stack is `-auth requisite pam_fprintd.so
+max-tries=-1 timeout=-1` between faillock `preauth` and `authsucc`, with no `authfail`: pam_fprintd
+retries misses itself, so any other end (no reader, device claimed, lockout) turns fingerprint off
+until a password submit or the next lock. `requisite`, because `authsucc` after a failed scan
+resets a below-threshold tally. Packages ship it.
+
+Rejected: one stack with pam_fprintd first, which blocks typing until the scan times out; KDE's
+250 ms timing heuristic; restarting on failure with a brake, which duplicates pam_fprintd's retries.

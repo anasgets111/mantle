@@ -174,6 +174,7 @@ mod tests {
             acquisition: 4,
             prompt: None,
             messages: Vec::new(),
+            fingerprint: None,
             unlocking: false,
         }
     }
@@ -258,6 +259,7 @@ mod tests {
                 acquisition: 1,
                 prompt: None,
                 messages: Vec::new(),
+                fingerprint: None,
                 unlocking: false
             }
         );
@@ -278,6 +280,7 @@ mod tests {
                 acquisition: 0,
                 prompt: None,
                 messages: Vec::new(),
+                fingerprint: None,
                 unlocking: false
             }
         );
@@ -298,6 +301,7 @@ mod tests {
                 acquisition: 0,
                 prompt: None,
                 messages: Vec::new(),
+                fingerprint: None,
                 unlocking: false
             }
         );
@@ -323,6 +327,7 @@ mod tests {
                 acquisition: 4,
                 prompt: None,
                 messages: Vec::new(),
+                fingerprint: None,
                 // PAM said yes and the lock is still up: the window a config animates out in
                 // (ADR-0190).
                 unlocking: true
@@ -402,6 +407,7 @@ mod tests {
                     acquisition: 4,
                     prompt: None,
                     messages: Vec::new(),
+                    fingerprint: None,
                     unlocking: false
                 },
                 "{outcome:?}"

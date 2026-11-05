@@ -194,6 +194,10 @@
 ---@field path string Absolute path.
 ---@field size integer Size in bytes; a symlink reports its target's size.
 
+---@class FingerprintState
+---`mantle.lock.fingerprint` while its conversation runs (ADR-0382).
+---@field messages PamNotice[] pam_fprintd's lines, such as "Place your finger" or "Failed to match", oldest first, at most 8. Translated: show them, never match on them.
+
 ---@class Folder
 ---@field entries FileEntry[] Files (and symlinks to files) directly inside, minus dotfiles, filtered by extension and sorted case-insensitively by name. Relisted 200 ms after the last change.
 ---@field error? string Why listing failed, e.g. `"No such file or directory (os error 2)"`; `nil` on success. A missing or deleted folder keeps this error until it appears, then lists on its own.
@@ -642,6 +646,7 @@
 ---@field attempts integer Rejected passwords since this lock was confirmed; reset by the next lock.
 ---@field authenticating boolean An answer is with PAM, or typed before its prompt and held for it. A second submit is refused while true.
 ---@field error string Last failure to draw: PAM's verdict (`"authentication failed"`, `"too many attempts"`, or a PAM or worker error) or a refused lock's reason. Cleared by a correct password, `lock`, a confirmed lock, and unlock.
+---@field fingerprint? FingerprintState The fingerprint conversation beside the password one (ADR-0382), or `nil` while none runs: no `mantle-fingerprint` stack, or it ended without a match. A password submit and the next lock start it again. `prompt`, `messages`, `attempts` and `error` stay the password's.
 ---@field messages PamNotice[] PAM's info and error lines, oldest first, at most 8. Cleared by the next answer and when the lock ends.
 ---@field prompt? PamPrompt PAM's pending question (ADR-0381), or `nil` while it owes nothing.
 ---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).

@@ -2,11 +2,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use shared::{debug, error, warn};
+use shared::state::lock::{FingerprintState, PamNotice, PamPrompt};
+use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::state::{LockEvent, LockState, apply, may_authenticate, releases};
-use crate::capabilities::conversation::{Dialogue, Heard};
+use crate::capabilities::conversation::{Dialogue, Heard, PamFields};
 use crate::pam_worker::Conversation;
 use shared::action::LockAction;
 
@@ -24,6 +25,24 @@ pub struct LockController {
     unlock_animation_ms: AtomicU64,
     /// The lock's PAM conversation (ADR-0381). Locked after `state` wherever both are held.
     dialogue: Mutex<Dialogue>,
+    /// The fingerprint conversation beside it (ADR-0382). Locked after `dialogue`.
+    fingerprint: Mutex<Dialogue>,
+}
+
+/// What the fingerprint dialogue writes: its lines into `mantle.lock.fingerprint`, a prompt and the
+/// answer flag into scratch, since nobody can answer a fingerprint stack's question.
+struct Scan<'a>(Option<PamPrompt>, &'a mut Vec<PamNotice>, bool);
+
+impl PamFields for Scan<'_> {
+    fn pam(&mut self) -> (&mut Option<PamPrompt>, &mut Vec<PamNotice>, &mut bool) {
+        (&mut self.0, &mut *self.1, &mut self.2)
+    }
+}
+
+/// Ends the fingerprint conversation; `mantle.lock.fingerprint` turns nil.
+fn stop_fingerprint(state: &mut LockState, fingerprint: &mut Dialogue) {
+    fingerprint.stop(&mut Scan(None, &mut Vec::new(), false));
+    state.fingerprint = None;
 }
 
 impl LockController {
@@ -37,6 +56,7 @@ impl LockController {
             commands_tx,
             unlock_animation_ms: AtomicU64::new(0),
             dialogue: Mutex::new(dialogue),
+            fingerprint: Mutex::default(),
         }
     }
 
@@ -144,6 +164,7 @@ impl LockController {
         apply(&mut state, event);
         if relock || !state.active {
             self.dialogue.lock().expect("mutex poisoned").stop(&mut *state);
+            stop_fingerprint(&mut state, &mut self.fingerprint.lock().expect("mutex poisoned"));
         }
     }
 
@@ -161,6 +182,17 @@ impl LockController {
         }
     }
 
+    /// Starts the fingerprint conversation unless it already runs: after `Locked` and after a
+    /// password submit, never on its own after it ends (ADR-0382).
+    pub fn listen(&self, start: impl FnOnce(u64) -> Conversation) {
+        let mut state = self.state.lock().expect("mutex poisoned");
+        let mut fingerprint = self.fingerprint.lock().expect("mutex poisoned");
+        if state.active && !state.unlocking && !fingerprint.is_live() {
+            fingerprint.start(start);
+            state.fingerprint = Some(FingerprintState::default());
+        }
+    }
+
     /// `secure_submit(lock, authenticate)`: answers PAM's prompt, or holds the answer until one
     /// comes, starting a conversation if none runs. Refused with no lock held, while unlocking, or
     /// while an answer is already with PAM.
@@ -172,14 +204,49 @@ impl LockController {
         self.dialogue.lock().expect("mutex poisoned").submit(&mut *state, secret, start)
     }
 
-    /// Applies one frame of conversation `serial`; a verdict also counts or clears the attempt.
+    /// Applies one frame of conversation `serial`. The first `Success` unlocks and stops the other
+    /// conversation. A password verdict also counts or clears the attempt; a fingerprint that ends
+    /// any other way, or asks a question, only turns fingerprint off (ADR-0382).
     pub fn hear(&self, serial: u64, message: shared::PamMessage) -> Heard {
         let mut state = self.state.lock().expect("mutex poisoned");
-        let heard = self.dialogue.lock().expect("mutex poisoned").hear(&mut *state, serial, message);
-        if let Heard::Ended { outcome, .. } = &heard {
-            apply(&mut state, LockEvent::Authenticated(outcome.clone()));
+        let mut dialogue = self.dialogue.lock().expect("mutex poisoned");
+        let mut fingerprint = self.fingerprint.lock().expect("mutex poisoned");
+        if !fingerprint.runs(serial) {
+            let heard = dialogue.hear(&mut *state, serial, message);
+            if let Heard::Ended { outcome, .. } = &heard {
+                if *outcome == shared::PamOutcome::Success {
+                    stop_fingerprint(&mut state, &mut fingerprint);
+                }
+                apply(&mut state, LockEvent::Authenticated(outcome.clone()));
+            }
+            return heard;
         }
-        heard
+        let mut scan = Scan(None, &mut state.fingerprint.get_or_insert_default().messages, false);
+        let heard = fingerprint.hear(&mut scan, serial, message);
+        if let Some(asked) = scan.0.take() {
+            warn!(
+                "the mantle-fingerprint PAM stack asked {:?}, which nobody can answer; fingerprint is off until a password submit or the next lock",
+                asked.text
+            );
+            stop_fingerprint(&mut state, &mut fingerprint);
+            return Heard::Changed;
+        }
+        match heard {
+            Heard::Ended { outcome: shared::PamOutcome::Success, .. } => {
+                dialogue.stop(&mut *state);
+                state.fingerprint = None;
+                apply(&mut state, LockEvent::Authenticated(shared::PamOutcome::Success));
+                heard
+            }
+            Heard::Ended { outcome, .. } => {
+                info!(
+                    "fingerprint conversation {serial} ended {outcome:?}; off until a password submit or the next lock"
+                );
+                state.fingerprint = None;
+                Heard::Changed
+            }
+            heard => heard,
+        }
     }
 
     /// A closed channel means `main.rs`'s loop is gone; log and drop.
@@ -358,6 +425,84 @@ mod tests {
         let mut started = None;
         controller.converse(start_into(&mut started));
         assert!(started.is_some_and(|(serial, _)| serial != stale));
+    }
+
+    /// [`locked`] with a fingerprint conversation beside the password's, and its serial.
+    fn scanning() -> (LockController, tokio::sync::mpsc::UnboundedReceiver<shared::SetSessionLock>, u64, u64) {
+        let (controller, rx, password) = locked();
+        let mut started = None;
+        controller.listen(start_into(&mut started));
+        let (fingerprint, _) = started.expect("a held lock starts fingerprint");
+        assert_eq!(controller.snapshot().fingerprint, Some(FingerprintState::default()));
+        (controller, rx, password, fingerprint)
+    }
+
+    fn outcome(outcome: shared::PamOutcome) -> shared::PamMessage {
+        shared::PamMessage::Outcome(outcome)
+    }
+
+    /// ADR-0382: either conversation's first `Success` unlocks and ends the other, whose late
+    /// verdict, right or wrong, applies to nothing.
+    #[test]
+    fn the_first_success_unlocks_and_the_loser_is_stale() {
+        let (controller, mut rx, password, fingerprint) = scanning();
+        let heard = controller.hear(fingerprint, outcome(shared::PamOutcome::Success));
+        assert_eq!(heard, Heard::Ended { outcome: shared::PamOutcome::Success, prompted: false });
+        let state = controller.snapshot();
+        assert!(state.unlocking && state.prompt.is_none() && state.fingerprint.is_none(), "{state:?}");
+        assert_eq!(controller.hear(password, outcome(shared::PamOutcome::AuthFailed)), Heard::Stale);
+        assert_eq!(controller.snapshot().attempts, 0, "the stopped password counts nothing");
+        controller.unlock_after_animation();
+        assert_eq!(rx.try_recv().ok(), Some(shared::SetSessionLock { locked: false }));
+
+        let (controller, _rx, password, fingerprint) = scanning();
+        assert!(controller.submit(secret(), |_| unreachable!("the conversation is running")));
+        assert!(matches!(controller.hear(password, outcome(shared::PamOutcome::Success)), Heard::Ended { .. }));
+        assert_eq!(controller.snapshot().fingerprint, None, "the password's match stops the scan");
+        assert_eq!(controller.hear(fingerprint, outcome(shared::PamOutcome::Success)), Heard::Stale);
+    }
+
+    /// A fingerprint that ends without a match is not a wrong password and does not restart itself:
+    /// only `listen`, after a submit or a new lock, brings it back.
+    #[test]
+    fn a_failed_fingerprint_counts_nothing_and_stays_off_until_asked_again() {
+        let (controller, _rx, _password, fingerprint) = scanning();
+        let missed = shared::PamMessage::Message { kind: shared::PamNoticeKind::Info, text: "Failed to match".into() };
+        assert_eq!(controller.hear(fingerprint, missed), Heard::Changed);
+        let state = controller.snapshot();
+        assert_eq!(state.fingerprint.map(|f| f.messages.len()), Some(1));
+        assert!(state.messages.is_empty(), "the password's lines are its own");
+        assert_eq!(
+            controller.hear(fingerprint, outcome(shared::PamOutcome::AuthFailed)),
+            Heard::Changed,
+            "not Ended, so the caller restarts nothing"
+        );
+        let state = controller.snapshot();
+        assert_eq!((state.attempts, state.error.as_str(), state.fingerprint), (0, "", None));
+        assert!(state.prompt.is_some(), "the password conversation runs on");
+
+        let mut again = None;
+        controller.listen(start_into(&mut again));
+        let (restarted, _) = again.take().expect("a submit starts it again");
+        controller.listen(start_into(&mut again));
+        assert!(again.is_none(), "one fingerprint conversation at a time");
+        controller.record(LockEvent::Reported(shared::LockOutcome::Locked));
+        assert_eq!(controller.snapshot().fingerprint, None, "a relock ends it");
+        assert_eq!(controller.hear(restarted, outcome(shared::PamOutcome::Success)), Heard::Stale);
+        controller.listen(start_into(&mut again));
+        assert!(again.is_some(), "the next lock starts it again");
+    }
+
+    /// A fingerprint stack that asks a question is misconfigured: nobody can type at a scan.
+    #[test]
+    fn a_fingerprint_prompt_stops_it_and_never_reaches_the_lock_screen() {
+        let (controller, _rx, _password, fingerprint) = scanning();
+        let asked = shared::PamMessage::Prompt { text: "PIN:".into(), echo: false };
+        assert_eq!(controller.hear(fingerprint, asked), Heard::Changed);
+        let state = controller.snapshot();
+        assert_eq!(state.prompt.map(|p| p.text), Some("Password:".to_string()), "still the password's");
+        assert_eq!(state.fingerprint, None);
+        assert_eq!(controller.hear(fingerprint, outcome(shared::PamOutcome::Success)), Heard::Stale);
     }
 
     /// A held lock with one attempt answered `outcome`.

@@ -1,0 +1,6 @@
+# The .deb's /etc/pam.d/mantle-fingerprint: `packaging/pam.d/mantle-fingerprint`, with Debian's
+# `common-account` in place of `system-auth`, which Debian and Ubuntu do not ship.
+auth      requisite   pam_faillock.so preauth silent
+-auth     requisite   pam_fprintd.so max-tries=-1 timeout=-1
+auth      required    pam_faillock.so authsucc
+account   include     common-account

@@ -1,0 +1,15 @@
+# Mantle's fingerprint stack for the lock screen (ADR-0382), installed to
+# /etc/pam.d/mantle-fingerprint.
+# It runs beside the password stack (`mantle`); whichever succeeds first unlocks.
+#
+# `requisite` on pam_fprintd: a failed or missing scan ends the chain before `authsucc`, which would
+# otherwise reset the faillock tally of wrong passwords. No `authfail`: a missed scan is not a wrong
+# password. `max-tries=-1 timeout=-1`: pam_fprintd retries misses for the whole lock. `-auth` only
+# silences the log line when pam_fprintd is not installed; the chain still fails.
+#
+# To turn fingerprint off, replace this file's content with `auth requisite pam_deny.so`. An empty
+# file falls back to /etc/pam.d/other, and a deleted one comes back with the next upgrade.
+auth      requisite   pam_faillock.so preauth silent
+-auth     requisite   pam_fprintd.so max-tries=-1 timeout=-1
+auth      required    pam_faillock.so authsucc
+account   include     system-auth
