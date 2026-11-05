@@ -38,6 +38,10 @@ pub struct Dialogue {
     /// That `required` failure decides the verdict whatever is typed, so a submit restarts PAM
     /// rather than answer it; a restart at a prompt costs no attempt.
     refused_early: bool,
+    /// An info line refuses too: the lock's, since stock pam_faillock sends its lockout as info.
+    /// Not polkit's: with pam_fprintd in its stack every submit would close the helper, which
+    /// faillock may count.
+    pub info_refuses: bool,
 }
 
 /// What a frame did to the state.
@@ -121,7 +125,7 @@ impl Dialogue {
                 }
             }
             PamMessage::Message { kind, text } => {
-                self.refused_early |= kind == PamNoticeKind::Error && !self.prompted;
+                self.refused_early |= !self.prompted && (kind == PamNoticeKind::Error || self.info_refuses);
                 if messages.len() == MAX_MESSAGES {
                     messages.remove(0);
                 }
@@ -260,13 +264,15 @@ mod tests {
     }
 
     /// A lockout that ended while its worker waited: the restarted worker's preauth passes, so the
-    /// correct password unlocks instead of failing once. An error after the first prompt is a later
+    /// correct password unlocks instead of failing once. A line after the first prompt is a later
     /// factor's, and restarting there would send the next answer to a fresh password prompt.
     #[test]
-    fn a_submit_after_an_early_error_line_restarts_pam_and_holds_the_answer() {
+    fn a_submit_after_an_early_line_restarts_pam_and_holds_the_answer() {
         let (mut dialogue, serial, mut old) = started();
+        dialogue.info_refuses = true;
         let mut fields = Fields::default();
-        let locked = PamMessage::Message { kind: PamNoticeKind::Error, text: "account locked, 5 minutes left".into() };
+        // pam_faillock's preauth sends its lockout as info (pam_faillock.c, `faillock_message`).
+        let locked = PamMessage::Message { kind: PamNoticeKind::Info, text: "account locked, 5 minutes left".into() };
         dialogue.hear(&mut fields, serial, locked.clone());
         dialogue.hear(&mut fields, serial, prompt("Password:", false));
         let mut new = None;
@@ -286,10 +292,18 @@ mod tests {
         let mut fields = Fields::default();
         dialogue.hear(&mut fields, serial, prompt("Password:", false));
         dialogue.submit(&mut fields, secret(b"hunter2"), unused);
-        dialogue.hear(&mut fields, serial, locked);
+        dialogue.hear(&mut fields, serial, locked.clone());
         dialogue.hear(&mut fields, serial, prompt("Code:", false));
-        assert!(dialogue.submit(&mut fields, secret(b"123456"), unused), "a later error line restarts nothing");
+        assert!(dialogue.submit(&mut fields, secret(b"123456"), unused), "a later line restarts nothing");
         answers.try_recv().unwrap();
         assert_eq!(answers.try_recv().unwrap().as_slice(), b"123456");
+
+        // Polkit's: an early info line (pam_fprintd's prompt in its stack) restarts nothing.
+        let (mut dialogue, serial, mut answers) = started();
+        let mut fields = Fields::default();
+        dialogue.hear(&mut fields, serial, locked);
+        dialogue.hear(&mut fields, serial, prompt("Password:", false));
+        assert!(dialogue.submit(&mut fields, secret(b"hunter2"), unused), "the same helper answers");
+        assert_eq!(answers.try_recv().unwrap().as_slice(), b"hunter2");
     }
 }

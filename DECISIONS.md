@@ -8790,8 +8790,8 @@ info line before any prompt. Every prompt and line now reaches Lua through one s
 unmasked for an echo-on prompt, so typed text never crosses Lua or the action log.
 
 The lock worker starts on `Locked`, so PAM's prompt is on screen before anything is typed; an early
-answer is held for the first masked prompt. A worker refused by faillock's preauth before its first
-prompt is restarted by the next submit, since that `required` failure decides the verdict. Polkit's
+answer is held for the first masked prompt. A lock worker that showed any line before its first
+prompt (faillock's preauth refusal is info) is restarted by the next submit. Polkit's
 helper starts on the first submit instead: closing it fails its `fgets`, and faillock counts every
 cancel. An expired password unlocks, as in GDM: the session is already logged in.
 
