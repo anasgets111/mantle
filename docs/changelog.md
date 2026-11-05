@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.12.0 - 2026-11-05
+
 - Added: The lock screen unlocks with a fingerprint when fprintd has a finger enrolled. Packages install the `mantle-fingerprint` PAM stack. `mantle.lock.fingerprint` is `nil` while fingerprint is off, else `{ messages }` with pam_fprintd's lines. A missed scan never counts as an attempt.
 - Added: `mantle.polkit.identities` lists the accounts a polkit request accepts, `identity` is the one it authenticates as (your own when offered), and `mantle.polkit:select_identity(uid)` switches to another.
 - Added: `mantle.lock` and `mantle.polkit` gain `prompt` (`{ id, text, echo }`, PAM's own question, `nil` while PAM owes nothing) and `messages` (PAM's info and error lines). Two-factor codes, a re-asked password and fingerprint hints now reach the lock screen. Bind the secure field's `masked` to `not prompt.echo` to show a visible answer.
