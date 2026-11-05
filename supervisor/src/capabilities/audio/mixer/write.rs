@@ -63,6 +63,7 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         AudioCommand::SetDefaultSink(id) => write_default_device(state, DefaultDevice::Sink, id),
         AudioCommand::SetDefaultSource(id) => write_default_device(state, DefaultDevice::Source, id),
         AudioCommand::SetCardProfile { device, index } => write_card_profile(state, device, index),
+        AudioCommand::SetPort { card, index } => write_port(state, card, index),
     }
 }
 
@@ -169,27 +170,53 @@ fn write_device_route(
         return;
     };
     let object = route::route_object(index, route.profile_device, channel_volumes, muted);
-    with_pod(&object, format_args!("a Route object for device {}", route.device_id), |pod| {
-        let state = state.borrow();
-        let Some((device, _listener)) = state.devices.get(&route.device_id) else {
-            debug!("device {} is not bound; cannot write its Route", route.device_id);
-            return;
-        };
-        device.set_param(pw::spa::param::ParamType::Route, 0, pod);
-    })
+    set_device_param(state, route.device_id, pw::spa::param::ParamType::Route, &object);
 }
 
 /// Sends `SPA_PARAM_Profile`, which switches an ALSA card's outputs or a BlueZ device's codec; the
 /// new profile returns through `bind_device`'s listener.
 fn write_card_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, index: i32) {
-    with_pod(&profile::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
+    set_device_param(state, device_id, pw::spa::param::ParamType::Profile, &profile::profile_object(index));
+}
+
+/// Routes card `card_id` to port `index` on [`port_device`]; the new route returns through
+/// `bind_device`'s listener.
+fn write_port(state: &Rc<RefCell<MixerState>>, card_id: u32, index: i32) {
+    let Some(device) = port_device(&state.borrow(), card_id, index) else {
+        debug!("set_port({card_id}, {index}) names no port of that card's active profile; ignored");
+        return;
+    };
+    let object = route::route_object(index, device, None, None);
+    set_device_param(state, card_id, pw::spa::param::ParamType::Route, &object);
+}
+
+/// The `card.profile.device` port `index` of `card_id` is routed on: one of its devices that a live
+/// sink or source routes through. Those are the active profile's; `device_routes` still holds the
+/// routes of a profile left behind.
+fn port_device(state: &MixerState, card_id: u32, index: i32) -> Option<i32> {
+    let port = state.cards.get(&card_id)?.ports.get(&index)?;
+    let live = |device| {
+        let route = Some(DeviceRoute { device_id: card_id, profile_device: device });
+        state.sinks.values().chain(state.sources.values()).any(|entry| entry.route == route)
+    };
+    port.devices.iter().copied().find(|&device| live(device))
+}
+
+/// Sends `object` as `param` to bound device `device_id`, a card's `Route` or `Profile`.
+fn set_device_param(
+    state: &Rc<RefCell<MixerState>>,
+    device_id: u32,
+    param: pw::spa::param::ParamType,
+    object: &pw::spa::pod::Value,
+) {
+    with_pod(object, format_args!("a {param:?} object for device {device_id}"), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) = state.devices.get(&device_id) else {
-            debug!("set_card_profile({device_id}, {index}) names no bound audio device; ignored");
+            debug!("device {device_id} is not bound; its {param:?} write is dropped");
             return;
         };
-        device.set_param(pw::spa::param::ParamType::Profile, 0, pod);
-    });
+        device.set_param(param, 0, pod);
+    })
 }
 
 /// Sends `SPA_PARAM_Props` to a stream or a node-owned sink/source.
@@ -250,4 +277,42 @@ fn write_default_device(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id
     };
     let value = serde_json::json!({ "name": node_name }).to_string();
     metadata.set_property(0, key, Some(METADATA_JSON_TYPE), Some(&value));
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::watch;
+
+    use super::super::devices::{Card, DeviceEntry};
+    use super::super::state::PrivacySources;
+    use super::*;
+
+    #[test]
+    fn a_port_is_routed_on_the_profile_device_the_active_profile_uses() {
+        let (updates, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = MixerState::new(updates, privacy_updates);
+        let port = route::Port {
+            index: 3,
+            name: "analog-output-headphones".to_string(),
+            description: String::new(),
+            port_type: None,
+            output: true,
+            available: true,
+            profiles: vec![1, 2],
+            devices: vec![4, 7],
+        };
+        state.cards.insert(51, Card { ports: [(3, port)].into_iter().collect(), ..Card::default() });
+        state.device_routes.insert((51, 4), route::ActiveRoute { index: 2, port: None, props: None });
+        assert_eq!(port_device(&state, 51, 3), None, "a route the previous profile left, with no node on it");
+
+        let routed = |profile_device| DeviceEntry {
+            route: Some(DeviceRoute { device_id: 51, profile_device }),
+            ..DeviceEntry::default()
+        };
+        state.sinks.insert(60, routed(7));
+        assert_eq!(port_device(&state, 51, 3), Some(7));
+        assert_eq!(port_device(&state, 51, 9), None, "an unknown port");
+        assert_eq!(port_device(&state, 52, 3), None, "another card's route does not count");
+    }
 }

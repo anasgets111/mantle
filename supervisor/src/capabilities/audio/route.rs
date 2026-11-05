@@ -1,9 +1,11 @@
-//! ALSA hardware route pod construction and extraction.
+//! ALSA and BlueZ `Route` pods: building writes, reading the active route, and listing ports from
+//! `EnumRoute`.
 
 use std::collections::HashMap;
 
-use pipewire::spa::pod::{Object, Property, Value};
+use pipewire::spa::pod::{Object, Property, Value, ValueArray};
 use pipewire::spa::sys as spa_sys;
+use pipewire::spa::utils::Id;
 
 use super::master::{RawSinkProps, extract_sink_props, props_object_with_id};
 
@@ -57,16 +59,7 @@ pub(super) fn extract_route_target(
             (spa_sys::SPA_PARAM_ROUTE_index, Value::Int(value)) => index = Some(*value),
             (spa_sys::SPA_PARAM_ROUTE_device, Value::Int(value)) => profile_device = Some(*value),
             (spa_sys::SPA_PARAM_ROUTE_props, value) => props_value = Some(value),
-            // `[count, key, value, key, value, ...]`
-            (spa_sys::SPA_PARAM_ROUTE_info, Value::Struct(info)) => {
-                for pair in info.get(1..).unwrap_or_default().chunks(2) {
-                    if let [Value::String(key), Value::String(value)] = pair
-                        && key == "port.type"
-                    {
-                        port = Some(value.clone());
-                    }
-                }
-            }
+            (spa_sys::SPA_PARAM_ROUTE_info, Value::Struct(info)) => port = port_type(info),
             _ => {}
         }
     }
@@ -75,6 +68,68 @@ pub(super) fn extract_route_target(
         routes.get(&(device_id, profile_device)).and_then(|route| route.props.as_ref()).is_some_and(|props| props.mute);
     let props = props_value.and_then(|value| extract_sink_props(value, previous_mute));
     Some((profile_device, ActiveRoute { index: index?, port, props }))
+}
+
+/// `port.type` from a route's `info`, `[count, key, value, key, value, ...]`.
+fn port_type(info: &[Value]) -> Option<String> {
+    info.get(1..).unwrap_or_default().chunks(2).find_map(|pair| match pair {
+        [Value::String(key), Value::String(value)] if key == "port.type" => Some(value.clone()),
+        _ => None,
+    })
+}
+
+/// One `EnumRoute` entry: a port a card can route to, such as speakers or headphones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Port {
+    pub index: i32,
+    pub name: String,
+    pub description: String,
+    pub port_type: Option<String>,
+    pub output: bool,
+    /// `false` only when PipeWire reports the port unavailable, such as an unplugged jack.
+    pub available: bool,
+    /// Profile indexes the port works under.
+    pub profiles: Vec<i32>,
+    /// `card.profile.device` values it can be routed on, the `device` a `Route` write names.
+    pub devices: Vec<i32>,
+}
+
+/// Pulls a [`Port`] from an `EnumRoute` object; `None` skips one missing its index or direction.
+pub(super) fn extract_port(value: &Value) -> Option<Port> {
+    let Value::Object(object) = value else { return None };
+    let (mut index, mut output) = (None, None);
+    let mut port = Port {
+        index: 0,
+        name: String::new(),
+        description: String::new(),
+        port_type: None,
+        output: false,
+        available: true,
+        profiles: Vec::new(),
+        devices: Vec::new(),
+    };
+    for property in &object.properties {
+        match (property.key, &property.value) {
+            (spa_sys::SPA_PARAM_ROUTE_index, Value::Int(value)) => index = Some(*value),
+            (spa_sys::SPA_PARAM_ROUTE_direction, Value::Id(Id(value))) => {
+                output = Some(*value == spa_sys::SPA_DIRECTION_OUTPUT);
+            }
+            (spa_sys::SPA_PARAM_ROUTE_name, Value::String(value)) => port.name = value.clone(),
+            (spa_sys::SPA_PARAM_ROUTE_description, Value::String(value)) => port.description = value.clone(),
+            (spa_sys::SPA_PARAM_ROUTE_available, Value::Id(Id(value))) => {
+                port.available = *value != spa_sys::SPA_PARAM_AVAILABILITY_no;
+            }
+            (spa_sys::SPA_PARAM_ROUTE_info, Value::Struct(info)) => port.port_type = port_type(info),
+            (spa_sys::SPA_PARAM_ROUTE_profiles, Value::ValueArray(ValueArray::Int(values))) => {
+                port.profiles = values.clone();
+            }
+            (spa_sys::SPA_PARAM_ROUTE_devices, Value::ValueArray(ValueArray::Int(values))) => {
+                port.devices = values.clone();
+            }
+            _ => {}
+        }
+    }
+    Some(Port { index: index?, output: output?, ..port })
 }
 
 #[cfg(test)]
@@ -159,5 +214,46 @@ mod tests {
         });
         assert_eq!(extract_route_target(&index_only, &Default::default(), 0), None);
         assert_eq!(extract_route_target(&Value::Bool(true), &Default::default(), 0), None);
+    }
+
+    #[test]
+    fn extract_port_reads_an_enum_route_and_skips_one_without_a_direction() {
+        let string = |text: &str| Value::String(text.to_string());
+        let mut properties = vec![
+            Property::new(spa_sys::SPA_PARAM_ROUTE_index, Value::Int(2)),
+            Property::new(spa_sys::SPA_PARAM_ROUTE_name, string("analog-output-headphones")),
+            Property::new(spa_sys::SPA_PARAM_ROUTE_description, string("Headphones")),
+            Property::new(spa_sys::SPA_PARAM_ROUTE_available, Value::Id(Id(spa_sys::SPA_PARAM_AVAILABILITY_no))),
+            Property::new(
+                spa_sys::SPA_PARAM_ROUTE_info,
+                Value::Struct(vec![Value::Int(1), string("port.type"), string("headphones")]),
+            ),
+            Property::new(spa_sys::SPA_PARAM_ROUTE_profiles, Value::ValueArray(ValueArray::Int(vec![1, 3]))),
+            Property::new(spa_sys::SPA_PARAM_ROUTE_devices, Value::ValueArray(ValueArray::Int(vec![7]))),
+        ];
+        let object = |properties: &Vec<Property>| {
+            Value::Object(Object {
+                type_: spa_sys::SPA_TYPE_OBJECT_ParamRoute,
+                id: spa_sys::SPA_PARAM_EnumRoute,
+                properties: properties.clone(),
+            })
+        };
+        assert_eq!(extract_port(&object(&properties)), None, "a port with no direction is skipped");
+
+        properties
+            .push(Property::new(spa_sys::SPA_PARAM_ROUTE_direction, Value::Id(Id(spa_sys::SPA_DIRECTION_OUTPUT))));
+        assert_eq!(
+            extract_port(&object(&properties)),
+            Some(Port {
+                index: 2,
+                name: "analog-output-headphones".to_string(),
+                description: "Headphones".to_string(),
+                port_type: Some("headphones".to_string()),
+                output: true,
+                available: false,
+                profiles: vec![1, 3],
+                devices: vec![7],
+            })
+        );
     }
 }

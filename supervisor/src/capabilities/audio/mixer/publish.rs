@@ -65,7 +65,9 @@ mod tests {
     use tokio::sync::mpsc::UnboundedSender;
     use tokio::sync::watch;
 
-    use super::super::devices::{AudioCard, AudioDevice, Card, CardProfile, DeviceEntry, DeviceNames, DeviceRoute};
+    use super::super::devices::{
+        AudioCard, AudioDevice, Card, CardPort, CardProfile, DeviceEntry, DeviceNames, DeviceRoute, PortDirection,
+    };
     use super::super::streams::CaptureApp;
     use super::*;
     use crate::capabilities::audio::{profile, route};
@@ -136,6 +138,15 @@ mod tests {
                         available: false,
                     }],
                     active: None,
+                    ports: vec![CardPort {
+                        index: 2,
+                        name: "analog-output-headphones".to_string(),
+                        description: "Headphones".to_string(),
+                        port_type: Some("headphones".to_string()),
+                        direction: PortDirection::Output,
+                        available: false,
+                        profiles: vec![1],
+                    }],
                 },
                 AudioCard {
                     device: 80,
@@ -149,6 +160,7 @@ mod tests {
                         available: true,
                     }],
                     active: Some(2),
+                    ports: vec![],
                 },
             ],
         };
@@ -192,6 +204,15 @@ mod tests {
                             "description": "Digital Stereo (HDMI) Output",
                             "available": false,
                         }],
+                        "ports": [{
+                            "index": 2,
+                            "name": "analog-output-headphones",
+                            "description": "Headphones",
+                            "type": "headphones",
+                            "direction": "output",
+                            "available": false,
+                            "profiles": [1],
+                        }],
                     },
                     {
                         "device": 80,
@@ -205,6 +226,7 @@ mod tests {
                             "available": true,
                         }],
                         "active": 2,
+                        "ports": [],
                     },
                 ],
             })

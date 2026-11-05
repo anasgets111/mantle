@@ -108,6 +108,9 @@ pub enum AudioAction {
     SetAppMuted { id: u32, muted: bool },
     /// Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
     SetCardProfile { device: u32, index: i32 },
+    /// Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers.
+    /// The port must work under the active profile. WirePlumber keeps the choice.
+    SetPort { card: u32, index: i32 },
 }
 
 #[derive(Debug, serde::Deserialize)]

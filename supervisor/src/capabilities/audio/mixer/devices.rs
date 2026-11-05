@@ -1,7 +1,7 @@
 //! Audio devices for `mantle.audio`: sink and source names, icons and hardware routes, and the
 //! profiles of ALSA and BlueZ cards.
 
-pub use shared::state::audio::{AudioCard, AudioDevice, CardProfile};
+pub use shared::state::audio::{AudioCard, AudioDevice, CardPort, CardProfile, PortDirection};
 
 use std::collections::HashMap;
 
@@ -25,6 +25,10 @@ pub(super) struct Card {
     pub(super) active: Option<i32>,
     /// `EnumProfile` answers collected since the last `Profile` answer, swapped in when it arrives.
     pub(super) incoming: std::collections::BTreeMap<i32, profile::Profile>,
+    /// The ports from the last finished `EnumRoute`, keyed by index.
+    pub(super) ports: std::collections::BTreeMap<i32, route::Port>,
+    /// `EnumRoute` answers collected since the last `Profile` answer, which is asked after them.
+    pub(super) incoming_ports: std::collections::BTreeMap<i32, route::Port>,
 }
 
 impl Card {
@@ -33,12 +37,19 @@ impl Card {
         self.incoming.insert(profile.index, profile);
     }
 
-    /// Ends an enumeration with its `Profile` answer, replacing the list and making `index` active.
-    /// Returns whether either changed, so re-enumerating the same card publishes nothing.
+    /// Collects one `EnumRoute` answer.
+    pub(super) fn enumerated_port(&mut self, port: route::Port) {
+        self.incoming_ports.insert(port.index, port);
+    }
+
+    /// Ends an enumeration with its `Profile` answer, replacing the profile and port lists and making
+    /// `index` active. Returns whether any changed, so re-enumerating the same card publishes nothing.
     pub(super) fn finish_enumeration(&mut self, index: i32) -> bool {
         let profiles = std::mem::take(&mut self.incoming);
-        let changed = profiles != self.profiles || self.active != Some(index);
+        let ports = std::mem::take(&mut self.incoming_ports);
+        let changed = profiles != self.profiles || ports != self.ports || self.active != Some(index);
         self.profiles = profiles;
+        self.ports = ports;
         self.active = Some(index);
         changed
     }
@@ -64,6 +75,19 @@ pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
                 })
                 .collect(),
             active: card.active,
+            ports: card
+                .ports
+                .values()
+                .map(|port| CardPort {
+                    index: port.index,
+                    name: port.name.clone(),
+                    description: port.description.clone(),
+                    port_type: port.port_type.clone(),
+                    direction: if port.output { PortDirection::Output } else { PortDirection::Input },
+                    available: port.available,
+                    profiles: port.profiles.clone(),
+                })
+                .collect(),
         })
         .collect();
     out.sort_by_key(|card| card.device);
@@ -300,5 +324,24 @@ mod tests {
         // A volume step re-enumerates the same card; nothing changed, so nothing publishes.
         card.enumerated(profile(2, "a2dp-sink-aac"));
         assert!(!card.finish_enumeration(2));
+
+        // A jack unplugged changes only a port's availability, which publishes.
+        let port = |available| route::Port {
+            index: 3,
+            name: "analog-output-headphones".to_string(),
+            description: String::new(),
+            port_type: None,
+            output: true,
+            available,
+            profiles: vec![2],
+            devices: vec![7],
+        };
+        card.enumerated(profile(2, "a2dp-sink-aac"));
+        card.enumerated_port(port(true));
+        assert!(card.finish_enumeration(2));
+        card.enumerated(profile(2, "a2dp-sink-aac"));
+        card.enumerated_port(port(false));
+        assert!(card.finish_enumeration(2));
+        assert!(!card.ports[&3].available);
     }
 }

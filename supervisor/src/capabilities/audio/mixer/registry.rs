@@ -3,6 +3,7 @@
 //! in its blocking `main_loop.run()`.
 
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::capabilities::{RETRY_FIRST, STABLE, next_delay};
@@ -516,6 +517,28 @@ fn bind_default_metadata(
     state_mut.metadata = Some((metadata, listener));
 }
 
+/// The params a device `info` asks for again, from each `(id, flags)` it lists: PipeWire flips a
+/// param's `SPA_PARAM_INFO_SERIAL` flag bit when its value changes, so a flag set unlike `seen`'s
+/// marks a change. `Profile`'s answer ends the `EnumProfile` and `EnumRoute` enumerations
+/// ([`Card::finish_enumeration`]), so a change to any of the three asks all three, in that order.
+fn params_to_ask(
+    seen: &mut HashMap<u32, u32>,
+    params: impl Iterator<Item = (u32, u32)>,
+) -> Vec<pw::spa::param::ParamType> {
+    use pw::spa::param::ParamType;
+    let changed: Vec<u32> =
+        params.filter(|&(id, flags)| seen.insert(id, flags) != Some(flags)).map(|(id, _)| id).collect();
+    let card = [ParamType::EnumProfile, ParamType::EnumRoute, ParamType::Profile];
+    let mut ask = Vec::new();
+    if card.iter().any(|param| changed.contains(&param.as_raw())) {
+        ask.extend(card);
+    }
+    if changed.contains(&ParamType::Route.as_raw()) {
+        ask.push(ParamType::Route);
+    }
+    ask
+}
+
 /// Binds ALSA and BlueZ `Device` globals for their profiles and active `Route`: its index for
 /// writes, its port for device glyphs. Without the `Route`, hardware-sink `set_volume` is silently
 /// dropped. A BlueZ card is keyed by MAC for a Bluetooth join. `v4l2`/`libcamera` devices have no
@@ -525,8 +548,8 @@ fn bind_default_metadata(
 /// is called, and a `Route` appearing later is pushed to nobody. A shell started before its card
 /// settles, which is every login, then dropped every write for the session (ADR-0200).
 ///
-/// `Profile` is asked after `EnumProfile`, so its answer ends the profile enumeration and publishes
-/// only on a change. Answers are matched by that order, not by seq: protocol-native's
+/// `Profile` is asked after `EnumProfile` and `EnumRoute`, so its answer ends both enumerations and
+/// publishes only on a change. Answers are matched by that order, not by seq: protocol-native's
 /// `device_marshal_enum_params` sends `SPA_RESULT_RETURN_ASYNC(msg->seq)` and ignores the caller's
 /// (a live `enum_params(7, ..)` came back as 1073741828).
 fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
@@ -562,14 +585,22 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
     // because a strong one is a cycle through the listener the device owns.
     let device = Rc::new(device);
     let device_for_info = Rc::downgrade(&device);
+    let param_flags = RefCell::new(HashMap::new());
     let state_for_param = Rc::clone(state);
     let listener = device
         .add_listener_local()
         .param(move |_seq, param_type, _index, _next, param| {
             let Some(value) = decode(param) else { return };
-            if param_type == pw::spa::param::ParamType::Route {
-                record_route(&state_for_param, device_id, &value);
-                return;
+            match param_type {
+                pw::spa::param::ParamType::Route => return record_route(&state_for_param, device_id, &value),
+                pw::spa::param::ParamType::EnumRoute => {
+                    let Some(port) = route::extract_port(&value) else { return };
+                    if let Some(card) = state_for_param.borrow_mut().cards.get_mut(&device_id) {
+                        card.enumerated_port(port);
+                    }
+                    return;
+                }
+                _ => {}
             }
             let Some(profile) = profile::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
@@ -582,16 +613,19 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
                 _ => {}
             }
         })
-        // Re-asks on every param change, including the first `info` a bind always answers with.
-        // A profile switch or a plugged headset moves the active route.
+        // Re-asks the params that changed, every one on the first `info` a bind always answers
+        // with. A profile switch or a plugged headset moves the active route; a volume step
+        // changes only the Route.
         .info(move |info| {
             if !info.change_mask().contains(pw::device::DeviceChangeMask::PARAMS) {
                 return;
             }
+            let params = info.params().iter().map(|param| (param.id().as_raw(), param.flags().bits()));
+            let ask = params_to_ask(&mut param_flags.borrow_mut(), params);
             if let Some(device) = device_for_info.upgrade() {
-                device.enum_params(0, Some(pw::spa::param::ParamType::EnumProfile), 0, u32::MAX);
-                device.enum_params(0, Some(pw::spa::param::ParamType::Profile), 0, u32::MAX);
-                device.enum_params(0, Some(pw::spa::param::ParamType::Route), 0, u32::MAX);
+                for param in ask {
+                    device.enum_params(0, Some(param), 0, u32::MAX);
+                }
             }
         })
         .register();
@@ -659,6 +693,23 @@ mod tests {
                 Err(err) => panic!("no matching audio state: {err}"),
             }
         }
+    }
+
+    #[test]
+    fn a_route_change_asks_only_the_route_and_a_profile_change_the_card_params() {
+        use pw::spa::param::ParamType;
+        let raw = |param: ParamType| param.as_raw();
+        let mut seen = HashMap::new();
+        let all =
+            [raw(ParamType::EnumProfile), raw(ParamType::EnumRoute), raw(ParamType::Profile), raw(ParamType::Route)];
+        let info = |flipped: &[u32]| all.map(|id| (id, if flipped.contains(&id) { 0b11 } else { 0b10 }));
+        let card = vec![ParamType::EnumProfile, ParamType::EnumRoute, ParamType::Profile];
+
+        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [card.clone(), vec![ParamType::Route]].concat());
+        assert_eq!(params_to_ask(&mut seen, info(&[]).into_iter()), [], "nothing changed");
+        assert_eq!(params_to_ask(&mut seen, info(&[raw(ParamType::Route)]).into_iter()), [ParamType::Route]);
+        let profile = [raw(ParamType::Route), raw(ParamType::Profile)];
+        assert_eq!(params_to_ask(&mut seen, info(&profile).into_iter()), card, "the route's flag is unchanged");
     }
 
     /// Absent at start, then up, lost, and back, as a PipeWire started late at login and then

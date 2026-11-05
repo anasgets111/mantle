@@ -91,6 +91,40 @@ pub struct AudioCard {
     /// `index` of the active profile; `nil` before PipeWire reports it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active: Option<i32>,
+    /// Every port, unplugged ones included, ordered by `index`. A device's `port` is its active one.
+    pub ports: Vec<CardPort>,
+}
+
+/// One entry of `AudioCard.ports`: a place a card routes sound, such as speakers or headphones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CardPort {
+    /// Port index, the second argument of `set_port`.
+    pub index: i32,
+    /// PipeWire's untranslated id, e.g. `"analog-output-headphones"`.
+    pub name: String,
+    /// PipeWire's description, e.g. `"Headphones"`.
+    pub description: String,
+    /// `port.type`, e.g. `"speaker"`, `"headphones"`, `"hdmi"`, `"mic"`.
+    #[serde(rename = "type", skip_serializing_if = "Option::is_none")]
+    pub port_type: Option<String>,
+    /// `"output"` for a sink's port, `"input"` for a source's.
+    pub direction: PortDirection,
+    /// `false` when PipeWire reports the port unavailable, such as an unplugged jack.
+    pub available: bool,
+    /// `profiles[].index` values the port works under.
+    pub profiles: Vec<i32>,
+}
+
+/// Whether a port plays or records.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum PortDirection {
+    /// A sink's port, such as speakers.
+    Output,
+    /// A source's port, such as a microphone.
+    Input,
 }
 
 /// One entry of `AudioCard.profiles`.

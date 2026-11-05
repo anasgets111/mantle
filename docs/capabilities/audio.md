@@ -61,6 +61,7 @@ One ALSA or BlueZ card and every profile it offers.
 | `device` | `integer` | PipeWire device id, the first argument of `set_card_profile`. |
 | `mac?` | `string` | A BlueZ card's MAC address, from its `bluez_card.*` name with `_` turned to `:`; joins `mantle.bluetooth`. `nil` on an ALSA card. |
 | `name` | `string` | `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`. |
+| `ports` | `CardPort[]` | Every port, unplugged ones included, ordered by `index`. A device's `port` is its active one. |
 | `profiles` | `CardProfile[]` | Every profile, unavailable ones included, ordered by `index`. |
 
 ### `AudioChannel`
@@ -93,6 +94,20 @@ One `sinks` or `sources` entry.
 | `port?` | `string` | The active card route's `port.type`, e.g. `"headphones"`, `"hdmi"`, `"mic"`. |
 | `volume?` | `number` | Volume in percent, the loudest channel; `nil` before its first report. A sink's default is pulled back to `150` when another client sets it louder. |
 
+### `CardPort`
+
+One entry of `AudioCard.ports`: a place a card routes sound, such as speakers or headphones.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `available` | `boolean` | `false` when PipeWire reports the port unavailable, such as an unplugged jack. |
+| `description` | `string` | PipeWire's description, e.g. `"Headphones"`. |
+| `direction` | `PortDirection` | `"output"` for a sink's port, `"input"` for a source's. |
+| `index` | `integer` | Port index, the second argument of `set_port`. |
+| `name` | `string` | PipeWire's untranslated id, e.g. `"analog-output-headphones"`. |
+| `profiles` | `integer[]` | `profiles[].index` values the port works under. |
+| `type?` | `string` | `port.type`, e.g. `"speaker"`, `"headphones"`, `"hdmi"`, `"mic"`. |
+
 ### `CardProfile`
 
 One entry of `AudioCard.profiles`.
@@ -104,6 +119,15 @@ One entry of `AudioCard.profiles`.
 | `description` | `string` | PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`. |
 | `index` | `integer` | Profile index, the second argument of `set_card_profile`. |
 | `name` | `string` | PipeWire's untranslated id, e.g. `"output:hdmi-stereo"` or `"off"`. |
+
+### `PortDirection`
+
+Whether a port plays or records.
+
+| Value | Description |
+| --- | --- |
+| `"output"` | A sink's port, such as speakers. |
+| `"input"` | A source's port, such as a microphone. |
 
 ## Actions
 
@@ -121,6 +145,7 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`. |
 | `set_app_muted` | `id: integer, muted: boolean` | Sets an `apps[].id` stream's mute. |
 | `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice. |
+| `set_port` | `card: integer, index: integer` | Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice. |
 
 ## Backend
 
@@ -131,6 +156,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `active`, `channels`, `volume`, `muted` and `balance`; `card` is the node's `device.id` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
+| Each ALSA and BlueZ device's `EnumRoute` | `cards[].ports`; `set_port` writes a `Route` on the profile device a sink or source of the active profile uses, so a port outside the active profile is dropped |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no

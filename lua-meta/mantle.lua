@@ -95,6 +95,7 @@
 ---@field device integer PipeWire device id, the first argument of `set_card_profile`.
 ---@field mac? string A BlueZ card's MAC address, from its `bluez_card.*` name with `_` turned to `:`; joins `mantle.bluetooth`. `nil` on an ALSA card.
 ---@field name string `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`.
+---@field ports CardPort[] Every port, unplugged ones included, ordered by `index`. A device's `port` is its active one.
 ---@field profiles CardProfile[] Every profile, unavailable ones included, ordered by `index`.
 
 ---@class AudioChannel
@@ -128,6 +129,16 @@
 ---| "pending_charge" # On mains, neither draining nor taking current: a charge limit, weak charger or thermal pause.
 ---| "pending_discharge" # Waiting to discharge.
 ---`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "pending_charge"`.
+
+---@class CardPort
+---One entry of `AudioCard.ports`: a place a card routes sound, such as speakers or headphones.
+---@field available boolean `false` when PipeWire reports the port unavailable, such as an unplugged jack.
+---@field description string PipeWire's description, e.g. `"Headphones"`.
+---@field direction PortDirection `"output"` for a sink's port, `"input"` for a source's.
+---@field index integer Port index, the second argument of `set_port`.
+---@field name string PipeWire's untranslated id, e.g. `"analog-output-headphones"`.
+---@field profiles integer[] `profiles[].index` values the port works under.
+---@field type? string `port.type`, e.g. `"speaker"`, `"headphones"`, `"hdmi"`, `"mic"`.
 
 ---@class CardProfile
 ---One entry of `AudioCard.profiles`.
@@ -395,6 +406,11 @@
 ---One account a polkit challenge accepts.
 ---@field name string Login name, or empty when the uid has no passwd entry.
 ---@field uid integer
+
+---@alias PortDirection
+---| "output" # A sink's port, such as speakers.
+---| "input" # A source's port, such as a microphone.
+---Whether a port plays or records.
 
 ---@class PrivacyUser
 ---One app using a camera, microphone or screen capture.
@@ -812,6 +828,7 @@ local AppearanceCapability = {}
 ---@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
 ---@field set_app_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets an `apps[].id` stream's mute.
 ---@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
+---@field set_port fun(self: AudioCapability, card: integer, index: integer) Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
 ---@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata

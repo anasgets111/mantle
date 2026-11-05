@@ -42,6 +42,7 @@ fn command(action: AudioAction) -> AudioCommand {
         AudioAction::SetAppVolume { id, volume } => AudioCommand::SetAppVolume { id, volume: volume / 100.0 },
         AudioAction::SetAppMuted { id, muted } => AudioCommand::SetAppMuted { id, muted },
         AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
+        AudioAction::SetPort { card, index } => AudioCommand::SetPort { card, index },
     }
 }
 
@@ -68,5 +69,6 @@ mod tests {
             decode("set_card_profile", &[51.into(), 3.into()]),
             AudioCommand::SetCardProfile { device: 51, index: 3 }
         );
+        assert_eq!(decode("set_port", &[51.into(), 2.into()]), AudioCommand::SetPort { card: 51, index: 2 });
     }
 }

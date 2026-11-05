@@ -111,6 +111,7 @@ impl Capability {
                 "set_app_volume",
                 "set_app_muted",
                 "set_card_profile",
+                "set_port",
             ],
             Capability::Bluetooth => &[
                 "set_enabled",

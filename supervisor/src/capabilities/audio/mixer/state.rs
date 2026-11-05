@@ -31,42 +31,20 @@ pub struct PrivacySources {
 /// One audio write crossing from tokio to the PipeWire loop. A channel is required because the
 /// proxies are `!Send`; `pipewire::channel` gives the loop an eventfd, so commands apply between
 /// PipeWire events. Array ids resolve against live maps; stale ids are logged and dropped because
-/// PipeWire recycles them.
+/// PipeWire recycles them. Volumes are linear fractions.
 #[derive(Debug, Clone, PartialEq)]
 pub enum AudioCommand {
-    /// A sink or source volume as a linear fraction.
-    SetVolume {
-        id: u32,
-        volume: f32,
-    },
-    SetMuted {
-        id: u32,
-        muted: bool,
-    },
+    SetVolume { id: u32, volume: f32 },
+    SetMuted { id: u32, muted: bool },
     ToggleMute(u32),
-    SetBalance {
-        id: u32,
-        balance: f32,
-    },
+    SetBalance { id: u32, balance: f32 },
     SetDefaultSink(u32),
     SetDefaultSource(u32),
-    SetChannelVolume {
-        id: u32,
-        index: u32,
-        volume: f32,
-    },
-    SetAppVolume {
-        id: u32,
-        volume: f32,
-    },
-    SetAppMuted {
-        id: u32,
-        muted: bool,
-    },
-    SetCardProfile {
-        device: u32,
-        index: i32,
-    },
+    SetChannelVolume { id: u32, index: u32, volume: f32 },
+    SetAppVolume { id: u32, volume: f32 },
+    SetAppMuted { id: u32, muted: bool },
+    SetCardProfile { device: u32, index: i32 },
+    SetPort { card: u32, index: i32 },
 }
 
 /// Listener-owned state and snapshot channels. Held for the thread lifetime. `sink_*`/`metadata*`
