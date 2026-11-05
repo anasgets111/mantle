@@ -7,8 +7,9 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-- Added: `mantle.audio.cards` lists each ALSA sound card with every profile it offers (`index`, `name`, `description`, `available`) and the `active` one, so a config can switch one card between analog and HDMI. Unplugged profiles stay listed with `available = false`.
-- Breaking: `mantle.audio:set_bluetooth_profile(device, index)` is now `mantle.audio:set_card_profile(device, index)`, and takes a `cards[].device` as well as a `bluetooth[].device`. Rename the call.
+- Added: `mantle.audio.cards` lists each ALSA and Bluetooth sound card with every profile it offers (`index`, `name`, `description`, `available`) and the `active` one, so a config can switch one card between analog and HDMI. Unplugged profiles stay listed with `available = false`.
+- Breaking: `mantle.audio:set_bluetooth_profile(device, index)` is now `mantle.audio:set_card_profile(device, index)`, and takes any `cards[].device`. Rename the call.
+- Breaking: `mantle.audio.bluetooth` is gone; Bluetooth cards are in `mantle.audio.cards`, with a `mac` to join `mantle.bluetooth`. Each profile carries the `codec` it names, if any, and unavailable ones stay listed: a codec picker reads `profiles` where `codec and available`, instead of `codecs`.
 
 ## 0.12.1 - 2026-11-05
 

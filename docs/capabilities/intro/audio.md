@@ -25,8 +25,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | :--- | :--- |
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `channels`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
-| `bluez_card.*` devices and their profiles | `bluetooth` |
-| ALSA devices and their profiles | `cards` |
+| ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no

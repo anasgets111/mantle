@@ -28,10 +28,8 @@ pub struct AudioState {
     pub sources: Vec<AudioDevice>,
     /// Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
     pub apps: Vec<AppStream>,
-    /// BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
-    pub bluetooth: Vec<BluetoothCodecs>,
-    /// ALSA sound cards with their profiles, ordered by `device`. A card makes sinks and sources only
-    /// for its active profile, e.g. analog or HDMI on one Intel HDA card.
+    /// ALSA and BlueZ cards with their profiles, ordered by `device`. A card makes sinks and sources
+    /// only for its active profile: analog or HDMI on one Intel HDA card, a codec on a headset.
     pub cards: Vec<AudioCard>,
 }
 
@@ -77,34 +75,7 @@ pub struct AudioChannel {
     pub volume: f64,
 }
 
-/// One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct BluetoothCodecs {
-    /// PipeWire device id, the first argument of `set_card_profile`.
-    pub device: u32,
-    /// MAC address from the `bluez_card.*` name, `_` turned to `:`.
-    pub mac: String,
-    /// Available profiles that name a codec, ordered by `index`.
-    pub codecs: Vec<CodecProfile>,
-    /// `index` of the active profile; `nil` before PipeWire reports it or when it is not in `codecs`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub active: Option<i32>,
-}
-
-/// One entry of `BluetoothCodecs.codecs`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct CodecProfile {
-    /// Profile index, the second argument of `set_card_profile`.
-    pub index: i32,
-    /// Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
-    pub codec: String,
-    /// PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
-    pub description: String,
-}
-
-/// One ALSA sound card and every profile it offers.
+/// One ALSA or BlueZ card and every profile it offers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AudioCard {
@@ -112,6 +83,10 @@ pub struct AudioCard {
     pub device: u32,
     /// `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`.
     pub name: String,
+    /// A BlueZ card's MAC address, from its `bluez_card.*` name with `_` turned to `:`; joins
+    /// `mantle.bluetooth`. `nil` on an ALSA card.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mac: Option<String>,
     /// Every profile, unavailable ones included, ordered by `index`.
     pub profiles: Vec<CardProfile>,
     /// `index` of the active profile; `nil` before PipeWire reports it.
@@ -129,6 +104,10 @@ pub struct CardProfile {
     pub name: String,
     /// PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`.
     pub description: String,
+    /// The Bluetooth codec the profile names, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`; `nil` when it names
+    /// none, as `off` and every ALSA profile.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub codec: Option<String>,
     /// `false` when PipeWire reports the profile unavailable, such as HDMI with no display plugged in.
     pub available: bool,
 }

@@ -8,7 +8,7 @@ use std::rc::Rc;
 use pipewire as pw;
 use shared::debug;
 
-use crate::capabilities::audio::{bluez, master, route};
+use crate::capabilities::audio::{master, profile, route};
 
 use super::devices::DeviceRoute;
 use super::state::{AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState};
@@ -23,21 +23,17 @@ const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
 pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioCommand) {
     debug!(2; "applying command: {command:?}");
     match command {
-        AudioCommand::SetMasterVolume(volume) => set_default_volume(state, DefaultDevice::Sink, volume),
-        AudioCommand::SetMasterMuted(muted) => set_default_muted(state, DefaultDevice::Sink, Some(muted)),
-        AudioCommand::ToggleMasterMute => set_default_muted(state, DefaultDevice::Sink, None),
+        AudioCommand::SetMasterVolume(volume) => set_volume(state, DefaultDevice::Sink, None, volume),
+        AudioCommand::SetMasterMuted(muted) => set_muted(state, DefaultDevice::Sink, None, Some(muted)),
+        AudioCommand::ToggleMasterMute => set_muted(state, DefaultDevice::Sink, None, None),
         AudioCommand::SetBalance(balance) => {
-            let Some((node_id, volumes)) = resolve_default(state, DefaultDevice::Sink)
-                .and_then(|(id, current)| Some((id, master::balanced_channel_volumes(&current, balance)?)))
-            else {
-                debug!("set_balance({balance}) has no default output with left and right channels; ignored");
-                return;
-            };
-            write_device_volume(state, DefaultDevice::Sink, node_id, Some(volumes), None);
+            set_levels(state, DefaultDevice::Sink, None, format_args!("balance {balance}"), |props, _| {
+                master::balanced_channel_volumes(props, balance)
+            });
         }
-        AudioCommand::SetSourceVolume(volume) => set_default_volume(state, DefaultDevice::Source, volume),
-        AudioCommand::SetSourceMuted(muted) => set_default_muted(state, DefaultDevice::Source, Some(muted)),
-        AudioCommand::ToggleSourceMute => set_default_muted(state, DefaultDevice::Source, None),
+        AudioCommand::SetSourceVolume(volume) => set_volume(state, DefaultDevice::Source, None, volume),
+        AudioCommand::SetSourceMuted(muted) => set_muted(state, DefaultDevice::Source, None, Some(muted)),
+        AudioCommand::ToggleSourceMute => set_muted(state, DefaultDevice::Source, None, None),
         AudioCommand::SetAppVolume { id, volume } => {
             let Some(current) = state.borrow().app_props.get(&id).cloned() else {
                 debug!("set_app_volume({id}, {volume}) names a stream with no known Props; ignored");
@@ -71,31 +67,39 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
 }
 
 fn set_channel_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: u32, index: u32, volume: f32) {
+    set_levels(state, kind, Some(id), format_args!("channel {index} volume {volume}"), |props, max| {
+        master::channel_volume(props, index, volume, max)
+    });
+}
+
+fn set_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>, volume: f32) {
+    set_levels(state, kind, id, format_args!("volume {volume}"), |props, max| {
+        master::cubed_channel_volumes(volume, &props.channel_volumes, max)
+    });
+}
+
+/// The node a write targets: `id`, else the default device, resolved once here.
+fn target(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>) -> Option<u32> {
+    id.or_else(|| state.borrow().default_node(kind))
+}
+
+/// Writes the channel volumes `levels` derives from node `id`'s current `Props` and the direction's
+/// cap; every volume write shares it.
+fn set_levels(
+    state: &Rc<RefCell<MixerState>>,
+    kind: DefaultDevice,
+    id: Option<u32>,
+    what: std::fmt::Arguments,
+    levels: impl FnOnce(&master::RawSinkProps, f32) -> Option<Vec<f32>>,
+) {
     // ponytail: two writes within one PipeWire round trip can share stale Props; upgrade with write acknowledgments.
-    let channels = {
-        let state = state.borrow();
-        let current = state.device_props(kind, id);
-        let max = kind.max_volume();
-        current.and_then(|props| master::channel_volume(props, index, volume, max))
-    };
-    let Some(channels) = channels else {
-        debug!("channel volume {volume} for {kind:?} device {id}, channel {index} has no valid target; ignored");
+    let target = target(state, kind, id);
+    let channels = target.and_then(|id| levels(state.borrow().device_props(kind, id)?, kind.max_volume()));
+    let (Some(id), Some(channels)) = (target, channels) else {
+        debug!("{what} for {kind:?} device {target:?} has no channels to write; ignored");
         return;
     };
     write_device_volume(state, kind, id, Some(channels), None);
-}
-
-fn set_default_volume(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, volume: f32) {
-    let Some((node_id, current)) = resolve_default(state, kind) else {
-        debug!("a {kind:?} volume of {volume} has no resolved default device to write to; ignored");
-        return;
-    };
-    let max = kind.max_volume();
-    let Some(channel_volumes) = master::cubed_channel_volumes(volume, &current.channel_volumes, max) else {
-        debug!("a {kind:?} volume of {volume} resolved to node {node_id}, which reports no channels; ignored");
-        return;
-    };
-    write_device_volume(state, kind, node_id, Some(channel_volumes), None);
 }
 
 /// Pulls the default sink back to the cap when another client (`wpctl set-volume 5%+`) raised it past.
@@ -123,11 +127,11 @@ pub(super) fn cap_default_sink(state: &Rc<RefCell<MixerState>>) {
     }
 }
 
-/// Sets or toggles one direction's mute. `None` toggles using resolved `Props`; a set needs no
-/// channel count because mute carries no `channelVolumes`.
-fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted: Option<bool>) {
-    let Some(node_id) = state.borrow().default_node(kind) else {
-        debug!("a {kind:?} mute has no resolved default device to write to; ignored");
+/// Sets or toggles a device's mute. `None` toggles using resolved `Props`; a set needs no channel
+/// count because mute carries no `channelVolumes`.
+fn set_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: Option<u32>, muted: Option<bool>) {
+    let Some(node_id) = target(state, kind, id) else {
+        debug!("a {kind:?} mute has no device to write to; ignored");
         return;
     };
     // A toggle needs the current value; an explicit set does not, so only the toggle waits for
@@ -140,12 +144,6 @@ fn set_default_muted(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, muted
         return;
     };
     write_device_volume(state, kind, node_id, None, Some(muted));
-}
-
-fn resolve_default(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice) -> Option<(u32, master::RawSinkProps)> {
-    let state = state.borrow();
-    let node_id = state.default_node(kind)?;
-    Some((node_id, state.device_props(kind, node_id)?.clone()))
 }
 
 /// Writes through the owning object. A hardware sink's node `Props` accepts
@@ -200,7 +198,7 @@ fn write_device_route(
 /// Sends `SPA_PARAM_Profile`, which switches an ALSA card's outputs or a BlueZ device's codec; the
 /// new profile returns through `bind_device`'s listener.
 fn write_card_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, index: i32) {
-    with_pod(&bluez::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
+    with_pod(&profile::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
         let state = state.borrow();
         let Some((device, _listener)) = state.devices.get(&device_id) else {
             debug!("set_card_profile({device_id}, {index}) names no bound audio device; ignored");

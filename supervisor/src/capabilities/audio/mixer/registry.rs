@@ -18,7 +18,7 @@ use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-use crate::capabilities::audio::{bluez, master, route};
+use crate::capabilities::audio::{master, profile, route};
 
 use super::PropsLookup;
 use super::devices::{Card, DeviceEntry, DeviceRoute, device_names};
@@ -178,8 +178,8 @@ fn run_inner(
         .info(move |info| {
             let pid = info.props().and_then(|props| prop_u32(props, *keys::APP_PROCESS_ID));
             let mut state = state_for_info.borrow_mut();
-            if pid.is_some() && state.camera.core_pid != pid {
-                state.camera.core_pid = pid;
+            if pid.is_some() && state.graph.core_pid != pid {
+                state.graph.core_pid = pid;
                 state.publish_privacy();
             }
         })
@@ -277,7 +277,7 @@ pub(super) fn record_node_props(
 }
 
 /// Routes `Node`, `Device`, and `default` `Metadata` globals to their binders and records the
-/// `Link` globals the camera graph needs; ignores the rest.
+/// `Link` globals in the link graph; ignores the rest.
 fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
     match obj.type_ {
         ObjectType::Node => on_node_global(state, registry, obj),
@@ -285,7 +285,7 @@ fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryR
         ObjectType::Metadata => bind_default_metadata(state, registry, obj),
         ObjectType::Link => {
             let mut state = state.borrow_mut();
-            if obj.props.is_some_and(|props| state.camera.add_link(obj.id, props)) {
+            if obj.props.is_some_and(|props| state.graph.add_link(obj.id, props)) {
                 state.publish_privacy();
             }
         }
@@ -321,7 +321,7 @@ fn on_node_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Regi
     // A camera source is read from its globals; its consumers are the nodes that get bound.
     if kind == NodeKind::Video {
         let mut state = state.borrow_mut();
-        if obj.props.is_some_and(|props| state.camera.add_source(obj.id, props)) {
+        if obj.props.is_some_and(|props| state.graph.add_camera(obj.id, props)) {
             state.publish_privacy();
         }
         return;
@@ -535,7 +535,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
     let mac = match props.get_prop(*keys::DEVICE_API) {
         Some("alsa") => None,
         Some("bluez5") => {
-            let Some(mac) = device_name.and_then(bluez::mac_from_card_name) else {
+            let Some(mac) = device_name.and_then(profile::mac_from_card_name) else {
                 debug!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
                 return;
             };
@@ -571,7 +571,7 @@ fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::Registr
                 record_route(&state_for_param, device_id, &value);
                 return;
             }
-            let Some(profile) = bluez::extract_profile(&value) else { return };
+            let Some(profile) = profile::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
             let Some(card) = state.cards.get_mut(&device_id) else { return };
             match param_type {

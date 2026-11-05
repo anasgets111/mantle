@@ -4,7 +4,7 @@
 
 pub use shared::state::audio::AppStream;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use pipewire::keys;
@@ -163,55 +163,8 @@ fn upsert_or_remove<V: PartialEq>(map: &mut BTreeMap<u32, V>, node_id: u32, pars
     }
 }
 
-/// Which `Stream/Input/Video` nodes read a camera (ADR-0034), from registry globals alone. A link
-/// from a camera source to a stream makes that stream a camera consumer; a viewer of a portal
-/// screencast stays out.
-#[derive(Debug, Default)]
-pub(super) struct CameraGraph {
-    /// Camera source nodes.
-    sources: BTreeSet<u32>,
-    /// `Link` id -> (output node, input node), kept only for links leaving a camera source.
-    links: BTreeMap<u32, (u32, u32)>,
-    /// The daemon's `application.process.id`, from the core `info` event.
-    pub(super) core_pid: Option<u32>,
-}
-
 pub(super) fn prop_u32(props: &impl PropsLookup, key: &str) -> Option<u32> {
     props.get_prop(key)?.parse().ok()
-}
-
-impl CameraGraph {
-    /// Records a `Video/Source` that is a camera: the device-backed node has `device.id` and
-    /// `media.role = "Camera"`, a portal screencast has neither. Whether it was one.
-    pub(super) fn add_source(&mut self, id: u32, props: &impl PropsLookup) -> bool {
-        let camera = props.get_prop(*keys::MEDIA_ROLE) == Some("Camera") || props.get_prop(*keys::DEVICE_ID).is_some();
-        camera && self.sources.insert(id)
-    }
-
-    /// Whether the link leaves a camera source, so the consumers changed. A node's global precedes
-    /// the links that name it.
-    pub(super) fn add_link(&mut self, id: u32, props: &impl PropsLookup) -> bool {
-        let (Some(output), Some(input)) =
-            (prop_u32(props, *keys::LINK_OUTPUT_NODE), prop_u32(props, *keys::LINK_INPUT_NODE))
-        else {
-            return false;
-        };
-        self.sources.contains(&output) && self.links.insert(id, (output, input)) != Some((output, input))
-    }
-
-    /// Forgets a removed global of any kind, and the links that name it so a reused id inherits
-    /// none; whether the consumers changed.
-    pub(super) fn remove(&mut self, id: u32) -> bool {
-        let source = self.sources.remove(&id);
-        let links = self.links.len();
-        self.links.retain(|&link, &mut (output, input)| link != id && output != id && input != id);
-        source || self.links.len() != links
-    }
-
-    /// Running streams linked to a camera source.
-    pub(super) fn consumers(&self, streams: &BTreeMap<u32, CaptureApp>) -> Vec<CaptureApp> {
-        running(streams).into_iter().filter(|app| self.links.values().any(|&(_, input)| input == app.node_id)).collect()
-    }
 }
 
 /// One microphone or screen-capture stream (ADR-0137); the list it is in supplies the kind.
@@ -562,65 +515,6 @@ mod tests {
 
     fn props(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(key, value)| (key.to_string(), value.to_string())).collect()
-    }
-
-    /// Global props of the real UVC camera node (`pw-cli ls Node`).
-    fn camera_source() -> HashMap<String, String> {
-        props(&[
-            ("media.class", "Video/Source"),
-            ("media.role", "Camera"),
-            ("device.id", "54"),
-            ("object.path", "v4l2:/dev/video0"),
-        ])
-    }
-
-    fn camera_graph() -> CameraGraph {
-        let mut graph = CameraGraph::default();
-        assert!(graph.add_source(63, &camera_source()));
-        graph
-    }
-
-    fn link(output: &str, input: &str) -> HashMap<String, String> {
-        props(&[("link.output.node", output), ("link.input.node", input)])
-    }
-
-    fn video_stream(node_id: u32, running: bool) -> BTreeMap<u32, CaptureApp> {
-        let app = CaptureApp { node_id, pid: None, app_name: Some("ffmpeg".to_string()), running };
-        BTreeMap::from([(node_id, app)])
-    }
-
-    #[test]
-    fn a_stream_linked_to_a_camera_source_is_a_consumer_until_it_stops_or_unlinks() {
-        let mut graph = camera_graph();
-        assert!(graph.add_link(70, &link("63", "94")));
-        let consumers = |graph: &CameraGraph, running| graph.consumers(&video_stream(94, running));
-        assert_eq!(consumers(&graph, true).len(), 1);
-        assert!(consumers(&graph, false).is_empty(), "an idle stream holds the camera without reading");
-        assert!(graph.remove(70));
-        assert!(consumers(&graph, true).is_empty());
-    }
-
-    #[test]
-    fn only_a_device_backed_or_camera_role_source_is_a_camera() {
-        let mut graph = CameraGraph::default();
-        let portal = props(&[("media.class", "Video/Source"), ("node.name", "unlisted-portal-source")]);
-        assert!(!graph.add_source(80, &portal), "a screencast with an unlisted name is not a camera");
-        assert!(graph.add_source(81, &props(&[("media.role", "Camera")])));
-        assert!(graph.add_source(82, &props(&[("device.id", "54")])));
-        assert!(!graph.add_link(71, &link("80", "94")), "a viewer of that source is no camera user");
-        assert!(graph.consumers(&video_stream(94, true)).is_empty());
-    }
-
-    #[test]
-    fn removing_a_node_or_link_id_drops_every_link_naming_it() {
-        for (removed, why) in
-            [(63, "the camera source"), (94, "the consumer, so a reused id inherits no link"), (70, "the link")]
-        {
-            let mut graph = camera_graph();
-            graph.add_link(70, &link("63", "94"));
-            assert!(graph.remove(removed), "{why}");
-            assert!(graph.consumers(&video_stream(94, true)).is_empty(), "{why}");
-        }
     }
 
     #[test]

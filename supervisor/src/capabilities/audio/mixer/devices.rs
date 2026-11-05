@@ -1,14 +1,14 @@
 //! Audio devices for `mantle.audio`: sink and source names, icons and hardware routes, and the
 //! profiles of ALSA and BlueZ cards.
 
-pub use shared::state::audio::{AudioCard, AudioDevice, BluetoothCodecs, CardProfile, CodecProfile};
+pub use shared::state::audio::{AudioCard, AudioDevice, CardProfile};
 
 use std::collections::HashMap;
 
 use pipewire::keys;
 
 use super::PropsLookup;
-use crate::capabilities::audio::{bluez, master, route};
+use crate::capabilities::audio::{master, profile, route};
 
 /// What the mixer tracks for one bound ALSA or BlueZ device. Proxies live in `devices`, keeping this
 /// plain test data like [`DeviceEntry`].
@@ -19,16 +19,16 @@ pub(super) struct Card {
     /// `device.description`, else `device.nick`, else `device.name`.
     pub(super) name: String,
     /// The profiles from the last finished `EnumProfile`, keyed by index.
-    pub(super) profiles: std::collections::BTreeMap<i32, bluez::Profile>,
+    pub(super) profiles: std::collections::BTreeMap<i32, profile::Profile>,
     /// The index `Profile` reports.
     pub(super) active: Option<i32>,
     /// `EnumProfile` answers collected since the last `Profile` answer, swapped in when it arrives.
-    pub(super) incoming: std::collections::BTreeMap<i32, bluez::Profile>,
+    pub(super) incoming: std::collections::BTreeMap<i32, profile::Profile>,
 }
 
 impl Card {
     /// Collects one `EnumProfile` answer.
-    pub(super) fn enumerated(&mut self, profile: bluez::Profile) {
+    pub(super) fn enumerated(&mut self, profile: profile::Profile) {
         self.incoming.insert(profile.index, profile);
     }
 
@@ -43,41 +43,14 @@ impl Card {
     }
 }
 
-/// Builds [`super::AudioState::bluetooth`], ordered by device id for deterministic publishes.
-pub(super) fn bluetooth_codecs(cards: &HashMap<u32, Card>) -> Vec<BluetoothCodecs> {
-    let mut out: Vec<BluetoothCodecs> = cards
-        .iter()
-        .filter_map(|(&device, card)| {
-            let mac = card.mac.clone()?;
-            let codecs: Vec<CodecProfile> = card
-                .profiles
-                .values()
-                .filter(|profile| profile.available)
-                .filter_map(|profile| {
-                    Some(CodecProfile {
-                        index: profile.index,
-                        codec: bluez::codec_from_name(&profile.name)
-                            .or_else(|| bluez::codec_of(&profile.description))?,
-                        description: profile.description.clone(),
-                    })
-                })
-                .collect();
-            let active = card.active.filter(|index| codecs.iter().any(|codec| codec.index == *index));
-            Some(BluetoothCodecs { device, mac, codecs, active })
-        })
-        .collect();
-    out.sort_by_key(|entry| entry.device);
-    out
-}
-
-/// Builds [`super::AudioState::cards`] from the ALSA cards, ordered by device id.
+/// Builds [`super::AudioState::cards`], ordered by device id for deterministic publishes.
 pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
     let mut out: Vec<AudioCard> = cards
         .iter()
-        .filter(|(_, card)| card.mac.is_none())
         .map(|(&device, card)| AudioCard {
             device,
             name: card.name.clone(),
+            mac: card.mac.clone(),
             profiles: card
                 .profiles
                 .values()
@@ -85,6 +58,7 @@ pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
                     index: profile.index,
                     name: profile.name.clone(),
                     description: profile.description.clone(),
+                    codec: profile::codec_from_name(&profile.name).or_else(|| profile::codec_of(&profile.description)),
                     available: profile.available,
                 })
                 .collect(),
@@ -286,7 +260,7 @@ mod tests {
 
     #[test]
     fn a_profile_enumeration_replaces_the_list_and_reports_only_a_change() {
-        let profile = |index: i32, name: &str| bluez::Profile {
+        let profile = |index: i32, name: &str| profile::Profile {
             index,
             name: name.to_string(),
             description: String::new(),

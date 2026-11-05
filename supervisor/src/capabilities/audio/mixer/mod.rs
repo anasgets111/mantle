@@ -32,6 +32,8 @@
 //! This file wires events; [`super::master`] owns parsing, resolution, and linear/cubic conversion.
 
 mod devices;
+mod graph;
+mod publish;
 mod registry;
 mod state;
 mod streams;

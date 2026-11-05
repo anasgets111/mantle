@@ -90,9 +90,10 @@
 ---@field no_display boolean `NoDisplay=true`: omit from launchers, but keep its name and icon for window lookup.
 
 ---@class AudioCard
----One ALSA sound card and every profile it offers.
+---One ALSA or BlueZ card and every profile it offers.
 ---@field active? integer `index` of the active profile; `nil` before PipeWire reports it.
 ---@field device integer PipeWire device id, the first argument of `set_card_profile`.
+---@field mac? string A BlueZ card's MAC address, from its `bluez_card.*` name with `_` turned to `:`; joins `mantle.bluetooth`. `nil` on an ALSA card.
 ---@field name string `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`.
 ---@field profiles CardProfile[] Every profile, unavailable ones included, ordered by `index`.
 
@@ -123,16 +124,10 @@
 ---| "pending_discharge" # Waiting to discharge.
 ---`battery.state`: UPower's `Device.State` by name, e.g. `b.state == "pending_charge"`.
 
----@class BluetoothCodecs
----One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
----@field active? integer `index` of the active profile; `nil` before PipeWire reports it or when it is not in `codecs`.
----@field codecs CodecProfile[] Available profiles that name a codec, ordered by `index`.
----@field device integer PipeWire device id, the first argument of `set_card_profile`.
----@field mac string MAC address from the `bluez_card.*` name, `_` turned to `:`.
-
 ---@class CardProfile
 ---One entry of `AudioCard.profiles`.
 ---@field available boolean `false` when PipeWire reports the profile unavailable, such as HDMI with no display plugged in.
+---@field codec? string The Bluetooth codec the profile names, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`; `nil` when it names none, as `off` and every ALSA profile.
 ---@field description string PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`.
 ---@field index integer Profile index, the second argument of `set_card_profile`.
 ---@field name string PipeWire's untranslated id, e.g. `"output:hdmi-stereo"` or `"off"`.
@@ -140,12 +135,6 @@
 ---@class ClockConfigure
 ---`clock:configure`'s table. An absent `interval` keeps the current one.
 ---@field interval? integer Seconds between pushes, each on a multiple of it since the epoch, so `60` lands on every minute; `1` is the default and `0` stops them.
-
----@class CodecProfile
----One entry of `BluetoothCodecs.codecs`.
----@field codec string Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
----@field description string PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
----@field index integer Profile index, the second argument of `set_card_profile`.
 
 ---@alias ColorScheme
 ---| "default" # No preference, or a value the portal does not define.
@@ -594,8 +583,7 @@
 ---`mantle.audio`'s payload (ADR-0053).
 ---@field apps AppStream[] Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures.
 ---@field balance? number Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map.
----@field bluetooth BluetoothCodecs[] BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
----@field cards AudioCard[] ALSA sound cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile, e.g. analog or HDMI on one Intel HDA card.
+---@field cards AudioCard[] ALSA and BlueZ cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile: analog or HDMI on one Intel HDA card, a codec on a headset.
 ---@field muted boolean Default output mute; `false` with no default sink or before its first report.
 ---@field sinks AudioDevice[] Every output device.
 ---@field source_muted boolean Default input (microphone) mute; `false` with no default source or before its first report.
@@ -827,7 +815,7 @@ local AppearanceCapability = {}
 ---@field toggle_source_mute fun(self: AudioCapability) Toggles default input mute.
 ---@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
 ---@field set_app_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets an `apps[].id` stream's mute.
----@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`, or a `bluetooth[].device` to one of its `codecs[].index`. WirePlumber keeps the choice.
+---@field set_card_profile fun(self: AudioCapability, device: integer, index: integer) Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
 
 ---[docs](https://anasgets111.github.io/mantle/capabilities/battery.html)
 ---@class BatteryCapability: ReadOnlyCapability<BatteryState>, userdata
