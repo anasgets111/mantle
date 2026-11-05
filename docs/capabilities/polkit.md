@@ -21,17 +21,37 @@ column {
                 return polkit.message or ""
             end, ""),
         },
+        text {
+            content = mantle.polkit:map(function(polkit)
+                return polkit.prompt and polkit.prompt.text or "Password"
+            end, ""),
+        },
         textfield {
             width = 280,
             height = 24,
-            placeholder = "Password",
+            masked = mantle.polkit:map(function(polkit)
+                return not (polkit.prompt and polkit.prompt.echo)
+            end, true),
             secure_submit = { capability = "polkit", action = "authenticate" },
         },
         text {
             foreground = "#F38BA8",
             content = mantle.polkit:map(function(polkit)
-                return polkit.error or ""
+                local last = polkit.messages[#polkit.messages]
+                return last and last.text or polkit.error or ""
             end, ""),
+        },
+        list {
+            direction = "horizontal",
+            spacing = 8,
+            items = mantle.polkit:map(function(polkit) return polkit.identities end, {}),
+            key = function(identity) return tostring(identity.uid) end,
+            each = function(identity)
+                return rect {
+                    on_click = function() mantle.polkit:select_identity(identity.uid) end,
+                    children = { text { content = identity.name } },
+                }
+            end,
         },
         rect {
             on_click = function() mantle.polkit:cancel() end,

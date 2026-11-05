@@ -19,12 +19,15 @@ local time = mantle.clock:map(function(clock) return os.date("%H:%M", clock.time
 local date = mantle.clock:map(function(clock) return os.date("%A, %d %B", clock.time) end, "")
 
 local hint = mantle.lock:map(function(lock)
+    local last = lock.messages[#lock.messages]
     if lock.authenticating then
         return "Checking…"
+    elseif last then
+        return last.text
     elseif lock.error ~= "" then
         return lock.attempts > 1 and string.format("Wrong password (%d tries)", lock.attempts) or "Wrong password"
     end
-    return "Type your password and press Enter"
+    return lock.prompt and lock.prompt.text or "Type your password and press Enter"
 end, "")
 
 local failed = mantle.lock:map(function(lock) return lock.error ~= "" and not lock.authenticating end, false)
@@ -64,6 +67,7 @@ local lock_screen = lock {
                             foreground = "#cdd6f4",
                             text_align = "center",
                             placeholder = "Password",
+                            masked = mantle.lock:map(function(lock) return not (lock.prompt and lock.prompt.echo) end, true),
                             secure_submit = { capability = "lock", action = "authenticate" },
                         },
                     },
@@ -87,7 +91,8 @@ return { lock_screen }
 - `secure_submit` sends keystrokes straight to PAM; Lua never sees the password, so the field has no `on_change` or `on_submit` ([secure fields](../guide/input.md#secure-fields)).
 - `child = function(output)` gives every monitor its own copy ([per-output child](../surfaces/index.md#per-output-child)).
 - `set_unlock_animation` keeps the lock up for `FADE_MS` after success, while `unlocking` fades the card out ([animation](../guide/animation.md)).
-- `error`, `attempts` and `authenticating` drive the hint and the red border.
+- PAM starts when the session locks. The hint shows its latest `messages` line (a faillock countdown, say) or else its `prompt` text, and `error`, `attempts` and `authenticating` drive the rest of the hint and the red border.
+- `masked` follows `prompt.echo`, so a two-factor code shows as typed while a password stays masked. Either way it never reaches Lua ([lock capability](../capabilities/lock.md)).
 - `action` exposes `mantle call lock` to a keybind, and an idle threshold locks after 300 s without input ([action](../guide/scripting.md#action), [idle](../capabilities/idle.md#methods)).
 
 ## Variations
