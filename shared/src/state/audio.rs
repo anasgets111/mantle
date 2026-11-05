@@ -30,6 +30,9 @@ pub struct AudioState {
     pub apps: Vec<AppStream>,
     /// BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`.
     pub bluetooth: Vec<BluetoothCodecs>,
+    /// ALSA sound cards with their profiles, ordered by `device`. A card makes sinks and sources only
+    /// for its active profile, e.g. analog or HDMI on one Intel HDA card.
+    pub cards: Vec<AudioCard>,
 }
 
 /// One `sinks` or `sources` entry.
@@ -78,7 +81,7 @@ pub struct AudioChannel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct BluetoothCodecs {
-    /// PipeWire device id, the first argument of `set_bluetooth_profile`.
+    /// PipeWire device id, the first argument of `set_card_profile`.
     pub device: u32,
     /// MAC address from the `bluez_card.*` name, `_` turned to `:`.
     pub mac: String,
@@ -93,12 +96,41 @@ pub struct BluetoothCodecs {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CodecProfile {
-    /// Profile index, the second argument of `set_bluetooth_profile`.
+    /// Profile index, the second argument of `set_card_profile`.
     pub index: i32,
     /// Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`.
     pub codec: String,
     /// PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
     pub description: String,
+}
+
+/// One ALSA sound card and every profile it offers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct AudioCard {
+    /// PipeWire device id, the first argument of `set_card_profile`.
+    pub device: u32,
+    /// `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`.
+    pub name: String,
+    /// Every profile, unavailable ones included, ordered by `index`.
+    pub profiles: Vec<CardProfile>,
+    /// `index` of the active profile; `nil` before PipeWire reports it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub active: Option<i32>,
+}
+
+/// One entry of `AudioCard.profiles`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct CardProfile {
+    /// Profile index, the second argument of `set_card_profile`.
+    pub index: i32,
+    /// PipeWire's untranslated id, e.g. `"output:hdmi-stereo"` or `"off"`.
+    pub name: String,
+    /// PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`.
+    pub description: String,
+    /// `false` when PipeWire reports the profile unavailable, such as HDMI with no display plugged in.
+    pub available: bool,
 }
 
 /// One app's playback or recording stream (ADR-0053). Streams without a pid are left out.

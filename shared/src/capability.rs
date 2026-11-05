@@ -114,7 +114,7 @@ impl Capability {
                 "toggle_source_mute",
                 "set_app_volume",
                 "set_app_muted",
-                "set_bluetooth_profile",
+                "set_card_profile",
             ],
             Capability::Bluetooth => &[
                 "set_enabled",

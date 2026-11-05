@@ -111,8 +111,9 @@ pub enum AudioAction {
     SetAppVolume { id: u32, volume: f32 },
     /// Sets an `apps[].id` stream's mute.
     SetAppMuted { id: u32, muted: bool },
-    /// Switches a `bluetooth[].device` to one of its `codecs[].index`.
-    SetBluetoothProfile { device: u32, index: i32 },
+    /// Switches a `cards[].device` to one of its `profiles[].index`, or a `bluetooth[].device` to one
+    /// of its `codecs[].index`. WirePlumber keeps the choice.
+    SetCardProfile { device: u32, index: i32 },
 }
 
 #[derive(Debug, serde::Deserialize)]

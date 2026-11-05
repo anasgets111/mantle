@@ -1,10 +1,10 @@
-//! BlueZ card profile and codec parsing.
+//! Card profile parsing, for ALSA and BlueZ devices alike, and BlueZ codec names.
 
 use pipewire::spa::pod::{Object, Property, Value};
 use pipewire::spa::sys as spa_sys;
 use pipewire::spa::utils::Id;
 
-/// One BlueZ card profile from `EnumProfile` or `Profile`, e.g. index 2, `a2dp-sink-aac`, described
+/// One card profile from `EnumProfile` or `Profile`, e.g. BlueZ index 2, `a2dp-sink-aac`, described
 /// as `"High Fidelity Playback (A2DP Sink, codec AAC)"`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Profile {
@@ -65,8 +65,8 @@ pub(super) fn codec_of(description: &str) -> Option<String> {
     (!codec.is_empty()).then(|| codec.to_string())
 }
 
-/// Builds the `SPA_PARAM_Profile` object that switches a BlueZ device to profile `index`.
-/// `save: true` keeps the choice for the device's next connection, as the other mixer writes do.
+/// Builds the `SPA_PARAM_Profile` object that switches a device to profile `index`. `save: true`
+/// keeps the choice for the device's next connection, as the other mixer writes do.
 pub(super) fn profile_object(index: i32) -> Value {
     Value::Object(Object {
         type_: spa_sys::SPA_TYPE_OBJECT_ParamProfile,

@@ -128,7 +128,7 @@ BlueZ on the system bus.
 | Agent | Mantle registers the default `KeyboardDisplay` agent at `/org/mantle/Bluez/Agent1`. A confirmation, authorization, displayed code, PIN entry or passkey entry becomes `pairing_request` only while the adapter is discoverable or Mantle is pairing that device. A `"service"` request asks only for a paired device. One request shows at a time: a second is rejected, unless the first only displays a code and the second needs an answer |
 | Discovery | `start_discovery` clears `discovered_devices`, but the next device change refills it with every unpaired device BlueZ still holds, earlier scans' included; `stop_discovery` keeps it |
 | Battery, category | `Battery1` gives `battery`; the `Class` major and minor bits give `category` |
-| Codecs | PipeWire owns them: [`audio`](audio.md)`.bluetooth` lists each device's profiles and `set_bluetooth_profile` switches one |
+| Codecs | PipeWire owns them: [`audio`](audio.md)`.bluetooth` lists each device's profiles and `set_card_profile` switches one |
 
 ## How do I…
 

@@ -1,7 +1,7 @@
 //! Audio devices for `mantle.audio`: sink and source names, icons and hardware routes, and the
-//! codec profiles of BlueZ cards.
+//! profiles of ALSA and BlueZ cards.
 
-pub use shared::state::audio::{AudioDevice, BluetoothCodecs, CodecProfile};
+pub use shared::state::audio::{AudioCard, AudioDevice, BluetoothCodecs, CardProfile, CodecProfile};
 
 use std::collections::HashMap;
 
@@ -10,11 +10,14 @@ use pipewire::keys;
 use super::PropsLookup;
 use crate::capabilities::audio::{bluez, master, route};
 
-/// What the mixer tracks for one bound BlueZ device. Proxies live in `bluez_devices`, keeping this
+/// What the mixer tracks for one bound ALSA or BlueZ device. Proxies live in `devices`, keeping this
 /// plain test data like [`DeviceEntry`].
 #[derive(Debug, Clone, Default)]
-pub(super) struct BluezCard {
-    pub(super) mac: String,
+pub(super) struct Card {
+    /// The address from a BlueZ card's name; `None` marks an ALSA card.
+    pub(super) mac: Option<String>,
+    /// `device.description`, else `device.nick`, else `device.name`.
+    pub(super) name: String,
     /// The profiles from the last finished `EnumProfile`, keyed by index.
     pub(super) profiles: std::collections::BTreeMap<i32, bluez::Profile>,
     /// The index `Profile` reports.
@@ -23,7 +26,7 @@ pub(super) struct BluezCard {
     pub(super) incoming: std::collections::BTreeMap<i32, bluez::Profile>,
 }
 
-impl BluezCard {
+impl Card {
     /// Collects one `EnumProfile` answer.
     pub(super) fn enumerated(&mut self, profile: bluez::Profile) {
         self.incoming.insert(profile.index, profile);
@@ -41,10 +44,11 @@ impl BluezCard {
 }
 
 /// Builds [`super::AudioState::bluetooth`], ordered by device id for deterministic publishes.
-pub(super) fn bluetooth_codecs(cards: &HashMap<u32, BluezCard>) -> Vec<BluetoothCodecs> {
+pub(super) fn bluetooth_codecs(cards: &HashMap<u32, Card>) -> Vec<BluetoothCodecs> {
     let mut out: Vec<BluetoothCodecs> = cards
         .iter()
-        .map(|(&device, card)| {
+        .filter_map(|(&device, card)| {
+            let mac = card.mac.clone()?;
             let codecs: Vec<CodecProfile> = card
                 .profiles
                 .values()
@@ -59,10 +63,35 @@ pub(super) fn bluetooth_codecs(cards: &HashMap<u32, BluezCard>) -> Vec<Bluetooth
                 })
                 .collect();
             let active = card.active.filter(|index| codecs.iter().any(|codec| codec.index == *index));
-            BluetoothCodecs { device, mac: card.mac.clone(), codecs, active }
+            Some(BluetoothCodecs { device, mac, codecs, active })
         })
         .collect();
     out.sort_by_key(|entry| entry.device);
+    out
+}
+
+/// Builds [`super::AudioState::cards`] from the ALSA cards, ordered by device id.
+pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
+    let mut out: Vec<AudioCard> = cards
+        .iter()
+        .filter(|(_, card)| card.mac.is_none())
+        .map(|(&device, card)| AudioCard {
+            device,
+            name: card.name.clone(),
+            profiles: card
+                .profiles
+                .values()
+                .map(|profile| CardProfile {
+                    index: profile.index,
+                    name: profile.name.clone(),
+                    description: profile.description.clone(),
+                    available: profile.available,
+                })
+                .collect(),
+            active: card.active,
+        })
+        .collect();
+    out.sort_by_key(|card| card.device);
     out
 }
 
@@ -263,7 +292,7 @@ mod tests {
             description: String::new(),
             available: true,
         };
-        let mut card = BluezCard::default();
+        let mut card = Card::default();
 
         card.enumerated(profile(1, "a2dp-sink-sbc"));
         card.enumerated(profile(2, "a2dp-sink-aac"));

@@ -47,7 +47,7 @@ fn command(action: AudioAction) -> AudioCommand {
         AudioAction::ToggleSourceMute => AudioCommand::ToggleSourceMute,
         AudioAction::SetAppVolume { id, volume } => AudioCommand::SetAppVolume { id, volume: volume / 100.0 },
         AudioAction::SetAppMuted { id, muted } => AudioCommand::SetAppMuted { id, muted },
-        AudioAction::SetBluetoothProfile { device, index } => AudioCommand::SetBluetoothProfile { device, index },
+        AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
     }
 }
 
@@ -72,6 +72,10 @@ mod tests {
         assert_eq!(
             decode("set_app_volume", &[7.into(), 25.into()]),
             AudioCommand::SetAppVolume { id: 7, volume: 0.25 }
+        );
+        assert_eq!(
+            decode("set_card_profile", &[51.into(), 3.into()]),
+            AudioCommand::SetCardProfile { device: 51, index: 3 }
         );
     }
 }

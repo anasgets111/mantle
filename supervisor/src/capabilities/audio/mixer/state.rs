@@ -12,7 +12,7 @@ use tokio::sync::watch;
 
 #[cfg(test)]
 use super::devices::{AudioDevice, BluetoothCodecs};
-use super::devices::{BluezCard, DeviceEntry, bluetooth_codecs, device_list};
+use super::devices::{Card, DeviceEntry, bluetooth_codecs, card_list, device_list};
 use super::streams::{AppStream, CameraGraph, CaptureApp, running};
 use crate::capabilities::audio::{master, route};
 use crate::capabilities::scale::percent_from_fraction;
@@ -49,7 +49,7 @@ pub enum AudioCommand {
     ToggleSourceMute,
     SetAppVolume { id: u32, volume: f32 },
     SetAppMuted { id: u32, muted: bool },
-    SetBluetoothProfile { device: u32, index: i32 },
+    SetCardProfile { device: u32, index: i32 },
 }
 
 /// Listener-owned state and snapshot channels. Held for the thread lifetime. `sink_*`/`metadata*`
@@ -83,14 +83,12 @@ pub(super) struct MixerState {
     /// `Audio/Source` id -> the same `Props`-backed entry used for master volume.
     pub(super) sources: HashMap<u32, DeviceEntry>,
     pub(super) source_nodes: HashMap<u32, (pw::node::Node, pw::node::NodeListener)>,
-    /// Bound ALSA `Device` proxies/listeners for writes. BlueZ proxies live in `bluez_devices`.
+    /// Bound ALSA and BlueZ `Device` proxies/listeners for writes.
     pub(super) devices: HashMap<u32, (Rc<pw::device::Device>, pw::device::DeviceListener)>,
     /// `(device global id, card.profile.device)` -> active ALSA or BlueZ `Route`.
     pub(super) device_routes: HashMap<(u32, i32), route::ActiveRoute>,
-    /// BlueZ `Device` id -> its MAC and profiles, for [`AudioState::bluetooth`].
-    pub(super) bluez_cards: HashMap<u32, BluezCard>,
-    /// Bound BlueZ `Device` proxies/listeners, separate from `bluez_cards` so state stays plain.
-    pub(super) bluez_devices: HashMap<u32, (Rc<pw::device::Device>, pw::device::DeviceListener)>,
+    /// `Device` id -> its profiles, for [`AudioState::bluetooth`] and [`AudioState::cards`].
+    pub(super) cards: HashMap<u32, Card>,
     /// Audio stream id -> raw `Props`, using the sink's pod shape and parser.
     pub(super) app_props: HashMap<u32, master::RawSinkProps>,
     /// Names selected by `default.audio.sink`/`default.audio.source`, or `None` before arrival.
@@ -122,8 +120,7 @@ impl MixerState {
             source_nodes: HashMap::new(),
             devices: HashMap::new(),
             device_routes: HashMap::new(),
-            bluez_cards: HashMap::new(),
-            bluez_devices: HashMap::new(),
+            cards: HashMap::new(),
             app_props: HashMap::new(),
             default_sink_name: None,
             default_source_name: None,
@@ -139,7 +136,6 @@ impl MixerState {
         self.sink_nodes.clear();
         self.source_nodes.clear();
         self.devices.clear();
-        self.bluez_devices.clear();
         self.metadata = None;
     }
 
@@ -208,7 +204,8 @@ impl MixerState {
             sinks: device_list(&self.sinks, &self.device_routes, sink),
             sources: device_list(&self.sources, &self.device_routes, source),
             apps,
-            bluetooth: bluetooth_codecs(&self.bluez_cards),
+            bluetooth: bluetooth_codecs(&self.cards),
+            cards: card_list(&self.cards),
         };
         if Some(&next) == self.last_sent.as_ref() {
             return;
@@ -227,13 +224,12 @@ impl MixerState {
         let mut audio = self.sinks.remove(&id).is_some();
         audio |= self.sources.remove(&id).is_some();
         audio |= self.app_props.remove(&id).is_some();
-        audio |= self.bluez_cards.remove(&id).is_some();
+        audio |= self.cards.remove(&id).is_some();
         audio |= self.apps.remove(&id).is_some();
         // ALSA and BlueZ devices both record routes; drop this id's so a reused id inherits none.
         let routes = self.device_routes.len();
         self.device_routes.retain(|&(device_id, _), _| device_id != id);
         audio |= self.devices.remove(&id).is_some();
-        audio |= self.bluez_devices.remove(&id).is_some();
         audio |= self.device_routes.len() != routes;
         if self.metadata_id == Some(id) {
             audio = true;
@@ -291,7 +287,7 @@ pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
 
 #[cfg(test)]
 mod tests {
-    use super::super::devices::{CodecProfile, DeviceNames};
+    use super::super::devices::{AudioCard, CardProfile, CodecProfile, DeviceNames};
     use super::*;
     use crate::capabilities::audio::bluez;
     use shared::state::audio::AudioChannel;
@@ -357,6 +353,17 @@ mod tests {
                 }],
                 active: Some(2),
             }],
+            cards: vec![AudioCard {
+                device: 51,
+                name: "Built-in Audio".to_string(),
+                profiles: vec![CardProfile {
+                    index: 3,
+                    name: "output:hdmi-stereo".to_string(),
+                    description: "Digital Stereo (HDMI) Output".to_string(),
+                    available: false,
+                }],
+                active: None,
+            }],
         };
         let json = serde_json::to_value(&state).unwrap();
         assert_eq!(
@@ -381,6 +388,16 @@ mod tests {
                     "mac": "AA:BB:CC:DD:EE:FF",
                     "codecs": [{ "index": 2, "codec": "AAC", "description": "High Fidelity Playback (A2DP Sink, codec AAC)" }],
                     "active": 2,
+                }],
+                "cards": [{
+                    "device": 51,
+                    "name": "Built-in Audio",
+                    "profiles": [{
+                        "index": 3,
+                        "name": "output:hdmi-stereo",
+                        "description": "Digital Stereo (HDMI) Output",
+                        "available": false,
+                    }],
                 }],
             })
         );
@@ -441,7 +458,7 @@ mod tests {
     }
 
     #[test]
-    fn publish_audio_lists_only_the_bluetooth_profiles_that_offer_a_codec_now() {
+    fn publish_audio_lists_bluetooth_codecs_and_every_alsa_card_profile_apart() {
         let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
         let mut state = mixer_state(updates, privacy_updates);
@@ -450,32 +467,61 @@ mod tests {
                 bluez::Profile { index, name: name.to_string(), description: description.to_string(), available };
             (index, profile)
         };
-        state.bluez_cards = HashMap::from([(
-            80,
-            BluezCard {
-                mac: "AA:BB:CC:DD:EE:FF".to_string(),
-                profiles: [
-                    profile(0, "off", "Off", true),
-                    profile(1, "a2dp-sink-sbc", "High Fidelity Playback (A2DP Sink, codec SBC)", true),
-                    // A translated description names no codec in English; the name still does.
-                    profile(2, "a2dp-sink-aac", "High-Fidelity-Wiedergabe (A2DP-Senke, Codec AAC)", true),
-                    profile(3, "a2dp-sink-ldac", "High Fidelity Playback (A2DP Sink, codec LDAC)", false),
-                ]
-                .into_iter()
-                .collect(),
-                active: Some(2),
-                ..BluezCard::default()
-            },
-        )]);
+        state.cards = HashMap::from([
+            (
+                80,
+                Card {
+                    mac: Some("AA:BB:CC:DD:EE:FF".to_string()),
+                    profiles: [
+                        profile(0, "off", "Off", true),
+                        profile(1, "a2dp-sink-sbc", "High Fidelity Playback (A2DP Sink, codec SBC)", true),
+                        // A translated description names no codec in English; the name still does.
+                        profile(2, "a2dp-sink-aac", "High-Fidelity-Wiedergabe (A2DP-Senke, Codec AAC)", true),
+                        profile(3, "a2dp-sink-ldac", "High Fidelity Playback (A2DP Sink, codec LDAC)", false),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    active: Some(2),
+                    ..Card::default()
+                },
+            ),
+            (
+                51,
+                Card {
+                    name: "Built-in Audio".to_string(),
+                    profiles: [
+                        profile(0, "off", "Off", true),
+                        profile(1, "output:analog-stereo", "Analog Stereo Output", true),
+                        profile(4, "output:hdmi-stereo", "Digital Stereo (HDMI) Output", false),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    active: Some(1),
+                    ..Card::default()
+                },
+            ),
+        ]);
 
         state.publish_audio();
 
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
+        assert_eq!(published.bluetooth.len(), 1, "an ALSA card has no codecs");
         let card = &published.bluetooth[0];
         assert_eq!(card.mac, "AA:BB:CC:DD:EE:FF");
         let codecs: Vec<&str> = card.codecs.iter().map(|codec| codec.codec.as_str()).collect();
         assert_eq!(codecs, ["SBC", "AAC"], "off names no codec and LDAC is unavailable");
         assert_eq!(card.active, Some(2));
+
+        assert_eq!(published.cards.len(), 1, "a BlueZ card is listed under bluetooth only");
+        let card = &published.cards[0];
+        assert_eq!((card.device, card.name.as_str(), card.active), (51, "Built-in Audio", Some(1)));
+        let profiles: Vec<(i32, &str, bool)> =
+            card.profiles.iter().map(|profile| (profile.index, profile.name.as_str(), profile.available)).collect();
+        assert_eq!(
+            profiles,
+            [(0, "off", true), (1, "output:analog-stereo", true), (4, "output:hdmi-stereo", false)],
+            "unplugged HDMI stays listed, flagged unavailable"
+        );
     }
 
     #[test]

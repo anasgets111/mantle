@@ -7,6 +7,9 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Added: `mantle.audio.cards` lists each ALSA sound card with every profile it offers (`index`, `name`, `description`, `available`) and the `active` one, so a config can switch one card between analog and HDMI. Unplugged profiles stay listed with `available = false`.
+- Breaking: `mantle.audio:set_bluetooth_profile(device, index)` is now `mantle.audio:set_card_profile(device, index)`, and takes a `cards[].device` as well as a `bluetooth[].device`. Rename the call.
+
 ## 0.12.1 - 2026-11-05
 
 - Added: Packages point to what fingerprint unlock needs: `mantle-bin` lists `fprintd` as optional, the `.deb` suggests `fprintd` and `libpam-fprintd`, and the `.rpm` suggests `fprintd` and `fprintd-pam`.

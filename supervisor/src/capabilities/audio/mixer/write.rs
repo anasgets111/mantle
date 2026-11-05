@@ -66,7 +66,7 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
         AudioCommand::SetSourceChannelVolume { id, index, volume } => {
             set_channel_volume(state, DefaultDevice::Source, id, index, volume);
         }
-        AudioCommand::SetBluetoothProfile { device, index } => write_bluetooth_profile(state, device, index),
+        AudioCommand::SetCardProfile { device, index } => write_card_profile(state, device, index),
     }
 }
 
@@ -189,9 +189,7 @@ fn write_device_route(
     let object = route::route_object(index, route.profile_device, channel_volumes, muted);
     with_pod(&object, format_args!("a Route object for device {}", route.device_id), |pod| {
         let state = state.borrow();
-        let Some((device, _listener)) =
-            state.devices.get(&route.device_id).or_else(|| state.bluez_devices.get(&route.device_id))
-        else {
+        let Some((device, _listener)) = state.devices.get(&route.device_id) else {
             debug!("device {} is not bound; cannot write its Route", route.device_id);
             return;
         };
@@ -199,13 +197,13 @@ fn write_device_route(
     })
 }
 
-/// Sends `SPA_PARAM_Profile`, which changes a BlueZ device's codec; the new profile returns through
-/// `bind_bluez_device`'s listener.
-fn write_bluetooth_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, index: i32) {
+/// Sends `SPA_PARAM_Profile`, which switches an ALSA card's outputs or a BlueZ device's codec; the
+/// new profile returns through `bind_device`'s listener.
+fn write_card_profile(state: &Rc<RefCell<MixerState>>, device_id: u32, index: i32) {
     with_pod(&bluez::profile_object(index), format_args!("a Profile object for device {device_id}"), |pod| {
         let state = state.borrow();
-        let Some((device, _listener)) = state.bluez_devices.get(&device_id) else {
-            debug!("set_bluetooth_profile({device_id}, {index}) names no bound Bluetooth device; ignored");
+        let Some((device, _listener)) = state.devices.get(&device_id) else {
+            debug!("set_card_profile({device_id}, {index}) names no bound audio device; ignored");
             return;
         };
         device.set_param(pw::spa::param::ParamType::Profile, 0, pod);

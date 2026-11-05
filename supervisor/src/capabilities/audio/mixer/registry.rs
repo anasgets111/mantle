@@ -1,5 +1,5 @@
 //! PipeWire registry plumbing for stream/video nodes, `Audio/Sink`/`Source`, default metadata,
-//! ALSA devices, and BlueZ devices' codec profiles. `run` is the thread entry point; callbacks run
+//! and ALSA and BlueZ devices' profiles and routes. `run` is the thread entry point; callbacks run
 //! in its blocking `main_loop.run()`.
 
 use std::cell::{Cell, RefCell};
@@ -21,7 +21,7 @@ use tokio::sync::watch;
 use crate::capabilities::audio::{bluez, master, route};
 
 use super::PropsLookup;
-use super::devices::{BluezCard, DeviceEntry, DeviceRoute, device_names};
+use super::devices::{Card, DeviceEntry, DeviceRoute, device_names};
 use super::state::{
     AudioCommand, AudioState, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState,
     PrivacySources,
@@ -516,84 +516,50 @@ fn bind_default_metadata(
     state_mut.metadata = Some((metadata, listener));
 }
 
-/// Binds ALSA `Device` globals for their active `Route`: its index for writes, its port for device
-/// glyphs. Without this, hardware-sink `set_volume` is silently dropped. `v4l2`/`libcamera` devices
-/// have no audio routes.
+/// Binds ALSA and BlueZ `Device` globals for their profiles and active `Route`: its index for
+/// writes, its port for device glyphs. Without the `Route`, hardware-sink `set_volume` is silently
+/// dropped. A BlueZ card is keyed by MAC for a Bluetooth join. `v4l2`/`libcamera` devices have no
+/// audio routes.
 ///
 /// Enumerated from `info`, not subscribed to: `subscribe_params` delivers only what exists when it
 /// is called, and a `Route` appearing later is pushed to nobody. A shell started before its card
 /// settles, which is every login, then dropped every write for the session (ADR-0200).
+///
+/// `Profile` is asked after `EnumProfile`, so its answer ends the profile enumeration and publishes
+/// only on a change. Answers are matched by that order, not by seq: protocol-native's
+/// `device_marshal_enum_params` sends `SPA_RESULT_RETURN_ASYNC(msg->seq)` and ignores the caller's
+/// (a live `enum_params(7, ..)` came back as 1073741828).
 fn bind_device(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryRc, obj: &GlobalObject<&DictRef>) {
-    match obj.props.and_then(|props| props.get_prop(*keys::DEVICE_API)) {
-        Some("alsa") => {}
-        Some("bluez5") => return bind_bluez_device(state, registry, obj),
+    let Some(props) = obj.props else { return };
+    let device_name = props.get_prop(*keys::DEVICE_NAME);
+    let mac = match props.get_prop(*keys::DEVICE_API) {
+        Some("alsa") => None,
+        Some("bluez5") => {
+            let Some(mac) = device_name.and_then(bluez::mac_from_card_name) else {
+                debug!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
+                return;
+            };
+            Some(mac)
+        }
         _ => return,
-    }
+    };
+    let name = props
+        .get_prop(*keys::DEVICE_DESCRIPTION)
+        .or_else(|| props.get_prop(*keys::DEVICE_NICK))
+        .or(device_name)
+        .unwrap_or_default()
+        .to_string();
     let device_id = obj.id;
     let device: pw::device::Device = match registry.bind(obj) {
         Ok(device) => device,
         Err(err) => {
-            debug!("failed to bind ALSA device {device_id}: {err}");
+            debug!("failed to bind audio device {device_id} ({name}): {err}");
             return;
         }
     };
 
     // `Rc` so the `info` handler below can reach the proxy it is registered on; `Weak` there,
     // because a strong one is a cycle through the listener the device owns.
-    let device = Rc::new(device);
-    let device_for_info = Rc::downgrade(&device);
-    let state_for_param = Rc::clone(state);
-    let listener = device
-        .add_listener_local()
-        .param(move |_seq, param_type, _index, _next, param| {
-            if param_type != pw::spa::param::ParamType::Route {
-                return;
-            }
-            let Some(value) = decode(param) else { return };
-            record_route(&state_for_param, device_id, &value);
-        })
-        // Re-asks on every param change, including the first `info` a bind always answers with.
-        // A profile switch or a plugged headset moves the active route.
-        .info(move |info| {
-            if !info.change_mask().contains(pw::device::DeviceChangeMask::PARAMS) {
-                return;
-            }
-            if let Some(device) = device_for_info.upgrade() {
-                device.enum_params(0, Some(pw::spa::param::ParamType::Route), 0, u32::MAX);
-            }
-        })
-        .register();
-
-    state.borrow_mut().devices.insert(device_id, (device, listener));
-}
-
-/// Binds a BlueZ `Device` for its codec profiles and mixer routes, keyed by MAC for a Bluetooth join.
-/// Enumerated from `info` (ADR-0200). `Profile` is asked after `EnumProfile`,
-/// so its answer ends the profile enumeration and publishes only on a change. Answers are matched by that
-/// order, not by seq: protocol-native's `device_marshal_enum_params` sends
-/// `SPA_RESULT_RETURN_ASYNC(msg->seq)` and ignores the caller's (a live `enum_params(7, ..)` came
-/// back as 1073741828).
-fn bind_bluez_device(
-    state: &Rc<RefCell<MixerState>>,
-    registry: &pw::registry::RegistryRc,
-    obj: &GlobalObject<&DictRef>,
-) {
-    let Some(mac) = obj.props.and_then(|props| props.get_prop(*keys::DEVICE_NAME)).and_then(bluez::mac_from_card_name)
-    else {
-        debug!("Bluetooth device {} names no address; its codecs are not tracked", obj.id);
-        return;
-    };
-    let device_id = obj.id;
-    let device: pw::device::Device = match registry.bind(obj) {
-        Ok(device) => device,
-        Err(err) => {
-            debug!("failed to bind Bluetooth device {device_id} ({mac}): {err}");
-            return;
-        }
-    };
-
-    // `Rc`/`Weak` for the same reason as `bind_device`: the `info` handler needs the proxy it is
-    // registered on without a cycle through the listener.
     let device = Rc::new(device);
     let device_for_info = Rc::downgrade(&device);
     let state_for_param = Rc::clone(state);
@@ -607,7 +573,7 @@ fn bind_bluez_device(
             }
             let Some(profile) = bluez::extract_profile(&value) else { return };
             let mut state = state_for_param.borrow_mut();
-            let Some(card) = state.bluez_cards.get_mut(&device_id) else { return };
+            let Some(card) = state.cards.get_mut(&device_id) else { return };
             match param_type {
                 pw::spa::param::ParamType::EnumProfile => card.enumerated(profile),
                 pw::spa::param::ParamType::Profile if card.finish_enumeration(profile.index) => {
@@ -616,6 +582,8 @@ fn bind_bluez_device(
                 _ => {}
             }
         })
+        // Re-asks on every param change, including the first `info` a bind always answers with.
+        // A profile switch or a plugged headset moves the active route.
         .info(move |info| {
             if !info.change_mask().contains(pw::device::DeviceChangeMask::PARAMS) {
                 return;
@@ -629,8 +597,8 @@ fn bind_bluez_device(
         .register();
 
     let mut state = state.borrow_mut();
-    state.bluez_cards.insert(device_id, BluezCard { mac, ..BluezCard::default() });
-    state.bluez_devices.insert(device_id, (device, listener));
+    state.cards.insert(device_id, Card { mac, name, ..Card::default() });
+    state.devices.insert(device_id, (device, listener));
 }
 
 #[cfg(test)]

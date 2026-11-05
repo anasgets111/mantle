@@ -32,6 +32,7 @@ list {
 | `apps` | `AppStream[]` | Apps playing or recording audio, excluding pid-less streams, notification sounds, meters and monitor captures. |
 | `balance?` | `number` | Default output balance, `-1.0` (left) to `1.0` (right); `nil` with no sink, for mono or an unknown channel map. |
 | `bluetooth` | `BluetoothCodecs[]` | BlueZ audio devices PipeWire knows, with their codecs, ordered by `device`. |
+| `cards` | `AudioCard[]` | ALSA sound cards with their profiles, ordered by `device`. A card makes sinks and sources only for its active profile, e.g. analog or HDMI on one Intel HDA card. |
 | `muted` | `boolean` | Default output mute; `false` with no default sink or before its first report. |
 | `sinks` | `AudioDevice[]` | Every output device. |
 | `source_muted` | `boolean` | Default input (microphone) mute; `false` with no default source or before its first report. |
@@ -55,6 +56,17 @@ One app's playback or recording stream. Streams without a pid are left out.
 | `process_name?` | `string` | `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read. |
 | `recording` | `boolean` | A capture stream, such as a call's microphone, rather than playback. |
 | `volume?` | `number` | Stream volume in percent; `nil` until PipeWire reports the stream's `Props`. |
+
+### `AudioCard`
+
+One ALSA sound card and every profile it offers.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `active?` | `integer` | `index` of the active profile; `nil` before PipeWire reports it. |
+| `device` | `integer` | PipeWire device id, the first argument of `set_card_profile`. |
+| `name` | `string` | `device.description`, e.g. `"Built-in Audio"`, else `device.nick`, else `device.name`. |
+| `profiles` | `CardProfile[]` | Every profile, unavailable ones included, ordered by `index`. |
 
 ### `AudioChannel`
 
@@ -89,8 +101,19 @@ One BlueZ audio device's codec choices, joined to `mantle.bluetooth` by MAC.
 | --- | --- | --- |
 | `active?` | `integer` | `index` of the active profile; `nil` before PipeWire reports it or when it is not in `codecs`. |
 | `codecs` | `CodecProfile[]` | Available profiles that name a codec, ordered by `index`. |
-| `device` | `integer` | PipeWire device id, the first argument of `set_bluetooth_profile`. |
+| `device` | `integer` | PipeWire device id, the first argument of `set_card_profile`. |
 | `mac` | `string` | MAC address from the `bluez_card.*` name, `_` turned to `:`. |
+
+### `CardProfile`
+
+One entry of `AudioCard.profiles`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `available` | `boolean` | `false` when PipeWire reports the profile unavailable, such as HDMI with no display plugged in. |
+| `description` | `string` | PipeWire's description, e.g. `"Digital Stereo (HDMI) Output"`. |
+| `index` | `integer` | Profile index, the second argument of `set_card_profile`. |
+| `name` | `string` | PipeWire's untranslated id, e.g. `"output:hdmi-stereo"` or `"off"`. |
 
 ### `CodecProfile`
 
@@ -100,7 +123,7 @@ One entry of `BluetoothCodecs.codecs`.
 | --- | --- | --- |
 | `codec` | `string` | Codec from the profile name, else its English description, e.g. `"AAC"`, `"LDAC"`, `"mSBC"`. |
 | `description` | `string` | PipeWire's description, e.g. `"High Fidelity Playback (A2DP Sink, codec AAC)"`. |
-| `index` | `integer` | Profile index, the second argument of `set_bluetooth_profile`. |
+| `index` | `integer` | Profile index, the second argument of `set_card_profile`. |
 
 ## Actions
 
@@ -121,7 +144,7 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `toggle_source_mute` |  | Toggles default input mute. |
 | `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`. |
 | `set_app_muted` | `id: integer, muted: boolean` | Sets an `apps[].id` stream's mute. |
-| `set_bluetooth_profile` | `device: integer, index: integer` | Switches a `bluetooth[].device` to one of its `codecs[].index`. |
+| `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`, or a `bluetooth[].device` to one of its `codecs[].index`. WirePlumber keeps the choice. |
 
 ## Backend
 
@@ -132,6 +155,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `channels`, `volume`, `muted`, `balance`, `source_volume`, `source_muted` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | `bluez_card.*` devices and their profiles | `bluetooth` |
+| ALSA devices and their profiles | `cards` |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |
 
 The first push waits until PipeWire has reported every object and its volume, so a machine with no
