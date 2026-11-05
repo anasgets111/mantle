@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.12.1 - 2026-11-05
+
 - Added: Packages point to what fingerprint unlock needs: `mantle-bin` lists `fprintd` as optional, the `.deb` suggests `fprintd` and `libpam-fprintd`, and the `.rpm` suggests `fprintd` and `fprintd-pam`.
 
 ## 0.12.0 - 2026-11-05
