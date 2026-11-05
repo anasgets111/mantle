@@ -133,6 +133,7 @@
 
 ---@class CardPort
 ---One entry of `AudioCard.ports`: a place a card routes sound, such as speakers or headphones.
+---@field active boolean The card routes sound through it now: an active route of the active profile names it, and its `type` is that sink's or source's `port`.
 ---@field available boolean `false` when PipeWire reports the port unavailable, such as an unplugged jack.
 ---@field description string PipeWire's description, e.g. `"Headphones"`.
 ---@field direction PortDirection `"output"` for a sink's port, `"input"` for a source's.

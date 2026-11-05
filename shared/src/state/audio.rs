@@ -112,6 +112,9 @@ pub struct CardPort {
     pub direction: PortDirection,
     /// `false` when PipeWire reports the port unavailable, such as an unplugged jack.
     pub available: bool,
+    /// The card routes sound through it now: an active route of the active profile names it, and
+    /// its `type` is that sink's or source's `port`.
+    pub active: bool,
     /// `profiles[].index` values the port works under.
     pub profiles: Vec<i32>,
 }

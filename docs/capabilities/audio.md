@@ -101,6 +101,7 @@ One entry of `AudioCard.ports`: a place a card routes sound, such as speakers or
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `active` | `boolean` | The card routes sound through it now: an active route of the active profile names it, and its `type` is that sink's or source's `port`. |
 | `available` | `boolean` | `false` when PipeWire reports the port unavailable, such as an unplugged jack. |
 | `description` | `string` | PipeWire's description, e.g. `"Headphones"`. |
 | `direction` | `PortDirection` | `"output"` for a sink's port, `"input"` for a source's. |

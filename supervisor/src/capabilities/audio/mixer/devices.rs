@@ -55,8 +55,13 @@ impl Card {
     }
 }
 
-/// Builds [`super::AudioState::cards`], ordered by device id for deterministic publishes.
-pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
+/// Builds [`super::AudioState::cards`], ordered by device id for deterministic publishes. A port
+/// is active when a route on one of its profile devices names it under the active profile; a
+/// route left from the previous profile stays in `routes` but names a port outside it.
+pub(super) fn card_list(
+    cards: &HashMap<u32, Card>,
+    routes: &HashMap<(u32, i32), route::ActiveRoute>,
+) -> Vec<AudioCard> {
     let mut out: Vec<AudioCard> = cards
         .iter()
         .map(|(&device, card)| AudioCard {
@@ -85,6 +90,11 @@ pub(super) fn card_list(cards: &HashMap<u32, Card>) -> Vec<AudioCard> {
                     port_type: port.port_type.clone(),
                     direction: if port.output { PortDirection::Output } else { PortDirection::Input },
                     available: port.available,
+                    active: card.active.is_some_and(|profile| port.profiles.contains(&profile))
+                        && port
+                            .devices
+                            .iter()
+                            .any(|&on| routes.get(&(device, on)).is_some_and(|r| r.index == port.index)),
                     profiles: port.profiles.clone(),
                 })
                 .collect(),
@@ -299,6 +309,38 @@ mod tests {
             }],
             "no description seen falls back to the node name"
         );
+    }
+
+    /// Profile 2 routes device 7 to headphones; the mic route on device 0 is left from profile 1.
+    #[test]
+    fn a_port_is_active_when_a_route_of_the_active_profile_names_it() {
+        let port = |index, profiles: Vec<i32>, device| route::Port {
+            index,
+            name: String::new(),
+            description: String::new(),
+            port_type: None,
+            output: device == 7,
+            available: true,
+            profiles,
+            devices: vec![device],
+        };
+        let card = Card {
+            active: Some(2),
+            ports: [port(3, vec![2], 7), port(4, vec![2], 7), port(5, vec![1], 0)]
+                .into_iter()
+                .map(|port| (port.index, port))
+                .collect(),
+            ..Card::default()
+        };
+        let routes = HashMap::from([
+            ((51, 7), route::ActiveRoute { index: 3, port: None, props: None }),
+            ((51, 0), route::ActiveRoute { index: 5, port: None, props: None }),
+        ]);
+
+        let cards = card_list(&HashMap::from([(51, card)]), &routes);
+
+        let active: Vec<_> = cards[0].ports.iter().map(|port| (port.index, port.active)).collect();
+        assert_eq!(active, [(3, true), (4, false), (5, false)]);
     }
 
     #[test]

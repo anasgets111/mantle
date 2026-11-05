@@ -39,7 +39,7 @@ impl MixerState {
             sinks: device_list(&self.sinks, &self.device_routes, sink),
             sources: device_list(&self.sources, &self.device_routes, source),
             apps,
-            cards: card_list(&self.cards),
+            cards: card_list(&self.cards, &self.device_routes),
         };
         if Some(&next) == self.last_sent.as_ref() {
             return;
@@ -151,6 +151,7 @@ mod tests {
                         port_type: Some("headphones".to_string()),
                         direction: PortDirection::Output,
                         available: false,
+                        active: false,
                         profiles: vec![1],
                     }],
                 },
@@ -217,6 +218,7 @@ mod tests {
                             "type": "headphones",
                             "direction": "output",
                             "available": false,
+                            "active": false,
                             "profiles": [1],
                         }],
                     },
