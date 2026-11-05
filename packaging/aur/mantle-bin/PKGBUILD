@@ -20,7 +20,7 @@ optdepends=('niri: workspaces, windows and keyboard layout'
             'lua-language-server: type-checking the config in an editor')
 provides=("mantle=$pkgver")
 conflicts=('mantle' 'mantle-git')
-backup=('etc/pam.d/mantle')
+backup=('etc/pam.d/mantle' 'etc/pam.d/mantle-fingerprint')
 # The release build already strips its binaries.
 options=('!debug' '!strip')
 source=("$url/releases/download/v$pkgver/mantle-$pkgver-$CARCH-linux.tar.gz")
@@ -31,6 +31,6 @@ package() {
     install -dm755 "$pkgdir/usr"
     cp -a usr/local/. "$pkgdir/usr/"
     mv "$pkgdir/usr/share/licenses/mantle" "$pkgdir/usr/share/licenses/$pkgname"
-    install -Dm644 etc/pam.d/mantle "$pkgdir/etc/pam.d/mantle"
+    install -Dm644 -t "$pkgdir/etc/pam.d" etc/pam.d/mantle etc/pam.d/mantle-fingerprint
     install -Dm644 -t "$pkgdir/usr/share/polkit-1/rules.d" etc/polkit-1/rules.d/*.rules
 }

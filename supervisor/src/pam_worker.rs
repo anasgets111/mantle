@@ -21,6 +21,16 @@ pub const WORKER_ENV: &str = "MANTLE_PAM_WORKER";
 /// The account the worker authenticates.
 const USERNAME_ENV: &str = "MANTLE_PAM_USERNAME";
 
+/// Which conversation the worker runs: [`PASSWORD`] or [`FINGERPRINT`]. A mode, not a service
+/// name, so the Supervisor never names a stack the worker would open.
+const MODE_ENV: &str = "MANTLE_PAM_MODE";
+
+/// The password conversation, on [`pam_service_in`]'s stack.
+pub const PASSWORD: &str = "password";
+
+/// The fingerprint conversation beside it (ADR-0382), on [`FINGERPRINT_SERVICE`] only.
+pub const FINGERPRINT: &str = "fingerprint";
+
 /// Admin PAM service-stack directory. A constant lets [`pam_service_in`] tests use a temporary
 /// directory.
 const PAM_CONFIG_DIR: &str = "/etc/pam.d";
@@ -35,21 +45,35 @@ const MANTLE_SERVICE: &str = "mantle";
 /// `/etc/pam.d/polkit-1`, so `"login"` is the disclosed fallback (ADR-0028).
 const FALLBACK_SERVICE: &str = "login";
 
+/// `packaging/pam.d/mantle-fingerprint`. No fallback: any other stack asks for a password.
+const FINGERPRINT_SERVICE: &str = "mantle-fingerprint";
+
 /// Uses Mantle's stack when installed, otherwise the console-login stack. Probing avoids PAM's
 /// `/etc/pam.d/other` fallback, `pam_deny` on stock Arch: hardcoding `mantle` would turn a missing
 /// package file into a lock screen rejecting every correct password, while failing closed locks
 /// out the user. `stat` runs once per authentication, deliberately uncached so installing the file
 /// takes effect without restarting the locked shell. Checks both dirs libpam itself would.
-fn pam_service_in(pam_config_dir: &std::path::Path, pam_vendor_dir: &std::path::Path) -> &'static str {
-    if pam_config_dir.join(MANTLE_SERVICE).exists() || pam_vendor_dir.join(MANTLE_SERVICE).exists() {
-        MANTLE_SERVICE
-    } else {
-        FALLBACK_SERVICE
+/// `None` for an unknown mode.
+fn pam_service_in(mode: &str, admin: &std::path::Path, vendor: &std::path::Path) -> Option<&'static str> {
+    match mode {
+        PASSWORD if installed_in(MANTLE_SERVICE, admin, vendor) => Some(MANTLE_SERVICE),
+        PASSWORD => Some(FALLBACK_SERVICE),
+        FINGERPRINT => Some(FINGERPRINT_SERVICE),
+        _ => None,
     }
 }
 
-fn pam_service() -> &'static str {
-    pam_service_in(std::path::Path::new(PAM_CONFIG_DIR), std::path::Path::new(PAM_VENDOR_DIR))
+fn installed_in(service: &str, admin: &std::path::Path, vendor: &std::path::Path) -> bool {
+    admin.join(service).exists() || vendor.join(service).exists()
+}
+
+fn pam_service(mode: &str) -> Option<&'static str> {
+    pam_service_in(mode, std::path::Path::new(PAM_CONFIG_DIR), std::path::Path::new(PAM_VENDOR_DIR))
+}
+
+/// Whether the lock may start a fingerprint conversation; uncached like [`pam_service_in`].
+pub fn fingerprint_installed() -> bool {
+    installed_in(FINGERPRINT_SERVICE, std::path::Path::new(PAM_CONFIG_DIR), std::path::Path::new(PAM_VENDOR_DIR))
 }
 
 /// Ceiling on PAM's reply once an answer is sent, until its next prompt or verdict. It never runs
@@ -154,13 +178,13 @@ fn account_verdict(result: nonstick::Result<()>) -> shared::PamOutcome {
 
 /// Runs `pam_start` via `TransactionBuilder`, then `authenticate` and `account_management`,
 /// relaying every message over stdio (ADR-0381).
-fn run_conversation(username: &str) -> shared::PamOutcome {
+fn run_conversation(username: &str, service: &str) -> shared::PamOutcome {
     let conversation = RelayConversation {
         reader: RefCell::new(std::io::stdin().lock()),
         writer: RefCell::new(std::io::stdout().lock()),
         hangup: exit_now,
     };
-    match nonstick::TransactionBuilder::new_with_service(pam_service())
+    match nonstick::TransactionBuilder::new_with_service(service)
         .username(username)
         .build(conversation.into_conversation())
     {
@@ -178,7 +202,9 @@ fn run_conversation(username: &str) -> shared::PamOutcome {
 /// no runtime is spun up here.
 pub fn run_worker() -> Result<(), Box<dyn std::error::Error>> {
     let username = std::env::var(USERNAME_ENV)?;
-    let outcome = run_conversation(&username);
+    let mode = std::env::var(MODE_ENV)?;
+    let service = pam_service(&mode).ok_or_else(|| format!("unknown PAM mode {mode:?}"))?;
+    let outcome = run_conversation(&username, service);
     write_frame(std::io::stdout().lock(), &shared::PamMessage::Outcome(outcome))?;
     Ok(())
 }
@@ -221,11 +247,11 @@ impl Conversation {
 /// drops what a killed one says late.
 pub type Events = UnboundedSender<(u64, shared::PamMessage)>;
 
-/// Starts the lock's worker for `uid` (ADR-0381). The worker begins PAM at once, so its prompt is
-/// on screen before anything is typed.
-pub fn start_lock_conversation(uid: u32, serial: u64, events: Events) -> Conversation {
+/// Starts the lock's worker for `uid` in `mode` (ADR-0381). The worker begins PAM at once, so its
+/// prompt is on screen before anything is typed.
+pub fn start_lock_conversation(uid: u32, mode: &'static str, serial: u64, events: Events) -> Conversation {
     let (answers, received) = tokio::sync::mpsc::unbounded_channel();
-    tokio::spawn(lock_conversation(uid, serial, events, received));
+    tokio::spawn(lock_conversation(uid, mode, serial, events, received));
     Conversation { answers }
 }
 
@@ -240,9 +266,9 @@ pub fn start_polkit_conversation(uid: u32, cookie: String, serial: u64, events: 
 
 type Answers = tokio::sync::mpsc::UnboundedReceiver<shared::Zeroizing<Vec<u8>>>;
 
-async fn lock_conversation(uid: u32, serial: u64, events: Events, answers: Answers) {
+async fn lock_conversation(uid: u32, mode: &str, serial: u64, events: Events, answers: Answers) {
     let mut guard = ReportOnDrop { pending: Some((serial, events.clone())) };
-    let ended = match username_for(uid).and_then(|name| spawn_worker(&name).map_err(|err| err.to_string())) {
+    let ended = match username_for(uid).and_then(|name| spawn_worker(&name, mode).map_err(|err| err.to_string())) {
         Err(reason) => Exchange::Verdict(shared::PamOutcome::StartFailed(reason)),
         Ok(child) => converse_with_worker(child, serial, &events, answers, PAM_REPLY_TIMEOUT).await,
     };
@@ -551,12 +577,16 @@ impl Drop for ReportOnDrop {
 /// " (deleted)" filename and rebuilds a real sibling path.
 pub(crate) const SELF_EXE: &str = "/proc/self/exe";
 
-/// Re-execs this binary as a PAM worker for `username`.
-fn spawn_worker(username: &str) -> std::io::Result<tokio::process::Child> {
+/// Re-execs this binary as a PAM worker for `username` in `mode`.
+fn spawn_worker(username: &str, mode: &str) -> std::io::Result<tokio::process::Child> {
     crate::process::spawn_group_leader_stdio_piped(
         SELF_EXE,
         &[],
-        &[(WORKER_ENV.to_string(), "1".to_string()), (USERNAME_ENV.to_string(), username.to_string())],
+        &[
+            (WORKER_ENV.to_string(), "1".to_string()),
+            (USERNAME_ENV.to_string(), username.to_string()),
+            (MODE_ENV.to_string(), mode.to_string()),
+        ],
     )
 }
 
@@ -675,34 +705,70 @@ mod tests {
     #[test]
     fn the_pam_service_is_mantle_only_when_a_stack_is_installed() {
         let no_such = std::path::Path::new("/no/such/pam.d");
-        assert_eq!(pam_service_in(no_such, no_such), "login", "missing directories");
+        assert_eq!(pam_service_in(PASSWORD, no_such, no_such), Some("login"), "missing directories");
 
         let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "login", "no stack installed");
+        assert_eq!(pam_service_in(PASSWORD, admin.path(), vendor.path()), Some("login"), "no stack installed");
 
         std::fs::write(admin.path().join("mantle"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle", "admin directory");
+        assert_eq!(pam_service_in(PASSWORD, admin.path(), vendor.path()), Some("mantle"), "admin directory");
 
         let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
         std::fs::write(vendor.path().join("mantle"), "auth include system-auth\n").unwrap();
-        assert_eq!(pam_service_in(admin.path(), vendor.path()), "mantle", "vendor directory without an override");
+        assert_eq!(
+            pam_service_in(PASSWORD, admin.path(), vendor.path()),
+            Some("mantle"),
+            "vendor directory without an override"
+        );
     }
 
-    /// The shipped file is what the probe finds and must carry both chains: `run_conversation`
+    /// The fingerprint worker never falls back: `login` would wait for a password nobody types.
+    /// Its probe looks for its own file in both dirs, and `mantle` alone does not count.
+    #[test]
+    fn the_fingerprint_stack_is_its_own_and_an_unknown_mode_is_refused() {
+        let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        assert_eq!(pam_service_in(FINGERPRINT, admin.path(), vendor.path()), Some("mantle-fingerprint"));
+        assert_eq!(pam_service_in("login", admin.path(), vendor.path()), None, "a mode is not a service name");
+        assert_eq!((pam_service(FINGERPRINT), pam_service("login")), (Some("mantle-fingerprint"), None), "on any host");
+        std::fs::write(admin.path().join("mantle"), "auth include system-auth\n").unwrap();
+        assert!(!installed_in(FINGERPRINT_SERVICE, admin.path(), vendor.path()), "no stack, no fingerprint worker");
+        std::fs::write(vendor.path().join(FINGERPRINT_SERVICE), "").unwrap();
+        assert!(installed_in(FINGERPRINT_SERVICE, admin.path(), vendor.path()), "vendor directory");
+        let (admin, vendor) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        std::fs::write(admin.path().join(FINGERPRINT_SERVICE), "").unwrap();
+        assert!(installed_in(FINGERPRINT_SERVICE, admin.path(), vendor.path()), "admin directory");
+    }
+
+    /// The shipped files are what the probe finds and must carry both chains: `run_conversation`
     /// calls `authenticate`, then `account_management`; without `account`, the second fails after
     /// password acceptance.
     #[test]
-    fn the_shipped_pam_stack_declares_both_chains_the_worker_drives() {
-        let shipped =
-            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../packaging/pam.d/mantle")).unwrap();
-        let directives: Vec<&str> =
-            shipped.lines().map(str::trim).filter(|line| !line.is_empty() && !line.starts_with('#')).collect();
-        assert!(directives.iter().any(|line| line.starts_with("auth")), "no auth chain in {directives:?}");
-        assert!(directives.iter().any(|line| line.starts_with("account")), "no account chain in {directives:?}");
-        assert!(
-            directives.iter().all(|line| line.starts_with("auth") || line.starts_with("account")),
-            "the worker opens no session and changes no password, so anything else is dead config: {directives:?}"
-        );
+    fn the_shipped_pam_stacks_declare_both_chains_the_worker_drives() {
+        for name in ["mantle", "mantle-debian", "mantle-fingerprint", "mantle-fingerprint-debian"] {
+            let path = format!("{}/../packaging/pam.d/{name}", env!("CARGO_MANIFEST_DIR"));
+            let shipped = std::fs::read_to_string(path).unwrap();
+            let directives: Vec<String> = shipped
+                .lines()
+                .filter(|line| !line.trim().is_empty() && !line.trim().starts_with('#'))
+                .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+                .collect();
+            let chain = |prefix: &str| directives.iter().any(|line| line.trim_start_matches('-').starts_with(prefix));
+            assert!(chain("auth") && chain("account"), "{name}: both chains in {directives:?}");
+            assert!(
+                directives
+                    .iter()
+                    .all(|line| line.trim_start_matches('-').starts_with("auth") || line.starts_with("account")),
+                "{name}: the worker opens no session and changes no password, so anything else is dead config: {directives:?}"
+            );
+            if name.starts_with("mantle-fingerprint") {
+                // `required` would run `authsucc` after a failed scan and reset the faillock tally.
+                assert!(directives.contains(&"-auth requisite pam_fprintd.so max-tries=-1 timeout=-1".to_string()));
+                assert!(
+                    !directives.iter().any(|line| line.contains("authfail")),
+                    "{name}: a missed scan must not count toward a lockout"
+                );
+            }
+        }
     }
 
     /// Upper bound for ordinary paths, never waited on in a passing run. Distinct from [`PAM_REPLY_TIMEOUT`].
@@ -901,7 +967,7 @@ mod tests {
     #[tokio::test]
     async fn a_conversation_that_cannot_start_reports_once_under_its_serial() {
         let (events, mut heard) = tokio::sync::mpsc::unbounded_channel();
-        let _lock = start_lock_conversation(UNMAPPED_UID, 7, events.clone());
+        let _lock = start_lock_conversation(UNMAPPED_UID, PASSWORD, 7, events.clone());
         let _polkit = start_polkit_conversation(UNMAPPED_UID, "cookie".into(), 8, events);
         let mut serials = Vec::new();
         for _ in 0..2 {

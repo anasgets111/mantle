@@ -64,7 +64,7 @@ jobs:
           ln -s ../lib/mantle/mantle "$root/usr/local/bin/mantle"
           install -Dm644 -t "$root/usr/local/share/mantle/lua-meta" lua-meta/*.lua
           install -Dm644 LICENSE "$root/usr/local/share/licenses/mantle/LICENSE"
-          install -Dm644 packaging/pam.d/mantle "$root/etc/pam.d/mantle"
+          install -Dm644 -t "$root/etc/pam.d" packaging/pam.d/mantle packaging/pam.d/mantle-fingerprint
           install -Dm644 -t "$root/etc/polkit-1/rules.d" packaging/polkit-1/rules.d/*.rules
           # Both binaries load and the renderer evaluates the starter config, with no compositor.
           "$root/usr/local/bin/mantle" check -c share/starter

@@ -42,6 +42,14 @@ contents:
     dst: /etc/pam.d/mantle
     type: config|noreplace
     packager: deb
+  - src: packaging/pam.d/mantle-fingerprint
+    dst: /etc/pam.d/mantle-fingerprint
+    type: config|noreplace
+    packager: rpm
+  - src: packaging/pam.d/mantle-fingerprint-debian
+    dst: /etc/pam.d/mantle-fingerprint
+    type: config|noreplace
+    packager: deb
 
 # The libraries `readelf -d` lists, plus `fc-match`. Built on glibc 2.43, so older refuses to load.
 overrides:

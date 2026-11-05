@@ -102,5 +102,6 @@ return { lock_screen }
 | Wallpaper behind it | Wrap the column in a `rect { width = "fill", height = "fill" }` whose first child is `image { source = "/path/to/wallpaper.jpg", width = "fill", height = "fill" }`, and drop the gradient ([image](../nodes/image.md)) |
 | Blurred wallpaper | Add `source_blur = 24` to that `image` ([blurs](../guide/paint.md#blurs)) |
 | Unlock button | A clickable node with `submits_secure = true` beside the field sends it like Enter ([pointer](../guide/input.md#pointer)) |
+| Fingerprint hint | In `hint`, right after the `lock.messages` branch, return the last of `lock.fingerprint.messages` when `lock.fingerprint` is not `nil`, so a wrong password's error does not hide it. A match unlocks like a password ([lock capability](../capabilities/lock.md#backend)) |
 | Clock on one monitor only | `visible = output == "DP-1"` on the clock texts |
 | Lock before suspend | An `action` that sets a `suspend_pending` state and calls `mantle.lock:lock()`; a `mantle.lock:on_change` that sees `active` turn true with it set clears it and runs `systemctl suspend` through [`process.detach`](../guide/processes.md#processdetach). Suspending straight away can sleep before the lock draws |

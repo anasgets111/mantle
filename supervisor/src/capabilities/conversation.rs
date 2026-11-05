@@ -61,6 +61,11 @@ impl Dialogue {
         self.live.is_some()
     }
 
+    /// Whether `serial` is the running conversation's.
+    pub fn runs(&self, serial: u64) -> bool {
+        self.live.is_some() && serial == self.serial
+    }
+
     /// Starts a conversation under a fresh serial, ending any running one.
     pub fn start(&mut self, start: impl FnOnce(u64) -> Conversation) {
         self.serial = next_id();

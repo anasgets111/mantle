@@ -9,9 +9,7 @@ feature one config lacks is not an engine gap.
 
 Defects or missing pieces a config cannot work around.
 
-| Item | Why / what's left | ADR |
-| :--- | :--- | :--- |
-| Lock screen fingerprint ([#14](https://github.com/anasgets111/mantle/issues/14)) | One stack that runs `pam_fprintd` before `pam_unix` blocks typing until the scan times out. Run a fingerprint-only PAM service beside the password one and kill the loser's worker; it needs real `account` checks and a deliberate faillock choice. Polkit cannot do this, since its helper runs one stack | 0028, 0381 |
+None open.
 
 ## Later
 
