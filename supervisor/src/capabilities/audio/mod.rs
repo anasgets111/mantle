@@ -41,6 +41,7 @@ fn command(action: AudioAction) -> AudioCommand {
         }
         AudioAction::SetAppVolume { id, volume } => AudioCommand::SetAppVolume { id, volume: volume / 100.0 },
         AudioAction::SetAppMuted { id, muted } => AudioCommand::SetAppMuted { id, muted },
+        AudioAction::SetAppTarget { id, device } => AudioCommand::SetAppTarget { id, device },
         AudioAction::SetCardProfile { device, index } => AudioCommand::SetCardProfile { device, index },
         AudioAction::SetPort { card, index } => AudioCommand::SetPort { card, index },
     }
@@ -70,5 +71,12 @@ mod tests {
             AudioCommand::SetCardProfile { device: 51, index: 3 }
         );
         assert_eq!(decode("set_port", &[51.into(), 2.into()]), AudioCommand::SetPort { card: 51, index: 2 });
+        assert_eq!(
+            decode("set_app_target", &[101.into(), 59.into()]),
+            AudioCommand::SetAppTarget { id: 101, device: Some(59) }
+        );
+        let back = AudioCommand::SetAppTarget { id: 101, device: None };
+        assert_eq!(decode("set_app_target", &[101.into(), serde_json::Value::Null]), back, "nil clears");
+        assert_eq!(decode("set_app_target", &[101.into()]), back, "and so does leaving it out");
     }
 }

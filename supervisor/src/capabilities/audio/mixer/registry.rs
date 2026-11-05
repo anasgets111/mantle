@@ -286,8 +286,14 @@ fn on_global(state: &Rc<RefCell<MixerState>>, registry: &pw::registry::RegistryR
         ObjectType::Metadata => bind_default_metadata(state, registry, obj),
         ObjectType::Link => {
             let mut state = state.borrow_mut();
-            if obj.props.is_some_and(|props| state.graph.add_link(obj.id, props)) {
+            let Some(props) = obj.props else { return };
+            let changed = state.graph.add_link(obj.id, props);
+            if changed.camera {
                 state.publish_privacy();
+            }
+            // Deduplicated: a link between two nodes no app owns publishes nothing new.
+            if changed.links {
+                state.publish_audio();
             }
         }
         _ => {}

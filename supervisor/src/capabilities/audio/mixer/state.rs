@@ -43,6 +43,7 @@ pub enum AudioCommand {
     SetChannelVolume { id: u32, index: u32, volume: f32 },
     SetAppVolume { id: u32, volume: f32 },
     SetAppMuted { id: u32, muted: bool },
+    SetAppTarget { id: u32, device: Option<u32> },
     SetCardProfile { device: u32, index: i32 },
     SetPort { card: u32, index: i32 },
 }
@@ -173,7 +174,7 @@ impl MixerState {
     }
 
     /// Drops everything tracked under a removed global. Audio publishes only if a map that feeds
-    /// it lost an entry (ports and links are most removals); privacy only for camera links and sources and its capture streams.
+    /// it lost an entry or a link went (ports are most removals); privacy only for camera links and sources and its capture streams.
     pub(super) fn remove_global(&mut self, id: u32) {
         self.nodes.remove(&id);
         self.sink_nodes.remove(&id);
@@ -196,10 +197,12 @@ impl MixerState {
             self.default_sink_name = None;
             self.default_source_name = None;
         }
-        if audio {
+        let graph = self.graph.remove(id);
+        // A link that went may have carried an app to its device.
+        if audio || graph.links {
             self.publish_audio();
         }
-        let mut privacy = self.graph.remove(id);
+        let mut privacy = graph.camera;
         privacy |= self.camera_streams.remove(&id).is_some();
         privacy |= self.microphones.remove(&id).is_some();
         privacy |= self.screencasts.remove(&id).is_some();

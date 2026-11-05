@@ -29,6 +29,11 @@ impl MixerState {
                 },
                 None => app,
             })
+            .map(|app| {
+                let devices = if app.recording { &self.sources } else { &self.sinks };
+                let target = self.graph.linked(app.id, !app.recording).find(|node| devices.contains_key(node));
+                AppStream { target, ..app }
+            })
             .collect();
         let next = AudioState {
             sinks: device_list(&self.sinks, &self.device_routes, sink),
@@ -85,6 +90,7 @@ mod tests {
             recording: false,
             volume: None,
             muted: false,
+            target: None,
         }
     }
 
@@ -417,6 +423,34 @@ mod tests {
         let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
         assert_eq!(published.apps[0].volume, None, "another stream's reading must not leak onto this one");
         assert!(!published.apps[0].muted);
+    }
+
+    #[test]
+    fn an_app_reports_the_device_its_links_reach() {
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        state.sinks = HashMap::from([(59, sink_at("alsa_output.analog", None, None))]);
+        state.sources = HashMap::from([(60, sink_at("alsa_input.analog", None, None))]);
+        state.apps.insert(101, sample_stream(101));
+        state.apps.insert(102, AppStream { recording: true, ..sample_stream(102) });
+        let link = |output: &str, input: &str| {
+            HashMap::from([
+                ("link.output.node".to_string(), output.to_string()),
+                ("link.input.node".to_string(), input.to_string()),
+            ])
+        };
+        state.graph.add_link(80, &link("101", "59"));
+        state.graph.add_link(81, &link("60", "102"));
+        // A recording reads from the source, not from the sink a playback link also names.
+        state.graph.add_link(82, &link("59", "102"));
+
+        state.publish_audio();
+        let targets = |published: &AudioState| published.apps.iter().map(|app| app.target).collect::<Vec<_>>();
+        assert_eq!(targets(&rx.try_recv().unwrap()), [Some(59), Some(60)]);
+
+        state.remove_global(80);
+        assert_eq!(targets(&rx.try_recv().expect("an unlinked app republishes")), [None, Some(60)]);
     }
 
     #[test]

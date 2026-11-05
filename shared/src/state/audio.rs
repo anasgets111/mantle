@@ -149,7 +149,7 @@ pub struct CardProfile {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AppStream {
-    /// PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`.
+    /// PipeWire node id, the first argument of `set_app_volume`, `set_app_muted` and `set_app_target`.
     pub id: u32,
     /// Owning process id, from `application.process.id`.
     pub pid: i32,
@@ -174,4 +174,8 @@ pub struct AppStream {
     pub volume: Option<f64>,
     /// Stream mute; `false` until `volume` is known.
     pub muted: bool,
+    /// The `sinks[].id` a playback stream plays into, or the `sources[].id` a recording reads; `nil`
+    /// while it is linked to neither.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<u32>,
 }

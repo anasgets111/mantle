@@ -106,6 +106,13 @@ pub enum AudioAction {
     SetAppVolume { id: u32, volume: f32 },
     /// Sets an `apps[].id` stream's mute.
     SetAppMuted { id: u32, muted: bool },
+    /// Moves an `apps[].id` stream to a `sinks[].id`, or a recording to a `sources[].id`; `nil`
+    /// returns it to the default. WirePlumber keeps the choice for that app.
+    SetAppTarget {
+        id: u32,
+        #[serde(default)]
+        device: Option<u32>,
+    },
     /// Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice.
     SetCardProfile { device: u32, index: i32 },
     /// Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers.

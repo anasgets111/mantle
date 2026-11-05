@@ -14,6 +14,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Breaking: `mantle.audio`'s `volume`, `muted`, `balance`, `source_volume` and `source_muted` are gone: read the `active` entry of `sinks` or `sources`.
 - Breaking: `mantle.audio:set_volume`, `set_muted`, `toggle_mute` and `set_balance` take a `sinks[].id` or `sources[].id` first: `set_volume(sink.id, 50)`. `set_source_volume`, `set_source_muted` and `toggle_source_mute` are gone; pass a source's id to the same actions. `set_sink_channel_volume` and `set_source_channel_volume` are now one `set_channel_volume(id, index, volume)`.
 - Added: `mantle.audio.cards[].ports` lists each card's ports (`index`, `name`, `description`, `type`, `direction`, `available`, `profiles`), and `mantle.audio:set_port(card, index)` switches one, such as speakers to headphones. Unplugged ports stay listed with `available = false`.
+- Added: `mantle.audio.apps[].target` is the sink an app plays into, or the source it records from, and `mantle.audio:set_app_target(id, device)` moves it; `nil` returns it to the default.
 
 ## 0.12.1 - 2026-11-05
 

@@ -17,6 +17,9 @@ use super::state::{AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KE
 /// dump (`type:'Spa:String:JSON'`) rather than inferred from the value looking like JSON.
 const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
 
+/// The `default` metadata key WirePlumber reads a stream's chosen device from.
+const TARGET_OBJECT_KEY: &str = "target.object";
+
 /// Applies one [`AudioCommand`] on the PipeWire thread. Every arm resolves its target against live
 /// maps first and logs rather than guessing when it cannot. Stale ids matter because PipeWire
 /// recycles them. Results return through the same-loop event.
@@ -60,6 +63,7 @@ pub(super) fn apply_command(state: &Rc<RefCell<MixerState>>, command: AudioComma
             }
             write_node_props(state, id, None, Some(muted));
         }
+        AudioCommand::SetAppTarget { id, device } => write_app_target(state, id, device),
         AudioCommand::SetDefaultSink(id) => write_default_device(state, DefaultDevice::Sink, id),
         AudioCommand::SetDefaultSource(id) => write_default_device(state, DefaultDevice::Source, id),
         AudioCommand::SetCardProfile { device, index } => write_card_profile(state, device, index),
@@ -255,6 +259,31 @@ fn with_pod(object: &pw::spa::pod::Value, what: std::fmt::Arguments, send: impl 
         return;
     };
     send(pod)
+}
+
+/// Writes `target.object` for stream `id` in the `default` metadata, how WirePlumber moves a
+/// stream; `None` deletes it and the stream follows the default again. Named by `node.name`, which
+/// WirePlumber matches as it does `object.serial`.
+fn write_app_target(state: &Rc<RefCell<MixerState>>, id: u32, device: Option<u32>) {
+    let state = state.borrow();
+    let Some(app) = state.apps.get(&id) else {
+        debug!("set_app_target({id}, {device:?}) names no tracked stream; ignored");
+        return;
+    };
+    let kind = if app.recording { DefaultDevice::Source } else { DefaultDevice::Sink };
+    let name = match device.map(|device| state.device_entries(kind).get(&device)) {
+        None => None,
+        Some(Some(entry)) => Some(entry.names.node_name.as_str()),
+        Some(None) => {
+            debug!("set_app_target({id}, {device:?}) names no {kind:?} for that stream; ignored");
+            return;
+        }
+    };
+    let Some((metadata, _listener)) = state.metadata.as_ref() else {
+        debug!("the `default` metadata object is not bound; cannot move stream {id}");
+        return;
+    };
+    metadata.set_property(id, TARGET_OBJECT_KEY, None, name);
 }
 
 /// Writes `audio:set_default_sink/source(id)`. Metadata names devices by `node.name`, so an id

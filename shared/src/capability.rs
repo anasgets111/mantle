@@ -110,6 +110,7 @@ impl Capability {
                 "set_channel_volume",
                 "set_app_volume",
                 "set_app_muted",
+                "set_app_target",
                 "set_card_profile",
                 "set_port",
             ],

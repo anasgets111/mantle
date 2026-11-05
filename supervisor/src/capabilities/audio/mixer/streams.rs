@@ -122,6 +122,7 @@ fn parse_stream_props(
         recording,
         volume: None,
         muted: false,
+        target: None,
     })
 }
 

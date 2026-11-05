@@ -42,13 +42,14 @@ One app's playback or recording stream. Streams without a pid are left out.
 | --- | --- | --- |
 | `binary?` | `string` | `application.process.binary`, e.g. `"firefox"`. |
 | `icon?` | `string` | XDG icon name from `application.icon-name`, else `media.icon-name`, e.g. `"firefox"`. |
-| `id` | `integer` | PipeWire node id, the first argument of `set_app_volume` and `set_app_muted`. |
+| `id` | `integer` | PipeWire node id, the first argument of `set_app_volume`, `set_app_muted` and `set_app_target`. |
 | `media_name?` | `string` | `media.name`, which tells one app's streams apart, e.g. a browser tab's `"YouTube Music"`. Follows the stream as the client renames it. |
 | `muted` | `boolean` | Stream mute; `false` until `volume` is known. |
 | `name?` | `string` | `application.name`, if the client set one. |
 | `pid` | `integer` | Owning process id, from `application.process.id`. |
 | `process_name?` | `string` | `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read. |
 | `recording` | `boolean` | A capture stream, such as a call's microphone, rather than playback. |
+| `target?` | `integer` | The `sinks[].id` a playback stream plays into, or the `sources[].id` a recording reads; `nil` while it is linked to neither. |
 | `volume?` | `number` | Stream volume in percent; `nil` until PipeWire reports the stream's `Props`. |
 
 ### `AudioCard`
@@ -144,6 +145,7 @@ Call each as `mantle.audio:<action>(arguments...)`; `?` marks an argument you ma
 | `set_channel_volume` | `id: integer, index: integer, volume: number` | Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as `set_volume`. Other channels stay unchanged. |
 | `set_app_volume` | `id: integer, volume: number` | Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`. |
 | `set_app_muted` | `id: integer, muted: boolean` | Sets an `apps[].id` stream's mute. |
+| `set_app_target` | `id: integer, device?: integer` | Moves an `apps[].id` stream to a `sinks[].id`, or a recording to a `sources[].id`; `nil` returns it to the default. WirePlumber keeps the choice for that app. |
 | `set_card_profile` | `device: integer, index: integer` | Switches a `cards[].device` to one of its `profiles[].index`. WirePlumber keeps the choice. |
 | `set_port` | `card: integer, index: integer` | Routes a `cards[].device` to one of its `ports[].index`, e.g. headphones instead of speakers. The port must work under the active profile. WirePlumber keeps the choice. |
 
@@ -155,6 +157,8 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | :--- | :--- |
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `active`, `channels`, `volume`, `muted` and `balance`; `card` is the node's `device.id` |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
+| `Link` globals | an app's `target`: the sink or source its links reach |
+| `target.object` in the `default` metadata, keyed by the stream's id | `set_app_target` writes the device's `node.name` there, how WirePlumber moves a stream; `nil` deletes it. WirePlumber's stream restore keeps the choice per app, so a stream that reconnects goes back to it, unless `node.stream.restore-target` is off |
 | ALSA and `bluez_card.*` devices and their profiles | `cards`; a BlueZ card's `mac` comes from its name, a profile's `codec` from its name, else its English description |
 | Each ALSA and BlueZ device's `EnumRoute` | `cards[].ports`; `set_port` writes a `Route` on the profile device a sink or source of the active profile uses, so a port outside the active profile is dropped |
 | Each ALSA and BlueZ device's active `Route` | `port`, and a hardware sink's or source's volume, mute and balance, Bluetooth microphones included. The node's `Props` only mirror the `Route`: they are read until it arrives, and a write before then is dropped. A virtual device has no `Route` and uses its node's `Props` |

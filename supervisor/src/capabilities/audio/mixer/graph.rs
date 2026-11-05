@@ -1,5 +1,6 @@
 //! The PipeWire link graph: every `Link` global's two ends, and which `Video/Source` nodes are
-//! cameras, from registry globals alone. Camera consumers (ADR-0034) are one query on it.
+//! cameras, from registry globals alone. Camera consumers (ADR-0034) and an app's device are
+//! queries on it.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -7,6 +8,13 @@ use pipewire::keys;
 
 use super::PropsLookup;
 use super::streams::{CaptureApp, prop_u32, running};
+
+/// What a graph change touched: camera consumers feed `mantle.privacy`, any link `apps[].target`.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Changed {
+    pub(super) camera: bool,
+    pub(super) links: bool,
+}
 
 #[derive(Debug, Default)]
 pub(super) struct LinkGraph {
@@ -26,29 +34,38 @@ impl LinkGraph {
         camera && self.cameras.insert(id)
     }
 
-    /// Records a link; whether the camera consumers changed. A node's global precedes the links
-    /// that name it.
-    pub(super) fn add_link(&mut self, id: u32, props: &impl PropsLookup) -> bool {
+    /// Records a link; what changed, if anything. A node's global precedes the links that name it.
+    pub(super) fn add_link(&mut self, id: u32, props: &impl PropsLookup) -> Changed {
         let (Some(output), Some(input)) =
             (prop_u32(props, *keys::LINK_OUTPUT_NODE), prop_u32(props, *keys::LINK_INPUT_NODE))
         else {
-            return false;
+            return Changed::default();
         };
-        self.links.insert(id, (output, input)) != Some((output, input)) && self.cameras.contains(&output)
+        let new = self.links.insert(id, (output, input)) != Some((output, input));
+        Changed { camera: new && self.cameras.contains(&output), links: new }
     }
 
     /// Forgets a removed global of any kind, and the links that name it so a reused id inherits
-    /// none; whether the camera consumers changed.
-    pub(super) fn remove(&mut self, id: u32) -> bool {
-        let camera = self.cameras.contains(&id);
-        let mut changed = false;
+    /// none; what changed.
+    pub(super) fn remove(&mut self, id: u32) -> Changed {
+        let mut changed = Changed { camera: self.cameras.contains(&id), links: false };
         self.links.retain(|&link, &mut (output, input)| {
             let keep = link != id && output != id && input != id;
-            changed |= !keep && self.cameras.contains(&output);
+            changed.camera |= !keep && self.cameras.contains(&output);
+            changed.links |= !keep;
             keep
         });
         self.cameras.remove(&id);
-        changed || camera
+        changed
+    }
+
+    /// The nodes linked to `node`: what it plays into for a playback stream, what it records from
+    /// otherwise.
+    pub(super) fn linked(&self, node: u32, playback: bool) -> impl Iterator<Item = u32> + '_ {
+        self.links.values().filter_map(move |&(output, input)| match playback {
+            true => (output == node).then_some(input),
+            false => (input == node).then_some(output),
+        })
     }
 
     /// Running streams linked to a camera source.
@@ -100,11 +117,11 @@ mod tests {
     #[test]
     fn a_stream_linked_to_a_camera_source_is_a_consumer_until_it_stops_or_unlinks() {
         let mut graph = camera_graph();
-        assert!(graph.add_link(70, &link("63", "94")));
+        assert!(graph.add_link(70, &link("63", "94")).camera);
         let consumers = |graph: &LinkGraph, running| graph.camera_consumers(&video_stream(94, running));
         assert_eq!(consumers(&graph, true).len(), 1);
         assert!(consumers(&graph, false).is_empty(), "an idle stream holds the camera without reading");
-        assert!(graph.remove(70));
+        assert!(graph.remove(70).camera);
         assert!(consumers(&graph, true).is_empty());
     }
 
@@ -115,10 +132,14 @@ mod tests {
         assert!(!graph.add_camera(80, &portal), "a screencast with an unlisted name is not a camera");
         assert!(graph.add_camera(81, &props(&[("media.role", "Camera")])));
         assert!(graph.add_camera(82, &props(&[("device.id", "54")])));
-        assert!(!graph.add_link(71, &link("80", "94")), "a viewer of that source is no camera user");
+        assert_eq!(
+            graph.add_link(71, &link("80", "94")),
+            Changed { camera: false, links: true },
+            "a viewer of that source is no camera user, but its link is tracked"
+        );
         assert!(graph.camera_consumers(&video_stream(94, true)).is_empty());
-        assert_eq!(graph.links.len(), 1, "but the link is tracked");
-        assert!(!graph.remove(71), "and its leaving changes no consumer");
+        assert_eq!(graph.add_link(71, &link("80", "94")), Changed::default(), "a repeat changes nothing");
+        assert_eq!(graph.remove(71), Changed { camera: false, links: true });
     }
 
     #[test]
@@ -129,9 +150,21 @@ mod tests {
             let mut graph = camera_graph();
             graph.add_link(70, &link("63", "94"));
             graph.add_link(71, &link("40", "41"));
-            assert!(graph.remove(removed), "{why}");
+            assert_eq!(graph.remove(removed), Changed { camera: true, links: true }, "{why}");
             assert!(graph.camera_consumers(&video_stream(94, true)).is_empty(), "{why}");
             assert_eq!(graph.links.len(), 1, "{why}: the unrelated link stays");
         }
+    }
+
+    #[test]
+    fn a_stream_is_linked_to_the_device_it_plays_into_or_records_from() {
+        let mut graph = LinkGraph::default();
+        // Two channels, two links, as `pw-link -l` shows for a stereo stream.
+        graph.add_link(80, &link("101", "59"));
+        graph.add_link(81, &link("101", "59"));
+        graph.add_link(82, &link("60", "102"));
+        assert_eq!(graph.linked(101, true).collect::<Vec<_>>(), [59, 59]);
+        assert_eq!(graph.linked(102, false).collect::<Vec<_>>(), [60]);
+        assert_eq!(graph.linked(102, true).count(), 0, "a recording stream plays into nothing");
     }
 }
