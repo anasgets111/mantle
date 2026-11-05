@@ -31,6 +31,7 @@ package() {
     install -dm755 "$pkgdir/usr"
     cp -a usr/local/. "$pkgdir/usr/"
     mv "$pkgdir/usr/share/licenses/mantle" "$pkgdir/usr/share/licenses/$pkgname"
-    install -Dm644 -t "$pkgdir/etc/pam.d" etc/pam.d/mantle etc/pam.d/mantle-fingerprint
-    install -Dm644 -t "$pkgdir/usr/share/polkit-1/rules.d" etc/polkit-1/rules.d/*.rules
+    install -Dm644 -t "$pkgdir/etc/pam.d" usr/local/share/mantle/pam.d/{mantle,mantle-fingerprint}
+    install -Dm644 -t "$pkgdir/usr/share/polkit-1/rules.d" usr/local/share/mantle/polkit-1/rules.d/*.rules
+    rm -r "$pkgdir/usr/share/mantle/"{pam.d,polkit-1}
 }

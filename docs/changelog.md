@@ -12,6 +12,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Added: `mantle.lock` and `mantle.polkit` gain `prompt` (`{ id, text, echo }`, PAM's own question, `nil` while PAM owes nothing) and `messages` (PAM's info and error lines). Two-factor codes, a re-asked password and fingerprint hints now reach the lock screen. Bind the secure field's `masked` to `not prompt.echo` to show a visible answer.
 - Changed: The lock screen starts PAM when the session locks, so `prompt` is ready before you type. A password typed before PAM asks is held for its first masked prompt, and `authenticating` now means an answer is with PAM.
 - Changed: A polkit prompt starts PAM on the first submit, so its `prompt` is `nil` until then.
+- Changed: The release tarball no longer writes to `/etc`, so an upgrade keeps your edits. It puts the PAM stacks, with `-debian` variants for Debian and Ubuntu, and the polkit rule in `/usr/local/share/mantle/`; copy them to `/etc` once.
 - Fixed: After a faillock lockout runs out, the first correct password on the lock screen unlocks. It used to fail once, because the lock kept the PAM attempt that had shown the lockout.
 - Fixed: A lock screen no longer refuses a correct password once the account's password has expired. The session is already logged in, as GDM decides.
 - Fixed: Polkit prompts in other languages show their real text instead of escape codes, and a visible polkit prompt is no longer answered with an empty line.

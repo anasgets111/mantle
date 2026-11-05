@@ -64,8 +64,10 @@ jobs:
           ln -s ../lib/mantle/mantle "$root/usr/local/bin/mantle"
           install -Dm644 -t "$root/usr/local/share/mantle/lua-meta" lua-meta/*.lua
           install -Dm644 LICENSE "$root/usr/local/share/licenses/mantle/LICENSE"
-          install -Dm644 -t "$root/etc/pam.d" packaging/pam.d/mantle packaging/pam.d/mantle-fingerprint
-          install -Dm644 -t "$root/etc/polkit-1/rules.d" packaging/polkit-1/rules.d/*.rules
+          # Templates, not /etc: extracting over / would overwrite an admin's edits, and which PAM
+          # variant fits depends on the distribution.
+          install -Dm644 -t "$root/usr/local/share/mantle/pam.d" packaging/pam.d/*
+          install -Dm644 -t "$root/usr/local/share/mantle/polkit-1/rules.d" packaging/polkit-1/rules.d/*.rules
           # Both binaries load and the renderer evaluates the starter config, with no compositor.
           "$root/usr/local/bin/mantle" check -c share/starter
           if readelf -d "$root"/usr/local/lib/mantle/* | grep -q libalpm; then exit 1; fi
@@ -75,7 +77,7 @@ jobs:
             grep -qF -- "- $lib" packaging/nfpm.yaml || { echo "$lib is missing from packaging/nfpm.yaml"; exit 1; }
           done
           echo "glibc floor: $(readelf -W --dyn-syms "$root"/usr/local/lib/mantle/* | grep -o 'GLIBC_[0-9.]*' | sort -uV | tail -1)"
-          tar -C "$root" -czf "stage/$name.tar.gz" usr etc
+          tar -C "$root" -czf "stage/$name.tar.gz" usr
           nfpm package -f packaging/nfpm.yaml -p deb -t stage/
           nfpm package -f packaging/nfpm.yaml -p rpm -t stage/
           (cd stage && sha256sum *.tar.gz *.deb *.rpm > SHA256SUMS)

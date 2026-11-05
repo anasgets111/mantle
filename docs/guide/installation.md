@@ -13,7 +13,7 @@ and source builds follow `main`.
 | :--- | :--- |
 | Arch | Install [`mantle-bin`](https://aur.archlinux.org/packages/mantle-bin) from the AUR for the latest release, or [`mantle-git`](https://aur.archlinux.org/packages/mantle-git) to build `main`. Both install the PAM stack |
 | Ubuntu, Fedora | Install a [release](https://github.com/anasgets111/mantle/releases) package with `sudo apt install ./mantle_<version>_amd64.deb` or `sudo dnf install ./mantle-<version>-1.x86_64.rpm`. These packages install under `/usr`, with library dependencies and the PAM stack. They require Ubuntu 26.04 or Fedora 44 or later because the binaries need glibc 2.43 |
-| Release tarball | `sudo tar -xzf mantle-<version>-x86_64-linux.tar.gz -C /` installs under `/usr/local`, with the PAM stack and polkit rule under `/etc`. Install the required libraries yourself. It needs glibc 2.43 |
+| Release tarball | `sudo tar -xzf mantle-<version>-x86_64-linux.tar.gz -C /` installs under `/usr/local` and leaves `/etc` alone, so an upgrade keeps your edits: copy the [system files](#system-files) from `/usr/local/share/mantle/` once. Install the required libraries yourself. It needs glibc 2.43 |
 | From source | `cargo build --workspace --release`, then put `target/release/mantle` and `target/release/mantle-renderer` together on `PATH`, for example in `~/.local/bin`. See [build requirements](#build-from-source) |
 | From a checkout, for development | `just run [config]` builds and runs a config (default `share/starter`). `just swap` builds an optimised pair into `$CARGO_HOME/bin` and restarts the running shell |
 
@@ -93,7 +93,7 @@ capabilities your config uses. Each capability page says what happens when its b
 | [`workspaces`](../capabilities/workspaces.md#backend) | niri, Hyprland, sway or mango |
 | [`windows`](../capabilities/windows.md#backend) | niri, Hyprland, sway or mango, else `wlr-foreign-toplevel-management-v1` |
 | [`idle`](../capabilities/idle.md#backend) | `ext-idle-notify-v1`, logind |
-| [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the Mantle PAM stack ([system files](#system-files-for-source-installs)) |
+| [`lock`](../capabilities/lock.md#backend) | `ext-session-lock-v1`, logind, the Mantle PAM stack ([system files](#system-files)) |
 | [`polkit`](../capabilities/polkit.md#backend) | polkitd with its helper socket `/run/polkit/agent-helper.socket`, `$XDG_SESSION_ID`, no other polkit agent running |
 | [`sysinfo`](../capabilities/sysinfo.md#backend) | hwmon `k10temp`, `coretemp` or `acpitz` for CPU temperature; `amdgpu`, `nouveau`, `nvidia`, `i915` or `xe` for GPU temperature; `lsblk` for disks; `nvtop`, `nvidia-smi` or DRM sysfs for GPU telemetry; `/proc/net/dev` for network throughput |
 | [`updates`](../capabilities/updates.md#backend) | `pacman` and its `curl`, `dnf` or `apt-get`; `pkexec`, answered by the polkit agent; paru or yay for AUR |
@@ -117,10 +117,12 @@ Use [rustup](https://rustup.rs) where the distro's `cargo` is older. Mantle is d
 on Arch. The Fedora and Debian package lists build the workspace in a container; running the
 shell, and the `updates` capability's dnf and apt backends, are untested on Fedora and Ubuntu.
 
-## System files for source installs
+## System files
 
-Packages and the tarball install the system files they include. If you install binaries from a
-source build, these files are in [`packaging/`](../../packaging):
+Packages install the files they need. The tarball puts them in `/usr/local/share/mantle/`, and a
+source build has them in [`packaging/`](../../packaging).
+On Debian and Ubuntu, install the `-debian` variant of each PAM stack under the same name: they
+include `common-*` where the others include `system-auth`.
 
 | File | Install to | Without it |
 | :--- | :--- | :--- |
