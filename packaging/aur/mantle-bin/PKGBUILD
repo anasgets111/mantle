@@ -16,6 +16,7 @@ optdepends=('niri: workspaces, windows and keyboard layout'
             'mangowm: workspaces, windows and keyboard layout'
             'paru: AUR package updates'
             'yay: AUR package updates'
+            'fprintd: fingerprint unlock on the lock screen'
             'sound-theme-freedesktop: notification sounds'
             'lua-language-server: type-checking the config in an editor')
 provides=("mantle=$pkgver")
