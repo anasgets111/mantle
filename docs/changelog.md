@@ -17,6 +17,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Added: `mantle.audio.apps[].target` is the sink an app plays into, or the source it records from, and `mantle.audio:set_app_target(id, device)` moves it; `nil` returns it to the default.
 - Added: `mantle.audio:set_virtual_devices(devices)` declares null sinks, combined sinks, loopbacks, echo-cancelled microphones and filter chains such as an equalizer. Each appears in `sinks` or `sources`, PipeWire's module arguments pass through `args`, and a reload keeps them until the next call.
 - Added: `mantle.audio.cards[].ports[].active` marks the port a card routes through now, such as headphones rather than speakers.
+- Added: `mantle.audio.apps[].pinned_to` is the device an app is pinned to with `set_app_target`, or by another mixer; `nil` when it follows the default or the device it names is gone. `target` stays the device it plays through.
 - Changed: `mantle check` fails when a config reads a capability field that does not exist, such as a field a release removed, and names the nearest one; a running shell still reads `nil`. It covers reads made while it evaluates and lays out the config; `on_click`, `action` and `timer` handlers do not run.
 - Changed: `mantle check` fails when a capability `on_change` handler raises on sample data; before, it only logged a warning.
 

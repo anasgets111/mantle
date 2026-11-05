@@ -32,7 +32,8 @@ impl MixerState {
             .map(|app| {
                 let devices = if app.recording { &self.sources } else { &self.sinks };
                 let target = self.graph.linked(app.id, !app.recording).find(|node| devices.contains_key(node));
-                AppStream { target, ..app }
+                let pinned_to = self.app_pins.get(&app.id).and_then(|pin| pinned_device(devices, pin));
+                AppStream { target, pinned_to, ..app }
             })
             .collect();
         let next = AudioState {
@@ -63,6 +64,15 @@ impl MixerState {
     }
 }
 
+/// The lowest id among `devices` whose `node.name` or `object.serial` is `pin`, a `target.object`
+/// value, which WirePlumber matches against both.
+fn pinned_device(devices: &std::collections::HashMap<u32, super::devices::DeviceEntry>, pin: &str) -> Option<u32> {
+    let names = |entry: &super::devices::DeviceEntry| {
+        entry.names.node_name == pin || entry.names.serial.as_deref() == Some(pin)
+    };
+    devices.iter().filter(|(_, entry)| names(entry)).map(|(&id, _)| id).min()
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, HashMap};
@@ -91,6 +101,7 @@ mod tests {
             volume: None,
             muted: false,
             target: None,
+            pinned_to: None,
         }
     }
 
@@ -293,6 +304,31 @@ mod tests {
         assert_eq!(published.sinks[0].volume, Some(30.0), "a whole percent, not f32 noise");
         assert!(!published.sinks[0].muted);
         assert_eq!(published.apps, vec![sample_stream(1)]);
+    }
+
+    /// A pin names a sink by `node.name` or `object.serial`; one naming a gone device, or a source
+    /// for a playback stream, is `nil`, and a removed stream's pin goes with it.
+    #[test]
+    fn publish_audio_resolves_each_apps_pin_to_a_current_device_of_its_direction() {
+        let (updates, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (privacy_updates, _privacy_rx) = watch::channel(PrivacySources::default());
+        let mut state = mixer_state(updates, privacy_updates);
+        let mut analog = sink_at("alsa_output.analog", None, None);
+        analog.names.serial = Some("120".to_string());
+        state.sinks = HashMap::from([(59, analog), (70, sink_at("bluez_output.headset", None, None))]);
+        state.sources = HashMap::from([(61, sink_at("alsa_input.analog", None, None))]);
+        for (id, pin) in [(1, "bluez_output.headset"), (2, "120"), (3, "bluez_output.gone"), (4, "alsa_input.analog")] {
+            state.apps.insert(id, sample_stream(id));
+            state.app_pins.insert(id, pin.to_string());
+        }
+
+        state.publish_audio();
+
+        let published = rx.try_recv().expect("publish_audio should have sent a snapshot");
+        let pins: Vec<_> = published.apps.iter().map(|app| (app.id, app.pinned_to)).collect();
+        assert_eq!(pins, [(1, Some(70)), (2, Some(59)), (3, None), (4, None)]);
+        state.remove_global(1);
+        assert!(!state.app_pins.contains_key(&1));
     }
 
     #[test]

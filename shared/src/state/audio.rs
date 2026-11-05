@@ -181,4 +181,10 @@ pub struct AppStream {
     /// while it is linked to neither.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target: Option<u32>,
+    /// The `sinks[].id` or `sources[].id` the stream is pinned to: the device its `target.object`
+    /// in the `default` metadata names, by `node.name` or `object.serial`, as `set_app_target`
+    /// writes. `nil` when unset, or when it names no current device of the stream's direction,
+    /// such as an unplugged headset; WirePlumber then plays it on the default.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pinned_to: Option<u32>,
 }

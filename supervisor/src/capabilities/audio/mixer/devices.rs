@@ -108,6 +108,8 @@ pub(super) fn card_list(
 #[derive(Debug, Clone, Default, PartialEq)]
 pub(super) struct DeviceNames {
     pub(super) node_name: String,
+    /// `object.serial`, which a `target.object` may name instead of `node_name`.
+    pub(super) serial: Option<String>,
     pub(super) description: Option<String>,
     pub(super) icon: Option<String>,
     pub(super) bus: Option<String>,
@@ -197,6 +199,7 @@ pub(super) fn device_names(props: &impl PropsLookup) -> Option<DeviceNames> {
     let hint = |key: &str| props.get_prop(key).map(str::to_string);
     Some(DeviceNames {
         node_name: props.get_prop(*keys::NODE_NAME)?.to_string(),
+        serial: hint("object.serial"),
         description: device_display_name(props),
         icon: hint(*keys::DEVICE_ICON_NAME),
         bus: hint(*keys::DEVICE_BUS),

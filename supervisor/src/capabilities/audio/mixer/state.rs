@@ -96,6 +96,8 @@ pub(super) struct MixerState {
     /// needs this. `None` until `metadata.name == "default"` is found.
     pub(super) metadata: Option<(pw::metadata::Metadata, pw::metadata::MetadataListener)>,
     pub(super) metadata_id: Option<u32>,
+    /// Stream id -> its `target.object` in the `default` metadata, for `apps[].pinned_to`.
+    pub(super) app_pins: HashMap<u32, String>,
     /// `node.name` -> a declared null sink and the `adapter` proxy this connection created for it.
     pub(super) null_sinks: HashMap<String, (shared::action::VirtualDevice, pw::node::Node)>,
 }
@@ -126,6 +128,7 @@ impl MixerState {
             default_source_name: None,
             metadata: None,
             metadata_id: None,
+            app_pins: HashMap::new(),
             null_sinks: HashMap::new(),
         }
     }
@@ -191,6 +194,7 @@ impl MixerState {
         audio |= self.app_props.remove(&id).is_some();
         audio |= self.cards.remove(&id).is_some();
         audio |= self.apps.remove(&id).is_some();
+        self.app_pins.remove(&id);
         // ALSA and BlueZ devices both record routes; drop this id's so a reused id inherits none.
         let routes = self.device_routes.len();
         self.device_routes.retain(|&(device_id, _), _| device_id != id);
@@ -202,6 +206,7 @@ impl MixerState {
             self.metadata_id = None;
             self.default_sink_name = None;
             self.default_source_name = None;
+            self.app_pins.clear();
         }
         let graph = self.graph.remove(id);
         // A link that went may have carried an app to its device.
@@ -234,6 +239,9 @@ impl DefaultDevice {
 
 /// Metadata key naming the master output device, confirmed in `pw-metadata`.
 pub(super) const DEFAULT_AUDIO_SINK_KEY: &str = "default.audio.sink";
+
+/// The `default` metadata key WirePlumber reads a stream's chosen device from.
+pub(super) const TARGET_OBJECT_KEY: &str = "target.object";
 
 /// Metadata key naming the default input device; same JSON shape as the sink key.
 pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";

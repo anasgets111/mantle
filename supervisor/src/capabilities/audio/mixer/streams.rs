@@ -123,6 +123,7 @@ fn parse_stream_props(
         volume: None,
         muted: false,
         target: None,
+        pinned_to: None,
     })
 }
 

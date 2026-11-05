@@ -26,7 +26,7 @@ use super::devices::{Card, DeviceEntry, DeviceRoute, device_names};
 use super::null_sinks;
 use super::state::{
     AudioCommand, AudioState, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState,
-    PrivacySources,
+    PrivacySources, TARGET_OBJECT_KEY,
 };
 use super::streams::{NodeKind, apply_capture_info_event, apply_info_event, classify, prop_u32};
 use super::write::{apply_command, cap_default_sink};
@@ -517,12 +517,22 @@ fn bind_default_metadata(
     let state_for_property = Rc::clone(state);
     let listener = metadata
         .add_listener_local()
-        .property(move |_subject, key, _type_, value| {
+        .property(move |subject, key, _type_, value| {
             // Ignore other keys, including default.configured.* (which can name a disconnected
             // Bluetooth device); default.audio.* names the real devices.
             let field = match key {
                 Some(DEFAULT_AUDIO_SINK_KEY) => DefaultDevice::Sink,
                 Some(DEFAULT_AUDIO_SOURCE_KEY) => DefaultDevice::Source,
+                // Keyed by the stream's id; publish_audio drops a pin that changed nothing.
+                Some(TARGET_OBJECT_KEY) => {
+                    let mut state_mut = state_for_property.borrow_mut();
+                    match value {
+                        Some(pin) => state_mut.app_pins.insert(subject, pin.to_string()),
+                        None => state_mut.app_pins.remove(&subject),
+                    };
+                    state_mut.publish_audio();
+                    return 0;
+                }
                 _ => return 0,
             };
             let mut state_mut = state_for_property.borrow_mut();

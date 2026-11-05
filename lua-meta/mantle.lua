@@ -75,6 +75,7 @@
 ---@field muted boolean Stream mute; `false` until `volume` is known.
 ---@field name? string `application.name`, if the client set one.
 ---@field pid integer Owning process id, from `application.process.id`.
+---@field pinned_to? integer The `sinks[].id` or `sources[].id` the stream is pinned to: the device its `target.object` in the `default` metadata names, by `node.name` or `object.serial`, as `set_app_target` writes. `nil` when unset, or when it names no current device of the stream's direction, such as an unplugged headset; WirePlumber then plays it on the default.
 ---@field process_name? string `/proc/<pid>/comm`, or `nil` if it was unreadable when the stream's properties were read.
 ---@field recording boolean A capture stream, such as a call's microphone, rather than playback.
 ---@field target? integer The `sinks[].id` a playback stream plays into, or the `sources[].id` a recording reads; `nil` while it is linked to neither.

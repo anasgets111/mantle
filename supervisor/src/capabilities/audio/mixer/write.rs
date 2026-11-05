@@ -11,14 +11,13 @@ use shared::debug;
 use crate::capabilities::audio::{master, profile, route};
 
 use super::devices::DeviceRoute;
-use super::state::{AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState};
+use super::state::{
+    AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState, TARGET_OBJECT_KEY,
+};
 
 /// The `type_` a `default.audio.*` metadata value carries. Read straight off `pw-metadata`'s own
 /// dump (`type:'Spa:String:JSON'`) rather than inferred from the value looking like JSON.
 const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
-
-/// The `default` metadata key WirePlumber reads a stream's chosen device from.
-const TARGET_OBJECT_KEY: &str = "target.object";
 
 /// Applies one [`AudioCommand`] on the PipeWire thread. Every arm resolves its target against live
 /// maps first and logs rather than guessing when it cannot. Stale ids matter because PipeWire
