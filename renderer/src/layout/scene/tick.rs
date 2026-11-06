@@ -576,6 +576,35 @@ mod tests {
         assert!(scene.surface("bar@TEST").unwrap().animating());
     }
 
+    /// Found live: a pass landing between two frames of a child's height tween measured the child
+    /// a little past the size on screen, so the card around it started its own run to that size and
+    /// pinned there, clipping the child, until the child settled.
+    #[test]
+    fn a_content_sized_parent_follows_a_childs_running_tween_through_a_pass_between_frames() {
+        let mut scene = Scene::new();
+        let shaping = ShapingHandle::spawn();
+        let (lua, surface) = surface_from(
+            r#"panel { id = "bar", child = column {
+                animate = { height = { duration = 100, easing = "linear" } },
+                children = { rect { width = 10, height = state("h", 0),
+                    animate = { height = { duration = 100, easing = "linear" } } } } } }"#,
+        );
+        let instances = [instance_at(&surface, full())];
+        let heights = |scene: &Scene| {
+            let card = &scene.surface("bar@TEST").unwrap().children[0];
+            (card.rect.height, card.children[0].rect.height)
+        };
+        let apply =
+            |scene: &mut Scene| apply_at(scene, std::slice::from_ref(&surface), full(), &shaping, &lua).unwrap();
+        apply(&mut scene);
+        lua.load(r#"state("h", 0):set(100)"#).exec().unwrap();
+        apply(&mut scene);
+        let started = scene.surface("bar@TEST").unwrap().children[0].children[0].tweens[0].started;
+        apply(&mut scene);
+        scene.tick(&instances, &shaping, &lua, started + std::time::Duration::from_millis(50));
+        assert_eq!(heights(&scene), (50.0, 50.0), "the card grows with the child, not after it");
+    }
+
     #[test]
     fn a_text_whose_content_changes_mid_run_keeps_easing_from_its_size_on_screen() {
         let mut scene = Scene::new();

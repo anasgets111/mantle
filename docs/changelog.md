@@ -22,6 +22,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 - Added: `mantle.audio:set_level_meters(ids)` meters those sinks and sources, and `mantle.audio_levels` carries their peaks (`levels`, each `{ id, peak }` in percent) up to 30 times a second, for VU meters. No call, no meter; an empty list stops them.
 - Changed: `mantle check` fails when a config reads a capability field that does not exist, such as a field a release removed, and names the nearest one; a running shell still reads `nil`. It covers reads made while it evaluates and lays out the config; `on_click`, `action` and `timer` handlers do not run.
 - Changed: `mantle check` fails when a capability `on_change` handler raises on sample data; before, it only logged a warning.
+- Fixed: A content-sized node with `animate.height` or `animate.width` grows with a child's running animation. A pass between two frames, such as a disclosure's first open, used to freeze it until the child settled, so it stuttered.
 
 ## 0.12.1 - 2026-11-05
 

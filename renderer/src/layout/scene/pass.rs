@@ -65,7 +65,7 @@ pub(super) fn solve_instance(
         tree.set_style(prepared.taffy, root_style).map_err(taffy_failed)?;
     }
     solve(tree, prepared.taffy, available, (shaping, drafts))?;
-    if measure_content_sizes(tree, &mut prepared, now)? {
+    if measure_content_sizes(tree, &mut prepared, now)?.0 {
         solve(tree, prepared.taffy, available, (shaping, drafts))?;
     }
     finish(tree, prepared, shaping, now)
@@ -74,21 +74,39 @@ pub(super) fn solve_instance(
 /// A content-sized `width` or `height` with an `animate` entry has no target until it is solved.
 /// Eases it from the size on screen to the one just solved ([`node::retarget_measured`]), and
 /// pins the solver node and the properties to the eased size, so siblings, children and ticks lay
-/// out at it. Returns whether anything was pinned and the tree needs solving again. A tick has no
-/// `prior_size` and skips this: its running tween already pins the axis in `properties`.
+/// out at it. Returns whether anything was pinned and the tree needs solving again, and whether
+/// this subtree's layout is moving. A tick has no `prior_size` and skips this: its running tween
+/// already pins the axis in `properties`.
+///
+/// An axis with no run of its own follows a descendant's running layout tween instead of starting
+/// one: that motion is already eased, and a pass between two of its frames measures it a little
+/// past the size on screen, which would pin the axis there until the descendant settles.
+///
+/// ponytail: an unanimated content change during a descendant's run snaps instead of easing;
+/// upgrade: solve once more with descendants at their targets and ease to that.
 fn measure_content_sizes(
     tree: &mut taffy::TaffyTree<Measure>,
     node: &mut PreparedNode,
     now: Instant,
-) -> Result<bool, LayoutError> {
+) -> Result<(bool, bool), LayoutError> {
     if !node.style.visible {
-        return Ok(false);
+        return Ok((false, false));
     }
-    let mut pinned = false;
+    let (mut pinned, mut inner) = (false, false);
     for child in &mut node.children {
-        pinned |= measure_content_sizes(tree, child, now)?;
+        let (child_pinned, child_moving) = measure_content_sizes(tree, child, now)?;
+        (pinned, inner) = (pinned | child_pinned, inner | child_moving);
     }
-    let Some(shown) = node.prior_size.filter(|_| node.properties.contains_key("animate")) else { return Ok(pinned) };
+    let moving = |this: &PreparedNode| {
+        inner
+            || this
+                .tweens
+                .iter()
+                .any(|tween| !tween.resting && !tween.done(now) && !node::is_paint_only(tween.property))
+    };
+    let Some(shown) = node.prior_size.filter(|_| node.properties.contains_key("animate")) else {
+        return Ok((pinned, moving(node)));
+    };
     let solved = tree.layout(node.taffy).map_err(taffy_failed)?.size;
     // The compositor sizes an allocated root axis, so it never eases.
     let axes = [
@@ -96,7 +114,7 @@ fn measure_content_sizes(
         ("height", node.style.height_mode, shown.1, solved.height, node.allocated_axes.1),
     ];
     for (property, mode, shown, measured, allocated) in axes {
-        if mode != SizeMode::Content || allocated {
+        if mode != SizeMode::Content || allocated || (inner && !node.tweens.iter().any(|t| t.property == property)) {
             continue;
         }
         let Some(size) =
@@ -117,7 +135,7 @@ fn measure_content_sizes(
         tree.set_style(node.taffy, style).map_err(taffy_failed)?;
         pinned = true;
     }
-    Ok(pinned)
+    Ok((pinned, moving(node)))
 }
 
 /// A configured `Content` axis belongs to the root when its protocol allocated that axis:
