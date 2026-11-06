@@ -109,7 +109,8 @@ pub struct RendererClient {
     /// Each shown declared surface's `reset_on_close` list, from the evaluation that showed it, so
     /// a reload that removes the surface still knows what to write back (ADR-0289).
     shown_resets: HashMap<String, Vec<lua::signal::Signal>>,
-    /// A reset wrote after this turn's pass, so the loop owes another before it sleeps.
+    /// A reset or a moved layout measurement wrote after this turn's pass, so the loop owes another
+    /// before it sleeps.
     owes_pass: bool,
     /// `mantle` table for lazy members. Above `loader` for drop order.
     mantle: mlua::Table,
@@ -454,17 +455,16 @@ impl RendererClient {
     ) {
         self.scene.note_drawn_images(instance_id, drawn, now);
         self.scene.note_image_loads(instance_id, drawn, self.loader.lua());
-        // Written after this turn's pass: its readers' pass is the next turn's, owed now.
-        self.owes_pass |= self.mark_layout_readers();
+        self.mark_layout_readers();
     }
 
-    /// Marks the readers of each layout measurement written since the last take; whether any was.
-    fn mark_layout_readers(&mut self) -> bool {
-        let moved = crate::lua::signal::take_layout_changed(self.loader.lua());
-        for id in &moved {
-            self.dirty.mark_cell(*id);
+    /// Marks the readers of each layout measurement written since the last take. Written after
+    /// this turn's pass, so their pass is owed now rather than at the next unrelated wake.
+    fn mark_layout_readers(&mut self) {
+        for id in crate::lua::signal::take_layout_changed(self.loader.lua()) {
+            self.dirty.mark_cell(id);
+            self.owes_pass = true;
         }
-        !moved.is_empty()
     }
 
     /// Drops a departed instance's retained tree and its `(surface, output)` pair, whenever its

@@ -250,6 +250,7 @@ impl RendererClient {
             for id in moved {
                 self.dirty.mark_cell(id);
             }
+            self.owes_pass = true;
         }
     }
 
@@ -607,10 +608,12 @@ mod tests {
         client.loader.lua().load("w:set(40)").exec().unwrap();
         assert!(client.re_resolve_if_dirty());
         assert_eq!(client.take_last_resolved(), Some(vec!["bar@TEST".to_string()]));
+        assert!(client.next_wake_deadline().is_some(), "the follow-up must not wait for an unrelated wake");
         assert!(client.re_resolve_if_dirty(), "a later move earns its own follow-up");
         assert_eq!(client.take_last_resolved(), Some(vec!["reader@TEST".to_string()]));
         let reader = client.scene.surface("reader@TEST").unwrap();
         assert_eq!(reader.children[0].rect.width, 40.0, "the reader laid out from the moved rect");
+        assert!(client.next_wake_deadline().is_none(), "nothing is owed once the readers caught up");
     }
 
     #[test]
@@ -681,6 +684,7 @@ mod tests {
         assert!(client.re_resolve_if_dirty());
         let started = client.scene.surface("writer@TEST").unwrap().children[0].tweens[0].started;
         client.tick_animations(&["writer@TEST".into()], started + std::time::Duration::from_millis(90));
+        assert!(client.next_wake_deadline().is_some(), "a tick's moved measurement owes its readers a pass now");
         assert!(client.re_resolve_if_dirty(), "readers update before the animation settles");
         assert!(!client.scene.surface("reader@TEST").unwrap().visible);
         client.loader.lua().load("w:set(40)").exec().unwrap();
