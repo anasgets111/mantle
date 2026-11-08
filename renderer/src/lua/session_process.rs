@@ -52,7 +52,7 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
 
             lua.from_value::<Option<shared::action::SignalName>>(stop_signal.clone()).map_err(|_| {
                 let given = stop_signal.as_string().map(|name| name.to_string_lossy()).unwrap_or_default();
-                let got = super::marshal::expected_one_of(SIGNALS, &given, &preview_for_error(&stop_signal));
+                let got = super::marshal::expected_one_of(shared::action::SignalName::NAMES, &given, &preview_for_error(&stop_signal));
                 mlua::Error::runtime(format!("session_process: stop_signal: expected a signal name, {got}"))
             })?;
             let processes = capability(lua, "session_process", "processes")?;
@@ -71,9 +71,6 @@ pub fn register(lua: &Lua) -> mlua::Result<()> {
         }
     )
 }
-
-/// `shared::action::SignalName`'s names; `signal_names_match_the_wire_enum` keeps them in step.
-const SIGNALS: &[&str] = &["TERM", "INT", "HUP", "QUIT", "USR1", "USR2", "KILL", "STOP", "CONT"];
 
 /// `session_process`'s `spec`, checked key by key with messages naming the call.
 struct Spec;
@@ -156,16 +153,4 @@ fn build_handle(lua: &Lua, name: &str, processes: mlua::AnyUserData) -> mlua::Re
 
     index_entry_signals(lua, &handle, &processes, "sessions", name, None)?;
     Ok(handle)
-}
-
-#[cfg(test)]
-mod tests {
-    /// serde lists every variant in its unknown-variant error, so a new one fails here unprompted.
-    #[test]
-    fn signal_names_match_the_wire_enum() {
-        let err = serde_json::from_str::<shared::action::SignalName>("\"?\"").unwrap_err().to_string();
-        let listed = err.split("expected one of ").nth(1).expect(&err);
-        assert!(super::SIGNALS.iter().all(|name| listed.contains(&format!("`{name}`"))), "{err}");
-        assert_eq!(listed.matches('`').count(), super::SIGNALS.len() * 2, "{err}");
-    }
 }

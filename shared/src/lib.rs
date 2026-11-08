@@ -28,6 +28,9 @@ pub use secure_buffer::SecureBuffer;
 pub use state::conversation::PamNoticeKind;
 pub use zeroize::{Zeroize, Zeroizing};
 
+/// The published book: `docs/x/y.md` is served at `x/y.html` under it.
+pub const DOCS_URL: &str = "https://anasgets111.github.io/mantle/";
+
 /// std's `eprintln!`/`eprint!` panic on a failed write, and under `panic = "abort"` a full log tmpfs
 /// (ADR-0199) would kill lock authority. Both binaries import these over std's with `#[macro_use]`.
 ///

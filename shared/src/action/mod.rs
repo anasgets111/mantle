@@ -168,6 +168,15 @@ fn absolute<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<String,
 mod tests {
     use super::*;
 
+    /// serde lists every variant in its unknown-variant error, so a new one fails here unprompted.
+    #[test]
+    fn signal_names_match_the_wire_enum() {
+        let err = serde_json::from_str::<SignalName>("\"?\"").unwrap_err().to_string();
+        let listed = err.split("expected one of ").nth(1).expect(&err);
+        assert!(SignalName::NAMES.iter().all(|name| listed.contains(&format!("`{name}`"))), "{err}");
+        assert_eq!(listed.matches('`').count(), SignalName::NAMES.len() * 2, "{err}");
+    }
+
     /// The wire stays `(action, [arguments])`; each case is a coercion the hand parsers once got
     /// wrong or a Lua marshalling quirk a config really sends.
     #[test]

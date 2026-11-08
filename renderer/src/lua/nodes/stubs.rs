@@ -6,6 +6,8 @@
 //! its header's `{Name}` placeholder ([`NODE_SHAPES`], [`SURFACE_SHAPES`]). Composite input types
 //! supply their unions and projections beside their parsers.
 
+use shared::DOCS_URL;
+
 use super::properties::{ALL, Absent, BOX, KINDS, PLACED, Property, SURFACES, kind_doc, properties};
 use crate::layout::node::Shape;
 use crate::layout::node::melt::PartInput;
@@ -65,9 +67,6 @@ fn fill<T: LuaType>(header: &str) -> String {
 /// Choice sets the stubs name as an alias.
 const ALIASES: [(&str, &[&str]); 3] =
     [("Align", Align::NAMES), ("Blend", Blend::NAMES), ("PopupAnchor", PopupAnchor::NAMES)];
-
-/// The published book: `docs/x/y.md` is served at `x/y.html` under it.
-const DOCS: &str = "https://anasgets111.github.io/mantle/";
 
 /// Opens a docs page's generated property table; the table runs to [`END`].
 const BEGIN: &str =
@@ -201,7 +200,7 @@ fn render_stub(header: &str, kinds: &[&str]) -> String {
             out.push_str(&format!("---{}\n", blurb.trim()));
         }
         out.push_str(&format!(
-            "---[docs]({DOCS}{}.html)\n---@param props {}\n---@return {}\nfunction {kind}(props) end\n",
+            "---[docs]({DOCS_URL}{}.html)\n---@param props {}\n---@return {}\nfunction {kind}(props) end\n",
             page(kind),
             class(kind),
             if kind_bit(kind) & SURFACES != 0 { "Surface" } else { "Node" }
@@ -213,7 +212,7 @@ fn render_stub(header: &str, kinds: &[&str]) -> String {
 /// `lua-meta/nodes.lua`.
 fn nodes_lua() -> String {
     let percent: Vec<String> = (0..=100).map(|n| format!("\"{n}%\"")).collect();
-    let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS);
+    let mut header = NODES_HEADER.replace("{PERCENT}", &percent.join("|")).replace("{DOCS}", DOCS_URL);
     header = header.replace("{ALIGN}", &union(Align::NAMES)).replace("{BLEND}", &union(Blend::NAMES));
     header = header.replace("{EASING}", &union(&crate::layout::node::easing_names().collect::<Vec<_>>()));
     header = header.replace("{ANIMATABLE}", &Animatable::lua());

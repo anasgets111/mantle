@@ -170,10 +170,7 @@ fn check_lua_authored(value: &Value) -> Result<(), marshal::MarshalError> {
             marshal::check_integer(*i)?;
         }
         Value::String(s) => {
-            let len = s.as_bytes().len();
-            if len > marshal::MAX_STRING_BYTES {
-                return Err(marshal::MarshalError::StringTooLong { len });
-            }
+            marshal::check_string_len(s.as_bytes().len())?;
         }
         _ => {}
     }

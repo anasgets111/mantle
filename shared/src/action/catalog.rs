@@ -296,6 +296,11 @@ pub enum SignalName {
     Cont,
 }
 
+impl SignalName {
+    /// The wire spellings; `signal_names_match_the_wire_enum` keeps them in step with the variants.
+    pub const NAMES: &[&str] = &["TERM", "INT", "HUP", "QUIT", "USR1", "USR2", "KILL", "STOP", "CONT"];
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]

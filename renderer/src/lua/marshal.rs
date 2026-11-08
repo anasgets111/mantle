@@ -91,8 +91,13 @@ pub fn check_integer(value: i64) -> Result<i64, MarshalError> {
     }
 }
 
+pub fn check_string_len(len: usize) -> Result<(), MarshalError> {
+    if len <= MAX_STRING_BYTES { Ok(()) } else { Err(MarshalError::StringTooLong { len }) }
+}
+
 pub fn check_string(value: &str) -> Result<&str, MarshalError> {
-    if value.len() <= MAX_STRING_BYTES { Ok(value) } else { Err(MarshalError::StringTooLong { len: value.len() }) }
+    check_string_len(value.len())?;
+    Ok(value)
 }
 
 /// Refuses a key of a config sub-table (`padding`, `anchor`, a `session_process` spec, ...) that
