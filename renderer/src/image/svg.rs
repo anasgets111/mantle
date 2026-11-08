@@ -381,6 +381,24 @@ pub(super) mod tests {
     }
 
     #[test]
+    fn an_embedded_png_image_is_drawn() {
+        // Without resvg's `raster-images` the `<image>` parses but draws nothing, leaving it clear.
+        let dir = tempfile::tempdir().unwrap();
+        let png = dir.path().join("red.png");
+        let mut encoder = png::Encoder::new(std::fs::File::create(&png).unwrap(), 2, 2);
+        encoder.set_color(png::ColorType::Rgba);
+        encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 255].repeat(4)).unwrap();
+        let svg = dir.path().join("photo.svg");
+        let href = png.display();
+        let doc = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="{href}" width="2" height="2"/></svg>"#
+        );
+        std::fs::write(&svg, doc).unwrap();
+        let (pixels, ..) = rasterize_svg(&svg, 8, None, &FontDatabase::default()).unwrap();
+        assert!(pixels.as_chunks::<4>().0.iter().all(|px| *px == [255, 0, 0, 255]), "{pixels:?}");
+    }
+
+    #[test]
     fn a_gzipped_svgz_rasterizes_to_the_same_pixels_as_its_plaintext() {
         let dir = tempfile::tempdir().unwrap();
         let plain = dir.path().join("gradient.svg");
