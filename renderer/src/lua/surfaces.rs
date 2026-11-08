@@ -6,9 +6,9 @@
 
 use std::path::Path;
 
+use crate::layout::node::properties::closable;
 use crate::layout::{self, node::SurfaceSpec};
 use crate::lua::location::Site;
-use crate::lua::nodes::properties::closable;
 use crate::lua::{LoadOutput, Loader, LoaderError};
 
 /// Parses every declared root role and returns the roster. Field type errors are

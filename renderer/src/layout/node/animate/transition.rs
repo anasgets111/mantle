@@ -6,9 +6,9 @@ use mlua::Value;
 use super::easing::Easing;
 use crate::layout::node::input::required_duration;
 use crate::layout::node::prop::Prop;
+use crate::layout::node::properties::Property;
 use crate::layout::node::{LayoutError, invalid, preview_for_error, preview_str, value_as_f32};
 use crate::lua::luacats::{lua_shape, spelled};
-use crate::lua::nodes::properties::Property;
 
 // ADR-0181: how a `retain`ing image crosses from the picture it is holding to the one that has
 // just landed.

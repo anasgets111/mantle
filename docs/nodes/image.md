@@ -37,7 +37,7 @@ return { panel {
 
 `image` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop |
@@ -123,7 +123,7 @@ image {
 
 See also: [icon](icon.md), [shader](shader.md), [paint](../guide/paint.md), [animation](../guide/animation.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [transition](../../renderer/src/layout/node/animate/transition.rs),
 [shader stage](../../renderer/src/layout/image_shader/mod.rs), [decode](../../renderer/src/image/decode.rs),
 [animation](../../renderer/src/image/animation.rs).

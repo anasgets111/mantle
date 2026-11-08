@@ -45,7 +45,7 @@ Keyed workspace buttons from a capability: [workspaces cookbook](../cookbook/wor
 `list` takes the [common properties](index.md#common-properties), plus the ones below. It takes no
 [box properties](index.md#box-properties): wrap it in a `rect` or `column` for a background.
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `items` | `any[]\|Bound` | Empty | Array; bind a signal to rebuild on change. Missing or `nil` (a capability before its first push) is an empty list; a `nil` hole ends it. More than 10000 items without `limit` is an error |
@@ -151,5 +151,5 @@ local items = list {
 
 See also: [row and column](row-column.md), [signals](../guide/signals.md), [input: scroll](../guide/input.md#scroll).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [list parser](../../renderer/src/layout/node/list.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [list parser](../../renderer/src/layout/node/list.rs),
 [layout as row or column](../../renderer/src/layout/scene/solver.rs).

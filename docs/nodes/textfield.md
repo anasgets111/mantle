@@ -67,7 +67,7 @@ The image shows the empty search field and unfiltered list. Typing updates the l
 
 `textfield` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `font` | `string\|Bound` | The `fonts` chain | Family placed before the `fonts` chain. `""` raises; an unknown family falls back to the chain |
@@ -171,6 +171,6 @@ return { panel { id = "reply", layer = "top", anchor = { bottom = true },
 
 See also: [input](../guide/input.md), [list](list.md), [text](text.md), [surfaces: panel](../surfaces/panel.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [secure_submit](../../renderer/src/layout/node/spec.rs), [plain fields](../../renderer/src/wayland/input/keyboard/plain.rs),
 [focus](../../renderer/src/wayland/input/keyboard/focus.rs).

@@ -39,7 +39,7 @@ return row {
 `row` and `column` take the [common](index.md#common-properties) and
 [box](index.md#box-properties) properties, plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Laid out in order along the main axis. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
@@ -176,6 +176,6 @@ return header
 
 See also: [list](list.md), [rect](rect.md), [layout model](index.md#layout-model).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [layout solver](../../renderer/src/layout/scene/solver.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [layout solver](../../renderer/src/layout/scene/solver.rs),
 [spacing and alignment parsers](../../renderer/src/layout/node/style/mod.rs),
 [scroll](../../renderer/src/layout/scene/scroll.rs).

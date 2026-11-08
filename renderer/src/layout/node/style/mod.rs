@@ -198,7 +198,7 @@ pub(super) fn range_of(property: &str) -> (f32, f32) {
     if property == "scroll" {
         return (0.0, f32::MAX);
     }
-    crate::lua::nodes::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
+    fields::range(property).unwrap_or(if property == "margin" { (-8192.0, 8192.0) } else { (0.0, 8192.0) })
 }
 
 /// What an absent key in `property`'s `{ x, y }` or edge table means: the identity for that

@@ -78,7 +78,7 @@ dismisses it and `on_dismiss` clears the state.
 Beyond the [shared properties](index.md#properties-every-role-takes). Every field but `id`, `parent`,
 `on_dismiss`, `on_escape` and `reset_on_close` takes a signal.
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `id` | `string` | Required | The surface's identity across reloads, unique among surfaces. A `panel`'s or `lock`'s per-output instances are `"{id}@{output}"`; `output = "active"` keeps the bare `id` |

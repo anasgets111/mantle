@@ -10,41 +10,17 @@ use mlua::{Lua, Table, Value};
 use crate::layout::node::PropMap;
 use crate::lua::location::Site;
 
-pub(crate) mod properties;
+use crate::layout::node::properties;
 #[cfg(test)]
 mod stubs;
 
-pub(crate) use properties::range;
-use properties::{KINDS, Property, kind_bit, kind_of, properties, rows_named};
+use properties::{KINDS, accepted_properties, kind_bit, kind_of, row_in};
+#[cfg(test)]
+use properties::{accepted, refused};
 
 /// The node kinds, one global constructor each.
 fn node_kinds() -> impl Iterator<Item = &'static str> {
     KINDS.iter().copied()
-}
-
-/// The row for `property`, whose `&'static str` name is what a [`PropMap`] keys by.
-fn row_in(bit: u16, property: &str) -> Option<&'static Property> {
-    rows_named(property).iter().copied().find(|row| row.kinds & bit != 0)
-}
-
-/// [`row_in`] for a caller holding only the kind.
-pub(crate) fn accepted(kind: &str, property: &str) -> Option<&'static Property> {
-    row_in(kind_bit(kind)?, property)
-}
-
-/// Whether `kind` declares `property` only to refuse it, as a `lock` does `width`.
-pub(crate) fn refused(kind: &str, property: &str) -> bool {
-    let bit = kind_bit(kind).unwrap_or(0);
-    rows_named(property).iter().any(|row| row.refused && row.kinds & bit != 0)
-}
-
-/// Accepted properties, sorted for errors.
-fn accepted_properties(kind: &str) -> Vec<&'static str> {
-    let bit = kind_bit(kind).unwrap_or(0);
-    let mut names: Vec<&'static str> = properties().filter(|row| row.kinds & bit != 0).map(|row| row.name).collect();
-    names.sort_unstable();
-    names.dedup();
-    names
 }
 
 /// Lua node table tagged with `kind`, carrying other properties unchanged. Not the final scene

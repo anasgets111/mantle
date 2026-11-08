@@ -131,7 +131,7 @@ impl CaretStyle {
 pub struct Multiline {
     pub min_lines: usize,
     pub max_lines: Option<usize>,
-    pub submit: crate::wayland::SubmitKey,
+    pub submit: crate::layout::node::SubmitKey,
 }
 
 impl Multiline {
@@ -242,7 +242,7 @@ pub enum PaintStyle {
         /// Grapheme-cluster cap on the draft; `None` is unlimited.
         max_length: Option<usize>,
         /// What Escape does in a plain field; read here so a bad name fails the pass.
-        escape: crate::wayland::Escape,
+        escape: crate::layout::node::Escape,
         /// `None` is one line.
         multiline: Option<Multiline>,
     },
@@ -581,7 +581,7 @@ mod tests {
             Ok(_) => unreachable!(),
             Err(err) => Err(err.to_string()),
         };
-        use crate::wayland::SubmitKey::{CtrlReturn, Return};
+        use crate::layout::node::SubmitKey::{CtrlReturn, Return};
         assert_eq!(read("multiline = false"), Ok(None));
         assert_eq!(read("multiline = true"), Ok(Some(Multiline { min_lines: 1, max_lines: None, submit: CtrlReturn })));
         let set = read("multiline = true, min_lines = 2, max_lines = 4, submit_key = 'return'");

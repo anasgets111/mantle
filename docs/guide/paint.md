@@ -82,7 +82,7 @@ colours and no short `#RGB` form.
 
 ## Box properties
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `background` | `Color\|Gradient\|BackgroundLayer[]\|Bound` | None | A colour, a [gradient](#gradients) or a list of [layers](#background-layers). Absent draws nothing; `"#00000000"` is an explicit transparent fill. Colour layers tween under `animate`; a gradient snaps |
@@ -1141,7 +1141,7 @@ blur does not fade with `opacity`, so a fading scrim would blur at full strength
 
 See also: [nodes](../nodes/index.md), [surfaces](../surfaces/index.md), [animation](animation.md), [input](input.md#hit-testing), [glossary](../glossary.md).
 
-Source: [allowlist](../../renderer/src/lua/nodes/properties.rs),
+Source: [allowlist](../../renderer/src/layout/node/properties.rs),
 [parsers](../../renderer/src/layout/node/style/mod.rs),
 [effect parsers](../../renderer/src/layout/node/style/effect.rs),
 [paint style](../../renderer/src/layout/node/paint_style.rs),

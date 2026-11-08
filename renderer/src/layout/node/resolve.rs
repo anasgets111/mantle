@@ -62,8 +62,7 @@ pub(crate) fn resolve_declared(
     }
     // `effect` is every kind's row but `backdrop` is a box's, and a key's kind is no row's.
     if let Some(Value::Table(effect)) = properties.get("effect")
-        && crate::lua::nodes::properties::kind_bit(kind)
-            .is_some_and(|bit| bit & crate::lua::nodes::properties::BOX == 0)
+        && fields::kind_bit(kind).is_some_and(|bit| bit & fields::BOX == 0)
     {
         let input = effect.get::<mlua::Table>("shader").and_then(|shader| shader.get::<mlua::LuaString>("input"));
         for (key, reads) in [

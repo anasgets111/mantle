@@ -5,7 +5,6 @@
 use shared::debug;
 
 use super::*;
-use crate::layout::node::prop::keywords;
 use crate::lua::call_logged;
 
 mod edit;
@@ -16,33 +15,9 @@ mod rows;
 mod secure;
 pub(in crate::wayland::input) use edit::{EditHistory, Span, Unit, extend_by_unit, unit_range};
 pub(in crate::wayland) use focus::{ControlKind, FocusedControl, secure_target_at};
+pub(crate) use on_key::HeldPress;
 pub(super) use on_key::take_press;
-pub(crate) use on_key::{HeldPress, KeyPress, KeyRelease};
 pub(in crate::wayland) use secure::SecureFocus;
-
-keywords! {
-    /// What Escape does in a plain `textfield`; a `secure_submit` field always scrubs and stays armed.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Escape {
-        /// Empty the draft, then leave the field if `on_cancel` is set.
-        Clear,
-        /// Keep the draft and leave the field.
-        Blur,
-        /// Keep the draft and the focus; the key goes up through `on_key` and `on_escape`.
-        Pass,
-    }
-}
-
-keywords! {
-    /// The chord that submits a `multiline` field; the other Return inserts a newline.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum SubmitKey {
-        /// Ctrl+Return submits; Return inserts a newline.
-        CtrlReturn = "ctrl+return",
-        /// Return submits; Shift+Return inserts a newline.
-        Return,
-    }
-}
 
 /// Innermost pressed `textfield` (ADR-0092): masked fields address a capability and never Lua
 /// (ADR-0005); plain fields send edits to Lua.

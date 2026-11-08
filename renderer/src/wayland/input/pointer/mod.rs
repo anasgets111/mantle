@@ -7,7 +7,7 @@ use smithay_client_toolkit::seat::pointer::{BTN_BACK, BTN_EXTRA, BTN_FORWARD, BT
 use super::keyboard::{FieldTarget, Span, Unit, extend_by_unit, unit_range};
 use super::*;
 use crate::layout::node::fields::pointer;
-use crate::layout::node::prop::{Keyword, keywords};
+use crate::layout::node::prop::Keyword;
 use crate::lua::call_logged;
 use crate::lua::marshal::{modifiers_table, rect_table};
 
@@ -50,28 +50,6 @@ fn pointer_button_name(code: u32) -> Option<&'static str> {
         _ => None,
     }
     .map(Keyword::name)
-}
-
-keywords! {
-    /// The mouse buttons `on_click` reports.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum MouseButton {
-        Left,
-        Right,
-        Middle,
-        Back,
-        Forward,
-    }
-}
-
-keywords! {
-    /// Where an `on_drag` call falls in its drag (ADR-0116).
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum DragPhase {
-        Start,
-        Move,
-        End,
-    }
 }
 
 /// Pointer input to `on_click` (ADR-0050); dispatch is delegated by `delegate_dispatch2!(App)`.

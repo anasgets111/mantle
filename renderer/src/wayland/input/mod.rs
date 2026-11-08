@@ -8,8 +8,6 @@ mod clipboard;
 mod inject;
 pub(in crate::wayland) mod keyboard;
 pub(super) use clipboard::{ClipboardSource, PendingPaste};
-pub(crate) use keyboard::{Escape, KeyPress, KeyRelease, SubmitKey};
-pub(crate) use pointer::{DragPhase, MouseButton};
 mod pointer;
 mod text_input;
 pub(super) use text_input::TextInput;

@@ -49,8 +49,8 @@ use crate::layout::instance::{
     OutputGeometry, SurfaceInstance, expand_instances, is_instance_of, reconcile_instances, warn_unmatched_outputs,
 };
 use crate::layout::node::{
-    self, ConstraintAdjustment, LayerKind, PanelSpec, PopupAnchor, PopupSpec, SizeHint, SizeMode, SurfaceSpec,
-    WindowSpec,
+    self, ConstraintAdjustment, DragPhase, Escape, KeyPress, KeyRelease, LayerKind, MouseButton, PanelSpec,
+    PopupAnchor, PopupSpec, SizeHint, SizeMode, SubmitKey, SurfaceSpec, WindowSpec,
 };
 use crate::socket::RendererClient;
 use crate::text::atlas::TextPainter;
@@ -65,7 +65,6 @@ mod idle_profile;
 mod input;
 #[cfg(test)]
 pub(crate) use input::apply_hover_write;
-pub(crate) use input::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 mod layer;
 mod lock;
 mod main_loop;

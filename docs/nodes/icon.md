@@ -33,7 +33,7 @@ return app_badge
 
 `icon` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `name` | `string\|Bound` | `""` | An icon theme name (`"firefox"`, `"audio-volume-high-symbolic"`), looked up at the drawn size, or an image path (absolute, or `~/` under `$HOME`), used as is. `""` or a name the theme lacks draws nothing |
@@ -71,6 +71,6 @@ change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP,
 
 See also: [image](image.md), [capabilities](../capabilities/index.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [theme lookup](../../renderer/src/image/icons.rs), [decode](../../renderer/src/image/decode.rs),
 [icon draw](../../renderer/src/layout/paint/build.rs).

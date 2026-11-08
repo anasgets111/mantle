@@ -381,7 +381,7 @@ pub(crate) mod tests {
     }
 
     /// Minimal loader for tests that do not `require`; evaluates `setup` above a `panel` and reads
-    /// back a global. A node would reject a probe key no `nodes::properties` field declares.
+    /// back a global. A node would reject a probe key no `node::properties` field declares.
     pub(crate) fn probe<T: mlua::FromLua>(loader: &Loader, setup: &str, name: &str) -> T {
         loader.evaluate(&format!("{setup}\nreturn panel {{ id = \"bar\", layer = \"top\" }}")).unwrap();
         loader.lua().globals().get(name).unwrap()

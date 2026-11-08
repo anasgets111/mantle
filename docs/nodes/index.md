@@ -171,7 +171,7 @@ The pointer handlers `on_click`, `on_double_click`, `on_drag`, `on_wheel` and `s
 clicks: the innermost node under the pointer with a handler for the event wins, and a node without
 one lets the event through to the node around it ([pointer](../guide/input.md#pointer)).
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `width` | `Length\|Bound`, `[0, 8192]` | Content | See [sizes](#sizes) |
@@ -361,7 +361,7 @@ See also: [surfaces](../surfaces/index.md) (where a tree lives), [signals](../gu
 (live properties), [paint](../guide/paint.md), [animation](../guide/animation.md),
 [input](../guide/input.md), [capabilities](../capabilities/index.md).
 
-Source: [node vocabulary](../../renderer/src/lua/nodes/properties.rs),
+Source: [node vocabulary](../../renderer/src/layout/node/properties.rs),
 [layout solver](../../renderer/src/layout/scene/solver.rs),
 [pass](../../renderer/src/layout/scene/pass.rs), [reconciliation](../../renderer/src/layout/scene/children.rs),
 [property resolution](../../renderer/src/layout/node/resolve.rs),

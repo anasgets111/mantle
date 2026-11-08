@@ -42,7 +42,7 @@ void main() {
 
 `shader` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `source` | `string\|Bound` | `""` | Absolute, or `~/` under `$HOME`, `.frag` path; relative is refused, `""` draws nothing. Compiling, errors and reloads: [the .frag file](#the-frag-file) |
@@ -136,6 +136,6 @@ void main() {
 
 See also: [image transitions](image.md#transition), [animation](../guide/animation.md), [paint](../guide/paint.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [params](../../renderer/src/layout/node/animate/transition.rs), [shader stage](../../renderer/src/layout/image_shader/mod.rs),
 [`.frag` reloads](../../supervisor/src/watcher.rs).

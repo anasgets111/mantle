@@ -1,5 +1,5 @@
 //! A node property's value type: the parser the engine reads it with and, through [`LuaType`], the
-//! type `lua-meta` declares for it. `lua::nodes::properties` declares every property as a
+//! type `lua-meta` declares for it. `layout::node::properties` declares every property as a
 //! [`Field`] of one, so the stub cannot name a type the parser does not read. The value types
 //! particular to one property live beside the code that uses them; the shared ones are here.
 
@@ -11,9 +11,9 @@ use super::{
     LayoutError, PropMap, Rgba, checked_string, invalid, lua_hex_color, parse_hex_color, preview_for_error,
     preview_str, reject_signal_in_structural_field, value_as_f32,
 };
+use crate::layout::node::properties::{Absent, Property, kind_of};
 use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal::{number_word, out_of_range};
-use crate::lua::nodes::properties::{Absent, Property, kind_of};
 use crate::lua::signal::{self, is_signal};
 
 pub(crate) trait Prop: LuaType {

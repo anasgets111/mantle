@@ -598,7 +598,7 @@ pub(crate) mod tests {
             align: TextAlign::Start,
             disabled: false,
             max_length: None,
-            escape: crate::wayland::Escape::Clear,
+            escape: crate::layout::node::Escape::Clear,
             multiline: None,
         }
     }
@@ -697,7 +697,7 @@ pub(crate) mod tests {
         let text = "hello\nhello";
         let mut paint = field_paint("", face(14.0, 0.0));
         let PaintStyle::TextField { multiline, .. } = &mut paint else { unreachable!() };
-        let submit = crate::wayland::SubmitKey::CtrlReturn;
+        let submit = crate::layout::node::SubmitKey::CtrlReturn;
         *multiline = Some(crate::layout::node::Multiline { min_lines: 1, max_lines: None, submit });
         let line = 14.0 * 1.2;
         let mut field = ResolvedNode::test("textfield", (10.0, 0.0, 200.0, line), Vec::new());

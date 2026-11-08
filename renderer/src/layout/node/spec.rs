@@ -410,7 +410,7 @@ mod tests {
     fn a_lock_without_an_id_or_with_a_property_it_denies_is_refused_by_name() {
         let lua = signal_lua();
         // `output` and `anchor` never reach `lock_spec` from a config: they are not on a `lock`
-        // field in `nodes::properties`, so `deserialize_lua_table` refuses them first
+        // field in `node::properties`, so `deserialize_lua_table` refuses them first
         // (`a_lock_property_that_is_not_even_on_the_kind_is_refused_before_lock_spec_sees_it`).
         // The denied ones here are ones a lock legitimately has a row for and refuses anyway.
         for (fields, property) in [

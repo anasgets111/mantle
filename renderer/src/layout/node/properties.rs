@@ -1,6 +1,6 @@
 //! Every property a node kind accepts, declared as a typed [`Field`]: the one table the name check,
 //! the parsers, `lua-meta/{nodes,surfaces}.lua` and the docs' property tables all read
-//! (`stubs.rs` renders the last two). A field's Rust type is how the engine parses it
+//! (`lua::nodes::stubs` renders the last two). A field's Rust type is how the engine parses it
 //! ([`Prop::read`]) and what the stubs declare ([`LuaType::lua`]); its `///` block is the stub's
 //! words and, in a `Book:` paragraph, the docs table's cell; a group's `///` block opens its kind's
 //! constructor stub.
@@ -11,6 +11,7 @@
 
 use Absent::{Bool, Choice, Lua, Number, Prose, Required, Unset};
 
+use super::events::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use crate::image::Fit;
 use crate::layout::hit::LogicalPoint;
 use crate::layout::node::prop::{
@@ -28,7 +29,6 @@ use crate::layout::node::{
 use crate::lua::VirtualNode;
 use crate::lua::luacats::{LuaType, Modifiers, Spelling, fun, spelling};
 use crate::text::snap::LogicalRect;
-use crate::wayland::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use mlua::Value;
 
 /// What an absent key means.
@@ -751,6 +751,31 @@ props! {
 /// Every row, in declaration order: what the name check, the lookups below and the stubs read.
 pub(crate) fn properties() -> impl Iterator<Item = &'static Property> + Clone {
     GROUPS.iter().flat_map(|(_, _, rows)| rows.iter())
+}
+
+/// The row for `property`, whose `&'static str` name is what a [`super::PropMap`] keys by.
+pub(crate) fn row_in(bit: u16, property: &str) -> Option<&'static Property> {
+    rows_named(property).iter().copied().find(|row| row.kinds & bit != 0)
+}
+
+/// [`row_in`] for a caller holding only the kind.
+pub(crate) fn accepted(kind: &str, property: &str) -> Option<&'static Property> {
+    row_in(kind_bit(kind)?, property)
+}
+
+/// Whether `kind` declares `property` only to refuse it, as a `lock` does `width`.
+pub(crate) fn refused(kind: &str, property: &str) -> bool {
+    let bit = kind_bit(kind).unwrap_or(0);
+    rows_named(property).iter().any(|row| row.refused && row.kinds & bit != 0)
+}
+
+/// Accepted properties, sorted for errors.
+pub(crate) fn accepted_properties(kind: &str) -> Vec<&'static str> {
+    let bit = kind_bit(kind).unwrap_or(0);
+    let mut names: Vec<&'static str> = properties().filter(|row| row.kinds & bit != 0).map(|row| row.name).collect();
+    names.sort_unstable();
+    names.dedup();
+    names
 }
 
 /// The `///` block of the group whose kinds are exactly `bit`, which opens that kind's constructor

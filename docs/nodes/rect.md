@@ -41,7 +41,7 @@ The badge comes second, so it paints over the icon.
 `rect` takes the [common](index.md#common-properties) and [box](index.md#box-properties)
 properties, plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `children` | `Node[]\|Bound` | None | Array of node tables, up to 10000; a `nil` or `false` entry is an error. Stacked in order: later children paint over earlier ones. Bind a signal of an array to [switch views](index.md#switching-views-with-ids) |
@@ -96,5 +96,5 @@ their own `align_h`.
 
 See also: [row and column](row-column.md), [paint](../guide/paint.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [children](../../renderer/src/layout/node/spec.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [children](../../renderer/src/layout/node/spec.rs),
 [box paint](../../renderer/src/layout/node/paint_style.rs).

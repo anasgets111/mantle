@@ -113,10 +113,10 @@ and otherwise fails on a stale file.
 | Output | Source |
 | --- | --- |
 | `lua-meta/mantle.lua` | `shared/src/state/` payloads and `shared/src/action/` actions; doc comments become descriptions. Test: `supervisor/src/stubs.rs` |
-| `lua-meta/nodes.lua`, `surfaces.lua` | Properties: `renderer/src/lua/nodes/properties.rs`. Nested fields and keys: `lua_shape!` beside each parser. Composite types: `LuaType`. Alias names and prose: `nodes/stubs.rs`, which holds the test; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
+| `lua-meta/nodes.lua`, `surfaces.lua` | Properties: `renderer/src/layout/node/properties.rs`. Nested fields and keys: `lua_shape!` beside each parser. Composite types: `LuaType`. Alias names and prose: `nodes/stubs.rs`, which holds the test; `every_type_the_stubs_declare_is_accepted_by_the_engine` probes each type |
 | `lua-meta/globals.lua`, `signals.lua` | Signatures and docs registered through `lua::define` and `lua::luacats`; classes beside their Rust types; shared `Signal<T>` and `Bound` header and the test in `renderer/src/lua/mod.rs` |
 | `docs/capabilities/<name>.md` | Rust capability types and `docs/capabilities/intro/<name>.md` |
-| Property tables in `docs/{nodes,surfaces}/*.md`, `docs/guide/paint.md` | `renderer/src/lua/nodes/properties.rs`; prose outside the generated markers is hand-written |
+| Property tables in `docs/{nodes,surfaces}/*.md`, `docs/guide/paint.md` | `renderer/src/layout/node/properties.rs`; prose outside the generated markers is hand-written |
 
 `renderer/build.rs` derives config-check samples from `shared/src/schema/` into Cargo's `OUT_DIR`.
 They are embedded in the renderer, never checked in or touched by `just stubs`.

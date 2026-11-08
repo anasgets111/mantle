@@ -526,7 +526,7 @@ impl Scene {
 /// Admits all four root roles as containers with one `child` tree, including a lock tree
 /// before the compositor has handed out a surface (ADR-0040 decision 1, ADR-0052 decision 2).
 fn ensure_supported_kind(kind: &str) -> Result<(), LayoutError> {
-    if crate::lua::nodes::properties::KINDS.contains(&kind) {
+    if crate::layout::node::properties::KINDS.contains(&kind) {
         Ok(())
     } else {
         Err(LayoutError::UnsupportedNodeKind(kind.to_string()))

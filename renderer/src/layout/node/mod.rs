@@ -8,10 +8,12 @@
 mod animate;
 mod content;
 pub(crate) mod corner;
+mod events;
 pub(crate) mod input;
 mod list;
 pub(crate) mod melt;
 mod paint_style;
+pub(crate) mod properties;
 pub(crate) mod shape;
 mod vector_path;
 pub use shape::Shape;
@@ -90,10 +92,11 @@ use mlua::{Lua, Value};
 use crate::lua::location::Site;
 use crate::lua::luacats::{LuaType, spelled};
 use crate::lua::marshal;
-pub(crate) use crate::lua::nodes::properties::{self as fields, Property};
 use crate::lua::signal;
 use crate::text::snap::LogicalRect;
+pub(crate) use events::{DragPhase, Escape, KeyPress, KeyRelease, MouseButton, SubmitKey};
 use prop::Prop;
+pub(crate) use properties::{self as fields, Property};
 use std::rc::Rc;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -560,7 +563,7 @@ fn parse_hex_color(property: &str, s: &str) -> Result<Rgba, LayoutError> {
 /// because `get_layer_surface` fixes them at creation, a popup's `parent` because `get_popup` pins
 /// one (ADR-0051 decision 1); what a live request can change stays bound (ADR-0044 decision 1).
 pub(crate) fn is_structural_property(kind: &str, property: &str) -> bool {
-    crate::lua::nodes::accepted(kind, property).is_some_and(|row| row.raw)
+    properties::accepted(kind, property).is_some_and(|row| row.raw)
 }
 
 /// A test's property map, built the way production builds one: through the deserializer, which is

@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use super::RendererClient;
+use crate::layout::node::properties::closable;
 use crate::lua;
-use crate::lua::nodes::properties::closable;
 
 impl RendererClient {
     /// `shown` is every instance with a role object this turn. A declared surface shown last call

@@ -141,7 +141,7 @@ fn drop_refused_values(
     if lua.app_data_ref::<DroppedValues>().is_none() {
         return Ok(false);
     }
-    let bit = crate::lua::nodes::properties::kind_bit(kind).unwrap_or(0);
+    let bit = crate::layout::node::properties::kind_bit(kind).unwrap_or(0);
     // Sorted, so which values a report names comes from the config, not the hasher.
     let mut keys: Vec<&'static str> = properties.keys().copied().collect();
     keys.sort_unstable();
@@ -153,7 +153,7 @@ fn drop_refused_values(
         {
             continue;
         }
-        let rows = crate::lua::nodes::properties::rows_named(name)
+        let rows = crate::layout::node::properties::rows_named(name)
             .iter()
             .filter(|row| row.kinds & bit != 0 && !row.raw && !row.refused);
         // Every row: a root's own row and the common one both parse its `width`.

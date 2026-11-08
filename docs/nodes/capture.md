@@ -57,7 +57,7 @@ confirm these are separate requirements. Non-Hyprland window capture remains on 
 
 `capture` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `output` | `string\|Bound` | `""` | Connector name, e.g. `"DP-1"`; `""` draws nothing. An unknown name draws nothing and warns once. Changing it starts a fresh capture |
@@ -107,5 +107,5 @@ and logs one warning.
 
 See also: [image](image.md), [surfaces](../surfaces/index.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [capture](../../renderer/src/wayland/capture/mod.rs).

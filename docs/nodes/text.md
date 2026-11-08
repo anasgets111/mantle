@@ -57,7 +57,7 @@ return column { width = 320, padding = 16, spacing = 10, radius = 12,
 
 `text` takes the [common properties](index.md#common-properties), plus:
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `content` | `string\|TextRun[]\|Bound` | `""` | A string, or an array of up to 10000 [runs](#runs), drawn as one paragraph |
@@ -183,6 +183,6 @@ ellipsis; it never merges content from later lines into the preview.
 
 See also: [textfield](textfield.md), [fonts](../guide/scripting.md#fonts), [icon](icon.md).
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [content parsers](../../renderer/src/layout/node/content.rs),
 [measure](../../renderer/src/layout/scene/solver.rs), [line height](../../renderer/src/text/shaping/mod.rs),
 [link hit testing](../../renderer/src/layout/hit.rs).

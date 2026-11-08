@@ -4,7 +4,7 @@ Experimental vector leaf with no intrinsic size. `width` and `height` define its
 commands use logical pixels relative to the box's top-left corner. Resizing does not scale
 coordinates. Use the existing `scale` transform to scale a drawing.
 
-<!-- Generated from renderer/src/lua/nodes/properties.rs by `just stubs`: edit the table there. -->
+<!-- Generated from renderer/src/layout/node/properties.rs by `just stubs`: edit the table there. -->
 | Property | Type | Default | Behaviour |
 | :--- | :--- | :--- | :--- |
 | `commands` | `PathCommand[]\|Bound` | `{}` | Up to 4096 commands. Each has op M/L/Q/C/A/corner/Z and points containing 2/2/4/6/5/2/0 numbers; a corner also takes `radius` and `corner_smoothing`. Begin each subpath with M or A. Coordinates are in [-8192, 8192]; arc angles need only be finite |
@@ -225,4 +225,4 @@ return path {
 }
 ```
 
-Source: [vocabulary](../../renderer/src/lua/nodes/properties.rs), [vector path](../../renderer/src/layout/node/vector_path.rs).
+Source: [vocabulary](../../renderer/src/layout/node/properties.rs), [vector path](../../renderer/src/layout/node/vector_path.rs).

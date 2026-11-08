@@ -5,23 +5,6 @@ use xkbcommon::xkb;
 
 use super::*;
 use crate::layout::node::fields::common;
-use crate::lua::luacats::spelled;
-
-/// One key press as `on_key` receives it: `---@class KeyPress` in `surfaces.lua`.
-pub(crate) struct KeyPress {
-    name: String,
-    text: Option<String>,
-    /// `(ctrl, shift, alt, super)`.
-    modifiers: [bool; 4],
-    /// `None` for a release, which has no `repeat` field.
-    repeat: Option<bool>,
-}
-
-/// One key release as `on_key_release` receives it: a [`KeyPress`] without `repeat`.
-pub(crate) struct KeyRelease(KeyPress);
-
-spelled!(KeyPress => "KeyPress");
-spelled!(KeyRelease => "KeyRelease");
 
 impl KeyPress {
     pub(super) fn new(event: &KeyEvent, modifiers: [bool; 4], repeat: Option<bool>) -> Self {
@@ -37,25 +20,6 @@ impl KeyPress {
             keysym => xkb::keysym_get_name(keysym),
         };
         Self { name, text: text.map(str::to_string), modifiers, repeat }
-    }
-}
-
-impl IntoLua for KeyPress {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
-        let table = lua.create_table()?;
-        table.set("name", self.name)?;
-        table.set("text", self.text)?;
-        table.set("modifiers", crate::lua::marshal::modifiers_table(lua, self.modifiers)?)?;
-        if let Some(repeat) = self.repeat {
-            table.set("repeat", repeat)?;
-        }
-        Ok(Value::Table(table))
-    }
-}
-
-impl IntoLua for KeyRelease {
-    fn into_lua(self, lua: &Lua) -> mlua::Result<Value> {
-        self.0.into_lua(lua)
     }
 }
 
