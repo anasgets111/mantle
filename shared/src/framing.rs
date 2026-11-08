@@ -9,8 +9,6 @@
 //! heap stays on glibc's free lists for the life of the session (a `malloc_trim` returned 4.5% of
 //! one), so an unscrubbed copy is not short-lived.
 
-use std::io::Read as _;
-
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use thiserror::Error;
@@ -60,14 +58,9 @@ fn frame_len(prefix: [u8; 4]) -> Result<usize, FramingError> {
     Ok(len)
 }
 
-/// Scrubbing storage for a payload: sized up front when small, empty (so it grows as bytes arrive) when not.
-// ponytail: above SMALL_FRAME_LEN growth frees unscrubbed blocks; no secret is that large.
+/// Bounded read storage, even when a peer announces a large frame and sends nothing.
 fn payload_buf(len: usize) -> Zeroizing<Vec<u8>> {
-    Zeroizing::new(if len <= SMALL_FRAME_LEN { vec![0; len] } else { Vec::new() })
-}
-
-fn truncated() -> FramingError {
-    std::io::Error::from(std::io::ErrorKind::UnexpectedEof).into()
+    Zeroizing::new(vec![0; len.min(SMALL_FRAME_LEN)])
 }
 
 /// Writes a 4-byte big-endian length prefix followed by `payload`, then flushes so a buffered
@@ -91,8 +84,16 @@ pub async fn read_frame<R: AsyncRead + Unpin>(reader: &mut R) -> Result<Vec<u8>,
     let mut payload = payload_buf(len);
     if len <= SMALL_FRAME_LEN {
         reader.read_exact(&mut payload).await?;
-    } else if (&mut *reader).take(len as u64).read_to_end(&mut payload).await? < len {
-        return Err(truncated());
+    } else {
+        let mut received = crate::SecureBuffer::default();
+        let mut remaining = len;
+        while remaining != 0 {
+            let count = remaining.min(payload.len());
+            reader.read_exact(&mut payload[..count]).await?;
+            received.push_bytes(&payload[..count]);
+            remaining -= count;
+        }
+        return Ok(received.into_bytes());
     }
     // Moving the allocation out leaves an empty `Vec` to drop; the bytes travel on to the caller.
     Ok(std::mem::take(&mut *payload))
@@ -115,8 +116,16 @@ pub fn read_frame_blocking(mut reader: impl std::io::Read) -> Result<Vec<u8>, Fr
     let mut payload = payload_buf(len);
     if len <= SMALL_FRAME_LEN {
         reader.read_exact(&mut payload)?;
-    } else if (&mut reader).take(len as u64).read_to_end(&mut payload)? < len {
-        return Err(truncated());
+    } else {
+        let mut received = crate::SecureBuffer::default();
+        let mut remaining = len;
+        while remaining != 0 {
+            let count = remaining.min(payload.len());
+            reader.read_exact(&mut payload[..count])?;
+            received.push_bytes(&payload[..count]);
+            remaining -= count;
+        }
+        return Ok(received.into_bytes());
     }
     Ok(std::mem::take(&mut *payload))
 }

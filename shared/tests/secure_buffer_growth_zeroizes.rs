@@ -123,23 +123,56 @@ fn decoding_a_secret_never_leaks_plaintext_to_freed_memory() {
     assert!(!LEAK_FOUND.load(Ordering::SeqCst), "decoding freed a block holding a plaintext prefix");
 }
 
-/// `read_frame` reads a small frame into one up-front buffer; growing from empty would free blocks
-/// holding a prefix of the password frame.
 #[test]
 fn reading_a_secret_frame_never_leaks_plaintext_to_freed_memory() {
     let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
     let _serial = SERIAL.lock().unwrap();
-    LEAK_FOUND.store(false, Ordering::SeqCst);
     let message = shared::PamMessage::Response { secret: SECRET.as_bytes().to_vec() };
     let payload = serde_json::to_vec(&message).unwrap();
-    let mut frame = (payload.len() as u32).to_be_bytes().to_vec();
-    frame.extend_from_slice(&payload);
-    let _ = PAYLOAD.set(payload);
+    let _ = PAYLOAD.set(payload.clone());
+    for len in [payload.len(), shared::framing::SMALL_FRAME_LEN * 3 + 1] {
+        let mut frame = (len as u32).to_be_bytes().to_vec();
+        frame.extend(payload.iter().copied().cycle().take(len));
+        for complete in [true, false] {
+            let wire = if complete { &frame[..] } else { &frame[..frame.len() - 1] };
+            for blocking in [false, true] {
+                LEAK_FOUND.store(false, Ordering::SeqCst);
+                WATCHING.store(true, Ordering::SeqCst);
+                let result = if blocking {
+                    shared::framing::read_frame_blocking(wire)
+                } else {
+                    runtime.block_on(shared::framing::read_frame(&mut &wire[..]))
+                };
+                let truncated = matches!(&result, Err(shared::framing::FramingError::Io(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof);
+                let read = result.map(zeroize::Zeroizing::new);
+                let succeeded = read.is_ok();
+                let matches = read.as_ref().is_ok_and(|read| read.as_slice() == &frame[4..]);
+                drop(read);
+                WATCHING.store(false, Ordering::SeqCst);
 
-    WATCHING.store(true, Ordering::SeqCst);
-    let mut read = runtime.block_on(shared::framing::read_frame(&mut &frame[..])).unwrap();
-    zeroize::Zeroize::zeroize(&mut read);
-    WATCHING.store(false, Ordering::SeqCst);
-
-    assert!(!LEAK_FOUND.load(Ordering::SeqCst), "read_frame freed a block holding a plaintext prefix of the frame");
+                assert_eq!(succeeded, complete, "len={len}, blocking={blocking}");
+                assert_eq!(truncated, !complete, "len={len}, blocking={blocking}");
+                if complete {
+                    assert!(matches, "len={len}, blocking={blocking}");
+                }
+                assert!(
+                    !LEAK_FOUND.load(Ordering::SeqCst),
+                    "read_frame freed plaintext: len={len}, blocking={blocking}, complete={complete}"
+                );
+            }
+        }
+        let (_keep_open, pending) = tokio::io::duplex(1);
+        let mut reader = tokio::io::AsyncReadExt::chain(&frame[..frame.len() - 1], pending);
+        LEAK_FOUND.store(false, Ordering::SeqCst);
+        WATCHING.store(true, Ordering::SeqCst);
+        let mut read = Box::pin(shared::framing::read_frame(&mut reader));
+        let poll =
+            std::future::Future::poll(read.as_mut(), &mut std::task::Context::from_waker(std::task::Waker::noop()));
+        let pending = poll.is_pending();
+        drop(poll);
+        drop(read);
+        WATCHING.store(false, Ordering::SeqCst);
+        assert!(pending, "the peer kept its incomplete frame open: len={len}");
+        assert!(!LEAK_FOUND.load(Ordering::SeqCst), "cancelling read_frame freed plaintext: len={len}");
+    }
 }

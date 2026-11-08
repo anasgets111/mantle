@@ -106,11 +106,16 @@ impl SecureBuffer {
     pub fn expose_secret(&self) -> &[u8] {
         &self.bytes
     }
+
+    /// Transfers scrubbing responsibility to the receiver without copying the secret.
+    pub(crate) fn into_bytes(mut self) -> Vec<u8> {
+        std::mem::take(&mut self.bytes)
+    }
 }
 
 /// `#[serde(deserialize_with)]` for a secret byte field. Serde's own `Vec<u8>` grows by
 /// reallocating, freeing plaintext prefixes, and drops a half-decoded vector unscrubbed when a
-/// later element fails; this collects into a [`SecureBuffer`] and copies out at the exact length.
+/// later element fails; this collects into a [`SecureBuffer`] and transfers the finished allocation.
 pub fn deserialize_secret<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
     struct Secret;
     impl<'de> serde::de::Visitor<'de> for Secret {
@@ -125,7 +130,7 @@ pub fn deserialize_secret<'de, D: serde::Deserializer<'de>>(deserializer: D) -> 
             while let Some(byte) = seq.next_element::<u8>()? {
                 buffer.push_bytes(&[byte]);
             }
-            Ok(buffer.expose_secret().to_vec())
+            Ok(buffer.into_bytes())
         }
     }
     deserializer.deserialize_seq(Secret)
