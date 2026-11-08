@@ -28,7 +28,7 @@ use super::{
     MAX_APP_NAME_BYTES, MAX_SUMMARY_BYTES, NOTIFICATIONS_BUS_NAME, NOTIFICATIONS_CAPABILITIES,
     NOTIFICATIONS_OBJECT_PATH, Notification, NotificationsState, Urgency,
 };
-use crate::capabilities::clock::controller::epoch_seconds;
+use crate::capabilities::epoch_seconds;
 use crate::capabilities::truncate_utf8_bytes;
 
 struct NotificationsQueueState {

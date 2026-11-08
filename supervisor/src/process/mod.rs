@@ -15,6 +15,18 @@ use tokio::process::{Child, Command};
 
 pub mod registry;
 
+/// Path this process re-execs to reach a worker branch of `main`: the PAM worker or the NVML query.
+///
+/// The magic link, not `current_exe()`, and the difference is a session that cannot be unlocked.
+/// `current_exe()` *reads* the link into a pathname, and the kernel appends " (deleted)" once the
+/// binary is replaced, so the spawn fails with `ENOENT`. Executing the link resolves to the inode
+/// this process already pins, which Linux supports after unlinking. A `pacman -Syu` or `cargo build`
+/// over a locked session would otherwise strand it behind "could not start authentication".
+///
+/// Not `renderer_binary_path()`'s problem: that one calls `with_file_name`, which drops the whole
+/// " (deleted)" filename and rebuilds a real sibling path.
+pub const SELF_EXE: &str = "/proc/self/exe";
+
 /// Waits up to `grace`; `None` means still running. A real exit can land at the deadline, so an
 /// elapsed timeout re-checks with `try_wait()`. Used after both SIGTERM and SIGKILL in
 /// [`reap_process_group`].

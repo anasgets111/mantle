@@ -15,7 +15,7 @@ use shared::warn;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::task::JoinHandle;
 
-use crate::capabilities::clock::controller::epoch_seconds;
+use crate::capabilities::epoch_seconds;
 
 /// Relist 200ms after the last event. Forty wallpapers produce forty `CREATE`/`CLOSE_WRITE` pairs;
 /// one listing after the burst is the point.

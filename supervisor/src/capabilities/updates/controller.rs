@@ -13,7 +13,7 @@ use tokio::sync::watch;
 
 use super::backend::Backend;
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
-use crate::capabilities::clock::controller::epoch_seconds;
+use crate::capabilities::epoch_seconds;
 use crate::process;
 use shared::action::UpdatesConfigure;
 #[cfg(test)]

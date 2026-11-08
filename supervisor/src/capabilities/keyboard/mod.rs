@@ -4,7 +4,7 @@
 pub mod controller;
 pub mod locks;
 
-pub use controller::{KeyboardController, KeyboardState};
+pub use controller::KeyboardController;
 use shared::action::KeyboardAction;
 
 /// `set_backlight` is a spawned D-Bus write (ADR-0037, ADR-0029); `switch_layout` forwards

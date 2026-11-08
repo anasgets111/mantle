@@ -16,10 +16,7 @@ use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
 
-/// `SystemTime::now()`'s epoch truncated to whole seconds for `time`; one pinned seam.
-pub fn epoch_seconds(now: SystemTime) -> i64 {
-    now.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0)
-}
+use crate::capabilities::epoch_seconds;
 
 fn sample() -> ClockState {
     ClockState { time: epoch_seconds(SystemTime::now()), monotonic: monotonic_seconds() }
@@ -32,7 +29,7 @@ fn next_boundary(now: Duration, interval: u64) -> u64 {
 
 /// Duration from `elapsed_since_epoch` to the next whole-second boundary. Pure over `Duration` for
 /// clock-free tests.
-pub fn time_until_next_second(elapsed_since_epoch: Duration) -> Duration {
+fn time_until_next_second(elapsed_since_epoch: Duration) -> Duration {
     Duration::from_secs(1) - Duration::from_nanos(u64::from(elapsed_since_epoch.subsec_nanos()))
 }
 
@@ -136,11 +133,6 @@ async fn run_clock_task(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn epoch_seconds_is_exact() {
-        assert_eq!(epoch_seconds(UNIX_EPOCH + Duration::from_secs(1_700_000_000)), 1_700_000_000);
-    }
 
     #[test]
     fn time_until_next_second_is_the_complement_of_the_subsecond_remainder() {

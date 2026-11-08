@@ -11,7 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use zbus::fdo::RequestNameFlags;
 use zbus::zvariant::{OwnedObjectPath, Value};
 
-use crate::capabilities::clock::controller::epoch_seconds;
+use crate::capabilities::epoch_seconds;
 use crate::capabilities::name_departures;
 
 use super::icon::icon_filename_stem;

@@ -39,7 +39,7 @@ pub(crate) const PID_ENV: &str = "MANTLE_NVML_PID";
 // ponytail: blocks the Supervisor loop ~22 ms per sample, with no timeout on a hung driver; move the sample
 // to `spawn_blocking` if `--profile` latency matters.
 pub(super) fn resident_kib(pid: u32) -> Option<u64> {
-    let output = std::process::Command::new(crate::pam_worker::SELF_EXE)
+    let output = std::process::Command::new(crate::process::SELF_EXE)
         .env(PID_ENV, pid.to_string())
         .stdin(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

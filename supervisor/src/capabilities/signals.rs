@@ -1,13 +1,12 @@
 use shared::Capability;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
-
-use super::audio::mixer::AudioState;
-use super::bluetooth::BluetoothState;
-use super::idle::IdleState;
-use super::keyboard::KeyboardState;
-use super::network::NetworkState;
-use super::secrets::SecretsState;
+use shared::state::audio::AudioState;
 use shared::state::audio_levels::AudioLevelsState;
+use shared::state::bluetooth::BluetoothState;
+use shared::state::idle::IdleState;
+use shared::state::keyboard::KeyboardState;
+use shared::state::network::NetworkState;
+use shared::state::secrets::SecretsState;
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 /// A received signal waiting for [`Capabilities::push`](super::Capabilities::push).
 /// [`Signals::next`] only awaits `recv()`, so losing the `tokio::select!` race drops no signal.

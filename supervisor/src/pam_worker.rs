@@ -15,6 +15,8 @@ use nonstick::{ConversationAdapter, Transaction};
 use shared::{debug, error, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
+use crate::process::SELF_EXE;
+
 /// Set (to anything) in the re-exec'd worker; `main.rs` checks it before any other setup.
 pub const WORKER_ENV: &str = "MANTLE_PAM_WORKER";
 
@@ -564,18 +566,6 @@ impl Drop for ReportOnDrop {
         }
     }
 }
-
-/// Path this process re-execs to reach a worker branch of `main`: the PAM worker or the NVML query.
-///
-/// The magic link, not `current_exe()`, and the difference is a session that cannot be unlocked.
-/// `current_exe()` *reads* the link into a pathname, and the kernel appends " (deleted)" once the
-/// binary is replaced, so the spawn fails with `ENOENT`. Executing the link resolves to the inode
-/// this process already pins, which Linux supports after unlinking. A `pacman -Syu` or `cargo build`
-/// over a locked session would otherwise strand it behind "could not start authentication".
-///
-/// Not `renderer_binary_path()`'s problem: that one calls `with_file_name`, which drops the whole
-/// " (deleted)" filename and rebuilds a real sibling path.
-pub(crate) const SELF_EXE: &str = "/proc/self/exe";
 
 /// Re-execs this binary as a PAM worker for `username` in `mode`.
 fn spawn_worker(username: &str, mode: &str) -> std::io::Result<tokio::process::Child> {

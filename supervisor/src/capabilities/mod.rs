@@ -13,7 +13,7 @@
 
 use std::path::Path;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -133,6 +133,11 @@ pub fn truncate_utf8_bytes(input: &str, max_bytes: usize) -> String {
     input[..input.floor_char_boundary(max_bytes)].to_string()
 }
 
+/// Seconds since the Unix epoch at `now`, or 0 before it.
+pub fn epoch_seconds(now: SystemTime) -> i64 {
+    now.duration_since(UNIX_EPOCH).map(|elapsed| elapsed.as_secs() as i64).unwrap_or(0)
+}
+
 /// The next agent prompt's request ID, unique across agents.
 /// ponytail: after 2^64-2 requests, refuse more until Supervisor restarts; never reuse an id.
 pub(crate) fn next_request_id() -> Option<String> {
@@ -201,6 +206,11 @@ where
 mod tests {
     use super::*;
     use shared::Capability;
+
+    #[test]
+    fn epoch_seconds_is_exact() {
+        assert_eq!(epoch_seconds(UNIX_EPOCH + Duration::from_secs(1_700_000_000)), 1_700_000_000);
+    }
 
     #[test]
     fn from_name_resolves_every_roster_entry_and_nothing_else() {
