@@ -1,6 +1,8 @@
-//! `mantle.polkit.rs` snapshot payload.
+//! `mantle.polkit` snapshot payload.
 
 use serde::Serialize;
+
+use super::conversation::{PamNotice, PamPrompt};
 
 /// `mantle.polkit`'s payload (ADR-0114). Every other field is empty while `active` is false.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
@@ -20,9 +22,9 @@ pub struct PolkitState {
     /// The uid the next helper authenticates: this session's user if offered, else the first.
     pub identity: u32,
     /// The helper's pending question, as on `mantle.lock`. `nil` until the first submit starts it.
-    pub prompt: Option<super::lock::PamPrompt>,
+    pub prompt: Option<PamPrompt>,
     /// The helper's info and error lines, as on `mantle.lock`.
-    pub messages: Vec<super::lock::PamNotice>,
+    pub messages: Vec<PamNotice>,
     /// An answer is with PAM, or typed before its prompt and held for it. A second submit is
     /// refused while true.
     pub authenticating: bool,

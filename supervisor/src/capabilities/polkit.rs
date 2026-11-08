@@ -13,6 +13,7 @@ use crate::capabilities::conversation::{Dialogue, Heard, PamFields};
 use crate::pam_worker::Conversation;
 use crate::polkit::{AgentError, BeginAuthenticationCall, unix_user_uids};
 use shared::action::PolkitAction;
+use shared::state::conversation::{PamNotice, PamPrompt};
 
 /// polkitd's pending `BeginAuthentication` call and its completing reply.
 struct Pending {
@@ -152,9 +153,7 @@ impl PolkitController {
 }
 
 impl PamFields for PolkitState {
-    fn pam(
-        &mut self,
-    ) -> (&mut Option<shared::state::lock::PamPrompt>, &mut Vec<shared::state::lock::PamNotice>, &mut bool) {
+    fn pam(&mut self) -> (&mut Option<PamPrompt>, &mut Vec<PamNotice>, &mut bool) {
         (&mut self.prompt, &mut self.messages, &mut self.authenticating)
     }
 }

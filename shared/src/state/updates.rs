@@ -1,7 +1,25 @@
 //! `mantle.updates` snapshot payload.
 
-use crate::action::UpdateCandidate;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// One installed package with a newer version.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct UpdateCandidate {
+    /// Package name.
+    pub name: String,
+    /// Installed version.
+    pub old_version: String,
+    /// Version on offer.
+    pub new_version: String,
+    /// Bytes to fetch; `0` when already cached.
+    pub download_size: i64,
+    /// Bytes the new version occupies installed; not a delta.
+    pub installed_size: i64,
+    /// Source repository, e.g. `"extra"` or `"aur"`; empty in a seeded list that lacks it.
+    #[serde(default)]
+    pub repository: String,
+}
 
 /// `mantle.updates`'s payload.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use shared::action::UpdateCandidate;
+use shared::state::updates::UpdateCandidate;
 
 /// Upgrades from the simulation's `Inst` lines, sizes `0` until [`fill_sizes`]. A package the
 /// upgrade newly installs has no installed version and is not listed.

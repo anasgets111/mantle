@@ -1,8 +1,30 @@
 //! `mantle.mpris` snapshot payload.
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-use crate::action::LoopStatus;
+/// MPRIS `LoopStatus`, also the `set_loop_status` argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum LoopStatus {
+    /// Plays through once.
+    None,
+    /// Repeats the current track.
+    Track,
+    /// Repeats the playlist.
+    Playlist,
+}
+
+impl LoopStatus {
+    /// The MPRIS wire spelling.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Track => "Track",
+            Self::Playlist => "Playlist",
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]

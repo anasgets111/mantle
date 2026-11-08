@@ -25,7 +25,8 @@ pub mod queue;
 pub mod sound;
 
 pub use controller::NotificationsController;
-use shared::action::{NotificationsAction, Urgency};
+use shared::action::NotificationsAction;
+use shared::state::notifications::Urgency;
 pub use sound::run_sound_player;
 
 /// Dispatch (ADR-0037): signal-emitting `dismiss`/`invoke_action`/`reply` use `tokio::spawn`

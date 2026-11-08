@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use serde::Deserialize;
 use zbus::zvariant::{Signature, Type};
 
-use shared::action::Urgency;
+use shared::state::notifications::Urgency;
 
 use crate::capabilities::truncate_utf8_bytes;
 

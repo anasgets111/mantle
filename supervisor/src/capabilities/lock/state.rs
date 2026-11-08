@@ -1,3 +1,4 @@
+use shared::state::conversation::{PamNotice, PamPrompt};
 pub use shared::state::lock::LockState;
 
 /// Events from Lua `lock()`, the PAM worker, or the Renderer, all applied by pure [`apply`].
@@ -121,9 +122,7 @@ pub fn may_authenticate(state: &LockState) -> bool {
 }
 
 impl crate::capabilities::conversation::PamFields for LockState {
-    fn pam(
-        &mut self,
-    ) -> (&mut Option<shared::state::lock::PamPrompt>, &mut Vec<shared::state::lock::PamNotice>, &mut bool) {
+    fn pam(&mut self) -> (&mut Option<PamPrompt>, &mut Vec<PamNotice>, &mut bool) {
         (&mut self.prompt, &mut self.messages, &mut self.authenticating)
     }
 }

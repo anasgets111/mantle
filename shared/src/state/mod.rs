@@ -9,6 +9,7 @@ pub mod battery;
 pub mod bluetooth;
 pub mod brightness;
 pub mod clock;
+pub mod conversation;
 pub mod folders;
 pub mod idle;
 pub mod keyboard;

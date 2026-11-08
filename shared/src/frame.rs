@@ -395,7 +395,7 @@ pub enum PamMessage {
     /// neither is refused.
     Prompt { text: String, echo: bool },
     /// A PAM module's info or error line.
-    Message { kind: crate::state::lock::PamNoticeKind, text: String },
+    Message { kind: crate::state::conversation::PamNoticeKind, text: String },
     /// The answer to the most recent `Prompt`.
     Response {
         #[serde(deserialize_with = "secure_buffer::deserialize_secret")]

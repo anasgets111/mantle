@@ -3,7 +3,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use shared::state::lock::{PamNotice, PamPrompt};
+use shared::state::conversation::{PamNotice, PamPrompt};
 use shared::{PamMessage, PamNoticeKind, PamOutcome, Zeroizing};
 
 use crate::pam_worker::Conversation;

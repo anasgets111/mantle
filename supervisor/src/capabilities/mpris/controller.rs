@@ -13,7 +13,8 @@ use super::collections::{PlaylistsState, read_playlists};
 use super::metadata::clamp_seek_target;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
 use super::watcher::{service_name_for_id, spawn_discovery};
-use shared::action::{LoopStatus, PlayerCommand};
+use shared::action::PlayerCommand;
+use shared::state::mpris::LoopStatus;
 
 /// Every command fails this one way, only into a `debug!`; nothing matches on it.
 const UNKNOWN_PLAYER: &str = "no MPRIS player with that id is currently tracked";

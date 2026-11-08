@@ -1,4 +1,4 @@
-//! `mantle.secrets.rs` snapshot payload.
+//! `mantle.secrets` snapshot payload.
 
 use serde::Serialize;
 use std::collections::BTreeMap;

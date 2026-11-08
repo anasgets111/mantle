@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::process::{Command, Stdio};
 
-use shared::action::UpdateCandidate;
+use shared::state::updates::UpdateCandidate;
 
 use super::super::backend::program_is_in;
 

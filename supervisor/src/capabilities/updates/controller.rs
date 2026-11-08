@@ -15,9 +15,9 @@ use super::backend::Backend;
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
 use crate::capabilities::clock::controller::epoch_seconds;
 use crate::process;
-#[cfg(test)]
-use shared::action::UpdateCandidate;
 use shared::action::UpdatesConfigure;
+#[cfg(test)]
+use shared::state::updates::UpdateCandidate;
 
 /// Tail length for [`UpdatesState::install_log`]. Enough to hold a failure and nearby lines; a
 /// 2,000-package run belongs in a file, not a state payload reserialized on every progress line.

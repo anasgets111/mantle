@@ -4,7 +4,7 @@
 pub use shared::state::mpris::PlayerState;
 
 use crate::capabilities::scale::percent_from_fraction;
-use shared::action::LoopStatus;
+use shared::state::mpris::LoopStatus;
 use shared::state::mpris::PlayState;
 
 use std::collections::HashMap;

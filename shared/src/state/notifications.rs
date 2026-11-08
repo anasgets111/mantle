@@ -1,7 +1,17 @@
 //! `mantle.notifications` snapshot payload.
 
-use crate::action::Urgency;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+/// Notification urgency, also the `set_sound` tier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Urgency {
+    Low,
+    #[default]
+    Normal,
+    Critical,
+}
 
 /// One body-markup run (ADR-0033): styled text or an image.
 #[derive(Debug, Clone, PartialEq, Serialize)]

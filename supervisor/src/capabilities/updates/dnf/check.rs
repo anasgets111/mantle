@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 use std::process::Command;
 
-use shared::action::UpdateCandidate;
+use shared::state::updates::UpdateCandidate;
 
 use super::super::backend::{nonzero, run};
 

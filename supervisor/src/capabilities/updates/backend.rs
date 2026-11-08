@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use shared::action::UpdateCandidate;
+use shared::state::updates::UpdateCandidate;
 use shared::warn;
 
 /// One successful check. `aur_error` means the AUR half failed; `packages` still holds the repos'.

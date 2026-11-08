@@ -1,6 +1,10 @@
 //! Every capability's action enum and the types its fields decode into. `supervisor/src/stubs.rs`
 //! turns each variant into a typed method, its `///` block the description.
 
+use crate::state::mpris::LoopStatus;
+use crate::state::notifications::Urgency;
+use crate::state::updates::UpdateCandidate;
+
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -365,30 +369,6 @@ pub enum PlayerCommand {
     Stop,
 }
 
-/// MPRIS `LoopStatus`, also the `set_loop_status` argument.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum LoopStatus {
-    /// Plays through once.
-    None,
-    /// Repeats the current track.
-    Track,
-    /// Repeats the playlist.
-    Playlist,
-}
-
-impl LoopStatus {
-    /// The MPRIS wire spelling.
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "None",
-            Self::Track => "Track",
-            Self::Playlist => "Playlist",
-        }
-    }
-}
-
 #[derive(Debug, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
@@ -453,17 +433,6 @@ pub enum NotificationsAction {
     SetAppMuted { app: String, muted: bool },
     /// Pauses every expiry countdown for `seconds`, capped at 300; `0` releases the hold.
     HoldExpiry { seconds: u64 },
-}
-
-/// Notification urgency, also the `set_sound` tier.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-#[serde(rename_all = "snake_case")]
-pub enum Urgency {
-    Low,
-    #[default]
-    Normal,
-    Critical,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -593,25 +562,6 @@ pub struct UpdatesConfigure {
     /// name to aur.archlinux.org and builds without PKGBUILD review.
     #[serde(default)]
     pub aur: bool,
-}
-
-/// One installed package with a newer version.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
-pub struct UpdateCandidate {
-    /// Package name.
-    pub name: String,
-    /// Installed version.
-    pub old_version: String,
-    /// Version on offer.
-    pub new_version: String,
-    /// Bytes to fetch; `0` when already cached.
-    pub download_size: i64,
-    /// Bytes the new version occupies installed; not a delta.
-    pub installed_size: i64,
-    /// Source repository, e.g. `"extra"` or `"aur"`; empty in a seeded list that lacks it.
-    #[serde(default)]
-    pub repository: String,
 }
 
 #[derive(Debug, serde::Deserialize)]

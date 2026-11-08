@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use shared::state::lock::{FingerprintState, PamNotice, PamPrompt};
+use shared::state::conversation::{PamNotice, PamPrompt};
+use shared::state::lock::FingerprintState;
 use shared::{debug, error, info, warn};
 use tokio::sync::mpsc::UnboundedSender;
 
