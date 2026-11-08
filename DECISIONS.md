@@ -817,6 +817,12 @@ second forever, for a change the kernel already announces.
    Amendment: the `evdev` crate is gone. The same LEDs are `EVIOCGBIT`, `EVIOCGLED`, and `AsyncFd`
    on the first readable `/dev/input/event*` with `LED_CAPSL`, via nix's ioctl macros; `SYN_DROPPED`
    triggers an `EVIOCGLED` resync. Sysfs stays the one-shot fallback.
+
+   Amendment: without evdev access, sysfs was read once and froze. It is now polled every 250 ms,
+   3 reads per tick, only while no `/dev/input` node opens; a udev `input` event re-resolves the LEDs
+   and retries evdev. 0034.1 rejected polling the backlight because the kernel announces its
+   changes; lock LEDs announce nothing (no inotify, no uevent). Rejected: our own `uaccess` rule
+   for keyboards, which would let the session read every keystroke.
 2. Keep a narrow keyboard-layout trait for Hyprland/niri, not a workspace abstraction.
 3. Select one primary keyboard and expose index-based switching; Lua computes cycling. ADR-0205
    keeps the one-keyboard selection and corrects what "primary" means on Hyprland.

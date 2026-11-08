@@ -1,6 +1,6 @@
 //! Lock-state monitoring for `mantle.keyboard` (ADR-0034). Sysfs LED `brightness` files do not
 //! emit inotify `MODIFY` when `input_leds` changes them. `EV_LED` on the input device is primary
-//! and sysfs is a read-once fallback.
+//! and sysfs, polled, is the fallback when this user cannot open the input device.
 
 use std::fs::File;
 use std::io::{self, Read};
@@ -9,13 +9,15 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use shared::state::keyboard::KeyboardState;
 use shared::{debug, error, warn};
 use tokio::io::unix::AsyncFd;
 use tokio::sync::mpsc::UnboundedSender;
+use tokio::time::MissedTickBehavior;
 
-use super::super::udev_watch;
+use super::super::{publish, udev_watch};
 
 /// Resolved sysfs nodes for all three lock indicators. All-or-nothing: a missing sibling makes
 /// [`resolve_lock_leds`] return `None` because hardware exposes all three or none.
@@ -198,7 +200,9 @@ fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
         Ok(file) => file,
         Err(NoLedDevice::Denied) => {
             if !WARNED.swap(true, Ordering::Relaxed) {
-                warn!("cannot open /dev/input/event*; lock state will freeze. Add the user to the `input` group");
+                warn!(
+                    "cannot open /dev/input/event*; lock state may lag up to 250 ms or stay false. Add the user to the `input` group"
+                );
             }
             return None;
         }
@@ -211,35 +215,42 @@ fn open_led_stream(state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
     unsafe { AsyncFd::register(file) }.inspect_err(|err| debug!("failed to open an EV_LED event stream: {err}")).ok()
 }
 
-/// Uses the input device first (ADR-0034); sysfs (`resolve_lock_leds`) is a read-once
-/// fallback, so neither source leaves all locks at their logged `false` defaults.
-fn resolve_locks(leds_root: &Path, state: &Mutex<KeyboardState>) -> Option<AsyncFd<File>> {
-    if let Some(stream) = open_led_stream(state) {
-        return Some(stream);
+/// Re-reads the sysfs LEDs until `until` resolves: they announce no change (ADR-0034). `None`
+/// means the receiver is gone.
+async fn poll_leds<T>(
+    leds: &LockLeds,
+    state: &Mutex<KeyboardState>,
+    events: &UnboundedSender<()>,
+    until: impl Future<Output = T>,
+) -> Option<T> {
+    // ponytail: fixed 250 ms; make it configurable, or poll only while a config reads a lock field.
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    let mut until = std::pin::pin!(until);
+    loop {
+        tokio::select! {
+            woke = &mut until => return Some(woke),
+            _ = tick.tick() => {
+                if !publish(state, events, read_leds(leds, state)) {
+                    return None;
+                }
+            }
+        }
     }
-    debug!(
-        "no readable evdev device with LED_CAPSL capability; falling back to a one-time sysfs LED read for lock state"
-    );
-    let Some(leds) = resolve_lock_leds(leds_root) else {
-        debug!(
-            "no lock-state source available (neither evdev nor sysfs LED nodes); caps/num/scroll_lock will stay false"
-        );
-        return None;
-    };
-    let mut guard = state.lock().expect("mutex poisoned");
-    match read_led_on(&leds.caps) {
-        Ok(on) => guard.caps_lock = on,
-        Err(err) => debug!("failed to read the sysfs capslock LED; caps_lock will stay false: {err}"),
+}
+
+/// `state` with the three locks re-read from sysfs; an unreadable LED keeps its last value.
+fn read_leds(leds: &LockLeds, state: &Mutex<KeyboardState>) -> KeyboardState {
+    let mut next = state.lock().expect("mutex poisoned").clone();
+    for (led, lock) in
+        [(&leds.caps, &mut next.caps_lock), (&leds.num, &mut next.num_lock), (&leds.scroll, &mut next.scroll_lock)]
+    {
+        match read_led_on(led) {
+            Ok(on) => *lock = on,
+            Err(err) => debug!("failed to read {led:?}; keeping its last state: {err}"),
+        }
     }
-    match read_led_on(&leds.num) {
-        Ok(on) => guard.num_lock = on,
-        Err(err) => debug!("failed to read the sysfs numlock LED; num_lock will stay false: {err}"),
-    }
-    match read_led_on(&leds.scroll) {
-        Ok(on) => guard.scroll_lock = on,
-        Err(err) => debug!("failed to read the sysfs scrolllock LED; scroll_lock will stay false: {err}"),
-    }
-    None
+    next
 }
 
 /// Forwards `EV_LED` changes until the fd ends, which unplugging the keyboard does with `ENODEV`.
@@ -289,7 +300,13 @@ async fn pump_leds(fd: &AsyncFd<File>, state: &Mutex<KeyboardState>, events: &Un
 /// node, which the fd that died with the old one never sees. Without this the locks stay frozen
 /// where the unplug left them until the shell restarts.
 pub(super) fn watch_locks(leds_root: &Path, state: Arc<Mutex<KeyboardState>>, events: UnboundedSender<()>) {
-    let mut stream = resolve_locks(leds_root, &state);
+    let leds_root = leds_root.to_path_buf();
+    let mut stream = open_led_stream(&state);
+    // Read before the first snapshot, as evdev's `sync_locks` is, so it never starts at `false`.
+    if let (None, Some(leds)) = (&stream, resolve_lock_leds(&leds_root)) {
+        let next = read_leds(&leds, &state);
+        *state.lock().expect("mutex poisoned") = next;
+    }
     tokio::spawn(async move {
         let mut watch = udev_watch("input")
             .inspect_err(|err| {
@@ -305,18 +322,33 @@ pub(super) fn watch_locks(leds_root: &Path, state: Arc<Mutex<KeyboardState>>, ev
                 }
                 continue;
             }
-            let Some(watch) = watch.as_mut() else { return };
-            let mut guard = match watch.readable_mut().await {
-                Ok(guard) => guard,
-                Err(err) => {
-                    error!(
-                        "the udev input watch's fd errored ({err}); lock state will freeze if the keyboard is replugged"
-                    );
-                    return;
-                }
+            // Re-resolved per wait: a replugged keyboard's LEDs are a new `inputN` directory.
+            let leds = resolve_lock_leds(&leds_root);
+            if leds.is_none() && watch.is_none() {
+                debug!("no lock-state source (neither evdev nor sysfs LEDs); caps/num/scroll_lock stay false");
+                return;
+            }
+            let uevent = async {
+                let Some(watch) = watch.as_mut() else { return std::future::pending().await };
+                let mut guard = watch.readable_mut().await?;
+                for _event in guard.get_inner().iter() {}
+                guard.clear_ready();
+                io::Result::Ok(())
             };
-            for _event in guard.get_inner().iter() {}
-            guard.clear_ready();
+            let woke = match &leds {
+                Some(leds) => match poll_leds(leds, &state, &events, uevent).await {
+                    Some(woke) => woke,
+                    None => return,
+                },
+                None => uevent.await,
+            };
+            if let Err(err) = woke {
+                error!(
+                    "the udev input watch's fd errored ({err}); lock state will freeze if the keyboard is replugged"
+                );
+                watch = None;
+                continue;
+            }
             stream = open_led_stream(&state);
             if stream.is_some() && events.send(()).is_err() {
                 return;
@@ -383,6 +415,30 @@ mod tests {
             assert_eq!(read_led_on(&led).unwrap(), on, "{brightness:?}");
         }
         assert!(read_led_on(&root.path().join("missing")).is_err());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn sysfs_poll_publishes_only_a_changed_led_and_stops_with_the_receiver() {
+        let root = tempfile::tempdir().unwrap();
+        let caps = write_led(root.path(), "input3::capslock", "0");
+        write_led(root.path(), "input3::numlock", "1");
+        write_led(root.path(), "input3::scrolllock", "0");
+        let leds = resolve_lock_leds(root.path()).unwrap();
+        let state = Mutex::new(KeyboardState::default());
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        assert_eq!(poll_leds(&leds, &state, &tx, rx.recv()).await, Some(Some(())), "the first read publishes num_lock");
+        assert!(state.lock().unwrap().num_lock);
+        poll_leds(&leds, &state, &tx, tokio::time::sleep(Duration::from_secs(2))).await;
+        assert!(rx.try_recv().is_err(), "unchanged reads publish nothing");
+
+        std::fs::write(caps.join("brightness"), "1").unwrap();
+        assert_eq!(poll_leds(&leds, &state, &tx, rx.recv()).await, Some(Some(())));
+        assert!(state.lock().unwrap().caps_lock);
+
+        drop(rx);
+        std::fs::write(caps.join("brightness"), "0").unwrap();
+        assert_eq!(poll_leds(&leds, &state, &tx, std::future::pending::<()>()).await, None);
     }
 
     fn input_event(type_: u16, code: u16, value: i32) -> [u8; 24] {
