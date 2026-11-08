@@ -2,7 +2,10 @@
 //! kill/exit reporting, and per-generation/shutdown reap sweeps.
 
 use std::collections::HashMap;
+use std::future::{Future, poll_fn};
 use std::io;
+use std::process::ExitStatus;
+use std::task::Poll;
 
 use shared::{ProcessExited, ProcessOutputLine, ProcessStream, SupervisorFrame, debug, warn};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
@@ -13,7 +16,12 @@ use crate::socket;
 
 /// Tracked `process.run` children, keyed by spawning generation and Renderer-assigned
 /// `CommandEnvelope.id` (ADR-0026). Mutated only inside `main()`'s `select!`, not behind a mutex.
-pub(crate) type LiveProcesses = HashMap<(u32, u64), Child>;
+pub(crate) type LiveProcesses = HashMap<(u32, u64), Process>;
+
+pub(crate) struct Process {
+    child: Child,
+    output_done: bool,
+}
 
 /// Parses `process.run` arguments as `[cmd, args]`. `None` means protocol shape mismatch, not
 /// spawn failure; the caller logs it.
@@ -51,8 +59,6 @@ pub(crate) fn dispatch(
                         } else {
                             stream_process_output(&task_registry, generation_id, id, stdout, stderr).await;
                         }
-                        // Pipes close an instant before the exit status lands; let it, so `on_exit` is not rechecked 100 ms later.
-                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
                         let _ = task_done_tx.send((generation_id, id));
                     });
                 }
@@ -93,7 +99,7 @@ pub(crate) fn dispatch(
                 while reaps.try_join_next().is_some() {}
                 let registry = registry.clone();
                 reaps.spawn(async move {
-                    let code = kill_registered_process(child, generation_id, id).await;
+                    let code = kill_registered_process(child.child, generation_id, id).await;
                     send_frame_logged(
                         &registry,
                         generation_id,
@@ -119,7 +125,7 @@ pub(crate) fn spawn_and_register_process(
         Ok(mut child) => {
             let stdout = child.stdout.take().expect("spawn_group_leader_piped always pipes stdout");
             let stderr = child.stderr.take().expect("spawn_group_leader_piped always pipes stderr");
-            processes.insert((generation_id, id), child);
+            processes.insert((generation_id, id), Process { child, output_done: false });
             Some((stdout, stderr))
         }
         Err(err) => {
@@ -311,35 +317,48 @@ pub(crate) async fn kill_registered_process(mut child: Child, generation_id: u32
     }
 }
 
-/// Once `(generation_id, id)`'s output has closed: reports the exit and forgets the child if it has
-/// exited, else keeps it tracked and rechecks on `done_tx` after a beat. A child that closed its
-/// streams but runs on (daemonized) stays reapable with its generation or at shutdown.
-// ponytail: rechecks every 100 ms while such a child lives. Upgrade: a pidfd readiness wait.
-pub(crate) fn report_if_exited(
+/// Records output completion without reaping the leader while its pipes still carry data.
+pub(crate) fn output_closed(processes: &mut LiveProcesses, generation_id: u32, id: u64) {
+    if let Some(process) = processes.get_mut(&(generation_id, id)) {
+        process.output_done = true;
+    }
+}
+
+/// Waits for an exit after its output is drained. `Child::wait` is cancel-safe, so the main
+/// select may drop this future without losing either the status or the registered wakeup.
+// ponytail: every select pass polls each output-closed child that still runs, O(n) per pass; fine at
+// tens of children. Upgrade: a FuturesUnordered or JoinSet of per-child wait futures.
+pub(crate) async fn next_exit(processes: &mut LiveProcesses) -> ((u32, u64), io::Result<ExitStatus>) {
+    poll_fn(|cx| {
+        for (&key, process) in processes.iter_mut().filter(|(_, process)| process.output_done) {
+            if let Poll::Ready(status) = std::pin::pin!(process.child.wait()).poll(cx) {
+                return Poll::Ready((key, status));
+            }
+        }
+        Poll::Pending
+    })
+    .await
+}
+
+/// Forgets `(generation_id, id)` and sends its one `ProcessExited`; `None` code when it was
+/// signalled or the wait failed. A key already gone (killed or reaped meanwhile) sends nothing.
+pub(crate) fn report_exit(
     processes: &mut LiveProcesses,
     registry: &socket::GenerationRegistry,
-    done_tx: &tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
     generation_id: u32,
     id: u64,
+    status: io::Result<ExitStatus>,
 ) {
-    let Some(child) = processes.get_mut(&(generation_id, id)) else { return };
-    let code = match child.try_wait() {
-        Ok(Some(status)) => status.code(),
-        Ok(None) => {
-            let done_tx = done_tx.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                let _ = done_tx.send((generation_id, id));
-            });
-            return;
-        }
-        // `None` as for a failed kill reap: `id`'s `on_exit` is waiting and nothing else answers it.
+    if processes.remove(&(generation_id, id)).is_none() {
+        return;
+    }
+    let code = match status {
+        Ok(status) => status.code(),
         Err(err) => {
             warn!("failed to wait on exited process {id} (generation {generation_id}): {err}");
             None
         }
     };
-    processes.remove(&(generation_id, id));
     send_frame_logged(registry, generation_id, &SupervisorFrame::ProcessExited(ProcessExited { id, code }));
 }
 
@@ -353,8 +372,8 @@ pub(crate) fn take_generation(processes: &mut LiveProcesses, generation_id: u32)
 /// child, not only the Renderer.
 pub(crate) async fn reap_processes(processes: &mut LiveProcesses) {
     let children = std::mem::take(processes);
-    futures_util::future::join_all(children.into_iter().map(|(key, mut child)| async move {
-        if let Err(err) = super::reap_process_group(&mut child, super::DEFAULT_REAP_GRACE).await {
+    futures_util::future::join_all(children.into_iter().map(|(key, mut process)| async move {
+        if let Err(err) = super::reap_process_group(&mut process.child, super::DEFAULT_REAP_GRACE).await {
             warn!("failed to reap process {key:?}: {err}");
         }
     }))
@@ -365,6 +384,7 @@ pub(crate) async fn reap_processes(processes: &mut LiveProcesses) {
 mod tests {
     use super::*;
     use crate::process::sh_args;
+    use futures_util::FutureExt;
 
     /// Drains a `BoundedLines` over an in-memory reader, so the cap is exercised without a child.
     async fn lines_of(input: &[u8]) -> Vec<String> {
@@ -558,7 +578,7 @@ mod tests {
         assert!(lines.iter().any(|l| l.id == 9 && l.stream == ProcessStream::Stderr && l.line == "err1"));
 
         // The streamer does not own the Child, so the exit code comes from waiting on it.
-        let mut child = processes.remove(&(1, 9)).expect("process must still be registered");
+        let mut child = processes.remove(&(1, 9)).expect("process must still be registered").child;
         assert_eq!(child.wait().await.unwrap().code(), Some(3));
     }
 
@@ -597,8 +617,14 @@ mod tests {
         for (id, action, expected) in [(1, "run", vec!["a", "b"]), (2, "capture", vec!["a\nb\n"])] {
             dispatch(&mut processes, &registry, &done_tx, &mut reaps, &envelope(id, action, sh("printf 'a\nb\n'")));
             assert_eq!(crate::capabilities::test_support::within(done_rx.recv()).await, Some((1, id)));
+            output_closed(&mut processes, 1, id);
+            let (key, status) = crate::capabilities::test_support::within(next_exit(&mut processes)).await;
+            assert_eq!(key, (1, id));
             let lines: Vec<_> = drained(&mut rx).into_iter().map(|line| line.line).collect();
             assert_eq!(lines, expected, "{action}");
+            report_exit(&mut processes, &registry, 1, id, status);
+            assert!(matches!(serde_json::from_slice::<SupervisorFrame>(&rx.try_recv().unwrap()).unwrap(),
+                SupervisorFrame::ProcessExited(ProcessExited { id: got, code: Some(0) }) if got == id));
         }
 
         let dir = tempfile::tempdir().unwrap();
@@ -656,14 +682,73 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_finished_child_is_reported_with_its_real_exit_code_and_forgotten() {
+    async fn an_exit_is_held_until_output_closes_even_when_the_leader_is_already_gone() {
         let mut processes: LiveProcesses = HashMap::new();
-        spawn_and_register_process(&mut processes, 1, 9, "sh", &sh_args("exit 7"));
-        processes.get_mut(&(1, 9)).unwrap().wait().await.unwrap();
-        let (registry, mut rx) = registry_with_connection(1);
-        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+        // The background job holds the pipes open after the leader exits with 4, and leaves once
+        // `hold` is gone: removed below, or with the tempdir if an assertion panics first.
+        let dir = tempfile::tempdir().unwrap();
+        let hold = dir.path().join("hold");
+        std::fs::write(&hold, b"").unwrap();
+        let args = vec![
+            "-c".into(),
+            "(while [ -e \"$1\" ]; do sleep 0.01; done) & exit 4".into(),
+            "sh".into(),
+            hold.to_string_lossy().into_owned(),
+        ];
+        spawn_and_register_process(&mut processes, 1, 1, "sh", &args);
+        crate::capabilities::test_support::poll_until(|| processes.get_mut(&(1, 1))?.child.try_wait().unwrap()).await;
 
-        report_if_exited(&mut processes, &registry, &done_tx, 1, 9);
+        assert!(next_exit(&mut processes).now_or_never().is_none(), "output has not closed");
+        output_closed(&mut processes, 1, 1);
+        let (key, status) = crate::capabilities::test_support::within(next_exit(&mut processes)).await;
+        assert_eq!((key, status.unwrap().code()), ((1, 1), Some(4)));
+        std::fs::remove_file(hold).unwrap();
+    }
+
+    #[tokio::test]
+    async fn next_exit_yields_the_child_that_exits_whatever_the_map_order() {
+        let mut processes: LiveProcesses = HashMap::new();
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir.path().join("exit");
+        let waiting = vec![
+            "-c".into(),
+            "while [ ! -e \"$1\" ]; do sleep 0.01; done".into(),
+            "sh".into(),
+            release.to_string_lossy().into_owned(),
+        ];
+        spawn_and_register_process(&mut processes, 1, 1, "sh", &sh_args("sleep 30"));
+        spawn_and_register_process(&mut processes, 1, 2, "sh", &waiting);
+        spawn_and_register_process(&mut processes, 1, 3, "sh", &sh_args("sleep 30"));
+        for id in 1..=3 {
+            output_closed(&mut processes, 1, id);
+        }
+        assert!(next_exit(&mut processes).now_or_never().is_none());
+        std::fs::write(release, b"").unwrap();
+
+        let (key, _) = crate::capabilities::test_support::within(next_exit(&mut processes)).await;
+        assert_eq!(key, (1, 2));
+        reap_processes(&mut processes).await;
+    }
+
+    #[tokio::test]
+    async fn a_child_exiting_after_output_closes_wakes_its_waiter_and_reports_its_real_code() {
+        let mut processes: LiveProcesses = HashMap::new();
+        let dir = tempfile::tempdir().unwrap();
+        let release = dir.path().join("exit");
+        let args = vec![
+            "-c".into(),
+            "exec >&- 2>&-; while [ ! -e \"$1\" ]; do sleep 0.01; done; exit 7".into(),
+            "sh".into(),
+            release.to_string_lossy().into_owned(),
+        ];
+        let (stdout, stderr) = spawn_and_register_process(&mut processes, 1, 9, "sh", &args).unwrap();
+        let (registry, mut rx) = registry_with_connection(1);
+        stream_process_output(&registry, 1, 9, stdout, stderr).await;
+        output_closed(&mut processes, 1, 9);
+        assert!(next_exit(&mut processes).now_or_never().is_none());
+        std::fs::write(release, b"").unwrap();
+        let ((generation_id, id), status) = crate::capabilities::test_support::within(next_exit(&mut processes)).await;
+        report_exit(&mut processes, &registry, generation_id, id, status);
 
         assert!(processes.is_empty());
         match serde_json::from_slice::<SupervisorFrame>(&rx.try_recv().unwrap()).unwrap() {
@@ -677,17 +762,18 @@ mod tests {
         let mut processes: LiveProcesses = HashMap::new();
         let (stdout, stderr) =
             spawn_and_register_process(&mut processes, 1, 4, "sh", &sh_args("exec >&- 2>&-; sleep 30")).unwrap();
-        let pid = processes[&(1, 4)].id().unwrap();
+        let pid = processes[&(1, 4)].child.id().unwrap();
         let (registry, mut rx) = registry_with_connection(1);
-        let (done_tx, mut done_rx) = tokio::sync::mpsc::unbounded_channel();
         stream_process_output(&registry, 1, 4, stdout, stderr).await;
+        output_closed(&mut processes, 1, 4);
 
-        report_if_exited(&mut processes, &registry, &done_tx, 1, 4);
-
+        assert!(next_exit(&mut processes).now_or_never().is_none(), "EOF is not an exit");
         assert!(processes.contains_key(&(1, 4)), "still running, so a Renderer replacement must still find it");
         assert!(rx.try_recv().is_err(), "no exit to report yet");
-        assert_eq!(done_rx.recv().await, Some((1, 4)), "and it is rechecked later");
         reap_processes(&mut take_generation(&mut processes, 1)).await;
+        output_closed(&mut processes, 1, 4);
+        assert!(processes.is_empty(), "a stale EOF must not restore a reaped child");
+        assert!(next_exit(&mut processes).now_or_never().is_none());
         assert!(crate::process::exited(&[pid]).await);
     }
 
@@ -718,6 +804,13 @@ mod tests {
         }
 
         assert!(registry.send_to(1, b"lock".to_vec()), "a control frame still fits and the peer was not hung up on");
+        let (done_tx, _done_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut reaps = tokio::task::JoinSet::new();
+        dispatch(&mut processes, &registry, &done_tx, &mut reaps, &envelope(2, "kill", vec![]));
+        crate::capabilities::test_support::within(reaps.join_next()).await.unwrap().unwrap();
+        assert!(processes.is_empty(), "output backpressure must not hold up the kill");
+        output_closed(&mut processes, 1, 2);
+        assert!(next_exit(&mut processes).now_or_never().is_none(), "stale EOF after kill is ignored");
     }
 
     #[tokio::test]
@@ -755,7 +848,7 @@ mod tests {
         let mut processes: LiveProcesses = HashMap::new();
         spawn_and_register_process(&mut processes, 1, 1, "sh", &sh_args("sleep 30"));
         spawn_and_register_process(&mut processes, 2, 1, "sh", &sh_args("sleep 30"));
-        let pid = processes[&(1, 1)].id().expect("freshly spawned child has a pid");
+        let pid = processes[&(1, 1)].child.id().expect("freshly spawned child has a pid");
 
         reap_processes(&mut take_generation(&mut processes, 1)).await;
 
@@ -772,7 +865,7 @@ mod tests {
         spawn_and_register_process(&mut processes, 1, 1, "sh", &sh_args("sleep 30"));
         spawn_and_register_process(&mut processes, 2, 1, "sh", &sh_args("sleep 30"));
         let pids: Vec<u32> =
-            processes.values().map(|child| child.id().expect("freshly spawned child has a pid")).collect();
+            processes.values().map(|process| process.child.id().expect("freshly spawned child has a pid")).collect();
 
         reap_processes(&mut processes).await;
 

@@ -394,7 +394,12 @@ async fn run_supervisor(
             // Success becomes an unlock order (ADR-0042).
             Some((serial, message)) = pam_events.recv() => supervisor.record_pam_message(serial, message),
             Some(()) = reload_events.recv() => supervisor.begin_reload(),
-            Some((generation_id, id)) = process_done.recv() => supervisor.reap_exited_process(generation_id, id),
+            Some((generation_id, id)) = process_done.recv() => {
+                process::registry::output_closed(&mut supervisor.processes, generation_id, id);
+            }
+            ((generation_id, id), status) = process::registry::next_exit(&mut supervisor.processes) => {
+                process::registry::report_exit(&mut supervisor.processes, &supervisor.registry, generation_id, id, status);
+            }
             Some(inbound) = inbound_frames.recv() => {
                 // No Renderer is live during a cooldown, so only control clients and call answers dispatch.
                 let live = supervisor.respawn_at.map_or(supervisor.authoritative.generation_id, |_| shared::CONTROL_CLIENT_GENERATION);

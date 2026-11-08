@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `process.run`'s `on_exit` and `capture`'s `on_done` fire as soon as the command exits. A command that closed its output and kept running used to report its exit up to 100 ms late.
+
 ## 0.13.0 - 2026-11-06
 
 - Added: `mantle.audio.cards` lists each ALSA and Bluetooth sound card with every profile it offers (`index`, `name`, `description`, `available`) and the `active` one, so a config can switch one card between analog and HDMI. Unplugged profiles stay listed with `available = false`.

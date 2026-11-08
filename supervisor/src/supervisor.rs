@@ -21,7 +21,7 @@ use crate::generation::{
 use crate::memory;
 use crate::pam_worker;
 use crate::polkit::AgentRequest;
-use crate::process::registry::{LiveProcesses, reap_processes, report_if_exited, take_generation};
+use crate::process::registry::{LiveProcesses, reap_processes, take_generation};
 use crate::snapshot::{Published, push_snapshot, send_owned};
 use crate::socket;
 use crate::{process, send_frame_logged};
@@ -121,7 +121,7 @@ pub(crate) struct Supervisor {
     /// ADR-0058 decision 4, ADR-0060: intent after lock-holder death or locked startup.
     relock: Relock,
     /// Tracked `process.run` children (ADR-0026).
-    processes: LiveProcesses,
+    pub(crate) processes: LiveProcesses,
     process_done_tx: tokio::sync::mpsc::UnboundedSender<(u32, u64)>,
     /// `process.kill` and departed-generation reaps, off the loop; [`Supervisor::reap`] drains them.
     reaps: tokio::task::JoinSet<()>,
@@ -545,11 +545,6 @@ impl Supervisor {
             &mut self.reaps,
             envelope,
         );
-    }
-
-    /// Reports one `process.run` child whose output closed, once it has exited.
-    pub(crate) fn reap_exited_process(&mut self, generation_id: u32, id: u64) {
-        report_if_exited(&mut self.processes, &self.registry, &self.process_done_tx, generation_id, id);
     }
 
     /// Reaps authoritative Renderer and live `process.run` children with SIGTERM/SIGKILL and
