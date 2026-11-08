@@ -168,9 +168,9 @@ mod tests {
         lua.load(r#"open = state("open", false) held = delay(open, 1)"#).exec().unwrap();
         lua.load("open:set(true)").exec().unwrap();
         assert!(!lua.load("return held:get()").eval::<bool>().unwrap());
-        assert!(next_wake_deadline(&lua).is_some());
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
+        let deadline = next_wake_deadline(&lua).expect("a deadline was armed");
+        lua.set_app_data(crate::lua::timer::SimClock(deadline));
+        assert!(!take_due_wake(&lua, deadline).is_empty());
         assert!(lua.load("return held:get()").eval::<bool>().unwrap());
         assert!(next_wake_deadline(&lua).is_none(), "an adopted value leaves nothing armed");
         for refused in ["delay(open, 0)", "delay(open, 0.1)"] {
@@ -215,9 +215,9 @@ mod tests {
 
         lua.load("clicks:set(1)").exec().unwrap();
         assert!(lua.load("return flashing:get()").eval::<bool>().unwrap());
-        assert!(next_wake_deadline(&lua).is_some());
-        std::thread::sleep(Duration::from_millis(5));
-        assert!(!take_due_wake(&lua, Instant::now()).is_empty());
+        let deadline = next_wake_deadline(&lua).expect("a deadline was armed");
+        lua.set_app_data(crate::lua::timer::SimClock(deadline));
+        assert!(!take_due_wake(&lua, deadline).is_empty());
         assert!(!lua.load("return flashing:get()").eval::<bool>().unwrap(), "the window closed");
 
         for refused in ["pulse(clicks, 0)", "pulse(clicks, 0.1)"] {

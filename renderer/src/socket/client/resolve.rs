@@ -728,25 +728,24 @@ mod tests {
                 .map(|c| c.rect.width)
                 .collect()
         };
-        let turn = |client: &mut RendererClient| {
+        let mut now = std::time::Instant::now();
+        let turn = |client: &mut RendererClient, at: std::time::Instant| {
+            client.loader.lua().set_app_data(crate::lua::timer::SimClock(at));
             client.wake_due_signals();
             client.re_resolve_if_dirty();
-            client.tick_animations(
-                &["bar@TEST".to_string()],
-                std::time::Instant::now() + std::time::Duration::from_secs(1),
-            );
+            client.tick_animations(&["bar@TEST".to_string()], at + std::time::Duration::from_secs(1));
             client.re_resolve_if_dirty();
         };
         client.loader.lua().load("h:set(true)").exec().unwrap();
-        turn(&mut client);
-        std::thread::sleep(std::time::Duration::from_millis(170));
-        turn(&mut client);
+        turn(&mut client, now);
+        now += std::time::Duration::from_millis(200);
+        turn(&mut client, now);
         assert_eq!(widths(&client), [34.0, 34.0]);
         client.loader.lua().load("h:set(false)").exec().unwrap();
-        turn(&mut client);
+        turn(&mut client, now);
         assert_eq!(widths(&client), [34.0, 34.0], "the delay holds it open");
-        std::thread::sleep(std::time::Duration::from_millis(170));
-        turn(&mut client);
+        now += std::time::Duration::from_millis(200);
+        turn(&mut client, now);
         assert_eq!(widths(&client), [0.0, 34.0], "and lets go on the turn it comes due");
     }
 

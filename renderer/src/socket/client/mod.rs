@@ -531,7 +531,8 @@ impl RendererClient {
     /// Writes each `delay` come due and `pulse` window closed, so this turn's re-resolve adopts
     /// the new value in their readers.
     pub fn wake_due_signals(&mut self) {
-        for cell in crate::lua::signal::take_due_wake(self.loader.lua(), std::time::Instant::now()) {
+        let now = crate::lua::timer::now(self.loader.lua());
+        for cell in crate::lua::signal::take_due_wake(self.loader.lua(), now) {
             self.dirty.mark_cell(cell);
         }
     }
