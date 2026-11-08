@@ -573,7 +573,7 @@ impl NotificationsController {
 
     #[zbus(name = "GetServerInformation")]
     async fn get_server_information(&self) -> (String, String, String, String) {
-        ("mantle".to_string(), "mantle".to_string(), "0.1.0".to_string(), "1.2".to_string())
+        ("mantle".to_string(), "mantle".to_string(), env!("CARGO_PKG_VERSION").to_string(), "1.2".to_string())
     }
 
     /// `reason` is [`CloseReason`] as its raw wire `u32` (the signal's D-Bus signature is fixed by
@@ -642,6 +642,16 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(dismissed.is_finished(), "a dismissed notification's timer must be aborted");
         assert_eq!(controller.state.lock().unwrap().timers.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn server_information_reports_the_release_version() {
+        let (events, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (sound_tx, _sound_rx) = std::sync::mpsc::sync_channel(1);
+        let controller = NotificationsController::inert(events, sound_tx);
+        let version = env!("CARGO_PKG_VERSION").to_string();
+        let expected = ("mantle".to_string(), "mantle".to_string(), version, "1.2".to_string());
+        assert_eq!(controller.get_server_information().await, expected);
     }
 
     #[tokio::test]
