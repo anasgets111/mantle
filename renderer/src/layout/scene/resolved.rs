@@ -98,6 +98,8 @@ pub(crate) struct LayoutStyle {
     pub(super) compositor_blur: bool,
     /// This node's own `shadows` and `effect.blur` (ADR-0254), over its whole painted subtree.
     pub(crate) effect: node::Effect,
+    /// `focus_ring`: keyboard control focus outlines this node.
+    pub(crate) focus_ring: bool,
     /// The room a windowed `list` holds before and after this, its first or last shown item, for
     /// the items it did not build: solver margin along the list's axis (ADR-0374).
     pub(super) window: (f32, f32),
@@ -112,8 +114,9 @@ impl LayoutStyle {
         use node::fields::{common, flow, flow_layout, paint};
         common::cursor.read(properties)?;
         common::accessible_name.read(properties)?;
-        common::focus_ring.read(properties)?;
+        let focus_ring = common::focus_ring.read(properties)?;
         Ok(Self {
+            focus_ring,
             margin: common::margin.read(properties)?,
             padding: common::padding.read(properties)?,
             width_mode: common::width.read(properties)?,

@@ -366,7 +366,7 @@ fn build_node(
         out.extend(ring_cmd(rect, &radius, ring, parent_clip.intersect(ring_box), scale));
     }
     if control == Some(node.id)
-        && node::fields::common::focus_ring.read(&node.properties).unwrap_or(true)
+        && node.layout_style.focus_ring
         && rect.width >= 4.0
         && rect.height >= 4.0
         && !clip.is_empty()
@@ -1300,8 +1300,11 @@ mod tests {
         assert_eq!(focused.commands.len(), idle.commands.len() + 2);
         assert!(focused.commands.iter().rev().take(2).all(|cmd| matches!(cmd.draw, Draw::Box { .. })));
 
-        let mut ringless = tree.clone();
-        std::rc::Rc::make_mut(&mut ringless.children[0].properties).insert("focus_ring", mlua::Value::Boolean(false));
+        let src = r##"return panel { id = "bar", width = 200, height = 40,
+            child = textfield { width = "fill", height = 28, placeholder = "Reply", focus_ring = false,
+                on_submit = function(text) end } }"##;
+        let ringless = resolved_surface(&lua, src, LogicalSize { width: 200.0, height: 40.0 });
+        let id = ringless.children[0].id;
         assert_eq!(build_with_control(&ringless, 1.0, &[], Some(id)).commands.len(), idle.commands.len());
     }
 
