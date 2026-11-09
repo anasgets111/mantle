@@ -476,11 +476,11 @@ props! {
         /// Colour for the SVG's `currentColor` (CSS `color`), which tints symbolic icons (ADR-0072); a `-symbolic` icon with no `currentColor` is recoloured whole, hard-coded fills included. Full-colour icons ignore it.
         foreground: Bound<Color> = absent(Prose("the file's own colours"));
     }
-    /// A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, SVG or SVGZ.
+    /// A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
     mod image(IMAGE) {
-        /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
+        /// File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
         ///
-        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop
+        /// Book: A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop
         source: Bound<FileText> = absent(Lua(r#""""#));
         /// `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
         ///

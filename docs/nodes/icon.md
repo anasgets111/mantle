@@ -46,7 +46,7 @@ side, centred.
 
 The theme is `gtk-icon-theme-name` from `$XDG_CONFIG_HOME/gtk-4.0/settings.ini`, else
 `gtk-3.0/settings.ini`, else `hicolor`. It is read once per Renderer process, so a theme
-change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP, GIF, SVG or SVGZ.
+change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
 
 ## How do I…
 

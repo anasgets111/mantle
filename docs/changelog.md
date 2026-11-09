@@ -8,6 +8,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 ## Unreleased
 
 - Fixed: `process.run`'s `on_exit` and `capture`'s `on_done` fire as soon as the command exits. A command that closed its output and kept running used to report its exit up to 100 ms late.
+- Added: `image` and `icon` nodes load `.ico` and `.bmp` files, so an app whose only icon is a `.ico` (`/usr/share/pixmaps/<name>.ico`) shows it.
 - Fixed: an `image` node's SVG draws its embedded `<image>` PNG, JPEG, GIF and WebP pictures. They used to draw blank.
 - Changed: `mantle.keyboard`'s `caps_lock`, `num_lock` and `scroll_lock` stay live without the `input` group, up to 250 ms late. They used to freeze at their startup values.
 

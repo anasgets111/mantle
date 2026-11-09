@@ -241,10 +241,14 @@ fn scan_theme_dir(
     closest
 }
 
-/// png, then svg, then svgz: the extensions this renderer decodes. `.xpm` is not among them, so a
-/// pixmap that exists only in that format stays unresolved rather than returning a path nothing can draw.
+/// png, svg, svgz, then ico and bmp (off-spec, but some apps ship only `pixmaps/<name>.ico`): the
+/// extensions this renderer decodes. `.xpm` is not among them, so a pixmap that exists only in that
+/// format stays unresolved rather than returning a path nothing can draw.
 fn existing_icon(dir: &Path, name: &str) -> Option<PathBuf> {
-    ["png", "svg", "svgz"].into_iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|path| path.is_file())
+    ["png", "svg", "svgz", "ico", "bmp"]
+        .into_iter()
+        .map(|ext| dir.join(format!("{name}.{ext}")))
+        .find(|path| path.is_file())
 }
 
 fn load_index(path: &Path) -> Option<Arc<super::icon_index::ThemeIndex>> {
@@ -519,10 +523,13 @@ mod tests {
         let pixmaps = root.path().join("pixmaps");
         std::fs::create_dir_all(&pixmaps).unwrap();
         std::fs::write(pixmaps.join("mark.png"), b"x").unwrap();
+        std::fs::write(pixmaps.join("mark.ico"), b"x").unwrap();
+        std::fs::write(pixmaps.join("app.ico"), b"x").unwrap();
         std::fs::write(pixmaps.join("both.png"), b"x").unwrap();
         std::fs::write(icons.join("both.svg"), b"x").unwrap();
         let roots = [root.path()];
         assert_eq!(find("mark", 16, "Child", &roots), Some(pixmaps.join("mark.png")));
+        assert_eq!(find("app", 16, "Child", &roots), Some(pixmaps.join("app.ico")), "an ico-only app still resolves");
         assert_eq!(find("both", 16, "Child", &roots), Some(icons.join("both.svg")));
     }
 

@@ -220,7 +220,7 @@
 ---@alias ImageAnimations { accessible_name?: Animation, align_h?: Animation, align_v?: Animation, async?: Animation, autofocus?: Animation, blend?: Animation, corner_smoothing?: Animation, cursor?: Animation, effect?: Animation, fit?: Animation, focus_ring?: Animation, focus_target?: Animation, focus_visible?: Animation, focused?: Animation, geometry?: Animation, height?: Animation, hittable?: Animation, hover?: Animation, id?: Animation, margin?: Animation, max_height?: Animation, max_width?: Animation, min_height?: Animation, min_width?: Animation, on_click?: Animation, on_double_click?: Animation, on_drag?: Animation, on_hover?: Animation, on_key?: Animation, on_key_release?: Animation, on_press?: Animation, on_wheel?: Animation, opacity?: Animation, origin?: Animation, padding?: Animation, playing?: Animation, pointer?: Animation, radius?: Animation, retain?: Animation, rotate?: Animation, scale?: Animation, settled?: Animation, shadows?: Animation, source?: Animation, source_blur?: Animation, status?: Animation, submits_secure?: Animation, transition?: Animation, translate?: Animation, visible?: Animation, width?: Animation, exit?: Exit, move?: MoveAnimation, [string]: "no such property" }
 ---@class ImageProps: NodeBase, PlacedBase
 ---@field animate? ImageAnimations|Bound Tween named properties to each newly resolved value without running Lua (ADR-0145). `move` eases a matched node to its new parent-relative layout position; an ancestor that shifts needs its own `move`. `exit` runs after removal. Only a node already on screen animates, unless an entry has `from`.
----@field source? string|Bound Default `""`. File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
+---@field source? string|Bound Default `""`. File path, absolute or `~/` under `$HOME`, never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop (ADR-0233).
 ---@field fit? "cover"|"contain"|"stretch"|Bound Default `"cover"`. `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it. No intrinsic size: set `width`/`height`.
 ---@field async? boolean|Bound Default `false`. `false` decodes in the frame that first draws it. `true` decodes on a worker and draws nothing until the first decode lands (ADR-0122). A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images.
 ---@field retain? boolean|Bound Default `false`. Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` and a stable `id`.
@@ -335,7 +335,7 @@ function text(props) end
 ---@return Node
 function icon(props) end
 
----A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, SVG or SVGZ.
+---A picture from a file, decoded off-thread: PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
 ---[docs](https://anasgets111.github.io/mantle/nodes/image.html)
 ---@param props ImageProps
 ---@return Node

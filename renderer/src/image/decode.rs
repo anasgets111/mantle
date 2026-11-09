@@ -577,6 +577,18 @@ mod tests {
     }
 
     #[test]
+    fn an_ico_and_a_bmp_decode_to_the_pixels_they_were_written_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 128, 0, 0, 255, 255, 0, 0, 0, 0];
+        for name in ["fixture.ico", "fixture.bmp"] {
+            let path = dir.path().join(name);
+            ::image::RgbaImage::from_raw(2, 2, rgba.clone()).unwrap().save(&path).unwrap();
+            let (pixels, ..) = decode_raster(&path, (2, 2), None, Charge::Free, &|| true).expect(name);
+            assert_eq!(pixels, rgba, "{name}");
+        }
+    }
+
+    #[test]
     fn a_file_that_is_not_an_image_reports_why_instead_of_panicking() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("not-really.png");
