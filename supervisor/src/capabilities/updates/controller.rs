@@ -305,7 +305,7 @@ async fn run_install_with_child(
                 guard.install_current_package = step.package;
             }
             drop(guard);
-            // Every line, not only progress: gating left the log frozen until the first `(n/m)`.
+            // Every line, not only progress: gating left the log frozen until the first package operation.
             // Pacman prints nothing per package during a download without a tty (a pty would cost
             // ANSI and `\r` handling), so that phase stays silent
             // (its `wchar` does not move); `#updates.packages` and `download_size` cover the gap in config.
@@ -375,7 +375,7 @@ mod tests {
         }
 
         fn parse_install_step(&self, line: &str) -> Option<InstallStep> {
-            crate::capabilities::updates::pacman::install::parse_install_step(line)
+            crate::capabilities::updates::pacman::install::parse_install_step(&mut Default::default(), line)
         }
     }
 
@@ -619,6 +619,74 @@ mod tests {
             "stderr is where a package manager says why it failed, so it has to be in the tail by \
              the time the install is reported finished: {log:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn pacman_piped_install_counts_packages_and_resets_between_runs() {
+        use crate::capabilities::updates::pacman::PacmanBackend;
+
+        let backend = Arc::new(PacmanBackend::new(Default::default(), Default::default(), None));
+        // Reconstructed from pacman's C-locale summary and package-operation callbacks.
+        for (transcript, expected, exit_code) in [
+            (
+                "Packages (5) old-1 [removal] new-2 kvantum-2 linux-2 lib-1
+:: Processing package changes...
+removing old...
+installing new...
+upgrading kvantum...
+reinstalling linux...
+downgrading lib...
+",
+                (5, 5, "lib"),
+                0,
+            ),
+            (
+                "Packages (2) first-1 second-1
+installing first...
+Packages (1) helper-1
+installing helper...
+",
+                (1, 1, "helper"),
+                0,
+            ),
+            ("", (0, 0, ""), 1),
+            (
+                "upgrading orphan...
+",
+                (0, 0, "orphan"),
+                0,
+            ),
+        ] {
+            backend.install_command();
+            let state = Arc::new(Mutex::new(UpdatesState::default()));
+            let child = process::spawn_group_leader_piped(
+                "sh",
+                &process::sh_args(&format!(
+                    "cat <<'PACMAN'
+{transcript}PACMAN
+exit {exit_code}"
+                )),
+            )
+            .unwrap();
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+            run_install_with_child(backend.clone(), state.clone(), events_tx, child).await;
+            let snapshot = state.lock().unwrap().clone();
+            assert_eq!(
+                (
+                    snapshot.install_current_step,
+                    snapshot.install_total_steps,
+                    snapshot.install_current_package.as_str()
+                ),
+                expected,
+            );
+            assert_eq!(snapshot.install_exit_code, Some(exit_code));
+            assert_eq!(snapshot.install_log, transcript.lines().collect::<Vec<_>>());
+            let mut signals = 0;
+            while events_rx.try_recv().is_ok() {
+                signals += 1;
+            }
+            assert_eq!(signals, transcript.lines().count() + 1);
+        }
     }
 
     #[tokio::test]

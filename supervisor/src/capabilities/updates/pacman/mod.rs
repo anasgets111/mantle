@@ -6,6 +6,7 @@ pub mod check;
 pub mod install;
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use shared::warn;
@@ -19,11 +20,12 @@ pub struct PacmanBackend {
     db_root: PathBuf,
     aur_helper: Option<&'static str>,
     aur: AtomicBool,
+    install: Mutex<install::Progress>,
 }
 
 impl PacmanBackend {
     pub fn new(conf_path: PathBuf, db_root: PathBuf, aur_helper: Option<&'static str>) -> Self {
-        Self { conf_path, db_root, aur_helper, aur: AtomicBool::new(false) }
+        Self { conf_path, db_root, aur_helper, aur: AtomicBool::new(false), install: Mutex::default() }
     }
 
     /// The helper to check and install through: detected and asked for.
@@ -57,6 +59,7 @@ impl Backend for PacmanBackend {
     /// `LC_ALL=C` keeps the progress lines untranslated, and `pkexec` passes it on. It is set outside
     /// `pkexec` so the program polkit sees stays `pacman`, which the packaged rule matches.
     fn install_command(&self) -> InstallCommand {
+        *self.install.lock().expect("mutex poisoned") = install::Progress::default();
         let tail = match self.active_helper() {
             Some(helper) => [vec![helper.to_string()], aur::install_arguments(helper)].concat(),
             None => ["pkexec", "pacman", "-Syu", "--noconfirm"].map(String::from).to_vec(),
@@ -65,7 +68,7 @@ impl Backend for PacmanBackend {
     }
 
     fn parse_install_step(&self, line: &str) -> Option<InstallStep> {
-        install::parse_install_step(line)
+        install::parse_install_step(&mut self.install.lock().expect("mutex poisoned"), line)
     }
 
     fn aur_helper(&self) -> Option<&'static str> {
