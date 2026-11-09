@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.13.1 - 2026-11-09
+
 - Fixed: `process.run`'s `on_exit` and `capture`'s `on_done` fire as soon as the command exits. A command that closed its output and kept running used to report its exit up to 100 ms late.
 - Added: `image` and `icon` nodes load `.ico` and `.bmp` files, so an app whose only icon is a `.ico` (`/usr/share/pixmaps/<name>.ico`) shows it.
 - Fixed: an `image` node's SVG draws its embedded `<image>` PNG, JPEG, GIF and WebP pictures. They used to draw blank.
