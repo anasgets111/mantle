@@ -292,6 +292,8 @@ async fn run_supervisor(
     // and senders; `signals` is the receiver this loop awaits. An unread capability's sender never
     // sends, so it never wakes the loop.
     let (capabilities, mut signals) = Capabilities::new(connection.clone(), sound_tx, idle_signal_tx);
+    let (icon_theme_tx, mut icon_themes) = tokio::sync::mpsc::unbounded_channel();
+    capabilities::appearance::spawn_icon_theme(icon_theme_tx);
 
     let socket_path = shared::control_socket_path(&dir);
     let (registry, call_routes, mut inbound_frames, mut connected) = socket::spawn_listener(&socket_path)?;
@@ -380,6 +382,7 @@ async fn run_supervisor(
             Some(request) = agent_requests.recv() => supervisor.handle_polkit_request(request),
             Some((serial, message)) = polkit_events.recv() => supervisor.record_polkit_message(serial, message),
             Some(generation_id) = connected.recv() => supervisor.hydrate(generation_id),
+            Some(theme) = icon_themes.recv() => supervisor.set_icon_theme(theme),
             // One arm per snapshot capability (ADR-0076); `Signals::next` is cancel-safe.
             Some(signal) = signals.next() => supervisor.push_capability_signal(signal),
             Some(event) = idle_signals.recv() => {

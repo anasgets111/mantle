@@ -330,6 +330,9 @@ pub enum SupervisorFrame {
     },
     /// That call's answer, routed back to the waiting control client (ADR-0197).
     CallResult(CallResult),
+    /// The settings portal's icon theme directory, or `None` to fall back to GTK's
+    /// `settings.ini`. Sent on change and to each new generation, whatever the config reads.
+    IconTheme(Option<String>),
 }
 
 /// Renderer -> Supervisor frames, tagged like [`SupervisorFrame`]. `Command` is the Lua-write

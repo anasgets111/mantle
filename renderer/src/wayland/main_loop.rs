@@ -244,6 +244,9 @@ pub fn run(
             match app.client.handle_frame(frame) {
                 FrameOutcome::Handled => {}
                 FrameOutcome::ApplyPending => app.apply_pending(&qh, None),
+                FrameOutcome::IconThemeChanged => {
+                    app.mark_surfaces_stale_where(crate::layout::paint::DisplayList::draws_an_icon)
+                }
                 FrameOutcome::Inject { id, inject } => {
                     let outcome = match app.inject_input(&inject) {
                         Ok(()) => shared::CallOutcome::Returned(serde_json::Value::Null),

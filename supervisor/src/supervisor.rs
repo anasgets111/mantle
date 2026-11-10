@@ -110,6 +110,8 @@ pub(crate) struct Supervisor {
     /// Last snapshot per capability, replayed to each new generation by [`Supervisor::hydrate`]. Its
     /// revision counts published snapshots for the memory report (ADR-0305).
     last_snapshots: HashMap<Capability, Published>,
+    /// The portal's icon theme, replayed like `last_snapshots`.
+    icon_theme: Option<String>,
     /// Id for the next crash replacement.
     next_generation_id: u32,
     renderer: Renderer,
@@ -164,6 +166,7 @@ impl Supervisor {
             locked_flag,
             session_bridge,
             last_snapshots: HashMap::new(),
+            icon_theme: None,
             next_generation_id: 1,
             renderer,
             restart_brake: RestartBrake::default(),
@@ -315,6 +318,11 @@ impl Supervisor {
         self.capabilities.push(signal, &self.registry, self.authoritative.generation_id, &mut self.last_snapshots);
     }
 
+    pub(crate) fn set_icon_theme(&mut self, theme: Option<String>) {
+        send_frame_logged(&self.registry, self.authoritative.generation_id, &SupervisorFrame::IconTheme(theme.clone()));
+        self.icon_theme = theme;
+    }
+
     /// Asks the authoritative generation to re-evaluate its config (ADR-0216).
     pub(crate) fn begin_reload(&self) {
         send_frame_logged(&self.registry, self.authoritative.generation_id, &SupervisorFrame::Reevaluate);
@@ -347,6 +355,9 @@ impl Supervisor {
         for (capability, last) in std::mem::take(&mut self.last_snapshots) {
             let snapshot = send_owned(&self.registry, generation_id, last.snapshot);
             self.last_snapshots.insert(capability, Published { snapshot, deduped: last.deduped });
+        }
+        if self.icon_theme.is_some() {
+            send_frame_logged(&self.registry, generation_id, &SupervisorFrame::IconTheme(self.icon_theme.clone()));
         }
         // ADR-0058 decision 4: replay before relock, or one default frame looks like a broken
         // shell. No Supervisor-side auth-capability check here; Renderer reports Refused if its

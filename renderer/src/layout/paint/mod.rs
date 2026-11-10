@@ -299,6 +299,11 @@ impl DisplayList {
         })
     }
 
+    /// Whether this list draws an `icon`, whose file a theme switch changes under an unchanged list.
+    pub fn draws_an_icon(&self) -> bool {
+        any_draw_matches(&self.commands, |draw| matches!(draw, Draw::Icon { .. }))
+    }
+
     /// Whether any `capture` in this list is one of `nodes` (ADR-0248): a landed frame names the
     /// node it uploads for, mirroring [`Self::draws_any_of`]'s file-name lookup for `image`.
     pub fn captures_any_of(&self, nodes: &[NodeId]) -> bool {
@@ -645,6 +650,7 @@ mod tests {
         let list = build(&tree, 1.0, None);
         assert!(list.draws_any_of(&[std::path::PathBuf::from("/tmp/a.png")]));
         assert!(!list.draws_any_of(&[std::path::PathBuf::from("/tmp/b.png")]));
+        assert!(!list.draws_an_icon(), "an image is not themed");
         // The same walk names the pin `ImageCache::trim` keeps: the path with the box the image
         // was keyed on, the 100x40 rect it fills.
         let pinned = pins(&list);
@@ -677,6 +683,7 @@ mod tests {
             image::icons::FIXTURE_ICONS.replace(previous);
             assert!(matches, "{name}: an unchanged icon must repaint when its font-dependent SVG is evicted");
             assert!(!unrelated && !empty, "{name}: unrelated files must not repaint the icon");
+            assert!(list.draws_an_icon(), "{name}: a theme switch reaches a nested icon");
         }
     }
 

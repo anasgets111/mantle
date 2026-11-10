@@ -44,9 +44,11 @@ return app_badge
 An explicit `width` or `height` overrides that axis of the square; the icon draws at the shorter
 side, centred.
 
-The theme is `gtk-icon-theme-name` from `$XDG_CONFIG_HOME/gtk-4.0/settings.ini`, else
-`gtk-3.0/settings.ini`, else `hicolor`. It is read once per Renderer process, so a theme
-change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
+The theme is the desktop portal's `org.gnome.desktop.interface` `icon-theme` (what
+`gsettings set org.gnome.desktop.interface icon-theme` writes), else `gtk-icon-theme-name` from
+`$XDG_CONFIG_HOME/gtk-4.0/settings.ini`, else `gtk-3.0/settings.ini`, else `hicolor`. A
+change through the portal redraws every icon at once; a `settings.ini` edit shows after a shell
+restart. Files load as PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ.
 
 ## How do I…
 
@@ -65,7 +67,7 @@ change shows after a shell restart, not a reload. Files load as PNG, JPEG, WebP,
 | :--- | :--- |
 | An icon draws nothing | The theme and its fallbacks lack the name; `mantle log` warns once with the theme. Check `/usr/share/icons/<theme>`, or pass an absolute path or `~/` under `$HOME` |
 | `foreground` does not change a colour icon | Only SVGs that use `currentColor` (symbolic icons) take it |
-| The wrong theme's icons appear | The theme comes from GTK settings, read at Renderer start. Set `gtk-icon-theme-name` and restart the shell |
+| The wrong theme's icons appear | Set the theme with `gsettings set org.gnome.desktop.interface icon-theme <theme>` (needs `xdg-desktop-portal` with a GTK or GNOME backend). Without the portal, set `gtk-icon-theme-name` in `settings.ini` and restart the shell |
 | An icon is smaller than its box | It draws at the shorter side of `width`/`height`. Keep them equal, or use `size` alone |
 | An icon given as a relative path draws nothing | A relative `name` is a theme name. Use `mantle.config_dir .. "/icons/x.svg"` |
 

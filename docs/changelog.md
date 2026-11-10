@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `icon` nodes use the icon theme set with `gsettings set org.gnome.desktop.interface icon-theme`, read through the desktop portal, and redraw when it changes. They used to fall back to `hicolor` without a GTK `settings.ini`, and a theme change needed a restart.
 - Fixed: `mantle.updates` reports the current package and install step counts when pacman runs without a terminal.
 
 ## 0.13.1 - 2026-11-09

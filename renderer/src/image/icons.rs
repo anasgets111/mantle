@@ -54,10 +54,25 @@ pub fn resolve(name: &str, px: u32) -> Option<PathBuf> {
         let found = ["svg", "png"].iter().map(|ext| dir.join(format!("{name}.{ext}"))).find(|path| path.is_file());
         return Some(found.unwrap_or_else(|| panic!("no fixture icon {name:?}: add {name}.svg to {}", dir.display())));
     }
-    memoized(name, size, || lookup(name, size))
+    memoized(resolved(), name, size, |theme| lookup(name, size, theme))
 }
 
-fn lookup(name: &str, size: u32) -> Option<PathBuf> {
+/// Switches to the settings portal's theme, or back to [`gtk_theme`] for `None`, and forgets every
+/// resolved path, misses included. Returns whether the theme changed.
+pub fn follow_portal_theme(portal: Option<String>) -> bool {
+    switch_theme(resolved(), portal.unwrap_or_else(gtk_theme))
+}
+
+fn switch_theme(resolved: &Mutex<Resolved>, theme: String) -> bool {
+    let mut resolved = resolved.lock().expect("icon memo poisoned");
+    if resolved.theme.as_deref() == Some(theme.as_str()) {
+        return false;
+    }
+    *resolved = Resolved { theme: Some(theme), memo: Memo::default() };
+    true
+}
+
+fn lookup(name: &str, size: u32, theme: &str) -> Option<PathBuf> {
     let roots = data_dirs();
     let bases: Vec<PathBuf> = std::env::var_os("HOME")
         .map(|home| PathBuf::from(home).join(".icons"))
@@ -66,36 +81,47 @@ fn lookup(name: &str, size: u32) -> Option<PathBuf> {
         .collect();
     let pixmaps: Vec<PathBuf> =
         roots.iter().map(|root| root.join("pixmaps")).chain([PathBuf::from("/usr/share/pixmaps")]).collect();
-    let found = find_icon(name, size, theme(), &bases, &pixmaps);
-    if found.is_none() && super::first_failure(name) {
-        shared::warn!("icon {name:?} is in neither the {:?} theme nor its fallbacks", theme());
+    let found = find_icon(name, size, theme, &bases, &pixmaps);
+    if found.is_none() && super::first_failure(&format!("{theme}/{name}")) {
+        shared::warn!("icon {name:?} is in neither the {theme:?} theme nor its fallbacks");
     }
     found
 }
 
 /// [`resolve`]'s memo, with the filesystem walk injected so tests can count it. A correct answer
 /// re-derived every frame is the defect.
-fn memoized(name: &str, size: u32, lookup: impl FnOnce() -> Option<PathBuf>) -> Option<PathBuf> {
-    if let Some(hit) = memo().lock().expect("icon memo poisoned").get(&size).and_then(|by_name| by_name.get(name)) {
-        return hit.clone();
-    }
-    let found = lookup();
+fn memoized(
+    resolved: &Mutex<Resolved>,
+    name: &str,
+    size: u32,
+    lookup: impl FnOnce(&str) -> Option<PathBuf>,
+) -> Option<PathBuf> {
+    let theme = {
+        let mut resolved = resolved.lock().expect("icon memo poisoned");
+        if let Some(hit) = resolved.memo.get(&size).and_then(|by_name| by_name.get(name)) {
+            return hit.clone();
+        }
+        resolved.theme.get_or_insert_with(gtk_theme).clone()
+    };
+    let found = lookup(&theme);
     // Do not hold the map across `lookup`: its filesystem walk would serialize callers.
-    let mut memo = memo().lock().expect("icon memo poisoned");
-    let by_name = memo.entry(size).or_default();
-    if by_name.len() >= MEMO_CAPACITY {
-        by_name.clear();
+    let mut resolved = resolved.lock().expect("icon memo poisoned");
+    // A switch during `lookup` made this answer the old theme's.
+    if resolved.theme.as_deref() == Some(theme.as_str()) {
+        let by_name = resolved.memo.entry(size).or_default();
+        if by_name.len() >= MEMO_CAPACITY {
+            by_name.clear();
+        }
+        by_name.insert(name.to_string(), found.clone());
     }
-    by_name.insert(name.to_string(), found.clone());
     found
 }
 
-/// Process-lifetime resolved lookups, keyed by size then name so hits borrow a `&str`.
+/// The active theme and its resolved lookups, keyed by size then name so hits borrow a `&str`.
 ///
-/// Process scope matches [`theme`]: the active theme is read once and changes only when reload
-/// replaces the Renderer (ADR-0054). Use `Mutex`, not `thread_local!`, because callers are not
-/// limited to the render thread; an uncontended lock is nanoseconds against the measured 1.6ms
-/// lookup.
+/// One lock, so a theme switch and the memo it empties never disagree. Use `Mutex`, not
+/// `thread_local!`, because callers are not limited to the render thread; an uncontended lock is
+/// nanoseconds against the measured 1.6ms lookup.
 ///
 /// Capped at [`MEMO_CAPACITY`] names per size and cleared wholesale there, because the set of names
 /// is not bounded by what is installed: a notification's `app_icon` is a bare theme name chosen by
@@ -105,9 +131,16 @@ fn memoized(name: &str, size: u32, lookup: impl FnOnce() -> Option<PathBuf>) -> 
 ///
 /// Cleared rather than evicted, following `text::shaping`'s cache: an LRU maintains a recency order
 /// on every hit, which is work on the path the memo exists to make cheap.
-fn memo() -> &'static Mutex<Memo> {
-    static MEMO: OnceLock<Mutex<Memo>> = OnceLock::new();
-    MEMO.get_or_init(|| Mutex::new(Memo::default()))
+fn resolved() -> &'static Mutex<Resolved> {
+    static RESOLVED: OnceLock<Mutex<Resolved>> = OnceLock::new();
+    RESOLVED.get_or_init(Mutex::default)
+}
+
+/// `theme` is the directory name, `None` until the first lookup or portal frame sets it.
+#[derive(Default)]
+struct Resolved {
+    theme: Option<String>,
+    memo: Memo,
 }
 
 /// Names remembered per size. Sized like `text::shaping`'s cache: far past any real working set (a
@@ -117,19 +150,16 @@ const MEMO_CAPACITY: usize = 4096;
 /// Size -> name -> path, nested so hits borrow the inner `&str` without allocating.
 type Memo = HashMap<u32, HashMap<String, Option<PathBuf>>>;
 
-/// The active theme's *directory* name, read once per process rather than behind every paint, so a
-/// theme change needs a restart.
-fn theme() -> &'static str {
-    static THEME: OnceLock<String> = OnceLock::new();
-    THEME.get_or_init(|| gtk_setting("gtk-icon-theme-name").unwrap_or_else(|| "hicolor".to_string()))
+/// The theme until the settings portal names one, which the Supervisor reads (`appearance.rs`): GTK's
+/// setting, else `hicolor`, the spec's implicit fallback.
+fn gtk_theme() -> String {
+    gtk_setting("gtk-icon-theme-name").unwrap_or_else(|| "hicolor".to_string())
 }
 
 /// Do not spawn `gsettings get org.gnome.desktop.interface icon-theme`: that is one process per
-/// render-thread call (the Wayland dispatch thread since ADR-0039), and it returns the theme's
-/// display `Name=` (`"Tela circle dracula"`) rather than the directory (`"Tela-circle-dracula"`).
+/// render-thread call (the Wayland dispatch thread since ADR-0039).
 ///
-/// Read `key` directly from settings, GTK 4 before GTK 3; the icon theme then falls to `hicolor`, the spec's
-/// implicit fallback.
+/// Read `key` directly from settings, GTK 4 before GTK 3.
 ///
 /// ponytail: GTK settings only. KDE uses `Icons/Theme` in `kdeglobals`, so Plasma falls to
 /// `hicolor`, drawing app icons but almost no status icons. Upgrade: another `find_map` arm; not
@@ -272,6 +302,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_missing_icon_warns_once_in_each_theme() {
+        let name = "mantle-test-missing-icon-theme-warning";
+        for theme in ["mantle-test-old-theme", "mantle-test-new-theme"] {
+            assert_eq!(lookup(name, 16, theme), None);
+            assert!(!super::super::first_failure(&format!("{theme}/{name}")));
+        }
+    }
+
+    #[test]
     fn only_an_absolute_name_is_its_own_path() {
         // Tray icons arrive as absolute `icon_path`s with no stat. `./x.png` is not a theme name
         // and is not resolved against the working directory.
@@ -314,32 +353,37 @@ mod tests {
 
     #[test]
     fn the_memo_keys_on_both_name_and_size() {
+        let state = in_theme("hicolor");
         // A collision draws the *wrong* icon, harder to notice than a missing one: a plausible bar
         // full of icons other than the requested ones.
         assert_eq!(
-            memoized("mantle-test-beta", 16, || Some(PathBuf::from("/memo/beta-16"))),
+            memoized(&state, "mantle-test-beta", 16, |_| Some(PathBuf::from("/memo/beta-16"))),
             Some(PathBuf::from("/memo/beta-16"))
         );
         assert_eq!(
-            memoized("mantle-test-beta", 32, || Some(PathBuf::from("/memo/beta-32"))),
+            memoized(&state, "mantle-test-beta", 32, |_| Some(PathBuf::from("/memo/beta-32"))),
             Some(PathBuf::from("/memo/beta-32"))
         );
         assert_eq!(
-            memoized("mantle-test-gamma", 16, || Some(PathBuf::from("/memo/gamma-16"))),
+            memoized(&state, "mantle-test-gamma", 16, |_| Some(PathBuf::from("/memo/gamma-16"))),
             Some(PathBuf::from("/memo/gamma-16"))
         );
         assert_eq!(
-            memoized("mantle-test-beta", 16, || panic!("a remembered name must not be looked up again")),
+            memoized(&state, "mantle-test-beta", 16, |_| panic!("a remembered name must not be looked up again")),
             Some(PathBuf::from("/memo/beta-16"))
         );
     }
 
     #[test]
     fn a_name_the_theme_does_not_have_is_remembered_as_absent() {
+        let state = in_theme("hicolor");
         // Misses walk the whole inheritance chain and stat every candidate; worst call was 5.5ms.
         // Memoize `None` exactly like a hit.
-        assert_eq!(memoized("mantle-test-missing", 16, || None), None);
-        assert_eq!(memoized("mantle-test-missing", 16, || panic!("an absent name must not be looked up again")), None);
+        assert_eq!(memoized(&state, "mantle-test-missing", 16, |_| None), None);
+        assert_eq!(
+            memoized(&state, "mantle-test-missing", 16, |_| panic!("an absent name must not be looked up again")),
+            None
+        );
     }
 
     /// A notification's `app_icon` is an arbitrary name from whichever application sent it, so the
@@ -347,16 +391,52 @@ mod tests {
     /// of the generation.
     #[test]
     fn the_memo_drops_its_names_rather_than_growing_without_bound() {
+        let state = in_theme("hicolor");
         let mut walks = 0;
         for i in 0..=MEMO_CAPACITY {
-            memoized(&format!("name-that-no-theme-has-{i}"), 999, || {
+            memoized(&state, &format!("name-that-no-theme-has-{i}"), 999, |_| {
                 walks += 1;
                 None
             });
         }
-        let held = memo().lock().unwrap().get(&999).map(HashMap::len).unwrap_or_default();
+        let held = state.lock().unwrap().memo.get(&999).map(HashMap::len).unwrap_or_default();
         assert!(held <= MEMO_CAPACITY, "the map must not hold more than the cap, held {held}");
         assert_eq!(walks, MEMO_CAPACITY + 1, "every novel name still resolves; the cap bounds memory, not correctness");
+    }
+
+    /// The process-wide state: a repeated frame must not repaint every icon surface again. Only
+    /// this test sets it, and every other test resolves through fixtures or a local state.
+    #[test]
+    fn the_same_portal_theme_twice_is_one_switch() {
+        assert!(follow_portal_theme(Some("mantle-test-portal".into())));
+        assert!(!follow_portal_theme(Some("mantle-test-portal".into())));
+    }
+
+    fn in_theme(theme: &str) -> Mutex<Resolved> {
+        let state = Mutex::default();
+        switch_theme(&state, theme.to_string());
+        state
+    }
+
+    #[test]
+    fn a_theme_switch_resolves_a_remembered_name_again_including_a_miss() {
+        let root = tempfile::tempdir().unwrap();
+        for theme in ["Old", "New"] {
+            write_index(root.path(), theme, &fixed_index(None));
+            write_icon(root.path(), theme, "16x16/apps", "both");
+        }
+        write_icon(root.path(), "New", "16x16/apps", "only-new");
+        let state = in_theme("Old");
+        let resolve = |name: &str| memoized(&state, name, 16, |theme| find(name, 16, theme, &[root.path()]));
+        assert_eq!(resolve("both"), Some(root.path().join("icons/Old/16x16/apps/both.png")));
+        assert_eq!(resolve("only-new"), None);
+
+        assert!(!switch_theme(&state, "Old".into()), "an unchanged theme is no switch");
+        assert!(memoized(&state, "both", 16, |_| panic!("an unchanged theme must keep the memo")).is_some());
+
+        assert!(switch_theme(&state, "New".into()));
+        assert_eq!(resolve("both"), Some(root.path().join("icons/New/16x16/apps/both.png")));
+        assert_eq!(resolve("only-new"), Some(root.path().join("icons/New/16x16/apps/only-new.png")));
     }
 
     fn find(name: &str, px: u32, theme: &str, roots: &[&Path]) -> Option<PathBuf> {

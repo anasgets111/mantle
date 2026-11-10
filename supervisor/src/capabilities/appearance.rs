@@ -17,6 +17,8 @@ use zbus::zvariant::OwnedValue;
 use super::publish;
 
 const NAMESPACE: &str = "org.freedesktop.appearance";
+const INTERFACE: &str = "org.gnome.desktop.interface";
+const ICON_THEME: &str = "icon-theme";
 
 type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 
@@ -27,6 +29,8 @@ type Settings = HashMap<String, HashMap<String, OwnedValue>>;
 )]
 trait PortalSettings {
     fn read_all(&self, namespaces: &[&str]) -> zbus::Result<Settings>;
+
+    fn read_one(&self, namespace: &str, key: &str) -> zbus::Result<OwnedValue>;
 
     #[zbus(signal)]
     fn setting_changed(&self, namespace: &str, key: &str, value: OwnedValue) -> zbus::Result<()>;
@@ -95,16 +99,23 @@ async fn read(proxy: &PortalSettingsProxy<'_>) -> Option<AppearanceState> {
         .map(|settings| parse(&settings))
 }
 
-/// Subscribes before the first read so a change during the round trip is not lost, then re-reads
-/// the namespace on each `SettingChanged` in it and whenever the portal changes owner.
+/// The proxy and a stream that yields on each `SettingChanged` matching `args` and whenever the
+/// portal changes owner. Callers subscribe before the first read so a change during the round
+/// trip is not lost.
+async fn subscribe(
+    bus: &zbus::Connection,
+    args: &[(u8, &str)],
+) -> zbus::Result<(PortalSettingsProxy<'static>, impl futures_util::Stream<Item = ()> + use<>)> {
+    let proxy = PortalSettingsProxy::builder(bus).cache_properties(CacheProperties::No).build().await?;
+    let changed = proxy.receive_setting_changed_with_args(args).await?.map(drop);
+    let owner = proxy.inner().receive_owner_changed().await?.map(drop);
+    Ok((proxy, stream_select!(changed.fuse(), owner.fuse())))
+}
+
+/// Re-reads the namespace on each `SettingChanged` in it and whenever the portal changes owner.
 async fn run(bus: zbus::Connection, state: Arc<Mutex<AppearanceState>>, events: UnboundedSender<()>) {
-    let subscribed = async {
-        let proxy = PortalSettingsProxy::builder(&bus).cache_properties(CacheProperties::No).build().await?;
-        let changed = proxy.receive_setting_changed_with_args(&[(0, NAMESPACE)]).await?.map(drop);
-        let owner = proxy.inner().receive_owner_changed().await?.map(drop);
-        zbus::Result::Ok((proxy, stream_select!(changed.fuse(), owner.fuse())))
-    };
-    let Ok((proxy, changes)) = subscribed.await.inspect_err(|err| debug!("cannot follow the portal: {err}")) else {
+    let subscribed = subscribe(&bus, &[(0, NAMESPACE)]).await;
+    let Ok((proxy, changes)) = subscribed.inspect_err(|err| debug!("cannot follow the portal: {err}")) else {
         let _ = events.send(());
         return;
     };
@@ -125,6 +136,49 @@ async fn run(bus: zbus::Connection, state: Arc<Mutex<AppearanceState>>, events: 
     }
 }
 
+/// Follows the portal's icon theme for the Renderer's icon lookup, outside the lazy capability:
+/// icons resolve for every config, not only one that reads `mantle.appearance`.
+pub fn spawn_icon_theme(themes: UnboundedSender<Option<String>>) {
+    tokio::spawn(async move {
+        if let Some(bus) = super::session_bus("icons follow only GTK's settings.ini").await {
+            follow_icon_theme(bus, themes).await;
+        }
+    });
+}
+
+/// Sends each change of the theme; `None` is a missing key or an empty or non-string value.
+/// Other failed reads keep the last theme, and nothing is sent until the portal answers.
+async fn follow_icon_theme(bus: zbus::Connection, themes: UnboundedSender<Option<String>>) {
+    let subscribed = subscribe(&bus, &[(0, INTERFACE), (1, ICON_THEME)]).await;
+    let Ok((proxy, changes)) = subscribed.inspect_err(|err| debug!("cannot follow the portal's icon theme: {err}"))
+    else {
+        return;
+    };
+    let mut changes = std::pin::pin!(changes);
+    let mut last = None;
+    loop {
+        let theme = match proxy.read_one(INTERFACE, ICON_THEME).await.inspect_err(|err| debug!("no icon theme: {err}"))
+        {
+            Ok(value) => Some(String::try_from(value).ok().filter(|theme| !theme.is_empty())),
+            Err(zbus::Error::MethodError(name, ..)) if name.as_str() == "org.freedesktop.portal.Error.NotFound" => {
+                Some(None)
+            }
+            Err(_) => None,
+        };
+        if let Some(theme) = theme
+            && theme != last
+        {
+            last.clone_from(&theme);
+            if themes.send(theme).is_err() {
+                return;
+            }
+        }
+        if changes.next().await.is_none() {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,11 +192,22 @@ mod tests {
         values: Vec<(&'static str, Value<'static>)>,
     }
 
+    #[derive(Debug, zbus::DBusError)]
+    #[zbus(prefix = "org.freedesktop.portal.Error")]
+    enum PortalError {
+        NotFound(String),
+    }
+
     #[zbus::interface(name = "org.freedesktop.portal.Settings")]
     impl FakePortal {
         fn read_all(&self, _namespaces: Vec<String>) -> Settings {
             let values = self.values.iter().map(|(key, v)| ((*key).to_string(), OwnedValue::try_from(v).unwrap()));
             HashMap::from([(NAMESPACE.to_string(), values.collect())])
+        }
+
+        fn read_one(&self, namespace: String, key: String) -> Result<OwnedValue, PortalError> {
+            let found = self.values.iter().find(|(name, _)| namespace == INTERFACE && *name == key);
+            found.map(|(_, v)| OwnedValue::try_from(v).unwrap()).ok_or(PortalError::NotFound(key))
         }
 
         #[zbus(signal)]
@@ -244,6 +309,36 @@ mod tests {
         let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), changed.recv()).await;
         assert!(quiet.is_err(), "a portal that vanished is no change");
         assert_eq!(appearance.snapshot().color_scheme, ColorScheme::Dark);
+    }
+
+    #[tokio::test]
+    async fn the_icon_theme_is_read_from_a_portal_that_arrives_later_and_each_change_is_forwarded() {
+        let bus = private_bus().await;
+        let (themes, mut sent) = mpsc::unbounded_channel();
+        tokio::spawn(follow_icon_theme(bus.connection().await, themes));
+        let portal = serve(&bus, vec![(ICON_THEME, Value::from("Papirus"))]).await;
+        assert_eq!(within(sent.recv()).await, Some(Some("Papirus".into())));
+
+        let fake = portal.object_server().interface::<_, FakePortal>(PATH).await.unwrap();
+        for (theme, expected) in [("Tela-circle-dracula", Some("Tela-circle-dracula".into())), ("", None)] {
+            fake.get_mut().await.values[0].1 = Value::from(theme);
+            FakePortal::setting_changed(fake.signal_emitter(), INTERFACE, ICON_THEME, Value::from(theme))
+                .await
+                .unwrap();
+            assert_eq!(within(sent.recv()).await, Some(expected));
+        }
+
+        drop(fake);
+        drop(portal);
+        let portal = serve(&bus, vec![(ICON_THEME, Value::from("Adwaita"))]).await;
+        assert_eq!(within(sent.recv()).await, Some(Some("Adwaita".into())));
+
+        drop(portal);
+        let quiet = tokio::time::timeout(std::time::Duration::from_millis(300), sent.recv()).await;
+        assert!(quiet.is_err(), "a portal that vanished must keep the last icon theme");
+
+        let _portal = serve(&bus, vec![]).await;
+        assert_eq!(within(sent.recv()).await, Some(None));
     }
 
     #[test]

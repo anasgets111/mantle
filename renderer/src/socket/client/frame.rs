@@ -22,6 +22,8 @@ pub enum FrameOutcome {
     Inject { id: u64, inject: Inject },
     /// A successful `Reevaluate`, which may change the surface set (`crate::wayland::App::apply_pending`).
     ApplyPending,
+    /// Icons now resolve to other files under unchanged display lists.
+    IconThemeChanged,
 }
 
 impl RendererClient {
@@ -106,6 +108,11 @@ impl RendererClient {
                 }
             }
             SupervisorFrame::Inject { id, inject } => return FrameOutcome::Inject { id, inject },
+            SupervisorFrame::IconTheme(theme) => {
+                if crate::image::icons::follow_portal_theme(theme) {
+                    return FrameOutcome::IconThemeChanged;
+                }
+            }
             // The Supervisor routes these to control clients; one arriving here is a wire fault.
             SupervisorFrame::CallResult(result) => {
                 error!("ignoring a CallResult for id {}; nothing here calls", result.id);
