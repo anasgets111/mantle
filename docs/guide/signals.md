@@ -60,6 +60,8 @@ in the [reference](#reference).
 ### Capabilities before their first push
 
 A capability reads `nil` until its first snapshot arrives (hydration), and in `mantle check`'s first pass.
+`lock` and `polkit` push their idle state at startup; after a restart while locked, `lock` stays `nil`
+until the lock is taken again.
 `:map(fn, before?)` and `computed(deps, fn, before?)` skip `fn` and hold `before` until every capability
 dependency has pushed. Set `before` to what a guard would have returned (`{}`, `0`, `""`, `false`);
 without it the signal reads `nil`. `:get()` and `on_change`'s `previous` still see `nil`.

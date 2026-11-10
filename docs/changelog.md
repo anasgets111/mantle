@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.lock` and `mantle.polkit` publish their idle state at startup, so `computed` and `:map` over them run without waiting for a lock or authentication request. After a restart while locked, `mantle.lock` stays `nil` until the lock is taken again.
+
 ## 0.13.2 - 2026-11-10
 
 - Fixed: `icon` nodes use the icon theme set with `gsettings set org.gnome.desktop.interface icon-theme`, read through the desktop portal, and redraw when it changes. They used to fall back to `hicolor` without a GTK `settings.ini`, and a theme change needed a restart.

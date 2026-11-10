@@ -4,7 +4,7 @@
 //! in `main.rs`, one per arm. `select!` drops losing futures before running the winner, allowing
 //! `child.wait()` and `&mut supervisor` in separate branches. Most operations address only the
 //! authoritative generation via `self.authoritative.generation_id`; `hydrate` is the exception.
-//! [`Capabilities`] needs a live bus, so only [`push_snapshot`] is tested in isolation.
+//! Tests use a private bus and a stub child to exercise boot hydration without a live shell.
 
 use std::collections::HashMap;
 
@@ -155,7 +155,7 @@ impl Supervisor {
                  to take that lock over (ADR-0060)"
             );
         }
-        Self {
+        let mut supervisor = Self {
             registry,
             authoritative: Authoritative { generation_id: 0, child: boot_child },
             capabilities,
@@ -177,7 +177,15 @@ impl Supervisor {
             process_done_tx,
             reaps: tokio::task::JoinSet::new(),
             departed_reaped: None,
+        };
+        // Boot-built controllers have no lazy reader to publish their initial state. An owed relock
+        // leaves `lock` nil until its `LockReport`: a default `active = false` here would tell the
+        // shell the session is unlocked while the compositor still holds it (ADR-0060).
+        if supervisor.relock == Relock::Idle {
+            supervisor.push_lock_state();
         }
+        supervisor.push_polkit_state();
+        supervisor
     }
 
     /// Sends `SetSessionLock` and its state snapshot; every command is a lock-screen-visible state
@@ -583,6 +591,70 @@ impl Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn boot_built_capabilities_hydrate_their_first_state_but_an_owed_relock_holds_lock_back() {
+        use crate::capabilities::test_support::private_bus;
+        use tokio::sync::mpsc;
+
+        let bus = private_bus().await;
+        for locked in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            if locked {
+                std::fs::File::create(dir.path().join("session-locked")).unwrap();
+            }
+            let connection = bus.connection().await;
+            let (sound_tx, _sounds) = std::sync::mpsc::sync_channel(1);
+            let (idle_tx, _idle) = mpsc::unbounded_channel();
+            let (capabilities, _signals) = Capabilities::new(connection.clone(), sound_tx, idle_tx);
+            let (lock_tx, mut lock_commands) = mpsc::unbounded_channel();
+            let (logind_tx, _logind) = mpsc::unbounded_channel();
+            let bridge = lock::logind::SessionBridge::new(connection, logind_tx).await;
+            let (pam_tx, _pam) = mpsc::unbounded_channel();
+            let (polkit_tx, _polkit) = mpsc::unbounded_channel();
+            let (done_tx, _done) = mpsc::unbounded_channel();
+            let renderer = Renderer::new("/bin/true".into(), dir.path(), dir.path(), None, 0, None);
+            let child = renderer.spawn(0).unwrap();
+            let mut supervisor = Supervisor::new(
+                socket::GenerationRegistry::default(),
+                child,
+                renderer,
+                capabilities,
+                LockController::new(lock_tx),
+                lock::SessionLockedFlag::at(dir.path().join("session-locked")),
+                bridge,
+                pam_tx,
+                polkit_tx,
+                done_tx,
+            );
+            supervisor.authoritative.child.wait().await.unwrap();
+
+            // A locked boot relocks on its first registration, so only the unlocked one replays twice.
+            let generations: &[u32] = if locked { &[0] } else { &[0, 1] };
+            for &generation_id in generations {
+                supervisor.authoritative.generation_id = generation_id;
+                let (tx, mut frames) = mpsc::channel(4);
+                supervisor.registry.register(generation_id, tx, Default::default());
+                supervisor.hydrate(generation_id);
+                let mut snapshots = HashMap::new();
+                while let Ok(bytes) = frames.try_recv() {
+                    let SupervisorFrame::StateSnapshot(snapshot) = serde_json::from_slice(&bytes).unwrap() else {
+                        panic!("boot hydration sends only snapshots");
+                    };
+                    assert_eq!(snapshot.revision, 1, "replay must not advance the revision");
+                    snapshots.insert(snapshot.capability, snapshot.payload);
+                }
+                assert_eq!(snapshots["polkit"]["active"], false);
+                if locked {
+                    assert!(!snapshots.contains_key("lock"), "an owed relock must not read as unlocked");
+                    assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true });
+                } else {
+                    assert_eq!(snapshots["lock"]["active"], false);
+                    assert!(lock_commands.try_recv().is_err(), "an unlocked boot must not request a lock");
+                }
+            }
+        }
+    }
 
     #[test]
     fn a_respawn_discards_the_relock_in_flight() {
