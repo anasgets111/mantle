@@ -7,6 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+## 0.13.3 - 2026-11-10
+
 - Fixed: `mantle.lock` and `mantle.polkit` publish their idle state at startup, so `computed` and `:map` over them run without waiting for a lock or authentication request. After a restart while locked, `mantle.lock` stays `nil` until the lock is taken again.
 
 ## 0.13.2 - 2026-11-10
