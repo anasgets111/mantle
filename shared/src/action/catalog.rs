@@ -99,9 +99,11 @@ pub enum AudioAction {
     /// Sets a `sinks[].id` or `sources[].id` balance, `-1.0` (left) to `1.0` (right), clamped; the
     /// louder side keeps its level.
     SetBalance { id: u32, balance: f32 },
-    /// Makes this `sinks[].id` the default output.
+    /// Makes this `sinks[].id` the default output. WirePlumber saves the choice, so a volume change,
+    /// re-plug or restart keeps it.
     SetDefaultSink { id: u32 },
-    /// Makes this `sources[].id` the default input.
+    /// Makes this `sources[].id` the default input. WirePlumber saves the choice, so a volume change,
+    /// re-plug or restart keeps it.
     SetDefaultSource { id: u32 },
     /// Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as
     /// `set_volume`. Other channels stay unchanged.

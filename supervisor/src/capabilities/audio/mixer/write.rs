@@ -12,10 +12,11 @@ use crate::capabilities::audio::{master, profile, route};
 
 use super::devices::DeviceRoute;
 use super::state::{
-    AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DefaultDevice, MixerState, TARGET_OBJECT_KEY,
+    AudioCommand, DEFAULT_AUDIO_SINK_KEY, DEFAULT_AUDIO_SOURCE_KEY, DEFAULT_CONFIGURED_AUDIO_SINK_KEY,
+    DEFAULT_CONFIGURED_AUDIO_SOURCE_KEY, DefaultDevice, MixerState, TARGET_OBJECT_KEY,
 };
 
-/// The `type_` a `default.audio.*` metadata value carries. Read straight off `pw-metadata`'s own
+/// The `type_` a `default.audio.*` or `default.configured.audio.*` metadata value carries. Read straight off `pw-metadata`'s own
 /// dump (`type:'Spa:String:JSON'`) rather than inferred from the value looking like JSON.
 const METADATA_JSON_TYPE: &str = "Spa:String:JSON";
 
@@ -290,6 +291,11 @@ fn write_app_target(state: &Rc<RefCell<MixerState>>, id: u32, device: Option<u32
 /// Writes `audio:set_default_sink/source(id)`. Metadata names devices by `node.name`, so an id
 /// read from the device array is translated through its tracked entry. System-wide defaults use `0`
 /// (`pw-metadata` shows `update: id:0 key:'default.audio.sink'`).
+///
+/// The `default.configured.*` key is the one that sticks: WirePlumber saves it and reselects from
+/// it on every rescan, which a volume write's `Route` change triggers. Writing only
+/// `default.audio.*` lost the choice to the highest-priority device on the next volume change.
+/// The `default.audio.*` write applies the choice before that rescan runs.
 fn write_default_device(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id: u32) {
     let state = state.borrow();
     let node_name = state.device_entries(kind).get(&id).map(|entry| entry.names.node_name.clone());
@@ -301,12 +307,14 @@ fn write_default_device(state: &Rc<RefCell<MixerState>>, kind: DefaultDevice, id
         debug!("the `default` metadata object is not bound; cannot set the default {kind:?}");
         return;
     };
-    let key = match kind {
-        DefaultDevice::Sink => DEFAULT_AUDIO_SINK_KEY,
-        DefaultDevice::Source => DEFAULT_AUDIO_SOURCE_KEY,
+    let (configured, current) = match kind {
+        DefaultDevice::Sink => (DEFAULT_CONFIGURED_AUDIO_SINK_KEY, DEFAULT_AUDIO_SINK_KEY),
+        DefaultDevice::Source => (DEFAULT_CONFIGURED_AUDIO_SOURCE_KEY, DEFAULT_AUDIO_SOURCE_KEY),
     };
     let value = serde_json::json!({ "name": node_name }).to_string();
-    metadata.set_property(0, key, Some(METADATA_JSON_TYPE), Some(&value));
+    for key in [configured, current] {
+        metadata.set_property(0, key, Some(METADATA_JSON_TYPE), Some(&value));
+    }
 }
 
 #[cfg(test)]

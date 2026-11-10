@@ -852,8 +852,8 @@ local AppearanceCapability = {}
 ---@field set_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets a `sinks[].id` or `sources[].id` mute.
 ---@field toggle_mute fun(self: AudioCapability, id: integer) Toggles a `sinks[].id` or `sources[].id` mute.
 ---@field set_balance fun(self: AudioCapability, id: integer, balance: number) Sets a `sinks[].id` or `sources[].id` balance, `-1.0` (left) to `1.0` (right), clamped; the louder side keeps its level.
----@field set_default_sink fun(self: AudioCapability, id: integer) Makes this `sinks[].id` the default output.
----@field set_default_source fun(self: AudioCapability, id: integer) Makes this `sources[].id` the default input.
+---@field set_default_sink fun(self: AudioCapability, id: integer) Makes this `sinks[].id` the default output. WirePlumber saves the choice, so a volume change, re-plug or restart keeps it.
+---@field set_default_source fun(self: AudioCapability, id: integer) Makes this `sources[].id` the default input. WirePlumber saves the choice, so a volume change, re-plug or restart keeps it.
 ---@field set_channel_volume fun(self: AudioCapability, id: integer, index: integer, volume: number) Sets one `channels[]` level of a `sinks[].id` or `sources[].id` in percent, clamped as `set_volume`. Other channels stay unchanged.
 ---@field set_app_volume fun(self: AudioCapability, id: integer, volume: number) Sets an `apps[].id` stream's volume in percent, clamped to `[0, 100]`.
 ---@field set_app_muted fun(self: AudioCapability, id: integer, muted: boolean) Sets an `apps[].id` stream's mute.

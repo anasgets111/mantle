@@ -24,6 +24,7 @@ PipeWire's native API, on one thread shared with [`privacy`](privacy.md#backend)
 | PipeWire object | Feeds |
 | :--- | :--- |
 | `Audio/Sink`, `Audio/Source` nodes and the `default` metadata's `default.audio.sink`/`source` | `sinks`, `sources`, their `active`, `channels`, `volume`, `muted` and `balance`; `card` is the node's `device.id` |
+| `default.configured.audio.sink`/`source` in the `default` metadata | Written with `default.audio.sink`/`source` by `set_default_sink`/`set_default_source`, as `wpctl set-default` does. WirePlumber saves this key and picks the default from it on every rescan, so the choice survives a volume change or a re-plug; `default.audio.*` alone is overwritten by the next rescan |
 | `Stream/Output/Audio`, `Stream/Input/Audio` nodes | `apps`, minus the streams its field lists |
 | `Link` globals | an app's `target`: the sink or source its links reach |
 | `target.object` in the `default` metadata, keyed by the stream's id | An app's `pinned_to`: the sink or source whose `node.name` or `object.serial` it names, `nil` when unset or when it names no current device of the stream's direction. `set_app_target` writes the device's `node.name` there, how WirePlumber moves a stream; `nil` deletes it. WirePlumber's stream restore keeps the choice per app, so a stream that reconnects goes back to it, unless `node.stream.restore-target` is off. Whether that restore also writes `target.object` back, and so shows as `pinned_to`, is unverified; a choice made through another mixer that writes the key does show |

@@ -251,3 +251,10 @@ pub(super) const TARGET_OBJECT_KEY: &str = "target.object";
 
 /// Metadata key naming the default input device; same JSON shape as the sink key.
 pub(super) const DEFAULT_AUDIO_SOURCE_KEY: &str = "default.audio.source";
+
+/// The user's chosen output, as `wpctl set-default` writes it. WirePlumber persists this key and
+/// picks the default from it on every rescan; `default.audio.sink` is only that rescan's output.
+pub(super) const DEFAULT_CONFIGURED_AUDIO_SINK_KEY: &str = "default.configured.audio.sink";
+
+/// The user's chosen input; the source counterpart of [`DEFAULT_CONFIGURED_AUDIO_SINK_KEY`].
+pub(super) const DEFAULT_CONFIGURED_AUDIO_SOURCE_KEY: &str = "default.configured.audio.source";
