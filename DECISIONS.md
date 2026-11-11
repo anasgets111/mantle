@@ -8877,3 +8877,14 @@ tile and filter pass per use. Weights put every kind at 2-3 ns in release: 2^28 
 (breeze `kiten`, blurs) needs 82M, 3.3x headroom; at 512 px two icons are refused. Render stays
 inline (ADR-0122); its worst case is now bounded. Rejected: a wall-clock timeout, which cannot stop
 resvg or free a decode worker it holds, and a separate process, a new trust boundary for one call.
+
+## 0387. SVG draw cost is not estimated; app-supplied SVG rasterizes on the decode workers
+
+ADR-0386's `draw_cost` is removed. It leaked: a clip child with its own `clip-path`, `feMerge` with
+500k inputs, `feOffset` result lookups (quadratic), paths charged by area rather than segments, and
+nested SVG layer caps all drew far past their charge. It also refused real icons: breeze `kiten` and
+`parley` at 512 px, a 256 px icon on a 2x display (`kiten` needs 82M at 256 px, so about 330M of the
+2^28 ceiling at 512). KDE, GNOME, Quickshell, DankMaterialShell, Noctalia and Waybar estimate nothing.
+Kept: the structural caps of ADR-0384 and the refusal of an `<image>` usvg would decode per use.
+Replaced by rasterizing an `image` node's SVG on the decode workers whatever `async` says; themed
+icons stay inline for a complete first frame (ADR-0122). Deferred: a killable helper process.
