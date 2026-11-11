@@ -32,30 +32,24 @@ pub(super) fn service_name_for_id(id: &str) -> String {
     format!("{MPRIS_SERVICE_PREFIX}{id}")
 }
 
-/// Scans `ListNames`, filters with [`is_trackable_player`], and registers each match not already
-/// tracked. Returns whether any was left out at the player limit.
-async fn discover_existing(
-    connection: &zbus::Connection,
-    dbus_proxy: &zbus::fdo::DBusProxy<'static>,
-    registry: &PlayerRegistry,
-    events: &UnboundedSender<()>,
-) -> bool {
+/// Scans `ListNames` for the names [`is_trackable_player`] accepts that are not already tracked.
+async fn discover_existing(dbus_proxy: &zbus::fdo::DBusProxy<'static>, registry: &PlayerRegistry) -> Vec<String> {
     let names = match dbus_proxy.list_names().await {
         Ok(names) => names,
         Err(err) => {
             warn!("ListNames failed; no players discovered this scan: {err}");
-            return false;
+            return Vec::new();
         }
     };
-    let mut left_out = false;
+    let mut found = Vec::new();
     for name in names {
         let name = name.to_string();
         let tracked = registry.lock().expect("mpris registry mutex poisoned").contains_key(&name);
         if is_trackable_player(&name) && !tracked {
-            left_out |= register_player(connection, registry, events, name).await;
+            found.push(name);
         }
     }
-    left_out
+    found
 }
 
 /// `NameOwnerChanged` for player names only; `arg0namespace` keeps the bus from waking discovery
@@ -101,10 +95,20 @@ pub(super) async fn spawn_discovery(
         }
     };
 
-    let mut left_out = discover_existing(&connection, &dbus_proxy, &registry, &events).await;
-
+    let mut found = discover_existing(&dbus_proxy, &registry).await;
+    // Registrations in flight, each its own task: one player that never answers takes about 100 s
+    // of call timeouts. Its departure cancels it.
+    let mut pending = std::collections::HashMap::new();
     tokio::spawn(async move {
-        while let Some(message) = stream.next().await {
+        loop {
+            for name in found.drain(..) {
+                let (connection, registry, events) = (connection.clone(), registry.clone(), events.clone());
+                let bus_name = name.clone();
+                let task =
+                    tokio::spawn(async move { register_player(&connection, &registry, &events, bus_name).await });
+                pending.insert(name, task).inspect(tokio::task::JoinHandle::abort);
+            }
+            let Some(message) = stream.next().await else { break };
             let Some(signal) = message.ok().and_then(zbus::fdo::NameOwnerChanged::from_message) else { continue };
             let Ok(args) = signal.args() else { continue };
             let name = args.name.to_string();
@@ -113,12 +117,18 @@ pub(super) async fn spawn_discovery(
             }
             shared::debug!("MPRIS player signal: {name} owner={}", args.new_owner.is_some());
             if args.new_owner.is_some() {
-                left_out |= register_player(&connection, &registry, &events, name).await;
+                found.push(name);
             } else {
+                // Awaited, so a cancelled registration cannot insert after the removal below.
+                if let Some(task) = pending.remove(&name) {
+                    task.abort();
+                    let _ = task.await;
+                }
+                let was_full = registry.lock().expect("mpris registry mutex poisoned").len() >= super::MAX_PLAYERS;
                 unregister_player(&registry, &name, &events);
                 // A slot may have freed: pick up the players left out at the limit.
-                if left_out {
-                    left_out = discover_existing(&connection, &dbus_proxy, &registry, &events).await;
+                if was_full {
+                    found = discover_existing(&dbus_proxy, &registry).await;
                 }
             }
         }
@@ -169,6 +179,7 @@ mod tests {
             drop(players.remove(freed));
         };
 
+        poll_until(|| (registry.lock().unwrap().len() == super::super::MAX_PLAYERS).then_some(())).await;
         let left_out = untracked(&players).expect("the scan leaves one name out");
         free_a_slot(&mut players);
         poll_until(|| tracked(&left_out).then_some(())).await;
@@ -179,6 +190,43 @@ mod tests {
         free_a_slot(&mut players);
         poll_until(|| tracked(&left_out).then_some(())).await;
         assert_eq!(registry.lock().unwrap().len(), super::super::MAX_PLAYERS);
+    }
+
+    /// A player whose `CanControl` never answers.
+    struct Hung;
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+    impl Hung {
+        #[zbus(property)]
+        async fn can_control(&self) -> bool {
+            std::future::pending().await
+        }
+    }
+
+    /// A player that never answers holds up only its own registration, and leaving cancels it.
+    #[tokio::test]
+    async fn a_hung_player_holds_up_only_itself() {
+        use crate::capabilities::test_support::{poll_until, private_bus};
+        let bus = private_bus().await;
+        let registry = PlayerRegistry::default();
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        spawn_discovery(bus.builder().build().await.unwrap(), registry.clone(), events).await;
+        let tracked = |name: &str| registry.lock().unwrap().contains_key(&format!("{MPRIS_SERVICE_PREFIX}{name}"));
+        let player = |name: &str, hung: bool| {
+            let builder = bus.builder().name(format!("{MPRIS_SERVICE_PREFIX}{name}")).unwrap();
+            let builder = builder.serve_at("/org/mpris/MediaPlayer2", Root).unwrap();
+            let builder = if hung { builder.serve_at("/org/mpris/MediaPlayer2", Hung).unwrap() } else { builder };
+            async move { builder.build().await.unwrap() }
+        };
+
+        let hung = player("hung", true).await;
+        let _next = player("next", false).await;
+        poll_until(|| tracked("next").then_some(())).await;
+
+        drop(hung);
+        let _last = player("last", false).await;
+        poll_until(|| tracked("last").then_some(())).await;
+        assert!(!tracked("hung"), "a departed player's registration ran on");
     }
 
     #[test]
