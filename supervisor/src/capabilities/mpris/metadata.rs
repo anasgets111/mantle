@@ -29,6 +29,7 @@ fn value_as_str_or_joined_array(value: &Value<'_>) -> Option<String> {
 fn value_as_i64(value: &Value<'_>) -> Option<i64> {
     match value {
         Value::I64(i) => Some(*i),
+        Value::U64(u) => i64::try_from(*u).ok(),
         Value::U32(u) => Some(i64::from(*u)),
         Value::I32(i) => Some(i64::from(*i)),
         _ => None,
@@ -196,6 +197,21 @@ mod tests {
         assert_eq!(parsed.art_url, None);
         assert_eq!(parsed.trackid, None);
         assert_eq!(parsed.url.as_deref().map(str::len), Some(4096), "a URL exactly at the cap is kept");
+    }
+
+    /// The spec says `x`, but some players send `t`; one past `i64::MAX` names no length.
+    #[test]
+    fn parse_metadata_reads_a_length_of_any_integer_type() {
+        for (value, expected) in [
+            (Value::U64(1_302_000_000), Some(1_302_000_000)),
+            (Value::U64(u64::MAX), None),
+            (Value::U32(7), Some(7)),
+            (Value::I32(-1), Some(-1)),
+            (Value::F64(7.0), None),
+        ] {
+            let map = HashMap::from([("mpris:length".to_string(), owned(value.try_clone().unwrap()))]);
+            assert_eq!(parse_metadata(&map).length_us, expected, "{value:?}");
+        }
     }
 
     #[test]
