@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -365,8 +365,9 @@ async fn handle_connection(
     let writer_hangup = Arc::clone(&hangup);
     let writer = tokio::spawn(async move {
         while let Some(payload) = outbound_rx.recv().await {
-            // `send_frame_logged` drops a frame over the cap before it is queued, so this is the
-            // socket failing. A dead writer must not stay registered: leave by the departure path.
+            // Every frame passed `frame_fits` before it was queued (a `process.run` line is far
+            // below the cap), so this is the socket failing. A dead writer must not stay
+            // registered: leave by the departure path.
             if let Err(err) = framing::write_frame(&mut write_half, &payload).await {
                 debug!("writing to generation {generation_id} failed: {err}");
                 writer_hangup.notify_one();
@@ -472,6 +473,36 @@ fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame)
         .map(|claimed| format!("it names generation {claimed}, but this connection is generation {generation_id}"))
 }
 
+/// Whether `frame`, serialized as `payload`, fits the frame cap: the one check every queued frame
+/// passes, where its kind is known. The writer would refuse a larger one and close the socket.
+pub(crate) fn frame_fits(frame: &SupervisorFrame, payload: &[u8]) -> bool {
+    if payload.len() <= framing::MAX_FRAME_LEN {
+        return true;
+    }
+    let message = format!("dropped a {}-byte {} frame: over the frame cap", payload.len(), frame_kind(frame));
+    if oversized_warns(frame) {
+        warn!("{message}")
+    } else {
+        debug!("{message}")
+    }
+    false
+}
+
+/// The capability a snapshot is for, or the frame's kind.
+fn frame_kind(frame: &SupervisorFrame) -> &str {
+    match frame {
+        SupervisorFrame::StateSnapshot(snapshot) => &snapshot.capability,
+        SupervisorFrame::CallResult(_) => "call answer",
+        _ => "non-snapshot",
+    }
+}
+
+/// Warn the first time each capability or kind is too large: a client re-sending the same state
+/// would otherwise log one line per push, and a single flag would hide a second capability.
+fn oversized_warns(frame: &SupervisorFrame) -> bool {
+    shared::log::first_failure(&format!("oversized frame: {}", frame_kind(frame)))
+}
+
 /// Sends `frame`, logging rather than propagating failure. `NoConnection` is expected before boot
 /// Renderer registration; `connected.recv()` replays `last_snapshots`, so no early push is lost.
 /// Returns whether the frame was queued.
@@ -481,20 +512,7 @@ pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u3
     else {
         return false;
     };
-    // Dropped here, where the frame's kind is known, rather than by the writer, which would close
-    // the socket. Warned once: a client re-sending the same state would log one line per push.
-    if payload.len() > framing::MAX_FRAME_LEN {
-        static WARNED: AtomicBool = AtomicBool::new(false);
-        let what = match frame {
-            SupervisorFrame::StateSnapshot(snapshot) => snapshot.capability.as_str(),
-            _ => "non-snapshot",
-        };
-        let len = payload.len();
-        if WARNED.swap(true, Ordering::Relaxed) {
-            debug!("dropped a {len}-byte {what} frame for generation {generation_id}: over the frame cap");
-        } else {
-            warn!("dropped a {len}-byte {what} frame for generation {generation_id}: over the frame cap");
-        }
+    if !frame_fits(frame, &payload) {
         return false;
     }
     if registry.send_to(generation_id, payload) {
@@ -729,6 +747,22 @@ mod tests {
         framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
         assert_eq!(within(connected.recv()).await, Some(5));
         (registry, inbound, client)
+    }
+
+    /// Each capability that outgrows the cap warns once, so a second freezing later is not hidden
+    /// behind the first.
+    #[test]
+    fn an_oversized_frame_warns_once_per_capability() {
+        let snapshot = |capability: &str| {
+            SupervisorFrame::StateSnapshot(shared::StateSnapshot {
+                capability: capability.into(),
+                revision: 1,
+                payload: serde_json::Value::Null,
+            })
+        };
+        assert!(oversized_warns(&snapshot("test-warn-a")));
+        assert!(!oversized_warns(&snapshot("test-warn-a")), "the same capability again is quiet");
+        assert!(oversized_warns(&snapshot("test-warn-b")), "another capability still warns");
     }
 
     /// A state push grown past the frame cap is dropped before it is queued, where its capability

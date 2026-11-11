@@ -77,8 +77,19 @@ impl CallRoutes {
             }
         };
         let id = result.id;
-        let payload = serde_json::to_vec(&shared::SupervisorFrame::CallResult(result))
-            .map_err(|err| format!("could not encode the answer to call {id}: {err}"))?;
+        let encode = |result| {
+            let frame = shared::SupervisorFrame::CallResult(result);
+            serde_json::to_vec(&frame)
+                .map(|payload| (frame, payload))
+                .map_err(|err| format!("could not encode the answer to call {id}: {err}"))
+        };
+        let (frame, mut payload) = encode(result)?;
+        // Re-serializing can outgrow what the Renderer sent (`1e15` comes back as
+        // `1000000000000000.0`). A refusal tells the caller why rather than leaving it waiting.
+        if !super::frame_fits(&frame, &payload) {
+            let why = format!("its {}-byte answer is over the frame cap", payload.len());
+            payload = encode(shared::CallResult { id, outcome: shared::CallOutcome::Failed(why) })?.1;
+        }
         entry.reply.try_send(payload).map_err(|err| format!("the caller of call {id} is gone: {err}"))
     }
 
@@ -138,6 +149,28 @@ mod tests {
         let payload = rx.try_recv().expect("the caller is waiting on exactly this");
         let frame: SupervisorFrame = serde_json::from_slice(&payload).unwrap();
         assert_eq!(frame, SupervisorFrame::CallResult(result(id)));
+    }
+
+    /// An answer past the frame cap would otherwise be dropped on the way out and leave `mantle call`
+    /// waiting; the caller hears why instead.
+    #[tokio::test]
+    async fn an_answer_too_large_to_send_reaches_the_caller_as_a_failure() {
+        let routes = CallRoutes::default();
+        let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4);
+        let id = routes.open(tx).unwrap();
+        routes.dispatched(id, 7);
+        let huge = serde_json::Value::String("x".repeat(shared::framing::MAX_FRAME_LEN));
+
+        routes.answer(7, shared::CallResult { id, outcome: shared::CallOutcome::Returned(huge) }).unwrap();
+
+        let frame: SupervisorFrame = serde_json::from_slice(&rx.try_recv().unwrap()).unwrap();
+        let SupervisorFrame::CallResult(shared::CallResult { id: answered, outcome: shared::CallOutcome::Failed(why) }) =
+            frame
+        else {
+            panic!("{frame:?}")
+        };
+        assert_eq!(answered, id);
+        assert!(why.contains("frame cap"), "{why}");
     }
 
     #[tokio::test]
