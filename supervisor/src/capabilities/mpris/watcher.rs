@@ -99,13 +99,19 @@ pub(super) async fn spawn_discovery(
     // Registrations in flight, each its own task: one player that never answers takes about 100 s
     // of call timeouts. Its departure cancels it.
     let mut pending = std::collections::HashMap::new();
+    // ponytail: at most MAX_PLAYERS registrations run at once, however many player names a client
+    // owns; 8 that never answer stall the rest until they time out or leave, as 8 names held by one
+    // client do. A waiting name is never refused for the ones in flight. Upgrade: a per-owner limit.
+    let permits = std::sync::Arc::new(tokio::sync::Semaphore::new(super::MAX_PLAYERS));
     tokio::spawn(async move {
         loop {
             for name in found.drain(..) {
                 let (connection, registry, events) = (connection.clone(), registry.clone(), events.clone());
-                let bus_name = name.clone();
-                let task =
-                    tokio::spawn(async move { register_player(&connection, &registry, &events, bus_name).await });
+                let (bus_name, permits) = (name.clone(), permits.clone());
+                let task = tokio::spawn(async move {
+                    let _permit = permits.acquire().await;
+                    register_player(&connection, &registry, &events, bus_name).await
+                });
                 pending.insert(name, task).inspect(tokio::task::JoinHandle::abort);
             }
             let Some(message) = stream.next().await else { break };
@@ -192,15 +198,72 @@ mod tests {
         assert_eq!(registry.lock().unwrap().len(), super::super::MAX_PLAYERS);
     }
 
-    /// A player whose `CanControl` never answers.
-    struct Hung;
+    /// A player whose `CanControl` answers only once `gate` closes; `entered` counts the players
+    /// asked.
+    struct Gated {
+        gate: std::sync::Arc<tokio::sync::Semaphore>,
+        entered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        asked: std::sync::atomic::AtomicBool,
+    }
 
     #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
-    impl Hung {
+    impl Gated {
         #[zbus(property)]
         async fn can_control(&self) -> bool {
-            std::future::pending().await
+            use std::sync::atomic::Ordering::Relaxed;
+            if !self.asked.swap(true, Relaxed) {
+                self.entered.fetch_add(1, Relaxed);
+            }
+            let _ = self.gate.acquire().await;
+            true
         }
+    }
+
+    /// Shared by every [`Gated`] player one test serves.
+    #[derive(Clone)]
+    struct Gate {
+        gate: std::sync::Arc<tokio::sync::Semaphore>,
+        entered: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Gate {
+        fn closed() -> Self {
+            Gate { gate: std::sync::Arc::new(tokio::sync::Semaphore::new(0)), entered: Default::default() }
+        }
+
+        fn player(&self) -> Gated {
+            Gated { gate: self.gate.clone(), entered: self.entered.clone(), asked: Default::default() }
+        }
+
+        fn entered(&self) -> usize {
+            self.entered.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    /// Discovery with a call timeout far past [`poll_until`]'s bound, so a registration waiting on a
+    /// [`Gated`] player cannot end by timing out within a test.
+    async fn discovery(
+        bus: &crate::capabilities::test_support::PrivateBus,
+    ) -> (PlayerRegistry, tokio::sync::mpsc::UnboundedReceiver<()>) {
+        let registry = PlayerRegistry::default();
+        let (events, woken) = tokio::sync::mpsc::unbounded_channel();
+        let connection = bus.builder().method_timeout(std::time::Duration::from_secs(60)).build().await.unwrap();
+        spawn_discovery(connection, registry.clone(), events).await;
+        (registry, woken)
+    }
+
+    async fn serve(
+        bus: &crate::capabilities::test_support::PrivateBus,
+        name: &str,
+        gated: Option<Gated>,
+    ) -> zbus::Connection {
+        let builder = bus.builder().name(format!("{MPRIS_SERVICE_PREFIX}{name}")).unwrap();
+        let builder = builder.serve_at("/org/mpris/MediaPlayer2", Root).unwrap();
+        let builder = match gated {
+            Some(gated) => builder.serve_at("/org/mpris/MediaPlayer2", gated).unwrap(),
+            None => builder,
+        };
+        builder.build().await.unwrap()
     }
 
     /// A player that never answers holds up only its own registration, and leaving cancels it.
@@ -208,25 +271,48 @@ mod tests {
     async fn a_hung_player_holds_up_only_itself() {
         use crate::capabilities::test_support::{poll_until, private_bus};
         let bus = private_bus().await;
-        let registry = PlayerRegistry::default();
-        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
-        spawn_discovery(bus.builder().build().await.unwrap(), registry.clone(), events).await;
+        let (registry, _woken) = discovery(&bus).await;
         let tracked = |name: &str| registry.lock().unwrap().contains_key(&format!("{MPRIS_SERVICE_PREFIX}{name}"));
-        let player = |name: &str, hung: bool| {
-            let builder = bus.builder().name(format!("{MPRIS_SERVICE_PREFIX}{name}")).unwrap();
-            let builder = builder.serve_at("/org/mpris/MediaPlayer2", Root).unwrap();
-            let builder = if hung { builder.serve_at("/org/mpris/MediaPlayer2", Hung).unwrap() } else { builder };
-            async move { builder.build().await.unwrap() }
-        };
+        let gate = Gate::closed();
 
-        let hung = player("hung", true).await;
-        let _next = player("next", false).await;
+        let hung = serve(&bus, "hung", Some(gate.player())).await;
+        poll_until(|| (gate.entered() == 1).then_some(())).await;
+        let _next = serve(&bus, "next", None).await;
         poll_until(|| tracked("next").then_some(())).await;
 
-        drop(hung);
-        let _last = player("last", false).await;
+        hung.release_name(format!("{MPRIS_SERVICE_PREFIX}hung")).await.unwrap();
+        let _last = serve(&bus, "last", None).await;
         poll_until(|| tracked("last").then_some(())).await;
-        assert!(!tracked("hung"), "a departed player's registration ran on");
+        // The hung player now answers: a registration still running would finish within
+        // milliseconds, its remaining calls refused at once since the name has no owner.
+        gate.gate.close();
+        let ghost =
+            tokio::time::timeout(std::time::Duration::from_millis(500), poll_until(|| tracked("hung").then_some(())));
+        assert!(ghost.await.is_err(), "a departed player's registration ran on");
+    }
+
+    /// Before any player is tracked, registrations in flight are what the limit bounds: a client
+    /// owning many player names gets at most `MAX_PLAYERS` registered at once.
+    #[tokio::test]
+    async fn at_most_max_players_registrations_run_at_once() {
+        use crate::capabilities::test_support::{poll_until, private_bus};
+        let bus = private_bus().await;
+        let gate = Gate::closed();
+        let mut players = Vec::new();
+        for index in 0..3 * super::super::MAX_PLAYERS {
+            players.push(serve(&bus, &format!("p{index}"), Some(gate.player())).await);
+        }
+        let (registry, _woken) = discovery(&bus).await;
+
+        poll_until(|| (gate.entered() >= super::super::MAX_PLAYERS).then_some(())).await;
+        let more = tokio::time::timeout(
+            std::time::Duration::from_millis(500),
+            poll_until(|| (gate.entered() > super::super::MAX_PLAYERS).then_some(())),
+        );
+        assert!(more.await.is_err(), "{} registrations ran at once", gate.entered());
+
+        gate.gate.close();
+        poll_until(|| (registry.lock().unwrap().len() == super::super::MAX_PLAYERS).then_some(())).await;
     }
 
     #[test]
