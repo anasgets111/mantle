@@ -46,7 +46,9 @@ pub(super) fn fit_text_to_box(
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
             let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
-            if *elide != node::Elide::None && width > content_width {
+            // `content_width` is the box minus its padding, which float rounding can leave a hair
+            // under the width a content-sized box was measured at.
+            if *elide != node::Elide::None && width > content_width + 0.01 {
                 let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
                 Some(fitted)
@@ -775,6 +777,21 @@ mod tests {
             r#"panel {{ id = "bar", child = text {{ width = 80, content = "{LONG}", wrap = "word", max_lines = 0 }} }}"#
         );
         assert_eq!(text_box(&zero), text_box(&uncapped));
+    }
+
+    /// Its box is the measured width plus padding; the padding taken back off must not leave a
+    /// float rounding short of the width it was measured at.
+    #[test]
+    fn a_padded_content_sized_label_fits_its_own_box() {
+        for content in ["Volume", "Wi-Fi 5G", "Bluetooth", "Do not disturb", "Battery 87%", LONG] {
+            for padding in [0.1, 0.3, 0.7, 1.1, 3.3, 6.6, 7.7, 13.3, 17.9, 33.3] {
+                let drawn = elided(&format!(
+                    r#"panel {{ id = "bar", child = row {{ children = {{ text {{ content = "{content}",
+                        elide = "end", padding = {{ left = {padding}, right = {padding} }} }} }} }} }}"#
+                ));
+                assert_eq!(drawn, content, "padding {padding}");
+            }
+        }
     }
 
     #[test]
