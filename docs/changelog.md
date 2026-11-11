@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a tray item from a Qt app that sets its menu after showing its icon gets that menu in `mantle.tray.items`. It used to stay without one until the app restarted.
 - Fixed: `mantle.network.vpn_secret` clears when NetworkManager restarts. It used to stay up for 2 minutes answering nobody, and the restarted NetworkManager's own secret requests were refused until then.
 - Fixed: `mantle.network` joins and forgets a Wi-Fi network whose name is not UTF-8, such as a Latin-1 `café`, listed with `�` in its `ssid`, and no longer mixes up two networks whose names differ only in bytes shown as `�`. Joining one used to save a profile under the mangled name, which could never connect, ask again for the password of one already saved, or join the other network; `forget` deleted nothing or both. When two networks in range share a name, `connect` now fails with "several networks share this name" and `forget` deletes nothing, logging the same; `connect` with `�` in the name of a network out of range fails with "network not found".
 - Fixed: a `mantle.network:connect` join still unsettled after 90 seconds is stopped when it reports `connection timed out`. It used to time out at 45 seconds, before NetworkManager's own 45-second DHCP wait ended, and kept connecting anyway, so the device could connect after showing the error with a retyped key left unsaved. `connect_vpn` also waits 90 seconds, up from 45.

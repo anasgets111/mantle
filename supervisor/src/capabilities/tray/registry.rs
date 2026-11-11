@@ -32,7 +32,7 @@ pub(super) struct ItemEntry {
     /// reshuffles the tray.
     registered: u64,
     properties_forwarder: JoinHandle<()>,
-    menu_forwarder: Option<JoinHandle<()>>,
+    menu_forwarder: JoinHandle<()>,
 }
 
 /// `tray.items` in registration order. Sorting D-Bus ids lexicographically puts `1.100` before
@@ -69,19 +69,7 @@ pub(super) async fn register_item(
 
     let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default(), false).await;
 
-    let menu_path = item.menu().await.ok();
-    let menu = match &menu_path {
-        Some(path) if !path.as_str().is_empty() && path.as_str() != "/" => {
-            match bind_dbusmenu(connection, &destination, path).await {
-                Ok(menu) => Some(menu),
-                Err(err) => {
-                    debug!("failed to bind DBusMenu for {unique_name} at {path}: {err}");
-                    None
-                }
-            }
-        }
-        _ => None,
-    };
+    let menu = bind_item_menu(&item).await;
     if let Some(menu) = &menu {
         match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id)).await {
             Ok(items) => tray_item.menu = Some(items),
@@ -107,9 +95,8 @@ pub(super) async fn register_item(
 
     let properties_forwarder =
         spawn_item_signal_forwarder(item.clone(), unique_name.clone(), key.clone(), registry.clone(), events.clone());
-    let menu_forwarder = menu
-        .clone()
-        .map(|menu| spawn_menu_signal_forwarder(&item, menu, key.clone(), registry.clone(), events.clone()));
+    let menu_forwarder =
+        spawn_menu_signal_forwarder(&item, menu.clone(), key.clone(), registry.clone(), events.clone());
 
     let mut entry =
         ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
@@ -125,9 +112,7 @@ pub(super) async fn register_item(
     };
     if let Some(previous) = previous {
         previous.properties_forwarder.abort();
-        if let Some(handle) = previous.menu_forwarder {
-            handle.abort();
-        }
+        previous.menu_forwarder.abort();
     }
     let _ = events.send(());
     Ok(())
@@ -255,27 +240,53 @@ fn reap_menu_icons(item_id: &str, old: &[MenuItem], kept: &[MenuItem]) {
 /// is a whole `GetLayout`.
 const MENU_SETTLE: std::time::Duration = std::time::Duration::from_millis(100);
 
+/// The item's `Menu`, bound; `None` for none, including the `/NO_DBUSMENU` Qt names until the app sets one.
+async fn bind_item_menu(item: &StatusNotifierItemProxy<'static>) -> Option<DBusMenuProxy<'static>> {
+    let path = item.menu().await.ok().filter(|path| !matches!(path.as_str(), "/" | "/NO_DBUSMENU"))?;
+    let destination = item.inner().destination().to_owned().into();
+    let bound = bind_dbusmenu(item.inner().connection(), &destination, &path).await;
+    bound.inspect_err(|err| debug!("failed to bind DBusMenu for {destination} at {path}: {err}")).ok()
+}
+
+/// `LayoutUpdated` and `ItemsPropertiesUpdated` from `menu`; none without one.
+async fn menu_updates(menu: Option<&DBusMenuProxy<'static>>) -> futures_util::stream::BoxStream<'static, bool> {
+    let Some(menu) = menu else { return futures_util::stream::pending().boxed() };
+    match (menu.receive_layout_updated().await, menu.receive_items_properties_updated().await) {
+        (Ok(layout), Ok(props)) => futures_util::stream::select(layout.map(|_| false), props.map(|_| false)).boxed(),
+        _ => futures_util::stream::pending().boxed(),
+    }
+}
+
 /// Refetches the full menu after each settled burst of `NewMenu`, `LayoutUpdated` or
-/// `ItemsPropertiesUpdated` and updates `menu` in place (ADR-0031). One task per menu-bearing item,
+/// `ItemsPropertiesUpdated`, rebinding `Menu` on `NewMenu`, and updates `menu` in place (ADR-0031). One task per item,
 /// aborted with the item task on unregistration.
 fn spawn_menu_signal_forwarder(
     item: &StatusNotifierItemProxy<'static>,
-    menu: DBusMenuProxy<'static>,
+    mut menu: Option<DBusMenuProxy<'static>>,
     key: ItemKey,
     registry: ItemRegistry,
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     let item = item.clone();
     tokio::spawn(async move {
-        let Ok(new_menu) = item.receive_new_menu().await else { return };
-        let Ok(layout_updated) = menu.receive_layout_updated().await else { return };
-        let Ok(props_updated) = menu.receive_items_properties_updated().await else { return };
+        let Ok(mut new_menu) = item.receive_new_menu().await else { return };
+        let mut updates = menu_updates(menu.as_ref()).await;
         let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
-        let menus = futures_util::stream::select(new_menu.map(drop), layout_updated.map(drop));
-        let mut changes = futures_util::stream::select(menus, props_updated.map(drop));
-        while changes.next().await.is_some() {
-            while let Ok(Some(())) = tokio::time::timeout(MENU_SETTLE, changes.next()).await {}
-            match fetch_menu_via(&menu, &item_stem).await {
+        loop {
+            let mut changes = futures_util::stream::select(new_menu.by_ref().map(|_| true), updates.by_ref());
+            let Some(mut rebind) = changes.next().await else { break };
+            while let Ok(Some(next)) = tokio::time::timeout(MENU_SETTLE, changes.next()).await {
+                rebind |= next;
+            }
+            if rebind {
+                menu = bind_item_menu(&item).await;
+                updates = menu_updates(menu.as_ref()).await;
+                let mut guard = registry.lock().expect("mutex poisoned");
+                let Some(entry) = guard.get_mut(&key) else { break };
+                entry.menu = menu.clone();
+            }
+            let Some(menu) = &menu else { continue };
+            match fetch_menu_via(menu, &item_stem).await {
                 Ok(items) => {
                     let mut guard = registry.lock().expect("mutex poisoned");
                     let Some(entry) = guard.get_mut(&key) else { break };
@@ -321,9 +332,7 @@ pub(super) fn spawn_name_owner_changed_forwarder(
                 debug!("tray item {} disconnected", item_id);
                 departed.push(item_id);
                 entry.properties_forwarder.abort();
-                if let Some(handle) = entry.menu_forwarder {
-                    handle.abort();
-                }
+                entry.menu_forwarder.abort();
                 // Remove all three variant files (ADR-0074). Reconnecting apps get a new unique
                 // name, so stale PNGs otherwise pile up for the rest of the session (logind clears
                 // $XDG_RUNTIME_DIR only when the user's last session ends).
@@ -370,7 +379,7 @@ mod tests {
             last_known: TrayItem { id: id.to_string(), ..TrayItem::default() },
             registered,
             properties_forwarder: tokio::spawn(std::future::ready(())),
-            menu_forwarder: None,
+            menu_forwarder: tokio::spawn(std::future::ready(())),
         }
     }
 
@@ -468,6 +477,10 @@ mod tests {
 
     #[zbus::interface(name = "org.kde.StatusNotifierItem")]
     impl FakeItem {
+        #[zbus(property, name = "Menu")]
+        fn menu(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from("/MenuBar").unwrap()
+        }
         #[zbus(signal)]
         async fn new_menu(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
     }
@@ -491,7 +504,7 @@ mod tests {
         let entry = entry(&connection, "item", 0).await;
         registry.lock().unwrap().insert(key(":1.10"), entry);
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
-        let _forwarder = spawn_menu_signal_forwarder(&item, menu.unwrap(), key(":1.10"), registry, events);
+        let _forwarder = spawn_menu_signal_forwarder(&item, menu.ok(), key(":1.10"), registry, events);
         let menu_signals = SignalEmitter::new(&app, menu_path).unwrap();
         let item_signals = SignalEmitter::new(&app, item_path).unwrap();
         // Subscribing is the forwarder's first await; signals sent before it are lost.
@@ -571,6 +584,81 @@ mod tests {
 
         crate::capabilities::test_support::within(pushed.recv()).await.expect("the forwarder announces the removal");
         assert!(registry.lock().unwrap().is_empty());
+    }
+
+    /// Qt names `/NO_DBUSMENU` until the app sets a menu, then sends `NewMenu`.
+    struct LateMenuItem {
+        menu: Arc<Mutex<&'static str>>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl LateMenuItem {
+        #[zbus(property, name = "Status")]
+        fn status(&self) -> String {
+            "Active".to_string()
+        }
+        #[zbus(property, name = "Menu")]
+        fn menu(&self) -> OwnedObjectPath {
+            OwnedObjectPath::try_from(*self.menu.lock().unwrap()).unwrap()
+        }
+        #[zbus(signal)]
+        async fn new_menu(emitter: &SignalEmitter<'_>) -> zbus::Result<()>;
+    }
+
+    #[tokio::test]
+    async fn a_menu_set_after_show_replaces_qt_no_dbusmenu() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let menu_path = Arc::new(Mutex::new("/NO_DBUSMENU"));
+        let gate = Arc::new(tokio::sync::Semaphore::new(100));
+        let fetches = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = bus.builder().serve_at("/MenuBar", CountingMenu { fetches: fetches.clone(), gate: gate.clone() });
+        let app = app.unwrap().serve_at("/MenuBar2", CountingMenu { fetches, gate });
+        let app = app.unwrap().serve_at("/StatusNotifierItem", LateMenuItem { menu: menu_path.clone() });
+        let app = app.unwrap().build().await.unwrap();
+        let connection = bus.connection().await;
+        let unique = app.unique_name().unwrap().to_owned();
+        let resolved = ResolvedRegistration {
+            unique_name: unique.clone(),
+            destination: BusName::from(unique.clone()).into(),
+            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
+        };
+        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
+        register_item(&connection, &registry, &events, resolved).await.unwrap();
+        let key: ItemKey = (unique, OwnedObjectPath::try_from("/StatusNotifierItem").unwrap());
+        assert!(registry.lock().unwrap()[&key].menu.is_none(), "/NO_DBUSMENU is no menu");
+
+        *menu_path.lock().unwrap() = "/MenuBar";
+        let emitter = SignalEmitter::new(&app, "/StatusNotifierItem").unwrap();
+        crate::capabilities::test_support::within(async {
+            loop {
+                LateMenuItem::new_menu(&emitter).await.unwrap();
+                tokio::time::sleep(MENU_SETTLE * 2).await;
+                let guard = registry.lock().unwrap();
+                let entry = &guard[&key];
+                if entry.last_known.menu.is_some() {
+                    assert_eq!(entry.menu.as_ref().map(|menu| menu.inner().path().as_str()), Some("/MenuBar"));
+                    break;
+                }
+            }
+        })
+        .await;
+
+        // A `LayoutUpdated` from the old menu in the same burst must not cancel the rebind.
+        *menu_path.lock().unwrap() = "/MenuBar2";
+        let old_menu = SignalEmitter::new(&app, "/MenuBar").unwrap();
+        crate::capabilities::test_support::within(async {
+            loop {
+                LateMenuItem::new_menu(&emitter).await.unwrap();
+                CountingMenu::layout_updated(&old_menu, 1, 0).await.unwrap();
+                tokio::time::sleep(MENU_SETTLE * 2).await;
+                let guard = registry.lock().unwrap();
+                if guard[&key].menu.as_ref().map(|menu| menu.inner().path().as_str()) == Some("/MenuBar2") {
+                    break;
+                }
+            }
+        })
+        .await;
     }
 
     /// In-place updates must not move an item.
