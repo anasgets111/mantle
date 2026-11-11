@@ -3,7 +3,7 @@ use std::ops::Range;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::layout::node::{self, PaintStyle, StyleRun};
-use crate::text::shaping::ShapingHandle;
+use crate::text::shaping::{FIT_SLACK, ShapingHandle};
 
 /// Rewrites a `text`'s content to what its box can actually show, which is the one thing paint
 /// cannot work out for itself.
@@ -46,9 +46,7 @@ pub(super) fn fit_text_to_box(
         // skipping the binary search below is the difference on a list of them.
         node::Wrap::None => {
             let width = unconstrained_width.unwrap_or_else(|| measured_width(content, runs, face, shaping));
-            // `content_width` is the box minus its padding, which float rounding can leave a hair
-            // under the width a content-sized box was measured at.
-            if *elide != node::Elide::None && width > content_width + 0.01 {
+            if *elide != node::Elide::None && width > content_width + FIT_SLACK {
                 let fitted = elide_edges(content, runs, *elide, face, content_width, shaping);
                 *elided = true;
                 Some(fitted)
@@ -188,7 +186,7 @@ fn elide_cut(
         let mut candidate = Fitted::new(text, runs);
         candidate.push_source(region.start..cut);
         candidate.push_ellipsis(cut, region.end);
-        measured_width(&candidate.text, &candidate.runs, face, shaping) <= width
+        measured_width(&candidate.text, &candidate.runs, face, shaping) <= width + FIT_SLACK
     };
     if fits(region.end) {
         return region.end;
@@ -841,6 +839,26 @@ mod tests {
                 ));
                 assert_eq!(drawn, content, "padding {padding}");
             }
+        }
+    }
+
+    /// The same round trip under a wrap: shaped again at a hair under its own width, the last
+    /// word would move to a second line, and a capped line would lose a grapheme to its ellipsis.
+    #[test]
+    fn a_padded_content_sized_wrapping_text_stays_on_one_line() {
+        for padding in [25.16, 26.27, 32.19, 33.3] {
+            let (drawn, height) = text_box(&format!(
+                r#"panel {{ id = "bar", width = 2000, child = row {{ children = {{ text {{ content = "Do not disturb",
+                    wrap = "word", padding = {{ left = {padding}, right = {padding} }} }} }} }} }}"#
+            ));
+            assert_eq!((drawn.as_str(), height), ("Do not disturb", 12.0 * 1.2), "padding {padding}");
+        }
+        for padding in [1.48, 4.07, 6.29, 6.66] {
+            let drawn = elided(&format!(
+                r#"panel {{ id = "bar", child = column {{ children = {{ text {{ content = "Hi there\nmuch longer second line",
+                    wrap = "word", max_lines = 1, elide = "end", padding = {{ left = {padding}, right = {padding} }} }} }} }} }}"#
+            ));
+            assert_eq!(drawn, "Hi there\u{2026}", "a capped line keeps its whole text, padding {padding}");
         }
     }
 

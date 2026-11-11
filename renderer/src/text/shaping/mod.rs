@@ -183,6 +183,10 @@ enum Request {
     ResolvedPrimaryFamily(mpsc::Sender<String>),
 }
 
+/// Slack on every width a text is fitted to: a box's content width is its border box minus its
+/// padding, which float rounding can leave a hair under the width it was measured at.
+pub const FIT_SLACK: f32 = 0.01;
+
 /// How many measured strings [`ShapingHandle`] remembers before it drops the lot. A bar resolves
 /// about twenty text nodes and a long list a few hundred; a clock shapes strings nobody asks for
 /// again, so an unbounded map would grow for the session. Full, it holds about 400KB (under 1% of

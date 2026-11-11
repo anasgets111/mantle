@@ -198,7 +198,7 @@ pub(super) fn shape(
         }
     }
     let mut layout: Layout<()> = builder.build(&request.text);
-    layout.break_all_lines(request.max_width);
+    layout.break_all_lines(request.max_width.map(|width| width + super::FIT_SLACK));
 
     let mut width = 0.0_f32;
     let mut lines = Vec::new();
