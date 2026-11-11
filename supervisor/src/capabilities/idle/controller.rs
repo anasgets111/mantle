@@ -319,11 +319,12 @@ impl IdleController {
 
     /// `org.freedesktop.ScreenSaver.Inhibit` (ADR-0231): takes the same logind fd a config's
     /// `idle:inhibit` takes, so one refcount answers for both and the gate keeps one source.
-    pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> u32 {
+    /// `None` past the hold limits; see [`apply_screensaver_inhibit`].
+    pub async fn screensaver_inhibit(&self, peer: String, who: String, why: String) -> Option<u32> {
         let (cookie, holds) = {
             let mut state = self.inhibit.state.lock().await;
             let (cookie, open_fd) =
-                apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why });
+                apply_screensaver_inhibit(&mut state, peer, super::state::IdleInhibitor { who, why })?;
             if open_fd {
                 // As recorded, so logind gets the capped reason too.
                 let reason = state.screensaver[&cookie].1.why.clone();
@@ -335,7 +336,7 @@ impl IdleController {
         // once, at info, that something holds the session awake.
         debug!("ScreenSaver.Inhibit -> cookie {cookie}; {} hold(s) now live", holds.len());
         self.publish_screensaver(holds);
-        cookie
+        Some(cookie)
     }
 
     /// `org.freedesktop.ScreenSaver.UnInhibit`; false for a cookie nothing holds, which the

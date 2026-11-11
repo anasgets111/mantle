@@ -3,7 +3,7 @@
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use super::{MAX_METADATA_TEXT_BYTES, MAX_METADATA_URL_BYTES};
+use super::{MAX_METADATA_TEXT_BYTES, MAX_METADATA_URL_BYTES, id_fits};
 use crate::capabilities::file_url::file_url_to_path;
 use crate::capabilities::truncate_utf8_bytes;
 
@@ -73,7 +73,7 @@ pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedV
         genre: joined("xesam:genre"),
         art_url: url("mpris:artUrl"),
         length_us: get("mpris:length").and_then(value_as_i64),
-        trackid: get("mpris:trackid").and_then(value_as_trackid),
+        trackid: get("mpris:trackid").and_then(value_as_trackid).filter(|id| id_fits(id)),
         url: url("xesam:url"),
     }
 }
@@ -162,10 +162,10 @@ mod tests {
     }
 
     /// Any session-bus application can be a player, so its text is capped on a UTF-8 boundary and
-    /// a URL past its cap is dropped: cut short, it would name a different file or page.
+    /// a URL or track id past its cap is dropped: cut short, it would name a different thing.
     #[test]
-    fn parse_metadata_caps_text_and_drops_an_overlong_url() {
-        let long = format!("{}é{}", "a".repeat(1023), "b".repeat(4096));
+    fn parse_metadata_caps_text_and_drops_an_overlong_url_or_trackid() {
+        let long = format!("{}é{}", "a".repeat(255), "b".repeat(4096));
         let mut artists = Array::new(&Signature::Str);
         artists.append(Value::Str(Str::from(long.as_str()))).unwrap();
         let mut map = HashMap::new();
@@ -178,10 +178,12 @@ mod tests {
         let data_url = format!("data:image/png;base64,{}", "A".repeat(4096));
         map.insert("mpris:artUrl".to_string(), owned(Value::Str(Str::from(data_url.as_str()))));
         map.insert("xesam:url".to_string(), owned(Value::Str(Str::from(format!("file:///{}", "d".repeat(4088))))));
+        let trackid = format!("/{}", "t".repeat(256));
+        map.insert("mpris:trackid".to_string(), owned(Value::ObjectPath(ObjectPath::try_from(trackid).unwrap())));
 
         let parsed = parse_metadata(&map);
 
-        let capped = "a".repeat(1023);
+        let capped = "a".repeat(255);
         for (field, value) in [
             ("title", &parsed.title),
             ("artist", &parsed.artist),
@@ -189,9 +191,10 @@ mod tests {
             ("album_artist", &parsed.album_artist),
             ("genre", &parsed.genre),
         ] {
-            assert_eq!(value, &capped, "{field}: the two-byte é straddles byte 1024, so it goes whole");
+            assert_eq!(value, &capped, "{field}: the two-byte é straddles byte 256, so it goes whole");
         }
         assert_eq!(parsed.art_url, None);
+        assert_eq!(parsed.trackid, None);
         assert_eq!(parsed.url.as_deref().map(str::len), Some(4096), "a URL exactly at the cap is kept");
     }
 

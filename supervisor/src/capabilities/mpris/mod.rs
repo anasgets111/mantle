@@ -24,14 +24,29 @@ pub mod watcher;
 pub use controller::MprisController;
 use shared::action::MprisAction;
 
-/// Cap on each `Metadata` text field: title, artists, album, album artists, genres. Any session-bus
-/// application can be a player, and every field rides in the `mantle.mpris` push. Far past any
-/// real title, CJK included.
-const MAX_METADATA_TEXT_BYTES: usize = 1024;
+/// Cap on each string a player supplies besides its URLs: metadata text, `Identity`,
+/// `DesktopEntry`, track and playlist ids, playlist names and icons, orderings. Any session-bus
+/// application can be a player, and this cap times every list's limit is what keeps `mantle.mpris`
+/// within one frame (`the_largest_mpris_snapshot_fits_in_one_frame`). A tray title's cap; a
+/// 100-character YouTube title fits unless it is mostly CJK.
+const MAX_METADATA_TEXT_BYTES: usize = 256;
 
 /// Cap on `mpris:artUrl` and `xesam:url`: `PATH_MAX`, room for any local `file://` art. A longer
 /// URL is dropped, not cut: a cut one names a different file or page.
 const MAX_METADATA_URL_BYTES: usize = 4096;
+
+/// Whether an id the player takes back on an action fits [`MAX_METADATA_TEXT_BYTES`]. One that does
+/// not is dropped, not cut: a cut one names nothing.
+fn id_fits(id: &str) -> bool {
+    id.len() <= MAX_METADATA_TEXT_BYTES
+}
+
+/// ponytail: players past 8 are not tracked, and one left out is not picked up when another leaves.
+/// Upgrade: re-scan `ListNames` on a departure.
+const MAX_PLAYERS: usize = 8;
+
+/// Playlist orderings kept. MPRIS defines five; the rest are a player's own.
+const MAX_ORDERINGS: usize = 16;
 
 /// `mantle.mpris` action dispatch (ADR-0037): `tokio::spawn`s each write action
 /// (ADR-0036/ADR-0029). Seeks are unclamped here; each command clamps, or declines to, where it runs.
@@ -65,4 +80,63 @@ pub fn dispatch(controller: &MprisController, envelope: &shared::CommandEnvelope
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use shared::state::mpris::{
+        MprisState, PlayerState, PlaylistSummary, PlaylistsState, TrackListState, TrackSummary,
+    };
+
+    use super::*;
+    use crate::capabilities::test_support::{snapshot_frame_len, worst_case_text};
+
+    /// The proof that no set of players can push `mantle.mpris` past the frame cap: every list at its
+    /// limit, every string at its cap in characters JSON escapes to six bytes.
+    #[test]
+    fn the_largest_mpris_snapshot_fits_in_one_frame() {
+        let text = || worst_case_text(MAX_METADATA_TEXT_BYTES);
+        let url = || worst_case_text(MAX_METADATA_URL_BYTES);
+        let playlist = || PlaylistSummary { id: text(), name: text(), icon: text() };
+        let track = TrackSummary { id: text(), title: text(), artist: text(), length: Some(i64::MAX) };
+        let player = PlayerState {
+            // A bus name is at most 255 bytes, none of them escaped.
+            id: "p".repeat(255),
+            identity: text(),
+            title: text(),
+            artist: text(),
+            album: text(),
+            album_artist: text(),
+            genre: text(),
+            desktop_entry: text(),
+            // Canonical, so at most `PATH_MAX`.
+            album_art_path: worst_case_text(4096),
+            art_url: url(),
+            url: url(),
+            position: Some(i64::MIN),
+            position_updated_at: i64::MIN,
+            length: Some(i64::MAX),
+            pid: Some(u32::MAX),
+            track_list: TrackListState {
+                tracks: vec![track; collections::TRACK_LIMIT],
+                current_track: text(),
+                can_edit: true,
+            },
+            playlists: PlaylistsState {
+                count: u32::MAX,
+                orderings: vec![text(); MAX_ORDERINGS],
+                active: Some(playlist()),
+                index: u32::MAX,
+                page_size: collections::PLAYLIST_PAGE_LIMIT,
+                order: text(),
+                reverse: true,
+                playlists: vec![playlist(); collections::PLAYLIST_PAGE_LIMIT as usize],
+            },
+            ..PlayerState::default()
+        };
+
+        let len = snapshot_frame_len(shared::Capability::Mpris, &MprisState { players: vec![player; MAX_PLAYERS] });
+
+        assert!(len < shared::framing::MAX_FRAME_LEN, "{len} bytes");
+    }
 }

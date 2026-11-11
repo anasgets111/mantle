@@ -29,8 +29,8 @@ impl LoopStatus {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MprisState {
-    /// Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]`
-    /// stays put; empty when none runs.
+    /// Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]`
+    /// stays put; empty when none runs. At most 8: a player appearing past that is left out.
     pub players: Vec<PlayerState>,
 }
 

@@ -4,6 +4,7 @@
 pub use shared::state::mpris::PlayerState;
 
 use crate::capabilities::scale::percent_from_fraction;
+use crate::capabilities::truncate_utf8_bytes;
 use shared::state::mpris::LoopStatus;
 use shared::state::mpris::PlayState;
 
@@ -12,7 +13,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use futures_util::{FutureExt, StreamExt};
-use shared::debug;
+use shared::{debug, warn};
 use tokio::task::JoinHandle;
 
 use super::collections::{TrackListState, next_optional, read_playlists, read_track_list, spawn_collections_forwarder};
@@ -23,6 +24,7 @@ use super::proxies::{
     bind_track_list,
 };
 use super::watcher::player_id;
+use super::{MAX_METADATA_TEXT_BYTES, MAX_PLAYERS};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Allocates [`PlayerEntry::registered`] on the same terms as the tray counter.
@@ -70,7 +72,7 @@ struct Resynced {
 
 fn resolved_player_identity(read: zbus::Result<String>, previous: Option<&PlayerState>, bus_name: &str) -> String {
     match read {
-        Ok(identity) => identity,
+        Ok(identity) => truncate_utf8_bytes(&identity, MAX_METADATA_TEXT_BYTES),
         Err(err) => {
             debug!("Identity read failed for {bus_name}; keeping the last known value this round: {err}");
             previous.map(|state| state.identity.clone()).unwrap_or_default()
@@ -177,7 +179,7 @@ async fn resync(
     // `player_identity` is MediaPlayer2.Identity, not the TrackIdentity key below.
     let player_identity = resolved_player_identity(player_identity, previous_state, bus_name);
     // Optional and absent on several players: an error means "I have none", not a stale value.
-    let desktop_entry = desktop_entry.unwrap_or_default();
+    let desktop_entry = truncate_utf8_bytes(&desktop_entry.unwrap_or_default(), MAX_METADATA_TEXT_BYTES);
 
     // A full Metadata read failure keeps metadata-derived fields instead of resetting them and
     // causing a spurious track change.
@@ -323,6 +325,10 @@ pub(super) async fn register_player(
     };
     let previous = {
         let mut guard = registry.lock().expect("mutex poisoned");
+        if guard.len() >= MAX_PLAYERS && !guard.contains_key(&bus_name) {
+            warn!("not tracking {bus_name}: {MAX_PLAYERS} players already are");
+            return;
+        }
         entry.registered = match guard.get(&bus_name) {
             // Same bus name, same player: holds its place; a restart gets a new unique name.
             Some(existing) => existing.registered,
@@ -591,6 +597,8 @@ mod identity_tests {
         assert_eq!(resolved_player_identity(Err(zbus::Error::InvalidReply), Some(&previous), "test"), "Player name");
         assert_eq!(resolved_player_identity(Err(zbus::Error::InvalidReply), None, "test"), "");
         assert_eq!(resolved_player_identity(Ok("New name".to_string()), Some(&previous), "test"), "New name");
+        let long = "n".repeat(super::super::MAX_METADATA_TEXT_BYTES + 1);
+        assert_eq!(resolved_player_identity(Ok(long), None, "test").len(), super::super::MAX_METADATA_TEXT_BYTES);
     }
 
     struct Root;
@@ -697,7 +705,8 @@ mod resync_tests {
     #[zbus::interface(name = "org.mpris.MediaPlayer2")]
     impl Root {
         #[zbus(property)] fn identity(&self) -> String { "Fixture".into() }
-        #[zbus(property)] fn desktop_entry(&self) -> String { "fixture".into() }
+        /// Past the text cap, so the capped read shows.
+        #[zbus(property)] fn desktop_entry(&self) -> String { "f".repeat(super::super::MAX_METADATA_TEXT_BYTES + 1) }
         #[zbus(property)] fn can_raise(&self) -> bool { false }
         #[zbus(property)] fn can_quit(&self) -> bool { true }
     }
@@ -757,6 +766,22 @@ mod resync_tests {
         assert_eq!(ids, ["fixture", "other"]);
     }
 
+    /// Past the limit a new player is not tracked; one already tracked still re-registers.
+    #[tokio::test]
+    async fn players_past_the_limit_are_not_tracked() {
+        let (connection, _peer, _) = serve().await;
+        let registry: PlayerRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        for index in 0..=super::super::MAX_PLAYERS {
+            register_player(&connection, &registry, &events, format!("{NAME}{index}")).await;
+        }
+        register_player(&connection, &registry, &events, format!("{NAME}0")).await;
+
+        let ids: Vec<String> = ordered_players(&registry).into_iter().map(|player| player.id).collect();
+        let expected: Vec<String> = (0..super::super::MAX_PLAYERS).map(|index| format!("fixture{index}")).collect();
+        assert_eq!(ids, expected);
+    }
+
     #[tokio::test]
     async fn a_player_keeps_its_owner_pid_through_a_resync() {
         let bus = private_bus().await;
@@ -803,7 +828,7 @@ mod resync_tests {
             position: state.position,
             position_updated_at: state.position_updated_at,
             length: Some(240_000_000),
-            desktop_entry: "fixture".into(),
+            desktop_entry: "f".repeat(super::super::MAX_METADATA_TEXT_BYTES),
             ..PlayerState::default()
         };
         assert_eq!(state, expected);

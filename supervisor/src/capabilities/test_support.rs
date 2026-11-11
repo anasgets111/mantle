@@ -12,6 +12,19 @@ pub(crate) fn properties(pairs: &[(&str, Value<'static>)]) -> std::collections::
     pairs.iter().map(|(key, value)| ((*key).into(), OwnedValue::try_from(value.clone()).unwrap())).collect()
 }
 
+/// A string of `bytes` bytes that JSON escapes to six each (`\u0001`): a string at its cap, as long
+/// as it can serialize.
+pub(crate) fn worst_case_text(bytes: usize) -> String {
+    "\u{1}".repeat(bytes)
+}
+
+/// The length of `state` sent as `capability`'s snapshot frame, the size the frame cap applies to.
+pub(crate) fn snapshot_frame_len(capability: shared::Capability, state: &impl serde::Serialize) -> usize {
+    let payload = serde_json::to_value(state).unwrap();
+    let snapshot = shared::StateSnapshot { capability: capability.as_str().to_owned(), revision: u32::MAX, payload };
+    serde_json::to_vec(&shared::SupervisorFrame::StateSnapshot(snapshot)).unwrap().len()
+}
+
 /// Connected p2p zbus connections without a bus daemon, returned as `(server, client)`. `serve`
 /// installs the client's interfaces; pass `Ok` when the client answers nothing, which is most tests
 /// here, since binding a proxy makes no call unless it asks for `CacheProperties::Yes` -- that one

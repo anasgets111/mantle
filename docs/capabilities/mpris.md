@@ -34,7 +34,7 @@ rect {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `players` | `PlayerState[]` | Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. |
+| `players` | `PlayerState[]` | Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: a player appearing past that is left out. |
 
 ### `LoopStatus`
 

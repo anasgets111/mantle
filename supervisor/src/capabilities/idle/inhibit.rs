@@ -9,7 +9,6 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::controller::IdleController;
 use super::state::IdleInhibitor;
-use crate::capabilities::truncate_utf8_bytes;
 
 fn total(counts: &HashMap<u32, u32>) -> u32 {
     counts.values().sum()
@@ -39,23 +38,30 @@ pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32)
 /// [`cleanup_generation_inhibit`] can never drop a browser's hold on a config reload.
 pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
 
-/// Cap on a `ScreenSaver` hold's `application_name` and `reason`. Any session-bus application
-/// supplies them and every hold rides in the `mantle.idle` push; like a tray title, they are drawn,
-/// never matched.
-const MAX_SCREENSAVER_TEXT_BYTES: usize = 256;
+/// ponytail: holds past these are refused with a D-Bus error. Per peer, so a client leaking a hold
+/// per play reaches its own limit first; 16, not 1, because the portal is one peer for every
+/// sandboxed app. Upgrade: count per app through the portal's `app_id`.
+const MAX_SCREENSAVER_HOLDS_PER_PEER: usize = 16;
+pub(crate) const MAX_SCREENSAVER_HOLDS: usize = 64;
 
-/// `ScreenSaver.Inhibit`: records the hold, its text capped, and reports the same 0->1 transition a
-/// config's hold does. The cookie is the client's handle for releasing it.
-pub(crate) fn apply_screensaver_inhibit(state: &mut InhibitState, peer: String, hold: IdleInhibitor) -> (u32, bool) {
+/// `ScreenSaver.Inhibit`: records the hold, its text capped, and reports the same 0->1 transition
+/// a config's hold does. The cookie is the client's handle for releasing it. `None`, recording
+/// nothing, past either hold limit.
+pub(crate) fn apply_screensaver_inhibit(
+    state: &mut InhibitState,
+    peer: String,
+    hold: IdleInhibitor,
+) -> Option<(u32, bool)> {
+    let held = state.screensaver.values().filter(|(holder, _)| *holder == peer).count();
+    if held >= MAX_SCREENSAVER_HOLDS_PER_PEER || state.screensaver.len() >= MAX_SCREENSAVER_HOLDS {
+        return None;
+    }
     let cookie = state.next_cookie;
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
-    let hold = IdleInhibitor {
-        who: truncate_utf8_bytes(&hold.who, MAX_SCREENSAVER_TEXT_BYTES),
-        why: truncate_utf8_bytes(&hold.why, MAX_SCREENSAVER_TEXT_BYTES),
-    };
+    let hold = super::state::inhibitor(&hold.who, &hold.why);
     state.screensaver.insert(cookie, (peer, hold));
-    (cookie, apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER))
+    Some((cookie, apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER)))
 }
 
 /// `ScreenSaver.UnInhibit`. `None` for a cookie nothing holds, which must not move the refcount:
@@ -161,7 +167,10 @@ impl ScreenSaver {
         let Some(peer) = header.sender().map(|sender| sender.to_string()) else {
             return Err(zbus::fdo::Error::Failed("Inhibit arrived without a sender".to_string()));
         };
-        Ok(self.controller.screensaver_inhibit(peer, application_name, reason).await)
+        self.controller
+            .screensaver_inhibit(peer, application_name, reason)
+            .await
+            .ok_or_else(|| zbus::fdo::Error::LimitsExceeded("too many idle holds".to_string()))
     }
 
     async fn un_inhibit(
@@ -212,6 +221,27 @@ pub(super) mod tests {
         IdleInhibitor { who: String::new(), why: why.to_string() }
     }
 
+    /// Refused past either limit; a refusal moves no refcount, and a release makes room again.
+    #[test]
+    fn a_screensaver_hold_past_the_per_peer_or_total_limit_is_refused() {
+        let mut state = InhibitState::default();
+        for _ in 0..MAX_SCREENSAVER_HOLDS_PER_PEER {
+            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        }
+        assert_eq!(apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")), None);
+        assert_eq!(state.counts[&SCREENSAVER_HOLDER] as usize, MAX_SCREENSAVER_HOLDS_PER_PEER);
+
+        for peer in 0.. {
+            if apply_screensaver_inhibit(&mut state, format!(":2.{peer}"), hold("Playing")).is_none() {
+                break;
+            }
+        }
+        assert_eq!(state.screensaver.len(), MAX_SCREENSAVER_HOLDS);
+        let oldest = *state.screensaver.keys().next().unwrap();
+        apply_screensaver_release(&mut state, oldest, ":1.42").unwrap();
+        assert!(apply_screensaver_inhibit(&mut state, ":3.0".into(), hold("Playing")).is_some());
+    }
+
     /// Any session-bus application can call `Inhibit`, and every hold rides in the `mantle.idle` push.
     #[test]
     fn a_screensaver_holds_name_and_reason_are_capped_on_a_char_boundary() {
@@ -219,7 +249,8 @@ pub(super) mod tests {
         let long = format!("{}é{}", "a".repeat(255), "b".repeat(1024));
 
         let (cookie, _) =
-            apply_screensaver_inhibit(&mut state, ":1.42".into(), IdleInhibitor { who: long.clone(), why: long });
+            apply_screensaver_inhibit(&mut state, ":1.42".into(), IdleInhibitor { who: long.clone(), why: long })
+                .unwrap();
 
         let (_, hold) = &state.screensaver[&cookie];
         assert_eq!(hold.who, "a".repeat(255), "the two-byte é straddles byte 256, so it goes whole");
@@ -230,11 +261,12 @@ pub(super) mod tests {
     fn the_first_screensaver_hold_opens_the_fd_and_cookies_start_at_one() {
         let mut state = InhibitState::default();
 
-        let (first, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
+        let (first, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
 
         assert_eq!(first, 1, "0 is a cookie some clients reject");
         assert!(transition);
-        let (second, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio"));
+        let (second, transition) =
+            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
         assert_eq!(second, 2);
         assert!(!transition, "the same client's second hold is already covered");
         assert_eq!(state.screensaver.len(), 2);
@@ -247,7 +279,8 @@ pub(super) mod tests {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
 
-        let (cookie, transition) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
+        let (cookie, transition) =
+            apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
         assert!(!transition, "generation 1 already opened it");
 
         let transition = apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
@@ -258,7 +291,7 @@ pub(super) mod tests {
     #[test]
     fn releasing_an_unknown_or_foreign_cookie_moves_no_refcount() {
         let mut state = InhibitState::default();
-        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
+        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
         assert_eq!(apply_screensaver_release(&mut state, cookie, ":1.99"), None, "another peer's cookie");
         apply_screensaver_release(&mut state, cookie, ":1.42").expect("a live cookie");
 
@@ -270,9 +303,9 @@ pub(super) mod tests {
     #[test]
     fn a_departed_peer_loses_its_own_holds_and_no_one_elses() {
         let mut state = InhibitState::default();
-        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
-        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio"));
-        let (survivor, _) = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting"));
+        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
+        apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing audio")).unwrap();
+        let (survivor, _) = apply_screensaver_inhibit(&mut state, ":1.99".into(), hold("Presenting")).unwrap();
 
         let transition = drop_screensaver_peer(&mut state, ":1.42").expect("that peer held two");
 
@@ -288,7 +321,7 @@ pub(super) mod tests {
     fn a_config_reload_reaps_its_generation_without_touching_a_screensaver_hold() {
         let mut state = InhibitState::default();
         apply_inhibit(&mut state.counts, 1);
-        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video"));
+        let (cookie, _) = apply_screensaver_inhibit(&mut state, ":1.42".into(), hold("Playing video")).unwrap();
 
         let transition = cleanup_generation_inhibit(&mut state.counts, 1);
 

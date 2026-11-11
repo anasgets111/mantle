@@ -3,15 +3,19 @@
 pub use shared::state::mpris::{PlaylistSummary, PlaylistsState, TrackListState, TrackSummary};
 
 use futures_util::{Stream, StreamExt};
+use std::collections::HashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-use zbus::zvariant::OwnedObjectPath;
+
+use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::metadata::parse_metadata;
 use super::player::PlayerRegistry;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
+use super::{MAX_METADATA_TEXT_BYTES, MAX_ORDERINGS, id_fits};
+use crate::capabilities::truncate_utf8_bytes;
 
-const TRACK_LIMIT: usize = 100;
+pub(super) const TRACK_LIMIT: usize = 100;
 const MAX_TRACK_IDS: usize = 10_000;
 pub(super) const PLAYLIST_PAGE_LIMIT: u32 = 100;
 
@@ -33,23 +37,22 @@ pub(super) async fn read_track_list(
     if metadata.len() != window.len() {
         return Err(zbus::Error::Failure("GetTracksMetadata returned the wrong number of tracks".into()));
     }
-    let tracks = window
-        .iter()
-        .zip(metadata)
-        .map(|(id, metadata)| {
-            let parsed = parse_metadata(&metadata);
-            TrackSummary {
-                id: id.to_string(),
-                title: parsed.title,
-                artist: parsed.artist,
-                length: parsed.length_us.filter(|length| *length >= 0),
-            }
-        })
-        .collect();
+    let tracks = window.iter().zip(metadata).filter_map(|(id, metadata)| track_summary(id, &metadata)).collect();
     Ok(TrackListState {
         tracks,
         current_track: current_track.unwrap_or_default().to_string(),
         can_edit: proxy.can_edit_tracks().await?,
+    })
+}
+
+/// `None` for an id past the cap; see [`id_fits`].
+fn track_summary(id: &OwnedObjectPath, metadata: &HashMap<String, OwnedValue>) -> Option<TrackSummary> {
+    let parsed = parse_metadata(metadata);
+    id_fits(id.as_str()).then(|| TrackSummary {
+        id: id.to_string(),
+        title: parsed.title,
+        artist: parsed.artist,
+        length: parsed.length_us.filter(|length| *length >= 0),
     })
 }
 
@@ -61,7 +64,8 @@ pub(super) async fn read_playlists(
     reverse: bool,
     fallback_order: bool,
 ) -> zbus::Result<PlaylistsState> {
-    let orderings = proxy.orderings().await?;
+    let orderings: Vec<String> =
+        proxy.orderings().await?.into_iter().filter(|ordering| id_fits(ordering)).take(MAX_ORDERINGS).collect();
     let selected_order =
         if order.is_empty() || (fallback_order && !orderings.iter().any(|supported| supported == order)) {
             orderings.first().cloned().unwrap_or_else(|| "Alphabetical".to_string())
@@ -73,7 +77,7 @@ pub(super) async fn read_playlists(
         return Err(zbus::Error::Failure(format!("unsupported playlist ordering {selected_order:?}")));
     }
     let (active_valid, active) = proxy.active_playlist().await?;
-    let active = active_valid.then(|| playlist_summary(active));
+    let active = active_valid.then(|| playlist_summary(active)).flatten();
     let page_size = requested_count.min(PLAYLIST_PAGE_LIMIT);
     let items = proxy.get_playlists(index, page_size, &selected_order, reverse).await?;
     if items.len() > page_size as usize {
@@ -87,12 +91,18 @@ pub(super) async fn read_playlists(
         page_size,
         order: selected_order,
         reverse,
-        playlists: items.into_iter().map(playlist_summary).collect(),
+        playlists: items.into_iter().filter_map(playlist_summary).collect(),
     })
 }
 
-fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> PlaylistSummary {
-    PlaylistSummary { id: id.to_string(), name, icon }
+/// `None` for an id past the cap; an icon URI past it reads as none, since a cut one names nothing.
+fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> Option<PlaylistSummary> {
+    let icon = if id_fits(&icon) { icon } else { String::new() };
+    id_fits(id.as_str()).then(|| PlaylistSummary {
+        id: id.to_string(),
+        name: truncate_utf8_bytes(&name, MAX_METADATA_TEXT_BYTES),
+        icon,
+    })
 }
 
 pub(super) async fn next_optional<S: Stream + Unpin>(stream: &mut Option<S>) -> Option<S::Item> {
@@ -220,10 +230,9 @@ mod tests {
     use crate::capabilities::mpris::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
     use crate::capabilities::test_support::{p2p_pair_serving, within};
     use futures_util::StreamExt;
-    use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
-    use zbus::zvariant::{ObjectPath, OwnedValue};
+    use zbus::zvariant::{ObjectPath, OwnedValue, Value};
 
     struct TrackPeer {
         edits: Arc<Mutex<Vec<String>>>,
@@ -302,9 +311,11 @@ mod tests {
             1000
         }
 
+        /// More than [`MAX_ORDERINGS`], one of them past the text cap.
         #[zbus(property)]
         async fn orderings(&self) -> Vec<String> {
-            vec!["Alphabetical".to_string()]
+            let custom = (0..MAX_ORDERINGS).map(|index| format!("Custom{index}"));
+            ["Alphabetical".to_string(), "o".repeat(MAX_METADATA_TEXT_BYTES + 1)].into_iter().chain(custom).collect()
         }
 
         #[zbus(property)]
@@ -317,6 +328,24 @@ mod tests {
             signal_emitter: &zbus::object_server::SignalEmitter<'_>,
             playlist: (OwnedObjectPath, String, String),
         ) -> zbus::Result<()>;
+    }
+
+    /// The id goes back to the player on an action, so one past the cap drops the entry rather than
+    /// naming nothing; text is cut, and an icon URI past the cap reads as none.
+    #[test]
+    fn an_entry_with_an_overlong_id_is_dropped_and_its_text_capped() {
+        let long = "x".repeat(MAX_METADATA_TEXT_BYTES + 1);
+        let long_path = path(&format!("/{long}"));
+        let title = crate::capabilities::test_support::properties(&[("xesam:title", Value::from(long.clone()))]);
+
+        assert_eq!(track_summary(&long_path, &HashMap::new()), None);
+        let track = track_summary(&path("/track/0"), &title).unwrap();
+        assert_eq!(track.title.len(), MAX_METADATA_TEXT_BYTES);
+
+        assert_eq!(playlist_summary((long_path, "List".into(), String::new())), None);
+        let playlist = playlist_summary((path("/playlist/0"), long.clone(), long)).unwrap();
+        assert_eq!(playlist.name.len(), MAX_METADATA_TEXT_BYTES);
+        assert_eq!(playlist.icon, "");
     }
 
     #[tokio::test]
@@ -384,6 +413,8 @@ mod tests {
         assert_eq!(list_state.count, 1000);
         assert_eq!(list_state.page_size, 100);
         assert_eq!(list_state.order, "Alphabetical");
+        assert_eq!(list_state.orderings.len(), MAX_ORDERINGS);
+        assert!(list_state.orderings.iter().all(|ordering| ordering.len() <= MAX_METADATA_TEXT_BYTES));
         assert_eq!(list_state.playlists.len(), 2);
         assert_eq!(list_state.active.as_ref().map(|active| active.id.as_str()), Some("/playlist/0"));
         let mut playlist_changes = playlists.receive_playlist_changed().await.unwrap();

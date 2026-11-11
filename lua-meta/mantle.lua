@@ -696,7 +696,7 @@
 ---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
 
 ---@class MprisState
----@field players PlayerState[] Every controllable MPRIS player except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs.
+---@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: a player appearing past that is left out.
 
 ---@class NetworkState
 ---`mantle.network`'s payload (ADR-0037).
