@@ -784,15 +784,18 @@ pub(crate) mod tests {
         assert_eq!(link_under(&node, LogicalPoint { x: 298.0, y: 5.0 }, &shaping), Some("https://d/".to_string()));
     }
 
-    /// The text path treats a lone `\r` and a `\n\r` pair as one line break.
+    /// The text path treats a lone `\r` as one line break and a `\n\r` pair as two, as Parley does.
     #[test]
     fn a_link_after_a_carriage_return_is_found_on_the_row_below() {
         let shaping = ShapingHandle::spawn();
         let step = 14.0 * 1.2;
-        for (text, range) in [("first\rsee this", 6..14), ("first\n\rsee this", 7..15)] {
+        for (text, range, row) in [("first\rsee this", 6..14, 1), ("first\n\rsee this", 7..15, 2)] {
             let node = styled_text(text, vec![link(range, "https://e/")], TextAlign::Start, 300.0);
-            assert_eq!(link_under(&node, LogicalPoint { x: 4.0, y: step / 2.0 }, &shaping), None, "{text:?}");
-            let below = link_under(&node, LogicalPoint { x: 4.0, y: step * 1.5 }, &shaping);
+            for above in 0..row {
+                let y = step * (above as f32 + 0.5);
+                assert_eq!(link_under(&node, LogicalPoint { x: 4.0, y }, &shaping), None, "{text:?}");
+            }
+            let below = link_under(&node, LogicalPoint { x: 4.0, y: step * (row as f32 + 0.5) }, &shaping);
             assert_eq!(below, Some("https://e/".to_string()), "{text:?}");
         }
     }

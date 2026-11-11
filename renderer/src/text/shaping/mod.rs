@@ -566,7 +566,8 @@ impl ShapingHandle {
     }
 }
 
-/// Paragraph boundaries for painting and hit testing. A CRLF or LFCR pair is one break.
+/// Paragraph boundaries for painting and hit testing. A CRLF pair is one break, an LFCR two, as
+/// Parley breaks them for measurement (UAX #14).
 fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     let bytes = text.as_bytes();
     let mut ranges = Vec::new();
@@ -575,11 +576,7 @@ fn paragraph_ranges(text: &str) -> Vec<std::ops::Range<usize>> {
     while i < bytes.len() {
         if bytes[i] == b'\r' || bytes[i] == b'\n' {
             ranges.push(start..i);
-            let first = bytes[i];
-            i += 1;
-            if i < bytes.len() && (bytes[i] == b'\r' || bytes[i] == b'\n') && bytes[i] != first {
-                i += 1;
-            }
+            i += if bytes[i..].starts_with(b"\r\n") { 2 } else { 1 };
             start = i;
         } else {
             i += 1;
@@ -952,11 +949,20 @@ mod tests {
             ("", vec![(0, 0)]),
             ("a\n", vec![(0, 1), (2, 2)]),
             ("a\r\n", vec![(0, 1), (3, 3)]),
-            ("a\n\r", vec![(0, 1), (3, 3)]),
+            ("a\n\r", vec![(0, 1), (2, 2), (3, 3)]),
             ("a\n\nb", vec![(0, 1), (2, 2), (3, 4)]),
         ] {
             let got: Vec<_> = paragraph_ranges(text).into_iter().map(|range| (range.start, range.end)).collect();
             assert_eq!(got, want, "{text:?}");
+        }
+    }
+
+    /// Paint draws the paragraphs these ranges cut, measurement the lines Parley breaks.
+    #[test]
+    fn paint_draws_the_lines_measurement_counts() {
+        let handle = ShapingHandle::spawn();
+        for text in ["a\nb", "a\r\nb", "a\n\rb", "a\r\rb", "a\n\r\nb", "a\r\n\r\nb"] {
+            assert_eq!(paragraph_ranges(text).len(), handle.shape(req(text, 20.0)).lines.len(), "{text:?}");
         }
     }
 
