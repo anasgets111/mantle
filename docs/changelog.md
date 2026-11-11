@@ -7,7 +7,8 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
-- Fixed: an SVG shown by an `image`, `icon` or mask no longer opens files its `<image>` elements name, so an icon pointing one at `/dev/zero` or a pipe can no longer freeze the shell or exhaust its memory. Only pictures embedded as `data:` URLs draw; an SVG that linked a picture file by path now draws without it, so embed the picture instead. Embedded pictures over 8192 px on a side, SVGs nested more than 8 deep, and nested SVGs that inflate past 8 MiB in all draw blank.
+- Fixed: an SVG shown by an `image`, `icon` or mask no longer opens files its `<image>` elements name, so an icon pointing one at `/dev/zero` or a pipe can no longer freeze the shell or exhaust its memory. Pictures embedded in an SVG draw blank past 8192 px on a side or 67 megapixels in all, as does an SVG nested inside an SVG nested inside an SVG.
+- Breaking: an SVG whose `<image>` links a picture by absolute path draws without it, and the log names the SVG. Embed the picture as a `data:` URL.
 - Fixed: a media player or an app holding the screen awake can no longer restart the shell in a loop by publishing a huge title, art URL or reason. `mantle.mpris` lists at most 8 players; its text stops at 256 bytes, track and playlist entries with a longer id are left out, and an `art_url` or `url` over 4096 bytes is ignored: the same track keeps its previous one, a new track has none. `mantle.idle.inhibitors` text stops at 256 bytes and lists at most 64 logind holders, and a `ScreenSaver` client past 16 holds, or 64 in all, gets an error. An update still too large to send is skipped, and that capability updates again once its state fits.
 - Fixed: live reload resumes after the config directory is renamed away and recreated, or deleted while it held a symlinked subdirectory. Edits used to stop reloading until a restart, with nothing logged.
 
