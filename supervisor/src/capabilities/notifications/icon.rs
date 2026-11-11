@@ -46,13 +46,14 @@ pub(super) fn hint_path(hint: &str) -> PathBuf {
 }
 
 /// Truncates and parses `Notify` body markup, then validates every `<img src>` path. Untrusted
-/// images are dropped (ADR-0033 closes arbitrary local-file disclosure through body markup).
+/// images are dropped (ADR-0033 closes arbitrary local-file disclosure through body markup); a
+/// `file://` URI is decoded first, as for `image-path`.
 pub(super) fn sanitize_body(raw_body: &str, trusted_roots: &[PathBuf]) -> Vec<NotificationSpan> {
     let truncated = truncate_utf8_bytes(raw_body, MAX_BODY_BYTES);
     parse_markup(&truncated)
         .into_iter()
         .filter_map(|span| match span {
-            NotificationSpan::Image { image_path } => validate_trusted_path(&image_path, trusted_roots)
+            NotificationSpan::Image { image_path } => validate_trusted_path(hint_path(&image_path), trusted_roots)
                 .map(|validated| NotificationSpan::Image { image_path: validated.to_string_lossy().into_owned() }),
             text_span => Some(text_span),
         })
@@ -252,6 +253,12 @@ mod tests {
             Some(file.canonicalize().unwrap().to_string_lossy().into_owned())
         );
         assert_eq!(validate_trusted_path(hint_path(&uri), &roots), Some(file.canonicalize().unwrap()));
+        let image_path = file.canonicalize().unwrap().to_string_lossy().into_owned();
+        assert_eq!(
+            sanitize_body(&format!(r#"<img src="{uri}"/>"#), &roots),
+            [NotificationSpan::Image { image_path }],
+            "a body image named by URI"
+        );
     }
 
     #[test]
