@@ -30,7 +30,8 @@ pub(super) trait Device1 {
 
     fn disconnect(&self) -> zbus::Result<()>;
 
-    fn pair(&self) -> zbus::Result<()>;
+    // `Pair` is called by name in `BluetoothController::pair`, past the call timeout.
+    fn cancel_pairing(&self) -> zbus::Result<()>;
 
     #[zbus(property)]
     fn address(&self) -> zbus::Result<String>;

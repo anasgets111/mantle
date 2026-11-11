@@ -22,6 +22,13 @@ use super::{
 const CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(3);
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(500);
 
+/// How long [`BluetoothController::pair`] waits for `Pair`, which returns only once the user has
+/// confirmed a passkey, typed a PIN or pressed a button, so the bus's 25 s call timeout would cut
+/// it short. bluetoothd gives each agent request 60 s (`REQUEST_TIMEOUT` in `src/agent.c`); this
+/// leaves bonding time after a full prompt. ponytail: one fixed ceiling, after which the pairing is
+/// cancelled; raise it if real devices need longer.
+const PAIR_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Proxies needed by `mantle.bluetooth` writes and state rebuilds. Every field is a cheap zbus
 /// proxy or `Arc`, so a clone can move into a `tokio::spawn` task.
 #[derive(Clone)]
@@ -348,9 +355,17 @@ impl BluetoothController {
         let Some((_, device)) = self.resolve_device(mac, "pair") else { return };
         let busy = self.mark_busy(mac, DeviceAction::Pairing);
         self.reconcile_discovery().await;
-        match device.pair().await {
-            Ok(()) => self.connect_within(mac, CONNECT_RETRY_WINDOW).await,
-            Err(err) => warn!("pair({mac:?}) failed: {err}"),
+        // `call_with_flags` skips the connection's call timeout; `PAIR_TIMEOUT` replaces it.
+        let call = device.inner().call_with_flags::<_, _, ()>("Pair", Default::default(), &());
+        match tokio::time::timeout(PAIR_TIMEOUT, call).await {
+            Ok(Ok(_)) => self.connect_within(mac, CONNECT_RETRY_WINDOW).await,
+            Ok(Err(err)) => warn!("pair({mac:?}) failed: {err}"),
+            Err(_) => {
+                warn!("pair({mac:?}) failed: not finished within {}s, cancelling", PAIR_TIMEOUT.as_secs());
+                if let Err(err) = device.cancel_pairing().await {
+                    warn!("CancelPairing({mac:?}) failed: {err}");
+                }
+            }
         }
         drop(busy);
         self.reconcile_discovery().await;
@@ -539,15 +554,29 @@ mod tests {
         assert!(controller.invited("BB"), "a visible adapter invites any device");
     }
 
-    /// A `Device1` that refuses its first `refusals` `Connect` calls, counting every call.
+    /// A `Device1` that refuses its first `refusals` `Connect` calls, counting every call. `Pair`
+    /// replies after `pair_delay`, the user's time at the prompt, unless `CancelPairing` ends it.
     struct Headset {
         connects: Arc<std::sync::atomic::AtomicUsize>,
         refusals: usize,
+        pair_delay: Duration,
+        cancels: Arc<std::sync::atomic::AtomicUsize>,
+        cancelled: Arc<tokio::sync::Notify>,
     }
 
     #[zbus::interface(name = "org.bluez.Device1")]
     impl Headset {
-        async fn pair(&self) {}
+        async fn pair(&self) -> zbus::fdo::Result<()> {
+            tokio::select! {
+                () = tokio::time::sleep(self.pair_delay) => Ok(()),
+                () = self.cancelled.notified() => Err(zbus::fdo::Error::Failed("AuthenticationCanceled".into())),
+            }
+        }
+
+        async fn cancel_pairing(&self) {
+            self.cancels.fetch_add(1, Ordering::SeqCst);
+            self.cancelled.notify_one();
+        }
 
         async fn connect(&self) -> zbus::fdo::Result<()> {
             if self.connects.fetch_add(1, Ordering::SeqCst) < self.refusals {
@@ -562,15 +591,22 @@ mod tests {
         }
 
         #[zbus(property)]
-        async fn set_trusted(&mut self, _trusted: bool) {}
+        async fn set_trusted(&self, _trusted: bool) {}
     }
 
-    /// A controller tracking one [`Headset`] as `AA`, plus its `Connect` count.
+    /// A controller tracking one [`Headset`] as `AA`, plus its `Connect` and `CancelPairing` counts.
     async fn with_headset(
         refusals: usize,
-    ) -> (BluetoothController, Arc<std::sync::atomic::AtomicUsize>, zbus::Connection, zbus::Connection) {
-        let connects = Arc::default();
-        let headset = Headset { connects: Arc::clone(&connects), refusals };
+        pair_delay: Duration,
+    ) -> (BluetoothController, Counts, zbus::Connection, zbus::Connection) {
+        let counts: Counts = Default::default();
+        let headset = Headset {
+            connects: Arc::clone(&counts.0),
+            refusals,
+            pair_delay,
+            cancels: Arc::clone(&counts.1),
+            cancelled: Arc::default(),
+        };
         const PATH: &str = "/org/bluez/hci0/dev_AA";
         let (caller, served) =
             crate::capabilities::test_support::p2p_pair_serving(|peer| peer.serve_at(PATH, headset)).await;
@@ -579,19 +615,64 @@ mod tests {
         let (controller, _receiver) = controller();
         let entry = DeviceEntry { mac: "AA".into(), device, battery: None, forwarder: tokio::spawn(async {}) };
         controller.devices.lock().unwrap().insert(path, entry);
-        (controller, connects, caller, served)
+        (controller, counts, caller, served)
+    }
+
+    /// `Connect` and `CancelPairing` calls a [`Headset`] has seen.
+    type Counts = (Arc<std::sync::atomic::AtomicUsize>, Arc<std::sync::atomic::AtomicUsize>);
+
+    fn count(counter: &std::sync::atomic::AtomicUsize) -> usize {
+        counter.load(Ordering::SeqCst)
     }
 
     #[tokio::test]
     async fn a_pair_retries_a_connect_the_headset_refuses_but_a_plain_connect_tries_once() {
-        let (controller, connects, _caller, _served) = with_headset(1).await;
+        let (controller, (connects, _), _caller, _served) = with_headset(1, Duration::ZERO).await;
         controller.pair("AA").await;
-        assert_eq!(connects.load(Ordering::SeqCst), 2, "one refusal, then the retry connects");
+        assert_eq!(count(&connects), 2, "one refusal, then the retry connects");
         assert!(controller.busy.lock().unwrap().is_empty());
 
-        let (controller, connects, _caller, _served) = with_headset(usize::MAX).await;
+        let (controller, (connects, _), _caller, _served) = with_headset(usize::MAX, Duration::ZERO).await;
         controller.connect("AA").await;
-        assert_eq!(connects.load(Ordering::SeqCst), 1, "a plain connect tries once");
+        assert_eq!(count(&connects), 1, "a plain connect tries once");
+    }
+
+    /// `Pair` answers only once the user has acted on the prompt, which outlasts the bus's call
+    /// timeout (25 s in production, 5 s on a test pair). Paused time runs both clocks instantly.
+    #[tokio::test(start_paused = true)]
+    async fn a_pair_waiting_on_the_user_outlasts_the_call_timeout_and_connects() {
+        let (controller, (connects, cancels), _caller, _served) = with_headset(0, Duration::from_secs(60)).await;
+        controller.pair("AA").await;
+        assert_eq!(count(&connects), 1, "a slow Pair still succeeds and connects");
+        assert_eq!(count(&cancels), 0);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pair_nobody_finishes_is_cancelled_at_its_limit() {
+        let (controller, (connects, cancels), _caller, _served) = with_headset(0, PAIR_TIMEOUT * 2).await;
+        let started = tokio::time::Instant::now();
+        controller.pair("AA").await;
+        assert_eq!(count(&cancels), 1, "BlueZ is told to stop pairing");
+        assert_eq!(count(&connects), 0, "a pair that never finished does not connect");
+        assert!(started.elapsed() < PAIR_TIMEOUT * 2, "the limit, not the device, ended the wait");
+        assert!(controller.busy.lock().unwrap().is_empty());
+    }
+
+    /// Each action runs on its own task, and a waiting `Pair` holds no lock the others need.
+    #[tokio::test]
+    async fn a_pending_pair_does_not_hold_up_other_actions() {
+        let (controller, (connects, _), _caller, _served) = with_headset(0, Duration::from_secs(3600)).await;
+        let pairing = tokio::spawn({
+            let controller = controller.clone();
+            async move { controller.pair("AA").await }
+        });
+        crate::capabilities::test_support::poll_until(|| {
+            (controller.busy.lock().unwrap().get("AA") == Some(&DeviceAction::Pairing)).then_some(())
+        })
+        .await;
+        within(controller.connect("AA")).await;
+        assert_eq!(count(&connects), 1);
+        pairing.abort();
     }
 
     struct FakeAdapter;
