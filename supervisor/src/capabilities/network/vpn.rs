@@ -56,10 +56,24 @@ fn failure_text(reason: u32) -> &'static str {
 
 /// Every active connection's StateChanged, which `ActiveConnections` does not report.
 pub(super) async fn forward_active_changes(connection: &zbus::Connection, events: UnboundedSender<NetworkSignal>) {
-    let rule = "type='signal',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'";
+    let rule = "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'";
     let rule = zbus::MatchRule::try_from(rule).expect("a valid match rule");
-    let stream = zbus::MessageStream::for_match_rule(rule, connection, None).await;
-    forward(stream.map(|stream| (stream, futures_util::stream::empty::<()>())), NetworkSignal::Changed, events);
+    // The bus applies `sender` to broadcasts only, and zbus cannot match a well-known name: a
+    // signal sent to the Supervisor directly still lands here, so check it against NM's owner.
+    let subscribed = async {
+        let bus = zbus::fdo::DBusProxy::new(connection).await?;
+        let stream = zbus::MessageStream::for_match_rule(rule, connection, None).await?;
+        zbus::Result::Ok(Box::pin(stream.filter(move |message| {
+            let sender = message.as_ref().ok().and_then(|message| Some(message.header().sender()?.to_owned()));
+            let bus = bus.clone();
+            async move {
+                let nm = zbus::names::WellKnownName::from_static_str_unchecked("org.freedesktop.NetworkManager");
+                matches!((bus.get_name_owner(nm.into()).await, sender), (Ok(owner), Some(sender)) if *owner == sender)
+            }
+        })))
+    };
+    let subscribed = subscribed.await.map(|stream| (stream, futures_util::stream::empty::<()>()));
+    forward(subscribed, NetworkSignal::Changed, events);
 }
 
 impl NetworkController {
@@ -206,6 +220,7 @@ mod tests {
 
     use super::*;
     use crate::capabilities::network::connect::tests::{ListedProfiles, attempting};
+    use crate::capabilities::test_support::within;
 
     const ACTIVE: &str = "/org/freedesktop/NetworkManager/ActiveConnection/3";
     const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/5";
@@ -319,6 +334,28 @@ mod tests {
         let (controller, _, _peer) = controller(FakeActive { state: 4, then: Some((4, 10)) }).await;
         tokio::time::timeout(Duration::from_secs(1), controller.connect_vpn("u-1")).await.unwrap();
         assert_eq!(vpn_error(&controller).as_deref(), Some("login failed"));
+    }
+
+    #[tokio::test]
+    async fn only_networkmanager_can_report_an_activation_change() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let nm = bus.builder().name("org.freedesktop.NetworkManager").unwrap().build().await.unwrap();
+        let (ours, impostor) = (bus.connection().await, bus.connection().await);
+        let (events, mut received) = tokio::sync::mpsc::unbounded_channel();
+        forward_active_changes(&ours, events).await;
+        let interface = "org.freedesktop.NetworkManager.Connection.Active";
+
+        let direct = ours.unique_name().unwrap().to_string();
+        for destination in [None, Some(direct.as_str())] {
+            impostor.emit_signal(destination, ACTIVE, interface, "StateChanged", &(2u32, 0u32)).await.unwrap();
+        }
+        // Answered only once the bus has routed both signals, so they reach `ours` ahead of NM's.
+        zbus::fdo::DBusProxy::new(&impostor).await.unwrap().get_id().await.unwrap();
+        nm.emit_signal(None::<&str>, ACTIVE, interface, "StateChanged", &(2u32, 0u32)).await.unwrap();
+
+        assert_eq!(within(received.recv()).await, Some(NetworkSignal::Changed));
+        let more = tokio::time::timeout(Duration::from_millis(50), received.recv()).await;
+        assert!(more.is_err(), "another sender's StateChanged must not rebuild the state");
     }
 
     #[tokio::test]
