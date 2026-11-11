@@ -29,6 +29,12 @@ pub(super) fn profile_ssid(settings: &HashMap<String, HashMap<String, OwnedValue
         .and_then(|value| Vec::<u8>::try_from(value.clone()).ok())
 }
 
+/// Whether a Wi-Fi profile's SSID reads as `ssid`. Lua sees SSIDs lossily decoded, so a
+/// non-UTF-8 one is compared the same way.
+fn profile_is_named(settings: &HashMap<String, HashMap<String, OwnedValue>>, ssid: &str) -> bool {
+    profile_ssid(settings).is_some_and(|bytes| String::from_utf8_lossy(&bytes) == ssid)
+}
+
 /// ponytail: the fallback misses NM policy restrictions; upgrade path: query NM compatibility
 /// for hidden or out-of-range SSIDs.
 fn profile_matches_device(
@@ -88,7 +94,7 @@ impl NetworkController {
     /// Saved Wi-Fi profiles for `ssid`, with settings and the caller's log context.
     pub(super) async fn saved_profiles_for_ssid(&self, ssid: &str, context: &str) -> Vec<SavedProfile> {
         let mut profiles = self.wifi_profiles(&format!("{context}({ssid:?})")).await;
-        profiles.retain(|profile| profile_ssid(&profile.settings).is_some_and(|bytes| bytes == ssid.as_bytes()));
+        profiles.retain(|profile| profile_is_named(&profile.settings, ssid));
         profiles
     }
 
@@ -100,7 +106,7 @@ impl NetworkController {
     ) -> Vec<SavedProfile> {
         let mut profiles =
             self.read_profiles(wifi.device.available_connections().await.unwrap_or_default(), "connect").await;
-        profiles.retain(|profile| profile_ssid(&profile.settings).is_some_and(|bytes| bytes == ssid.as_bytes()));
+        profiles.retain(|profile| profile_is_named(&profile.settings, ssid));
         if !profiles.is_empty() {
             return profiles;
         }

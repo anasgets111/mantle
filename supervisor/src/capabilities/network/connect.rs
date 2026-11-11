@@ -248,7 +248,8 @@ impl NetworkController {
     async fn activate_intent(&self, intent: &ConnectionIntent, wifi: &WifiDevice) -> Result<InFlight, ConnectError> {
         let Some(saved) = self.saved_profiles_for_device(&intent.ssid, wifi, intent.hidden).await.into_iter().next()
         else {
-            let dict = build_connection_dict(intent);
+            let ssid = self.ssid_bytes(&wifi.id, &intent.ssid);
+            let dict = build_connection_dict(intent, &ssid);
             let (created, active, _) = self
                 .nm
                 .add_and_activate_connection2(dict, &wifi.device_path, &root_object_path(), HashMap::new())
@@ -308,8 +309,8 @@ pub(super) mod tests {
         (controller, receiver, peer)
     }
 
-    /// One saved profile for an SSID, counting each `Save` and `Delete`.
-    struct FakeProfile(&'static str, Arc<AtomicUsize>);
+    /// One saved profile for raw SSID bytes, counting each `Save` and `Delete`.
+    struct FakeProfile(&'static [u8], Arc<AtomicUsize>);
 
     #[zbus::interface(name = "org.freedesktop.NetworkManager.Settings.Connection")]
     impl FakeProfile {
@@ -326,8 +327,7 @@ pub(super) mod tests {
                 "802-11-wireless".into(),
                 HashMap::from([(
                     "ssid".into(),
-                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.0.as_bytes().to_vec()))
-                        .unwrap(),
+                    zbus::zvariant::OwnedValue::try_from(zbus::zvariant::Value::from(self.0.to_vec())).unwrap(),
                 )]),
             )])
         }
@@ -379,7 +379,7 @@ pub(super) mod tests {
     async fn an_accepted_join_saves_only_the_key_it_typed() {
         const PROFILE: &str = "/org/freedesktop/NetworkManager/Settings/9";
         let saves = Arc::default();
-        let profile = FakeProfile("home", Arc::clone(&saves));
+        let profile = FakeProfile(b"home", Arc::clone(&saves));
         let (controller, _receiver, _peer) = attempting(|peer| peer.serve_at(PROFILE, profile)).await;
         let typed = InFlight { unsaved: Some(OwnedObjectPath::try_from(PROFILE).unwrap()), ..joined(1) };
 
@@ -395,8 +395,8 @@ pub(super) mod tests {
         const CAFE: &str = "/org/freedesktop/NetworkManager/Settings/2";
         let (home, cafe) = (Arc::default(), Arc::default());
         let (controller, _receiver, _peer) = attempting(|peer| {
-            peer.serve_at(HOME, FakeProfile("home", Arc::clone(&home)))?
-                .serve_at(CAFE, FakeProfile("cafe", Arc::clone(&cafe)))?
+            peer.serve_at(HOME, FakeProfile(b"home", Arc::clone(&home)))?
+                .serve_at(CAFE, FakeProfile(b"caf\xe9", Arc::clone(&cafe)))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
                     ListedProfiles(vec![
@@ -411,6 +411,9 @@ pub(super) mod tests {
 
         let count = |calls: &Arc<AtomicUsize>| calls.load(Ordering::SeqCst);
         assert_eq!((count(&home), count(&cafe)), (1, 0));
+        // A Latin-1 SSID reaches Lua lossily decoded, and forgetting it by that name still works.
+        controller.forget("caf\u{FFFD}").await;
+        assert_eq!((count(&home), count(&cafe)), (1, 1), "the non-UTF-8 SSID's profile is deleted");
     }
 
     /// NetworkManager, aborting the join it holds while it activates, counting each deactivation.
@@ -464,7 +467,7 @@ pub(super) mod tests {
             let (mut controller, _receiver, _peer) = attempting(|peer| {
                 peer.serve_at("/org/freedesktop/NetworkManager", nm)?
                     .serve_at(ACTIVE, Activation(ACTIVE_STATE_ACTIVATED))?
-                    .serve_at(PROFILE, FakeProfile("home", Arc::default()))?
+                    .serve_at(PROFILE, FakeProfile(b"home", Arc::default()))?
                     .serve_at(DEVICE, AvailableProfile(OwnedObjectPath::try_from(PROFILE).unwrap()))
             })
             .await;
@@ -491,6 +494,44 @@ pub(super) mod tests {
                 "only an aborted join is stopped; NM must not keep connecting it"
             );
         }
+    }
+
+    /// NetworkManager recording the SSID bytes of each profile `AddAndActivateConnection2` creates.
+    struct CreatingNm(Arc<Mutex<Vec<Vec<u8>>>>);
+
+    #[zbus::interface(name = "org.freedesktop.NetworkManager")]
+    impl CreatingNm {
+        fn add_and_activate_connection2(
+            &self,
+            connection: HashMap<String, HashMap<String, zbus::zvariant::OwnedValue>>,
+            _device: OwnedObjectPath,
+            _ap: OwnedObjectPath,
+            _options: HashMap<String, zbus::zvariant::OwnedValue>,
+        ) -> (OwnedObjectPath, OwnedObjectPath, HashMap<String, zbus::zvariant::OwnedValue>) {
+            let ssid = connection["802-11-wireless"]["ssid"].clone();
+            self.0.lock().unwrap().push(Vec::<u8>::try_from(ssid).unwrap());
+            let path = OwnedObjectPath::try_from(ACTIVE).unwrap();
+            (path.clone(), path, HashMap::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_new_profile_for_a_non_utf8_ssid_takes_the_bytes_the_access_point_broadcasts() {
+        let created = Arc::default();
+        let nm = CreatingNm(Arc::clone(&created));
+        let (controller, _receiver, _peer) =
+            attempting(|peer| peer.serve_at("/org/freedesktop/NetworkManager", nm)).await;
+        let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
+        let ap = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/AccessPoint/1").unwrap();
+        let held = HashMap::from([(ap, crate::capabilities::network::scan::tests::reading(b"caf\xe9"))]);
+        controller.access_points.lock().unwrap().insert("wlan0".into(), held);
+
+        for ssid in ["caf\u{FFFD}", "home"] {
+            let intent = connection_intent(ssid, false, &[]).unwrap();
+            within(controller.activate_intent(&intent, &device)).await.unwrap();
+        }
+
+        assert_eq!(*created.lock().unwrap(), [b"caf\xe9".to_vec(), b"home".to_vec()]);
     }
 
     /// An activation whose `State` reads the given value and never changes.
@@ -533,7 +574,7 @@ pub(super) mod tests {
         let (controller, _receiver, _peer) = attempting(|peer| {
             peer.serve_at(ACTIVE, RejectedKey)?
                 .serve_at(ACCEPTED, Activation(ACTIVE_STATE_ACTIVATED))?
-                .serve_at(PROFILE, FakeProfile("home", Arc::clone(&saves)))
+                .serve_at(PROFILE, FakeProfile(b"home", Arc::clone(&saves)))
         })
         .await;
         let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
@@ -559,8 +600,8 @@ pub(super) mod tests {
         const FIRST: &str = "/org/freedesktop/NetworkManager/Settings/1";
         const CHOSEN: &str = "/org/freedesktop/NetworkManager/Settings/2";
         let (controller, _receiver, _peer) = attempting(|peer| {
-            peer.serve_at(FIRST, FakeProfile("home", Arc::default()))?
-                .serve_at(CHOSEN, FakeProfile("home", Arc::default()))?
+            peer.serve_at(FIRST, FakeProfile(b"caf\xe9", Arc::default()))?
+                .serve_at(CHOSEN, FakeProfile(b"caf\xe9", Arc::default()))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
                     ListedProfiles(vec![
@@ -573,7 +614,8 @@ pub(super) mod tests {
         .await;
         let path = OwnedObjectPath::try_from(DEVICE).unwrap();
         let wifi = wifi(&controller, "wlan0", path).await;
-        let profiles = controller.saved_profiles_for_device("home", &wifi, false).await;
+        // Named as Lua sees a Latin-1 SSID: lossily decoded.
+        let profiles = controller.saved_profiles_for_device("caf\u{FFFD}", &wifi, false).await;
         assert_eq!(profiles.iter().map(|profile| profile.path.as_str()).collect::<Vec<_>>(), [CHOSEN]);
     }
 

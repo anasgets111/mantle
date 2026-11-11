@@ -109,11 +109,14 @@ pub(super) fn connection_intent(ssid: &str, hidden: bool, secret: &[u8]) -> Resu
     Ok(ConnectionIntent { ssid: ssid.to_string(), hidden, psk })
 }
 
-/// Builds the minimal `AddAndActivateConnection2` dict: security only for a secured intent,
-/// and `hidden` only when `intent.hidden` is set.
-pub(super) fn build_connection_dict(intent: &ConnectionIntent) -> HashMap<&str, HashMap<&str, Value<'_>>> {
+/// Builds the minimal `AddAndActivateConnection2` dict for the SSID broadcast as `ssid`: security
+/// only for a secured intent, and `hidden` only when `intent.hidden` is set.
+pub(super) fn build_connection_dict<'a>(
+    intent: &'a ConnectionIntent,
+    ssid: &'a [u8],
+) -> HashMap<&'a str, HashMap<&'a str, Value<'a>>> {
     let mut wireless: HashMap<&str, Value> =
-        HashMap::from([("ssid", Value::new(intent.ssid.as_bytes())), ("mode", Value::new("infrastructure"))]);
+        HashMap::from([("ssid", Value::new(ssid)), ("mode", Value::new("infrastructure"))]);
     if intent.hidden {
         wireless.insert("hidden", Value::new(true));
     }
@@ -148,8 +151,10 @@ mod tests {
         let intent = |ssid, hidden, secret: &[u8]| connection_intent(ssid, hidden, secret).unwrap();
         let (open, secured, hidden) =
             (intent("HomeWifi", false, &[]), intent("HomeWifi", false, b"hunter2"), intent("HiddenNet", true, &[]));
-        let (open, secured, hidden) =
-            (build_connection_dict(&open), build_connection_dict(&secured), build_connection_dict(&hidden));
+        fn dict(intent: &ConnectionIntent) -> HashMap<&str, HashMap<&str, Value<'_>>> {
+            build_connection_dict(intent, intent.ssid.as_bytes())
+        }
+        let (open, secured, hidden) = (dict(&open), dict(&secured), dict(&hidden));
         assert!(!open.contains_key("802-11-wireless-security"));
         assert!(!open["802-11-wireless"].contains_key("hidden"));
         assert_eq!(Vec::<u8>::try_from(open["802-11-wireless"]["ssid"].clone()).unwrap(), b"HomeWifi".to_vec());

@@ -118,6 +118,14 @@ async fn read_access_point(connection: &zbus::Connection, path: &OwnedObjectPath
 }
 
 impl NetworkController {
+    /// The bytes device `id`'s access point broadcasts for `ssid`, which Lua sees lossily decoded.
+    /// Else `ssid` itself, as for a hidden network.
+    pub(super) fn ssid_bytes(&self, id: &str, ssid: &str) -> Vec<u8> {
+        let cache = self.access_points.lock().expect("mutex poisoned");
+        let mut held = cache.get(id).into_iter().flat_map(HashMap::values);
+        held.find(|ap| String::from_utf8_lossy(&ap.ssid) == ssid).map_or_else(|| ssid.into(), |ap| ap.ssid.clone())
+    }
+
     pub async fn scan_device(&self, id: Option<&str>) {
         let Some(wifi) = self.wifi(id) else {
             match id {
@@ -186,8 +194,13 @@ impl NetworkController {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
+
+    /// A held reading for an open 2.4 GHz access point broadcasting `ssid`.
+    pub(crate) fn reading(ssid: &[u8]) -> ApReading {
+        ApReading { ssid: ssid.to_vec(), strength: 50, secure: false, band: "2.4 GHz" }
+    }
 
     fn ap(ssid: &str, strength: u8) -> AccessPointInfo {
         AccessPointInfo {
