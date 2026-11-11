@@ -74,17 +74,22 @@ pub(super) struct RawImageData {
 }
 
 /// Validates image-data bounds and the "ARGB icon rejection": positive dimensions up to
-/// [`MAX_IMAGE_DIMENSION`], 8-bit samples only, channels matching alpha (3=RGB, 4=RGBA), no row
-/// padding, and exact data length. ponytail: no 16-bit/float support until a real sender needs it.
+/// [`MAX_IMAGE_DIMENSION`], 8-bit samples only, channels matching alpha (3=RGB, 4=RGBA), and rows
+/// `rowstride` apart, the last one with or without its padding, as GdkPixbuf sends it.
+/// ponytail: no 16-bit/float support until a real sender needs it.
 pub(super) fn image_data_is_valid(image: &RawImageData) -> bool {
+    // Widened: computed before the checks below bound either factor.
+    let row = i64::from(image.width) * i64::from(image.channels);
     image.width > 0
         && image.height > 0
         && image.width <= MAX_IMAGE_DIMENSION
         && image.height <= MAX_IMAGE_DIMENSION
         && image.bits_per_sample == 8
         && image.channels == if image.has_alpha { 4 } else { 3 }
-        && image.rowstride == image.width * image.channels
-        && image.data.len() == (image.rowstride as usize) * (image.height as usize)
+        && i64::from(image.rowstride) >= row
+        && (image.rowstride as usize * (image.height as usize - 1) + row as usize
+            ..=image.rowstride as usize * image.height as usize)
+            .contains(&image.data.len())
 }
 
 /// Encodes checked [`RawImageData`] to PNG. Unlike `tray`'s `encode_argb32_to_png`, no
@@ -92,7 +97,9 @@ pub(super) fn image_data_is_valid(image: &RawImageData) -> bool {
 /// pixmaps.
 pub(super) fn encode_image_data_to_png(image: &RawImageData) -> Result<Vec<u8>, png::EncodingError> {
     let color = if image.has_alpha { png::ColorType::Rgba } else { png::ColorType::Rgb };
-    shm_icons::encode_png(image.width as u32, image.height as u32, color, &image.data)
+    let row = (image.width * image.channels) as usize;
+    let rows: Vec<u8> = image.data.chunks(image.rowstride as usize).flat_map(|line| &line[..row]).copied().collect();
+    shm_icons::encode_png(image.width as u32, image.height as u32, color, &rows)
 }
 
 pub(super) fn write_icon_png(id: u32, png_bytes: &[u8]) -> std::io::Result<String> {
@@ -309,6 +316,40 @@ mod tests {
         let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
         let info = reader.next_frame(&mut buf).expect("valid PNG frame");
         assert_eq!(&buf[..info.buffer_size()], &[0x11, 0x22, 0x33, 0x44]);
+    }
+
+    /// GdkPixbuf pads each RGB row to 4 bytes and may leave the last row unpadded.
+    #[test]
+    fn padded_rows_encode_without_their_padding() {
+        let row = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+        let padded: Vec<u8> = [&row[..], &[0xee; 3], &row[..], &[0xee; 3]].concat();
+        let image = |data: Vec<u8>| RawImageData {
+            width: 3,
+            height: 2,
+            rowstride: 12,
+            has_alpha: false,
+            bits_per_sample: 8,
+            channels: 3,
+            data,
+        };
+        for data in [padded.clone(), padded[..21].to_vec()] {
+            let image = image(data);
+            assert!(image_data_is_valid(&image), "{} bytes", image.data.len());
+            let png_bytes = encode_image_data_to_png(&image).expect("encoding must succeed");
+            let mut reader = png::Decoder::new(std::io::Cursor::new(png_bytes.as_slice())).read_info().unwrap();
+            let mut buf = vec![0u8; reader.output_buffer_size().unwrap()];
+            let info = reader.next_frame(&mut buf).unwrap();
+            assert_eq!(&buf[..info.buffer_size()], [row, row].concat(), "{} bytes", image.data.len());
+        }
+        for (case, data) in
+            [("short last row", padded[..20].to_vec()), ("trailing bytes", [&padded[..], &[0]].concat())]
+        {
+            assert!(!image_data_is_valid(&image(data)), "{case}");
+        }
+        let narrow = RawImageData { rowstride: 8, ..image(padded.clone()) };
+        assert!(!image_data_is_valid(&narrow), "a rowstride shorter than a row");
+        let huge = RawImageData { width: i32::MAX, channels: i32::MAX, ..image(padded) };
+        assert!(!image_data_is_valid(&huge), "factors that overflow i32 are refused, not a panic");
     }
 
     fn tiny_image() -> RawImageData {

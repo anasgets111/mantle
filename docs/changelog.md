@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: a notification picture sent as raw pixels with padded rows, as GTK apps send an RGB image whose width is not a multiple of 4, shows in `image_path`. It used to be dropped.
 - Fixed: when another tray host such as waybar exits and Mantle takes over `org.kde.StatusNotifierWatcher`, running tray apps are told a host is present and register with Mantle, so they show in `mantle.tray.items`. Before, Mantle reported no host and they stayed hidden until restarted.
 - Fixed: a tray item that changes its icon, title, tooltip, status or menu while the shell is first reading it shows the change. It used to keep what it showed first until its next change.
 - Fixed: a tray item from a Qt app that sets its menu after showing its icon gets that menu in `mantle.tray.items`. It used to stay without one until the app restarted.
