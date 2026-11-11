@@ -1045,6 +1045,35 @@ pub(crate) mod tests {
         path
     }
 
+    /// An `image`'s SVG rasterizes on a decode worker whatever `async` says, off the dispatch
+    /// thread, and draws once it lands; an `icon`'s stays inline for a whole first frame (ADR-0387).
+    #[test]
+    fn an_svg_image_decodes_on_a_worker_and_an_svg_icon_inline() {
+        let dir = tempfile::tempdir().unwrap();
+        let (red, green) = (solid_svg(dir.path(), "red.svg", "red"), solid_svg(dir.path(), "green.svg", "lime"));
+        let Some(instance) = init_headless_egl(64, 64) else { return };
+        let shaping = ShapingHandle::spawn();
+        let Some(mut painter) = text_painter(&instance, &shaping, 64, 64) else { return };
+        let root = |child: String| {
+            let src = format!(r#"return panel {{ id = "bar", width = 64, height = 64, child = {child} }}"#);
+            resolved_surface(&Lua::new(), &src, LogicalSize { width: 64.0, height: 64.0 })
+        };
+        let mut images = ImageCache::new();
+        let image = root(format!(r#"image {{ width = 64, height = 64, source = "{}" }}"#, red.display()));
+        paint_tree(&mut painter, &mut images, &image, 1.0);
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (0, 0, 0, 0), "not rasterized in the frame");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while images.poll().is_empty() {
+            assert!(Instant::now() < deadline, "the SVG decode never landed");
+            std::thread::yield_now();
+        }
+        paint_tree(&mut painter, &mut images, &image, 1.0);
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (255, 0, 0, 255), "drawn once landed");
+        let icon = root(format!(r#"icon {{ name = "{}", size = 64 }}"#, green.display()));
+        paint_tree(&mut painter, &mut ImageCache::new(), &icon, 1.0);
+        assert_eq!(pixel_at(painter.canvas_mut(), 32, 32), (0, 255, 0, 255), "an icon draws in its first frame");
+    }
+
     #[test]
     fn an_image_radius_rounds_the_picture_and_takes_a_table_per_corner() {
         let dir = tempfile::tempdir().unwrap();
@@ -1085,7 +1114,7 @@ pub(crate) mod tests {
             let gl = test_gl(&instance);
             let mut stage = image_shader::ShaderStage::default();
             let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
             let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 32 };
             let _ = execute("test", &mut painter, images, captures, &list, 1.0, (64.0, 32.0), &[whole], shaders);
             let canvas = painter.canvas_mut();
@@ -1127,7 +1156,7 @@ pub(crate) mod tests {
         let gl = test_gl(&instance);
         let mut stage = image_shader::ShaderStage::default();
         let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
         let whole = PhysicalRect { x0: 0, y0: 0, x1: 32, y1: 32 };
         let _ = execute("test", &mut painter, images, captures, &list, 1.0, (32.0, 32.0), &[whole], shaders);
         assert_eq!(pixel_at(painter.canvas_mut(), 16, 16), (255, 255, 255, 255));
@@ -1167,7 +1196,7 @@ pub(crate) mod tests {
             let gl = test_gl(&instance);
             let mut stage = image_shader::ShaderStage::default();
             let shaders = Some(Shaders { gl: &gl, stage: &mut stage });
-            let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+            let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
             let whole = PhysicalRect { x0: 0, y0: 0, x1: 64, y1: 64 };
             let _ = execute("test", &mut painter, images, captures, &list, 1.0, (64.0, 64.0), &[whole], shaders);
             let canvas = painter.canvas_mut();
@@ -1666,7 +1695,7 @@ pub(crate) mod tests {
         let list = build(&root, 1.0, focus.as_ref());
         let (target, whole) =
             ((size.0 as f32, size.1 as f32), PhysicalRect { x0: 0, y0: 0, x1: size.0 as i32, y1: size.1 as i32 });
-        let (images, captures) = (&mut ImageCache::new(), &mut CaptureCache::default());
+        let (images, captures) = (&mut ImageCache::inline(), &mut CaptureCache::default());
         let _ = execute("test", &mut painter, images, captures, &list, 1.0, target, &[whole], shaders);
         let canvas = painter.canvas_mut();
         Some(points.iter().map(|&(x, y)| pixel_at(canvas, x, y)).collect())

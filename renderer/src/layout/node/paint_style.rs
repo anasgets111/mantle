@@ -311,11 +311,14 @@ pub fn paint_style(kind: &str, properties: &PropMap) -> Result<Option<PaintStyle
         }
         "icon" => PaintStyle::Icon { name: icon::name.read(properties)?, color: icon::foreground.read(properties)? },
         "image" => {
-            let transition = image::transition.read(properties)?;
+            let (transition, source) = (image::transition.read(properties)?, image::source.read(properties)?);
+            // resvg cannot be interrupted, so an `image`'s SVG, which an app may supply, never
+            // rasterizes on the dispatch thread; an `icon` stays inline for its first frame (ADR-0387).
+            let off_thread = image::r#async.read(properties)? || crate::image::is_vector(std::path::Path::new(&source));
             PaintStyle::Image {
-                source: image::source.read(properties)?,
+                source,
                 fit: image::fit.read(properties)?,
-                load: if image::r#async.read(properties)? { Load::Background } else { Load::Inline },
+                load: if off_thread { Load::Background } else { Load::Inline },
                 // A dissolve crosses *from* the picture the node is holding, so declaring one is
                 // declaring retention; making a config write both would only let it write one.
                 retain: image::retain.read(properties)? || transition.is_some(),
