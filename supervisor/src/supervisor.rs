@@ -480,9 +480,11 @@ impl Supervisor {
     }
 
     /// logind announced sleep (ADR-0385): lock as `mantle.lock:lock()` does and answer `locked` once
-    /// the lock is up or refused, or at once if it already is up.
+    /// the lock is up or refused, or at once if it already is up. A lock animating out after a
+    /// correct password is retaken once its release lands; see [`Supervisor::record_lock_report`].
     pub(crate) fn lock_before_sleep(&mut self, locked: tokio::sync::oneshot::Sender<()>) {
-        if self.lock.snapshot().active {
+        let state = self.lock.snapshot();
+        if state.active && !state.unlocking {
             let _ = locked.send(());
             return;
         }
@@ -549,7 +551,13 @@ impl Supervisor {
         }
         self.lock.record(lock::LockEvent::Reported(report.outcome));
         if let Some(locked) = self.sleep_waits.take() {
-            let _ = locked.send(());
+            if change == lock::SessionLock::Released {
+                // An unlock that was underway when sleep was announced: lock again before suspend.
+                self.sleep_waits = Some(locked);
+                self.lock.lock();
+            } else {
+                let _ = locked.send(());
+            }
         }
         // PAM starts with the lock, so its prompt is on screen before anything is typed (ADR-0381).
         self.lock.converse(self.lock_starter(pam_worker::PASSWORD));
@@ -703,6 +711,17 @@ mod tests {
         supervisor.lock_before_sleep(locked_tx);
         assert_eq!(locked.try_recv(), Ok(()), "an existing lock releases the delay at once");
         assert!(lock_commands.try_recv().is_err());
+
+        // A correct password, then the lid closes while the lock animates out.
+        supervisor.lock.record(lock::LockEvent::Authenticated(shared::PamOutcome::Success));
+        let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
+        supervisor.lock_before_sleep(locked_tx);
+        assert!(locked.try_recv().is_err(), "a lock on its way out must not release the delay");
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Unlocked });
+        assert_eq!(lock_commands.try_recv().unwrap(), shared::SetSessionLock { locked: true }, "relock after it lands");
+        assert!(locked.try_recv().is_err(), "the delay holds until the relock answers");
+        supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Refused("none".into()) });
+        assert_eq!(locked.try_recv(), Ok(()));
     }
 
     #[test]

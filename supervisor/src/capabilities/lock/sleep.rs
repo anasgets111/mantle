@@ -1,6 +1,7 @@
 //! Lock before sleep (ADR-0385): a logind `sleep` delay inhibitor, so a suspend waits until the
-//! lock screen is on the glass. `main.rs` starts it once the config starts `mantle.lock`, which a
-//! lock surface's password field does; a config that cannot lock never delays a suspend.
+//! lock screen is on the glass. `main.rs` starts it on the first `mantle.lock` start, which a lock
+//! surface's password field sends and so does any read of `mantle.lock`; it then runs for the
+//! Supervisor's lifetime. A config that never starts `mantle.lock` never delays a suspend.
 
 use std::time::Duration;
 
