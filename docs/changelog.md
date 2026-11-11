@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: an `image` with `async = true`, or `palette.quantize`, reads a file replaced within the same second as its cached thumbnail from the new file when its byte size changed. It used to keep showing the old picture's thumbnail.
 - Fixed: an `icon` or an SVG `image` drawn more than 8192 px on a side, such as `icon { size = 30000 }`, draws its SVG at 8192 px, scaled up, as a raster picture already was. It used to rasterize at full size, 3.6 GB for that icon, which could exhaust memory and crash the shell.
 - Fixed: an `image` that decodes on a worker (`async = true`) into a box of another shape than its picture, such as a 16:9 photo with `fit = "cover"` in a square, draws as sharp and cropped the same on every open. Later opens used to draw a smaller cached thumbnail scaled up, blurrier and cropped wider.
 - Fixed: a `text` whose content holds `\n\r` draws the empty line between them, as its box already counted. It used to draw one line fewer than it was tall.

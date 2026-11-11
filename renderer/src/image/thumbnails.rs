@@ -4,9 +4,9 @@
 //! Thunar, GTK file choosers, and this picker share it, so either side can open an already-seen
 //! folder without decoding again.
 //!
-//! Implemented: layout, URI hashing, `Thumb::URI`/`Thumb::MTime` write and mtime read check,
-//! temp-file-and-rename with `0600` files and `0700` dirs. Not implemented: `fail/` (a decode miss
-//! is `Slot::Failed` for this generation), `Thumb::Size`, or `/usr/share/thumbnails` lookup.
+//! Implemented: layout, URI hashing, `Thumb::URI`/`Thumb::MTime`/`Thumb::Size` write and read
+//! checks, temp-file-and-rename with `0600` files and `0700` dirs. Not implemented: `fail/` (a
+//! decode miss is `Slot::Failed` for this generation) or `/usr/share/thumbnails` lookup.
 
 use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
@@ -82,6 +82,8 @@ pub struct Slot {
     path: PathBuf,
     uri: String,
     mtime_secs: i64,
+    /// The source's length: `Thumb::MTime` is whole seconds, and a rewrite within one is the same.
+    size: u64,
     /// The longest edge the thumbnail is made at.
     pub px: u32,
 }
@@ -91,10 +93,10 @@ impl Slot {
     /// the largest size or the source cannot be stat'd (there is no mtime to validate against).
     pub fn for_file(cache_root: &Path, source: &Path, box_px: (u32, u32)) -> Option<Slot> {
         let (dir, px) = size_for(box_px)?;
-        let modified = std::fs::metadata(source).ok()?.modified().ok()?;
-        let mtime_secs = modified.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+        let metadata = std::fs::metadata(source).ok()?;
+        let mtime_secs = metadata.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
         let uri = file_uri(source);
-        Some(Slot { path: thumbnail_path(cache_root, dir, &uri), uri, mtime_secs, px })
+        Some(Slot { path: thumbnail_path(cache_root, dir, &uri), uri, mtime_secs, size: metadata.len(), px })
     }
 
     /// Straight RGBA8 pixels if `Thumb::MTime` matches the source. Missing mtime is untrusted per
@@ -110,9 +112,13 @@ impl Slot {
         if mtime.text.trim().parse::<i64>().ok()? != self.mtime_secs {
             return None;
         }
-        // Another `Thumb::URI` means a hash collision or copied cache. Missing URI is allowed when
-        // mtime matches.
-        if text.iter().any(|chunk| chunk.keyword == "Thumb::URI" && chunk.text != self.uri) {
+        // Another `Thumb::URI` means a hash collision or copied cache; another `Thumb::Size`, a
+        // rewrite within the mtime's second. Either missing is allowed when mtime matches.
+        let size = self.size.to_string();
+        if text.iter().any(|chunk| {
+            (chunk.keyword == "Thumb::URI" && chunk.text != self.uri)
+                || (chunk.keyword == "Thumb::Size" && chunk.text.trim() != size)
+        }) {
             return None;
         }
         // A thumbnail at this path is at most `px` on its longest edge, because that is what the
@@ -152,6 +158,7 @@ impl Slot {
             encoder
                 .add_text_chunk("Thumb::MTime".to_string(), self.mtime_secs.to_string())
                 .map_err(io::Error::other)?;
+            encoder.add_text_chunk("Thumb::Size".to_string(), self.size.to_string()).map_err(io::Error::other)?;
             encoder.add_text_chunk("Software".to_string(), "Mantle".to_string()).map_err(io::Error::other)?;
             let mut writer = encoder.write_header().map_err(io::Error::other)?;
             writer.write_image_data(rgba).map_err(io::Error::other)?;
@@ -216,6 +223,15 @@ mod tests {
         let mode = std::os::unix::fs::PermissionsExt::mode(&std::fs::metadata(slot.path()).unwrap().permissions());
         assert_eq!(mode & 0o777, 0o600);
         assert_eq!(slot.read_valid(), Some((pixels.clone(), 2, 1)));
+
+        // Rewritten within the same second, which `Thumb::MTime` cannot tell apart: the size can.
+        let modified = std::fs::metadata(&source).unwrap().modified().unwrap();
+        ::image::RgbaImage::from_pixel(8, 2, ::image::Rgba([1, 2, 3, 255])).save(&source).unwrap();
+        std::fs::File::options().write(true).open(&source).unwrap().set_modified(modified).unwrap();
+        let rewritten = Slot::for_file(&cache, &source, (100, 100)).unwrap();
+        assert!(rewritten.read_valid().is_none(), "the thumbnail is of the 4x2 source");
+        rewritten.write(&pixels, 2, 1).unwrap();
+        assert_eq!(rewritten.read_valid(), Some((pixels.clone(), 2, 1)));
 
         // A later source mtime makes the thumbnail stale.
         let bumped = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
