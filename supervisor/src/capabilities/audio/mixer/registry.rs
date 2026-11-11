@@ -710,6 +710,7 @@ mod tests {
             context.modules = [
                 { name = libpipewire-module-protocol-native } { name = libpipewire-module-access }
                 { name = libpipewire-module-adapter } { name = libpipewire-module-client-node }
+                { name = libpipewire-module-metadata }
             ]
             context.objects = [ { factory = adapter args = {
                 factory.name = support.null-audio-sink node.name = test-sink media.class = Audio/Sink
