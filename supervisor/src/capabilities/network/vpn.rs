@@ -60,19 +60,17 @@ pub(super) async fn forward_active_changes(connection: &zbus::Connection, events
     let rule = zbus::MatchRule::try_from(rule).expect("a valid match rule");
     // The bus applies `sender` to broadcasts only, and zbus cannot match a well-known name: a
     // signal sent to the Supervisor directly still lands here, so check it against NM's owner.
-    let subscribed = async {
-        let bus = zbus::fdo::DBusProxy::new(connection).await?;
-        let stream = zbus::MessageStream::for_match_rule(rule, connection, None).await?;
-        zbus::Result::Ok(Box::pin(stream.filter(move |message| {
-            let sender = message.as_ref().ok().and_then(|message| Some(message.header().sender()?.to_owned()));
-            let bus = bus.clone();
+    let bus = connection.clone();
+    let subscribed = zbus::MessageStream::for_match_rule(rule, connection, None).await.map(|stream| {
+        Box::pin(stream.filter(move |message| {
+            let (bus, message) = (bus.clone(), message.as_ref().ok().cloned());
             async move {
-                let nm = zbus::names::WellKnownName::from_static_str_unchecked("org.freedesktop.NetworkManager");
-                matches!((bus.get_name_owner(nm.into()).await, sender), (Ok(owner), Some(sender)) if *owner == sender)
+                let Some(message) = message else { return false };
+                crate::capabilities::sent_by_owner(&bus, &message.header(), "org.freedesktop.NetworkManager").await
             }
-        })))
-    };
-    let subscribed = subscribed.await.map(|stream| (stream, futures_util::stream::empty::<()>()));
+        }))
+    });
+    let subscribed = subscribed.map(|stream| (stream, futures_util::stream::empty::<()>()));
     forward(subscribed, NetworkSignal::Changed, events);
 }
 
