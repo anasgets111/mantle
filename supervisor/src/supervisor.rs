@@ -159,7 +159,7 @@ impl Supervisor {
         }
         let mut supervisor = Self {
             registry,
-            authoritative: Authoritative { generation_id: 0, child: boot_child },
+            authoritative: Authoritative { generation_id: 0, child: boot_child, can_lock: false },
             capabilities,
             lock,
             pam_events_tx,
@@ -431,7 +431,7 @@ impl Supervisor {
                 }
                 // The departed generation's id must not stay claimable by whatever inherits its pid.
                 let departed = self.authoritative.generation_id;
-                self.authoritative = Authoritative { generation_id: replacement_generation_id, child };
+                self.authoritative = Authoritative { generation_id: replacement_generation_id, child, can_lock: false };
                 self.renderer_departed = false;
                 notice!("spawned generation {replacement_generation_id} to replace it");
                 self.capabilities.forget_departed_requests(departed);
@@ -483,6 +483,11 @@ impl Supervisor {
     /// the lock is up or refused, or at once if it already is up. A lock animating out after a
     /// correct password is retaken once its release lands; see [`Supervisor::record_lock_report`].
     pub(crate) fn lock_before_sleep(&mut self, locked: tokio::sync::oneshot::Sender<()>) {
+        if !self.authoritative.can_lock {
+            debug!("the system is about to sleep; this config has no lock surface, so it is not locked");
+            let _ = locked.send(());
+            return;
+        }
         let state = self.lock.snapshot();
         if state.active && !state.unlocking {
             let _ = locked.send(());
@@ -698,6 +703,7 @@ mod tests {
         let bus = private_bus().await;
         let dir = tempfile::tempdir().unwrap();
         let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+        supervisor.authoritative.can_lock = true;
 
         let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
         supervisor.lock_before_sleep(locked_tx);
@@ -722,6 +728,21 @@ mod tests {
         assert!(locked.try_recv().is_err(), "the delay holds until the relock answers");
         supervisor.record_lock_report(shared::LockReport { outcome: shared::LockOutcome::Refused("none".into()) });
         assert_eq!(locked.try_recv(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn sleep_asks_a_generation_without_a_lock_surface_for_nothing() {
+        let bus = private_bus().await;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut supervisor, mut lock_commands, _open) = booted(&bus, dir.path()).await;
+        supervisor.authoritative.can_lock = true;
+        assert!(!supervisor.respawn_renderer().await);
+        assert!(!supervisor.authoritative.can_lock, "a replacement must say again that it can lock");
+
+        let (locked_tx, mut locked) = tokio::sync::oneshot::channel();
+        supervisor.lock_before_sleep(locked_tx);
+        assert!(lock_commands.try_recv().is_err(), "a config that cannot lock must not be asked to");
+        assert_eq!(locked.try_recv(), Ok(()), "and must not hold the suspend");
     }
 
     #[test]

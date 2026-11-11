@@ -94,6 +94,8 @@ impl Renderer {
 pub(super) struct Authoritative {
     pub(super) generation_id: u32,
     pub(super) child: tokio::process::Child,
+    /// This generation's last `RendererFrame::CanLock`.
+    pub(super) can_lock: bool,
 }
 
 /// How the authoritative Renderer ended (ADR-0058 decision 2). `Clean` is not a crash, so

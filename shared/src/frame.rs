@@ -372,6 +372,9 @@ pub enum RendererFrame {
     StartCapability {
         capability: Capability,
     },
+    /// Whether the applied config has a `lock` surface whose tree can authenticate, so a lock would
+    /// be taken rather than refused. Sent when it changes; a new generation starts at `false`.
+    CanLock(bool),
 }
 
 /// Final result of the Supervisor's re-exec'd PAM worker's conversation, carried as the last

@@ -173,6 +173,7 @@ fn frame_label(frame: &RendererFrame) -> &'static str {
         RendererFrame::SecureSubmit(_) => "SecureSubmit",
         RendererFrame::LockReport(_) => "LockReport",
         RendererFrame::StartCapability { .. } => "StartCapability",
+        RendererFrame::CanLock(_) => "CanLock",
         RendererFrame::CallResult(_) => "CallResult",
         // Never sent here (ADR-0112, ADR-0197), but a wildcard could hide a new unnamed variant.
         RendererFrame::SetState { .. } => "SetState",

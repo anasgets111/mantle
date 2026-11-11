@@ -37,6 +37,8 @@ pub struct CommandSender {
     /// `lua::namespace` and `secure_submit`'s sweep both use it (ADR-0070 decisions 1, 5), so a
     /// second `mantle.audio` reader costs nothing.
     started: Rc<RefCell<HashSet<String>>>,
+    /// The last `CanLock` sent; the Supervisor's starts at `false` too.
+    can_lock: Rc<Cell<bool>>,
     outbound_tx: UnboundedSender<RendererFrame>,
 }
 
@@ -47,6 +49,7 @@ impl CommandSender {
             generation_id,
             next_id: Rc::new(Cell::new(0)),
             started: Rc::new(RefCell::new(HashSet::new())),
+            can_lock: Rc::default(),
             outbound_tx,
         }
     }
@@ -65,6 +68,15 @@ impl CommandSender {
         let frame = RendererFrame::StartCapability { capability: known };
         if self.outbound_tx.send(frame).is_err() {
             error!("mantle.{known}: failed to queue the start request, the control-socket writer is gone");
+        }
+    }
+
+    /// Tells the Supervisor whether this generation can lock, on a change only (ADR-0385).
+    pub(crate) fn set_can_lock(&self, can_lock: bool) {
+        if self.can_lock.replace(can_lock) != can_lock
+            && self.outbound_tx.send(RendererFrame::CanLock(can_lock)).is_err()
+        {
+            error!("failed to queue CanLock({can_lock}), the control-socket writer is gone");
         }
     }
 

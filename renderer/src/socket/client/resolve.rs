@@ -318,6 +318,7 @@ fn dump_layout_if_asked(scene: &Scene) {
 
 /// Starts capabilities named by applied `textfield` `secure_submit`s (ADR-0070 decision 5), so a
 /// password prompt registers its agent even if nothing reads the member. The sender deduplicates.
+/// Reports `CanLock` from the same walk (ADR-0385).
 ///
 /// Called from every successful apply, `re_resolve_if_dirty` included, so a `textfield` a pushed
 /// value reveals registers its agent on the re-resolve that reveals it rather than waiting for the
@@ -327,12 +328,15 @@ fn dump_layout_if_asked(scene: &Scene) {
 /// `CommandSender::start_capability` dedupes, so a repeat costs one set lookup and no frame.
 /// Upgrade: an accumulated roster, if the walk itself ever shows up.
 fn start_secure_submit_capabilities(scene: &Scene, instances: &[SurfaceInstance], commands: &CommandSender) {
+    let mut can_lock = false;
     for instance in instances {
         let Some(tree) = scene.surface(&instance.instance_id) else { continue };
         for target in crate::layout::secure_submit::secure_submit_targets(tree) {
             commands.start_capability(&target.capability);
         }
+        can_lock |= tree.kind == "lock" && crate::layout::secure_submit::tree_can_authenticate(tree);
     }
+    commands.set_can_lock(can_lock);
 }
 
 /// Diagnostic geometry after `scene.apply`. Iterates *instances*, not declarations: one declaration
@@ -361,7 +365,7 @@ fn log_applied_surfaces(scene: &Scene, instances: &[SurfaceInstance]) {
 #[cfg(test)]
 mod tests {
     use super::super::tests::{
-        instances_for, push_workspace, queued_starts, rescue_state, run_startup, test_client, write_shell_lua,
+        instances_for, push_workspace, queued_starts, reload, rescue_state, run_startup, test_client, write_shell_lua,
     };
     use super::super::*;
     use shared::StateSnapshot;
@@ -426,6 +430,34 @@ mod tests {
             queued_starts(&mut outbound_rx).contains(&"polkit".to_string()),
             "the re-resolve that revealed the field must start the capability it names"
         );
+    }
+
+    /// The Supervisor locks on sleep only while this is `true` (ADR-0385), so a reload that drops
+    /// the lock surface must say so, and only changes are sent.
+    #[test]
+    fn can_lock_follows_the_applied_lock_surface_and_is_sent_on_change() {
+        let can_lock = |outbound_rx: &mut tokio::sync::mpsc::UnboundedReceiver<shared::RendererFrame>| {
+            std::iter::from_fn(|| outbound_rx.try_recv().ok())
+                .filter_map(|frame| match frame {
+                    shared::RendererFrame::CanLock(can_lock) => Some(can_lock),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        let lock = r#"return lock { id = "screen", child = textfield {
+            secure_submit = { capability = "lock", action = "authenticate" } } }"#;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_shell_lua(dir.path(), lock);
+        let (mut client, mut outbound_rx) = test_client(&path);
+        assert!(run_startup(&mut client));
+        assert_eq!(can_lock(&mut outbound_rx), [true]);
+
+        assert!(reload(&mut client, &path, lock));
+        assert!(can_lock(&mut outbound_rx).is_empty(), "an unchanged answer is not resent");
+        let field_only = r#"return panel { id = "bar", layer = "top", child = textfield {
+            secure_submit = { capability = "lock", action = "authenticate" } } }"#;
+        assert!(reload(&mut client, &path, field_only));
+        assert_eq!(can_lock(&mut outbound_rx), [false], "a lock's field outside a lock cannot lock");
     }
 
     /// A boot apply failure is `applied_output`'s own, so the first pass that applies clears it.

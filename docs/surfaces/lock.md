@@ -118,7 +118,7 @@ The field's keystrokes go to PAM and never reach Lua.
 | Show the desktop wallpaper behind it | An `image` in the per-output `child`, keyed by `output` ([per-output content](panel.md#per-output-content)) |
 | Put a clock on it | `mantle.clock:map(function(clock) return os.date("%H:%M", clock.time) end, "")` |
 | Add an unlock button beside the field | A clickable node with `submits_secure = true` sends the field like Enter ([pointer](../guide/input.md#pointer)). Give it and the field an `accessible_name` so Tab and screen readers reach both ([keyboard controls](../guide/input.md#keyboard-controls-and-accessibility)) |
-| Lock before suspend | Nothing to add. A config with a `lock` holds a logind `sleep` delay inhibitor, so any suspend (lid, `systemctl suspend`, a power menu) locks first and waits up to 3 s for the lock screen to show, then goes ahead. Already locked or refused, it does not wait; a lock still animating out after a correct password is taken again first. logind's `InhibitDelayMaxSec` (default 5 s) caps the wait; a lock that misses it logs a warning |
+| Lock before suspend | Nothing to add. Once the config has a `lock` with its password field, the shell holds a logind `sleep` delay inhibitor until it exits, so any suspend (lid, `systemctl suspend`, a power menu) locks first and waits up to 3 s for the lock screen to show, then goes ahead. Already locked or refused, it does not wait; a lock still animating out after a correct password is taken again first. After a reload that removes the `lock`, a suspend goes ahead at once without locking. logind's `InhibitDelayMaxSec` (default 5 s) caps the wait; a lock that misses it logs a warning |
 
 ## Gotchas
 
@@ -129,7 +129,6 @@ The field's keystrokes go to PAM and never reach Lua.
 | A reload while locked is ignored | It removed the lock's password field; the running lock screen stays. Fix the file |
 | Renaming the lock's `id` while locked is refused | Save the rename again after unlocking |
 | `visible`, `width`, `height`, `output` or `anchor` on a `lock` is refused | Remove them; the lock always covers every output |
-| A suspend shows the "declares no `lock` surface" refusal | The config reads `mantle.lock`, or declared a `lock` earlier in this run, but has none now. Any start of `mantle.lock` arms lock-before-sleep until the shell restarts |
 | The card's exit animation is cut off | The session unlocks when the `set_unlock_animation` time ends; make it at least the animation's length |
 
 See also: [lock capability](../capabilities/lock.md), [secure fields](../guide/input.md#secure-fields),

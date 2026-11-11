@@ -307,7 +307,7 @@ async fn run_supervisor(
     // rather than after config happens to read a member.
     let (logind_lock_tx, mut logind_lock_requests) = tokio::sync::mpsc::unbounded_channel::<()>();
     let session_bridge = lock::logind::SessionBridge::new(connection.clone(), logind_lock_tx).await;
-    // Taken by the first `mantle.lock` start, so a config that cannot lock never delays a suspend.
+    // Taken by the first generation that can lock, so a config that never could never delays a suspend.
     let (sleep_locks_tx, mut sleep_locks) = tokio::sync::mpsc::unbounded_channel();
     let mut sleep_locks_tx = Some(sleep_locks_tx);
     let (pam_events_tx, mut pam_events) = tokio::sync::mpsc::unbounded_channel::<(u64, shared::PamMessage)>();
@@ -420,6 +420,13 @@ async fn run_supervisor(
                 debug!(2; "inbound frame from generation {}: {:?}", inbound.generation_id, inbound.frame);
                 match inbound.frame {
                 RendererFrame::LockReport(report) => supervisor.record_lock_report(report),
+                RendererFrame::CanLock(can_lock) => {
+                    supervisor.authoritative.can_lock = can_lock;
+                    if let Some(requests) = sleep_locks_tx.take_if(|_| can_lock) {
+                        let bound = lock::sleep::LOCK_BEFORE_SLEEP;
+                        tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), requests, bound));
+                    }
+                }
                 RendererFrame::Command(envelope) => match envelope.params.capability.as_str() {
                     // `process` is addressable but never started, so it is not a roster capability.
                     "process" => supervisor.dispatch_process_command(&envelope).await,
@@ -436,12 +443,6 @@ async fn run_supervisor(
                         // Built at boot; starting it registers the agent (ADR-0070 decision 5,
                         // ADR-0114).
                         Capability::Polkit => polkit_agent.register(&connection),
-                        Capability::Lock => {
-                            if let Some(requests) = sleep_locks_tx.take() {
-                                let bound = lock::sleep::LOCK_BEFORE_SLEEP;
-                                tokio::spawn(lock::sleep::delay_sleep_until_locked(connection.clone(), requests, bound));
-                            }
-                        }
                         capability => supervisor.capabilities.start(capability).await,
                     }
                 }
