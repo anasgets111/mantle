@@ -44,7 +44,7 @@ pub(super) fn upload_or_log(canvas: &mut Canvas<OpenGl>, path: &Path, decoded: R
         Ok(slot) => slot,
         Err(err) => {
             if super::first_failure(&path.to_string_lossy()) {
-                warn!("{}: {err}", path.display());
+                warn!("{:?}: {err}", path);
             }
             Slot::Failed
         }

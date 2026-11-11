@@ -4,7 +4,9 @@ use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use resvg::usvg::{ImageHrefResolver, ImageKind, Options, Tree};
+use resvg::tiny_skia::{Rect, Transform};
+use resvg::usvg::filter::Kind;
+use resvg::usvg::{Fill, Group, ImageHrefResolver, ImageKind, Node, Options, Paint, Stroke, Tree};
 
 use shared::warn;
 
@@ -30,6 +32,13 @@ const MAX_SVG_DEPTH: usize = 256;
 const MAX_SVG_LINKS: usize = 256;
 /// A pattern link costs about 8 KiB of stack in release, four times a clip's; icons use 2 at most.
 const MAX_SVG_PATTERNS: usize = 16;
+
+/// Pixel writes one SVG may cost resvg, which cannot be interrupted and draws a mask or pattern
+/// again per shape using it: 10,000 rects under one mask froze the renderer for minutes. Each kind
+/// is weighted to 2-3 ns in release, so this is under 0.9 s; the costliest installed icon at 256 px
+/// takes 82M (breeze `kiten`). A shape's fixed overhead, `SVG_WORK_PER_NODE`, bounds the walk too.
+const MAX_SVG_WORK: u64 = 1 << 28;
+const SVG_WORK_PER_NODE: u64 = 256;
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
@@ -96,7 +105,7 @@ pub(super) fn rasterize_svg(
         ..Default::default()
     };
     if !within_recursion_limits(&data) {
-        return Err(format!("svg nests past {MAX_SVG_DEPTH} elements or links past its limits"));
+        return Err(format!("svg nests past {MAX_SVG_DEPTH} elements, links past its limits or repeats an image"));
     }
     let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
     if named_a_file.load(Ordering::Relaxed) {
@@ -112,9 +121,14 @@ pub(super) fn rasterize_svg(
     let scale = box_px as f32 / longest;
     let width = ((size.width() * scale).round() as u32).max(1);
     let height = ((size.height() * scale).round() as u32).max(1);
+    let transform = Transform::from_scale(scale, scale);
+    let canvas = u64::from(width) * u64::from(height);
+    if draw_cost(tree.root(), transform, canvas, 25 * canvas, &mut { MAX_SVG_WORK }).is_none() {
+        return Err(format!("svg would cost resvg over {MAX_SVG_WORK} pixel writes and was not drawn"));
+    }
     let mut pixmap =
         resvg::tiny_skia::Pixmap::new(width, height).ok_or_else(|| format!("no pixmap for {width}x{height}"))?;
-    resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
     let natural = (size.width().round() as u32, size.height().round() as u32);
     Ok((pixmap.take(), width, height, asked_for_a_font.load(Ordering::Relaxed), natural))
 }
@@ -187,8 +201,12 @@ fn embedded_image(
 }
 
 /// Whether `svg` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
-/// walked without recursion. Parsed as usvg parses it, so entity-expanded elements count; a
-/// document that does not parse is left for usvg to refuse.
+/// walked without recursion, and converts each embedded image once. Parsed as usvg parses it, so
+/// entity-expanded elements count; a document that does not parse is left for usvg to refuse.
+///
+/// usvg decodes an image's href, base64 and all, per conversion: per `<use>` copy, marker vertex,
+/// or shape under an `objectBoundingBox` mask, clip or filter. So none may sit in those, nor in
+/// what an `href` names (svgtypes' IRI: spaces, `#`, up to a space); none installed does.
 fn within_recursion_limits(svg: &[u8]) -> bool {
     let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
     let Some(doc) = std::str::from_utf8(svg)
@@ -197,8 +215,24 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
     else {
         return true;
     };
+    let linked: std::collections::HashSet<&str> = doc
+        .descendants()
+        .flat_map(|node| node.attributes())
+        .filter(|attr| attr.name() == "href")
+        .filter_map(|attr| attr.value().trim_start().strip_prefix('#')?.split(' ').next())
+        .collect();
     let (mut depths, mut links, mut patterns) = (Vec::new(), 0, 0);
     for node in doc.descendants().filter(|node| node.is_element()) {
+        let decoded_again = match node.tag_name().name() {
+            "image" => node.ancestors().any(|node| {
+                matches!(node.tag_name().name(), "mask" | "pattern" | "clipPath" | "marker" | "filter")
+                    || node.attribute("id").is_some_and(|id| linked.contains(id))
+            }),
+            "feImage" => {
+                node.attributes().any(|attr| attr.name() == "href" && !attr.value().trim_start().starts_with('#'))
+            }
+            _ => false,
+        };
         let parent = node.parent().and_then(|parent| depths.get(parent.id().get_usize())).copied();
         let depth = parent.unwrap_or(0) + 1;
         depths.resize(depths.len().max(node.id().get_usize() + 1), 0);
@@ -208,11 +242,88 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
             "pattern" => patterns += 1,
             _ => {}
         }
-        if depth > MAX_SVG_DEPTH || links > MAX_SVG_LINKS || patterns > MAX_SVG_PATTERNS {
+        if decoded_again || depth > MAX_SVG_DEPTH || links > MAX_SVG_LINKS || patterns > MAX_SVG_PATTERNS {
             return false;
         }
     }
     true
+}
+
+/// Spends from `left` the pixel writes of `resvg::render` drawing `group` into a `target`-pixel
+/// pixmap, `None` once that runs out. An isolated group's layer, capped at `cap` like resvg's, is
+/// written per pass, a clip's and a mask's included, and their content drawn into it; a pattern's
+/// tile, uncapped in resvg, per shape it paints. A raster is charged its box: usvg converts it
+/// once ([`within_recursion_limits`]), so `embedded_image`'s allowance bounds its one decode.
+fn draw_cost(group: &Group, transform: Transform, target: u64, cap: u64, left: &mut u64) -> Option<()> {
+    for node in group.children() {
+        *left = left.checked_sub(SVG_WORK_PER_NODE)?;
+        match node {
+            Node::Group(group) => {
+                let transform = transform.pre_concat(group.transform());
+                if !group.should_isolate() {
+                    draw_cost(group, transform, target, cap, left)?;
+                    continue;
+                }
+                let layer = pixels(group.layer_bounding_box().transform(transform).map(|rect| rect.to_rect())).min(cap);
+                *left = left.checked_sub(2 * layer)?;
+                let (sx, sy) = transform.get_scale();
+                for primitive in group.filters().iter().flat_map(|filter| filter.primitives()) {
+                    let passes = match primitive.kind() {
+                        Kind::Morphology(fe) => {
+                            let (rx, ry) = (fe.radius_x().get() * sx, fe.radius_y().get() * sy);
+                            pixels(Rect::from_xywh(0.0, 0.0, 2.0 * rx, 2.0 * ry))
+                        }
+                        Kind::ConvolveMatrix(fe) => {
+                            3 * u64::from(fe.matrix().columns()) * u64::from(fe.matrix().rows())
+                        }
+                        Kind::Turbulence(fe) => 32 * u64::from(fe.num_octaves().max(1)),
+                        Kind::GaussianBlur(_) | Kind::DropShadow(_) => 192,
+                        Kind::DiffuseLighting(_) | Kind::SpecularLighting(_) => 24,
+                        Kind::Image(fe) => draw_cost(fe.root(), transform, layer, cap, left).map(|()| 1)?,
+                        _ => 12,
+                    };
+                    *left = left.checked_sub(layer.saturating_mul(passes))?;
+                }
+                for clip in std::iter::successors(group.clip_path(), |clip| clip.clip_path()) {
+                    *left = left.checked_sub(4 * layer)?;
+                    draw_cost(clip.root(), transform.pre_concat(clip.transform()), layer, cap, left)?;
+                }
+                for mask in std::iter::successors(group.mask(), |mask| mask.mask()) {
+                    *left = left.checked_sub(8 * layer)?;
+                    draw_cost(mask.root(), transform, layer, cap, left)?;
+                }
+                draw_cost(group, transform, layer, cap, left)?;
+            }
+            Node::Path(path) => {
+                *left = left.checked_sub(pixels(path.stroke_bounding_box().transform(transform)).min(target))?;
+                for paint in [path.fill().map(Fill::paint), path.stroke().map(Stroke::paint)].into_iter().flatten() {
+                    if let Paint::Pattern(pattern) = paint {
+                        let (sx, sy) = transform.pre_concat(pattern.transform()).get_scale();
+                        let (width, height) = (pattern.rect().width() * sx, pattern.rect().height() * sy);
+                        let tile = pixels(Rect::from_xywh(0.0, 0.0, width, height));
+                        *left = left.checked_sub(tile)?;
+                        draw_cost(pattern.root(), Transform::from_scale(sx, sy), tile, cap, left)?;
+                    }
+                }
+            }
+            Node::Image(image) => match image.kind() {
+                ImageKind::SVG(tree) => {
+                    *left = left.checked_sub(2 * target)?;
+                    draw_cost(tree.root(), transform, target, cap, left)?;
+                }
+                _ => *left = left.checked_sub(pixels(image.bounding_box().transform(transform)).min(target))?,
+            },
+            Node::Text(text) => draw_cost(text.flattened(), transform, target, cap, left)?,
+        }
+    }
+    Some(())
+}
+
+/// `rect`'s pixels with resvg's 2-pixel anti-aliasing margin a side; a saturating cast, so a
+/// non-finite size is 0 or `u64::MAX`.
+fn pixels(rect: Option<Rect>) -> u64 {
+    let side = |length: f32| (length.ceil() as u64).saturating_add(4);
+    rect.map_or(0, |rect| side(rect.width()).saturating_mul(side(rect.height())))
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -708,22 +819,20 @@ pub(super) mod tests {
 
     /// The worst document the limits accept, on the smallest stack that decodes one: at every level
     /// `<g>` and `<tspan>` as deep as allowed, a pattern chain and a clip chain as long as allowed
-    /// at the deepest point, and the nested SVG inside them.
+    /// at the deepest point, and the nested SVG under the clip chain there: not in the pattern,
+    /// where usvg would convert it again.
     #[test]
     fn the_worst_accepted_document_fits_the_smallest_decode_stack() {
         let rect = r#"<rect width="2" height="2" fill="red"/>"#;
+        let clipped = |inner: &str| format!(r#"<g clip-path="url(#clipPath{})">{inner}</g>"#, MAX_SVG_LINKS - 1);
         let level = |inner: &str| {
-            let clipped = format!(r#"<g clip-path="url(#clipPath{})">{inner}</g>"#, MAX_SVG_LINKS - 1);
+            let painted = format!(r#"<rect width="2" height="2" fill="url(#pattern{})"/>"#, MAX_SVG_PATTERNS - 1);
             svg(&format!(
                 r#"<text>{}</text>{}{}{}"#,
                 nested("tspan", MAX_SVG_DEPTH - 2, "x"),
                 chain("clipPath", "clip-path", MAX_SVG_LINKS, rect),
-                chain("pattern", "fill", MAX_SVG_PATTERNS, &clipped),
-                nested(
-                    "g",
-                    MAX_SVG_DEPTH - 2,
-                    &format!(r#"<rect width="2" height="2" fill="url(#pattern{})"/>"#, MAX_SVG_PATTERNS - 1)
-                ),
+                chain("pattern", "fill", MAX_SVG_PATTERNS, &clipped(rect)),
+                nested("g", MAX_SVG_DEPTH - 3, &format!("{}{painted}", clipped(inner))),
             ))
         };
         let doc = (0..MAX_SVG_NESTING).fold(level(rect), |inner, _| {
@@ -746,6 +855,161 @@ pub(super) mod tests {
         };
         assert!(all_red(&rasterize_doc(&nest(MAX_SVG_NESTING))));
         assert!(all_clear(&rasterize_doc(&nest(MAX_SVG_NESTING + 1))));
+    }
+
+    /// `rasterize_svg` of `doc` at `edge` pixels: `Ok` with its pixels or the refusal.
+    fn rasterize_at(doc: &str, edge: u32) -> Result<Vec<u8>, String> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.svg");
+        std::fs::write(&path, doc).unwrap();
+        rasterize_svg(&path, edge, None, &FontDatabase::default()).map(|(pixels, ..)| pixels)
+    }
+
+    #[test]
+    fn a_mask_or_pattern_shared_by_many_shapes_is_refused_before_resvg_draws_it() {
+        // resvg draws a shared mask or pattern again for each shape using it: 10,000 rects under
+        // one 4000x4000 mask froze the renderer for minutes.
+        let defs = r#"<mask id="m" maskUnits="userSpaceOnUse" x="0" y="0" width="4000" height="4000">
+            <rect width="4000" height="4000" fill="white"/></mask>
+            <pattern id="p" patternUnits="userSpaceOnUse" width="4000" height="4000">
+            <rect width="4000" height="4000" fill="red"/></pattern>"#;
+        for shape in [
+            r#"<rect width="4000" height="4000" fill="red" mask="url(#m)"/>"#,
+            r#"<rect width="4000" height="4000" fill="url(#p)"/>"#,
+        ] {
+            let doc = |uses| {
+                let shapes = shape.repeat(uses);
+                format!(r#"<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 4000 4000">{defs}{shapes}</svg>"#)
+            };
+            assert!(rasterize_at(&doc(1), 128).is_ok_and(|pixels| all_red(&pixels)), "{shape}");
+            let refused = rasterize_at(&doc(10_000), 128).expect_err(shape);
+            assert!(refused.contains("pixel writes"), "{refused}");
+        }
+    }
+
+    #[test]
+    fn the_raster_drawn_sets_what_a_path_and_a_layer_cost() {
+        // A path costs at most the canvas, a layer at most 25 canvases: resvg's own layer ceiling.
+        let rects = svg(&r#"<rect width="2" height="2" fill="red"/>"#.repeat(300));
+        assert!(rasterize_at(&rects, 256).is_ok());
+        assert!(rasterize_at(&rects, 1024).is_err_and(|refused| refused.contains("pixel writes")));
+        let wide = r#"<g opacity="0.5"><rect x="-20" y="-20" width="50" height="50" fill="red"/></g>"#.repeat(4);
+        assert!(rasterize_at(&svg(&wide), 1024).is_err_and(|refused| refused.contains("pixel writes")));
+    }
+
+    #[test]
+    fn an_image_usvg_would_decode_again_refuses_the_whole_document() {
+        // usvg decodes the href, base64 and all, per conversion, before any resolver can refuse
+        // it: per `<use>` copy, per shape under an objectBoundingBox mask, per marker vertex.
+        let png = data_url("image/png", &red_png(2, 2));
+        let image = format!(r#"<image href="{png}" width="2" height="2"/>"#);
+        let doc = |body: String| {
+            format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="2" height="2">{body}</svg>"#
+            )
+        };
+        for body in [
+            format!(r##"<g id="a">{image}</g><use href="#a"/>"##),
+            format!(r##"<defs><g id="a"><g>{image}</g></g></defs><use xlink:href="  #a"/>"##),
+            format!(r#"<mask id="m">{image}</mask><rect width="2" height="2" fill="red" mask="url(#m)"/>"#),
+            format!(r#"<marker id="m">{image}</marker><path d="M0 0L1 1L2 2" marker-mid="url(#m)"/>"#),
+            format!(r#"<filter id="f"><feImage href="{png}"/></filter><rect width="2" height="2" filter="url(#f)"/>"#),
+        ] {
+            let refused = rasterize_at(&doc(body.clone()), 2).expect_err(&body);
+            assert!(refused.contains("repeats an image"), "{refused}");
+        }
+        // An image drawn once still draws beside a `<use>` and an `feImage` naming an element.
+        let once = format!(
+            r##"<filter id="f"><feImage href="#r"/></filter><rect id="r" width="2" height="2" fill="red"/><use href="#r"/>{image}"##
+        );
+        assert!(rasterize_at(&doc(once), 2).is_ok_and(|pixels| all_red(&pixels)));
+    }
+
+    #[test]
+    fn an_expensive_filter_primitive_is_charged_by_its_parameters() {
+        // A morphology window, octaves and a kernel multiply resvg's work per filtered pixel.
+        for primitive in [
+            r#"<feMorphology radius="1000"/>"#,
+            r#"<feTurbulence numOctaves="1000000"/>"#,
+            &format!(r#"<feConvolveMatrix order="200" kernelMatrix="{}"/>"#, "1 ".repeat(200 * 200)),
+        ] {
+            let doc = svg(&format!(
+                r#"<filter id="f">{primitive}</filter><rect width="2" height="2" fill="red" filter="url(#f)"/>"#
+            ));
+            assert!(rasterize_at(&doc, 64).is_err_and(|refused| refused.contains("pixel writes")), "{primitive}");
+        }
+    }
+
+    /// What [`draw_cost`] charges for each part of the cost model, on a 10x10 document drawn at its
+    /// own size: a full rect's path is 100 pixels on the canvas and 196 (14x14, with resvg's margin)
+    /// on a 10x10 layer, and every node also pays [`SVG_WORK_PER_NODE`].
+    #[test]
+    fn draw_cost_charges_what_resvg_draws() {
+        let cost = |body: &str| {
+            let doc = format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10">{body}</svg>"#);
+            let tree = Tree::from_str(&doc, &Options::default()).unwrap();
+            let mut left = u64::MAX;
+            draw_cost(tree.root(), Transform::default(), 100, 2500, &mut left).unwrap();
+            u64::MAX - left
+        };
+        const NODE: u64 = SVG_WORK_PER_NODE;
+        let rect = r#"<rect width="10" height="10" fill="red""#;
+        // An isolated group over one rect: its node, two layer passes, the rect drawn into it.
+        let layer = NODE + 2 * 196 + NODE + 196;
+        let filter = |primitive: &str| {
+            let filter = format!(
+                r#"<filter id="f" filterUnits="userSpaceOnUse" x="0" y="0" width="10" height="10">{primitive}</filter>"#
+            );
+            format!(r#"{filter}{rect} filter="url(#f)"/>"#)
+        };
+        let filtered = |primitive: &str| cost(&filter(primitive)) - layer;
+        assert_eq!(cost(""), 0);
+        assert_eq!(cost(&format!("{rect}/>")), NODE + 100);
+        assert_eq!(cost(&format!(r#"{rect} stroke="red" stroke-width="2"/>"#)), NODE + 100, "capped at the target");
+        assert_eq!(cost(&format!(r#"<g opacity="0.5">{rect}/></g>"#)), layer);
+        for (primitive, passes) in [
+            (r#"<feGaussianBlur stdDeviation="1"/>"#, 192),
+            (r#"<feDropShadow/>"#, 192),
+            (r#"<feDiffuseLighting><feDistantLight/></feDiffuseLighting>"#, 24),
+            (r#"<feSpecularLighting><feDistantLight/></feSpecularLighting>"#, 24),
+            (r#"<feTurbulence numOctaves="3"/>"#, 3 * 32),
+            (r#"<feTurbulence numOctaves="0"/>"#, 32),
+            (r#"<feConvolveMatrix order="3 2" kernelMatrix="1 1 1 1 1 1"/>"#, 3 * 6),
+            (r#"<feMorphology radius="4 3"/>"#, (8 + 4) * (6 + 4)),
+            (r#"<feFlood/>"#, 12),
+        ] {
+            assert_eq!(filtered(primitive), passes * 196, "{primitive}");
+        }
+        let named = format!(r#"<rect id="r" width="10" height="10"/>{}"#, filter(r##"<feImage href="#r"/>"##));
+        let element = cost(&named) - (NODE + 100) - layer - 196;
+        assert_eq!(element, NODE + 196, "an feImage draws the element it names onto the layer");
+        // Under scale(2) the layer is 24x24 and the window 2 * 4 * 2 by 2 * 3 * 2, plus the margin.
+        let scaled = |primitive: &str| cost(&format!(r#"<g transform="scale(2)">{}</g>"#, filter(primitive)));
+        let window = scaled(r#"<feMorphology radius="4 3"/>"#) - scaled("<feFlood/>");
+        assert_eq!(window, (20 * 16 - 12) * 24 * 24, "the radius is in pixels drawn");
+        let clip = r#"<clipPath id="c" clipPathUnits="userSpaceOnUse"><rect width="10" height="10"/></clipPath>"#;
+        let clipped = format!(r#"{rect} clip-path="url(#c)"/>"#);
+        assert_eq!(cost(&format!("{clip}{clipped}")), layer + 4 * 196 + NODE + 196);
+        let nested = r#"<clipPath id="d" clipPathUnits="userSpaceOnUse" clip-path="url(#c)"><rect width="10" height="10"/></clipPath>"#;
+        let chained = format!(r#"{rect} clip-path="url(#d)"/>"#);
+        assert_eq!(cost(&format!("{clip}{nested}{chained}")), layer + 2 * (4 * 196 + NODE + 196), "per link");
+        let mask = r#"<mask id="m" maskUnits="userSpaceOnUse"><rect width="10" height="10" fill="white"/></mask>"#;
+        let masked = format!(r#"{rect} mask="url(#m)"/>"#);
+        assert_eq!(cost(&format!("{mask}{masked}{masked}")), 2 * (layer + 8 * 196 + NODE + 196), "per use");
+        let pattern = r#"<pattern id="p" patternUnits="userSpaceOnUse" width="10" height="10"><rect width="10" height="10"/></pattern>"#;
+        let tile = 196 + NODE + 196;
+        let painted = r#"<rect width="10" height="10" fill="url(#p)" stroke="url(#p)"/>"#;
+        assert_eq!(cost(&format!("{pattern}{painted}{painted}")), 2 * (NODE + 100 + 2 * tile), "per paint");
+        let scaled = r#"<pattern id="s" patternUnits="userSpaceOnUse" width="10" height="10" patternTransform="scale(3)"><rect width="10" height="10"/></pattern>"#;
+        assert_eq!(
+            cost(&format!(r#"{scaled}<rect width="10" height="10" fill="url(#s)"/>"#)),
+            NODE + 100 + 34 * 34 + NODE + 34 * 34
+        );
+        let png = data_url("image/png", &red_png(10, 10));
+        assert_eq!(cost(&format!(r#"<image href="{png}" width="10" height="10"/>"#)), NODE + NODE + 100, "in a group");
+        let red = data_url("image/svg+xml", svg(r#"<rect width="2" height="2" fill="red"/>"#).as_bytes());
+        let nested_svg = cost(&format!(r#"<image href="{red}" width="10" height="10"/>"#));
+        assert_eq!(nested_svg, NODE + NODE + 2 * 100 + NODE + 100, "a nested SVG copies the whole target");
     }
 
     #[test]

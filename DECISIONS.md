@@ -8864,3 +8864,15 @@ refusal that leaves nothing to wait for), at once if already locked, or after 3 
 late, and a raised `InhibitDelayMaxSec` cannot stall a suspend on a dead Renderer. Lock latency on
 hardware is not yet measured. Resume takes a fresh fd; a refused first one is logged once and not
 retried. Rejected: a Lua opt-in, which leaves every config unlocked by default.
+
+## 0386. SVG draw cost is counted from the parsed tree and refused past 2^28 weighted pixel writes
+
+resvg cannot be interrupted and draws a shared mask or pattern once per shape using it; usvg decodes
+an `<image>` href once per conversion (`<use>` copy, marker vertex, `objectBoundingBox` mask or clip,
+filtered shape). So the image may sit in none of those nor in anything an `href` names, and before
+drawing, `draw_cost` walks the tree as `resvg::render` does, charging each layer, clip, mask, pattern
+tile and filter pass per use. Weights put every kind at 2-3 ns in release: 2^28 is under 0.9 s, an
+8192 px PNG decoded inline takes 0.45 s, and the costliest of 36,352 installed SVGs at 256 px
+(breeze `kiten`, blurs) needs 82M, 3.3x headroom; at 512 px two icons are refused. Render stays
+inline (ADR-0122); its worst case is now bounded. Rejected: a wall-clock timeout, which cannot stop
+resvg or free a decode worker it holds, and a separate process, a new trust boundary for one call.
