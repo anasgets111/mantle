@@ -26,14 +26,28 @@ impl NegotiatedBuffer {
         Some((self.pool.canvas(&self.buffer)?, size, self.stride as usize))
     }
 
-    /// Reverses the landed rows in place: a `y_invert` capture arrives bottom-up, and every
-    /// consumer (staging, the desktop unmix) reads top-down.
-    pub(super) fn flip_rows(&mut self) {
+    /// Reverses the landed rows and their `damage` in place: a `y_invert` capture arrives
+    /// bottom-up, and every consumer (staging, the desktop unmix) reads top-down.
+    pub(super) fn flip_rows(&mut self, damage: &mut [DamageRect]) {
         let (height, stride) = (self.height as usize, self.stride as usize);
         if let Some(canvas) = self.pool.canvas(&self.buffer) {
             flip_rows(canvas, stride, height);
         }
+        flip_damage(damage, self.height);
     }
+}
+
+fn flip_damage(damage: &mut [DamageRect], height: u32) {
+    for d in damage {
+        d.y = height.saturating_sub(d.y.saturating_add(d.height));
+    }
+}
+
+/// `create_buffer`'s arguments for a compositor-chosen size, `None` past the protocol's `i32`,
+/// pool size included.
+fn buffer_layout(width: u32, height: u32, stride: u32) -> Option<(i32, i32, i32, usize)> {
+    let len = i32::try_from(u64::from(stride) * u64::from(height)).ok()?;
+    Some((i32::try_from(width).ok()?, i32::try_from(height).ok()?, i32::try_from(stride).ok()?, len as usize))
 }
 
 fn flip_rows(canvas: &mut [u8], stride: usize, height: usize) {
@@ -79,8 +93,9 @@ pub(super) fn negotiate_buffer(
     {
         return existing;
     }
-    let mut pool = SlotPool::new((stride as usize * height as usize).max(1), shm).ok()?;
-    let (buffer, _canvas) = pool.create_buffer(width as i32, height as i32, stride as i32, format).ok()?;
+    let (w, h, s, len) = buffer_layout(width, height, stride)?;
+    let mut pool = SlotPool::new(len.max(1), shm).ok()?;
+    let (buffer, _canvas) = pool.create_buffer(w, h, s, format).ok()?;
     Some(NegotiatedBuffer { pool, buffer, width, height, stride, format })
 }
 
@@ -109,6 +124,25 @@ mod tests {
         let mut even = [1, 1, 2, 2];
         flip_rows(&mut even, 2, 2);
         assert_eq!(even, [2, 2, 1, 1]);
+    }
+
+    #[test]
+    fn flipping_damage_mirrors_it_and_survives_rects_past_the_buffer() {
+        let mut damage = [DamageRect { x: 0, y: 10, width: 5, height: 20 }, DamageRect::full(4, u32::MAX)];
+        damage[1].y = 7;
+        flip_damage(&mut damage, 100);
+        assert_eq!(damage[0].y, 70);
+        assert_eq!(damage[1].y, 0, "a compositor rect overflowing u32 clamps to the top");
+    }
+
+    #[test]
+    fn buffer_layout_refuses_sizes_the_protocol_cannot_carry() {
+        assert_eq!(buffer_layout(1920, 1080, 7680), Some((1920, 1080, 7680, 7680 * 1080)));
+        assert_eq!(buffer_layout(1 << 30, 1, (1u32 << 30).saturating_mul(4)), None, "stride past i32");
+        assert_eq!(buffer_layout(1 << 31, 1, u32::MAX), None, "width past i32");
+        assert_eq!(buffer_layout(16, 1 << 31, 64), None, "height past i32");
+        assert_eq!(buffer_layout(16_384, 1 << 15, 65_536), None, "a pool past i32::MAX bytes");
+        assert_eq!(buffer_layout(0, 0, 0), Some((0, 0, 0, 0)));
     }
 
     #[test]

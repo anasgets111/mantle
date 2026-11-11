@@ -120,11 +120,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, NodeId> for App {
                     && !wlr.dmabuf_active
                     && let Some(buffer) = wlr.buffer.as_mut()
                 {
-                    buffer.flip_rows();
-                    let height = buffer.height;
-                    for d in &mut wlr.damage {
-                        d.y = height.saturating_sub(d.y + d.height);
-                    }
+                    buffer.flip_rows(&mut wlr.damage);
                 }
                 land_ready_frame(&mut state.captures, &mut state.capture_cache, id);
                 state.request_next_if_live(*id);

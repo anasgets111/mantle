@@ -177,7 +177,7 @@ impl App {
         if ext.buffer.is_none()
             && let Some((width, height, format)) = ext.shm_negotiated
         {
-            ext.buffer = negotiate_buffer(&self.shm, None, width, height, width * 4, format);
+            ext.buffer = negotiate_buffer(&self.shm, None, width, height, width.saturating_mul(4), format);
         }
         let Some(negotiated) = ext.buffer.as_ref() else {
             // The first `Done` has not landed; it creates the frame once it does.
@@ -208,7 +208,7 @@ impl App {
                 ext.buffer = None;
             } else if let Some((width, height, format)) = ext.shm_negotiated {
                 let existing = ext.buffer.take();
-                ext.buffer = negotiate_buffer(&self.shm, existing, width, height, width * 4, format);
+                ext.buffer = negotiate_buffer(&self.shm, existing, width, height, width.saturating_mul(4), format);
             }
         }
         let session = self.captures.sources.get(&id).and_then(|s| match &s.proto {
