@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime};
 use shared::{debug, warn};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::watch;
+use tokio::time::Instant;
 
 use super::backend::Backend;
 use super::reboot::{REBOOT_MARKER, run_reboot_marker_task};
@@ -169,20 +170,19 @@ async fn run_check_task(
                 }
             }
         } else {
-            // Tokio's clock stops during suspend, so an interval timed by it runs late by every
-            // hour asleep. Poll instead and judge by the wall-clock age of the last
-            // success, which also retries a failed check at the next poll. The first tick is
-            // immediate, so an hourly schedule checks now, not in an hour (ADR-0113 amendment),
-            // and a config reload within the hour does not check again.
-            let mut ticker = tokio::time::interval(interval.min(CHECK_POLL));
-            // Checks can exceed a short interval. `Burst` would hammer mirrors with missed
-            // ticks; `Delay` resumes after the check.
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            // `next` is an interval after the last start on tokio's clock, which stops in suspend, so
+            // asking the wall clock every `CHECK_POLL` catches an overdue check and retries a failed
+            // one. A config reload within the interval does not check again (ADR-0113 amendment).
+            let wall = || {
+                let last = state.lock().expect("mutex poisoned").last_successful_check;
+                until_due(last, epoch_seconds(SystemTime::now()), interval)
+            };
+            let mut next = Instant::now() + wall();
             loop {
                 tokio::select! {
-                    _ = ticker.tick() => {
-                        let last = state.lock().expect("mutex poisoned").last_successful_check;
-                        if check_is_due(last, epoch_seconds(SystemTime::now()), interval) {
+                    _ = tokio::time::sleep_until(next.min(Instant::now() + CHECK_POLL)) => {
+                        if Instant::now() >= next || wall().is_zero() {
+                            next = Instant::now() + interval;
                             run_one_check(&backend, &state, &events).await;
                         }
                     }
@@ -190,6 +190,7 @@ async fn run_check_task(
                         if asked.is_none() {
                             return;
                         }
+                        next = Instant::now() + interval;
                         run_one_check(&backend, &state, &events).await;
                     }
                     changed = interval_rx.changed() => {
@@ -210,6 +211,7 @@ async fn run_check_task(
 async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesState>>, events: &UnboundedSender<()>) {
     state.lock().expect("mutex poisoned").checking = true;
     let _ = events.send(());
+    let started = epoch_seconds(SystemTime::now());
 
     // No timeout: every command a check runs has its own limit, and a check given up on would
     // still be running beside the next, sharing its download files.
@@ -224,7 +226,7 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
         Ok(Ok(report)) => {
             guard.packages = report.packages;
             guard.aur_error = report.aur_error;
-            guard.last_successful_check = Some(epoch_seconds(SystemTime::now()));
+            guard.last_successful_check = Some(started);
             guard.check_error = None;
             guard.consecutive_check_failures = 0;
         }
@@ -237,10 +239,11 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
     let _ = events.send(());
 }
 
-/// Due with no successful check yet, or when the last success is at least `interval` old.
-fn check_is_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -> bool {
-    let Some(last) = last_successful_check else { return true };
-    now.saturating_sub(last) >= interval.as_secs() as i64
+/// Wall-clock time until a check is due: none with no successful check, once the last is
+/// `interval` old, or when its stamp is in the future (a clock stepped back; the check rewrites it).
+fn until_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -> Duration {
+    let Some(age) = last_successful_check.map(|last| now.saturating_sub(last)) else { return Duration::ZERO };
+    u64::try_from(age).map_or(Duration::ZERO, |age| interval.saturating_sub(Duration::from_secs(age)))
 }
 
 /// Assumes `state.installing` and its progress fields were set by `UpdatesController::install`'s
@@ -537,21 +540,95 @@ mod tests {
         assert_eq!(controller.snapshot().consecutive_check_failures, 2);
     }
 
+    /// A backend whose every check succeeds once the test sends on its channel, so a check lasts
+    /// as long as the test advances paused time before releasing it.
+    struct Released(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+
+    impl Backend for Released {
+        fn name(&self) -> &'static str {
+            "released"
+        }
+        fn check(&self) -> Result<CheckReport, String> {
+            let _ = self.0.lock().unwrap().recv();
+            Ok(CheckReport { packages: vec![], aur_error: None })
+        }
+        fn install_command(&self) -> InstallCommand {
+            StubBackend.install_command()
+        }
+        fn parse_install_step(&self, _: &str) -> Option<InstallStep> {
+            None
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn scheduled_checks_start_one_interval_apart_however_long_each_takes() {
+        for interval in [60, 3600] {
+            let (release, hold) = std::sync::mpsc::channel();
+            let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+            let controller =
+                UpdatesController::with_backend(Some(Arc::new(Released(hold.into()))), no_marker(), events_tx);
+            events_rx.recv().await.unwrap();
+            controller.configure(UpdatesConfigure {
+                interval_secs: interval,
+                checked_at: None,
+                packages: vec![],
+                aur: false,
+            });
+            let mut starts = Vec::new();
+            for _ in 0..3 {
+                tokio::time::timeout(Duration::from_secs(interval + 600), events_rx.recv())
+                    .await
+                    .expect("the next scheduled check never started");
+                starts.push(tokio::time::Instant::now());
+                // A check lasting 5 s of paused time.
+                tokio::time::advance(Duration::from_secs(5)).await;
+                release.send(()).unwrap();
+                events_rx.recv().await.unwrap();
+            }
+            for pair in starts.windows(2) {
+                let gap = (pair[1] - pair[0]).as_secs_f64();
+                assert!((gap - interval as f64).abs() < 1.0, "interval {interval}: checks started {gap} s apart");
+            }
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_remembered_check_waits_out_the_rest_of_its_interval_unless_it_is_from_the_future() {
+        for (age, wait) in [(60, 3540), (-86_400, 0)] {
+            let (controller, mut events_rx) = failing_controller().await;
+            controller.configure(UpdatesConfigure {
+                interval_secs: 3600,
+                checked_at: Some(epoch_seconds(SystemTime::now()) - age),
+                packages: vec![],
+                aur: false,
+            });
+            events_rx.recv().await.expect("a seed pushes");
+            let start = tokio::time::Instant::now();
+            await_one_check(&mut events_rx).await;
+            // A clock stepped back must not stall checks until it catches up.
+            // A wall-clock second may tick between the seed and the scheduler reading it.
+            let waited = start.elapsed().as_secs();
+            assert!(waited + 1 >= wait && waited <= wait, "a check stamped {age} s ago waited {waited} s");
+        }
+    }
+
     #[test]
     fn a_check_is_due_by_the_age_of_the_last_stamp() {
         let last = 1_800_000_000;
         let hour = Duration::from_secs(3600);
-        // (last stamp, now, due). A reload re-invokes `configure` on a controller that outlives the
+        // (last stamp, now, wait). A reload re-invokes `configure` on a controller that outlives the
         // generation, so a reconfigure within the interval must not sync again.
-        for (stamp, now, due, case) in [
-            (None, last, true, "the first check of a process is due at once"),
-            (Some(last), last + 60, false, "a reconfigure within the interval waits"),
-            (Some(last), last + 3600, true, "exactly one interval old is due"),
-            (Some(last), last + 7200, true, "older than the interval"),
-            // A clock stepped backwards leaves a stamp ahead of `now`; it must read as recent, not underflow.
-            (Some(last), last - 5000, false, "a stamp in the future"),
+        for (stamp, now, wait, case) in [
+            (None, last, 0, "the first check of a process is due at once"),
+            (Some(last), last + 60, 3540, "a reconfigure within the interval waits out the rest"),
+            (Some(last), last + 3600, 0, "exactly one interval old is due"),
+            (Some(last), last + 7200, 0, "older than the interval"),
+            // A clock stepped backwards leaves a stamp ahead of `now`. Reading it as recent would
+            // stall checks until the clock catches up, across restarts since `checked_at` persists.
+            (Some(last), last - 5000, 0, "a stamp in the future is due, and the check rewrites it"),
+            (Some(i64::MAX), i64::MIN, 0, "and the subtraction cannot overflow"),
         ] {
-            assert_eq!(check_is_due(stamp, now, hour), due, "{case}");
+            assert_eq!(until_due(stamp, now, hour), Duration::from_secs(wait), "{case}");
         }
     }
 
