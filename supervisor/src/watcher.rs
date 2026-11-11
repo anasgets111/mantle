@@ -119,6 +119,19 @@ fn hash_file(path: &Path) -> Option<u64> {
 /// How often to re-add the root once the config tree has vanished; see the module comment.
 const REWATCH_RETRY: Duration = Duration::from_secs(1);
 
+/// Drops every watch and hash once the root is gone, and returns when to try re-adding it.
+fn lose_root(
+    watches: &mut Watches,
+    wd_to_dir: &mut HashMap<WatchDescriptor, PathBuf>,
+    hashes: &mut HashMap<PathBuf, u64>,
+) -> tokio::time::Instant {
+    for (wd, _) in wd_to_dir.drain() {
+        let _ = watches.remove(wd);
+    }
+    hashes.clear();
+    tokio::time::Instant::now() + REWATCH_RETRY
+}
+
 /// Watches `dir`'s tree for `.lua` and `.frag` changes, debounced by `debounce`, and emits one `()` per settled
 /// burst. See the module comment for irrelevant events.
 pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::UnboundedReceiver<()>> {
@@ -153,11 +166,7 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                                 // every hashed path is about an inode that is gone.
                                 // ponytail: a symlinked root repointed while its old target stays
                                 // put reports nothing. Upgrade: watch the root's parent for its name.
-                                for (wd, _) in wd_to_dir.drain() {
-                                    let _ = watches.remove(wd);
-                                }
-                                hashes.clear();
-                                rewatch_at = Some(tokio::time::Instant::now() + REWATCH_RETRY);
+                                rewatch_at = Some(lose_root(&mut watches, &mut wd_to_dir, &mut hashes));
                                 continue;
                             }
                             if event.mask.contains(EventMask::IGNORED) {
@@ -169,8 +178,11 @@ pub fn spawn_watcher(dir: &Path, debounce: Duration) -> io::Result<mpsc::Unbound
                             if event.mask.contains(EventMask::Q_OVERFLOW) {
                                 // Events were lost, so any edit or new directory may have been missed.
                                 hashes.clear();
+                                // Fails only on the root itself: gone, its `IGNORED` maybe lost in
+                                // the overflow, or out of watches. Retry as for a root reported gone.
                                 if let Err(err) = watch_tree(&mut watches, &mut wd_to_dir, &root) {
-                                    warn!("cannot re-watch {} after an inotify overflow: {err}; live reload may miss changes", root.display());
+                                    warn!("cannot re-watch {} after an inotify overflow: {err}; retrying", root.display());
+                                    rewatch_at = Some(lose_root(&mut watches, &mut wd_to_dir, &mut hashes));
                                 }
                                 deadline.bump(debounce);
                                 continue;
@@ -458,28 +470,6 @@ mod tests {
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "a genuinely changed rewrite must still fire a trigger");
     }
 
-    /// A checkout can take the config root away and bring it back with new inodes; every watch
-    /// dies at once, so only the re-add timer can see the return.
-    #[tokio::test]
-    async fn the_config_root_deleted_and_recreated_still_reloads() {
-        let outer = tempfile::tempdir().unwrap();
-        let root = outer.path().join("mantle");
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
-
-        let mut rx = spawn_watcher(&root, SHORT_DEBOUNCE).unwrap();
-        std::fs::remove_dir_all(&root).unwrap();
-        assert!(recv_within(&mut rx, WAIT).await.is_some(), "the delete itself fires first");
-
-        std::fs::create_dir(&root).unwrap();
-        std::fs::write(root.join("shell.lua"), "return {}").unwrap();
-
-        assert!(
-            recv_within(&mut rx, REWATCH_RETRY + WAIT).await.is_some(),
-            "a config root that vanished and came back has to reload"
-        );
-    }
-
     /// `mv ~/.config/mantle ~/.config/mantle.old` reports no `IGNORED`: the watch follows the inode
     /// to its new name, and the directory made in its place has none.
     #[tokio::test]
@@ -497,10 +487,11 @@ mod tests {
         assert!(recv_within(&mut rx, WAIT).await.is_some(), "an edit inside the new root has to reload");
     }
 
-    /// The watch on a symlinked subdirectory's target survives `rm -rf` of the root, so waiting for
-    /// every watch to die would wait forever.
+    /// A checkout can take the config root away and bring it back with new inodes, so only the
+    /// re-add timer can see the return. The watch on a symlinked subdirectory's target survives the
+    /// `rm -rf`, so waiting for every watch to die would wait forever.
     #[tokio::test]
-    async fn the_config_root_deleted_with_a_symlinked_subdirectory_and_recreated_still_reloads() {
+    async fn the_config_root_deleted_and_recreated_still_reloads() {
         let outer = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let root = outer.path().join("mantle");
