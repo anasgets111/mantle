@@ -3,6 +3,7 @@
 //! `pacman-conf` and `curl` all ship with pacman, so the check adds no runtime dependency.
 
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -93,13 +94,27 @@ pub fn outdated(conf: &Path, db_path: &Path) -> Result<Vec<UpdateCandidate>, Str
         .collect())
 }
 
-/// The installed packages no repo under `db_path` carries, as `(name, installed version)`.
+/// The installed packages no repo under `db_path` carries, as `(name, installed version)`, less
+/// those `IgnorePkg` names: the AUR helpers' `-Syu` skips them, so they would be reported forever.
 pub fn foreign(conf: &Path, db_path: &Path) -> Result<Vec<(String, String)>, String> {
-    Ok(pacman(conf, db_path, &["-Qm"])?
-        .lines()
+    let ignored = run(Command::new("pacman-conf").arg("--config").arg(conf).arg("IgnorePkg"), failed)?;
+    Ok(parse_foreign(&pacman(conf, db_path, &["-Qm"])?, &ignored))
+}
+
+/// `-Qm` lines, less names an `IgnorePkg` line matches.
+fn parse_foreign(text: &str, ignored: &str) -> Vec<(String, String)> {
+    text.lines()
         .filter_map(|line| line.split_once(' '))
+        .filter(|(name, _)| !ignored.lines().any(|pattern| fnmatch(pattern, name)))
         .map(|(name, version)| (name.to_string(), version.to_string()))
-        .collect())
+        .collect()
+}
+
+/// libalpm's `_alpm_fnmatch`, which `IgnorePkg` entries match with, globs included.
+fn fnmatch(pattern: &str, name: &str) -> bool {
+    let (Ok(pattern), Ok(name)) = (CString::new(pattern), CString::new(name)) else { return false };
+    // SAFETY: both pointers are NUL-terminated strings that outlive the call.
+    unsafe { libc::fnmatch(pattern.as_ptr(), name.as_ptr(), 0) == 0 }
 }
 
 fn pacman(conf: &Path, db_path: &Path, args: &[&str]) -> Result<String, String> {
@@ -193,6 +208,13 @@ mod tests {
                 new.to_string()
             ))
         );
+    }
+
+    #[test]
+    fn a_foreign_package_ignore_pkg_matches_is_left_out() {
+        // `pacman-conf IgnorePkg` lines, globs included, as libalpm's `fnmatch` reads them.
+        let found = parse_foreign("paru 2.0-1\nlinux-git 6.9-1\nzoom 6.0-1\nzoom-extra 1-1\n", "linux*\nzoom\n");
+        assert_eq!(found, [("paru".to_string(), "2.0-1".to_string()), ("zoom-extra".to_string(), "1-1".to_string())]);
     }
 
     #[test]
