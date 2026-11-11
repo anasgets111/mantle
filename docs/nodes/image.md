@@ -8,7 +8,8 @@ SVG and SVGZ `<text>` use the fonts loaded by Mantle. Declare required families 
 text without a family uses the chain's primary font. Generic names use the families declared in
 the chain. An unavailable family falls back to the loaded serif family, or the primary if none
 is loaded. SVG text uses SVG layout and shaping, so its spacing can differ from a `text` node. Images, icons and file masks
-share this behavior, including background decoding.
+share this behavior, including background decoding. An SVG's `<image>` draws only a picture embedded
+as a `data:` URL; one naming a file draws nothing.
 
 A wallpaper that crossfades when the path changes:
 

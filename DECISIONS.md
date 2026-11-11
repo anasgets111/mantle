@@ -8839,3 +8839,17 @@ the generation that sent it: a reload keeps it until the next call, a replaced R
 Rejected: `pw_context_load_module` in the Supervisor (unsafe FFI, DSP and crashes shared with it,
 idle memory); pipewire-pulse `load-module` (no filter chain, lost when pipewire-pulse restarts);
 `pipewire.conf.d` drop-ins (files left behind, a PipeWire restart to apply).
+
+## 0384. SVG `<image>` draws `data:` URLs only, under one budget per document
+
+usvg's default href resolver reads any path whole with `std::fs::read`: a FIFO blocks forever, on
+the dispatch thread for an inline `icon`, and `/dev/zero` reads until memory runs out. Tray items
+hand the engine SVGs from any session D-Bus client. `rasterize_svg` now resolves strings to nothing,
+as usvg already does below the top level and as browsers do for an SVG used as an image. All 16
+`<image>` hrefs in a desktop's Adwaita, breeze, hicolor and Tela themes are `data:image/png` URLs.
+Nested SVG inflates under `MAX_SVG_BYTES` shared by the whole document, since one image repeated at
+each level otherwise multiplies; nesting stops at 8, since 81 levels (under 1 MB) overflowed a
+2 MiB worker stack in a debug build. Embedded rasters must pass `plausible` from their header.
+
+Rejected: a resolver confined to the SVG's directory. It needs canonicalization against symlinks
+and `..`, a regular-file check with its stat-then-open race, and a cap, for links no shipped icon uses.

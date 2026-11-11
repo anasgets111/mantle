@@ -1,9 +1,12 @@
 //! SVG rasterization, with `currentColor` tinting for symbolic icons (ADR-0072).
 
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-use super::decode::{read_capped, take_capped};
+use resvg::usvg::{ImageHrefResolver, ImageKind, Options, Tree};
+
+use super::decode::{plausible, read_capped, take_capped};
 use crate::layout::node::{Rgba, byte};
 use crate::text::shaping::FontDatabase;
 
@@ -11,6 +14,9 @@ use crate::text::shaping::FontDatabase;
 /// into a tree with no ceiling of its own, and an icon that is not a few hundred kilobytes is not
 /// an icon.
 const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
+
+/// SVG `<image>` data URLs one document may nest. Each level recurses through usvg's parser.
+const MAX_SVG_NESTING: u32 = 8;
 
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
@@ -27,15 +33,10 @@ pub(super) fn rasterize_svg(
     let data = read_capped(path, MAX_SVG_BYTES)
         .map_err(|err| format!("{}: {err}", path.display()))?
         .ok_or_else(|| format!("svg is over the {MAX_SVG_BYTES}-byte limit and was not parsed"))?;
-    // gzip magic. Inflated here rather than by `usvg::decompress_svgz`, whose `read_to_end` has no
-    // ceiling: deflate reaches 1032:1, so a file that passed the cap above can still ask for 8GB.
-    // Also what puts plaintext in front of `tinted_svg`, which rewrites bytes.
-    let data = match data.starts_with(&[0x1f, 0x8b]) {
-        true => take_capped(flate2::read::GzDecoder::new(&data[..]), MAX_SVG_BYTES)
-            .map_err(|err| format!("{}: {err}", path.display()))?
-            .ok_or_else(|| format!("svgz inflates past the {MAX_SVG_BYTES}-byte limit and was not parsed"))?,
-        false => data,
-    };
+    // Inflated before `tinted_svg`, which rewrites bytes.
+    let data = plaintext(data, MAX_SVG_BYTES)
+        .map_err(|err| format!("{}: {err}", path.display()))?
+        .ok_or_else(|| format!("svgz inflates past the {MAX_SVG_BYTES}-byte limit and was not parsed"))?;
     // GTK's recolour for a symbolic icon without `currentColor` (Tela): `!important` beats attributes
     // and inline `style`. One with it (Adwaita) keeps its hard-coded accents.
     // ponytail: `<mask>` fills and `fill="none"` stroke-only shapes get filled too, as GTK does.
@@ -53,7 +54,8 @@ pub(super) fn rasterize_svg(
     // cannot answer instead: usvg drops text it could not lay out, which a later font may fix.
     let asked_for_a_font = AtomicBool::new(false);
     let select_font = resvg::usvg::FontResolver::default_font_selector();
-    let options = resvg::usvg::Options {
+    let (nested_budget, depth) = (AtomicU64::new(MAX_SVG_BYTES), AtomicU32::new(0));
+    let options = Options {
         fontdb: fonts.db.clone(),
         font_family: fonts.primary_family.clone(),
         font_resolver: resvg::usvg::FontResolver {
@@ -64,9 +66,15 @@ pub(super) fn rasterize_svg(
             select_fallback: resvg::usvg::FontResolver::default_fallback_selector(),
         },
         style_sheet,
+        // Only `data:` hrefs (ADR-0384): usvg's default reads any path whole, `/dev/zero` or a
+        // FIFO included. Its nested parse already refuses file hrefs below the top level.
+        image_href_resolver: ImageHrefResolver {
+            resolve_data: Box::new(|mime, data, options| embedded_image(mime, data, options, &nested_budget, &depth)),
+            resolve_string: Box::new(|_, _| None),
+        },
         ..Default::default()
     };
-    let tree = resvg::usvg::Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
+    let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
     let size = tree.size();
     let longest = size.width().max(size.height());
     // Check finiteness as well as sign: `<= 0.0` lets NaN reach `scale` and a zero-sized pixmap,
@@ -82,6 +90,44 @@ pub(super) fn rasterize_svg(
     resvg::render(&tree, resvg::tiny_skia::Transform::from_scale(scale, scale), &mut pixmap.as_mut());
     let natural = (size.width().round() as u32, size.height().round() as u32);
     Ok((pixmap.take(), width, height, asked_for_a_font.load(Ordering::Relaxed), natural))
+}
+
+/// `data`, inflated if it has the gzip magic, or `None` past `cap`. Inflated here rather than by
+/// `usvg::decompress_svgz`, whose `read_to_end` has no ceiling: deflate reaches 1032:1.
+fn plaintext(data: Vec<u8>, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
+    match data.starts_with(&[0x1f, 0x8b]) {
+        true => take_capped(flate2::read::GzDecoder::new(&data[..]), cap),
+        false => Ok((data.len() as u64 <= cap).then_some(data)),
+    }
+}
+
+/// usvg's default data resolver under a file's caps. resvg decodes a raster at its native size, so
+/// its header edges must pass [`plausible`]. Nested SVG, at every level, draws on one `budget`:
+/// an image repeated at each level would otherwise multiply what one document can ask for.
+/// `depth` counts the nested parses in progress, up to [`MAX_SVG_NESTING`].
+#[allow(clippy::rc_buffer)] // usvg's `ImageHrefDataResolverFn` hands over an `Arc<Vec<u8>>`.
+fn embedded_image(
+    mime: &str,
+    data: Arc<Vec<u8>>,
+    options: &Options,
+    budget: &AtomicU64,
+    depth: &AtomicU32,
+) -> Option<ImageKind> {
+    let header = ::image::ImageReader::new(std::io::Cursor::new(data.as_slice())).with_guessed_format().ok()?;
+    if header.format().is_some() {
+        plausible(header.into_dimensions().ok()?)?;
+    } else if matches!(mime, "image/svg+xml" | "text/plain") {
+        if depth.load(Ordering::Relaxed) == MAX_SVG_NESTING {
+            return None;
+        }
+        let svg = plaintext(Arc::unwrap_or_clone(data), budget.load(Ordering::Relaxed)).ok()??;
+        budget.fetch_sub(svg.len() as u64, Ordering::Relaxed);
+        depth.fetch_add(1, Ordering::Relaxed);
+        let tree = Tree::from_data_nested(&svg, options);
+        depth.fetch_sub(1, Ordering::Relaxed);
+        return tree.ok().map(ImageKind::SVG);
+    }
+    (ImageHrefResolver::default_data_resolver())(mime, data, options)
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -173,6 +219,7 @@ fn rewrite_color_declarations(text: &str, hex: &str) -> String {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use super::super::MAX_DECODE_EDGE;
     use super::super::tests::GRADIENT_SVG;
     use super::*;
 
@@ -380,22 +427,116 @@ pub(super) mod tests {
         assert!(distinct.len() > 16, "expected a gradient, got {} colours", distinct.len());
     }
 
-    #[test]
-    fn an_embedded_png_image_is_drawn() {
-        // Without resvg's `raster-images` the `<image>` parses but draws nothing, leaving it clear.
-        let dir = tempfile::tempdir().unwrap();
-        let png = dir.path().join("red.png");
-        let mut encoder = png::Encoder::new(std::fs::File::create(&png).unwrap(), 2, 2);
+    const RED_SVG: &str =
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><rect width="2" height="2" fill="red"/></svg>"#;
+
+    fn red_png(width: u32, height: u32) -> Vec<u8> {
+        let mut png = Vec::new();
+        let mut encoder = png::Encoder::new(&mut png, width, height);
         encoder.set_color(png::ColorType::Rgba);
-        encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 255].repeat(4)).unwrap();
-        let svg = dir.path().join("photo.svg");
-        let href = png.display();
-        let doc = format!(
-            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="{href}" width="2" height="2"/></svg>"#
-        );
-        std::fs::write(&svg, doc).unwrap();
-        let (pixels, ..) = rasterize_svg(&svg, 8, None, &FontDatabase::default()).unwrap();
-        assert!(pixels.as_chunks::<4>().0.iter().all(|px| *px == [255, 0, 0, 255]), "{pixels:?}");
+        encoder.write_header().unwrap().write_image_data(&[255, 0, 0, 255].repeat((width * height) as usize)).unwrap();
+        png
+    }
+
+    /// Percent-encoded rather than base64, which this crate has no encoder for.
+    fn data_url(mime: &str, bytes: &[u8]) -> String {
+        use std::fmt::Write;
+        bytes.iter().fold(format!("data:{mime},"), |mut url, byte| {
+            write!(url, "%{byte:02x}").unwrap();
+            url
+        })
+    }
+
+    fn image_doc(href: &str) -> String {
+        format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"><image href="{href}" width="2" height="2" preserveAspectRatio="none"/></svg>"#
+        )
+    }
+
+    fn rasterize_doc(doc: &str) -> Vec<u8> {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("doc.svg");
+        std::fs::write(&path, doc).unwrap();
+        rasterize_svg(&path, 4, None, &FontDatabase::default()).unwrap().0
+    }
+
+    fn all_red(pixels: &[u8]) -> bool {
+        pixels.as_chunks::<4>().0.iter().all(|px| *px == [255, 0, 0, 255])
+    }
+
+    fn all_clear(pixels: &[u8]) -> bool {
+        pixels.iter().all(|&channel| channel == 0)
+    }
+
+    #[test]
+    fn an_embedded_png_or_svg_image_is_drawn_from_a_data_url() {
+        // Without resvg's `raster-images` the `<image>` parses but draws nothing, leaving it clear.
+        for href in [
+            data_url("image/png", &red_png(2, 2)),
+            data_url("image/svg+xml", RED_SVG.as_bytes()),
+            data_url("image/svg+xml", &gzip(RED_SVG.as_bytes())),
+            data_url("image/svg+xml", image_doc(&data_url("image/png", &red_png(2, 2))).as_bytes()),
+        ] {
+            assert!(all_red(&rasterize_doc(&image_doc(&href))), "{href}");
+        }
+    }
+
+    /// A FIFO href would block the read forever, on the Wayland dispatch thread for an inline
+    /// `icon`, and `/dev/zero` would read until memory ran out. Joined within a bound, so a
+    /// regression fails here rather than hanging the suite.
+    #[test]
+    fn an_image_href_naming_a_file_is_never_opened() {
+        let dir = tempfile::tempdir().unwrap();
+        let fifo = dir.path().join("pipe.png");
+        nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU).expect("the test needs a real FIFO");
+        let png = dir.path().join("red.png");
+        std::fs::write(&png, red_png(2, 2)).unwrap();
+        for href in [fifo, png] {
+            let doc = image_doc(&href.display().to_string());
+            let (sender, receiver) = std::sync::mpsc::channel();
+            std::thread::spawn(move || sender.send(rasterize_doc(&doc)));
+            let pixels = receiver.recv_timeout(std::time::Duration::from_secs(10)).expect("the load must not block");
+            assert!(all_clear(&pixels), "{} was read", href.display());
+        }
+    }
+
+    #[test]
+    fn a_nested_svg_is_held_to_the_size_cap_across_every_level_and_image() {
+        // A few kilobytes of gzip inflating past the cap, two data URLs deep, so the inner one is
+        // reached through usvg's own nested parse.
+        let bomb = gzip(&[RED_SVG.as_bytes(), &vec![b' '; MAX_SVG_BYTES as usize]].concat());
+        let inner = image_doc(&data_url("image/svg+xml", &bomb));
+        assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", inner.as_bytes())))));
+
+        // Each fits alone, the pair does not: the cap is one budget for the whole document, or
+        // repeating an image, at each level, multiplies what one file can ask for.
+        let half =
+            data_url("image/svg+xml", &gzip(&[RED_SVG.as_bytes(), &vec![b' '; MAX_SVG_BYTES as usize / 2]].concat()));
+        let pixels = rasterize_doc(&format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="4" height="2"><image href="{half}" width="2" height="2"/><image href="{half}" x="2" width="2" height="2"/></svg>"#
+        ));
+        let (left, right): (Vec<_>, Vec<_>) =
+            pixels.as_chunks::<4>().0.chunks(2).enumerate().partition(|(i, _)| i % 2 == 0);
+        assert!(left.iter().all(|(_, px)| all_red(px.as_flattened())), "the first image is drawn");
+        assert!(right.iter().all(|(_, px)| all_clear(px.as_flattened())), "the second is over the budget");
+    }
+
+    #[test]
+    fn nested_svg_stops_at_the_nesting_limit() {
+        // Each level recurses through usvg's parser: 81 levels of base64 gzip, under 1 MB in all,
+        // overflowed a 2 MiB decode worker's stack in a debug build and aborted the renderer.
+        let nest = |levels| {
+            (0..levels).fold(RED_SVG.to_string(), |svg, _| image_doc(&data_url("image/svg+xml", &gzip(svg.as_bytes()))))
+        };
+        assert!(all_red(&rasterize_doc(&nest(MAX_SVG_NESTING))));
+        assert!(all_clear(&rasterize_doc(&nest(MAX_SVG_NESTING + 1))));
+    }
+
+    #[test]
+    fn an_embedded_raster_past_the_decode_edge_is_refused_from_its_header() {
+        // resvg decodes an embedded raster at its native size, outside `decode_within_limits`.
+        let wide = data_url("image/png", &red_png(MAX_DECODE_EDGE + 1, 1));
+        assert!(all_clear(&rasterize_doc(&image_doc(&wide))));
     }
 
     #[test]
