@@ -780,6 +780,43 @@ mod tests {
         assert_eq!(texts[0].rect.width, texts[1].rect.width);
     }
 
+    /// Unless it says lines were dropped: then it is wide enough for the ellipsis too, with the
+    /// last kept line's runs and the style of the character the ellipsis follows.
+    #[test]
+    fn a_capped_elided_text_has_room_for_its_ellipsis() {
+        for (content, cap, expected) in [
+            (r#""Hi\nmuch longer second line""#, 1, "Hi\u{2026}"),
+            (r#"{ { text = "Hi", bold = true }, { text = "\nmuch longer second line" } }"#, 1, "Hi\u{2026}"),
+            (
+                r#"{ { text = "Hi", bold = true }, { text = " there\nmuch longer second line" } }"#,
+                1,
+                "Hi there\u{2026}",
+            ),
+            (
+                r#"{ { text = "Hi\n" }, { text = "yo", bold = true }, { text = "\nmuch longer third" } }"#,
+                2,
+                "Hi\nyo\u{2026}",
+            ),
+        ] {
+            let drawn = elided(&format!(
+                r#"panel {{ id = "bar", child = column {{ children = {{
+                    text {{ content = {content}, wrap = "word", max_lines = {cap}, elide = "end" }} }} }} }}"#
+            ));
+            assert_eq!(drawn, expected, "{content}");
+        }
+        let (scene, _lua, _shaping, _surface) = applied(
+            r#"panel { id = "bar", child = column { children = {
+                text { content = "Hi", wrap = "word", max_lines = 1, elide = "end" }, text { content = "Hi" },
+                text { wrap = "word", max_lines = 2, elide = "end",
+                    content = { { text = "Hi\n" }, { text = "yo", bold = true }, { text = " there\nmuch longer third" } } },
+                text { content = { { text = "yo", bold = true }, { text = " there\u{2026}" } } },
+            } } }"#,
+        );
+        let texts = &scene.surface("bar@TEST").unwrap().children[0].children;
+        assert_eq!(texts[0].rect.width, texts[1].rect.width, "a cap it never reaches leaves no room for an ellipsis");
+        assert_eq!(texts[2].rect.width, texts[3].rect.width, "the kept line's runs move with it");
+    }
+
     /// `max_lines = 0` is the uncapped spelling a `Bound` needs, since a signal cannot produce
     /// "absent". It has to mean the same thing as leaving the property off.
     #[test]
