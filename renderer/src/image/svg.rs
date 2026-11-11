@@ -242,11 +242,18 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
     true
 }
 
-/// Whether `node`'s `attr` holds a number past `bound`, or one this cannot read: split on signs and
-/// separators, so `7e4+7e4`, which svgtypes reads as two numbers, is two here.
+/// Whether `node`'s `attr` holds a number past `bound`, or one this cannot read. Split as svgtypes
+/// reads a list: on separators and on a sign not after an exponent's `e`, so `7e4+7e4` is two.
 fn past(node: resvg::usvg::roxmltree::Node, attr: &str, bound: f64) -> bool {
     let values = node.attributes().filter(|named| named.name() == attr).map(|named| named.value());
-    let pieces = values.flat_map(|value| value.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')));
+    let pieces = values.flat_map(|value| {
+        let mut after = ' ';
+        value.split(move |c: char| {
+            let exponent = matches!(c, '+' | '-') && matches!(after, 'e' | 'E');
+            after = c;
+            !(c.is_ascii_alphanumeric() || c == '.' || exponent)
+        })
+    });
     pieces.filter(|piece| !piece.is_empty()).any(|piece| !piece.parse::<f64>().is_ok_and(|n| n <= bound))
 }
 
@@ -838,6 +845,9 @@ pub(super) mod tests {
         for (primitive, refused) in [
             (r#"<feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
             (r#"<feTurbulence seed="-7"/>"#, false),
+            (r#"<feTurbulence seed="1e+3"/>"#, false),
+            (r#"<feConvolveMatrix order="3e+0" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
+            (r#"<feConvolveMatrix order="3E-0,3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
             (r#"<feConvolveMatrix order="65536"/>"#, true),
             (r#"<feConvolveMatrix order="7e4+7e4"/>"#, true),
             (r#"<feTurbulence seed="-3e38"/>"#, true),

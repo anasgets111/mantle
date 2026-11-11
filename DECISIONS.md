@@ -8888,3 +8888,5 @@ nested SVG layer caps all drew far past their charge. It also refused real icons
 Kept: the structural caps of ADR-0384 and the refusal of an `<image>` usvg would decode per use.
 Replaced by rasterizing an `image` node's SVG on the decode workers whatever `async` says; themed
 icons stay inline for a complete first frame (ADR-0122). Deferred: a killable helper process.
+Correction: every `icon` stays inline, an absolute path included, and so do file masks and shader
+samplers.

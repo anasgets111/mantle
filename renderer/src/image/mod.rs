@@ -9,9 +9,10 @@
 //! Failures are cached as `Failed`, unreadable files included; a *missing* file retries when its
 //! key changes on appearance.
 //!
-//! Decoding is inline by default, or on a worker pool for `async = true` (ADR-0122). The slot is
-//! `Pending` until [`ImageCache::poll`] finds pixels; [`ImageCache::upload_landed`] uploads them at
-//! the next paint's start. Workers decode; only this canvas-current thread uploads (ADR-0039).
+//! Decoding is inline by default, or on a worker pool for `async = true` and for an `image`'s SVG
+//! (ADR-0122, ADR-0387). The slot is `Pending` until [`ImageCache::poll`] finds pixels;
+//! [`ImageCache::upload_landed`] uploads them at the next paint's start. Workers decode; only this
+//! canvas-current thread uploads (ADR-0039).
 //! Pool decodes use [`thumbnails`]: read a current thumbnail instead of the file, and leave one
 //! after a full decode for later opens and other cache users.
 //!
@@ -190,8 +191,8 @@ crate::layout::node::prop::keywords! {
     }
 }
 
-/// Whether a draw waits for pixels (ADR-0122). `Inline` is the default for icons and wallpaper:
-/// decode in the first frame so its presentation is complete (ADR-0003). `Background` queues the
+/// Whether a draw waits for pixels (ADR-0122). `Inline` is the default for icons, masks and raster
+/// `image`s, never an `image`'s SVG (ADR-0387): decode in the first frame so its presentation is complete (ADR-0003). `Background` queues the
 /// decode and draws nothing until it lands, avoiding a second of frozen shell for forty tiles.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Load {

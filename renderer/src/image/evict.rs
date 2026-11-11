@@ -97,9 +97,6 @@ impl ImageCache {
     }
 
     pub(super) fn stand_in_key(&self, wanted: &CacheKey) -> Option<CacheKey> {
-        if wanted.blur_px != 0 {
-            return None;
-        }
         self.entries
             .iter()
             .filter_map(|(key, entry)| {
@@ -327,6 +324,12 @@ mod tests {
         assert!(cache.image(painter.canvas_mut(), &large, Load::Background).is_none());
         assert_eq!(cache.stand_in(painter.canvas_mut(), &large), Some(first));
         assert!(cache.stand_in(painter.canvas_mut(), &ImageRequest { fit: Fit::Cover, ..large }).is_none());
+        // A blurred SVG always decodes on a worker: a resize keeps its last raster, blurred alike.
+        let svg = dir.path().join("picture.svg");
+        std::fs::write(&svg, r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2"/>"#).unwrap();
+        let blurred = ImageRequest { path: &svg, blur_px: 2, ..small };
+        let first = cache.image(painter.canvas_mut(), &blurred, Load::Inline).unwrap();
+        assert_eq!(cache.stand_in(painter.canvas_mut(), &ImageRequest { box_px: (32, 32), ..blurred }), Some(first));
         // `image_status`: the file's own size once decoded; a stand-in is not this size's load.
         assert_eq!(cache.loaded(&small), Some(Loaded::Ready(Some((2, 2)))));
         // Decoded without its size, as a thumbnail hit nobody asked the size of: a `status` asks.

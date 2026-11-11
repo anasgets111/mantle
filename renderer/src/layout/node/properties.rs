@@ -488,15 +488,15 @@ props! {
         fit: Bound<OneOf<Fit>> = absent(Choice("cover"));
         /// `false` decodes in the frame that first draws it, except SVG and SVGZ, which always decode on a worker (ADR-0387). `true` decodes on a worker and draws nothing until the first decode lands (ADR-0122). A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images.
         r#async: Bound<Flag> = absent(Bool(false));
-        /// Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` and a stable `id`.
+        /// Keep drawing the last picture while a new `source` decodes, and on a failed decode (ADR-0180, ADR-0183). Needs `async = true` or an SVG `source`, and a stable `id`.
         retain: Bound<Flag> = absent(Bool(false));
-        /// Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` and a stable `id`. The first picture appears without one.
+        /// Cross-fade from the held picture to a newly decoded `source` (ADR-0181, ADR-0186). Implies `retain`; needs `async = true` or an SVG `source`, and a stable `id`. The first picture appears without one.
         ///
-        /// Book: Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition)
+        /// Book: Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` or an SVG `source`, and a stable `id`. Unknown keys are refused. See [transition](#transition)
         transition: Bound<TransitionSpec>;
-        /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async` a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animations ignore it.
+        /// Blur sigma in px (a fast box approximation), applied once at decode (ADR-0240). Runs on the decoding thread, so pair large images with `async`; under `async`, or for an SVG, a change blanks the image until the re-decode lands, and `retain` does not cover it (same `source`). Animations ignore it.
         ///
-        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animations ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it
+        /// Book: Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animations ignore it. Under `async`, or for an SVG, a change blanks the image until the re-decode lands; `retain` does not cover it
         source_blur: Bound<Num> = range(0.0, 8192.0).absent(Number(0.0));
         /// Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it.
         radius: Bound<NumberOrCorners> = range(0.0, 8192.0).absent(Number(0.0));

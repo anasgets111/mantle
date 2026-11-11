@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: an `image` with `source_blur` that decodes on a worker (`async = true`, or an SVG) keeps drawing its previous size, scaled, while a resize decodes, as one without a blur does. It used to draw nothing until the new size landed, so it vanished for the length of a size animation.
 - Fixed: an SVG with an `feConvolveMatrix` `order` above 32 or an `feTurbulence` `seed` beyond a billion either way fails to load instead of crashing the Renderer.
 - Changed: an `image` showing an SVG or SVGZ file decodes off the drawing thread whatever `async` says, so it appears once decoded, a frame or more after the first, rather than in the first frame. A slow file no longer freezes the shell while it draws. `icon` is unchanged.
 - Fixed: with `aur = true`, `mantle.updates.packages` leaves out AUR packages that `IgnorePkg` in `pacman.conf` names, globs included, as it already did for repo packages. They used to be listed after every upgrade, since the AUR helper skips them.

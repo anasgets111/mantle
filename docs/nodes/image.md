@@ -44,9 +44,9 @@ return { panel {
 | `source` | `string\|Bound` | `""` | A file path (`mantle.config_dir .. "/img/a.png"`, or `~/` under `$HOME`), never a theme name; `""` draws nothing. PNG, JPEG, WebP, GIF, ICO, BMP, SVG or SVGZ; animated GIF, WebP and APNG loop |
 | `fit` | `"cover"\|"contain"\|"stretch"\|Bound` | `"cover"` | `"cover"` fills the box and crops, `"contain"` fits inside it, `"stretch"` distorts to it |
 | `async` | `boolean\|Bound` | `false` | `false` decodes in the frame that first draws it, except SVG and SVGZ, which always decode on a worker. `true` decodes on a worker and draws nothing until the first decode lands. A resize keeps drawing the previous size, scaled, until the new size decodes; use it for many or large images |
-| `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` and a stable `id` |
-| `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` and a stable `id`. Unknown keys are refused. See [transition](#transition) |
-| `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animations ignore it. Under `async`, a change blanks the image until the re-decode lands; `retain` does not cover it |
+| `retain` | `boolean\|Bound` | `false` | Keep drawing the last picture while a new `source` decodes, and on a failed decode. Needs `async = true` or an SVG `source`, and a stable `id` |
+| `transition` | `Transition\|Bound` | None | Cross from the held picture to each newly decoded `source`. Implies `retain`; needs `async = true` or an SVG `source`, and a stable `id`. Unknown keys are refused. See [transition](#transition) |
+| `source_blur` | `number\|Bound`, `[0, 8192]` | `0` | Blur sigma in px, baked into the pixels once at decode (three box passes approximating a Gaussian); see [blurs](../guide/paint.md#blurs). Animations ignore it. Under `async`, or for an SVG, a change blanks the image until the re-decode lands; `retain` does not cover it |
 | `radius` | `number\|Corners\|Bound`, `[0, 8192]` | `0` | Corner radius px of the drawn picture, as `rect.radius`: a number sets all four corners, a missing corner is `0`, corners too big for a side shrink together. Rounds the visible picture, so `"contain"` rounds the fitted picture, not the box. Hit-testing ignores it |
 | `corner_smoothing` | `number\|Bound`, `[0, 1]` | `0` | Continuous corners on the drawn picture, as `rect.corner_smoothing`. The shader that rounds a `transition` approximates a smoothed corner by a superellipse through its endpoints and midpoint |
 | `playing` | `boolean\|Bound` | `true` | `false` holds an animation on its current frame, the first if it never played, and stops its frame requests; `true` resumes from there. Per node: another image showing the same file plays on, and a node keeps its place while scrolled out or resized. Stills ignore it |
@@ -114,7 +114,7 @@ image {
 | Trap | Fix |
 | :--- | :--- |
 | The image does not appear | It has no intrinsic size. Give `width` and `height` |
-| An image flashes blank when its `source` changes despite `retain` | `retain` needs `async = true` and a node that survives: give it a stable `id` |
+| An image flashes blank when its `source` changes despite `retain` | `retain` needs `async = true` (or an SVG `source`) and a node that survives: give it a stable `id` |
 | The shell stutters while images load | Inline decode blocks drawing. Set `async = true` |
 | `source = "firefox"` draws nothing | `source` is a path. Use [`icon`](icon.md) for theme names |
 | A relative `source` draws nothing | It resolves against the Renderer's working directory, not the config. Build paths from `mantle.config_dir` |
