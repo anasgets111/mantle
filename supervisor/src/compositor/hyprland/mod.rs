@@ -43,11 +43,12 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
-use super::{Compositor, connect, toggle_needed};
+use super::{Compositor, End, connect, keep_following, lost, toggle_needed};
+use crate::capabilities::RETRY_FIRST;
 use crate::capabilities::keyboard::controller::LayoutSink;
 use crate::capabilities::windows::controller::StatePublisher as WindowsPublisher;
 use crate::capabilities::workspaces::controller::StatePublisher;
-use shared::{Capability, debug, error, warn};
+use shared::{Capability, debug, warn};
 
 mod commands;
 mod wire;
@@ -198,12 +199,52 @@ fn parse_hyprland_devices(json: &str) -> Option<HyprlandKeyboard> {
     parsed.iter().find(|k| k.main).cloned().or_else(|| parsed.into_iter().next())
 }
 
+/// Folds `.socket2.sock` bursts into the published state, re-reading over `command_path`.
+fn follow<R: Read>(
+    mut reader: BufReader<R>,
+    command_path: &Path,
+    publisher: &mut StatePublisher,
+    windows_publisher: &mut WindowsPublisher,
+    keyboard: &LayoutSink,
+) -> End {
+    keyboard.read_hyprland(command_path);
+    let mut last = read_state(command_path);
+    let mut urgent = HashSet::new();
+    loop {
+        if let Some((rows, focused, special, windows)) = &last {
+            let workspaces_alive = publisher.publish(rows, focused.as_ref(), Some(special.as_slice()), None);
+            let windows_alive = windows_publisher.publish(windows.clone());
+            if !workspaces_alive && !windows_alive {
+                return End::Unwanted;
+            }
+        }
+        let burst = match read_burst(&mut reader) {
+            Ok(Some(burst)) => burst,
+            Ok(None) => break warn!("Hyprland event socket closed"),
+            Err(err) => break warn!("Hyprland event socket read failed: {err}"),
+        };
+        if burst.layout {
+            keyboard.read_hyprland(command_path);
+        }
+        urgent.extend(burst.urgent);
+        // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
+        if burst.reread {
+            let Some(mut state) = read_state(command_path) else { continue };
+            mark_urgent(&mut state, &mut urgent);
+            last = Some(state);
+        } else if let Some(state) = &mut last {
+            burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
+        }
+    }
+    lost(publisher, windows_publisher, None)
+}
+
 /// Hyprland over its two instance-directory sockets.
 pub struct Hyprland;
 
 impl Compositor for Hyprland {
     /// Connects to the event socket before the first state read, so an intervening change remains a
-    /// line to process. One OS thread then re-reads once per burst with a trigger until socket end or
+    /// line to process. One OS thread then re-reads once per burst with a trigger, reconnecting until
     /// no listener. Also drives `mantle.windows` from the same reads, and `keyboard`'s layout.
     fn spawn_reader(
         &self,
@@ -218,58 +259,13 @@ impl Compositor for Hyprland {
         };
         let events_path = hyprland_socket_path(&signature, ".socket2.sock");
         let command_path = hyprland_socket_path(&signature, ".socket.sock");
-        let stream = match UnixStream::connect(&events_path) {
-            Ok(stream) => stream,
-            Err(err) => {
-                error!(
-                    "failed to connect to Hyprland's event socket at {}; workspace and window reporting disabled for this run: {err}",
-                    events_path.display()
-                );
-                return;
-            }
-        };
-
-        macro_rules! publish {
-            ($rows:expr, $focused:expr, $special:expr, $windows:expr) => {
-                let workspaces_alive = publisher.publish($rows, $focused, $special, None);
-                let windows_alive = windows_publisher.publish($windows);
-                if !workspaces_alive && !windows_alive {
-                    return;
-                }
-            };
-        }
-
         std::thread::spawn(move || {
-            let mut reader = BufReader::new(stream);
-            keyboard.read_hyprland(&command_path);
-            let mut last = read_state(&command_path);
-            let mut urgent = HashSet::new();
-            loop {
-                if let Some((rows, focused, special, windows)) = &last {
-                    publish!(rows, focused.as_ref(), Some(special.as_slice()), windows.clone());
-                }
-                let burst = match read_burst(&mut reader) {
-                    Ok(Some(burst)) => burst,
-                    Ok(None) => break,
-                    Err(_) => {
-                        error!("Hyprland event socket read failed; workspaces and windows will no longer update");
-                        return;
-                    }
-                };
-                if burst.layout {
-                    keyboard.read_hyprland(&command_path);
-                }
-                urgent.extend(burst.urgent);
-                // Urgency only changes on a read: an `urgent` event, focus and close all trigger one.
-                if burst.reread {
-                    let Some(mut state) = read_state(&command_path) else { continue };
-                    mark_urgent(&mut state, &mut urgent);
-                    last = Some(state);
-                } else if let Some(state) = &mut last {
-                    burst.titles.iter().for_each(|(address, title)| patch_title(state, address, title));
-                }
-            }
-            error!("Hyprland event socket closed; workspaces and windows will no longer update");
+            keep_following(
+                "Hyprland",
+                RETRY_FIRST,
+                || UnixStream::connect(&events_path).map(BufReader::new),
+                |reader| follow(reader, &command_path, &mut publisher, &mut windows_publisher, &keyboard),
+            );
         });
     }
 
@@ -391,5 +387,62 @@ mod tests {
 
         let json = r#"{"keyboards":[{"active_keymap":"error","layout":"us,ara","main":true}]}"#;
         assert!(parse_hyprland_devices(json).is_none(), "the last good layout stands instead");
+    }
+
+    /// A fake `.socket.sock` answering every request `follow` makes at start: one workspace on one
+    /// monitor, no windows.
+    fn serve_commands(path: &Path) -> std::thread::JoinHandle<()> {
+        let listener = std::os::unix::net::UnixListener::bind(path).unwrap();
+        let workspace = r#"[{"id":1,"name":"1","monitor":"DP-1","windows":0}]"#;
+        let monitor =
+            r#"[{"name":"DP-1","activeWorkspace":{"id":1,"name":"1"},"specialWorkspace":{"name":""},"focused":true}]"#;
+        std::thread::spawn(move || {
+            for _ in ["devices", "workspaces", "monitors", "clients", "activewindow"] {
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut buf = [0; 64];
+                let read = conn.read(&mut buf).unwrap();
+                let asked = &buf[..read];
+                let reply = match asked {
+                    b"j/workspaces" => workspace,
+                    b"j/monitors" => monitor,
+                    b"j/clients" => "[]",
+                    b"j/activewindow" => "{}",
+                    _ => r#"{"keyboards":[]}"#,
+                };
+                conn.write_all(reply.as_bytes()).unwrap();
+            }
+        })
+    }
+
+    /// Runs `follow` over an event socket that closes at once, against [`serve_commands`]; each
+    /// flag keeps that publisher's receiver alive. The end, and the outputs left published.
+    fn run(workspaces_listening: bool, windows_listening: bool) -> (End, usize) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".socket.sock");
+        let server = serve_commands(&path);
+        let (ws_tx, ws_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (win_tx, win_rx) = tokio::sync::mpsc::unbounded_channel();
+        let _receivers = (workspaces_listening.then_some(ws_rx), windows_listening.then_some(win_rx));
+        let state = std::sync::Arc::new(std::sync::Mutex::new(Default::default()));
+        let mut publisher = StatePublisher::new(state.clone(), ws_tx, crate::compositor::CompositorKind::Hyprland);
+        let mut windows_publisher = WindowsPublisher::new(Default::default(), win_tx, "hyprland");
+
+        let end =
+            follow(BufReader::new(&b""[..]), &path, &mut publisher, &mut windows_publisher, &LayoutSink::default());
+
+        server.join().unwrap();
+        let outputs = state.lock().unwrap().outputs.len();
+        (end, outputs)
+    }
+
+    /// A closed event socket clears the state, so nothing stale shows while `keep_following`
+    /// reconnects; one listener is enough to keep following, and with none `follow` stops at the
+    /// first publish.
+    #[test]
+    fn a_closed_event_socket_clears_the_state_and_reports_a_loss() {
+        assert_eq!(run(true, true), (End::Lost, 0), "a lost socket left the stale state up");
+        assert_eq!(run(true, false), (End::Lost, 0));
+        assert_eq!(run(false, true), (End::Lost, 0));
+        assert_eq!(run(false, false), (End::Unwanted, 1), "the first read published the monitor");
     }
 }
