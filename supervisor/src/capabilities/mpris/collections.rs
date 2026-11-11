@@ -336,11 +336,15 @@ mod tests {
     fn an_entry_with_an_overlong_id_is_dropped_and_its_text_capped() {
         let long = "x".repeat(MAX_METADATA_TEXT_BYTES + 1);
         let long_path = path(&format!("/{long}"));
-        let title = crate::capabilities::test_support::properties(&[("xesam:title", Value::from(long.clone()))]);
+        let title = crate::capabilities::test_support::properties(&[
+            ("xesam:title", Value::from(long.clone())),
+            ("mpris:length", Value::from(0_i64)),
+        ]);
 
         assert_eq!(track_summary(&long_path, &HashMap::new()), None);
         let track = track_summary(&path("/track/0"), &title).unwrap();
         assert_eq!(track.title.len(), MAX_METADATA_TEXT_BYTES);
+        assert_eq!(track.length, Some(0), "zero is a length; only a negative one is unknown");
 
         assert_eq!(playlist_summary((long_path, "List".into(), String::new())), None);
         let playlist = playlist_summary((path("/playlist/0"), long.clone(), long)).unwrap();

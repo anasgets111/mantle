@@ -741,6 +741,11 @@ mod tests {
             SupervisorFrame::StateSnapshot(shared::StateSnapshot { capability: "mpris".into(), revision: 1, payload })
         };
 
+        let overhead = serde_json::to_vec(&snapshot(serde_json::json!(""))).unwrap().len();
+        let at_cap = snapshot(serde_json::Value::String("x".repeat(framing::MAX_FRAME_LEN - overhead)));
+        assert!(send_frame_logged(&registry, 5, &at_cap), "a frame exactly at the cap is sent");
+        assert_eq!(within(framing::read_frame(&mut client)).await.unwrap().len(), framing::MAX_FRAME_LEN);
+
         let oversized = snapshot(serde_json::Value::String("x".repeat(framing::MAX_FRAME_LEN)));
         assert!(!send_frame_logged(&registry, 5, &oversized), "an oversized frame is not queued");
         assert!(send_frame_logged(&registry, 5, &snapshot(serde_json::json!("after"))));
