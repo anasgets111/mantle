@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: an SVG with an `feConvolveMatrix` `order` above 32 or an `feTurbulence` `seed` beyond a billion either way fails to load instead of crashing the Renderer.
 - Changed: an `image` showing an SVG or SVGZ file decodes off the drawing thread whatever `async` says, so it appears once decoded, a frame or more after the first, rather than in the first frame. A slow file no longer freezes the shell while it draws. `icon` is unchanged.
 - Fixed: with `aur = true`, `mantle.updates.packages` leaves out AUR packages that `IgnorePkg` in `pacman.conf` names, globs included, as it already did for repo packages. They used to be listed after every upgrade, since the AUR helper skips them.
 - Fixed: on Arch, a `mantle.updates` check slower than 10 minutes no longer leaves a second check running beside it, which could store a half-downloaded repo database and fail later checks. `checking` stays `true` until the check ends, and the check no longer fails with "check timed out"; each repo database download now gives up after 10 minutes instead.

@@ -96,7 +96,9 @@ pub(super) fn rasterize_svg(
         ..Default::default()
     };
     if !within_recursion_limits(&data) {
-        return Err(format!("svg nests past {MAX_SVG_DEPTH} elements, links past its limits or repeats an image"));
+        return Err(format!(
+            "svg nests past {MAX_SVG_DEPTH} elements, links past its limits, repeats an image or overflows a filter"
+        ));
     }
     let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
     if named_a_file.load(Ordering::Relaxed) {
@@ -187,8 +189,9 @@ fn embedded_image(
 }
 
 /// Whether `svg` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
-/// walked without recursion, and converts each embedded image once. Parsed as usvg parses it, so
-/// entity-expanded elements count; a document that does not parse is left for usvg to refuse.
+/// walked without recursion, converts each embedded image once and overflows no filter integer.
+/// Parsed as usvg parses it, so entity-expanded elements count; a document that does not parse is
+/// left for usvg to refuse.
 ///
 /// usvg decodes an image's href, base64 and all, per conversion: per `<use>` copy, marker vertex,
 /// or shape under an `objectBoundingBox` mask, clip or filter. So none may sit in those, nor in
@@ -209,7 +212,7 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
         .collect();
     let (mut depths, mut links, mut patterns) = (Vec::new(), 0, 0);
     for node in doc.descendants().filter(|node| node.is_element()) {
-        let decoded_again = match node.tag_name().name() {
+        let refused = match node.tag_name().name() {
             "image" => node.ancestors().any(|node| {
                 matches!(node.tag_name().name(), "mask" | "pattern" | "clipPath" | "marker" | "filter")
                     || node.attribute("id").is_some_and(|id| linked.contains(id))
@@ -217,6 +220,10 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
             "feImage" => {
                 node.attributes().any(|attr| attr.name() == "href" && !attr.value().trim_start().starts_with('#'))
             }
+            // usvg multiplies `order`'s components and resvg negates the seed unchecked, which
+            // aborts the renderer. Kernels are 3 or 5 wide in practice; no installed icon has one.
+            "feConvolveMatrix" => past(node, "order", 32.0),
+            "feTurbulence" => past(node, "seed", 1e9),
             _ => false,
         };
         let parent = node.parent().and_then(|parent| depths.get(parent.id().get_usize())).copied();
@@ -228,11 +235,19 @@ fn within_recursion_limits(svg: &[u8]) -> bool {
             "pattern" => patterns += 1,
             _ => {}
         }
-        if decoded_again || depth > MAX_SVG_DEPTH || links > MAX_SVG_LINKS || patterns > MAX_SVG_PATTERNS {
+        if refused || depth > MAX_SVG_DEPTH || links > MAX_SVG_LINKS || patterns > MAX_SVG_PATTERNS {
             return false;
         }
     }
     true
+}
+
+/// Whether `node`'s `attr` holds a number past `bound`, or one this cannot read: split on signs and
+/// separators, so `7e4+7e4`, which svgtypes reads as two numbers, is two here.
+fn past(node: resvg::usvg::roxmltree::Node, attr: &str, bound: f64) -> bool {
+    let values = node.attributes().filter(|named| named.name() == attr).map(|named| named.value());
+    let pieces = values.flat_map(|value| value.split(|c: char| !(c.is_ascii_alphanumeric() || c == '.')));
+    pieces.filter(|piece| !piece.is_empty()).any(|piece| !piece.parse::<f64>().is_ok_and(|n| n <= bound))
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -809,6 +824,28 @@ pub(super) mod tests {
             r##"<filter id="f"><feImage href="#r"/></filter><rect id="r" width="2" height="2" fill="red"/><use href="#r"/>{image}"##
         );
         assert!(rasterize_at(&doc(once), 2).is_ok_and(|pixels| all_red(&pixels)));
+    }
+
+    /// usvg multiplies `order`'s components and resvg negates `seed` unchecked; with overflow
+    /// checks on and `panic = "abort"` in release, either would abort the renderer.
+    #[test]
+    fn a_filter_attribute_that_would_overflow_is_refused_before_usvg_parses_it() {
+        let filtered = |primitive: &str| {
+            svg(&format!(
+                r#"<filter id="f">{primitive}</filter><rect width="2" height="2" fill="red" filter="url(#f)"/>"#
+            ))
+        };
+        for (primitive, refused) in [
+            (r#"<feConvolveMatrix order="3" kernelMatrix="0 0 0 0 1 0 0 0 0"/>"#, false),
+            (r#"<feTurbulence seed="-7"/>"#, false),
+            (r#"<feConvolveMatrix order="65536"/>"#, true),
+            (r#"<feConvolveMatrix order="7e4+7e4"/>"#, true),
+            (r#"<feTurbulence seed="-3e38"/>"#, true),
+        ] {
+            let doc = filtered(primitive);
+            let drawn = std::thread::spawn(move || rasterize_at(&doc, 2)).join().expect(primitive);
+            assert_eq!(drawn.is_err_and(|err| err.contains("overflows a filter")), refused, "{primitive}");
+        }
     }
 
     #[test]
