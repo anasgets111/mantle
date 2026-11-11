@@ -485,12 +485,14 @@ pub enum StorageAction {
     /// Loads a JSON file, absolute or `~/` under `$HOME`, into `contents[expanded path]`, filling missing top-level keys from
     /// `defaults`. `persistent_table` sends this; stored values win over defaults.
     Open {
+        #[serde(deserialize_with = "super::absolute")]
         path: String,
         #[serde(default)]
         defaults: Option<serde_json::Map<String, serde_json::Value>>,
     },
     /// Sets `key` in a declared file (`path` absolute or `~/`), `nil` deleting it; saved 1 s after the last write.
     Set {
+        #[serde(deserialize_with = "super::absolute")]
         path: String,
         key: String,
         #[serde(default)]

@@ -258,6 +258,9 @@ mod tests {
                 decode::<StorageAction>("set", json!(["/s.json", "theme"])),
                 Ok(r#"Set { path: "/s.json", key: "theme", value: Null }"#),
             ),
+            // Relative would resolve against the Supervisor's working directory (ADR-0136).
+            (decode::<StorageAction>("set", json!(["s.json", "theme", 1])), Err("absolute")),
+            (decode::<StorageAction>("open", json!(["s.json"])), Err("absolute")),
         ] {
             match (&decoded, expected) {
                 (Ok(got), Ok(want)) => assert_eq!(got, want),

@@ -95,10 +95,7 @@ impl StorageController {
     /// `defaults` fills missing keys without overwriting stored ones, so adding a default is a new
     /// key, not a reset. A changed merge schedules a save, creating the file on first run.
     pub fn open(&self, path: &str, defaults: &Value) {
-        let Some(path) = absolute_path(path) else {
-            debug!("refused to open {path:?}; a store's path must be absolute");
-            return;
-        };
+        let path = PathBuf::from(path);
         let key = path.to_string_lossy().into_owned();
 
         let (declared, changed) = {
@@ -136,10 +133,7 @@ impl StorageController {
     ///
     /// The save stays unconditional: rewriting is the only repair for a deleted file.
     pub fn set(&self, path: &str, key: &str, value: Value) {
-        let Some(path) = absolute_path(path) else {
-            debug!("refused a write to {path:?}; a store's path must be absolute");
-            return;
-        };
+        let path = PathBuf::from(path);
         if key.is_empty() {
             debug!("refused a write to {}; a key cannot be empty", path.display());
             return;
@@ -251,14 +245,6 @@ fn log_parse_error(store: &mut Store, path: &Path, err: String) {
         warn!("{} keeps its last values and is not saved over until it parses: {err}", path.display());
         store.error = Some(err);
     }
-}
-
-/// The named path, or `None` when relative. Relative paths use the unset Supervisor working
-/// directory and would land somewhere neither the author nor next session can name
-/// (ADR-0136 decision 6).
-fn absolute_path(path: &str) -> Option<PathBuf> {
-    let path = PathBuf::from(path);
-    path.is_absolute().then_some(path)
 }
 
 /// `None` when missing, normal on first run; an error for anything a save would destroy.
@@ -417,11 +403,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_undeclared_or_relative_path_is_refused_rather_than_resolved() {
+    async fn an_undeclared_path_is_refused() {
         let (controller, _rx) = controller();
 
         controller.set("/tmp/never-opened.json", "key", json!(1));
-        controller.open("settings.json", &json!({ "theme": "mocha" })); // not resolved against the working directory
 
         assert!(controller.snapshot().contents.is_empty());
     }

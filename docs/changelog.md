@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.storage:open` and `mantle.storage:set` with a relative path raise an error at the call naming it, as `mantle.folders:watch` does. They used to do nothing, with nothing logged above debug.
 - Fixed: `mantle.mpris:seek` on a player without `mpris:trackid` does nothing when the player cannot report its position. It used to seek from the position last signalled, which lands seconds off on a playing track.
 - Fixed: on Hyprland, `mantle.workspaces` and `mantle.windows` reconnect after Hyprland's event socket drops or is not up yet at start, as on niri, sway and mango. They used to freeze until a restart; while disconnected they are now empty.
 - Fixed: a video holding the screen awake through `org.freedesktop.ScreenSaver` keeps its hold when another app releases a hold logind had refused. That release used to drop the video's hold, so the screen idled mid-video. A hold logind refuses is retried by the next one.
