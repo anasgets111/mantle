@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use futures_util::stream::{BoxStream, SelectAll};
 use futures_util::{FutureExt, StreamExt};
 use shared::debug;
 use tokio::sync::mpsc::UnboundedSender;
@@ -17,7 +18,7 @@ use crate::capabilities::shm_icons;
 use super::icon::{SPOOL_SUBDIR, icon_filename_stem};
 use super::item::{TrayItem, fetch_tray_item_base};
 use super::menu::{MenuItem, fetch_menu_via};
-use super::proxies::{DBusMenuProxy, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
+use super::proxies::{DBusMenuProxy, NewMenuStream, StatusNotifierItemProxy, bind_dbusmenu, bind_item};
 use super::registration::{ResolvedRegistration, item_id};
 
 /// Process-wide sequence for [`ItemEntry::registered`]. It only needs to increase; each registry
@@ -67,9 +68,12 @@ pub(super) async fn register_item(
         return Err(format!("{destination} exports no StatusNotifierItem at {object_path}: {err}"));
     }
 
+    // Subscribed before each first read, so a change signalled during registration is refetched.
+    let (signals, new_menu) = (item_signals(&item).await, item.receive_new_menu().await);
     let mut tray_item = fetch_tray_item_base(&item, &unique_name, &object_path, &TrayItem::default(), false).await;
 
     let menu = bind_item_menu(&item).await;
+    let updates = menu_updates(menu.as_ref()).await;
     if let Some(menu) = &menu {
         match fetch_menu_via(menu, &icon_filename_stem(&tray_item.id)).await {
             Ok(items) => tray_item.menu = Some(items),
@@ -93,15 +97,15 @@ pub(super) async fn register_item(
         }
     }
 
-    let properties_forwarder =
-        spawn_item_signal_forwarder(item.clone(), unique_name.clone(), key.clone(), registry.clone(), events.clone());
-    let menu_forwarder =
-        spawn_menu_signal_forwarder(&item, menu.clone(), key.clone(), registry.clone(), events.clone());
-
-    let mut entry =
-        ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
     let previous = {
         let mut guard = registry.lock().expect("mutex poisoned");
+        // Spawned under the lock, so a signal already queued finds the entry rather than ending its forwarder.
+        let (k, r, e) = (key.clone(), registry.clone(), events.clone());
+        let properties_forwarder = spawn_item_signal_forwarder(item.clone(), signals, k, r, e);
+        let (k, r, e) = (key.clone(), registry.clone(), events.clone());
+        let menu_forwarder = spawn_menu_signal_forwarder(&item, new_menu, menu.clone(), updates, k, r, e);
+        let mut entry =
+            ItemEntry { item, menu, last_known: tray_item, registered: 0, properties_forwarder, menu_forwarder };
         entry.registered = match guard.get(&key) {
             // Same key means re-registration, so keep its place. A restart gets a new unique name
             // and key, so it is a new item.
@@ -156,6 +160,18 @@ async fn next_burst(signals: &mut (impl futures_util::Stream<Item = bool> + Unpi
     Some(icon)
 }
 
+/// Every `NewX` signal but `NewMenu`, `true` for one that changes the icon.
+async fn item_signals(item: &StatusNotifierItemProxy<'static>) -> zbus::Result<SelectAll<BoxStream<'static, bool>>> {
+    Ok(futures_util::stream::select_all([
+        item.receive_new_title().await?.map(|_| false).boxed(),
+        item.receive_new_icon().await?.map(|_| true).boxed(),
+        item.receive_new_attention_icon().await?.map(|_| true).boxed(),
+        item.receive_new_overlay_icon().await?.map(|_| true).boxed(),
+        item.receive_new_tool_tip().await?.map(|_| false).boxed(),
+        item.receive_new_status().await?.map(|_| true).boxed(),
+    ]))
+}
+
 /// Re-fetches the [`TrayItem`] properties on every burst of `NewX` signals (all of them for an icon or status signal,
 /// else just the text ones) and updates the entry in place without debounce. One task per item; its handle lives in
 /// [`ItemEntry`] and is aborted on unregistration.
@@ -165,30 +181,19 @@ async fn next_burst(signals: &mut (impl futures_util::Stream<Item = bool> + Unpi
 /// would put a full `GetLayout` round trip behind every frame of an animated icon.
 fn spawn_item_signal_forwarder(
     item: StatusNotifierItemProxy<'static>,
-    unique_name: OwnedUniqueName,
+    signals: zbus::Result<SelectAll<BoxStream<'static, bool>>>,
     key: ItemKey,
     registry: ItemRegistry,
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let streams = async {
-            Ok::<_, zbus::Error>(futures_util::stream::select_all([
-                item.receive_new_title().await?.map(|_| false).boxed(),
-                item.receive_new_icon().await?.map(|_| true).boxed(),
-                item.receive_new_attention_icon().await?.map(|_| true).boxed(),
-                item.receive_new_overlay_icon().await?.map(|_| true).boxed(),
-                item.receive_new_tool_tip().await?.map(|_| false).boxed(),
-                item.receive_new_status().await?.map(|_| true).boxed(),
-            ]))
-        };
-        let Ok(mut signals) = streams.await else { return };
-
+        let Ok(mut signals) = signals else { return };
         while let Some(icon) = next_burst(&mut signals).await {
             let Some(previous) = registry.lock().expect("mutex poisoned").get(&key).map(|e| e.last_known.clone())
             else {
                 break;
             };
-            let refreshed = fetch_tray_item_base(&item, &unique_name, &key.1, &previous, !icon).await;
+            let refreshed = fetch_tray_item_base(&item, &key.0, &key.1, &previous, !icon).await;
 
             let mut guard = registry.lock().expect("mutex poisoned");
             let Some(entry) = guard.get_mut(&key) else { break };
@@ -249,7 +254,7 @@ async fn bind_item_menu(item: &StatusNotifierItemProxy<'static>) -> Option<DBusM
 }
 
 /// `LayoutUpdated` and `ItemsPropertiesUpdated` from `menu`; none without one.
-async fn menu_updates(menu: Option<&DBusMenuProxy<'static>>) -> futures_util::stream::BoxStream<'static, bool> {
+async fn menu_updates(menu: Option<&DBusMenuProxy<'static>>) -> BoxStream<'static, bool> {
     let Some(menu) = menu else { return futures_util::stream::pending().boxed() };
     match (menu.receive_layout_updated().await, menu.receive_items_properties_updated().await) {
         (Ok(layout), Ok(props)) => futures_util::stream::select(layout.map(|_| false), props.map(|_| false)).boxed(),
@@ -262,15 +267,16 @@ async fn menu_updates(menu: Option<&DBusMenuProxy<'static>>) -> futures_util::st
 /// aborted with the item task on unregistration.
 fn spawn_menu_signal_forwarder(
     item: &StatusNotifierItemProxy<'static>,
+    new_menu: zbus::Result<NewMenuStream>,
     mut menu: Option<DBusMenuProxy<'static>>,
+    mut updates: BoxStream<'static, bool>,
     key: ItemKey,
     registry: ItemRegistry,
     events: UnboundedSender<()>,
 ) -> JoinHandle<()> {
     let item = item.clone();
     tokio::spawn(async move {
-        let Ok(mut new_menu) = item.receive_new_menu().await else { return };
-        let mut updates = menu_updates(menu.as_ref()).await;
+        let Ok(mut new_menu) = new_menu else { return };
         let item_stem = icon_filename_stem(&item_id(key.0.as_str(), key.1.as_str()));
         loop {
             let mut changes = futures_util::stream::select(new_menu.by_ref().map(|_| true), updates.by_ref());
@@ -504,10 +510,12 @@ mod tests {
         let entry = entry(&connection, "item", 0).await;
         registry.lock().unwrap().insert(key(":1.10"), entry);
         let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
-        let _forwarder = spawn_menu_signal_forwarder(&item, menu.ok(), key(":1.10"), registry, events);
+        let (new_menu, menu) = (item.receive_new_menu().await, menu.ok());
+        let updates = menu_updates(menu.as_ref()).await;
+        let _forwarder = spawn_menu_signal_forwarder(&item, new_menu, menu, updates, key(":1.10"), registry, events);
         let menu_signals = SignalEmitter::new(&app, menu_path).unwrap();
         let item_signals = SignalEmitter::new(&app, item_path).unwrap();
-        // Subscribing is the forwarder's first await; signals sent before it are lost.
+        // Holds the first fetch at the gate, so the burst below queues behind it.
         while fetches.load(Ordering::Relaxed) == 0 {
             CountingMenu::layout_updated(&menu_signals, 0, 0).await.unwrap();
             tokio::time::sleep(MENU_SETTLE).await;
@@ -659,6 +667,71 @@ mod tests {
             }
         })
         .await;
+    }
+
+    /// Renames itself while the host registers it: `Menu` is read after the properties.
+    struct RenamedDuringRegistration {
+        title: Arc<Mutex<&'static str>>,
+        connection: Arc<std::sync::OnceLock<zbus::Connection>>,
+    }
+
+    #[zbus::interface(name = "org.kde.StatusNotifierItem")]
+    impl RenamedDuringRegistration {
+        #[zbus(property, name = "Status")]
+        fn status(&self) -> String {
+            "Active".to_string()
+        }
+        #[zbus(property, name = "Id")]
+        fn id(&self) -> String {
+            "renaming".to_string()
+        }
+        #[zbus(property, name = "Title")]
+        fn title(&self) -> String {
+            self.title.lock().unwrap().to_string()
+        }
+        #[zbus(property, name = "IconName")]
+        fn icon_name(&self) -> String {
+            self.title.lock().unwrap().to_string()
+        }
+        #[zbus(property, name = "Menu")]
+        async fn menu(&self) -> OwnedObjectPath {
+            *self.title.lock().unwrap() = "renamed";
+            let connection = self.connection.get().unwrap();
+            let interface = "org.kde.StatusNotifierItem";
+            connection
+                .emit_signal(None::<BusName<'_>>, "/StatusNotifierItem", interface, "NewTitle", &())
+                .await
+                .unwrap();
+            OwnedObjectPath::try_from("/").unwrap()
+        }
+    }
+
+    #[tokio::test]
+    async fn a_change_signalled_during_registration_is_refetched() {
+        let bus = crate::capabilities::test_support::private_bus().await;
+        let title = Arc::new(Mutex::new("first"));
+        let app_connection = Arc::new(std::sync::OnceLock::new());
+        let item = RenamedDuringRegistration { title: title.clone(), connection: app_connection.clone() };
+        let app = bus.builder().serve_at("/StatusNotifierItem", item).unwrap().build().await.unwrap();
+        app_connection.set(app.clone()).unwrap();
+        let connection = bus.connection().await;
+        let unique = app.unique_name().unwrap().to_owned();
+        let resolved = ResolvedRegistration {
+            unique_name: unique.clone(),
+            destination: BusName::from(unique.clone()).into(),
+            object_path: OwnedObjectPath::try_from("/StatusNotifierItem").unwrap(),
+        };
+        let registry: ItemRegistry = Arc::new(Mutex::new(HashMap::new()));
+        let (events, _pushed) = tokio::sync::mpsc::unbounded_channel();
+        register_item(&connection, &registry, &events, resolved).await.unwrap();
+        assert_eq!(*title.lock().unwrap(), "renamed", "the rename landed during registration");
+
+        let icon = crate::capabilities::test_support::poll_until(|| {
+            let items = ordered_items(&registry);
+            items.iter().any(|item| item.name == "renamed").then(|| items[0].icon_name.clone())
+        })
+        .await;
+        assert_eq!(icon.as_deref(), Some("first"), "a title signal reads only the text properties");
     }
 
     /// In-place updates must not move an item.
