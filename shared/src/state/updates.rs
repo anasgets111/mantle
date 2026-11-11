@@ -59,7 +59,7 @@ pub struct UpdatesState {
     /// running, before one, or when it failed to spawn.
     pub install_finished_at: Option<i64>,
     /// The last 200 lines of install output, stdout and stderr interleaved, newest last; cleared
-    /// when an install starts.
+    /// when an install starts. All of it is in `$XDG_RUNTIME_DIR/mantle/install.log` until the next.
     pub install_log: Vec<String>,
     /// Why the package manager could not be run or waited on, or `nil`. Its own failures are
     /// `install_exit_code`.
