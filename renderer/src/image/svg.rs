@@ -22,6 +22,15 @@ const MAX_SVG_BYTES: u64 = 8 * 1024 * 1024;
 /// 1024 `<g>` deep, and two levels overflowed the main thread's 8 MiB stack in a release build.
 const MAX_SVG_NESTING: u32 = 1;
 
+/// Element depth, and `clipPath`, `mask` and `marker` elements, one document may hold. usvg and
+/// resvg recurse once per level and per link (a link names an element, so their count bounds any
+/// chain however CSS routes it), with no limit on `<tspan>` or links. The deepest installed icon is
+/// 10 deep; the most linked holds 187 (Adwaita `user-trash-full`).
+const MAX_SVG_DEPTH: usize = 256;
+const MAX_SVG_LINKS: usize = 256;
+/// A pattern link costs about 8 KiB of stack in release, four times a clip's; icons use 2 at most.
+const MAX_SVG_PATTERNS: usize = 16;
+
 /// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
 /// loaded fonts change; the last field is the document's own size, rounded.
@@ -86,9 +95,12 @@ pub(super) fn rasterize_svg(
         },
         ..Default::default()
     };
+    if !within_recursion_limits(&data) {
+        return Err(format!("svg nests past {MAX_SVG_DEPTH} elements or links past its limits"));
+    }
     let tree = Tree::from_data(&data, &options).map_err(|err| err.to_string())?;
     if named_a_file.load(Ordering::Relaxed) {
-        warn!("{}: an <image> naming a file draws nothing; embed it as a data: URL", path.display());
+        warn!("{:?}: an <image> href that is not a data: URL draws nothing; embed the picture as one", path);
     }
     let size = tree.size();
     let longest = size.width().max(size.height());
@@ -120,7 +132,7 @@ fn plaintext(data: Vec<u8>, cap: u64) -> std::io::Result<Option<Vec<u8>>> {
 
 /// usvg's default data resolver under a file's caps. A raster is typed by the header `image`
 /// sniffs, never the MIME, so the header checked is the one decoded: its edges must pass
-/// [`plausible`] and its area comes out of `pixels`. Nested SVG, at every level, draws on one
+/// [`plausible`] and its area comes out of `pixels`. Nested SVG draws on one
 /// `budget`, which a refused inflation empties: an image repeated at each level, or by `<use>`,
 /// would otherwise multiply what one document can ask for. `depth` counts the nested parses in
 /// progress, up to [`MAX_SVG_NESTING`].
@@ -144,6 +156,9 @@ fn embedded_image(
             return None;
         };
         budget.fetch_sub(svg.len() as u64, Ordering::Relaxed);
+        if !within_recursion_limits(&svg) {
+            return None;
+        }
         depth.fetch_add(1, Ordering::Relaxed);
         let tree = Tree::from_data_nested(&svg, options);
         depth.fetch_sub(1, Ordering::Relaxed);
@@ -156,10 +171,48 @@ fn embedded_image(
         ImageFormat::WebP => ImageKind::WEBP,
         _ => return None,
     };
-    let (width, height) = plausible(header.into_dimensions().ok()?)?;
+    let (mut width, mut height) = header.into_dimensions().ok()?;
+    if format == ImageFormat::Gif {
+        // resvg allocates the first frame at its own size, which the gif crate never fits to the
+        // screen `image` reports.
+        let mut gif = gif::DecodeOptions::new().read_info(data.as_slice()).ok()?;
+        let frame = gif.next_frame_info().ok()??;
+        width = width.max(u32::from(frame.left) + u32::from(frame.width));
+        height = height.max(u32::from(frame.top) + u32::from(frame.height));
+    }
+    let (width, height) = plausible((width, height))?;
     let area = u64::from(width) * u64::from(height);
     pixels.try_update(Ordering::Relaxed, Ordering::Relaxed, |left| left.checked_sub(area)).ok()?;
     Some(kind(data))
+}
+
+/// Whether `svg` stays inside [`MAX_SVG_DEPTH`], [`MAX_SVG_LINKS`] and [`MAX_SVG_PATTERNS`],
+/// walked without recursion. Parsed as usvg parses it, so entity-expanded elements count; a
+/// document that does not parse is left for usvg to refuse.
+fn within_recursion_limits(svg: &[u8]) -> bool {
+    let options = resvg::usvg::roxmltree::ParsingOptions { allow_dtd: true, ..Default::default() };
+    let Some(doc) = std::str::from_utf8(svg)
+        .ok()
+        .and_then(|text| resvg::usvg::roxmltree::Document::parse_with_options(text, options).ok())
+    else {
+        return true;
+    };
+    let (mut depths, mut links, mut patterns) = (Vec::new(), 0, 0);
+    for node in doc.descendants().filter(|node| node.is_element()) {
+        let parent = node.parent().and_then(|parent| depths.get(parent.id().get_usize())).copied();
+        let depth = parent.unwrap_or(0) + 1;
+        depths.resize(depths.len().max(node.id().get_usize() + 1), 0);
+        depths[node.id().get_usize()] = depth;
+        match node.tag_name().name() {
+            "clipPath" | "mask" | "marker" => links += 1,
+            "pattern" => patterns += 1,
+            _ => {}
+        }
+        if depth > MAX_SVG_DEPTH || links > MAX_SVG_LINKS || patterns > MAX_SVG_PATTERNS {
+            return false;
+        }
+    }
+    true
 }
 
 /// A `-symbolic` file name, or a theme's `symbolic/` directory (Adwaita), as GTK decides it.
@@ -251,6 +304,7 @@ fn rewrite_color_declarations(text: &str, hex: &str) -> String {
 
 #[cfg(test)]
 pub(super) mod tests {
+    use super::super::decode::DECODE_STACK_BYTES;
     use super::super::tests::GRADIENT_SVG;
     use super::*;
 
@@ -551,12 +605,9 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn a_nested_svg_is_held_to_the_size_cap_across_every_level_and_image() {
-        // A few kilobytes of gzip inflating past the cap, two data URLs deep, so the inner one is
-        // reached through usvg's own nested parse.
+    fn a_nested_svg_is_held_to_the_size_cap_across_every_image() {
+        // A few kilobytes of gzip inflating past the cap.
         let bomb = gzip(&[RED_SVG.as_bytes(), &vec![b' '; MAX_SVG_BYTES as usize]].concat());
-        let inner = image_doc(&data_url("image/svg+xml", &bomb));
-        assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", inner.as_bytes())))));
 
         // Each fits alone, the pair does not: the cap is one budget for the whole document, or
         // repeating an image, at each level, multiplies what one file can ask for.
@@ -589,28 +640,101 @@ pub(super) mod tests {
         assert_eq!(side_by_side(&siblings), vec![RED; siblings.len()]);
     }
 
-    /// Each nested document may nest `<g>` 1024 deep (usvg's own limit), and every level recurses
-    /// through usvg's converter and resvg's renderer. A release build spent more stack than debug:
-    /// one flat 1020-deep document overflowed 2 MiB and fit 4; one nested level of 1020 each fit
-    /// 8 MiB and not 4; two nested levels overflowed 8 MiB.
+    fn svg(body: &str) -> String {
+        format!(r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2">{body}</svg>"#)
+    }
+
+    /// `inner` inside `depth` nested `tag` elements.
+    fn nested(tag: &str, depth: usize, inner: &str) -> String {
+        format!("{}{inner}{}", format!("<{tag}>").repeat(depth), format!("</{tag}>").repeat(depth))
+    }
+
+    /// `links` `tag` elements, each but the first naming the previous through `attr`; the last is
+    /// `{tag}{links - 1}`. `content` fills each.
+    fn chain(tag: &str, attr: &str, links: usize, content: &str) -> String {
+        (0..links)
+            .map(|i| match i {
+                0 => format!(r#"<{tag} id="{tag}0" width="2" height="2" patternUnits="userSpaceOnUse">{content}</{tag}>"#),
+                _ => format!(
+                    r#"<{tag} id="{tag}{i}" {attr}="url(#{tag}{})" width="2" height="2" patternUnits="userSpaceOnUse">{content}</{tag}>"#,
+                    i - 1
+                ),
+            })
+            .collect()
+    }
+
+    /// usvg stops `<g>` at 1024 deep, and its own stack ran out first: in release, about 800 deep on
+    /// a 2 MiB thread. It has no limit at all on nested `<tspan>` (700 overflowed 2 MiB in debug,
+    /// 1000 in release) or on clip-path, mask and pattern links (2000, 2000 and 256 in release).
     #[test]
-    fn the_deepest_nesting_fits_the_dispatch_thread_stack() {
-        let deep = |element: String| {
+    fn a_document_past_the_recursion_limits_is_refused_before_usvg_parses_it() {
+        let rect = r#"<rect width="2" height="2" fill="red"/>"#;
+        let draws = |doc: String| {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("deep.svg");
+            std::fs::write(&path, &doc).unwrap();
+            let thread = std::thread::Builder::new().stack_size(DECODE_STACK_BYTES);
+            let drawn = thread.spawn(move || rasterize_svg(&path, 2, None, &FontDatabase::default())).unwrap();
+            drawn.join().unwrap().is_ok_and(|(pixels, ..)| all_red(&pixels))
+        };
+        // The root counts, so the rect is at depth `MAX_SVG_DEPTH`.
+        assert!(draws(svg(&nested("g", MAX_SVG_DEPTH - 2, rect))));
+        assert!(!draws(svg(&nested("g", MAX_SVG_DEPTH - 1, rect))));
+        assert!(!draws(svg(&format!("<text>{}</text>", nested("tspan", 200_000, "x")))));
+        // Elements an entity expands to count: usvg parses with a DTD allowed.
+        let entity = nested("g", MAX_SVG_DEPTH - 1, rect);
+        assert!(!draws(format!("<!DOCTYPE svg [<!ENTITY deep '{entity}'>]>{}", svg("&deep;"))));
+        let clip = |links| {
             format!(
-                r#"<svg xmlns="http://www.w3.org/2000/svg" width="2" height="2">{}{element}{}</svg>"#,
-                "<g>".repeat(1020),
-                "</g>".repeat(1020)
+                r#"{}<rect width="2" height="2" fill="red" clip-path="url(#clipPath{})"/>"#,
+                chain("clipPath", "clip-path", links, rect),
+                links - 1
             )
         };
-        let doc = (0..MAX_SVG_NESTING).fold(deep(r#"<rect width="2" height="2" fill="red"/>"#.into()), |svg, _| {
-            deep(format!(
+        assert!(draws(svg(&clip(MAX_SVG_LINKS))));
+        assert!(!draws(svg(&clip(MAX_SVG_LINKS + 1))));
+        let pattern = |links| {
+            format!(
+                r#"{}<rect width="2" height="2" fill="url(#pattern{})"/>"#,
+                chain("pattern", "fill", links, rect),
+                links - 1
+            )
+        };
+        assert!(draws(svg(&pattern(MAX_SVG_PATTERNS))));
+        assert!(!draws(svg(&pattern(MAX_SVG_PATTERNS + 1))));
+        let too_deep = svg(&nested("g", MAX_SVG_DEPTH - 1, rect));
+        assert!(all_clear(&rasterize_doc(&image_doc(&data_url("image/svg+xml", too_deep.as_bytes())))));
+    }
+
+    /// The worst document the limits accept, on the smallest stack that decodes one: at every level
+    /// `<g>` and `<tspan>` as deep as allowed, a pattern chain and a clip chain as long as allowed
+    /// at the deepest point, and the nested SVG inside them.
+    #[test]
+    fn the_worst_accepted_document_fits_the_smallest_decode_stack() {
+        let rect = r#"<rect width="2" height="2" fill="red"/>"#;
+        let level = |inner: &str| {
+            let clipped = format!(r#"<g clip-path="url(#clipPath{})">{inner}</g>"#, MAX_SVG_LINKS - 1);
+            svg(&format!(
+                r#"<text>{}</text>{}{}{}"#,
+                nested("tspan", MAX_SVG_DEPTH - 2, "x"),
+                chain("clipPath", "clip-path", MAX_SVG_LINKS, rect),
+                chain("pattern", "fill", MAX_SVG_PATTERNS, &clipped),
+                nested(
+                    "g",
+                    MAX_SVG_DEPTH - 2,
+                    &format!(r#"<rect width="2" height="2" fill="url(#pattern{})"/>"#, MAX_SVG_PATTERNS - 1)
+                ),
+            ))
+        };
+        let doc = (0..MAX_SVG_NESTING).fold(level(rect), |inner, _| {
+            level(&format!(
                 r#"<image href="{}" width="2" height="2"/>"#,
-                data_url("image/svg+xml", &gzip(svg.as_bytes()))
+                data_url("image/svg+xml", &gzip(inner.as_bytes()))
             ))
         });
-        // The main thread's 8 MiB, where an inline `icon` decodes.
-        let drawn = std::thread::Builder::new().stack_size(8 << 20).spawn(move || rasterize_doc(&doc)).unwrap();
-        assert!(all_red(&drawn.join().unwrap()));
+        // A decode worker's, smaller than the 8 MiB main thread where an inline `icon` decodes.
+        let thread = std::thread::Builder::new().stack_size(DECODE_STACK_BYTES.min(8 << 20));
+        assert!(all_red(&thread.spawn(move || rasterize_doc(&doc)).unwrap().join().unwrap()));
     }
 
     #[test]
@@ -629,6 +753,27 @@ pub(super) mod tests {
         // resvg decodes an embedded raster at its native size, outside `decode_within_limits`.
         let wide = data_url("image/png", &red_png(MAX_DECODE_EDGE + 1, 1));
         assert!(all_clear(&rasterize_doc(&image_doc(&wide))));
+    }
+
+    #[test]
+    fn a_gif_is_charged_for_its_first_frame_when_that_outgrows_its_screen() {
+        // resvg allocates the first frame at its own size; `image` reports the logical screen.
+        let gif = |width: u16, height: u16| {
+            let [w0, w1] = width.to_le_bytes();
+            let [h0, h1] = height.to_le_bytes();
+            // A 1x1 screen with a two-colour global table, then one image descriptor.
+            let mut gif = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\xff\x00\x00\x00\x00\x00".to_vec();
+            gif.extend([0x2c, 0, 0, 0, 0, w0, w1, h0, h1, 0, 0x02, 0x00, 0x3b]);
+            gif
+        };
+        let resolve = |data: Vec<u8>, pixels: u64| {
+            let (bytes, pixels, depth) = (AtomicU64::new(MAX_SVG_BYTES), AtomicU64::new(pixels), AtomicU32::new(0));
+            embedded_image("image/gif", Arc::new(data), &Options::default(), &bytes, &pixels, &depth).is_some()
+        };
+        assert!(resolve(gif(1, 1), 1));
+        assert!(resolve(gif(2, 3), 6));
+        assert!(!resolve(gif(2, 3), 5), "a 2x3 frame on a 1x1 screen is 6 pixels");
+        assert!(!resolve(gif(MAX_DECODE_EDGE as u16 + 1, 1), u64::MAX));
     }
 
     #[test]

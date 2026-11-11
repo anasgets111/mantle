@@ -8840,20 +8840,15 @@ Rejected: `pw_context_load_module` in the Supervisor (unsafe FFI, DSP and crashe
 idle memory); pipewire-pulse `load-module` (no filter chain, lost when pipewire-pulse restarts);
 `pipewire.conf.d` drop-ins (files left behind, a PipeWire restart to apply).
 
-## 0384. SVG `<image>` draws `data:` URLs only, under one budget per document
+## 0384. SVG `<image>` draws `data:` URLs only, under limits per document
 
-usvg's default href resolver reads any path whole with `std::fs::read`: a FIFO blocks forever, on
-the dispatch thread for an inline `icon`, and `/dev/zero` reads until memory runs out. Tray items
-hand the engine SVGs from any session D-Bus client. `rasterize_svg` never set `resources_dir`, so a
-relative href resolved against the Renderer's working directory and only absolute-path links drew.
-Strings now resolve to nothing: an SVG used as an image loads nothing external, which is what
-browsers do and what usvg already does below the top level. All 16 `<image>` hrefs in a desktop's
-Adwaita, breeze, hicolor and Tela themes are `data:image/png` URLs.
-Nested SVG inflates one gzip layer under `MAX_SVG_BYTES` shared by the whole document, emptied by a
-refused inflation, since `<use>` copies call the resolver again; nesting stops at 1, since two
-levels of 1024-deep `<g>` overflowed 8 MiB in a release build. Embedded rasters are typed by their
-sniffed header, not the MIME, and draw on one `MAX_DECODE_EDGE`² pixel allowance per document.
+usvg's default href resolver reads any path whole: a FIFO blocks the dispatch thread forever and
+`/dev/zero` exhausts memory, from an SVG any D-Bus client can hand over as a tray icon. Strings now
+resolve to nothing, as browsers do for an SVG used as an image and usvg does below the top level.
+Only absolute links break (`resources_dir` was never set); every `<image>` in the installed themes
+is a `data:` URL. Each document gets one byte budget for nested SVG, one pixel allowance for
+rasters typed by their header, nesting 1, element depth 256, 256 clip/mask/marker and 16 patterns:
+usvg recurses per `<tspan>` and per link with no limit, and 256 pattern links overflowed 2 MiB.
 
-Rejected: reading absolute hrefs through `read_capped`, which already refuses non-regular files and
-caps the size. That closes the freeze, but any D-Bus client's icon could still draw any image the
-user can read; the decision rests on SVG-as-image semantics, not on what the file checks catch.
+Rejected: reading absolute hrefs through `read_capped`, which closes the freeze but still lets any
+client's icon draw any image the user can read.

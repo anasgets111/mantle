@@ -77,6 +77,10 @@ impl Drop for Pool {
     }
 }
 
+/// Each decode worker's stack: twice what the worst SVG `svg`'s limits accept needed in a release
+/// build (over 1.5 MiB, under 2), which a test renders on it. Reserved, not committed, until used.
+pub(super) const DECODE_STACK_BYTES: usize = 4 << 20;
+
 impl Pool {
     pub(super) fn try_send(&self, job: Job) -> Result<(), Refused> {
         if Arc::strong_count(&self.jobs) == 1 {
@@ -102,7 +106,8 @@ impl Pool {
             let waker = waker.clone();
             let wanted = Arc::clone(&wanted);
             let budget = Arc::clone(&budget);
-            let spawned = std::thread::Builder::new().name(format!("mantle-image-decode-{index}")).spawn(move || {
+            let thread = std::thread::Builder::new().name(format!("mantle-image-decode-{index}"));
+            let spawned = thread.stack_size(DECODE_STACK_BYTES).spawn(move || {
                 loop {
                     let Some(job) = jobs.pop() else { return };
                     // The permit is taken inside `decode`, where the source has been chosen and its
