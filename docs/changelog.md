@@ -7,6 +7,7 @@ version is 0.x, a minor release can break the Lua API. A `Breaking:` entry needs
 
 ## Unreleased
 
+- Fixed: `mantle.updates:configure({ interval = ... })` counts time the machine was asleep, so a daily check on a laptop that sleeps overnight runs daily rather than after 24 hours awake. A scheduled check that fails, such as one at login before the network is up, retries within 5 minutes instead of waiting a whole interval.
 - Fixed: `mantle.updates.install_log` keeps filling after the package manager prints a line that is not UTF-8, such as a Latin-1 install message; the bad bytes show as `�`. The log used to stop at that line, and an AUR helper running the upgrade died at its next write. A line over 64 KiB is cut.
 - Fixed: an SVG shown by an `image`, `icon` or mask that would take long to draw fails to load instead of freezing the shell, for minutes in the worst case. That is one whose masks, patterns, clip paths or filters are reused by thousands of shapes, or whose filters have a huge radius, octave count or kernel; the limit is about 0.9 s of drawing, three times what the costliest installed icon needs at 256 px. An SVG that would decode an embedded picture more than once, through `<use>`, a marker, mask, clip path, pattern or filter, fails to load too.
 - Fixed: a config with a `lock` locks before the machine suspends, from the lid, `systemctl suspend` or anything else. The suspend waits up to 3 s for the lock screen to show, then goes ahead. It used to suspend unlocked, so the desktop showed on resume until something locked it.

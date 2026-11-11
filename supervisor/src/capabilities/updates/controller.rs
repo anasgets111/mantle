@@ -27,6 +27,9 @@ const LOG_TAIL_LINES: usize = 200;
 /// thread leaks; the capability recovers.
 const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
 
+/// How often a scheduled check asks whether it is due; also the retry delay after a failure.
+const CHECK_POLL: Duration = Duration::from_secs(300);
+
 /// Cloneable so `main.rs` can hand an `Arc`-backed copy to the spawned install task.
 #[derive(Clone)]
 pub struct UpdatesController {
@@ -170,25 +173,22 @@ async fn run_check_task(
                 }
             }
         } else {
-            let mut ticker = tokio::time::interval(interval);
+            // Tokio's clock stops during suspend, so an interval timed by it runs late by every
+            // hour asleep. Poll instead and judge by the wall-clock age of the last
+            // success, which also retries a failed check at the next poll. The first tick is
+            // immediate, so an hourly schedule checks now, not in an hour (ADR-0113 amendment),
+            // and a config reload within the hour does not check again.
+            let mut ticker = tokio::time::interval(interval.min(CHECK_POLL));
             // Checks can exceed a short interval. `Burst` would hammer mirrors with missed
             // ticks; `Delay` resumes after the check.
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            // `interval` ticks immediately, so an hourly schedule checks now, not in an hour
-            // (ADR-0113 amendment). Skip only when this process has a fresh check: the
-            // controller outlives config generations, and an unconditional skip would let every
-            // save reset the hour, so a day of editing would never check.
-            if !first_check_is_due(
-                state.lock().expect("mutex poisoned").last_successful_check,
-                epoch_seconds(SystemTime::now()),
-                interval,
-            ) {
-                ticker.tick().await;
-            }
             loop {
                 tokio::select! {
                     _ = ticker.tick() => {
-                        run_one_check(&backend, &state, &events).await;
+                        let last = state.lock().expect("mutex poisoned").last_successful_check;
+                        if check_is_due(last, epoch_seconds(SystemTime::now()), interval) {
+                            run_one_check(&backend, &state, &events).await;
+                        }
                     }
                     asked = check_now_rx.recv() => {
                         if asked.is_none() {
@@ -240,9 +240,8 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
     let _ = events.send(());
 }
 
-/// Whether the interval's immediate first tick should check or be consumed. Due with no process
-/// check, or when the last success is at least `interval` old.
-fn first_check_is_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -> bool {
+/// Due with no successful check yet, or when the last success is at least `interval` old.
+fn check_is_due(last_successful_check: Option<i64>, now: i64, interval: Duration) -> bool {
     let Some(last) = last_successful_check else { return true };
     now.saturating_sub(last) >= interval.as_secs() as i64
 }
@@ -514,8 +513,26 @@ mod tests {
         assert_eq!(snapshot.packages.len(), 3, "a failed check reports the failure, it does not clear the list");
     }
 
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_scheduled_check_is_retried_within_minutes_not_a_whole_interval() {
+        let (controller, mut events_rx) = failing_controller().await;
+        controller.configure(UpdatesConfigure {
+            interval_secs: 86_400,
+            checked_at: None,
+            packages: vec![],
+            aur: false,
+        });
+        await_one_check(&mut events_rx).await;
+        assert_eq!(controller.snapshot().consecutive_check_failures, 1);
+
+        tokio::time::timeout(Duration::from_secs(301), await_one_check(&mut events_rx))
+            .await
+            .expect("a failure at login, before the network is up, must not wait a day");
+        assert_eq!(controller.snapshot().consecutive_check_failures, 2);
+    }
+
     #[test]
-    fn first_check_is_due_by_the_age_of_the_last_stamp() {
+    fn a_check_is_due_by_the_age_of_the_last_stamp() {
         let last = 1_800_000_000;
         let hour = Duration::from_secs(3600);
         // (last stamp, now, due). A reload re-invokes `configure` on a controller that outlives the
@@ -528,7 +545,7 @@ mod tests {
             // A clock stepped backwards leaves a stamp ahead of `now`; it must read as recent, not underflow.
             (Some(last), last - 5000, false, "a stamp in the future"),
         ] {
-            assert_eq!(first_check_is_due(stamp, now, hour), due, "{case}");
+            assert_eq!(check_is_due(stamp, now, hour), due, "{case}");
         }
     }
 

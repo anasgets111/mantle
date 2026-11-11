@@ -520,7 +520,7 @@
 ---`configure`'s table. One wrong-typed key raises at the call.
 ---@field aur? boolean Also check the AUR and install through `aur_helper` (ADR-0250). Sends every foreign package name to aur.archlinux.org and builds without PKGBUILD review.
 ---@field checked_at? integer Persisted Unix seconds of the last successful check. Seeds `last_successful_check` only while that is `nil`, so a restart need not recheck at once.
----@field interval integer Seconds between scheduled checks, the first at once unless `last_successful_check` is younger; `0` checks only on `check`.
+---@field interval integer Seconds between scheduled checks, the first at once unless `last_successful_check` is younger; `0` checks only on `check`. Time asleep counts, and a failed check retries within 5 minutes.
 ---@field packages? UpdateCandidate[] Persisted `packages` from that check, seeded on the same terms; ignored without `checked_at`.
 
 ---@alias Urgency "low"|"normal"|"critical"
