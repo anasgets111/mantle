@@ -304,20 +304,15 @@ impl MprisController {
         player.seek(offset).await
     }
 
-    /// A live `Position` read, not the cached snapshot.
+    /// A live `Position` read. Never the cached snapshot: it dates from the last signal, so it is
+    /// stale by however long the track has played since.
     async fn live_position(&self, id: &str) -> Option<i64> {
         let player = self.find_player(id)?;
-        match player.position().await {
-            Ok(position) => Some(position),
-            Err(err) => {
-                debug!("live Position read failed for {id:?}, falling back to the cached value: {err}");
-                self.cached_position(id)
-            }
-        }
+        player.position().await.inspect_err(|err| debug!("live Position read failed for {id:?}: {err}")).ok()
     }
 
     /// `mpris:seek(id, pos_us)`: `SetPosition(cached trackid, clamped pos_us)` when available;
-    /// otherwise relative `Seek` from the last known position because some players never report
+    /// otherwise relative `Seek` from a live position because some players never report
     /// `mpris:trackid` (ADR-0036). State waits for real `Seeked`/`PropertiesChanged` signals.
     pub async fn seek(&self, id: &str, target_us: i64) {
         let Some(context) = self.find_seek_context(id) else {
@@ -353,11 +348,6 @@ impl MprisController {
     fn find_root(&self, id: &str) -> Option<super::proxies::MprisRootProxy<'static>> {
         let bus_name = service_name_for_id(id);
         self.registry.lock().expect("mutex poisoned").get(&bus_name).map(|entry| entry.root.clone())
-    }
-
-    fn cached_position(&self, id: &str) -> Option<i64> {
-        let bus_name = service_name_for_id(id);
-        self.registry.lock().expect("mutex poisoned").get(&bus_name).and_then(|entry| entry.last_known.position)
     }
 
     /// `(MinimumRate, MaximumRate)` as last read.
@@ -406,7 +396,67 @@ struct SeekContext {
 
 #[cfg(test)]
 mod tests {
-    use super::valid_uri;
+    use super::*;
+    use crate::capabilities::test_support::p2p_pair_serving;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A player with no `mpris:trackid`, so an absolute seek converts against `Position`, which
+    /// fails once `refusing` is set. `seeks` records every `Seek` offset.
+    #[derive(Clone, Default)]
+    struct Player {
+        refusing: Arc<AtomicBool>,
+        seeks: Arc<Mutex<Vec<i64>>>,
+    }
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2.Player")]
+    impl Player {
+        fn seek(&self, offset: i64) {
+            self.seeks.lock().unwrap().push(offset);
+        }
+        #[zbus(property)]
+        fn position(&self) -> zbus::fdo::Result<i64> {
+            if self.refusing.load(Ordering::Relaxed) {
+                return Err(zbus::fdo::Error::Failed("no position".into()));
+            }
+            Ok(5_000_000)
+        }
+        #[zbus(property)]
+        fn can_seek(&self) -> bool {
+            true
+        }
+    }
+
+    struct Root;
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2")]
+    impl Root {
+        #[zbus(property)]
+        fn identity(&self) -> String {
+            "Fixture".into()
+        }
+    }
+
+    /// The cached position is a snapshot from the last signal, seconds old while playing: an
+    /// offset from it lands somewhere else, so a failed live read refuses the seek instead.
+    #[tokio::test]
+    async fn an_absolute_seek_converts_against_a_live_position_and_without_one_sends_nothing() {
+        let player = Player::default();
+        let served = player.clone();
+        let (connection, _peer) = p2p_pair_serving(|builder| {
+            builder.serve_at("/org/mpris/MediaPlayer2", served)?.serve_at("/org/mpris/MediaPlayer2", Root)
+        })
+        .await;
+        let controller = MprisController::inert();
+        let name = "org.mpris.MediaPlayer2.fixture";
+        super::super::player::register_player(&connection, &controller.registry, &controller.events, name.into()).await;
+        assert_eq!(controller.registry.lock().unwrap()[name].last_known.position, Some(5_000_000));
+
+        controller.seek("fixture", 60_000_000).await;
+        player.refusing.store(true, Ordering::Relaxed);
+        controller.seek("fixture", 60_000_000).await;
+
+        assert_eq!(*player.seeks.lock().unwrap(), [55_000_000], "only the seek with a live position goes out");
+    }
 
     #[test]
     fn open_uri_requires_an_absolute_uri_without_control_characters() {
