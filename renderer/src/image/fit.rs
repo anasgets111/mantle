@@ -2,17 +2,19 @@
 
 use std::path::Path;
 
-use super::Fit;
 use super::decode::is_vector;
+use super::{Fit, MAX_DECODE_EDGE};
 use crate::text::snap::LogicalRect;
 
 /// The box a source is *stored* under, which is not always the box it is drawn into: a vector
 /// texture uses its longest edge, so 24x30 shares the 30x30 slot (ADR-0122).
 /// A pin resolves through the same key, or an `image` pointing at an SVG pins 200x40 while the
 /// entry sits under 200x200 and `victims` evicts a texture a mapped surface shows (ADR-0183).
+/// Capped at [`MAX_DECODE_EDGE`] as `rasterize_svg` is, so every larger box shares one raster.
 pub(super) fn cache_box(path: &Path, box_px: (u32, u32)) -> (u32, u32) {
     let box_px = (box_px.0.max(1), box_px.1.max(1));
-    if is_vector(path) { (box_px.0.max(box_px.1), box_px.0.max(box_px.1)) } else { box_px }
+    let edge = box_px.0.max(box_px.1).min(MAX_DECODE_EDGE);
+    if is_vector(path) { (edge, edge) } else { box_px }
 }
 
 /// Image rect inside `box_rect` for its dimensions and [`Fit`]. `Cover` may exceed the box because

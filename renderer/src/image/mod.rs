@@ -839,6 +839,18 @@ mod tests {
         }
     }
 
+    /// `rasterize_svg` stops at `MAX_DECODE_EDGE`, so every larger box would hold the same raster
+    /// in a slot of its own: 256 MiB each.
+    #[test]
+    fn every_svg_box_past_the_decode_edge_shares_one_slot() {
+        let mut cache = ImageCache::inline();
+        let svg = Path::new("/icon.svg");
+        let [wide, huge] =
+            [(9_000, 10), (30_000, 30_000)].map(|box_px| cache.key_for(&ImageRequest { box_px, ..request(svg, 1) }));
+        assert_eq!(wide, huge);
+        assert_eq!(wide.box_px, (MAX_DECODE_EDGE, MAX_DECODE_EDGE));
+    }
+
     #[test]
     fn a_watched_file_wakes_no_one_and_a_rewrite_is_one_landed_file_until_its_slot_goes() {
         let dir = tempfile::tempdir().unwrap();
