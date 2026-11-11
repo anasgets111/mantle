@@ -13,6 +13,7 @@ use super::proxies::{REASON_NO_SECRETS, REASON_SSID_NOT_FOUND, REASON_SUPPLICANT
 #[derive(Debug)]
 pub(super) enum ConnectError {
     UnknownWifiDevice(String),
+    Ssid(&'static str),
     InvalidSecret(String),
     Dbus(zbus::Error),
 }
@@ -22,6 +23,7 @@ impl std::fmt::Display for ConnectError {
         match self {
             Self::UnknownWifiDevice(id) if id.is_empty() => write!(f, "no Wi-Fi device is present"),
             Self::UnknownWifiDevice(id) => write!(f, "Wi-Fi device {id:?} is unavailable"),
+            Self::Ssid(message) => f.write_str(message),
             Self::InvalidSecret(message) => write!(f, "secret is not valid UTF-8: {message}"),
             Self::Dbus(err) => write!(f, "{err}"),
         }

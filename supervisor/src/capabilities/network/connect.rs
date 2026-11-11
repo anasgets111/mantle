@@ -49,13 +49,13 @@ impl NetworkController {
         let Some(pending) = self.pending_intent() else {
             return;
         };
-        let Some(wifi) = self.pending_wifi(&pending) else {
+        let (Some(wifi), Ok(ssid)) = (self.pending_wifi(&pending), &pending.ssid_bytes) else {
             if let Some(pending) = self.take_current_intent(&pending) {
                 self.connect(pending, shared::Zeroizing::new(Vec::new())).await;
             }
             return;
         };
-        let saved = !self.saved_profiles_for_device(&pending.ssid, &wifi, pending.hidden).await.is_empty();
+        let saved = !self.saved_profiles_for_device(ssid, &wifi, pending.hidden).await.is_empty();
         // Unknown AP security takes the password branch.
         let secure = pending.hidden || self.access_point(&pending.device_id, &pending.ssid).is_none_or(|ap| ap.secure);
         if !saved && secure {
@@ -148,13 +148,13 @@ impl NetworkController {
             let (activated, timed_out) = (matches!(outcome, Some(Ok(()))), outcome.is_none());
             let (error, rejected_key) = activation_verdict(outcome);
             let ask_password = rejected_key
-                && match controller.pending_wifi(&pending) {
-                    Some(wifi) => !controller
-                        .saved_profiles_for_device(&pending.ssid, &wifi, pending.hidden)
+                && match (controller.pending_wifi(&pending), &pending.ssid_bytes) {
+                    (Some(wifi), Ok(ssid)) => !controller
+                        .saved_profiles_for_device(ssid, &wifi, pending.hidden)
                         .await
                         .iter()
                         .any(|profile| profile.settings.contains_key("802-1x")),
-                    None => false,
+                    _ => false,
                 };
             // A superseded attempt must not persist its key; whatever superseded it stopped it.
             if !controller.finish_connect(attempt, &pending, error, ask_password) {
@@ -237,8 +237,9 @@ impl NetworkController {
     async fn connect_inner(&self, pending: &PendingNetworkConnect, secret: &[u8]) -> Result<InFlight, ConnectError> {
         let wifi =
             self.pending_wifi(pending).ok_or_else(|| ConnectError::UnknownWifiDevice(pending.device_id.clone()))?;
+        let ssid = pending.ssid_bytes.as_deref().map_err(|message| ConnectError::Ssid(message))?;
         let mut intent = connection_intent(&pending.ssid, pending.hidden, secret)?;
-        let result = self.activate_intent(&intent, &wifi).await;
+        let result = self.activate_intent(&intent, ssid, &wifi).await;
         // Dicts borrow this plaintext PSK and are consumed now, so zeroize it explicitly
         // (ADR-0005/ADR-0014) rather than relying on Drop.
         if let Some(psk) = intent.psk.as_mut() {
@@ -248,11 +249,14 @@ impl NetworkController {
     }
 
     /// Reuses a saved profile; NM would otherwise create duplicates for the same SSID.
-    async fn activate_intent(&self, intent: &ConnectionIntent, wifi: &WifiDevice) -> Result<InFlight, ConnectError> {
-        let Some(saved) = self.saved_profiles_for_device(&intent.ssid, wifi, intent.hidden).await.into_iter().next()
-        else {
-            let ssid = self.ssid_bytes(&wifi.id, &intent.ssid);
-            let dict = build_connection_dict(intent, &ssid);
+    async fn activate_intent(
+        &self,
+        intent: &ConnectionIntent,
+        ssid: &[u8],
+        wifi: &WifiDevice,
+    ) -> Result<InFlight, ConnectError> {
+        let Some(saved) = self.saved_profiles_for_device(ssid, wifi, intent.hidden).await.into_iter().next() else {
+            let dict = build_connection_dict(intent, ssid);
             let (created, active, _) = self
                 .nm
                 .add_and_activate_connection2(dict, &wifi.device_path, &root_object_path(), HashMap::new())
@@ -392,31 +396,42 @@ pub(super) mod tests {
         assert_eq!(saves.load(Ordering::SeqCst), 1, "a join that typed no key saves nothing");
     }
 
+    /// Holds a scan of `ssids` on wlan0, as the last rebuild read them.
+    fn hold(controller: &NetworkController, ssids: &[&[u8]]) {
+        let path = |n| OwnedObjectPath::try_from(format!("/org/freedesktop/NetworkManager/AccessPoint/{n}")).unwrap();
+        let reading = crate::capabilities::network::scan::tests::reading;
+        let held = ssids.iter().enumerate().map(|(n, ssid)| (path(n), reading(ssid))).collect();
+        controller.access_points.lock().unwrap().insert("wlan0".into(), held);
+    }
+
     #[tokio::test]
     async fn forget_deletes_only_the_profiles_for_its_ssid() {
         const HOME: &str = "/org/freedesktop/NetworkManager/Settings/1";
         const CAFE: &str = "/org/freedesktop/NetworkManager/Settings/2";
-        let (home, cafe) = (Arc::default(), Arc::default());
+        const OTHER: &str = "/org/freedesktop/NetworkManager/Settings/3";
+        let (home, cafe, other) = (Arc::default(), Arc::default(), Arc::default());
         let (controller, _receiver, _peer) = attempting(|peer| {
             peer.serve_at(HOME, FakeProfile(b"home", Arc::clone(&home)))?
                 .serve_at(CAFE, FakeProfile(b"caf\xe9", Arc::clone(&cafe)))?
+                .serve_at(OTHER, FakeProfile(b"caf\xe8", Arc::clone(&other)))?
                 .serve_at(
                     "/org/freedesktop/NetworkManager/Settings",
-                    ListedProfiles(vec![
-                        OwnedObjectPath::try_from(HOME).unwrap(),
-                        OwnedObjectPath::try_from(CAFE).unwrap(),
-                    ]),
+                    ListedProfiles([HOME, CAFE, OTHER].map(|path| OwnedObjectPath::try_from(path).unwrap()).to_vec()),
                 )
         })
         .await;
 
         controller.forget("home").await;
 
-        let count = |calls: &Arc<AtomicUsize>| calls.load(Ordering::SeqCst);
-        assert_eq!((count(&home), count(&cafe)), (1, 0));
-        // A Latin-1 SSID reaches Lua lossily decoded, and forgetting it by that name still works.
+        let counts = || [&home, &cafe, &other].map(|calls| calls.load(Ordering::SeqCst));
+        assert_eq!(counts(), [1, 0, 0]);
+        // Two Latin-1 SSIDs read the same in Lua; the row in range says which one is meant.
+        hold(&controller, &[b"caf\xe9"]);
         controller.forget("caf\u{FFFD}").await;
-        assert_eq!((count(&home), count(&cafe)), (1, 1), "the non-UTF-8 SSID's profile is deleted");
+        assert_eq!(counts(), [1, 1, 0], "only the row's own network is forgotten");
+        hold(&controller, &[b"caf\xe9", b"caf\xe8"]);
+        controller.forget("caf\u{FFFD}").await;
+        assert_eq!(counts(), [1, 1, 0], "a name two rows share forgets neither");
     }
 
     /// NetworkManager, aborting the join it holds while it activates, counting each deactivation.
@@ -455,6 +470,7 @@ pub(super) mod tests {
         PendingNetworkConnect {
             attempt: 0,
             ssid: "home".into(),
+            ssid_bytes: Ok(b"home".to_vec()),
             hidden: false,
             device_id: "wlan0".into(),
             device_path: Some(OwnedObjectPath::try_from(device).unwrap()),
@@ -519,22 +535,45 @@ pub(super) mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_profile_for_a_non_utf8_ssid_takes_the_bytes_the_access_point_broadcasts() {
+    async fn a_non_utf8_ssid_joins_as_its_own_network_beside_one_named_the_same() {
+        const OTHER: &str = "/org/freedesktop/NetworkManager/Settings/8";
         let created = Arc::default();
         let nm = CreatingNm(Arc::clone(&created));
-        let (controller, _receiver, _peer) =
-            attempting(|peer| peer.serve_at("/org/freedesktop/NetworkManager", nm)).await;
+        let (controller, _receiver, _peer) = attempting(|peer| {
+            peer.serve_at("/org/freedesktop/NetworkManager", nm)?
+                .serve_at(OTHER, FakeProfile(b"caf\xe8", Arc::default()))?
+                .serve_at(DEVICE, AvailableProfile(OwnedObjectPath::try_from(OTHER).unwrap()))
+        })
+        .await;
         let device = wifi(&controller, "wlan0", OwnedObjectPath::try_from(DEVICE).unwrap()).await;
-        let ap = OwnedObjectPath::try_from("/org/freedesktop/NetworkManager/AccessPoint/1").unwrap();
-        let held = HashMap::from([(ap, crate::capabilities::network::scan::tests::reading(b"caf\xe9"))]);
-        controller.access_points.lock().unwrap().insert("wlan0".into(), held);
+        controller.devices.lock().unwrap().wifi.push(device);
+        let state = || {
+            let mut state = NetworkState::default();
+            controller.join.lock().unwrap().overlay(&mut state);
+            state
+        };
+        let settled = || {
+            let state = state();
+            (state.password_ssid.is_some() || state.connect_error.is_some()).then_some(state)
+        };
 
-        for ssid in ["caf\u{FFFD}", "home"] {
-            let intent = connection_intent(ssid, false, &[]).unwrap();
-            within(controller.activate_intent(&intent, &device)).await.unwrap();
+        // `caf\xe8` is saved and offered, but the row in range is the unsaved `caf\xe9`.
+        hold(&controller, &[b"caf\xe9"]);
+        controller.stash_connect_intent("caf\u{FFFD}".into(), false, Some("wlan0"));
+        assert_eq!(poll_until(settled).await.password_ssid.as_deref(), Some("caf\u{FFFD}"), "the unsaved one asks");
+        let pending = controller.take_prompted_intent().unwrap();
+        within(controller.connect(pending, shared::Zeroizing::new(b"hunter22".to_vec()))).await;
+        assert_eq!(*created.lock().unwrap(), [b"caf\xe9".to_vec()], "a new profile has its own bytes");
+
+        for (held, refusal) in
+            [(&[][..], "network not found"), (&[&b"caf\xe9"[..], b"caf\xe8"][..], "several networks share this name")]
+        {
+            hold(&controller, held);
+            controller.stash_connect_intent("caf\u{FFFD}".into(), false, Some("wlan0"));
+            let failed = poll_until(|| state().connect_error).await;
+            assert_eq!(failed.message, refusal);
         }
-
-        assert_eq!(*created.lock().unwrap(), [b"caf\xe9".to_vec(), b"home".to_vec()]);
+        assert_eq!(created.lock().unwrap().len(), 1, "no profile with guessed or mangled bytes");
     }
 
     /// An activation whose `State` reads the given value and never changes.
@@ -621,8 +660,7 @@ pub(super) mod tests {
         .await;
         let path = OwnedObjectPath::try_from(DEVICE).unwrap();
         let wifi = wifi(&controller, "wlan0", path).await;
-        // Named as Lua sees a Latin-1 SSID: lossily decoded.
-        let profiles = controller.saved_profiles_for_device("caf\u{FFFD}", &wifi, false).await;
+        let profiles = controller.saved_profiles_for_device(b"caf\xe9", &wifi, false).await;
         assert_eq!(profiles.iter().map(|profile| profile.path.as_str()).collect::<Vec<_>>(), [CHOSEN]);
     }
 

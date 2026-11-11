@@ -144,4 +144,5 @@ text {
 | Trap | Fix |
 | :--- | :--- |
 | A `wifi_devices` entry's `available_networks` has a row with `ssid == ""` | Hidden networks broadcast no name; they merge into one nameless row. Skip it and join hidden networks with `connect(ssid, true)` |
+| A network name shows `�` | Its name is not UTF-8, and `�` stands for the bytes Lua cannot show. `connect` and `forget` act on the network in range under that name. When two networks in range read the same, `connect` sets `connect_error` to "several networks share this name" and `forget` deletes nothing; out of range, `connect` with such a name fails with "network not found" |
 | A hidden network asks for a password even when open | Its security is unknown until it answers. Enter on the empty field joins it as open |

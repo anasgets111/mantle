@@ -160,6 +160,7 @@ impl NetworkController {
         }
         let pending = PendingNetworkConnect {
             attempt: 0,
+            ssid_bytes: self.resolve_ssid(&ssid),
             ssid,
             hidden,
             device_id: id.map(str::to_owned).or_else(|| wifi.as_ref().map(|wifi| wifi.id.clone())).unwrap_or_default(),
@@ -243,6 +244,7 @@ pub(super) mod tests {
         PendingNetworkConnect {
             attempt: 0,
             ssid: "home".to_string(),
+            ssid_bytes: Ok(b"home".to_vec()),
             hidden: true,
             device_id: "wlan0".to_string(),
             device_path: None,

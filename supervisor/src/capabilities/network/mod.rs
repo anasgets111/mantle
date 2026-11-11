@@ -33,6 +33,8 @@ use shared::action::NetworkAction;
 pub struct PendingNetworkConnect {
     pub(super) attempt: u64,
     pub ssid: String,
+    /// The raw SSID `ssid` names, resolved once when stashed; the error is the join's.
+    pub ssid_bytes: Result<Vec<u8>, &'static str>,
     pub hidden: bool,
     pub device_id: String,
     pub device_path: Option<zbus::zvariant::OwnedObjectPath>,

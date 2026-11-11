@@ -118,12 +118,18 @@ async fn read_access_point(connection: &zbus::Connection, path: &OwnedObjectPath
 }
 
 impl NetworkController {
-    /// The bytes device `id`'s access point broadcasts for `ssid`, which Lua sees lossily decoded.
-    /// Else `ssid` itself, as for a hidden network.
-    pub(super) fn ssid_bytes(&self, id: &str, ssid: &str) -> Vec<u8> {
+    /// The raw SSID of the scan row Lua names `ssid`, lossily decoded. A name no row shows is taken
+    /// as typed, as for a hidden network, unless it holds U+FFFD. Rows carry no other id, so a
+    /// name two networks share is refused rather than guessed.
+    pub(super) fn resolve_ssid(&self, ssid: &str) -> Result<Vec<u8>, &'static str> {
         let cache = self.access_points.lock().expect("mutex poisoned");
-        let mut held = cache.get(id).into_iter().flat_map(HashMap::values);
-        held.find(|ap| String::from_utf8_lossy(&ap.ssid) == ssid).map_or_else(|| ssid.into(), |ap| ap.ssid.clone())
+        let held = cache.values().flat_map(HashMap::values).map(|ap| &ap.ssid[..]);
+        let named: Vec<&[u8]> = held.filter(|raw| String::from_utf8_lossy(raw) == ssid).collect();
+        match named[..] {
+            [] => (!ssid.contains(char::REPLACEMENT_CHARACTER)).then(|| ssid.into()).ok_or("network not found"),
+            [first, ..] if named.iter().all(|raw| *raw == first) => Ok(first.to_vec()),
+            _ => Err("several networks share this name"),
+        }
     }
 
     pub async fn scan_device(&self, id: Option<&str>) {
