@@ -31,7 +31,8 @@ pub fn sync(conf: &Path, db_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Tries each mirror in order until one answers, as pacman does. Timeouts match libalpm's.
+/// Tries each mirror in order until one answers, as pacman does. Timeouts match libalpm's, plus a
+/// total limit libalpm lacks: a mirror trickling a byte a second would hold the check forever.
 fn fetch_db<'a>(sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a str>) -> Result<(), String> {
     let db = sync_dir.join(format!("{repo}.db"));
     // A killed download leaves only the part file; the db pacman reads is swapped in whole.
@@ -40,7 +41,7 @@ fn fetch_db<'a>(sync_dir: &Path, repo: &str, servers: impl Iterator<Item = &'a s
     for server in servers {
         let mut command = Command::new("curl");
         command.args(["--silent", "--show-error", "--fail", "--location", "--remote-time"]);
-        command.args(["--connect-timeout", "10", "--speed-limit", "1", "--speed-time", "10"]);
+        command.args(["--connect-timeout", "10", "--speed-limit", "1", "--speed-time", "10", "--max-time", "600"]);
         command.arg("--output").arg(&part);
         let _ = std::fs::remove_file(&part);
         if db.exists() {
@@ -210,6 +211,21 @@ mod tests {
         let info = parse_info(text);
         assert_eq!(info["bash"], ("core".to_string(), 10_055_844));
         assert_eq!(info["mesa"], ("extra".to_string(), 126_353_408));
+    }
+
+    #[test]
+    fn a_db_comes_from_the_first_mirror_that_has_it() {
+        let mirror = tempfile::tempdir().unwrap();
+        std::fs::write(mirror.path().join("core.db"), "db").unwrap();
+        let sync = tempfile::tempdir().unwrap();
+        let (dead, live) =
+            (format!("file://{}/gone", mirror.path().display()), format!("file://{}", mirror.path().display()));
+
+        let failed = fetch_db(sync.path(), "core", [dead.as_str()].into_iter());
+        assert!(failed.unwrap_err().starts_with("failed to sync core: "));
+        fetch_db(sync.path(), "core", [dead.as_str(), live.as_str()].into_iter()).unwrap();
+        assert_eq!(std::fs::read_to_string(sync.path().join("core.db")).unwrap(), "db");
+        assert!(!sync.path().join("core.db.part").exists());
     }
 
     #[test]

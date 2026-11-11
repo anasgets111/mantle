@@ -23,10 +23,6 @@ use shared::state::updates::UpdateCandidate;
 /// 2,000-package run belongs in a file, not a state payload reserialized on every progress line.
 const LOG_TAIL_LINES: usize = 200;
 
-/// A check that hangs (stuck db lock, dead mirror) must not wedge the scheduler. The blocking
-/// thread leaks; the capability recovers.
-const CHECK_TIMEOUT: Duration = Duration::from_secs(600);
-
 /// How often a scheduled check asks whether it is due; also the retry delay after a failure.
 const CHECK_POLL: Duration = Duration::from_secs(300);
 
@@ -215,11 +211,12 @@ async fn run_one_check(backend: &Arc<dyn Backend>, state: &Arc<Mutex<UpdatesStat
     state.lock().expect("mutex poisoned").checking = true;
     let _ = events.send(());
 
+    // No timeout: every command a check runs has its own limit, and a check given up on would
+    // still be running beside the next, sharing its download files.
     let backend = Arc::clone(backend);
-    let result = match tokio::time::timeout(CHECK_TIMEOUT, tokio::task::spawn_blocking(move || backend.check())).await {
-        Ok(joined) => joined.map_err(|join_err| format!("check task panicked: {join_err}")),
-        Err(_) => Ok(Err(format!("check timed out after {}s", CHECK_TIMEOUT.as_secs()))),
-    };
+    let result = tokio::task::spawn_blocking(move || backend.check())
+        .await
+        .map_err(|join_err| format!("check task panicked: {join_err}"));
 
     let mut guard = state.lock().expect("mutex poisoned");
     guard.checking = false;
@@ -444,13 +441,16 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_check_that_never_returns_times_out_and_the_next_one_still_runs() {
-        struct Hung(std::sync::Mutex<std::sync::mpsc::Receiver<()>>);
+    async fn a_slow_check_is_never_overlapped_by_the_next() {
+        // Two pacman checks at once share the sync root's `.db.part` files and can swap a
+        // half-downloaded db in.
+        struct Hung(std::sync::Mutex<std::sync::mpsc::Receiver<()>>, std::sync::atomic::AtomicUsize);
         impl Backend for Hung {
             fn name(&self) -> &'static str {
                 "hung"
             }
             fn check(&self) -> Result<CheckReport, String> {
+                self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let _ = self.0.lock().unwrap().recv();
                 Err("released".into())
             }
@@ -463,20 +463,26 @@ mod tests {
         }
         let (release, hold) = std::sync::mpsc::channel();
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let controller = UpdatesController::with_backend(Some(Arc::new(Hung(hold.into()))), no_marker(), events_tx);
+        let backend = Arc::new(Hung(hold.into(), Default::default()));
+        let controller = UpdatesController::with_backend(Some(backend.clone()), no_marker(), events_tx);
         events_rx.recv().await.unwrap();
 
         controller.check_now();
         events_rx.recv().await.unwrap();
         // Paused time does not auto-advance while a blocking task is outstanding.
-        tokio::time::advance(CHECK_TIMEOUT + Duration::from_secs(1)).await;
-        events_rx.recv().await.unwrap();
-        let snapshot = controller.snapshot();
-        assert!(!snapshot.checking);
-        assert!(snapshot.check_error.unwrap().contains("timed out"));
+        tokio::time::advance(Duration::from_secs(3600)).await;
+        for _ in 0..100 {
+            if !controller.snapshot().checking {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(controller.snapshot().checking, "a check still running was given up on");
         controller.check_now();
-        events_rx.recv().await.expect("the scheduler must accept a new check after a timeout");
         drop(release);
+        events_rx.recv().await.unwrap();
+        assert_eq!(backend.1.load(std::sync::atomic::Ordering::SeqCst), 1, "a second check ran beside the first");
+        assert!(!controller.snapshot().checking);
     }
 
     /// The two pushes one check makes: `checking` up, then the answer.

@@ -41,7 +41,8 @@ pub trait Backend: Send + Sync + 'static {
     fn name(&self) -> &'static str;
 
     /// Blocking outdated-package check; it syncs repo databases over the network. The caller runs
-    /// it in `tokio::task::spawn_blocking`; no async runtime is assumed here.
+    /// it in `tokio::task::spawn_blocking`; no async runtime is assumed here. It must return: the
+    /// caller waits with no timeout, so every command it runs needs a limit.
     ///
     /// Must not modify the real system: a wrong answer is a badge error; side effects can leave a
     /// half-upgraded machine.
