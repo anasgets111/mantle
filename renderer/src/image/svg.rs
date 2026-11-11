@@ -38,7 +38,8 @@ const MAX_SVG_PATTERNS: usize = 16;
 const SVG_FILTERS: [&str; 8] =
     ["feGaussianBlur", "feOffset", "feFlood", "feMerge", "feMergeNode", "feComposite", "feColorMatrix", "feBlend"];
 
-/// Rasterizes with longest edge `box_px`; [`fitted_rect`](super::fitted_rect) handles placement.
+/// Rasterizes with longest edge `box_px`, at most [`MAX_DECODE_EDGE`] as a raster source is, since
+/// the box is the config's; [`fitted_rect`](super::fitted_rect) handles placement.
 /// The `bool` says whether the document asked for a font, so only those pixels go stale when the
 /// loaded fonts change; the last field is the document's own size, rounded.
 pub(super) fn rasterize_svg(
@@ -118,7 +119,7 @@ pub(super) fn rasterize_svg(
     if !longest.is_finite() || longest <= 0.0 {
         return Err(format!("svg declares a {}x{} viewport", size.width(), size.height()));
     }
-    let scale = box_px as f32 / longest;
+    let scale = box_px.min(MAX_DECODE_EDGE) as f32 / longest;
     let width = ((size.width() * scale).round() as u32).max(1);
     let height = ((size.height() * scale).round() as u32).max(1);
     let mut pixmap =
@@ -538,6 +539,19 @@ pub(super) mod tests {
         let distinct: std::collections::HashSet<[u8; 3]> =
             pixels.as_chunks::<4>().0.iter().map(|px| [px[0], px[1], px[2]]).collect();
         assert!(distinct.len() > 16, "expected a gradient, got {} colours", distinct.len());
+    }
+
+    /// The box is the config's (`icon { size = 30000 }` asked for a 3.6 GB pixmap); a raster
+    /// source is never stored past `MAX_DECODE_EDGE`, and neither is an SVG. One pixel tall keeps
+    /// the over-limit raster cheap.
+    #[test]
+    fn an_svg_rasterizes_no_larger_than_the_decode_edge_whatever_its_box() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sliver.svg");
+        let doc = r#"<svg xmlns="http://www.w3.org/2000/svg" width="10000" height="1"><rect width="10000" height="1" fill="red"/></svg>"#;
+        std::fs::write(&path, doc).unwrap();
+        let (_, width, height, ..) = rasterize_svg(&path, 10_000, None, &FontDatabase::default()).unwrap();
+        assert_eq!((width, height), (MAX_DECODE_EDGE, 1));
     }
 
     const RED_SVG: &str =

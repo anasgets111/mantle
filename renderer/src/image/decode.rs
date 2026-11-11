@@ -198,7 +198,7 @@ pub(super) fn decode(
 ) -> Result<Decoded, String> {
     let CacheKey { path, box_px, cropped, blur_px, plays, .. } = key;
     // An SVG rasterizes to `box_px`, not to whatever the file declares, so it is bounded by the
-    // request and never approaches the pool budget. `MAX_SVG_BYTES` is what bounds the parse.
+    // request, and by `MAX_DECODE_EDGE` like a raster. `MAX_SVG_BYTES` is what bounds the parse.
     if is_vector(path) {
         let (pixels, width, height, text, natural) = rasterize_svg(path, box_px.0.max(box_px.1), tint, fonts)?;
         let natural = plausible(natural);
