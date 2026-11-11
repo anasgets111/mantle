@@ -28,7 +28,7 @@ end)
 | --- | --- | --- |
 | `compositor_hold_stale` | `boolean` | The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty. |
 | `inhibited` | `boolean` | True when logind blocks idle, a `ScreenSaver` client holds it, or the compositor was last observed withholding idle notifications. The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it. |
-| `inhibitors` | `IdleInhibitor[]` | Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. |
+| `inhibitors` | `IdleInhibitor[]` | Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`. |
 
 ### `IdleInhibitor`
 
@@ -36,7 +36,7 @@ One holder blocking idle.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `who` | `string` | Free-text holder name, e.g. `"mpv"`; draw it, never match it. |
+| `who` | `string` | Free-text holder name, e.g. `"mpv"`; draw it, never match it. Cut at 256 bytes, like `why`. |
 | `why` | `string` | Free-text reason, e.g. `"Playing video"`; often empty. |
 
 ## Actions

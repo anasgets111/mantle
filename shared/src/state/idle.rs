@@ -6,7 +6,7 @@ use serde::Serialize;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct IdleInhibitor {
-    /// Free-text holder name, e.g. `"mpv"`; draw it, never match it.
+    /// Free-text holder name, e.g. `"mpv"`; draw it, never match it. Cut at 256 bytes, like `why`.
     pub who: String,
     /// Free-text reason, e.g. `"Playing video"`; often empty.
     pub why: String,
@@ -24,6 +24,7 @@ pub struct IdleState {
     /// again. Its hold may have ended; a fresh idle period clears this uncertainty.
     pub compositor_hold_stale: bool,
     /// Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an
-    /// empty `who`; draw `why` then. An unconfirmed compositor hold is omitted.
+    /// empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64
+    /// logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
     pub inhibitors: Vec<IdleInhibitor>,
 }

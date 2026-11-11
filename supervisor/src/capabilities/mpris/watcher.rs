@@ -32,26 +32,30 @@ pub(super) fn service_name_for_id(id: &str) -> String {
     format!("{MPRIS_SERVICE_PREFIX}{id}")
 }
 
-/// Scans `ListNames` once, filters with [`is_trackable_player`], and registers each match.
+/// Scans `ListNames`, filters with [`is_trackable_player`], and registers each match not already
+/// tracked. Returns whether any was left out at the player limit.
 async fn discover_existing(
     connection: &zbus::Connection,
     dbus_proxy: &zbus::fdo::DBusProxy<'static>,
     registry: &PlayerRegistry,
     events: &UnboundedSender<()>,
-) {
+) -> bool {
     let names = match dbus_proxy.list_names().await {
         Ok(names) => names,
         Err(err) => {
-            warn!("ListNames failed; starting with no discovered players: {err}");
-            return;
+            warn!("ListNames failed; no players discovered this scan: {err}");
+            return false;
         }
     };
+    let mut left_out = false;
     for name in names {
         let name = name.to_string();
-        if is_trackable_player(&name) {
-            register_player(connection, registry, events, name).await;
+        let tracked = registry.lock().expect("mpris registry mutex poisoned").contains_key(&name);
+        if is_trackable_player(&name) && !tracked {
+            left_out |= register_player(connection, registry, events, name).await;
         }
     }
+    left_out
 }
 
 /// `NameOwnerChanged` for player names only; `arg0namespace` keeps the bus from waking discovery
@@ -97,7 +101,7 @@ pub(super) async fn spawn_discovery(
         }
     };
 
-    discover_existing(&connection, &dbus_proxy, &registry, &events).await;
+    let mut left_out = discover_existing(&connection, &dbus_proxy, &registry, &events).await;
 
     tokio::spawn(async move {
         while let Some(message) = stream.next().await {
@@ -109,9 +113,13 @@ pub(super) async fn spawn_discovery(
             }
             shared::debug!("MPRIS player signal: {name} owner={}", args.new_owner.is_some());
             if args.new_owner.is_some() {
-                register_player(&connection, &registry, &events, name).await;
+                left_out |= register_player(&connection, &registry, &events, name).await;
             } else {
                 unregister_player(&registry, &name, &events);
+                // A slot may have freed: pick up the players left out at the limit.
+                if left_out {
+                    left_out = discover_existing(&connection, &dbus_proxy, &registry, &events).await;
+                }
             }
         }
     });
@@ -120,6 +128,44 @@ pub(super) async fn spawn_discovery(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serving any object starts the peer's object server, so every call this test's peers do not
+    /// answer is refused at once instead of timing out.
+    struct Root;
+
+    #[zbus::interface(name = "org.mpris.MediaPlayer2")]
+    impl Root {
+        #[zbus(property)]
+        fn identity(&self) -> String {
+            "Fixture".into()
+        }
+    }
+
+    /// A player that arrived while every slot was taken is picked up once one frees, rather than
+    /// staying untracked until it or the shell restarts.
+    #[tokio::test]
+    async fn a_player_left_out_at_the_limit_is_tracked_once_a_slot_frees() {
+        use crate::capabilities::test_support::{poll_until, private_bus};
+        let bus = private_bus().await;
+        let mut players = Vec::new();
+        for index in 0..=super::super::MAX_PLAYERS {
+            let name = format!("{MPRIS_SERVICE_PREFIX}p{index}");
+            let peer = bus.builder().name(name.clone()).unwrap().serve_at("/org/mpris/MediaPlayer2", Root).unwrap();
+            players.push((name, peer.build().await.unwrap()));
+        }
+        let registry = PlayerRegistry::default();
+        let (events, _woken) = tokio::sync::mpsc::unbounded_channel();
+        spawn_discovery(bus.builder().build().await.unwrap(), registry.clone(), events).await;
+        let tracked = |name: &str| registry.lock().unwrap().contains_key(name);
+        let left_out = players.iter().position(|(name, _)| !tracked(name)).expect("one name is past the limit");
+        let left_out_name = players[left_out].0.clone();
+
+        let freed = (left_out + 1) % players.len();
+        drop(players.remove(freed));
+
+        poll_until(|| tracked(&left_out_name).then_some(())).await;
+        assert_eq!(registry.lock().unwrap().len(), super::super::MAX_PLAYERS);
+    }
 
     #[test]
     fn player_owner_rule_matches_player_names_only() {

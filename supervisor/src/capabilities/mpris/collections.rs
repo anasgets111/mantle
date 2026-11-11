@@ -6,13 +6,12 @@ use futures_util::{Stream, StreamExt};
 use std::collections::HashMap;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
-
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
 use super::metadata::parse_metadata;
 use super::player::PlayerRegistry;
 use super::proxies::{MprisPlaylistsProxy, MprisTrackListProxy};
-use super::{MAX_METADATA_TEXT_BYTES, MAX_ORDERINGS, id_fits};
+use super::{MAX_METADATA_TEXT_BYTES, MAX_ORDERINGS, fits_text_cap};
 use crate::capabilities::truncate_utf8_bytes;
 
 pub(super) const TRACK_LIMIT: usize = 100;
@@ -45,13 +44,17 @@ pub(super) async fn read_track_list(
     })
 }
 
-/// `None` for an id past the cap; see [`id_fits`].
+/// `None` for an id past the cap; see [`fits_text_cap`]. Title and artist take the list's tighter
+/// cap, since a hundred tracks multiply them.
 fn track_summary(id: &OwnedObjectPath, metadata: &HashMap<String, OwnedValue>) -> Option<TrackSummary> {
+    if !fits_text_cap(id.as_str()) {
+        return None;
+    }
     let parsed = parse_metadata(metadata);
-    id_fits(id.as_str()).then(|| TrackSummary {
+    Some(TrackSummary {
         id: id.to_string(),
-        title: parsed.title,
-        artist: parsed.artist,
+        title: truncate_utf8_bytes(&parsed.title, MAX_METADATA_TEXT_BYTES),
+        artist: truncate_utf8_bytes(&parsed.artist, MAX_METADATA_TEXT_BYTES),
         length: parsed.length_us.filter(|length| *length >= 0),
     })
 }
@@ -65,7 +68,7 @@ pub(super) async fn read_playlists(
     fallback_order: bool,
 ) -> zbus::Result<PlaylistsState> {
     let orderings: Vec<String> =
-        proxy.orderings().await?.into_iter().filter(|ordering| id_fits(ordering)).take(MAX_ORDERINGS).collect();
+        proxy.orderings().await?.into_iter().filter(|ordering| fits_text_cap(ordering)).take(MAX_ORDERINGS).collect();
     let selected_order =
         if order.is_empty() || (fallback_order && !orderings.iter().any(|supported| supported == order)) {
             orderings.first().cloned().unwrap_or_else(|| "Alphabetical".to_string())
@@ -97,8 +100,8 @@ pub(super) async fn read_playlists(
 
 /// `None` for an id past the cap; an icon URI past it reads as none, since a cut one names nothing.
 fn playlist_summary((id, name, icon): (OwnedObjectPath, String, String)) -> Option<PlaylistSummary> {
-    let icon = if id_fits(&icon) { icon } else { String::new() };
-    id_fits(id.as_str()).then(|| PlaylistSummary {
+    let icon = if fits_text_cap(&icon) { icon } else { String::new() };
+    fits_text_cap(id.as_str()).then(|| PlaylistSummary {
         id: id.to_string(),
         name: truncate_utf8_bytes(&name, MAX_METADATA_TEXT_BYTES),
         icon,
@@ -336,14 +339,17 @@ mod tests {
     fn an_entry_with_an_overlong_id_is_dropped_and_its_text_capped() {
         let long = "x".repeat(MAX_METADATA_TEXT_BYTES + 1);
         let long_path = path(&format!("/{long}"));
+        // Past the current track's cap too, so the track list's tighter one shows.
+        let longer = "x".repeat(super::super::MAX_TRACK_TEXT_BYTES + 1);
         let title = crate::capabilities::test_support::properties(&[
-            ("xesam:title", Value::from(long.clone())),
+            ("xesam:title", Value::from(longer.clone())),
+            ("xesam:artist", Value::from(longer)),
             ("mpris:length", Value::from(0_i64)),
         ]);
 
         assert_eq!(track_summary(&long_path, &HashMap::new()), None);
         let track = track_summary(&path("/track/0"), &title).unwrap();
-        assert_eq!(track.title.len(), MAX_METADATA_TEXT_BYTES);
+        assert_eq!((track.title.len(), track.artist.len()), (MAX_METADATA_TEXT_BYTES, MAX_METADATA_TEXT_BYTES));
         assert_eq!(track.length, Some(0), "zero is a length; only a negative one is unknown");
 
         assert_eq!(playlist_summary((long_path, "List".into(), String::new())), None);

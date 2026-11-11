@@ -3,7 +3,7 @@
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use super::{MAX_METADATA_TEXT_BYTES, MAX_METADATA_URL_BYTES, id_fits};
+use super::{MAX_METADATA_URL_BYTES, MAX_TRACK_TEXT_BYTES, fits_text_cap};
 use crate::capabilities::file_url::file_url_to_path;
 use crate::capabilities::truncate_utf8_bytes;
 
@@ -60,7 +60,7 @@ pub(super) struct ParsedMetadata {
 
 pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedValue>) -> ParsedMetadata {
     let get = |key: &str| metadata.get(key).map(|value| &**value);
-    let text = |text: &str| truncate_utf8_bytes(text, MAX_METADATA_TEXT_BYTES);
+    let text = |text: &str| truncate_utf8_bytes(text, MAX_TRACK_TEXT_BYTES);
     let joined = |key: &str| text(&get(key).and_then(value_as_str_or_joined_array).unwrap_or_default());
     let url = |key: &str| {
         get(key).and_then(value_as_str).filter(|url| url.len() <= MAX_METADATA_URL_BYTES).map(str::to_string)
@@ -73,7 +73,7 @@ pub(super) fn parse_metadata(metadata: &std::collections::HashMap<String, OwnedV
         genre: joined("xesam:genre"),
         art_url: url("mpris:artUrl"),
         length_us: get("mpris:length").and_then(value_as_i64),
-        trackid: get("mpris:trackid").and_then(value_as_trackid).filter(|id| id_fits(id)),
+        trackid: get("mpris:trackid").and_then(value_as_trackid).filter(|id| fits_text_cap(id)),
         url: url("xesam:url"),
     }
 }
@@ -165,7 +165,7 @@ mod tests {
     /// a URL or track id past its cap is dropped: cut short, it would name a different thing.
     #[test]
     fn parse_metadata_caps_text_and_drops_an_overlong_url_or_trackid() {
-        let long = format!("{}é{}", "a".repeat(255), "b".repeat(4096));
+        let long = format!("{}é{}", "a".repeat(1023), "b".repeat(4096));
         let mut artists = Array::new(&Signature::Str);
         artists.append(Value::Str(Str::from(long.as_str()))).unwrap();
         let mut map = HashMap::new();
@@ -178,12 +178,12 @@ mod tests {
         let data_url = format!("data:image/png;base64,{}", "A".repeat(4096));
         map.insert("mpris:artUrl".to_string(), owned(Value::Str(Str::from(data_url.as_str()))));
         map.insert("xesam:url".to_string(), owned(Value::Str(Str::from(format!("file:///{}", "d".repeat(4088))))));
-        let trackid = format!("/{}", "t".repeat(256));
+        let trackid = format!("/{}", "t".repeat(super::super::MAX_METADATA_TEXT_BYTES));
         map.insert("mpris:trackid".to_string(), owned(Value::ObjectPath(ObjectPath::try_from(trackid).unwrap())));
 
         let parsed = parse_metadata(&map);
 
-        let capped = "a".repeat(255);
+        let capped = "a".repeat(1023);
         for (field, value) in [
             ("title", &parsed.title),
             ("artist", &parsed.artist),
@@ -191,7 +191,7 @@ mod tests {
             ("album_artist", &parsed.album_artist),
             ("genre", &parsed.genre),
         ] {
-            assert_eq!(value, &capped, "{field}: the two-byte é straddles byte 256, so it goes whole");
+            assert_eq!(value, &capped, "{field}: the two-byte é straddles byte 1024, so it goes whole");
         }
         assert_eq!(parsed.art_url, None);
         assert_eq!(parsed.trackid, None);

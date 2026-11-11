@@ -39,8 +39,9 @@ pub fn apply_release_inhibit(counts: &mut HashMap<u32, u32>, generation_id: u32)
 pub(crate) const SCREENSAVER_HOLDER: u32 = u32::MAX;
 
 /// ponytail: holds past these are refused with a D-Bus error. Per peer, so a client leaking a hold
-/// per play reaches its own limit first; 16, not 1, because the portal is one peer for every
-/// sandboxed app. Upgrade: count per app through the portal's `app_id`.
+/// per play reaches its own limit first. Every sandboxed app shares the portal's peer, so one leaky
+/// app's 16 holds make the others' `Inhibit` fail. Upgrade: count per app through the portal's
+/// `app_id`.
 const MAX_SCREENSAVER_HOLDS_PER_PEER: usize = 16;
 pub(crate) const MAX_SCREENSAVER_HOLDS: usize = 64;
 
@@ -52,14 +53,26 @@ pub(crate) fn apply_screensaver_inhibit(
     peer: String,
     hold: IdleInhibitor,
 ) -> Option<(u32, bool)> {
+    let hold = super::state::inhibitor(&hold.who, &hold.why);
     let held = state.screensaver.values().filter(|(holder, _)| *holder == peer).count();
     if held >= MAX_SCREENSAVER_HOLDS_PER_PEER || state.screensaver.len() >= MAX_SCREENSAVER_HOLDS {
+        // Warned once per peer: a refused video that then blanks the screen should leave a trace,
+        // and a client retrying in a loop should not flood.
+        let message = format!(
+            "refused a ScreenSaver hold from {peer} ({:?}): it holds {held}, {} in all",
+            hold.who,
+            state.screensaver.len()
+        );
+        if shared::log::first_failure(&format!("screensaver limit {peer}")) {
+            shared::warn!("{message}");
+        } else {
+            shared::debug!("{message}");
+        }
         return None;
     }
     let cookie = state.next_cookie;
     // Never hand out 0: it is a legal cookie that clients routinely read as failure.
     state.next_cookie = cookie.wrapping_add(1).max(1);
-    let hold = super::state::inhibitor(&hold.who, &hold.why);
     state.screensaver.insert(cookie, (peer, hold));
     Some((cookie, apply_inhibit(&mut state.counts, SCREENSAVER_HOLDER)))
 }

@@ -30,7 +30,7 @@ impl LoopStatus {
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct MprisState {
     /// Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]`
-    /// stays put; empty when none runs. At most 8: a player appearing past that is left out.
+    /// stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves.
     pub players: Vec<PlayerState>,
 }
 
@@ -39,7 +39,7 @@ pub struct MprisState {
 pub struct PlayerState {
     /// Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
     pub id: String,
-    /// Display name, e.g. `"Spotify"`; empty if unanswered.
+    /// Display name, e.g. `"Spotify"`; empty if unanswered. Cut at 256 bytes.
     pub identity: String,
     /// MPRIS `PlaybackStatus`; keeps the last value when a read fails, `"stopped"` if none.
     pub play_state: PlayState,
@@ -70,7 +70,7 @@ pub struct PlayerState {
     pub minimum_rate: f64,
     /// MPRIS maximum playback rate, or `0` when unavailable.
     pub maximum_rate: f64,
-    /// Track title; empty when unset, normal between tracks.
+    /// Track title; empty when unset, normal between tracks. Cut at 1024 bytes, like the four below.
     pub title: String,
     /// Artists joined with `", "`; empty when unset.
     pub artist: String,
@@ -83,6 +83,7 @@ pub struct PlayerState {
     /// Cover art as an existing local path, or empty when unavailable.
     pub album_art_path: String,
     /// `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset.
+    /// One over 4096 bytes is ignored: the same track keeps its previous one, a new track has none.
     pub art_url: String,
     /// Playback offset in microseconds as of `position_updated_at`, not polled while playing: add
     /// elapsed time. `nil` when unknown (ADR-0036).
@@ -96,7 +97,7 @@ pub struct PlayerState {
     pub length: Option<i64>,
     /// `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
     pub url: String,
-    /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
+    /// The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset. Cut at 256 bytes.
     pub desktop_entry: String,
     /// Process id of the bus name's owner, which `mantle.audio.apps[].pid` matches exactly; `nil`
     /// when the bus refuses. A sandboxed app's streams may report a pid from inside its sandbox.
@@ -122,9 +123,10 @@ pub enum PlayState {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct TrackSummary {
-    /// TrackList object path, used by `track_list_go_to` and `track_list_remove_track`.
+    /// TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. A track
+    /// whose id is over 256 bytes is left out of `tracks`.
     pub id: String,
-    /// Track title, empty when the player has none.
+    /// Track title, empty when the player has none. Cut at 256 bytes, like `artist`.
     pub title: String,
     /// Track artists joined with `", "`.
     pub artist: String,
@@ -138,7 +140,7 @@ pub struct TrackSummary {
 pub struct TrackListState {
     /// At most 100 tracks around the current track; the full playlist remains player-owned.
     pub tracks: Vec<TrackSummary>,
-    /// Current TrackList object path, or empty if unknown.
+    /// Current TrackList object path, or empty if unknown or over 256 bytes.
     pub current_track: String,
     /// Whether the player permits add and remove calls.
     pub can_edit: bool,
@@ -149,9 +151,9 @@ pub struct TrackListState {
 pub struct PlaylistSummary {
     /// Stable playlist object path.
     pub id: String,
-    /// User-facing playlist name.
+    /// User-facing playlist name, cut at 256 bytes.
     pub name: String,
-    /// Icon URI, or empty if absent.
+    /// Icon URI, or empty if absent or over 256 bytes.
     pub icon: String,
 }
 
@@ -160,9 +162,9 @@ pub struct PlaylistSummary {
 pub struct PlaylistsState {
     /// Total playlists reported by the player.
     pub count: u32,
-    /// Ordering names accepted by `playlists_get`.
+    /// Ordering names accepted by `playlists_get`: at most 16, names over 256 bytes left out.
     pub orderings: Vec<String>,
-    /// Active playlist, if the player reports one.
+    /// Active playlist, if the player reports one; `nil` too when its id is over 256 bytes.
     pub active: Option<PlaylistSummary>,
     /// Index used for the current page.
     pub index: u32,
@@ -172,6 +174,7 @@ pub struct PlaylistsState {
     pub order: String,
     /// Whether the page is reversed.
     pub reverse: bool,
-    /// At most 100 playlist entries.
+    /// At most 100 playlist entries. One whose id is over 256 bytes is left out, so a page can be
+    /// shorter than `page_size` while `count` includes it.
     pub playlists: Vec<PlaylistSummary>,
 }

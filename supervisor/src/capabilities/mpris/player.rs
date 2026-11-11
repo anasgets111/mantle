@@ -264,24 +264,42 @@ async fn resync(
 /// Insert before spawn: zbus `receive_*_changed` streams replay cached values, so a forwarder
 /// could otherwise run before insertion, find nothing to update, and freeze the player. Confirmed
 /// live for the first player in a fresh session.
+///
+/// Returns whether `bus_name` was left out because [`MAX_PLAYERS`] are tracked, so discovery
+/// re-scans once one leaves.
 pub(super) async fn register_player(
     connection: &zbus::Connection,
     registry: &PlayerRegistry,
     events: &UnboundedSender<()>,
     bus_name: String,
-) {
+) -> bool {
+    // Checked before any round trip: discovery registers one name at a time, and each refused
+    // arrival would otherwise cost a bind, a resync and the collections.
+    let full = {
+        let guard = registry.lock().expect("mutex poisoned");
+        guard.len() >= MAX_PLAYERS && !guard.contains_key(&bus_name)
+    };
+    if full {
+        let message = format!("not tracking {bus_name}: {MAX_PLAYERS} players already are");
+        if shared::log::first_failure(&message) {
+            warn!("{message}")
+        } else {
+            debug!("{message}")
+        }
+        return true;
+    }
     let player = match bind_player(connection, &bus_name).await {
         Ok(player) => player,
         Err(err) => {
             debug!("failed to bind Player for {bus_name}: {err}");
-            return;
+            return false;
         }
     };
     let root = match bind_root(connection, &bus_name).await {
         Ok(root) => root,
         Err(err) => {
             debug!("failed to bind MediaPlayer2 for {bus_name}: {err}");
-            return;
+            return false;
         }
     };
     let track_list = bind_track_list(connection, &bus_name).await.ok();
@@ -290,7 +308,7 @@ pub(super) async fn register_player(
         Ok(true) => {}
         Ok(false) => {
             debug!("{bus_name} reports CanControl=false; not tracking it");
-            return;
+            return false;
         }
         Err(err) => debug!("CanControl read failed for {bus_name} (tracking anyway): {err}"),
     }
@@ -327,7 +345,7 @@ pub(super) async fn register_player(
         let mut guard = registry.lock().expect("mutex poisoned");
         if guard.len() >= MAX_PLAYERS && !guard.contains_key(&bus_name) {
             warn!("not tracking {bus_name}: {MAX_PLAYERS} players already are");
-            return;
+            return false;
         }
         entry.registered = match guard.get(&bus_name) {
             // Same bus name, same player: holds its place; a restart gets a new unique name.
@@ -367,6 +385,7 @@ pub(super) async fn register_player(
         None => collections_forwarder.abort(),
     }
     let _ = events.send(());
+    false
 }
 
 /// Read once per registration, since a new owner registers the name again; later resyncs keep it.

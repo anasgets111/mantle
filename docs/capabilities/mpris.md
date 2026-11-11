@@ -34,7 +34,7 @@ rect {
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `players` | `PlayerState[]` | Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: a player appearing past that is left out. |
+| `players` | `PlayerState[]` | Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves. |
 
 ### `LoopStatus`
 
@@ -59,7 +59,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `album` | `string` | Album title; empty when unset. |
 | `album_art_path` | `string` | Cover art as an existing local path, or empty when unavailable. |
 | `album_artist` | `string` | Album artists joined with `", "`; empty when unset. |
-| `art_url` | `string` | `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset. |
+| `art_url` | `string` | `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset. One over 4096 bytes is ignored: the same track keeps its previous one, a new track has none. |
 | `artist` | `string` | Artists joined with `", "`; empty when unset. |
 | `can_go_next` | `boolean` | MPRIS `CanGoNext`. |
 | `can_go_previous` | `boolean` | MPRIS `CanGoPrevious`. |
@@ -68,10 +68,10 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `can_quit` | `boolean` | MPRIS `CanQuit` on the root interface. |
 | `can_raise` | `boolean` | MPRIS `CanRaise` on the root interface. |
 | `can_seek` | `boolean` | MPRIS `CanSeek`. |
-| `desktop_entry` | `string` | The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset. |
+| `desktop_entry` | `string` | The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset. Cut at 256 bytes. |
 | `genre` | `string` | Genres joined with `", "`; empty when unset. |
 | `id` | `string` | Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it. |
-| `identity` | `string` | Display name, e.g. `"Spotify"`; empty if unanswered. |
+| `identity` | `string` | Display name, e.g. `"Spotify"`; empty if unanswered. Cut at 256 bytes. |
 | `length?` | `integer` | Track length in microseconds, or `nil` when unknown, as for a live stream. |
 | `loop_status?` | `LoopStatus` | MPRIS loop mode; `nil` when the player does not report one. |
 | `maximum_rate` | `number` | MPRIS maximum playback rate, or `0` when unavailable. |
@@ -83,7 +83,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | `position_updated_at` | `integer` | `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:now()` in seconds, so `mantle.clock:now() - position_updated_at / 1e6` is the age. |
 | `rate` | `number` | MPRIS playback rate. |
 | `shuffle` | `boolean` | MPRIS shuffle setting. |
-| `title` | `string` | Track title; empty when unset, normal between tracks. |
+| `title` | `string` | Track title; empty when unset, normal between tracks. Cut at 1024 bytes, like the four below. |
 | `track_list` | `TrackListState` | Nearby tracks from the optional MPRIS TrackList interface. |
 | `url` | `string` | `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset. |
 | `volume` | `number` | MPRIS volume in percent, `100` when unreported. The protocol permits amplification above `100`. |
@@ -92,21 +92,21 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `icon` | `string` | Icon URI, or empty if absent. |
+| `icon` | `string` | Icon URI, or empty if absent or over 256 bytes. |
 | `id` | `string` | Stable playlist object path. |
-| `name` | `string` | User-facing playlist name. |
+| `name` | `string` | User-facing playlist name, cut at 256 bytes. |
 
 ### `PlaylistsState`
 
 | Field | Type | Description |
 | --- | --- | --- |
-| `active?` | `PlaylistSummary` | Active playlist, if the player reports one. |
+| `active?` | `PlaylistSummary` | Active playlist, if the player reports one; `nil` too when its id is over 256 bytes. |
 | `count` | `integer` | Total playlists reported by the player. |
 | `index` | `integer` | Index used for the current page. |
 | `order` | `string` | Ordering used for the current page. |
-| `orderings` | `string[]` | Ordering names accepted by `playlists_get`. |
+| `orderings` | `string[]` | Ordering names accepted by `playlists_get`: at most 16, names over 256 bytes left out. |
 | `page_size` | `integer` | Number of entries requested for the current page, at most 100. |
-| `playlists` | `PlaylistSummary[]` | At most 100 playlist entries. |
+| `playlists` | `PlaylistSummary[]` | At most 100 playlist entries. One whose id is over 256 bytes is left out, so a page can be shorter than `page_size` while `count` includes it. |
 | `reverse` | `boolean` | Whether the page is reversed. |
 
 ### `TrackListState`
@@ -114,7 +114,7 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | Field | Type | Description |
 | --- | --- | --- |
 | `can_edit` | `boolean` | Whether the player permits add and remove calls. |
-| `current_track` | `string` | Current TrackList object path, or empty if unknown. |
+| `current_track` | `string` | Current TrackList object path, or empty if unknown or over 256 bytes. |
 | `tracks` | `TrackSummary[]` | At most 100 tracks around the current track; the full playlist remains player-owned. |
 
 ### `TrackSummary`
@@ -122,9 +122,9 @@ One of `"playing"`, `"paused"`, `"stopped"`.
 | Field | Type | Description |
 | --- | --- | --- |
 | `artist` | `string` | Track artists joined with `", "`. |
-| `id` | `string` | TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. |
+| `id` | `string` | TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. A track whose id is over 256 bytes is left out of `tracks`. |
 | `length?` | `integer` | Track length in microseconds, or `nil` when unknown. |
-| `title` | `string` | Track title, empty when the player has none. |
+| `title` | `string` | Track title, empty when the player has none. Cut at 256 bytes, like `artist`. |
 
 ## Actions
 

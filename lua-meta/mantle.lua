@@ -242,7 +242,7 @@
 
 ---@class IdleInhibitor
 ---One holder blocking idle.
----@field who string Free-text holder name, e.g. `"mpv"`; draw it, never match it.
+---@field who string Free-text holder name, e.g. `"mpv"`; draw it, never match it. Cut at 256 bytes, like `why`.
 ---@field why string Free-text reason, e.g. `"Playing video"`; often empty.
 
 ---@class JoinError
@@ -368,7 +368,7 @@
 ---@field album string Album title; empty when unset.
 ---@field album_art_path string Cover art as an existing local path, or empty when unavailable.
 ---@field album_artist string Album artists joined with `", "`; empty when unset.
----@field art_url string `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset.
+---@field art_url string `mpris:artUrl` as sent, e.g. an `https://` image to fetch and cache; empty when unset. One over 4096 bytes is ignored: the same track keeps its previous one, a new track has none.
 ---@field artist string Artists joined with `", "`; empty when unset.
 ---@field can_go_next boolean MPRIS `CanGoNext`.
 ---@field can_go_previous boolean MPRIS `CanGoPrevious`.
@@ -377,10 +377,10 @@
 ---@field can_quit boolean MPRIS `CanQuit` on the root interface.
 ---@field can_raise boolean MPRIS `CanRaise` on the root interface.
 ---@field can_seek boolean MPRIS `CanSeek`.
----@field desktop_entry string The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset.
+---@field desktop_entry string The player's `.desktop` basename, e.g. `"firefox"`, for app matching; empty when unset. Cut at 256 bytes.
 ---@field genre string Genres joined with `", "`; empty when unset.
 ---@field id string Bus-name suffix after `org.mpris.MediaPlayer2.`, e.g. `"spotify"`; every action takes it.
----@field identity string Display name, e.g. `"Spotify"`; empty if unanswered.
+---@field identity string Display name, e.g. `"Spotify"`; empty if unanswered. Cut at 256 bytes.
 ---@field length? integer Track length in microseconds, or `nil` when unknown, as for a live stream (ADR-0036).
 ---@field loop_status? LoopStatus MPRIS loop mode; `nil` when the player does not report one.
 ---@field maximum_rate number MPRIS maximum playback rate, or `0` when unavailable.
@@ -392,24 +392,24 @@
 ---@field position_updated_at integer `CLOCK_MONOTONIC` microseconds when `position` was read: the clock of `mantle.clock:now()` in seconds, so `mantle.clock:now() - position_updated_at / 1e6` is the age.
 ---@field rate number MPRIS playback rate.
 ---@field shuffle boolean MPRIS shuffle setting.
----@field title string Track title; empty when unset, normal between tracks.
+---@field title string Track title; empty when unset, normal between tracks. Cut at 1024 bytes, like the four below.
 ---@field track_list TrackListState Nearby tracks from the optional MPRIS TrackList interface.
 ---@field url string `xesam:url` as sent, e.g. a `file://` path or an `https://` page; empty when unset (ADR-0137).
 ---@field volume number MPRIS volume in percent, `100` when unreported. The protocol permits amplification above `100`.
 
 ---@class PlaylistSummary
----@field icon string Icon URI, or empty if absent.
+---@field icon string Icon URI, or empty if absent or over 256 bytes.
 ---@field id string Stable playlist object path.
----@field name string User-facing playlist name.
+---@field name string User-facing playlist name, cut at 256 bytes.
 
 ---@class PlaylistsState
----@field active? PlaylistSummary Active playlist, if the player reports one.
+---@field active? PlaylistSummary Active playlist, if the player reports one; `nil` too when its id is over 256 bytes.
 ---@field count integer Total playlists reported by the player.
 ---@field index integer Index used for the current page.
 ---@field order string Ordering used for the current page.
----@field orderings string[] Ordering names accepted by `playlists_get`.
+---@field orderings string[] Ordering names accepted by `playlists_get`: at most 16, names over 256 bytes left out.
 ---@field page_size integer Number of entries requested for the current page, at most 100.
----@field playlists PlaylistSummary[] At most 100 playlist entries.
+---@field playlists PlaylistSummary[] At most 100 playlist entries. One whose id is over 256 bytes is left out, so a page can be shorter than `page_size` while `count` includes it.
 ---@field reverse boolean Whether the page is reversed.
 
 ---@class PolkitIdentity
@@ -478,14 +478,14 @@
 
 ---@class TrackListState
 ---@field can_edit boolean Whether the player permits add and remove calls.
----@field current_track string Current TrackList object path, or empty if unknown.
+---@field current_track string Current TrackList object path, or empty if unknown or over 256 bytes.
 ---@field tracks TrackSummary[] At most 100 tracks around the current track; the full playlist remains player-owned.
 
 ---@class TrackSummary
 ---@field artist string Track artists joined with `", "`.
----@field id string TrackList object path, used by `track_list_go_to` and `track_list_remove_track`.
+---@field id string TrackList object path, used by `track_list_go_to` and `track_list_remove_track`. A track whose id is over 256 bytes is left out of `tracks`.
 ---@field length? integer Track length in microseconds, or `nil` when unknown.
----@field title string Track title, empty when the player has none.
+---@field title string Track title, empty when the player has none. Cut at 256 bytes, like `artist`.
 
 ---@class TrayItem
 ---@field attention_icon_name? string Artwork to draw while `status == "needs_attention"`, paired with `attention_icon_path` like the base icon; both `nil` when unset.
@@ -646,7 +646,7 @@
 ---`mantle.idle`'s payload (ADR-0141).
 ---@field compositor_hold_stale boolean The compositor last withheld idle notifications, but input resumed before it could answer again. Its hold may have ended; a fresh idle period clears this uncertainty.
 ---@field inhibited boolean True when logind blocks idle, a `ScreenSaver` client holds it (ADR-0231), or the compositor was last observed withholding idle notifications (ADR-0160). The compositor answer can remain true after a release while the seat is active; the next idle threshold refreshes it.
----@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted.
+---@field inhibitors IdleInhibitor[] Holders other than this shell, `ScreenSaver` clients included. The compositor's hold has an empty `who`; draw `why` then. An unconfirmed compositor hold is omitted. Lists at most 64 logind holders; a `ScreenSaver` client past 16 holds, or 64 in all, gets `LimitsExceeded`.
 
 ---@class BluetoothState
 ---@field available boolean BlueZ has an adapter; `false` without one or without `bluetoothd`.
@@ -696,7 +696,7 @@
 ---@field unlocking boolean PAM said yes and the lock is still up: the window for an out-animation (ADR-0190).
 
 ---@class MprisState
----@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: a player appearing past that is left out.
+---@field players PlayerState[] Controllable MPRIS players except `playerctld`, longest-running first, so `players[1]` stays put; empty when none runs. At most 8: one arriving past that is listed once another leaves.
 
 ---@class NetworkState
 ---`mantle.network`'s payload (ADR-0037).
