@@ -290,7 +290,7 @@ return panel {
 | Part | Contract |
 | :--- | :--- |
 | Signature | `palette.quantize(path, opts?, on_done)` → handle |
-| `path` | Local raster image; no SVG or URL |
+| `path` | Local raster image, absolute or `~/` under `$HOME`; a relative path raises. No SVG or URL |
 | `opts.depth` | `0` to `8`, default `3`: up to `2^depth` colours, fewer when the image has fewer. Out of range raises |
 | `opts.method` | `"celebi"` (default; Wu, then k-means in Lab, as matugen does) or `"wu"` (Wu alone, faster, rougher). Another raises |
 | `opts` | Only `depth`, `method` and `rescale`; another key raises |
