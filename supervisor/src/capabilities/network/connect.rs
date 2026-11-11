@@ -15,7 +15,10 @@ use super::{NetworkController, NetworkSignal, PendingNetworkConnect, root_object
 use crate::capabilities::bind;
 
 /// Backstop for an activation that stops answering without a verdict.
-pub(super) const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(45);
+/// ponytail: 90 s for Wi-Fi joins and VPNs alike, past NetworkManager's own defaults (45 s DHCP
+/// after association, 60 s `vpn.timeout`); a profile with longer timeouts set is cut off at 90 s.
+/// Upgrade path: read the profile's `ipv4.dhcp-timeout` or `vpn.timeout`.
+pub(super) const ACTIVATION_CEILING: std::time::Duration = std::time::Duration::from_secs(90);
 
 /// Kept separate from `Device` because zbus names both signal types `StateChanged`.
 #[zbus::proxy(
@@ -557,8 +560,12 @@ pub(super) mod tests {
         controller.devices.lock().unwrap().wifi.push(device);
         let (pending, attempt) = begun(&controller, home_on(DEVICE));
         tokio::time::pause();
+        let started = tokio::time::Instant::now();
 
         controller.watch_activation(attempt, joined(1), pending).await.unwrap();
+
+        // NetworkManager's own DHCP timeout is 45 s, so a join that slow can still succeed.
+        assert_eq!(started.elapsed().as_secs(), 90, "the join was given 90 s");
 
         let mut state = NetworkState::default();
         controller.join.lock().unwrap().overlay(&mut state);
