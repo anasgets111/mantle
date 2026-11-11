@@ -1,7 +1,7 @@
 //! `palette` global (ADR-0249). Renderer-local, unlike `process.run`: a palette has nothing to
 //! outlive a Renderer respawn.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use mlua::{Function, Lua, Table, Value};
 
@@ -53,10 +53,10 @@ impl PaletteRegistry {
         Self { calls: Calls::new(waker, false), cache_root }
     }
 
-    fn quantize(&self, path: String, depth: u8, method: Method, rescale: u32, on_done: Function) -> PaletteHandle {
+    fn quantize(&self, path: PathBuf, depth: u8, method: Method, rescale: u32, on_done: Function) -> PaletteHandle {
         let cache_root = self.cache_root.clone();
         let (id, job) = self.calls.submit(Some(on_done), move || {
-            match quantize_file(Path::new(&path), depth, method, rescale, cache_root.as_deref()) {
+            match quantize_file(&path, depth, method, rescale, cache_root.as_deref()) {
                 Ok(buckets) => {
                     let total: u32 = buckets.iter().map(|(count, _)| count).sum();
                     Some(
@@ -70,7 +70,7 @@ impl PaletteRegistry {
                     )
                 }
                 Err(err) => {
-                    warn!("palette.quantize({path}): {err}");
+                    warn!("palette.quantize({}): {err}", path.display());
                     None
                 }
             }
@@ -151,7 +151,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
         /// [docs](https://anasgets111.github.io/mantle/guide/scripting.html#palettequantize)
         fn palette.quantize(
             _lua,
-            /// A local raster file, a path or `~/` under `$HOME`; no SVG or URL.
+            /// A local raster file, absolute or `~/` under `$HOME`; anything else raises. No SVG or URL.
             path: String,
             /// `depth` 0 to 8, default 3: up to `2^depth` colours. `method` `"celebi"` (default) or `"wu"`. `rescale` caps the longest edge before
             /// counting, default 128, `0` for full size. Out of range raises.
@@ -174,7 +174,7 @@ pub fn register(lua: &Lua, registry: PaletteRegistry) -> mlua::Result<()> {
                 let range = out_of_range(0, u32::MAX, format!("integer {rescale}"));
                 return Err(mlua::Error::runtime(format!("palette.quantize: options: `rescale` {range}")));
             };
-            let path = super::marshal::expand_path("palette.quantize", &path)?;
+            let path = super::marshal::absolute_path("palette.quantize", &path)?;
             Ok(registry.quantize(path, depth, method, rescale, on_done))
         }
     )?;
@@ -252,16 +252,19 @@ mod tests {
     }
 
     #[test]
-    fn method_picks_the_quantizer_and_a_refused_option_is_a_config_error() {
+    fn method_picks_the_quantizer_and_a_refused_option_or_relative_path_is_a_config_error() {
         let (lua, _registry) = lua_with_palette();
         for name in ["celebi", "wu"] {
-            lua.load(format!(r#"palette.quantize("x.png", {{ method = "{name}" }}, function() end)"#)).exec().unwrap();
+            lua.load(format!(r#"palette.quantize("/x.png", {{ method = "{name}" }}, function() end)"#)).exec().unwrap();
         }
-        for (opts, needle) in
-            [(r#"method = "median""#, "`celebi`, `wu`"), ("depth = 9", "must be within [0, 8], got integer 9")]
-        {
+        for (path, opts, needle) in [
+            ("/x.png", r#"method = "median""#, "`celebi`, `wu`"),
+            ("/x.png", "depth = 9", "must be within [0, 8], got integer 9"),
+            // Relative would resolve against the Renderer's working directory, which nothing sets.
+            ("x.png", "", "path must be absolute or start with ~/"),
+        ] {
             let err =
-                lua.load(format!(r#"palette.quantize("x.png", {{ {opts} }}, function() end)"#)).exec().unwrap_err();
+                lua.load(format!(r#"palette.quantize("{path}", {{ {opts} }}, function() end)"#)).exec().unwrap_err();
             assert!(err.to_string().contains(needle), "{opts}: expected {needle:?} in the error, got: {err}");
         }
     }

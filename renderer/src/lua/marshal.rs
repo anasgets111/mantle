@@ -19,6 +19,13 @@ pub(crate) fn expand_path(what: &str, path: &str) -> mlua::Result<String> {
         .map_err(|err| mlua::Error::runtime(format!("{what}: {err}, got {}", crate::layout::node::preview_str(path))))
 }
 
+/// `path` absolute or `~/` under `$HOME`, or a Lua error naming `what`: a relative one would resolve
+/// against the working directory, which nothing sets.
+pub(crate) fn absolute_path(what: &str, path: &str) -> mlua::Result<std::path::PathBuf> {
+    shared::expand_home(path)
+        .map_err(|err| mlua::Error::runtime(format!("{what}: {err}, got {}", crate::layout::node::preview_str(path))))
+}
+
 /// The one wording for a value outside its closed range; `got` is spelled by [`number_word`] or `preview_for_error`.
 pub(crate) fn out_of_range(
     low: impl std::fmt::Display,

@@ -3,7 +3,7 @@
 
 use std::cell::OnceCell;
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
 
@@ -108,11 +108,6 @@ lua_class! {
     }
 }
 
-fn resolve(call: &str, path: &str) -> mlua::Result<PathBuf> {
-    shared::expand_home(path)
-        .map_err(|err| mlua::Error::runtime(format!("{call}: {err}, got {}", crate::layout::node::preview_str(path))))
-}
-
 fn read(path: &Path) -> Result<String, String> {
     let mut bytes = Vec::new();
     let file = std::fs::File::open(path).map_err(|err| err.to_string())?;
@@ -161,7 +156,7 @@ pub fn register(lua: &Lua, registry: FileRegistry) -> mlua::Result<()> {
             path: String,
             on_done: fn(text: Option<String>, err: Option<String>),
         ) -> FileHandle {
-            let path = resolve("file.read", &path)?;
+            let path = super::marshal::absolute_path("file.read", &path)?;
             Ok(reads.spawn(false, Some(on_done.0), move || {
                 Outcome::Read(read(&path))
             }))
@@ -185,7 +180,7 @@ pub fn register(lua: &Lua, registry: FileRegistry) -> mlua::Result<()> {
             /// Runs once with `changed`, or `nil` and an error message. Cancelling or reloading drops it; the write still lands.
             on_done: As<Option<Function>, Option<WriteDone>>,
         ) -> FileHandle {
-            let path = resolve("file.write", &path)?;
+            let path = super::marshal::absolute_path("file.write", &path)?;
             if matches!(opts.0, Some(Value::Function(_))) {
                 return Err(mlua::Error::runtime("file.write: the callback is the fourth argument; pass `nil` for opts before it"));
             }

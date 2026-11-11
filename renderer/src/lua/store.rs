@@ -105,14 +105,8 @@ impl LuaType for PersistentTable {
 
 /// The config's `path` as the key config and Supervisor share: `~/` expanded, absolute and naming a file.
 fn file_path(path: &str) -> mlua::Result<String> {
-    let path = &*super::marshal::expand_path("persistent_table", path)?;
-    if !path.starts_with('/') {
-        return Err(mlua::Error::runtime(format!(
-            "persistent_table: path must be absolute or start with ~/, got {}; a relative one resolves against the \
-             Supervisor's working directory, which nothing sets",
-            preview_str(path)
-        )));
-    }
+    let path = super::marshal::absolute_path("persistent_table", path)?;
+    let path = &*path.to_string_lossy();
     if std::path::Path::new(path).file_name().is_none() || path.ends_with('/') {
         return Err(mlua::Error::runtime(format!(
             "persistent_table: path must name a file, got {}",
