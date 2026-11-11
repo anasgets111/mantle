@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 use std::io;
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -365,16 +365,12 @@ async fn handle_connection(
     let writer_hangup = Arc::clone(&hangup);
     let writer = tokio::spawn(async move {
         while let Some(payload) = outbound_rx.recv().await {
-            match framing::write_frame(&mut write_half, &payload).await {
-                Ok(()) => {}
-                // Refused before a byte was written, so the stream is still aligned for the next
-                // frame. Ending here would close the socket, and the respawned Renderer's replay
-                // would carry the same frame again.
-                Err(FramingError::FrameTooLarge { len }) => {
-                    warn!("dropped a {len}-byte frame for generation {generation_id}: over the frame cap");
-                }
-                // A dead writer must not stay registered, so leave by the departure path.
-                Err(_) => return writer_hangup.notify_one(),
+            // `send_frame_logged` drops a frame over the cap before it is queued, so this is the
+            // socket failing. A dead writer must not stay registered: leave by the departure path.
+            if let Err(err) = framing::write_frame(&mut write_half, &payload).await {
+                debug!("writing to generation {generation_id} failed: {err}");
+                writer_hangup.notify_one();
+                break;
             }
         }
     });
@@ -480,10 +476,28 @@ fn refuse_frame(control_client: bool, generation_id: u32, frame: &RendererFrame)
 /// Renderer registration; `connected.recv()` replays `last_snapshots`, so no early push is lost.
 /// Returns whether the frame was queued.
 pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u32, frame: &SupervisorFrame) -> bool {
-    let queued = serde_json::to_vec(frame)
+    let Ok(payload) = serde_json::to_vec(frame)
         .inspect_err(|err| debug!("failed to serialize {frame:?} for generation {generation_id}: {err}"))
-        .is_ok_and(|payload| registry.send_to(generation_id, payload));
-    if queued {
+    else {
+        return false;
+    };
+    // Dropped here, where the frame's kind is known, rather than by the writer, which would close
+    // the socket. Warned once: a client re-sending the same state would log one line per push.
+    if payload.len() > framing::MAX_FRAME_LEN {
+        static WARNED: AtomicBool = AtomicBool::new(false);
+        let what = match frame {
+            SupervisorFrame::StateSnapshot(snapshot) => snapshot.capability.as_str(),
+            _ => "non-snapshot",
+        };
+        let len = payload.len();
+        if WARNED.swap(true, Ordering::Relaxed) {
+            debug!("dropped a {len}-byte {what} frame for generation {generation_id}: over the frame cap");
+        } else {
+            warn!("dropped a {len}-byte {what} frame for generation {generation_id}: over the frame cap");
+        }
+        return false;
+    }
+    if registry.send_to(generation_id, payload) {
         return true;
     }
     // Silent for snapshots: the replay delivers them, and a respawn cooldown logged one line per
@@ -497,6 +511,7 @@ pub(crate) fn send_frame_logged(registry: &GenerationRegistry, generation_id: u3
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::capabilities::test_support::{poll_until, within};
     use tokio::io::AsyncReadExt;
 
     fn command_frame(generation_id: u32) -> RendererFrame {
@@ -705,28 +720,33 @@ mod tests {
         assert_eq!(reported, [1, 2], "the connected channel must report each handshake's generation_id");
     }
 
-    /// A Renderer connected as generation 5, registered by the time this returns.
-    async fn connected_renderer(path: &Path) -> (GenerationRegistry, UnixStream) {
-        let (registry, _routes, _inbound, mut connected) = spawn_listener(path).unwrap();
+    /// A Renderer connected as generation 5, registered by the time this returns, with the frames
+    /// it sends.
+    async fn connected_renderer(path: &Path) -> (GenerationRegistry, mpsc::Receiver<InboundFrame>, UnixStream) {
+        let (registry, _routes, inbound, mut connected) = spawn_listener(path).unwrap();
         expect_this_process(&registry, &[5]);
         let mut client = UnixStream::connect(path).await.unwrap();
         framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
-        assert_eq!(crate::capabilities::test_support::within(connected.recv()).await, Some(5));
-        (registry, client)
+        assert_eq!(within(connected.recv()).await, Some(5));
+        (registry, inbound, client)
     }
 
-    /// Any session-bus application can grow a state push past the frame cap (an MPRIS title, a
-    /// pile of ScreenSaver holds). Losing that one push is the cost; the frames after it still flow.
+    /// A state push grown past the frame cap is dropped before it is queued, where its capability
+    /// is known for the log; the connection lives on and the frames after it still flow.
     #[tokio::test]
     async fn a_frame_over_the_cap_is_dropped_and_the_next_frame_still_arrives() {
         let dir = tempfile::tempdir().unwrap();
-        let (registry, mut client) = connected_renderer(&dir.path().join("control.sock")).await;
+        let (registry, _inbound, mut client) = connected_renderer(&dir.path().join("control.sock")).await;
+        let snapshot = |payload| {
+            SupervisorFrame::StateSnapshot(shared::StateSnapshot { capability: "mpris".into(), revision: 1, payload })
+        };
 
-        assert!(registry.send_to(5, vec![b'x'; framing::MAX_FRAME_LEN + 1]));
-        assert!(registry.send_to(5, b"after".to_vec()), "the connection survives the oversized frame");
+        let oversized = snapshot(serde_json::Value::String("x".repeat(framing::MAX_FRAME_LEN)));
+        assert!(!send_frame_logged(&registry, 5, &oversized), "an oversized frame is not queued");
+        assert!(send_frame_logged(&registry, 5, &snapshot(serde_json::json!("after"))));
 
-        let next = crate::capabilities::test_support::within(framing::read_frame(&mut client)).await.unwrap();
-        assert_eq!(next, b"after");
+        let next: SupervisorFrame = within(framing::read_json_frame(&mut client)).await.unwrap();
+        assert_eq!(next, snapshot(serde_json::json!("after")));
     }
 
     /// A writer that can no longer write must not leave the connection registered: every push to it
@@ -734,25 +754,20 @@ mod tests {
     #[tokio::test]
     async fn a_failed_write_takes_the_connection_through_departure() {
         let dir = tempfile::tempdir().unwrap();
-        let (registry, client) = connected_renderer(&dir.path().join("control.sock")).await;
+        let (registry, _inbound, client) = connected_renderer(&dir.path().join("control.sock")).await;
         // The peer stops reading but keeps its write half open, so only the write can notice.
         let client = client.into_std().unwrap();
         client.shutdown(std::net::Shutdown::Read).unwrap();
 
         assert!(registry.send_to(5, b"lost".to_vec()));
 
-        crate::capabilities::test_support::poll_until(|| (!registry.is_registered(5)).then_some(())).await;
+        poll_until(|| (!registry.is_registered(5)).then_some(())).await;
     }
 
     #[tokio::test]
     async fn spawn_listener_forwards_decoded_command_and_capability_frames_tagged_with_their_generation() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock");
-        let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
-        expect_this_process(&registry, &[5]);
-
-        let mut client = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+        let (_registry, mut inbound, mut client) = connected_renderer(&dir.path().join("control.sock")).await;
 
         let command = RendererFrame::Command(shared::CommandEnvelope {
             params: shared::CommandParams {
@@ -806,12 +821,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_capability_start_is_dropped_without_closing_the_connection() {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("control.sock");
-        let (registry, _routes, mut inbound, _connected) = spawn_listener(&path).unwrap();
-        expect_this_process(&registry, &[5]);
-
-        let mut client = UnixStream::connect(&path).await.unwrap();
-        framing::write_json_frame(&mut client, &ConnectionHandshake { generation_id: 5 }).await.unwrap();
+        let (_registry, mut inbound, mut client) = connected_renderer(&dir.path().join("control.sock")).await;
         let unknown = serde_json::json!({ "kind": "StartCapability", "data": { "capability": "nope" } });
         framing::write_json_frame(&mut client, &unknown).await.unwrap();
         let audio = RendererFrame::StartCapability { capability: shared::Capability::Audio };
